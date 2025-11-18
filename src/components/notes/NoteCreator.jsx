@@ -1,19 +1,65 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
-import { Mic, Sparkles, Loader2 } from 'lucide-react';
+import { Mic, Square, Sparkles, Loader2 } from 'lucide-react';
 import { base44 } from '@/api/base44Client';
 
 export default function NoteCreator({ onNoteCreated }) {
   const [content, setContent] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [audioFile, setAudioFile] = useState(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingTime, setRecordingTime] = useState(0);
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
+  const timerRef = useRef(null);
 
-  const handleAudioUpload = (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      setAudioFile(file);
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        const audioFile = new File([audioBlob], 'recording.webm', { type: 'audio/webm' });
+        setAudioFile(audioFile);
+        stream.getTracks().forEach(track => track.stop());
+      };
+
+      mediaRecorder.start();
+      setIsRecording(true);
+      setRecordingTime(0);
+
+      // Start timer
+      timerRef.current = setInterval(() => {
+        setRecordingTime(prev => prev + 1);
+      }, 1000);
+    } catch (error) {
+      console.error('Error accessing microphone:', error);
+      alert('Unable to access microphone. Please grant permission.');
     }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+      clearInterval(timerRef.current);
+    }
+  };
+
+  const formatTime = (seconds) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
   const generateAIAnalysis = async (noteContent) => {
@@ -111,23 +157,45 @@ Be constructive, insightful, and encouraging.`,
         disabled={isProcessing}
       />
 
-      <div className="flex items-center gap-4">
-        <label className="clay-button-secondary cursor-pointer flex items-center gap-2 px-6 py-3">
-          <Mic className="w-5 h-5" />
-          <span>{audioFile ? 'Audio Added ✓' : 'Add Audio'}</span>
-          <input
-            type="file"
-            accept="audio/*"
-            onChange={handleAudioUpload}
-            className="hidden"
-            disabled={isProcessing}
-          />
-        </label>
+      <div className="space-y-4">
+        {/* Recording Controls */}
+        <div className="flex items-center gap-4">
+          {!isRecording ? (
+            <Button
+              onClick={startRecording}
+              disabled={isProcessing || audioFile}
+              className="clay-button-secondary flex items-center gap-2 px-6 py-3"
+            >
+              <Mic className="w-5 h-5" />
+              <span>{audioFile ? 'Audio Recorded ✓' : 'Record Audio'}</span>
+            </Button>
+          ) : (
+            <Button
+              onClick={stopRecording}
+              className="clay-button-secondary flex items-center gap-2 px-6 py-3 animate-pulse border-red-400"
+            >
+              <Square className="w-5 h-5 text-red-400" />
+              <span className="text-red-400">Stop Recording ({formatTime(recordingTime)})</span>
+            </Button>
+          )}
 
+          {audioFile && !isRecording && (
+            <Button
+              onClick={() => setAudioFile(null)}
+              variant="ghost"
+              size="sm"
+              className="text-gray-400 hover:text-white"
+            >
+              Clear Audio
+            </Button>
+          )}
+        </div>
+
+        {/* Submit Button */}
         <Button
           onClick={handleSubmit}
-          disabled={isProcessing || (!content.trim() && !audioFile)}
-          className="clay-button flex-1 flex items-center justify-center gap-2 h-12"
+          disabled={isProcessing || isRecording || (!content.trim() && !audioFile)}
+          className="clay-button w-full flex items-center justify-center gap-2 h-12"
         >
           {isProcessing ? (
             <>
