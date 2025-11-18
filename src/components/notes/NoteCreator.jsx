@@ -107,7 +107,7 @@ Be constructive, insightful, and encouraging.`,
         value={content}
         onChange={(e) => setContent(e.target.value)}
         placeholder="Type your thoughts here..."
-        className="min-h-[200px] bg-dark-lighter border-0 text-white placeholder:text-gray-500 resize-none text-lg clay-input"
+        className="min-h-[200px] bg-dark-lighter border-0 text-black placeholder:text-gray-500 resize-none text-lg clay-input"
         disabled={isProcessing}
       />
 
