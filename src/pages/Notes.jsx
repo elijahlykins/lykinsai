@@ -5,12 +5,17 @@ import NoteCreator from '../components/notes/NoteCreator';
 import NoteSidebar from '../components/notes/NoteSidebar';
 import AIAnalysisPanel from '../components/notes/AIAnalysisPanel';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Menu, X, Trash2 } from 'lucide-react';
+import { Menu, X, Trash2, Edit2, Save, XCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 
 export default function NotesPage() {
   const [selectedNote, setSelectedNote] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editedContent, setEditedContent] = useState('');
+  const [editedTitle, setEditedTitle] = useState('');
   const queryClient = useQueryClient();
 
   const { data: notes = [], isLoading } = useQuery({
@@ -31,6 +36,28 @@ export default function NotesPage() {
     if (!selectedNote) return;
     await base44.entities.Note.delete(selectedNote.id);
     setSelectedNote(null);
+    queryClient.invalidateQueries(['notes']);
+  };
+
+  const startEditing = () => {
+    setEditedTitle(selectedNote.title);
+    setEditedContent(selectedNote.content);
+    setIsEditing(true);
+  };
+
+  const cancelEditing = () => {
+    setIsEditing(false);
+    setEditedTitle('');
+    setEditedContent('');
+  };
+
+  const saveEdits = async () => {
+    if (!selectedNote) return;
+    await base44.entities.Note.update(selectedNote.id, {
+      title: editedTitle,
+      content: editedContent
+    });
+    setIsEditing(false);
     queryClient.invalidateQueries(['notes']);
   };
 
@@ -68,14 +95,47 @@ export default function NotesPage() {
           </div>
 
           {selectedNote && (
-            <Button
-              onClick={handleDeleteNote}
-              variant="ghost"
-              size="icon"
-              className="clay-icon-button text-red-400 hover:text-red-300"
-            >
-              <Trash2 className="w-5 h-5" />
-            </Button>
+            <div className="flex items-center gap-2">
+              {!isEditing ? (
+                <>
+                  <Button
+                    onClick={startEditing}
+                    variant="ghost"
+                    size="icon"
+                    className="clay-icon-button"
+                  >
+                    <Edit2 className="w-5 h-5" />
+                  </Button>
+                  <Button
+                    onClick={handleDeleteNote}
+                    variant="ghost"
+                    size="icon"
+                    className="clay-icon-button text-red-400 hover:text-red-300"
+                  >
+                    <Trash2 className="w-5 h-5" />
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <Button
+                    onClick={saveEdits}
+                    variant="ghost"
+                    size="icon"
+                    className="clay-icon-button text-mint"
+                  >
+                    <Save className="w-5 h-5" />
+                  </Button>
+                  <Button
+                    onClick={cancelEditing}
+                    variant="ghost"
+                    size="icon"
+                    className="clay-icon-button"
+                  >
+                    <XCircle className="w-5 h-5" />
+                  </Button>
+                </>
+              )}
+            </div>
           )}
         </div>
 
@@ -89,12 +149,31 @@ export default function NotesPage() {
                 <>
                   {/* Selected Note Display */}
                   <div className="clay-card p-8 space-y-4">
-                    <h2 className="text-3xl font-bold text-white">{selectedNote.title}</h2>
-                    <div className="prose prose-invert max-w-none">
-                      <p className="text-gray-300 leading-relaxed whitespace-pre-wrap">
-                        {selectedNote.content}
-                      </p>
-                    </div>
+                    {!isEditing ? (
+                      <>
+                        <h2 className="text-3xl font-bold text-white">{selectedNote.title}</h2>
+                        <div className="prose prose-invert max-w-none">
+                          <p className="text-gray-300 leading-relaxed whitespace-pre-wrap">
+                            {selectedNote.content}
+                          </p>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <Input
+                          value={editedTitle}
+                          onChange={(e) => setEditedTitle(e.target.value)}
+                          className="text-2xl font-bold clay-input"
+                          placeholder="Note title..."
+                        />
+                        <Textarea
+                          value={editedContent}
+                          onChange={(e) => setEditedContent(e.target.value)}
+                          className="min-h-[300px] clay-input"
+                          placeholder="Note content..."
+                        />
+                      </>
+                    )}
                     {selectedNote.audio_url && (
                       <div className="mt-4">
                         <audio controls className="w-full clay-audio">
