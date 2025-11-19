@@ -282,6 +282,13 @@ export default function LongTermPage() {
               </div>
             ) : (
               <div className="max-w-4xl mx-auto p-8 space-y-6">
+                <Button
+                  onClick={() => setSelectedNote(null)}
+                  variant="ghost"
+                  className="text-black hover:bg-gray-100 flex items-center gap-2 -ml-2"
+                >
+                  ← Back to All Notes
+                </Button>
                 <div className="clay-card p-8 space-y-4">
                   {!isEditing ? (
                     <>
@@ -351,8 +358,8 @@ export default function LongTermPage() {
                 </div>
                 <NoteSummarization note={selectedNote} />
                 <AIAnalysisPanel note={selectedNote} allNotes={notes} onUpdate={handleUpdate} />
-                <Button onClick={() => setSelectedNote(null)} variant="outline" className="w-full bg-transparent border-gray-300 text-black hover:bg-gray-100">
-                  Back to Long Term
+                <Button onClick={() => setSelectedNote(null)} variant="outline" className="w-full bg-transparent border-gray-300 text-black hover:bg-gray-100 flex items-center gap-2">
+                  ← Back to All Notes
                 </Button>
               </div>
             )}

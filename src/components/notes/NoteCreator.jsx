@@ -125,7 +125,7 @@ Be constructive, insightful, and encouraging.`,
   };
 
   const autoSave = async () => {
-    if (!content.trim() && !audioFile) return;
+    if (!content.trim() && !audioFile && attachments.length === 0) return;
 
     setIsProcessing(true);
     try {
@@ -209,7 +209,7 @@ Note: "${finalContent.substring(0, 300)}"`,
       clearTimeout(saveTimeoutRef.current);
     }
 
-    if ((content.trim() || audioFile) && !isRecording) {
+    if ((content.trim() || audioFile || attachments.length > 0) && !isRecording) {
       saveTimeoutRef.current = setTimeout(() => {
         autoSave();
       }, 2000); // Save after 2 seconds of inactivity
@@ -220,7 +220,7 @@ Note: "${finalContent.substring(0, 300)}"`,
         clearTimeout(saveTimeoutRef.current);
       }
     };
-  }, [content, audioFile, isRecording]);
+  }, [content, audioFile, attachments, isRecording]);
 
   const handleFileUpload = async (file) => {
     try {

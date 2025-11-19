@@ -16,6 +16,7 @@ export default function AISearchPage() {
   const [isSearching, setIsSearching] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [selectedNote, setSelectedNote] = useState(null);
   const navigate = useNavigate();
 
   const { data: notes = [] } = useQuery({
@@ -100,29 +101,60 @@ Return the IDs of the most relevant notes, ranked by relevance.`,
         </div>
 
         <div className="flex-1 overflow-auto bg-dark p-8">
-          <div className="max-w-4xl mx-auto space-y-3">
-            {results.length > 0 ? (
-              results.map((note) => (
-                <div key={note.id} className="clay-card p-4">
-                  <div className="flex items-start justify-between mb-2">
-                    <h3 className="font-semibold text-black">{note.title}</h3>
-                    <span className="text-xs text-gray-500 px-2 py-1 bg-white/5 rounded">
-                      {note.storage_type === 'short_term' ? 'Short Term' : 'Long Term'}
-                    </span>
-                  </div>
-                  <p className="text-sm text-black line-clamp-2 mb-2">{note.content}</p>
-                  <div className="flex items-center gap-1 text-xs text-gray-500">
-                    <Clock className="w-3 h-3 text-black" />
-                    <span>{format(new Date(note.created_date), 'MMM d, yyyy')}</span>
-                  </div>
+          {selectedNote ? (
+            <div className="max-w-4xl mx-auto space-y-4">
+              <Button
+                onClick={() => setSelectedNote(null)}
+                variant="outline"
+                className="bg-transparent border-gray-300 text-black hover:bg-gray-100"
+              >
+                ← Back to Results
+              </Button>
+              <div className="clay-card p-8">
+                <h2 className="text-3xl font-bold text-black mb-4">{selectedNote.title}</h2>
+                <p className="leading-relaxed whitespace-pre-wrap text-black">{selectedNote.content}</p>
+                {selectedNote.audio_url && (
+                  <audio controls className="w-full mt-4">
+                    <source src={selectedNote.audio_url} />
+                  </audio>
+                )}
+                <div className="flex items-center gap-2 text-xs text-gray-500 mt-4">
+                  <Clock className="w-3 h-3" />
+                  <span>{format(new Date(selectedNote.created_date), 'MMM d, yyyy')}</span>
+                  <span className="mx-2">•</span>
+                  <span>{selectedNote.storage_type === 'short_term' ? 'Short Term' : 'Long Term'}</span>
                 </div>
-              ))
-            ) : query && !isSearching ? (
-              <p className="text-center text-gray-500 py-12">No results found</p>
-            ) : (
-              <p className="text-center text-gray-500 py-12">Search for memories by ideas or concepts</p>
-            )}
-          </div>
+              </div>
+            </div>
+          ) : (
+            <div className="max-w-4xl mx-auto space-y-3">
+              {results.length > 0 ? (
+                results.map((note) => (
+                  <button
+                    key={note.id}
+                    onClick={() => setSelectedNote(note)}
+                    className="clay-card p-4 w-full text-left hover:scale-[1.01] transition-all"
+                  >
+                    <div className="flex items-start justify-between mb-2">
+                      <h3 className="font-semibold text-black">{note.title}</h3>
+                      <span className="text-xs text-gray-500 px-2 py-1 bg-white/5 rounded">
+                        {note.storage_type === 'short_term' ? 'Short Term' : 'Long Term'}
+                      </span>
+                    </div>
+                    <p className="text-sm text-black line-clamp-2 mb-2">{note.content}</p>
+                    <div className="flex items-center gap-1 text-xs text-gray-500">
+                      <Clock className="w-3 h-3 text-black" />
+                      <span>{format(new Date(note.created_date), 'MMM d, yyyy')}</span>
+                    </div>
+                  </button>
+                ))
+              ) : query && !isSearching ? (
+                <p className="text-center text-gray-500 py-12">No results found</p>
+              ) : (
+                <p className="text-center text-gray-500 py-12">Search for memories by ideas or concepts</p>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
