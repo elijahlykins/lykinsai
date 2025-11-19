@@ -126,7 +126,7 @@ export default function LongTermPage() {
         <div className="p-6 border-b border-white/10">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-4">
-              <Archive className="w-6 h-6 text-white" />
+              <Archive className="w-6 h-6 text-black" />
               <h1 className="text-2xl font-bold text-white">Long Term Memory</h1>
             </div>
             <div className="flex items-center gap-2">
@@ -136,7 +136,7 @@ export default function LongTermPage() {
                   variant="ghost"
                   className="text-white hover:bg-white/10 flex items-center gap-2"
                 >
-                  <Link2 className="w-4 h-4" />
+                  <Link2 className="w-4 h-4 text-black" />
                   {showGraphView ? 'List View' : 'Graph View'}
                 </Button>
               )}
@@ -145,10 +145,10 @@ export default function LongTermPage() {
                   {!isEditing ? (
                     <>
                       <Button onClick={() => setShowLinkSelector(true)} variant="ghost" size="icon" className="text-white hover:bg-white/10">
-                        <Link2 className="w-5 h-5" />
+                        <Link2 className="w-5 h-5 text-black" />
                       </Button>
                       <Button onClick={startEditing} variant="ghost" size="icon" className="text-white hover:bg-white/10">
-                        <Edit2 className="w-5 h-5" />
+                        <Edit2 className="w-5 h-5 text-black" />
                       </Button>
                       <Button onClick={handleDeleteNote} variant="ghost" size="icon" className="text-red-400 hover:bg-white/10">
                         <Trash2 className="w-5 h-5" />
@@ -157,10 +157,10 @@ export default function LongTermPage() {
                   ) : (
                     <>
                       <Button onClick={saveEdits} variant="ghost" size="icon" className="text-green-400 hover:bg-white/10">
-                        <Save className="w-5 h-5" />
+                        <Save className="w-5 h-5 text-black" />
                       </Button>
                       <Button onClick={cancelEditing} variant="ghost" size="icon" className="text-white hover:bg-white/10">
-                        <XCircle className="w-5 h-5" />
+                        <XCircle className="w-5 h-5 text-black" />
                       </Button>
                     </>
                   )}
@@ -171,9 +171,9 @@ export default function LongTermPage() {
 
           {!selectedNote && !showGraphView && (
             <div className="flex gap-3 items-center">
-              <Filter className="w-4 h-4 text-gray-400" />
+              <Filter className="w-4 h-4 text-black" />
               <Select value={filterTag} onValueChange={setFilterTag}>
-                <SelectTrigger className="w-40 bg-dark-lighter border-white/10 text-white">
+                <SelectTrigger className="w-40 bg-dark-lighter border-white/10 text-black">
                   <SelectValue placeholder="Filter by tag" />
                 </SelectTrigger>
                 <SelectContent className="bg-dark-card border-white/10">
@@ -184,7 +184,7 @@ export default function LongTermPage() {
                 </SelectContent>
               </Select>
               <Select value={filterFolder} onValueChange={setFilterFolder}>
-                <SelectTrigger className="w-40 bg-dark-lighter border-white/10 text-white">
+                <SelectTrigger className="w-40 bg-dark-lighter border-white/10 text-black">
                   <SelectValue placeholder="Filter by folder" />
                 </SelectTrigger>
                 <SelectContent className="bg-dark-card border-white/10">
@@ -220,13 +220,13 @@ export default function LongTermPage() {
                       <div className="flex items-center gap-2 mb-2">
                         {note.folder && (
                           <span className="text-xs px-2 py-1 bg-white/5 rounded text-gray-400 flex items-center gap-1">
-                            <FolderIcon className="w-3 h-3" />
+                            <FolderIcon className="w-3 h-3 text-black" />
                             {note.folder}
                           </span>
                         )}
                       </div>
-                      <h3 className="font-semibold text-white mb-2 line-clamp-1">{note.title}</h3>
-                      <p className="text-sm text-gray-400 line-clamp-3 mb-3">{note.content}</p>
+                      <h3 className="font-semibold text-black mb-2 line-clamp-1">{note.title}</h3>
+                      <p className="text-sm text-black line-clamp-3 mb-3">{note.content}</p>
                       {note.tags?.length > 0 && (
                         <div className="flex flex-wrap gap-1 mb-2">
                           {note.tags.map(tag => (
@@ -237,12 +237,12 @@ export default function LongTermPage() {
                         </div>
                       )}
                       <div className="flex items-center gap-1 text-xs text-gray-500">
-                        <Clock className="w-3 h-3" />
+                        <Clock className="w-3 h-3 text-black" />
                         <span>{format(new Date(note.created_date), 'MMM d, yyyy')}</span>
                         {note.connected_notes?.length > 0 && (
                           <>
                             <span className="mx-1">•</span>
-                            <Link2 className="w-3 h-3" />
+                            <Link2 className="w-3 h-3 text-black" />
                             <span>{note.connected_notes.length}</span>
                           </>
                         )}
@@ -264,7 +264,7 @@ export default function LongTermPage() {
                       <div className="flex items-center gap-2 mb-4">
                         {selectedNote.folder && (
                           <span className="px-3 py-1 bg-white/5 rounded-full text-sm text-gray-400 flex items-center gap-2">
-                            <FolderIcon className="w-4 h-4" />
+                            <FolderIcon className="w-4 h-4 text-black" />
                             {selectedNote.folder}
                           </span>
                         )}
@@ -284,7 +284,7 @@ export default function LongTermPage() {
                       {selectedNote.connected_notes?.length > 0 && (
                         <div className="pt-4 border-t border-white/10">
                           <h3 className="text-sm font-medium text-gray-400 mb-3 flex items-center gap-2">
-                            <Link2 className="w-4 h-4" />
+                            <Link2 className="w-4 h-4 text-black" />
                             Linked Notes ({selectedNote.connected_notes.length})
                           </h3>
                           <div className="grid grid-cols-1 gap-2">
@@ -296,8 +296,8 @@ export default function LongTermPage() {
                                   onClick={() => setSelectedNote(connectedNote)}
                                   className="p-3 bg-white/5 rounded-lg text-left hover:bg-white/10 transition-all"
                                 >
-                                  <p className="text-sm font-medium text-white">{connectedNote.title}</p>
-                                  <p className="text-xs text-gray-400 line-clamp-1">{connectedNote.content}</p>
+                                  <p className="text-sm font-medium text-black">{connectedNote.title}</p>
+                                  <p className="text-xs text-black line-clamp-1">{connectedNote.content}</p>
                                 </button>
                               ) : null;
                             })}
