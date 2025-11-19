@@ -29,14 +29,21 @@ export default function AISearchPage() {
     
     setIsSearching(true);
     try {
-      const notesContext = notes.map(n => 
-        `ID: ${n.id}\nTitle: ${n.title}\nContent: ${n.content}\nType: ${n.storage_type}`
-      ).join('\n\n---\n\n');
+      const notesContext = notes.map(n => {
+        let context = `ID: ${n.id}\nTitle: ${n.title}\nContent: ${n.content}\nType: ${n.storage_type}`;
+        if (n.attachments && n.attachments.length > 0) {
+          context += `\nAttachments: ${n.attachments.map(a => a.name || a.url).join(', ')}`;
+        }
+        if (n.tags && n.tags.length > 0) {
+          context += `\nTags: ${n.tags.join(', ')}`;
+        }
+        return context;
+      }).join('\n\n---\n\n');
 
       const searchResults = await base44.integrations.Core.InvokeLLM({
         prompt: `Given this search query: "${query}"
         
-Find the most relevant notes based on ideas, concepts, and meaning (not just keyword matching).
+Find the most relevant notes based on ideas, concepts, meaning, attachments, and tags (semantic search, not just keyword matching).
 
 Available notes:
 ${notesContext}

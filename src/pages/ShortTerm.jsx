@@ -17,6 +17,7 @@ import TagInput from '../components/notes/TagInput';
 import NoteLinkSelector from '../components/notes/NoteLinkSelector';
 import KnowledgeGraph from '../components/notes/KnowledgeGraph';
 import NoteSummarization from '../components/notes/NoteSummarization';
+import MindMapGenerator from '../components/notes/MindMapGenerator';
 import ConnectionSuggestions from '../components/notes/ConnectionSuggestions';
 import ReminderPicker from '../components/notes/ReminderPicker';
 import ReminderNotifications from '../components/notes/ReminderNotifications';
@@ -354,6 +355,7 @@ export default function ShortTermPage() {
                   )}
                 </div>
                 <NoteSummarization note={selectedNote} />
+                <MindMapGenerator note={selectedNote} allNotes={notes} />
                 <AIAnalysisPanel note={selectedNote} allNotes={notes} onUpdate={handleUpdate} />
                 <Button onClick={() => setSelectedNote(null)} variant="outline" className="w-full bg-transparent border-gray-300 text-black hover:bg-gray-100 flex items-center gap-2">
                   ← Back to All Notes

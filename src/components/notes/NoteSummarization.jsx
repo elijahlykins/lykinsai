@@ -7,7 +7,7 @@ import { base44 } from '@/api/base44Client';
 export default function NoteSummarization({ note }) {
   const [summary, setSummary] = useState(null);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [summaryLength, setSummaryLength] = useState('medium');
+  const [summaryType, setSummaryType] = useState('paragraph');
   const [copied, setCopied] = useState(false);
 
   React.useEffect(() => {
@@ -17,19 +17,20 @@ export default function NoteSummarization({ note }) {
   const generateSummary = async () => {
     setIsGenerating(true);
     try {
-      const lengthInstructions = {
-        short: 'Create a very brief summary in 2-3 sentences.',
-        medium: 'Create a concise summary in 5-7 sentences.',
-        long: 'Create a detailed summary with key points and insights in 10-15 sentences.'
+      const typeInstructions = {
+        paragraph: 'Create a concise paragraph summary (5-7 sentences) that captures the main ideas.',
+        executive: 'Create an executive summary with: 1) Key Takeaway (1 sentence), 2) Main Points (3-4 bullet points), 3) Recommendation/Next Steps (1-2 sentences).',
+        bullets: 'Create a bullet-point summary with 5-8 key points. Use clear, concise bullets that capture the essential information.',
+        detailed: 'Create a detailed summary with: 1) Overview, 2) Key Details, 3) Important Insights, 4) Conclusions. Be comprehensive and thorough.'
       };
 
       const summaryText = await base44.integrations.Core.InvokeLLM({
-        prompt: `Summarize the following note. ${lengthInstructions[summaryLength]}
+        prompt: `Summarize the following note. ${typeInstructions[summaryType]}
 
 Title: ${note.title}
 Content: ${note.content}
 
-Provide a clear, well-structured summary that captures the main ideas and key points.`
+Provide a clear, well-structured summary.`
       });
 
       setSummary(summaryText);
@@ -75,14 +76,15 @@ Provide a clear, well-structured summary that captures the main ideas and key po
             <p className="text-gray-400 leading-relaxed">{summary}</p>
           </div>
           <div className="flex gap-2">
-            <Select value={summaryLength} onValueChange={setSummaryLength}>
-              <SelectTrigger className="w-32 bg-dark-lighter border-white/10 text-white">
+            <Select value={summaryType} onValueChange={setSummaryType}>
+              <SelectTrigger className="w-40 bg-dark-lighter border-white/10 text-white">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent className="bg-dark-card border-white/10">
-                <SelectItem value="short">Short</SelectItem>
-                <SelectItem value="medium">Medium</SelectItem>
-                <SelectItem value="long">Long</SelectItem>
+                <SelectItem value="paragraph">Paragraph</SelectItem>
+                <SelectItem value="executive">Executive</SelectItem>
+                <SelectItem value="bullets">Bullet Points</SelectItem>
+                <SelectItem value="detailed">Detailed</SelectItem>
               </SelectContent>
             </Select>
             <Button

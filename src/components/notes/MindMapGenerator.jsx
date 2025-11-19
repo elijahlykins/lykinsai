@@ -1,0 +1,255 @@
+import React, { useState } from 'react';
+import { Button } from '@/components/ui/button';
+import { Brain, Loader2, Download } from 'lucide-react';
+import { base44 } from '@/api/base44Client';
+
+export default function MindMapGenerator({ note, allNotes }) {
+  const [mindMap, setMindMap] = useState(null);
+  const [isGenerating, setIsGenerating] = useState(false);
+
+  const generateMindMap = async () => {
+    setIsGenerating(true);
+    try {
+      // Get connected notes content
+      const connectedNotesContent = note.connected_notes 
+        ? allNotes
+            .filter(n => note.connected_notes.includes(n.id))
+            .map(n => `- ${n.title}: ${n.content.substring(0, 100)}`)
+            .join('\n')
+        : 'No connected notes';
+
+      const mindMapData = await base44.integrations.Core.InvokeLLM({
+        prompt: `Create a mind map structure for this note and its connections.
+
+Main Note:
+Title: ${note.title}
+Content: ${note.content}
+Tags: ${note.tags?.join(', ') || 'None'}
+
+Connected Notes:
+${connectedNotesContent}
+
+Create a hierarchical mind map with:
+1. Central node (main note)
+2. Primary branches (main themes/concepts)
+3. Secondary branches (sub-topics, connected ideas)
+4. Connections (relationships between nodes)
+
+Return as a structured tree with nodes and their relationships.`,
+        response_json_schema: {
+          type: 'object',
+          properties: {
+            central: { 
+              type: 'object',
+              properties: {
+                id: { type: 'string' },
+                label: { type: 'string' },
+                color: { type: 'string' }
+              }
+            },
+            branches: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  id: { type: 'string' },
+                  label: { type: 'string' },
+                  color: { type: 'string' },
+                  subnodes: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      properties: {
+                        id: { type: 'string' },
+                        label: { type: 'string' }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            connections: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  from: { type: 'string' },
+                  to: { type: 'string' },
+                  label: { type: 'string' }
+                }
+              }
+            }
+          }
+        }
+      });
+
+      setMindMap(mindMapData);
+    } catch (error) {
+      console.error('Error generating mind map:', error);
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  const exportMindMap = () => {
+    const svg = document.getElementById('mindmap-svg');
+    if (svg) {
+      const svgData = new XMLSerializer().serializeToString(svg);
+      const blob = new Blob([svgData], { type: 'image/svg+xml' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `mindmap-${note.title}.svg`;
+      link.click();
+      URL.revokeObjectURL(url);
+    }
+  };
+
+  React.useEffect(() => {
+    generateMindMap();
+  }, []);
+
+  return (
+    <div className="clay-card p-6 space-y-4">
+      <div className="flex items-center justify-between">
+        <h3 className="text-lg font-semibold text-white flex items-center gap-2">
+          <Brain className="w-5 h-5 text-blue" />
+          Mind Map
+        </h3>
+        {mindMap && (
+          <Button
+            onClick={exportMindMap}
+            variant="ghost"
+            size="sm"
+            className="text-gray-400 hover:text-white"
+          >
+            <Download className="w-4 h-4" />
+          </Button>
+        )}
+      </div>
+
+      {isGenerating ? (
+        <div className="flex items-center justify-center py-12">
+          <Loader2 className="w-6 h-6 animate-spin text-blue" />
+        </div>
+      ) : mindMap ? (
+        <div className="space-y-4">
+          <svg
+            id="mindmap-svg"
+            viewBox="0 0 800 600"
+            className="w-full h-auto bg-dark-lighter rounded-lg"
+          >
+            {/* Central node */}
+            <circle
+              cx="400"
+              cy="300"
+              r="60"
+              fill={mindMap.central.color || '#8db4d4'}
+              opacity="0.3"
+            />
+            <text
+              x="400"
+              y="305"
+              textAnchor="middle"
+              fill="white"
+              fontSize="14"
+              fontWeight="bold"
+            >
+              {mindMap.central.label}
+            </text>
+
+            {/* Branches */}
+            {mindMap.branches.map((branch, idx) => {
+              const angle = (idx * 360) / mindMap.branches.length;
+              const radians = (angle * Math.PI) / 180;
+              const branchX = 400 + Math.cos(radians) * 200;
+              const branchY = 300 + Math.sin(radians) * 200;
+
+              return (
+                <g key={branch.id}>
+                  {/* Line from center to branch */}
+                  <line
+                    x1="400"
+                    y1="300"
+                    x2={branchX}
+                    y2={branchY}
+                    stroke={branch.color || '#b8a4d4'}
+                    strokeWidth="2"
+                    opacity="0.5"
+                  />
+                  
+                  {/* Branch node */}
+                  <circle
+                    cx={branchX}
+                    cy={branchY}
+                    r="45"
+                    fill={branch.color || '#b8a4d4'}
+                    opacity="0.3"
+                  />
+                  <text
+                    x={branchX}
+                    y={branchY + 5}
+                    textAnchor="middle"
+                    fill="white"
+                    fontSize="12"
+                  >
+                    {branch.label.substring(0, 15)}
+                  </text>
+
+                  {/* Subnodes */}
+                  {branch.subnodes?.map((subnode, subIdx) => {
+                    const subAngle = angle + ((subIdx - branch.subnodes.length / 2) * 30);
+                    const subRadians = (subAngle * Math.PI) / 180;
+                    const subX = branchX + Math.cos(subRadians) * 100;
+                    const subY = branchY + Math.sin(subRadians) * 100;
+
+                    return (
+                      <g key={subnode.id}>
+                        <line
+                          x1={branchX}
+                          y1={branchY}
+                          x2={subX}
+                          y2={subY}
+                          stroke="#8dd4b8"
+                          strokeWidth="1"
+                          opacity="0.4"
+                        />
+                        <circle
+                          cx={subX}
+                          cy={subY}
+                          r="25"
+                          fill="#8dd4b8"
+                          opacity="0.2"
+                        />
+                        <text
+                          x={subX}
+                          y={subY + 4}
+                          textAnchor="middle"
+                          fill="white"
+                          fontSize="10"
+                        >
+                          {subnode.label.substring(0, 10)}
+                        </text>
+                      </g>
+                    );
+                  })}
+                </g>
+              );
+            })}
+          </svg>
+
+          <Button
+            onClick={() => {
+              setMindMap(null);
+              generateMindMap();
+            }}
+            variant="outline"
+            className="w-full bg-transparent border-white/10 text-white hover:bg-white/10"
+          >
+            Regenerate
+          </Button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
