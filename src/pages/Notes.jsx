@@ -74,6 +74,7 @@ export default function NotesPage() {
             notes={notes}
             selectedNote={selectedNote}
             onSelectNote={setSelectedNote}
+            onUpdate={handleUpdate}
           />
         </div>
       </div>
@@ -151,9 +152,9 @@ export default function NotesPage() {
                   <div className="clay-card p-8 space-y-4">
                     {!isEditing ? (
                       <>
-                        <h2 className="text-3xl font-bold text-white">{selectedNote.title}</h2>
+                        <h2 className="text-3xl font-bold text-black">{selectedNote.title}</h2>
                         <div className="prose prose-invert max-w-none">
-                          <p className="text-gray-300 leading-relaxed whitespace-pre-wrap">
+                          <p className="text-black leading-relaxed whitespace-pre-wrap">
                             {selectedNote.content}
                           </p>
                         </div>
