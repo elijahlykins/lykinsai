@@ -116,7 +116,7 @@ Identify which note IDs are related or connected to the main note. Return only t
                 <CheckCircle className="w-5 h-5 text-mint mt-0.5 flex-shrink-0" />
                 <div>
                   <h4 className="font-semibold text-white mb-2">Validation</h4>
-                  <p className="text-sm text-white leading-relaxed">
+                  <p className="text-sm text-gray-400 leading-relaxed">
                     {note.ai_analysis.validation}
                   </p>
                 </div>
@@ -132,7 +132,7 @@ Identify which note IDs are related or connected to the main note. Return only t
                     <h4 className="font-semibold text-white mb-3">Questions to Explore</h4>
                     <ul className="space-y-2">
                       {note.ai_analysis.questions.map((question, idx) => (
-                        <li key={idx} className="text-sm text-white leading-relaxed">
+                        <li key={idx} className="text-sm text-gray-400 leading-relaxed">
                           • {question}
                         </li>
                       ))}
@@ -149,7 +149,7 @@ Identify which note IDs are related or connected to the main note. Return only t
                   <Sparkles className="w-5 h-5 text-lavender mt-0.5 flex-shrink-0" />
                   <div>
                     <h4 className="font-semibold text-white mb-2">Key Insights</h4>
-                    <p className="text-sm text-white leading-relaxed">
+                    <p className="text-sm text-gray-400 leading-relaxed">
                       {note.ai_analysis.insights}
                     </p>
                   </div>
