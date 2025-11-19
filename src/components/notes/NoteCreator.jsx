@@ -170,21 +170,13 @@ Be constructive, insightful, and encouraging.`,
       {/* Content Area - Notion Style */}
       <div className="flex-1 overflow-auto px-8 md:px-16 lg:px-32 xl:px-64 py-12">
         {inputMode === 'text' ? (
-          <div className="space-y-4">
-            <input
-              type="text"
-              placeholder="Untitled"
-              className="w-full text-4xl font-bold bg-transparent border-none outline-none text-white placeholder:text-gray-600"
-              disabled={isProcessing}
-            />
-            <Textarea
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              placeholder="Start typing..."
-              className="w-full min-h-[400px] bg-transparent border-0 text-white placeholder:text-gray-500 resize-none text-lg focus:outline-none focus:ring-0"
-              disabled={isProcessing}
-            />
-          </div>
+          <Textarea
+            value={content}
+            onChange={(e) => setContent(e.target.value)}
+            placeholder="Start typing..."
+            className="w-full h-full bg-transparent border-0 text-white placeholder:text-gray-500 resize-none text-lg focus:outline-none focus:ring-0"
+            disabled={isProcessing}
+          />
         ) : (
           <div className="space-y-6">
             <h2 className="text-2xl font-semibold text-white">Record Your Idea</h2>

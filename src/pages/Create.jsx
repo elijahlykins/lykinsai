@@ -35,8 +35,8 @@ export default function CreatePage() {
           <h1 className="text-2xl font-bold text-white">Create Memory</h1>
         </div>
 
-        <div className="flex-1 overflow-auto bg-dark">
-          <div className="max-w-4xl mx-auto p-8">
+        <div className="flex-1 bg-dark flex items-center justify-center">
+          <div className="w-full max-w-4xl h-full">
             <NoteCreator onNoteCreated={handleNoteCreated} />
           </div>
         </div>
