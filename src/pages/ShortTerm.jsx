@@ -17,6 +17,7 @@ import TagInput from '../components/notes/TagInput';
 import NoteLinkSelector from '../components/notes/NoteLinkSelector';
 import KnowledgeGraph from '../components/notes/KnowledgeGraph';
 import NoteSummarization from '../components/notes/NoteSummarization';
+import ConnectionSuggestions from '../components/notes/ConnectionSuggestions';
 
 export default function ShortTermPage() {
   const [selectedNote, setSelectedNote] = useState(null);

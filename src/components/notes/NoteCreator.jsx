@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import AttachmentPanel from './AttachmentPanel';
 import TagInput from './TagInput';
+import ConnectionSuggestions from './ConnectionSuggestions';
 
 export default function NoteCreator({ onNoteCreated, inputMode }) {
   const [title, setTitle] = useState('');
@@ -21,11 +22,30 @@ export default function NoteCreator({ onNoteCreated, inputMode }) {
   const [tags, setTags] = useState([]);
   const [folder, setFolder] = useState('Uncategorized');
   const [showMetadata, setShowMetadata] = useState(false);
+  const [suggestedConnections, setSuggestedConnections] = useState([]);
+  const [allNotes, setAllNotes] = useState([]);
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const timerRef = useRef(null);
   const saveTimeoutRef = useRef(null);
   const fileInputRef = useRef(null);
+
+  // Fetch all notes for suggestions
+  React.useEffect(() => {
+    const fetchNotes = async () => {
+      try {
+        const notes = await base44.entities.Note.list('-created_date');
+        setAllNotes(notes);
+      } catch (error) {
+        console.error('Error fetching notes:', error);
+      }
+    };
+    fetchNotes();
+  }, []);
+
+  const handleAddConnection = (noteId) => {
+    setSuggestedConnections([...suggestedConnections, noteId]);
+  };
 
   const startRecording = async () => {
     try {
@@ -159,7 +179,7 @@ Note: "${finalContent.substring(0, 300)}"`,
         audio_url: audioUrl,
         ai_analysis: aiAnalysis,
         color: randomColor,
-        connected_notes: [],
+        connected_notes: suggestedConnections,
         tags: finalTags,
         folder: folder
       });
@@ -169,6 +189,7 @@ Note: "${finalContent.substring(0, 300)}"`,
       setAudioFile(null);
       setTags([]);
       setFolder('Uncategorized');
+      setSuggestedConnections([]);
       onNoteCreated();
     } catch (error) {
       console.error('Error creating note:', error);
@@ -300,6 +321,17 @@ Note: "${finalContent.substring(0, 300)}"`,
               className="flex-1 w-full bg-transparent border-0 text-black placeholder:text-gray-500 resize-none text-lg focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0"
               disabled={isProcessing}
             />
+
+            {content.length > 50 && allNotes.length > 0 && (
+              <div className="mt-4">
+                <ConnectionSuggestions
+                  content={content}
+                  currentNoteId={null}
+                  allNotes={allNotes}
+                  onConnect={handleAddConnection}
+                />
+              </div>
+            )}
           </div>
         ) : (
           <div className="space-y-6">

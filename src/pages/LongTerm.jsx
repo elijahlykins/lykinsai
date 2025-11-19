@@ -16,6 +16,7 @@ import { createPageUrl } from '../utils';
 import NoteLinkSelector from '../components/notes/NoteLinkSelector';
 import KnowledgeGraph from '../components/notes/KnowledgeGraph';
 import NoteSummarization from '../components/notes/NoteSummarization';
+import ConnectionSuggestions from '../components/notes/ConnectionSuggestions';
 
 export default function LongTermPage() {
   const [selectedNote, setSelectedNote] = useState(null);
