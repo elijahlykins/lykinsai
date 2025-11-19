@@ -347,7 +347,6 @@ Note: "${finalContent.substring(0, 300)}"`,
           </div>
         ) : (
           <div className="space-y-6">
-            <h2 className="text-2xl font-semibold text-black">Record Your Idea</h2>
             <div className="flex flex-col items-center justify-center py-16 space-y-6">
               {!isRecording ? (
                 <Button
