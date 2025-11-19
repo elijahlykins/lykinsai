@@ -5,7 +5,9 @@ import NotionSidebar from '../components/notes/NotionSidebar';
 import SettingsModal from '../components/notes/SettingsModal';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-import { Search, Loader2, Clock } from 'lucide-react';
+import { Search, Loader2, Clock, Filter, X, Calendar, Tag, Folder } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { format } from 'date-fns';
 import { useNavigate } from 'react-router-dom';
 import { createPageUrl } from '../utils';
@@ -17,19 +19,103 @@ export default function AISearchPage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [selectedNote, setSelectedNote] = useState(null);
+  const [suggestions, setSuggestions] = useState([]);
+  const [isLoadingSuggestions, setIsLoadingSuggestions] = useState(false);
+  const [filters, setFilters] = useState({ dateRange: 'all', tags: [], folder: 'all' });
   const navigate = useNavigate();
+  const suggestionTimeoutRef = React.useRef(null);
 
   const { data: notes = [] } = useQuery({
     queryKey: ['notes'],
     queryFn: () => base44.entities.Note.list('-created_date'),
   });
 
+  // Extract unique tags and folders
+  const allTags = React.useMemo(() => {
+    const tagSet = new Set();
+    notes.forEach(note => {
+      if (note.tags) note.tags.forEach(tag => tagSet.add(tag));
+    });
+    return Array.from(tagSet).sort();
+  }, [notes]);
+
+  const allFolders = React.useMemo(() => {
+    const folderSet = new Set();
+    notes.forEach(note => {
+      if (note.folder) folderSet.add(note.folder);
+    });
+    return Array.from(folderSet).sort();
+  }, [notes]);
+
+  const loadSuggestions = async (searchQuery) => {
+    if (!searchQuery.trim() || searchQuery.length < 3) {
+      setSuggestions([]);
+      return;
+    }
+
+    setIsLoadingSuggestions(true);
+    try {
+      const recentTopics = notes.slice(0, 20).map(n => n.title).join(', ');
+      const commonTags = allTags.slice(0, 10).join(', ');
+
+      const suggestionsResponse = await base44.integrations.Core.InvokeLLM({
+        prompt: `Given partial search query: "${searchQuery}"
+        
+Recent note topics: ${recentTopics}
+Common tags: ${commonTags}
+
+Suggest 3-5 relevant search queries the user might want to search for. Be specific and relevant.
+Return only the suggestions as an array.`,
+        response_json_schema: {
+          type: 'object',
+          properties: {
+            suggestions: { type: 'array', items: { type: 'string' } }
+          }
+        }
+      });
+
+      setSuggestions(suggestionsResponse.suggestions || []);
+    } catch (error) {
+      console.error('Error loading suggestions:', error);
+      setSuggestions([]);
+    } finally {
+      setIsLoadingSuggestions(false);
+    }
+  };
+
   const handleSearch = async () => {
     if (!query.trim()) return;
     
     setIsSearching(true);
+    setSuggestions([]);
     try {
-      const notesContext = notes.map(n => {
+      // Apply filters
+      let filteredNotes = notes;
+      
+      if (filters.dateRange !== 'all') {
+        const now = new Date();
+        const dateThresholds = {
+          'today': 1,
+          'week': 7,
+          'month': 30,
+          'year': 365
+        };
+        const daysAgo = dateThresholds[filters.dateRange];
+        const threshold = new Date(now.setDate(now.getDate() - daysAgo));
+        filteredNotes = filteredNotes.filter(n => new Date(n.created_date) >= threshold);
+      }
+
+      if (filters.tags.length > 0) {
+        filteredNotes = filteredNotes.filter(n => 
+          n.tags && filters.tags.some(tag => n.tags.includes(tag))
+        );
+      }
+
+      if (filters.folder !== 'all') {
+        filteredNotes = filteredNotes.filter(n => n.folder === filters.folder);
+      }
+
+      const notesContext = filteredNotes.map(n => {
         let context = `ID: ${n.id}\nTitle: ${n.title}\nContent: ${n.content}\nType: ${n.storage_type}`;
         if (n.attachments && n.attachments.length > 0) {
           context += `\nAttachments: ${n.attachments.map(a => a.name || a.url).join(', ')}`;
@@ -44,20 +130,34 @@ export default function AISearchPage() {
         prompt: `Given this search query: "${query}"
         
 Find the most relevant notes based on ideas, concepts, meaning, attachments, and tags (semantic search, not just keyword matching).
+For each relevant note, identify a matching text snippet (1-2 sentences) that shows why it matches the query.
 
 Available notes:
 ${notesContext}
 
-Return the IDs of the most relevant notes, ranked by relevance.`,
+Return the IDs of relevant notes with their matching snippets, ranked by relevance.`,
         response_json_schema: {
           type: 'object',
           properties: {
-            note_ids: { type: 'array', items: { type: 'string' } }
+            results: { 
+              type: 'array', 
+              items: {
+                type: 'object',
+                properties: {
+                  note_id: { type: 'string' },
+                  snippet: { type: 'string' }
+                }
+              }
+            }
           }
         }
       });
 
-      const foundNotes = notes.filter(n => searchResults.note_ids?.includes(n.id));
+      const foundNotes = searchResults.results?.map(result => {
+        const note = filteredNotes.find(n => n.id === result.note_id);
+        return note ? { ...note, snippet: result.snippet } : null;
+      }).filter(Boolean) || [];
+
       setResults(foundNotes);
     } catch (error) {
       console.error('Search error:', error);
@@ -65,6 +165,26 @@ Return the IDs of the most relevant notes, ranked by relevance.`,
       setIsSearching(false);
     }
   };
+
+  React.useEffect(() => {
+    if (suggestionTimeoutRef.current) {
+      clearTimeout(suggestionTimeoutRef.current);
+    }
+
+    if (query.trim().length >= 3) {
+      suggestionTimeoutRef.current = setTimeout(() => {
+        loadSuggestions(query);
+      }, 500);
+    } else {
+      setSuggestions([]);
+    }
+
+    return () => {
+      if (suggestionTimeoutRef.current) {
+        clearTimeout(suggestionTimeoutRef.current);
+      }
+    };
+  }, [query]);
 
   return (
     <div className="min-h-screen bg-white flex overflow-hidden">
@@ -89,21 +209,120 @@ Return the IDs of the most relevant notes, ranked by relevance.`,
       <div className="flex-1 flex flex-col overflow-hidden">
         <div className="p-6 border-b border-gray-200">
           <h1 className="text-2xl font-bold text-black mb-6">AI Search</h1>
-          <div className="flex gap-2 max-w-2xl">
-            <Input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-              placeholder="Search by ideas, concepts, or keywords..."
-              className="flex-1 bg-gray-50 border-gray-300 text-black placeholder:text-gray-500"
-            />
-            <Button
-              onClick={handleSearch}
-              disabled={isSearching || !query.trim()}
-              className="bg-black text-white hover:bg-gray-800"
-            >
-              {isSearching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
-            </Button>
+          
+          <div className="max-w-2xl space-y-4">
+            {/* Search Input */}
+            <div className="relative">
+              <div className="flex gap-2">
+                <div className="flex-1 relative">
+                  <Input
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                    placeholder="Search by ideas, concepts, or keywords..."
+                    className="flex-1 bg-gray-50 border-gray-300 text-black placeholder:text-gray-500"
+                  />
+                  
+                  {/* Suggestions Dropdown */}
+                  {suggestions.length > 0 && (
+                    <div className="absolute top-full mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg z-50">
+                      {suggestions.map((suggestion, idx) => (
+                        <button
+                          key={idx}
+                          onClick={() => {
+                            setQuery(suggestion);
+                            setSuggestions([]);
+                          }}
+                          className="w-full px-4 py-2 text-left text-sm text-black hover:bg-gray-50 first:rounded-t-lg last:rounded-b-lg"
+                        >
+                          {suggestion}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <Button
+                  onClick={handleSearch}
+                  disabled={isSearching || !query.trim()}
+                  className="bg-black text-white hover:bg-gray-800"
+                >
+                  {isSearching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+                </Button>
+              </div>
+            </div>
+
+            {/* Filters */}
+            <div className="flex gap-2 flex-wrap items-center">
+              <Filter className="w-4 h-4 text-gray-500" />
+              
+              {/* Date Range Filter */}
+              <Select value={filters.dateRange} onValueChange={(value) => setFilters({...filters, dateRange: value})}>
+                <SelectTrigger className="w-32 h-8 bg-gray-50 border-gray-300 text-black text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="bg-white border-gray-200">
+                  <SelectItem value="all">All Time</SelectItem>
+                  <SelectItem value="today">Today</SelectItem>
+                  <SelectItem value="week">This Week</SelectItem>
+                  <SelectItem value="month">This Month</SelectItem>
+                  <SelectItem value="year">This Year</SelectItem>
+                </SelectContent>
+              </Select>
+
+              {/* Folder Filter */}
+              <Select value={filters.folder} onValueChange={(value) => setFilters({...filters, folder: value})}>
+                <SelectTrigger className="w-40 h-8 bg-gray-50 border-gray-300 text-black text-xs">
+                  <SelectValue placeholder="All Folders" />
+                </SelectTrigger>
+                <SelectContent className="bg-white border-gray-200">
+                  <SelectItem value="all">All Folders</SelectItem>
+                  {allFolders.map(folder => (
+                    <SelectItem key={folder} value={folder}>{folder}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+
+              {/* Tag Badges */}
+              {filters.tags.map(tag => (
+                <Badge key={tag} className="bg-gray-200 text-black hover:bg-gray-300">
+                  {tag}
+                  <button
+                    onClick={() => setFilters({...filters, tags: filters.tags.filter(t => t !== tag)})}
+                    className="ml-1"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </Badge>
+              ))}
+
+              {/* Tag Filter Dropdown */}
+              {allTags.length > 0 && (
+                <Select value="" onValueChange={(value) => {
+                  if (!filters.tags.includes(value)) {
+                    setFilters({...filters, tags: [...filters.tags, value]});
+                  }
+                }}>
+                  <SelectTrigger className="w-32 h-8 bg-gray-50 border-gray-300 text-black text-xs">
+                    <SelectValue placeholder="+ Add Tag" />
+                  </SelectTrigger>
+                  <SelectContent className="bg-white border-gray-200">
+                    {allTags.map(tag => (
+                      <SelectItem key={tag} value={tag}>{tag}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+
+              {/* Clear Filters */}
+              {(filters.dateRange !== 'all' || filters.folder !== 'all' || filters.tags.length > 0) && (
+                <button
+                  onClick={() => setFilters({ dateRange: 'all', tags: [], folder: 'all' })}
+                  className="text-xs text-gray-500 hover:text-black"
+                >
+                  Clear all
+                </button>
+              )}
+            </div>
           </div>
         </div>
 
@@ -148,10 +367,38 @@ Return the IDs of the most relevant notes, ranked by relevance.`,
                         {note.storage_type === 'short_term' ? 'Short Term' : 'Long Term'}
                       </span>
                     </div>
+                    
+                    {/* Matching Snippet */}
+                    {note.snippet && (
+                      <div className="mb-2 p-2 bg-yellow-50 border-l-2 border-yellow-400 rounded">
+                        <p className="text-sm text-black italic">"{note.snippet}"</p>
+                      </div>
+                    )}
+                    
                     <p className="text-sm text-black line-clamp-2 mb-2">{note.content}</p>
+                    
+                    {/* Tags and Attachments */}
+                    <div className="flex items-center gap-2 mb-2 flex-wrap">
+                      {note.tags?.slice(0, 3).map(tag => (
+                        <Badge key={tag} className="text-xs bg-gray-100 text-gray-700">{tag}</Badge>
+                      ))}
+                      {note.attachments?.length > 0 && (
+                        <Badge className="text-xs bg-blue-100 text-blue-700">
+                          {note.attachments.length} attachment{note.attachments.length > 1 ? 's' : ''}
+                        </Badge>
+                      )}
+                    </div>
+                    
                     <div className="flex items-center gap-1 text-xs text-gray-500">
                       <Clock className="w-3 h-3 text-black" />
                       <span>{format(new Date(note.created_date), 'MMM d, yyyy')}</span>
+                      {note.folder && (
+                        <>
+                          <span className="mx-2">•</span>
+                          <Folder className="w-3 h-3" />
+                          <span>{note.folder}</span>
+                        </>
+                      )}
                     </div>
                   </button>
                 ))
