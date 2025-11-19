@@ -50,7 +50,7 @@ Provide a clear, well-structured summary that captures the main ideas and key po
     <div className="clay-card p-6 space-y-4">
       <div className="flex items-center justify-between">
         <h3 className="text-lg font-semibold text-white flex items-center gap-2">
-          <Sparkles className="w-5 h-5 text-black" />
+          <Sparkles className="w-5 h-5 text-lavender" />
           AI Summary
         </h3>
         {summary && (
@@ -58,7 +58,7 @@ Provide a clear, well-structured summary that captures the main ideas and key po
             onClick={handleCopy}
             variant="ghost"
             size="sm"
-            className="text-black hover:text-gray-700"
+            className="text-gray-400 hover:text-white"
           >
             {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
           </Button>
@@ -67,7 +67,7 @@ Provide a clear, well-structured summary that captures the main ideas and key po
 
       {isGenerating ? (
         <div className="flex items-center justify-center py-8">
-          <Loader2 className="w-6 h-6 animate-spin text-black" />
+          <Loader2 className="w-6 h-6 animate-spin text-lavender" />
         </div>
       ) : summary ? (
         <div className="space-y-3">
