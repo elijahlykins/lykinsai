@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
-import { Mic, Square, Plus, Link as LinkIcon, Image, Video, FileText, Tag, Folder } from 'lucide-react';
+import { Mic, Square, Plus, Link as LinkIcon, Image, Video, FileText, Tag, Folder, Bell } from 'lucide-react';
 import { base44 } from '@/api/base44Client';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -292,6 +292,13 @@ Note: "${finalContent.substring(0, 300)}"`,
                 <Folder className="w-3 h-3 text-black" />
                 {folder}
               </button>
+              <button
+                onClick={() => setShowReminderPicker(true)}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-full ${reminder ? 'bg-yellow-100' : 'bg-dark-lighter/50'} hover:bg-dark-lighter text-xs text-black transition-all`}
+              >
+                <Bell className="w-3 h-3 text-black" />
+                {reminder ? 'Reminder Set' : 'Set Reminder'}
+              </button>
             </div>
 
             {showMetadata && (
@@ -451,6 +458,14 @@ Note: "${finalContent.substring(0, 300)}"`,
           />
         </DialogContent>
       </Dialog>
+
+      <ReminderPicker
+        isOpen={showReminderPicker}
+        onClose={() => setShowReminderPicker(false)}
+        currentReminder={reminder}
+        onSet={setReminder}
+        onRemove={() => setReminder(null)}
+      />
     </div>
   );
 }
