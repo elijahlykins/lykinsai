@@ -265,7 +265,7 @@ export default function ShortTermPage() {
                           </span>
                         )}
                       </div>
-                      <h2 className="text-3xl font-bold" style={{ color: textColor }}>{selectedNote.title}</h2>
+                      <h2 className="text-3xl font-bold text-black">{selectedNote.title}</h2>
                       {selectedNote.tags?.length > 0 && (
                         <div className="flex flex-wrap gap-2">
                           {selectedNote.tags.map(tag => (
@@ -276,7 +276,7 @@ export default function ShortTermPage() {
                           ))}
                         </div>
                       )}
-                      <p className="leading-relaxed whitespace-pre-wrap" style={{ color: textColor }}>{selectedNote.content}</p>
+                      <p className="leading-relaxed whitespace-pre-wrap text-black">{selectedNote.content}</p>
                       {selectedNote.connected_notes?.length > 0 && (
                         <div className="pt-4 border-t border-white/10">
                           <h3 className="text-sm font-medium text-gray-400 mb-3 flex items-center gap-2">

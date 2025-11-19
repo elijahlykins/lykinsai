@@ -10,6 +10,10 @@ export default function NoteSummarization({ note }) {
   const [summaryLength, setSummaryLength] = useState('medium');
   const [copied, setCopied] = useState(false);
 
+  React.useEffect(() => {
+    generateSummary();
+  }, []);
+
   const generateSummary = async () => {
     setIsGenerating(true);
     try {
@@ -61,44 +65,14 @@ Provide a clear, well-structured summary that captures the main ideas and key po
         )}
       </div>
 
-      {!summary ? (
-        <div className="space-y-3">
-          <div className="flex items-center gap-3">
-            <label className="text-sm text-gray-400">Summary Length:</label>
-            <Select value={summaryLength} onValueChange={setSummaryLength}>
-              <SelectTrigger className="w-32 bg-dark-lighter border-white/10 text-white">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent className="bg-dark-card border-white/10">
-                <SelectItem value="short">Short</SelectItem>
-                <SelectItem value="medium">Medium</SelectItem>
-                <SelectItem value="long">Long</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          <Button
-            onClick={generateSummary}
-            disabled={isGenerating}
-            className="w-full bg-lavender hover:bg-lavender/80 text-dark"
-          >
-            {isGenerating ? (
-              <>
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                Generating Summary...
-              </>
-            ) : (
-              <>
-                <Sparkles className="w-4 h-4 mr-2" />
-                Generate Summary
-              </>
-            )}
-          </Button>
+      {isGenerating ? (
+        <div className="flex items-center justify-center py-8">
+          <Loader2 className="w-6 h-6 animate-spin text-lavender" />
         </div>
-      ) : (
+      ) : summary ? (
         <div className="space-y-3">
           <div className="p-4 bg-lavender/10 rounded-lg border border-lavender/20">
-            <p className="text-white leading-relaxed">{summary}</p>
+            <p className="text-gray-400 leading-relaxed">{summary}</p>
           </div>
           <div className="flex gap-2">
             <Select value={summaryLength} onValueChange={setSummaryLength}>
@@ -124,7 +98,7 @@ Provide a clear, well-structured summary that captures the main ideas and key po
             </Button>
           </div>
         </div>
-      )}
+      ) : null}
     </div>
   );
 }
