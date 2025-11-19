@@ -310,6 +310,14 @@ export default function LongTermPage() {
                     <>
                       <Input value={editedTitle} onChange={(e) => setEditedTitle(e.target.value)} className="text-2xl font-bold clay-input" />
                       <Textarea value={editedContent} onChange={(e) => setEditedContent(e.target.value)} className="min-h-[300px] clay-input" />
+                      {editedContent.length > 50 && (
+                        <ConnectionSuggestions
+                          content={editedContent}
+                          currentNoteId={selectedNote.id}
+                          allNotes={notes}
+                          onConnect={handleToggleLink}
+                        />
+                      )}
                     </>
                   )}
                   {selectedNote.audio_url && (
