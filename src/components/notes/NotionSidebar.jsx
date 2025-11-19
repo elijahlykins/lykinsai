@@ -13,7 +13,7 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
       <div className="h-full bg-sidebar border-r border-white/10 flex flex-col p-3 w-16">
         <button
           onClick={onToggleCollapse}
-          className="p-2 hover:bg-white/10 rounded-lg transition-all text-white"
+          className="p-2 hover:bg-white/10 rounded-lg transition-all text-black bg-white"
         >
           <ChevronRight className="w-5 h-5" />
         </button>
@@ -23,7 +23,7 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
               <TooltipTrigger asChild>
                 <button
                   onClick={onOpenSettings}
-                  className="p-2 hover:bg-white/10 rounded-lg transition-all text-white"
+                  className="p-2 hover:bg-white/10 rounded-lg transition-all text-black"
                 >
                   <Settings className="w-5 h-5" />
                 </button>
@@ -47,7 +47,7 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
         </div>
         <button
           onClick={onToggleCollapse}
-          className="p-1 hover:bg-white/10 rounded transition-all text-white"
+          className="p-1 hover:bg-white/20 rounded transition-all text-black"
         >
           <ChevronLeft className="w-5 h-5" />
         </button>
@@ -60,10 +60,10 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
             <TooltipTrigger asChild>
               <button
                 onClick={() => onViewChange('short_term')}
-                className={`w-full px-6 py-3 rounded-full text-sm font-medium transition-all ${
+                className={`w-full px-6 py-3 rounded-full text-sm font-medium transition-all bg-white text-black ${
                   activeView === 'short_term'
-                    ? 'bg-white text-black'
-                    : 'bg-white/10 text-white hover:bg-white/20'
+                    ? 'ring-2 ring-white/50'
+                    : 'hover:ring-2 hover:ring-white/30'
                 }`}
               >
                 Short Term
@@ -79,10 +79,10 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
             <TooltipTrigger asChild>
               <button
                 onClick={() => onViewChange('long_term')}
-                className={`w-full px-6 py-3 rounded-full text-sm font-medium transition-all ${
+                className={`w-full px-6 py-3 rounded-full text-sm font-medium transition-all bg-white text-black ${
                   activeView === 'long_term'
-                    ? 'bg-white text-black'
-                    : 'bg-white/10 text-white hover:bg-white/20'
+                    ? 'ring-2 ring-white/50'
+                    : 'hover:ring-2 hover:ring-white/30'
                 }`}
               >
                 Long Term
@@ -98,7 +98,7 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
             <TooltipTrigger asChild>
               <button
                 onClick={onOpenSearch}
-                className="w-full px-6 py-3 rounded-full text-sm font-medium bg-white/10 text-white hover:bg-white/20 transition-all"
+                className="w-full px-6 py-3 rounded-full text-sm font-medium bg-white text-black hover:ring-2 hover:ring-white/30 transition-all"
               >
                 AI Search
               </button>
@@ -113,7 +113,7 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
             <TooltipTrigger asChild>
               <button
                 onClick={onOpenChat}
-                className="w-full px-6 py-3 rounded-full text-sm font-medium bg-white/10 text-white hover:bg-white/20 transition-all"
+                className="w-full px-6 py-3 rounded-full text-sm font-medium bg-white text-black hover:ring-2 hover:ring-white/30 transition-all"
               >
                 Memory Chat
               </button>
@@ -130,7 +130,7 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
             <TooltipTrigger asChild>
               <button
                 onClick={onOpenSettings}
-                className="p-2 hover:bg-white/10 rounded-lg transition-all text-white"
+                className="p-2 hover:bg-white/10 rounded-lg transition-all text-black"
               >
                 <Settings className="w-5 h-5" />
               </button>
