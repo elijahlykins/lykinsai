@@ -4,6 +4,7 @@ import LongTerm from './pages/LongTerm';
 import AISearch from './pages/AISearch';
 import MemoryChat from './pages/MemoryChat';
 import Notes from './pages/Notes';
+import TagManagement from './pages/TagManagement';
 
 
 export const PAGES = {
@@ -13,6 +14,7 @@ export const PAGES = {
     "AISearch": AISearch,
     "MemoryChat": MemoryChat,
     "Notes": Notes,
+    "TagManagement": TagManagement,
 }
 
 export const pagesConfig = {

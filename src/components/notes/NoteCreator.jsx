@@ -125,6 +125,21 @@ Be constructive, insightful, and encouraging.`,
       // Generate AI analysis
       const aiAnalysis = await generateAIAnalysis(finalContent);
 
+      // Auto-generate tags if none exist
+      let finalTags = tags;
+      if (tags.length === 0) {
+        try {
+          const tagSuggestions = await base44.integrations.Core.InvokeLLM({
+            prompt: `Analyze this note and suggest 3-5 relevant tags (single words or short phrases, lowercase). Return only the tags as a comma-separated list.
+
+Note: "${finalContent.substring(0, 300)}"`,
+          });
+          finalTags = tagSuggestions.split(',').map(t => t.trim()).filter(t => t.length > 0).slice(0, 5);
+        } catch (error) {
+          finalTags = [];
+        }
+      }
+
       // Use user's title or generate one
       let finalTitle = title.trim() || 'New Idea';
       if (!title.trim()) {
@@ -145,7 +160,7 @@ Be constructive, insightful, and encouraging.`,
         ai_analysis: aiAnalysis,
         color: randomColor,
         connected_notes: [],
-        tags: tags,
+        tags: finalTags,
         folder: folder
       });
 

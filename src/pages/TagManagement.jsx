@@ -1,0 +1,196 @@
+import React, { useState, useMemo } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { base44 } from '@/api/base44Client';
+import NotionSidebar from '../components/notes/NotionSidebar';
+import SettingsModal from '../components/notes/SettingsModal';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { Tag, Trash2, Edit2, Save, X } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { useNavigate } from 'react-router-dom';
+import { createPageUrl } from '../utils';
+
+export default function TagManagementPage() {
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [editingTag, setEditingTag] = useState(null);
+  const [newTagName, setNewTagName] = useState('');
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+
+  const { data: notes = [] } = useQuery({
+    queryKey: ['notes'],
+    queryFn: () => base44.entities.Note.list('-created_date'),
+  });
+
+  // Get all unique tags with their usage counts
+  const tagStats = useMemo(() => {
+    const tagMap = {};
+    notes.forEach(note => {
+      (note.tags || []).forEach(tag => {
+        if (!tagMap[tag]) {
+          tagMap[tag] = { name: tag, count: 0, noteIds: [] };
+        }
+        tagMap[tag].count++;
+        tagMap[tag].noteIds.push(note.id);
+      });
+    });
+    return Object.values(tagMap).sort((a, b) => b.count - a.count);
+  }, [notes]);
+
+  const handleRenameTag = async (oldTag, newTag) => {
+    if (!newTag.trim() || oldTag === newTag) {
+      setEditingTag(null);
+      return;
+    }
+
+    const affectedNotes = notes.filter(n => n.tags?.includes(oldTag));
+    
+    for (const note of affectedNotes) {
+      const updatedTags = note.tags.map(t => t === oldTag ? newTag.trim() : t);
+      await base44.entities.Note.update(note.id, { tags: updatedTags });
+    }
+
+    queryClient.invalidateQueries(['notes']);
+    setEditingTag(null);
+  };
+
+  const handleDeleteTag = async (tagToDelete) => {
+    if (!confirm(`Delete tag "${tagToDelete}"? This will remove it from ${tagStats.find(t => t.name === tagToDelete)?.count || 0} notes.`)) {
+      return;
+    }
+
+    const affectedNotes = notes.filter(n => n.tags?.includes(tagToDelete));
+    
+    for (const note of affectedNotes) {
+      const updatedTags = note.tags.filter(t => t !== tagToDelete);
+      await base44.entities.Note.update(note.id, { tags: updatedTags });
+    }
+
+    queryClient.invalidateQueries(['notes']);
+  };
+
+  const handleMergeTags = async (sourceTag, targetTag) => {
+    const affectedNotes = notes.filter(n => n.tags?.includes(sourceTag));
+    
+    for (const note of affectedNotes) {
+      let updatedTags = note.tags.filter(t => t !== sourceTag);
+      if (!updatedTags.includes(targetTag)) {
+        updatedTags.push(targetTag);
+      }
+      await base44.entities.Note.update(note.id, { tags: updatedTags });
+    }
+
+    queryClient.invalidateQueries(['notes']);
+  };
+
+  return (
+    <div className="min-h-screen bg-white flex overflow-hidden">
+      <div className={`${sidebarCollapsed ? 'w-16' : 'w-64'} flex-shrink-0 transition-all duration-300`}>
+        <NotionSidebar
+          activeView="tags"
+          onViewChange={(view) => navigate(createPageUrl(view === 'short_term' ? 'ShortTerm' : view === 'long_term' ? 'LongTerm' : 'Create'))}
+          onOpenSearch={() => navigate(createPageUrl('AISearch'))}
+          onOpenChat={() => navigate(createPageUrl('MemoryChat'))}
+          onOpenSettings={() => setSettingsOpen(true)}
+          isCollapsed={sidebarCollapsed}
+          onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+        />
+      </div>
+
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <div className="p-6 border-b border-gray-200">
+          <div className="flex items-center gap-4">
+            <Tag className="w-6 h-6 text-black" />
+            <h1 className="text-2xl font-bold text-black">Tag Management</h1>
+          </div>
+          <p className="text-sm text-gray-500 mt-2">Manage and organize your tags</p>
+        </div>
+
+        <div className="flex-1 overflow-hidden bg-gray-50">
+          <ScrollArea className="h-full">
+            <div className="max-w-4xl mx-auto p-8">
+              {tagStats.length === 0 ? (
+                <div className="text-center py-12 text-gray-500">
+                  <Tag className="w-12 h-12 mx-auto mb-3 opacity-30" />
+                  <p>No tags yet. Create notes with tags to see them here.</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {tagStats.map((tag) => (
+                    <div key={tag.name} className="clay-card p-4 flex items-center justify-between">
+                      {editingTag === tag.name ? (
+                        <div className="flex-1 flex items-center gap-2">
+                          <Input
+                            value={newTagName}
+                            onChange={(e) => setNewTagName(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') handleRenameTag(tag.name, newTagName);
+                              if (e.key === 'Escape') setEditingTag(null);
+                            }}
+                            className="flex-1 bg-gray-50 border-gray-300"
+                            autoFocus
+                          />
+                          <Button
+                            onClick={() => handleRenameTag(tag.name, newTagName)}
+                            size="sm"
+                            className="bg-green-600 text-white hover:bg-green-700"
+                          >
+                            <Save className="w-4 h-4" />
+                          </Button>
+                          <Button
+                            onClick={() => setEditingTag(null)}
+                            size="sm"
+                            variant="ghost"
+                            className="text-black hover:bg-gray-100"
+                          >
+                            <X className="w-4 h-4" />
+                          </Button>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="flex items-center gap-3">
+                            <span className="px-3 py-1 bg-lavender/20 text-lavender rounded-full text-sm font-medium flex items-center gap-2">
+                              <Tag className="w-3 h-3 text-black" />
+                              {tag.name}
+                            </span>
+                            <span className="text-sm text-gray-500">
+                              {tag.count} note{tag.count !== 1 ? 's' : ''}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Button
+                              onClick={() => {
+                                setEditingTag(tag.name);
+                                setNewTagName(tag.name);
+                              }}
+                              size="sm"
+                              variant="ghost"
+                              className="text-black hover:bg-gray-100"
+                            >
+                              <Edit2 className="w-4 h-4" />
+                            </Button>
+                            <Button
+                              onClick={() => handleDeleteTag(tag.name)}
+                              size="sm"
+                              variant="ghost"
+                              className="text-red-400 hover:bg-gray-100"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </Button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </ScrollArea>
+        </div>
+      </div>
+
+      <SettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
+    </div>
+  );
+}
