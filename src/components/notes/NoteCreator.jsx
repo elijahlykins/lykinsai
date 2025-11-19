@@ -204,62 +204,25 @@ Be constructive, insightful, and encouraging.`,
   };
 
   return (
-    <div className="h-full flex flex-col relative">
+    <div className="h-full flex relative">
       {/* Content Area - Notion Style */}
       <div className="flex-1 overflow-auto px-8 md:px-12 lg:px-16 xl:px-24 py-12">
         {inputMode === 'text' ? (
-          <div className="h-full flex gap-6">
-            <div className="flex-1 flex flex-col gap-6">
-              <Input
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                placeholder="New Idea"
-                className="text-6xl font-bold bg-transparent border-0 text-black placeholder:text-gray-400 focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0 h-auto px-0"
-                disabled={isProcessing}
-              />
-              <Textarea
-                value={content}
-                onChange={(e) => setContent(e.target.value)}
-                placeholder="Start typing..."
-                className="flex-1 w-full bg-transparent border-0 text-black placeholder:text-gray-500 resize-none text-lg focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0"
-                disabled={isProcessing}
-              />
-            </div>
-
-            {/* Attachments Panel */}
-            {attachments.length > 0 && (
-              <div className="w-64 space-y-3 flex-shrink-0">
-                {attachments.map((attachment) => (
-                  <div key={attachment.id} className="clay-card p-3 relative group">
-                    <button
-                      onClick={() => removeAttachment(attachment.id)}
-                      className="absolute -top-2 -right-2 w-6 h-6 bg-red-500 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-                    >
-                      <X className="w-4 h-4 text-white" />
-                    </button>
-                    
-                    {attachment.type === 'image' && (
-                      <img src={attachment.url} alt="" className="w-full h-32 object-cover rounded" />
-                    )}
-                    {attachment.type === 'video' && (
-                      <video src={attachment.url} className="w-full h-32 object-cover rounded" controls />
-                    )}
-                    {attachment.type === 'link' && (
-                      <div className="flex items-center gap-2 p-2">
-                        <LinkIcon className="w-4 h-4 text-white flex-shrink-0" />
-                        <span className="text-xs text-white truncate">{attachment.name}</span>
-                      </div>
-                    )}
-                    {attachment.type === 'file' && (
-                      <div className="flex items-center gap-2 p-2">
-                        <FileText className="w-4 h-4 text-white flex-shrink-0" />
-                        <span className="text-xs text-white truncate">{attachment.name}</span>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
+          <div className="h-full flex flex-col gap-6">
+            <Input
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="New Idea"
+              className="text-6xl font-bold bg-transparent border-0 text-black placeholder:text-gray-400 focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0 h-auto px-0"
+              disabled={isProcessing}
+            />
+            <Textarea
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              placeholder="Start typing..."
+              className="flex-1 w-full bg-transparent border-0 text-black placeholder:text-gray-500 resize-none text-lg focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0"
+              disabled={isProcessing}
+            />
           </div>
         ) : (
           <div className="space-y-6">
@@ -297,6 +260,41 @@ Be constructive, insightful, and encouraging.`,
           </div>
         )}
       </div>
+
+      {/* Attachments Panel - Outside text area */}
+      {attachments.length > 0 && inputMode === 'text' && (
+        <div className="w-80 border-l border-white/10 p-4 overflow-auto space-y-3 flex-shrink-0">
+          {attachments.map((attachment) => (
+            <div key={attachment.id} className="clay-card p-3 relative group">
+              <button
+                onClick={() => removeAttachment(attachment.id)}
+                className="absolute -top-2 -right-2 w-6 h-6 bg-red-500 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+              >
+                <X className="w-4 h-4 text-white" />
+              </button>
+              
+              {attachment.type === 'image' && (
+                <img src={attachment.url} alt="" className="w-full h-32 object-cover rounded" />
+              )}
+              {attachment.type === 'video' && (
+                <video src={attachment.url} className="w-full h-32 object-cover rounded" controls />
+              )}
+              {attachment.type === 'link' && (
+                <div className="flex items-center gap-2 p-2">
+                  <LinkIcon className="w-4 h-4 text-white flex-shrink-0" />
+                  <span className="text-xs text-white truncate">{attachment.name}</span>
+                </div>
+              )}
+              {attachment.type === 'file' && (
+                <div className="flex items-center gap-2 p-2">
+                  <FileText className="w-4 h-4 text-white flex-shrink-0" />
+                  <span className="text-xs text-white truncate">{attachment.name}</span>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Plus Button */}
       {inputMode === 'text' && (
