@@ -1,10 +1,12 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
-import { Mic, Square, Sparkles, Loader2 } from 'lucide-react';
+import { Input } from '@/components/ui/input';
+import { Mic, Square } from 'lucide-react';
 import { base44 } from '@/api/base44Client';
 
 export default function NoteCreator({ onNoteCreated, inputMode }) {
+  const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [audioFile, setAudioFile] = useState(null);
@@ -13,6 +15,7 @@ export default function NoteCreator({ onNoteCreated, inputMode }) {
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const timerRef = useRef(null);
+  const saveTimeoutRef = useRef(null);
 
   const startRecording = async () => {
     try {
@@ -88,7 +91,7 @@ Be constructive, insightful, and encouraging.`,
     }
   };
 
-  const handleSubmit = async () => {
+  const autoSave = async () => {
     if (!content.trim() && !audioFile) return;
 
     setIsProcessing(true);
@@ -112,17 +115,21 @@ Be constructive, insightful, and encouraging.`,
       // Generate AI analysis
       const aiAnalysis = await generateAIAnalysis(finalContent);
 
-      // Generate title
-      const titleResponse = await base44.integrations.Core.InvokeLLM({
-        prompt: `Create a short, catchy title (max 5 words) for this note: "${finalContent.substring(0, 200)}"`,
-      });
+      // Use user's title or generate one
+      let finalTitle = title.trim() || 'New Idea';
+      if (!title.trim()) {
+        const titleResponse = await base44.integrations.Core.InvokeLLM({
+          prompt: `Create a short, catchy title (max 5 words) for this note: "${finalContent.substring(0, 200)}"`,
+        });
+        finalTitle = titleResponse.trim();
+      }
 
       const colors = ['lavender', 'mint', 'blue', 'peach'];
       const randomColor = colors[Math.floor(Math.random() * colors.length)];
 
       // Create note
       await base44.entities.Note.create({
-        title: titleResponse.trim(),
+        title: finalTitle,
         content: finalContent,
         audio_url: audioUrl,
         ai_analysis: aiAnalysis,
@@ -130,6 +137,7 @@ Be constructive, insightful, and encouraging.`,
         connected_notes: []
       });
 
+      setTitle('');
       setContent('');
       setAudioFile(null);
       onNoteCreated();
@@ -140,18 +148,45 @@ Be constructive, insightful, and encouraging.`,
     }
   };
 
+  // Auto-save on content or audio change
+  useEffect(() => {
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+    }
+
+    if ((content.trim() || audioFile) && !isRecording) {
+      saveTimeoutRef.current = setTimeout(() => {
+        autoSave();
+      }, 2000); // Save after 2 seconds of inactivity
+    }
+
+    return () => {
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+      }
+    };
+  }, [content, audioFile, isRecording]);
+
   return (
     <div className="h-full flex flex-col">
       {/* Content Area - Notion Style */}
       <div className="flex-1 overflow-auto px-8 md:px-12 lg:px-16 xl:px-24 py-12">
         {inputMode === 'text' ? (
-          <Textarea
-            value={content}
-            onChange={(e) => setContent(e.target.value)}
-            placeholder="Start typing..."
-            className="w-full h-full bg-transparent border-0 text-black placeholder:text-gray-500 resize-none text-lg focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0"
-            disabled={isProcessing}
-          />
+          <div className="space-y-4">
+            <Input
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="New Idea"
+              className="text-4xl font-bold bg-transparent border-0 text-black placeholder:text-gray-400 focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0 h-auto px-0"
+              disabled={isProcessing}
+            />
+            <Textarea
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              placeholder="Start typing..."
+              className="w-full min-h-[400px] bg-transparent border-0 text-black placeholder:text-gray-500 resize-none text-lg focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0"
+              disabled={isProcessing}
+            />
         ) : (
           <div className="space-y-6">
             <h2 className="text-2xl font-semibold text-white">Record Your Idea</h2>
@@ -187,27 +222,6 @@ Be constructive, insightful, and encouraging.`,
             </div>
           </div>
         )}
-      </div>
-
-      {/* Bottom Action Bar */}
-      <div className="p-4 border-t border-white/10 flex justify-end">
-        <Button
-          onClick={handleSubmit}
-          disabled={isProcessing || isRecording || (!content.trim() && !audioFile)}
-          className="clay-button flex items-center justify-center gap-2 px-6 py-3"
-        >
-          {isProcessing ? (
-            <>
-              <Loader2 className="w-5 h-5 animate-spin" />
-              <span>Creating Memory...</span>
-            </>
-          ) : (
-            <>
-              <Sparkles className="w-5 h-5" />
-              <span>Create Memory Card</span>
-            </>
-          )}
-        </Button>
       </div>
     </div>
   );
