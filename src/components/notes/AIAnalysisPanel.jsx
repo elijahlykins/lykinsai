@@ -10,6 +10,23 @@ export default function AIAnalysisPanel({ note, allNotes, onUpdate }) {
   const runAIAnalysis = async () => {
     setIsAnalyzing(true);
     try {
+      const settings = JSON.parse(localStorage.getItem('lykinsai_settings') || '{}');
+      const personality = settings.aiPersonality || 'balanced';
+      const detailLevel = settings.aiDetailLevel || 'medium';
+
+      const personalityPrompts = {
+        professional: 'Provide a professional, objective analysis.',
+        balanced: 'Be constructive, insightful, and encouraging.',
+        casual: 'Be friendly, conversational, and supportive.',
+        enthusiastic: 'Be enthusiastic, motivating, and highlight exciting possibilities!'
+      };
+
+      const detailPrompts = {
+        brief: 'Keep responses concise and to the point.',
+        medium: 'Provide moderate detail with clear explanations.',
+        detailed: 'Provide comprehensive, in-depth analysis with examples.'
+      };
+
       const analysis = await base44.integrations.Core.InvokeLLM({
         prompt: `Analyze this idea/note and provide:
 1. A validation (Is this idea viable/interesting? Why or why not?)
@@ -18,7 +35,7 @@ export default function AIAnalysisPanel({ note, allNotes, onUpdate }) {
 
 Note content: "${note.content}"
 
-Be constructive, insightful, and encouraging.`,
+${personalityPrompts[personality]} ${detailPrompts[detailLevel]}`,
         response_json_schema: {
           type: 'object',
           properties: {

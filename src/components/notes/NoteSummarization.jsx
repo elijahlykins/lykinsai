@@ -17,6 +17,16 @@ export default function NoteSummarization({ note }) {
   const generateSummary = async () => {
     setIsGenerating(true);
     try {
+      const settings = JSON.parse(localStorage.getItem('lykinsai_settings') || '{}');
+      const personality = settings.aiPersonality || 'balanced';
+
+      const personalityTones = {
+        professional: 'Use professional, formal language.',
+        balanced: 'Use clear, neutral language.',
+        casual: 'Use friendly, conversational language.',
+        enthusiastic: 'Use engaging, energetic language!'
+      };
+
       const typeInstructions = {
         paragraph: 'Create a concise paragraph summary (5-7 sentences) that captures the main ideas.',
         executive: 'Create an executive summary with: 1) Key Takeaway (1 sentence), 2) Main Points (3-4 bullet points), 3) Recommendation/Next Steps (1-2 sentences).',
@@ -25,7 +35,7 @@ export default function NoteSummarization({ note }) {
       };
 
       const summaryText = await base44.integrations.Core.InvokeLLM({
-        prompt: `Summarize the following note. ${typeInstructions[summaryType]}
+        prompt: `Summarize the following note. ${typeInstructions[summaryType]} ${personalityTones[personality]}
 
 Title: ${note.title}
 Content: ${note.content}

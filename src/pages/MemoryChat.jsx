@@ -39,6 +39,23 @@ export default function MemoryChatPage() {
     setIsLoading(true);
 
     try {
+      const settings = JSON.parse(localStorage.getItem('lykinsai_settings') || '{}');
+      const personality = settings.aiPersonality || 'balanced';
+      const detailLevel = settings.aiDetailLevel || 'medium';
+
+      const personalityStyles = {
+        professional: 'You are a professional memory assistant. Be formal, precise, and objective.',
+        balanced: 'You are a helpful AI assistant. Be friendly yet professional.',
+        casual: 'You are a friendly companion. Be warm, conversational, and supportive.',
+        enthusiastic: 'You are an enthusiastic memory coach. Be energetic, motivating, and positive!'
+      };
+
+      const detailStyles = {
+        brief: 'Keep responses concise and under 3 sentences.',
+        medium: 'Provide clear responses with moderate detail.',
+        detailed: 'Give comprehensive, detailed responses with examples and explanations.'
+      };
+
       const notesContext = notes.map(n => 
         `Title: ${n.title}\nContent: ${n.content}\nDate: ${n.created_date}\nType: ${n.storage_type}`
       ).join('\n\n---\n\n');
@@ -46,7 +63,7 @@ export default function MemoryChatPage() {
       const conversationHistory = messages.map(m => `${m.role}: ${m.content}`).join('\n');
 
       const response = await base44.integrations.Core.InvokeLLM({
-        prompt: `You are a helpful AI assistant that helps users reflect on and understand their memories.
+        prompt: `${personalityStyles[personality]} ${detailStyles[detailLevel]}
 
 User's memories:
 ${notesContext}

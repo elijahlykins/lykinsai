@@ -11,7 +11,12 @@ export default function SettingsModal({ isOpen, onClose }) {
     textColor: 'white',
     autoArchiveDays: '30',
     aiAnalysisAuto: false,
-    theme: 'dark'
+    theme: 'dark',
+    accentColor: 'lavender',
+    fontSize: 'medium',
+    layoutDensity: 'comfortable',
+    aiPersonality: 'balanced',
+    aiDetailLevel: 'medium'
   });
 
   useEffect(() => {
@@ -24,8 +29,11 @@ export default function SettingsModal({ isOpen, onClose }) {
   const handleSave = () => {
     localStorage.setItem('lykinsai_settings', JSON.stringify(settings));
     
-    // Apply text color globally
+    // Apply theme globally
     document.documentElement.style.setProperty('--note-text-color', settings.textColor);
+    document.documentElement.style.setProperty('--accent-color', settings.accentColor);
+    document.documentElement.style.setProperty('--font-size', settings.fontSize === 'small' ? '14px' : settings.fontSize === 'large' ? '18px' : '16px');
+    document.documentElement.className = `theme-${settings.theme} density-${settings.layoutDensity}`;
     
     onClose();
   };
@@ -94,7 +102,84 @@ export default function SettingsModal({ isOpen, onClose }) {
               </SelectContent>
             </Select>
           </div>
-        </div>
+
+          {/* Accent Color */}
+          <div className="space-y-2">
+            <Label className="text-white">Accent Color</Label>
+            <Select value={settings.accentColor} onValueChange={(value) => setSettings({...settings, accentColor: value})}>
+              <SelectTrigger className="bg-dark-lighter border-white/10 text-white">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="bg-dark-card border-white/10">
+                <SelectItem value="lavender">Lavender</SelectItem>
+                <SelectItem value="mint">Mint</SelectItem>
+                <SelectItem value="blue">Blue</SelectItem>
+                <SelectItem value="peach">Peach</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Font Size */}
+          <div className="space-y-2">
+            <Label className="text-white">Font Size</Label>
+            <Select value={settings.fontSize} onValueChange={(value) => setSettings({...settings, fontSize: value})}>
+              <SelectTrigger className="bg-dark-lighter border-white/10 text-white">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="bg-dark-card border-white/10">
+                <SelectItem value="small">Small</SelectItem>
+                <SelectItem value="medium">Medium</SelectItem>
+                <SelectItem value="large">Large</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Layout Density */}
+          <div className="space-y-2">
+            <Label className="text-white">Layout Density</Label>
+            <Select value={settings.layoutDensity} onValueChange={(value) => setSettings({...settings, layoutDensity: value})}>
+              <SelectTrigger className="bg-dark-lighter border-white/10 text-white">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="bg-dark-card border-white/10">
+                <SelectItem value="compact">Compact</SelectItem>
+                <SelectItem value="comfortable">Comfortable</SelectItem>
+                <SelectItem value="spacious">Spacious</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* AI Personality */}
+          <div className="space-y-2">
+            <Label className="text-white">AI Personality</Label>
+            <Select value={settings.aiPersonality} onValueChange={(value) => setSettings({...settings, aiPersonality: value})}>
+              <SelectTrigger className="bg-dark-lighter border-white/10 text-white">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="bg-dark-card border-white/10">
+                <SelectItem value="professional">Professional</SelectItem>
+                <SelectItem value="balanced">Balanced</SelectItem>
+                <SelectItem value="casual">Casual & Friendly</SelectItem>
+                <SelectItem value="enthusiastic">Enthusiastic</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* AI Detail Level */}
+          <div className="space-y-2">
+            <Label className="text-white">AI Detail Level</Label>
+            <Select value={settings.aiDetailLevel} onValueChange={(value) => setSettings({...settings, aiDetailLevel: value})}>
+              <SelectTrigger className="bg-dark-lighter border-white/10 text-white">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="bg-dark-card border-white/10">
+                <SelectItem value="brief">Brief & Concise</SelectItem>
+                <SelectItem value="medium">Medium Detail</SelectItem>
+                <SelectItem value="detailed">Comprehensive</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          </div>
 
         <div className="flex justify-end gap-2 pt-4 border-t border-white/10">
           <Button

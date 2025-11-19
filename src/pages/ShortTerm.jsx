@@ -18,6 +18,7 @@ import NoteLinkSelector from '../components/notes/NoteLinkSelector';
 import KnowledgeGraph from '../components/notes/KnowledgeGraph';
 import NoteSummarization from '../components/notes/NoteSummarization';
 import MindMapGenerator from '../components/notes/MindMapGenerator';
+import RecommendationsPanel from '../components/notes/RecommendationsPanel';
 import ConnectionSuggestions from '../components/notes/ConnectionSuggestions';
 import ReminderPicker from '../components/notes/ReminderPicker';
 import ReminderNotifications from '../components/notes/ReminderNotifications';
