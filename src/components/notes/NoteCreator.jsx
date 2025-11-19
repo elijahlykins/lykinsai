@@ -11,7 +11,7 @@ import TagInput from './TagInput';
 import ConnectionSuggestions from './ConnectionSuggestions';
 import ReminderPicker from './ReminderPicker';
 
-export default function NoteCreator({ onNoteCreated, inputMode, showSaveButton = false }) {
+const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode }, ref) => {
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
@@ -49,6 +49,10 @@ export default function NoteCreator({ onNoteCreated, inputMode, showSaveButton =
   const handleAddConnection = (noteId) => {
     setSuggestedConnections([...suggestedConnections, noteId]);
   };
+
+  React.useImperativeHandle(ref, () => ({
+    handleSave: autoSave
+  }));
 
   const startRecording = async () => {
     try {
@@ -305,27 +309,7 @@ Be concise and capture the key points.`
   };
 
   return (
-    <div className="h-full flex flex-col relative">
-      {showSaveButton && (
-        <div className="flex justify-end mb-4">
-          <Button
-            onClick={autoSave}
-            disabled={isProcessing || (!content.trim() && !audioFile && attachments.length === 0)}
-            className="bg-black text-white hover:bg-gray-800 flex items-center gap-2"
-          >
-            {isProcessing ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                Saving...
-              </>
-            ) : (
-              'Save Idea'
-            )}
-          </Button>
-        </div>
-      )}
-      
-      <div className="flex-1 flex relative">
+    <div className="h-full flex relative">
         {/* Content Area - Notion Style */}
         <div className={`overflow-auto ${attachments.length > 0 && inputMode === 'text' ? 'w-1/2' : 'flex-1'}`}>
         {inputMode === 'text' ? (
@@ -527,7 +511,10 @@ Be concise and capture the key points.`
         onSet={setReminder}
         onRemove={() => setReminder(null)}
       />
-      </div>
     </div>
   );
-}
+});
+
+NoteCreator.displayName = 'NoteCreator';
+
+export default NoteCreator;
