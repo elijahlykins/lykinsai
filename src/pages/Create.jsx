@@ -44,18 +44,19 @@ export default function CreatePage() {
       <div className="flex items-center justify-between p-6 border-b border-gray-200">
         <h1 className="text-2xl font-bold text-black">Create Memory</h1>
           <div className="flex items-center gap-2">
+            <Button
+              onClick={() => noteCreatorRef.current?.handleSave()}
+              variant="ghost"
+              className="text-black hover:bg-gray-100 w-10 h-10 p-0"
+            >
+              <Save className="w-5 h-5" />
+            </Button>
             <button
               onClick={() => setInputMode(inputMode === 'text' ? 'audio' : 'text')}
               className="px-6 py-2 rounded-full bg-white text-black font-medium hover:bg-gray-200 transition-all"
             >
               {inputMode === 'text' ? 'Text' : 'Audio'}
             </button>
-            <Button
-              onClick={() => noteCreatorRef.current?.handleSave()}
-              className="bg-black text-white hover:bg-gray-800 w-10 h-10 p-0"
-            >
-              <Save className="w-4 h-4" />
-            </Button>
           </div>
         </div>
 
