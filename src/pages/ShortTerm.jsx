@@ -254,7 +254,7 @@ export default function ShortTermPage() {
                       {note.tags?.length > 0 && (
                         <div className="flex flex-wrap gap-1 mb-2">
                           {note.tags.map(tag => (
-                            <span key={tag} className="text-xs px-1.5 py-0.5 bg-lavender/20 text-lavender rounded">
+                            <span key={tag} className="text-xs px-1.5 py-0.5 bg-gray-100 text-gray-700 rounded">
                               {tag}
                             </span>
                           ))}
@@ -304,8 +304,8 @@ export default function ShortTermPage() {
                       {selectedNote.tags?.length > 0 && (
                         <div className="flex flex-wrap gap-2">
                           {selectedNote.tags.map(tag => (
-                            <span key={tag} className="px-3 py-1 bg-lavender/20 text-lavender rounded-full text-sm flex items-center gap-1">
-                              <Tag className="w-3 h-3 text-black" />
+                            <span key={tag} className="px-3 py-1 bg-gray-100 text-gray-700 rounded-full text-sm flex items-center gap-1">
+                              <Tag className="w-3 h-3 text-gray-600" />
                               {tag}
                             </span>
                           ))}
