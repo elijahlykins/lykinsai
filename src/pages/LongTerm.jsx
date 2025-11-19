@@ -228,11 +228,11 @@ export default function LongTermPage() {
         <div className="flex-1 overflow-hidden bg-gray-50">
           <ScrollArea className="h-full">
             {showGraphView && !selectedNote ? (
-              <div className="h-[calc(100vh-200px)] p-8">
-                <KnowledgeGraph
+              <div className="h-[calc(100vh-200px)]">
+                <EnhancedKnowledgeGraph
                   notes={filteredNotes}
-                  selectedNoteId={selectedNote?.id}
-                  onSelectNote={(id) => setSelectedNote(filteredNotes.find(n => n.id === id))}
+                  onSelectNote={(note) => setSelectedNote(note)}
+                  onUpdateConnections={handleUpdate}
                 />
               </div>
             ) : !selectedNote ? (
