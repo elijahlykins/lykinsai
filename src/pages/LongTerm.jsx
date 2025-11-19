@@ -19,6 +19,7 @@ import NoteSummarization from '../components/notes/NoteSummarization';
 import MindMapGenerator from '../components/notes/MindMapGenerator';
 import ConnectionSuggestions from '../components/notes/ConnectionSuggestions';
 import ReminderPicker from '../components/notes/ReminderPicker';
+import DuplicateDetector from '../components/notes/DuplicateDetector';
 
 export default function LongTermPage() {
   const [selectedNote, setSelectedNote] = useState(null);
@@ -235,6 +236,7 @@ export default function LongTermPage() {
               </div>
             ) : !selectedNote ? (
               <div className="max-w-4xl mx-auto p-8">
+                <DuplicateDetector notes={filteredNotes} onMerge={handleUpdate} />
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                   {filteredNotes.map((note) => (
                     <button

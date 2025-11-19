@@ -171,18 +171,51 @@ Be constructive, insightful, and encouraging.`,
       // Generate AI analysis
       const aiAnalysis = await generateAIAnalysis(finalContent);
 
-      // Auto-generate tags if none exist
+      // Auto-generate tags and folder suggestions
       let finalTags = tags;
-      if (tags.length === 0) {
+      let finalFolder = folder;
+      
+      if (tags.length === 0 || folder === 'Uncategorized') {
         try {
-          const tagSuggestions = await base44.integrations.Core.InvokeLLM({
-            prompt: `Analyze this note and suggest 3-5 relevant tags (single words or short phrases, lowercase). Return only the tags as a comma-separated list.
+          const suggestions = await base44.integrations.Core.InvokeLLM({
+            prompt: `Analyze this note and provide:
+1. 3-5 relevant tags (single words or short phrases, lowercase)
+2. Best folder category from: Projects, Ideas, Research, Personal, Work, or Uncategorized
 
-Note: "${finalContent.substring(0, 300)}"`,
+Note: "${finalContent.substring(0, 500)}"`,
+            response_json_schema: {
+              type: 'object',
+              properties: {
+                tags: { type: 'array', items: { type: 'string' } },
+                folder: { type: 'string' }
+              }
+            }
           });
-          finalTags = tagSuggestions.split(',').map(t => t.trim()).filter(t => t.length > 0).slice(0, 5);
+          
+          if (tags.length === 0 && suggestions.tags) {
+            finalTags = suggestions.tags.slice(0, 5);
+          }
+          if (folder === 'Uncategorized' && suggestions.folder) {
+            finalFolder = suggestions.folder;
+          }
         } catch (error) {
-          finalTags = [];
+          finalTags = tags.length > 0 ? tags : [];
+        }
+      }
+      
+      // Auto-generate summary
+      let summary = null;
+      if (finalContent.length > 100) {
+        try {
+          summary = await base44.integrations.Core.InvokeLLM({
+            prompt: `Create a brief 2-3 sentence summary of this note:
+
+"${finalContent.substring(0, 800)}"
+
+Be concise and capture the key points.`
+          });
+        } catch (error) {
+          summary = null;
         }
       }
 
@@ -199,7 +232,7 @@ Note: "${finalContent.substring(0, 300)}"`,
       const randomColor = colors[Math.floor(Math.random() * colors.length)];
 
       // Create note
-      await base44.entities.Note.create({
+      const newNote = await base44.entities.Note.create({
         title: finalTitle,
         content: finalContent,
         audio_url: audioUrl,
@@ -207,9 +240,10 @@ Note: "${finalContent.substring(0, 300)}"`,
         color: randomColor,
         connected_notes: suggestedConnections,
         tags: finalTags,
-        folder: folder,
+        folder: finalFolder,
         reminder: reminder,
-        attachments: attachments
+        attachments: attachments,
+        summary: summary
       });
 
       setTitle('');

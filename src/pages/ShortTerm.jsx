@@ -19,6 +19,7 @@ import KnowledgeGraph from '../components/notes/KnowledgeGraph';
 import NoteSummarization from '../components/notes/NoteSummarization';
 import MindMapGenerator from '../components/notes/MindMapGenerator';
 import RecommendationsPanel from '../components/notes/RecommendationsPanel';
+import DuplicateDetector from '../components/notes/DuplicateDetector';
 import ConnectionSuggestions from '../components/notes/ConnectionSuggestions';
 import ReminderPicker from '../components/notes/ReminderPicker';
 import ReminderNotifications from '../components/notes/ReminderNotifications';
@@ -234,6 +235,7 @@ export default function ShortTermPage() {
             ) : !selectedNote ? (
               <div className="max-w-4xl mx-auto p-8">
                 <RecommendationsPanel notes={filteredNotes} onSelectNote={setSelectedNote} />
+                <DuplicateDetector notes={filteredNotes} onMerge={handleUpdate} />
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                   {filteredNotes.map((note) => (
                     <button
