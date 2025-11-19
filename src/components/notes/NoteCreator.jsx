@@ -206,9 +206,9 @@ Be constructive, insightful, and encouraging.`,
   return (
     <div className="h-full flex relative">
       {/* Content Area - Notion Style */}
-      <div className={`${attachments.length > 0 && inputMode === 'text' ? 'w-1/2' : 'flex-1'} overflow-auto`}>
+      <div className={`overflow-auto ${attachments.length > 0 && inputMode === 'text' ? 'w-1/2' : 'flex-1'}`}>
         {inputMode === 'text' ? (
-          <div className="h-full flex flex-col gap-6 px-8 md:px-12 lg:px-16 xl:px-24 py-12">
+          <div className={`h-full flex flex-col gap-6 py-12 ${attachments.length > 0 ? 'px-8' : 'px-8 md:px-12 lg:px-16 xl:px-24'}`}>
             <Input
               value={title}
               onChange={(e) => setTitle(e.target.value)}
