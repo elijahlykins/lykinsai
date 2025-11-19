@@ -112,8 +112,8 @@ Return as a structured tree with nodes and their relationships.`,
   return (
     <div className="clay-card p-6 space-y-4">
       <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold text-white flex items-center gap-2">
-          <Brain className="w-5 h-5 text-blue" />
+        <h3 className="text-lg font-semibold text-black flex items-center gap-2">
+          <Brain className="w-5 h-5 text-gray-600" />
           Mind Map
         </h3>
         {mindMap && (
@@ -121,7 +121,7 @@ Return as a structured tree with nodes and their relationships.`,
             onClick={exportMindMap}
             variant="ghost"
             size="sm"
-            className="text-gray-400 hover:text-white"
+            className="text-gray-600 hover:text-black"
           >
             <Download className="w-4 h-4" />
           </Button>
@@ -151,7 +151,7 @@ Return as a structured tree with nodes and their relationships.`,
               x="400"
               y="305"
               textAnchor="middle"
-              fill="white"
+              fill="black"
               fontSize="14"
               fontWeight="bold"
             >
@@ -190,7 +190,7 @@ Return as a structured tree with nodes and their relationships.`,
                     x={branchX}
                     y={branchY + 5}
                     textAnchor="middle"
-                    fill="white"
+                    fill="black"
                     fontSize="12"
                   >
                     {branch.label.substring(0, 15)}
@@ -225,7 +225,7 @@ Return as a structured tree with nodes and their relationships.`,
                           x={subX}
                           y={subY + 4}
                           textAnchor="middle"
-                          fill="white"
+                          fill="black"
                           fontSize="10"
                         >
                           {subnode.label.substring(0, 10)}
@@ -244,7 +244,7 @@ Return as a structured tree with nodes and their relationships.`,
               generateMindMap();
             }}
             variant="outline"
-            className="w-full bg-transparent border-white/10 text-white hover:bg-white/10"
+            className="w-full bg-transparent border-gray-300 text-black hover:bg-gray-100"
           >
             Regenerate
           </Button>
