@@ -105,13 +105,13 @@ export default function KnowledgeGraph({ notes, selectedNoteId, onSelectNote }) 
         ctx.fill();
 
         if (node.isSelected) {
-          ctx.strokeStyle = '#fff';
+          ctx.strokeStyle = '#000';
           ctx.lineWidth = 3;
           ctx.stroke();
         }
 
         // Draw title
-        ctx.fillStyle = '#fff';
+        ctx.fillStyle = '#000';
         ctx.font = '12px sans-serif';
         ctx.textAlign = 'center';
         ctx.fillText(
