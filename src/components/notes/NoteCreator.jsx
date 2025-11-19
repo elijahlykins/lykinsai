@@ -206,7 +206,7 @@ Be constructive, insightful, and encouraging.`,
   return (
     <div className="h-full flex relative">
       {/* Content Area - Notion Style */}
-      <div className={`${attachments.length > 0 && inputMode === 'text' ? 'w-1/2' : 'flex-1'} overflow-auto px-8 md:px-12 lg:px-16 xl:px-24 py-12`}>
+      <div className={`${attachments.length > 0 && inputMode === 'text' ? 'w-1/2 px-8 py-12' : 'flex-1 px-8 md:px-12 lg:px-16 xl:px-24 py-12'} overflow-auto`}>
         {inputMode === 'text' ? (
           <div className="h-full flex flex-col gap-6">
             <Input
