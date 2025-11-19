@@ -60,7 +60,7 @@ Provide a clear, well-structured summary.`
   return (
     <div className="clay-card p-6 space-y-4">
       <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold text-white flex items-center gap-2">
+        <h3 className="text-lg font-semibold text-black flex items-center gap-2">
           <Sparkles className="w-5 h-5 text-lavender" />
           AI Summary
         </h3>

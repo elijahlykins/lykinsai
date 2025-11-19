@@ -104,7 +104,7 @@ Identify which note IDs are related or connected to the main note. Return only t
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Sparkles className="w-5 h-5 text-lavender" />
-            <h3 className="text-lg font-semibold text-white">AI Analysis</h3>
+            <h3 className="text-lg font-semibold text-black">AI Analysis</h3>
           </div>
           {!note.ai_analysis && (
             <Button
@@ -132,7 +132,7 @@ Identify which note IDs are related or connected to the main note. Return only t
               <div className="flex items-start gap-3">
                 <CheckCircle className="w-5 h-5 text-mint mt-0.5 flex-shrink-0" />
                 <div>
-                  <h4 className="font-semibold text-white mb-2">Validation</h4>
+                  <h4 className="font-semibold text-black mb-2">Validation</h4>
                   <p className="text-sm text-gray-400 leading-relaxed">
                     {note.ai_analysis.validation}
                   </p>
@@ -146,7 +146,7 @@ Identify which note IDs are related or connected to the main note. Return only t
                 <div className="flex items-start gap-3">
                   <HelpCircle className="w-5 h-5 text-blue mt-0.5 flex-shrink-0" />
                   <div className="flex-1">
-                    <h4 className="font-semibold text-white mb-3">Questions to Explore</h4>
+                    <h4 className="font-semibold text-black mb-3">Questions to Explore</h4>
                     <ul className="space-y-2">
                       {note.ai_analysis.questions.map((question, idx) => (
                         <li key={idx} className="text-sm text-gray-400 leading-relaxed">
@@ -165,7 +165,7 @@ Identify which note IDs are related or connected to the main note. Return only t
                 <div className="flex items-start gap-3">
                   <Sparkles className="w-5 h-5 text-lavender mt-0.5 flex-shrink-0" />
                   <div>
-                    <h4 className="font-semibold text-white mb-2">Key Insights</h4>
+                    <h4 className="font-semibold text-black mb-2">Key Insights</h4>
                     <p className="text-sm text-gray-400 leading-relaxed">
                       {note.ai_analysis.insights}
                     </p>
@@ -186,7 +186,7 @@ Identify which note IDs are related or connected to the main note. Return only t
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Link2 className="w-5 h-5 text-blue" />
-            <h3 className="text-lg font-semibold text-white">Connected Ideas</h3>
+            <h3 className="text-lg font-semibold text-black">Connected Ideas</h3>
           </div>
           <Button
             onClick={findConnections}
@@ -209,7 +209,7 @@ Identify which note IDs are related or connected to the main note. Return only t
           <div className="space-y-2">
             {connectedNotesList.map((connectedNote) => (
               <div key={connectedNote.id} className="clay-card-mini p-3">
-                <h4 className="font-medium text-white text-sm mb-1">
+                <h4 className="font-medium text-black text-sm mb-1">
                   {connectedNote.title}
                 </h4>
                 <p className="text-xs text-gray-400 line-clamp-2">
