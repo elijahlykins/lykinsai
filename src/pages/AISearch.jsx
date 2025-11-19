@@ -81,14 +81,14 @@ Return the IDs of the most relevant notes, ranked by relevance.`,
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
               placeholder="Search by ideas, concepts, or keywords..."
-              className="flex-1 bg-dark-lighter border-white/10 text-black placeholder:text-gray-500"
+              className="flex-1 bg-gray-50 border-gray-300 text-black placeholder:text-gray-500"
             />
             <Button
               onClick={handleSearch}
               disabled={isSearching || !query.trim()}
-              className="bg-white text-black hover:bg-gray-200"
+              className="bg-black text-white hover:bg-gray-800"
             >
-              {isSearching ? <Loader2 className="w-4 h-4 animate-spin text-black" /> : <Search className="w-4 h-4 text-black" />}
+              {isSearching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
             </Button>
           </div>
         </div>

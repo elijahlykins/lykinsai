@@ -83,8 +83,8 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
       </div>
 
       <div className="flex-1 flex flex-col overflow-hidden">
-        <div className="p-6 border-b border-white/10">
-          <h1 className="text-2xl font-bold text-white">Memory Chat</h1>
+        <div className="p-6 border-b border-gray-200">
+          <h1 className="text-2xl font-bold text-black">Memory Chat</h1>
         </div>
 
         <ScrollArea ref={scrollRef} className="flex-1 p-8">
@@ -102,8 +102,14 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
                       <Bot className="w-4 h-4 text-black" />
                     </div>
                   )}
-                ...
-                  {msg.role === 'user' && (
+                <div className={`max-w-[80%] p-3 rounded-lg ${
+                  msg.role === 'user' 
+                    ? 'bg-gray-200 text-black' 
+                    : 'bg-white border border-gray-200 text-gray-600'
+                }`}>
+                  <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                </div>
+                {msg.role === 'user' && (
                     <div className="w-8 h-8 rounded-full bg-gray-200 text-black flex items-center justify-center flex-shrink-0">
                       <User className="w-4 h-4 text-black" />
                     </div>
@@ -124,21 +130,21 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
           </div>
         </ScrollArea>
 
-        <div className="p-6 border-t border-white/10">
+        <div className="p-6 border-t border-gray-200 bg-white">
           <div className="max-w-4xl mx-auto flex gap-2">
             <Input
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleSend()}
               placeholder="Ask about your memories..."
-              className="flex-1 bg-dark-lighter border-white/10 text-black placeholder:text-gray-500"
+              className="flex-1 bg-gray-50 border-gray-300 text-black placeholder:text-gray-500"
             />
             <Button
               onClick={handleSend}
               disabled={isLoading || !input.trim()}
-              className="bg-white text-black hover:bg-gray-200"
+              className="bg-black text-white hover:bg-gray-800"
             >
-              {isLoading ? <Loader2 className="w-4 h-4 animate-spin text-black" /> : <Send className="w-4 h-4 text-black" />}
+              {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
             </Button>
           </div>
         </div>
