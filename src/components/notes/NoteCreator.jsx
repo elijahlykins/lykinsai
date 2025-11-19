@@ -172,19 +172,19 @@ Be constructive, insightful, and encouraging.`,
       {/* Content Area - Notion Style */}
       <div className="flex-1 overflow-auto px-8 md:px-12 lg:px-16 xl:px-24 py-12">
         {inputMode === 'text' ? (
-          <div className="space-y-4">
+          <div className="h-full flex flex-col gap-6">
             <Input
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               placeholder="New Idea"
-              className="text-4xl font-bold bg-transparent border-0 text-black placeholder:text-gray-400 focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0 h-auto px-0"
+              className="text-6xl font-bold bg-transparent border-0 text-black placeholder:text-gray-400 focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0 h-auto px-0"
               disabled={isProcessing}
             />
             <Textarea
               value={content}
               onChange={(e) => setContent(e.target.value)}
               placeholder="Start typing..."
-              className="w-full min-h-[400px] bg-transparent border-0 text-black placeholder:text-gray-500 resize-none text-lg focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0"
+              className="flex-1 w-full bg-transparent border-0 text-black placeholder:text-gray-500 resize-none text-lg focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0"
               disabled={isProcessing}
             />
           </div>
