@@ -34,7 +34,7 @@ export default function NoteCreator({ onNoteCreated, inputMode }) {
   const fileInputRef = useRef(null);
 
   // Fetch all notes for suggestions
-  React.useEffect(() => {
+  useEffect(() => {
     const fetchNotes = async () => {
       try {
         const notes = await base44.entities.Note.list('-created_date');
