@@ -2,9 +2,10 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
-import { Mic, Square, Plus, X, Link as LinkIcon, Image, Video, FileText } from 'lucide-react';
+import { Mic, Square, Plus, Link as LinkIcon, Image, Video, FileText } from 'lucide-react';
 import { base44 } from '@/api/base44Client';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import AttachmentPanel from './AttachmentPanel';
 
 export default function NoteCreator({ onNoteCreated, inputMode }) {
   const [title, setTitle] = useState('');
@@ -178,7 +179,9 @@ Be constructive, insightful, and encouraging.`,
         id: Date.now(),
         type: file.type.startsWith('image/') ? 'image' : file.type.startsWith('video/') ? 'video' : 'file',
         url: file_url,
-        name: file.name
+        name: file.name,
+        caption: '',
+        group: 'Ungrouped'
       };
       setAttachments([...attachments, attachment]);
       setShowAttachMenu(false);
@@ -193,7 +196,9 @@ Be constructive, insightful, and encouraging.`,
       id: Date.now(),
       type: 'link',
       url: url.trim(),
-      name: url.trim()
+      name: url.trim(),
+      caption: '',
+      group: 'Ungrouped'
     };
     setAttachments([...attachments, attachment]);
     setShowAttachMenu(false);
@@ -201,6 +206,10 @@ Be constructive, insightful, and encouraging.`,
 
   const removeAttachment = (id) => {
     setAttachments(attachments.filter(a => a.id !== id));
+  };
+
+  const updateAttachment = (id, updates) => {
+    setAttachments(attachments.map(a => a.id === id ? { ...a, ...updates } : a));
   };
 
   return (
@@ -261,39 +270,13 @@ Be constructive, insightful, and encouraging.`,
         )}
       </div>
 
-      {/* Attachments Panel - Outside text area */}
+      {/* Attachments Panel */}
       {attachments.length > 0 && inputMode === 'text' && (
-        <div className="w-1/2 border-l border-white/10 p-4 overflow-auto space-y-3 flex-shrink-0">
-          {attachments.map((attachment) => (
-            <div key={attachment.id} className="clay-card p-3 relative group">
-              <button
-                onClick={() => removeAttachment(attachment.id)}
-                className="absolute -top-2 -right-2 w-6 h-6 bg-red-500 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-              >
-                <X className="w-4 h-4 text-white" />
-              </button>
-              
-              {attachment.type === 'image' && (
-                <img src={attachment.url} alt="" className="w-full h-32 object-cover rounded" />
-              )}
-              {attachment.type === 'video' && (
-                <video src={attachment.url} className="w-full h-32 object-cover rounded" controls />
-              )}
-              {attachment.type === 'link' && (
-                <div className="flex items-center gap-2 p-2">
-                  <LinkIcon className="w-4 h-4 text-white flex-shrink-0" />
-                  <span className="text-xs text-white truncate">{attachment.name}</span>
-                </div>
-              )}
-              {attachment.type === 'file' && (
-                <div className="flex items-center gap-2 p-2">
-                  <FileText className="w-4 h-4 text-white flex-shrink-0" />
-                  <span className="text-xs text-white truncate">{attachment.name}</span>
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
+        <AttachmentPanel
+          attachments={attachments}
+          onRemove={removeAttachment}
+          onUpdate={updateAttachment}
+        />
       )}
 
       {/* Plus Button */}
