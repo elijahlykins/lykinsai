@@ -168,13 +168,13 @@ Be constructive, insightful, and encouraging.`,
       </div>
 
       {/* Content Area - Notion Style */}
-      <div className="flex-1 overflow-auto px-8 md:px-16 lg:px-32 xl:px-64 py-12">
+      <div className="flex-1 overflow-auto px-8 md:px-12 lg:px-16 xl:px-24 py-12">
         {inputMode === 'text' ? (
           <Textarea
             value={content}
             onChange={(e) => setContent(e.target.value)}
             placeholder="Start typing..."
-            className="w-full h-full bg-transparent border-0 text-white placeholder:text-gray-500 resize-none text-lg focus:outline-none focus:ring-0"
+            className="w-full h-full bg-transparent border-0 text-black placeholder:text-gray-500 resize-none text-lg focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0"
             disabled={isProcessing}
           />
         ) : (
