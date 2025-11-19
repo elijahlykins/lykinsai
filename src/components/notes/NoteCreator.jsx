@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
-import { Mic, Square, Plus, Link as LinkIcon, Image, Video, FileText, Tag, Folder, Bell } from 'lucide-react';
+import { Mic, Square, Plus, Link as LinkIcon, Image, Video, FileText, Tag, Folder, Bell, Loader2 } from 'lucide-react';
 import { base44 } from '@/api/base44Client';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -11,7 +11,7 @@ import TagInput from './TagInput';
 import ConnectionSuggestions from './ConnectionSuggestions';
 import ReminderPicker from './ReminderPicker';
 
-export default function NoteCreator({ onNoteCreated, inputMode }) {
+export default function NoteCreator({ onNoteCreated, inputMode, showSaveButton = false }) {
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
@@ -262,24 +262,7 @@ Be concise and capture the key points.`
     }
   };
 
-  // Auto-save on content or audio change
-  useEffect(() => {
-    if (saveTimeoutRef.current) {
-      clearTimeout(saveTimeoutRef.current);
-    }
 
-    if ((content.trim() || audioFile || attachments.length > 0) && !isRecording) {
-      saveTimeoutRef.current = setTimeout(() => {
-        autoSave();
-      }, 2000); // Save after 2 seconds of inactivity
-    }
-
-    return () => {
-      if (saveTimeoutRef.current) {
-        clearTimeout(saveTimeoutRef.current);
-      }
-    };
-  }, [content, audioFile, attachments, isRecording]);
 
   const handleFileUpload = async (file) => {
     try {
@@ -322,9 +305,29 @@ Be concise and capture the key points.`
   };
 
   return (
-    <div className="h-full flex relative">
-      {/* Content Area - Notion Style */}
-      <div className={`overflow-auto ${attachments.length > 0 && inputMode === 'text' ? 'w-1/2' : 'flex-1'}`}>
+    <div className="h-full flex flex-col relative">
+      {showSaveButton && (
+        <div className="flex justify-end mb-4">
+          <Button
+            onClick={autoSave}
+            disabled={isProcessing || (!content.trim() && !audioFile && attachments.length === 0)}
+            className="bg-black text-white hover:bg-gray-800 flex items-center gap-2"
+          >
+            {isProcessing ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Saving...
+              </>
+            ) : (
+              'Save Idea'
+            )}
+          </Button>
+        </div>
+      )}
+      
+      <div className="flex-1 flex relative">
+        {/* Content Area - Notion Style */}
+        <div className={`overflow-auto ${attachments.length > 0 && inputMode === 'text' ? 'w-1/2' : 'flex-1'}`}>
         {inputMode === 'text' ? (
           <div className={`h-full flex flex-col gap-6 py-12 ${attachments.length > 0 ? 'pl-2 pr-6' : 'px-8 md:px-12 lg:px-16 xl:px-24'}`}>
             <Input
@@ -524,6 +527,7 @@ Be concise and capture the key points.`
         onSet={setReminder}
         onRemove={() => setReminder(null)}
       />
+      </div>
     </div>
   );
 }
