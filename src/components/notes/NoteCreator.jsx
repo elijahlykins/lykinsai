@@ -2,8 +2,9 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
-import { Mic, Square } from 'lucide-react';
+import { Mic, Square, Plus, X, Link as LinkIcon, Image, Video, FileText } from 'lucide-react';
 import { base44 } from '@/api/base44Client';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 
 export default function NoteCreator({ onNoteCreated, inputMode }) {
   const [title, setTitle] = useState('');
@@ -12,10 +13,13 @@ export default function NoteCreator({ onNoteCreated, inputMode }) {
   const [audioFile, setAudioFile] = useState(null);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
+  const [attachments, setAttachments] = useState([]);
+  const [showAttachMenu, setShowAttachMenu] = useState(false);
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const timerRef = useRef(null);
   const saveTimeoutRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   const startRecording = async () => {
     try {
@@ -167,26 +171,95 @@ Be constructive, insightful, and encouraging.`,
     };
   }, [content, audioFile, isRecording]);
 
+  const handleFileUpload = async (file) => {
+    try {
+      const { file_url } = await base44.integrations.Core.UploadFile({ file });
+      const attachment = {
+        id: Date.now(),
+        type: file.type.startsWith('image/') ? 'image' : file.type.startsWith('video/') ? 'video' : 'file',
+        url: file_url,
+        name: file.name
+      };
+      setAttachments([...attachments, attachment]);
+      setShowAttachMenu(false);
+    } catch (error) {
+      console.error('Error uploading file:', error);
+    }
+  };
+
+  const handleLinkAdd = (url) => {
+    if (!url.trim()) return;
+    const attachment = {
+      id: Date.now(),
+      type: 'link',
+      url: url.trim(),
+      name: url.trim()
+    };
+    setAttachments([...attachments, attachment]);
+    setShowAttachMenu(false);
+  };
+
+  const removeAttachment = (id) => {
+    setAttachments(attachments.filter(a => a.id !== id));
+  };
+
   return (
-    <div className="h-full flex flex-col">
+    <div className="h-full flex flex-col relative">
       {/* Content Area - Notion Style */}
       <div className="flex-1 overflow-auto px-8 md:px-12 lg:px-16 xl:px-24 py-12">
         {inputMode === 'text' ? (
-          <div className="h-full flex flex-col gap-6">
-            <Input
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="New Idea"
-              className="text-6xl font-bold bg-transparent border-0 text-black placeholder:text-gray-400 focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0 h-auto px-0"
-              disabled={isProcessing}
-            />
-            <Textarea
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              placeholder="Start typing..."
-              className="flex-1 w-full bg-transparent border-0 text-black placeholder:text-gray-500 resize-none text-lg focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0"
-              disabled={isProcessing}
-            />
+          <div className="h-full flex gap-6">
+            <div className="flex-1 flex flex-col gap-6">
+              <Input
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder="New Idea"
+                className="text-6xl font-bold bg-transparent border-0 text-black placeholder:text-gray-400 focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0 h-auto px-0"
+                disabled={isProcessing}
+              />
+              <Textarea
+                value={content}
+                onChange={(e) => setContent(e.target.value)}
+                placeholder="Start typing..."
+                className="flex-1 w-full bg-transparent border-0 text-black placeholder:text-gray-500 resize-none text-lg focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0"
+                disabled={isProcessing}
+              />
+            </div>
+
+            {/* Attachments Panel */}
+            {attachments.length > 0 && (
+              <div className="w-64 space-y-3 flex-shrink-0">
+                {attachments.map((attachment) => (
+                  <div key={attachment.id} className="clay-card p-3 relative group">
+                    <button
+                      onClick={() => removeAttachment(attachment.id)}
+                      className="absolute -top-2 -right-2 w-6 h-6 bg-red-500 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      <X className="w-4 h-4 text-white" />
+                    </button>
+                    
+                    {attachment.type === 'image' && (
+                      <img src={attachment.url} alt="" className="w-full h-32 object-cover rounded" />
+                    )}
+                    {attachment.type === 'video' && (
+                      <video src={attachment.url} className="w-full h-32 object-cover rounded" controls />
+                    )}
+                    {attachment.type === 'link' && (
+                      <div className="flex items-center gap-2 p-2">
+                        <LinkIcon className="w-4 h-4 text-white flex-shrink-0" />
+                        <span className="text-xs text-white truncate">{attachment.name}</span>
+                      </div>
+                    )}
+                    {attachment.type === 'file' && (
+                      <div className="flex items-center gap-2 p-2">
+                        <FileText className="w-4 h-4 text-white flex-shrink-0" />
+                        <span className="text-xs text-white truncate">{attachment.name}</span>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         ) : (
           <div className="space-y-6">
@@ -224,6 +297,74 @@ Be constructive, insightful, and encouraging.`,
           </div>
         )}
       </div>
+
+      {/* Plus Button */}
+      {inputMode === 'text' && (
+        <button
+          onClick={() => setShowAttachMenu(true)}
+          className="fixed bottom-8 right-8 w-14 h-14 rounded-full bg-white text-black shadow-lg hover:shadow-xl transition-all flex items-center justify-center hover:scale-110"
+        >
+          <Plus className="w-6 h-6" />
+        </button>
+      )}
+
+      {/* Attachment Menu Dialog */}
+      <Dialog open={showAttachMenu} onOpenChange={setShowAttachMenu}>
+        <DialogContent className="bg-dark-card border-white/10 text-white">
+          <DialogHeader>
+            <DialogTitle className="text-white">Add Attachment</DialogTitle>
+          </DialogHeader>
+          
+          <div className="space-y-3 py-4">
+            <Button
+              onClick={() => {
+                const url = prompt('Enter link to video, article, or post:');
+                if (url) handleLinkAdd(url);
+              }}
+              className="w-full flex items-center gap-3 bg-dark-lighter hover:bg-white/10 text-white justify-start"
+            >
+              <LinkIcon className="w-5 h-5" />
+              Add Link (Video, Article, Post)
+            </Button>
+
+            <Button
+              onClick={() => fileInputRef.current?.click()}
+              className="w-full flex items-center gap-3 bg-dark-lighter hover:bg-white/10 text-white justify-start"
+            >
+              <Image className="w-5 h-5" />
+              Upload Image
+            </Button>
+
+            <Button
+              onClick={() => fileInputRef.current?.click()}
+              className="w-full flex items-center gap-3 bg-dark-lighter hover:bg-white/10 text-white justify-start"
+            >
+              <Video className="w-5 h-5" />
+              Upload Video
+            </Button>
+
+            <Button
+              onClick={() => fileInputRef.current?.click()}
+              className="w-full flex items-center gap-3 bg-dark-lighter hover:bg-white/10 text-white justify-start"
+            >
+              <FileText className="w-5 h-5" />
+              Upload File
+            </Button>
+          </div>
+
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*,video/*,*/*"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) handleFileUpload(file);
+              e.target.value = '';
+            }}
+            className="hidden"
+          />
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
