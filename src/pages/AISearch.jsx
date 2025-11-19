@@ -81,14 +81,14 @@ Return the IDs of the most relevant notes, ranked by relevance.`,
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
               placeholder="Search by ideas, concepts, or keywords..."
-              className="flex-1 bg-dark-lighter border-white/10 text-white placeholder:text-gray-500"
+              className="flex-1 bg-dark-lighter border-white/10 text-black placeholder:text-gray-500"
             />
             <Button
               onClick={handleSearch}
               disabled={isSearching || !query.trim()}
               className="bg-white text-black hover:bg-gray-200"
             >
-              {isSearching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+              {isSearching ? <Loader2 className="w-4 h-4 animate-spin text-black" /> : <Search className="w-4 h-4 text-black" />}
             </Button>
           </div>
         </div>
@@ -99,14 +99,14 @@ Return the IDs of the most relevant notes, ranked by relevance.`,
               results.map((note) => (
                 <div key={note.id} className="clay-card p-4">
                   <div className="flex items-start justify-between mb-2">
-                    <h3 className="font-semibold text-white">{note.title}</h3>
+                    <h3 className="font-semibold text-black">{note.title}</h3>
                     <span className="text-xs text-gray-500 px-2 py-1 bg-white/5 rounded">
                       {note.storage_type === 'short_term' ? 'Short Term' : 'Long Term'}
                     </span>
                   </div>
-                  <p className="text-sm text-gray-400 line-clamp-2 mb-2">{note.content}</p>
+                  <p className="text-sm text-black line-clamp-2 mb-2">{note.content}</p>
                   <div className="flex items-center gap-1 text-xs text-gray-500">
-                    <Clock className="w-3 h-3" />
+                    <Clock className="w-3 h-3 text-black" />
                     <span>{format(new Date(note.created_date), 'MMM d, yyyy')}</span>
                   </div>
                 </div>

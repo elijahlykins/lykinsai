@@ -239,16 +239,16 @@ Be constructive, insightful, and encouraging.`,
             <div className="flex gap-2 items-center">
               <button
                 onClick={() => setShowMetadata(!showMetadata)}
-                className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-dark-lighter/50 hover:bg-dark-lighter text-xs text-gray-600 transition-all"
+                className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-dark-lighter/50 hover:bg-dark-lighter text-xs text-black transition-all"
               >
-                <Tag className="w-3 h-3" />
+                <Tag className="w-3 h-3 text-black" />
                 Tags ({tags.length})
               </button>
               <button
                 onClick={() => setShowMetadata(!showMetadata)}
-                className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-dark-lighter/50 hover:bg-dark-lighter text-xs text-gray-600 transition-all"
+                className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-dark-lighter/50 hover:bg-dark-lighter text-xs text-black transition-all"
               >
-                <Folder className="w-3 h-3" />
+                <Folder className="w-3 h-3 text-black" />
                 {folder}
               </button>
             </div>
@@ -288,7 +288,7 @@ Be constructive, insightful, and encouraging.`,
           </div>
         ) : (
           <div className="space-y-6">
-            <h2 className="text-2xl font-semibold text-white">Record Your Idea</h2>
+            <h2 className="text-2xl font-semibold text-black">Record Your Idea</h2>
             <div className="flex flex-col items-center justify-center py-16 space-y-6">
               {!isRecording ? (
                 <Button
@@ -296,7 +296,7 @@ Be constructive, insightful, and encouraging.`,
                   disabled={isProcessing || audioFile}
                   className="clay-button flex items-center gap-2 px-8 py-6 text-lg"
                 >
-                  <Mic className="w-6 h-6" />
+                  <Mic className="w-6 h-6 text-black" />
                   <span>{audioFile ? 'Audio Recorded ✓' : 'Start Recording'}</span>
                 </Button>
               ) : (
@@ -313,7 +313,7 @@ Be constructive, insightful, and encouraging.`,
                 <Button
                   onClick={() => setAudioFile(null)}
                   variant="ghost"
-                  className="text-gray-400 hover:text-white"
+                  className="text-black hover:text-gray-700"
                 >
                   Clear Audio & Re-record
                 </Button>
@@ -338,7 +338,7 @@ Be constructive, insightful, and encouraging.`,
           onClick={() => setShowAttachMenu(true)}
           className="fixed bottom-8 right-8 w-14 h-14 rounded-full bg-white text-black shadow-lg hover:shadow-xl transition-all flex items-center justify-center hover:scale-110"
         >
-          <Plus className="w-6 h-6" />
+          <Plus className="w-6 h-6 text-black" />
         </button>
       )}
 
@@ -357,7 +357,7 @@ Be constructive, insightful, and encouraging.`,
               }}
               className="w-full flex items-center gap-3 bg-dark-lighter hover:bg-white/10 text-white justify-start"
             >
-              <LinkIcon className="w-5 h-5" />
+              <LinkIcon className="w-5 h-5 text-black" />
               Add Link (Video, Article, Post)
             </Button>
 
@@ -365,7 +365,7 @@ Be constructive, insightful, and encouraging.`,
               onClick={() => fileInputRef.current?.click()}
               className="w-full flex items-center gap-3 bg-dark-lighter hover:bg-white/10 text-white justify-start"
             >
-              <Image className="w-5 h-5" />
+              <Image className="w-5 h-5 text-black" />
               Upload Image
             </Button>
 
@@ -373,7 +373,7 @@ Be constructive, insightful, and encouraging.`,
               onClick={() => fileInputRef.current?.click()}
               className="w-full flex items-center gap-3 bg-dark-lighter hover:bg-white/10 text-white justify-start"
             >
-              <Video className="w-5 h-5" />
+              <Video className="w-5 h-5 text-black" />
               Upload Video
             </Button>
 
@@ -381,7 +381,7 @@ Be constructive, insightful, and encouraging.`,
               onClick={() => fileInputRef.current?.click()}
               className="w-full flex items-center gap-3 bg-dark-lighter hover:bg-white/10 text-white justify-start"
             >
-              <FileText className="w-5 h-5" />
+              <FileText className="w-5 h-5 text-black" />
               Upload File
             </Button>
           </div>

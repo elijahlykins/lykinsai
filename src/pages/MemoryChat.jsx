@@ -99,19 +99,19 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
                 <div key={idx} className={`flex gap-3 ${msg.role === 'user' ? 'justify-end' : ''}`}>
                   {msg.role === 'assistant' && (
                     <div className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center flex-shrink-0">
-                      <Bot className="w-4 h-4 text-white" />
+                      <Bot className="w-4 h-4 text-black" />
                     </div>
                   )}
                   <div className={`max-w-[80%] p-3 rounded-lg ${
                     msg.role === 'user' 
                       ? 'bg-white text-black' 
-                      : 'bg-dark-lighter border border-white/10 text-white'
+                      : 'bg-dark-lighter border border-white/10 text-gray-400'
                   }`}>
                     <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
                   </div>
                   {msg.role === 'user' && (
                     <div className="w-8 h-8 rounded-full bg-white text-black flex items-center justify-center flex-shrink-0">
-                      <User className="w-4 h-4" />
+                      <User className="w-4 h-4 text-black" />
                     </div>
                   )}
                 </div>
@@ -120,10 +120,10 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
             {isLoading && (
               <div className="flex gap-3">
                 <div className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center flex-shrink-0">
-                  <Bot className="w-4 h-4 text-white" />
+                  <Bot className="w-4 h-4 text-black" />
                 </div>
                 <div className="bg-dark-lighter border border-white/10 p-3 rounded-lg">
-                  <Loader2 className="w-4 h-4 animate-spin text-white" />
+                  <Loader2 className="w-4 h-4 animate-spin text-gray-400" />
                 </div>
               </div>
             )}
@@ -137,14 +137,14 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleSend()}
               placeholder="Ask about your memories..."
-              className="flex-1 bg-dark-lighter border-white/10 text-white placeholder:text-gray-500"
+              className="flex-1 bg-dark-lighter border-white/10 text-black placeholder:text-gray-500"
             />
             <Button
               onClick={handleSend}
               disabled={isLoading || !input.trim()}
               className="bg-white text-black hover:bg-gray-200"
             >
-              {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+              {isLoading ? <Loader2 className="w-4 h-4 animate-spin text-black" /> : <Send className="w-4 h-4 text-black" />}
             </Button>
           </div>
         </div>

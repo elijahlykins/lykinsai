@@ -270,7 +270,7 @@ export default function ShortTermPage() {
                         <div className="flex flex-wrap gap-2">
                           {selectedNote.tags.map(tag => (
                             <span key={tag} className="px-3 py-1 bg-lavender/20 text-lavender rounded-full text-sm flex items-center gap-1">
-                              <Tag className="w-3 h-3" />
+                              <Tag className="w-3 h-3 text-black" />
                               {tag}
                             </span>
                           ))}
