@@ -187,6 +187,7 @@ Be constructive, insightful, and encouraging.`,
               className="w-full min-h-[400px] bg-transparent border-0 text-black placeholder:text-gray-500 resize-none text-lg focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0"
               disabled={isProcessing}
             />
+          </div>
         ) : (
           <div className="space-y-6">
             <h2 className="text-2xl font-semibold text-white">Record Your Idea</h2>
