@@ -20,6 +20,7 @@ import MindMapGenerator from '../components/notes/MindMapGenerator';
 import ConnectionSuggestions from '../components/notes/ConnectionSuggestions';
 import ReminderPicker from '../components/notes/ReminderPicker';
 import DuplicateDetector from '../components/notes/DuplicateDetector';
+import EnhancedKnowledgeGraph from '../components/notes/EnhancedKnowledgeGraph';
 
 export default function LongTermPage() {
   const [selectedNote, setSelectedNote] = useState(null);

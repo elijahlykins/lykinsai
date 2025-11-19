@@ -20,6 +20,7 @@ import NoteSummarization from '../components/notes/NoteSummarization';
 import MindMapGenerator from '../components/notes/MindMapGenerator';
 import RecommendationsPanel from '../components/notes/RecommendationsPanel';
 import DuplicateDetector from '../components/notes/DuplicateDetector';
+import EnhancedKnowledgeGraph from '../components/notes/EnhancedKnowledgeGraph';
 import ConnectionSuggestions from '../components/notes/ConnectionSuggestions';
 import ReminderPicker from '../components/notes/ReminderPicker';
 import ReminderNotifications from '../components/notes/ReminderNotifications';
