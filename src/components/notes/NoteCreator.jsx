@@ -206,7 +206,7 @@ Be constructive, insightful, and encouraging.`,
   return (
     <div className="h-full flex relative">
       {/* Content Area - Notion Style */}
-      <div className="flex-1 overflow-auto px-8 md:px-12 lg:px-16 xl:px-24 py-12">
+      <div className={`${attachments.length > 0 && inputMode === 'text' ? 'w-1/2' : 'flex-1'} overflow-auto px-8 md:px-12 lg:px-16 xl:px-24 py-12`}>
         {inputMode === 'text' ? (
           <div className="h-full flex flex-col gap-6">
             <Input
@@ -263,7 +263,7 @@ Be constructive, insightful, and encouraging.`,
 
       {/* Attachments Panel - Outside text area */}
       {attachments.length > 0 && inputMode === 'text' && (
-        <div className="w-80 border-l border-white/10 p-4 overflow-auto space-y-3 flex-shrink-0">
+        <div className="w-1/2 border-l border-white/10 p-4 overflow-auto space-y-3 flex-shrink-0">
           {attachments.map((attachment) => (
             <div key={attachment.id} className="clay-card p-3 relative group">
               <button
