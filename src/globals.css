@@ -36,17 +36,25 @@
   }
 }
 
-/* Dark Theme Colors */
+/* Notion Dark Theme Colors */
 .bg-dark {
-  background: #0a0a15;
+  background: #191919;
 }
 
 .bg-dark-lighter {
-  background: #12121f;
+  background: #202020;
 }
 
 .bg-dark-card {
-  background: #1a1a2e;
+  background: #252525;
+}
+
+.bg-sidebar {
+  background: #252525;
+}
+
+.bg-sidebar-hover {
+  background: #2e2e2e;
 }
 
 /* Pastel Colors for Dark Theme */
@@ -98,32 +106,50 @@
   border-color: rgba(212, 184, 164, 0.2);
 }
 
-/* Claymorphism Styles */
+/* Notion-style Cards */
 .clay-card {
-  background: linear-gradient(145deg, #1a1a2e, #12121f);
-  border-radius: 20px;
-  box-shadow: 
-    8px 8px 16px rgba(0, 0, 0, 0.4),
-    -8px -8px 16px rgba(30, 30, 50, 0.1),
-    inset 2px 2px 4px rgba(255, 255, 255, 0.03);
-  transition: all 0.3s ease;
+  background: #252525;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  transition: all 0.2s ease;
 }
 
 .clay-card:hover {
-  box-shadow: 
-    10px 10px 20px rgba(0, 0, 0, 0.5),
-    -10px -10px 20px rgba(30, 30, 50, 0.15),
-    inset 2px 2px 4px rgba(255, 255, 255, 0.03);
+  background: #2a2a2a;
+  border-color: rgba(255, 255, 255, 0.15);
 }
 
 .clay-card-mini {
-  background: linear-gradient(145deg, #1f1f33, #16162a);
-  border-radius: 18px;
-  box-shadow: 
-    6px 6px 12px rgba(0, 0, 0, 0.3),
-    -6px -6px 12px rgba(35, 35, 55, 0.1),
-    inset 1px 1px 2px rgba(255, 255, 255, 0.02);
-  transition: all 0.3s ease;
+  background: #2a2a2a;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  transition: all 0.2s ease;
+}
+
+.notion-sidebar-button {
+  background: transparent;
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  transition: all 0.2s ease;
+  border: none;
+  color: rgba(255, 255, 255, 0.7);
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.notion-sidebar-button:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: white;
+  box-shadow: 0 0 12px rgba(255, 255, 255, 0.1);
+}
+
+.notion-sidebar-button.active {
+  background: rgba(255, 255, 255, 0.1);
+  color: white;
 }
 
 .clay-button {
