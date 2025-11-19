@@ -73,7 +73,13 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
       <div className={`${sidebarCollapsed ? 'w-16' : 'w-64'} flex-shrink-0 transition-all duration-300`}>
         <NotionSidebar
           activeView="chat"
-          onViewChange={(view) => navigate(createPageUrl(view === 'short_term' ? 'ShortTerm' : view === 'long_term' ? 'LongTerm' : view === 'tags' ? 'TagManagement' : 'Create'))}
+          onViewChange={(view) => navigate(createPageUrl(
+            view === 'short_term' ? 'ShortTerm' : 
+            view === 'long_term' ? 'LongTerm' : 
+            view === 'tags' ? 'TagManagement' : 
+            view === 'reminders' ? 'Reminders' : 
+            'Create'
+          ))}
           onOpenSearch={() => navigate(createPageUrl('AISearch'))}
           onOpenChat={() => navigate(createPageUrl('MemoryChat'))}
           onOpenSettings={() => setSettingsOpen(true)}

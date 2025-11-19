@@ -168,7 +168,26 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
               <p>Manage your tags</p>
             </TooltipContent>
           </Tooltip>
-        </nav>
+
+          {/* Reminders */}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={() => onViewChange('reminders')}
+                className={`w-full px-6 py-3 rounded-full text-sm font-medium bg-white text-black transition-all ${
+                  activeView === 'reminders'
+                    ? 'ring-2 ring-white/50'
+                    : 'hover:ring-2 hover:ring-white/30'
+                }`}
+              >
+                Reminders
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right">
+              <p>View and manage reminders</p>
+            </TooltipContent>
+          </Tooltip>
+          </nav>
 
         {/* Settings at bottom */}
         <div className="mt-auto pt-3">

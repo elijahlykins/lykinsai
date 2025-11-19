@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import AttachmentPanel from './AttachmentPanel';
 import TagInput from './TagInput';
 import ConnectionSuggestions from './ConnectionSuggestions';
+import ReminderPicker from './ReminderPicker';
 
 export default function NoteCreator({ onNoteCreated, inputMode }) {
   const [title, setTitle] = useState('');
@@ -24,6 +25,8 @@ export default function NoteCreator({ onNoteCreated, inputMode }) {
   const [showMetadata, setShowMetadata] = useState(false);
   const [suggestedConnections, setSuggestedConnections] = useState([]);
   const [allNotes, setAllNotes] = useState([]);
+  const [reminder, setReminder] = useState(null);
+  const [showReminderPicker, setShowReminderPicker] = useState(false);
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const timerRef = useRef(null);
@@ -181,7 +184,8 @@ Note: "${finalContent.substring(0, 300)}"`,
         color: randomColor,
         connected_notes: suggestedConnections,
         tags: finalTags,
-        folder: folder
+        folder: folder,
+        reminder: reminder
       });
 
       setTitle('');
@@ -190,6 +194,7 @@ Note: "${finalContent.substring(0, 300)}"`,
       setTags([]);
       setFolder('Uncategorized');
       setSuggestedConnections([]);
+      setReminder(null);
       onNoteCreated();
     } catch (error) {
       console.error('Error creating note:', error);

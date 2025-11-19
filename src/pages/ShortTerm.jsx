@@ -5,7 +5,7 @@ import NotionSidebar from '../components/notes/NotionSidebar';
 import SettingsModal from '../components/notes/SettingsModal';
 import AIAnalysisPanel from '../components/notes/AIAnalysisPanel';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Clock, Trash2, Edit2, Save, XCircle, Tag, Folder as FolderIcon, Link2, Filter } from 'lucide-react';
+import { Clock, Trash2, Edit2, Save, XCircle, Tag, Folder as FolderIcon, Link2, Filter, Bell } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Input } from '@/components/ui/input';
@@ -18,6 +18,8 @@ import NoteLinkSelector from '../components/notes/NoteLinkSelector';
 import KnowledgeGraph from '../components/notes/KnowledgeGraph';
 import NoteSummarization from '../components/notes/NoteSummarization';
 import ConnectionSuggestions from '../components/notes/ConnectionSuggestions';
+import ReminderPicker from '../components/notes/ReminderPicker';
+import ReminderNotifications from '../components/notes/ReminderNotifications';
 
 export default function ShortTermPage() {
   const [selectedNote, setSelectedNote] = useState(null);
@@ -31,6 +33,7 @@ export default function ShortTermPage() {
   const [showGraphView, setShowGraphView] = useState(false);
   const [filterTag, setFilterTag] = useState('all');
   const [filterFolder, setFilterFolder] = useState('all');
+  const [showReminderPicker, setShowReminderPicker] = useState(false);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
@@ -91,6 +94,18 @@ export default function ShortTermPage() {
     queryClient.invalidateQueries(['notes']);
   };
 
+  const handleSetReminder = async (reminderDate) => {
+    if (!selectedNote) return;
+    await base44.entities.Note.update(selectedNote.id, { reminder: reminderDate });
+    queryClient.invalidateQueries(['notes']);
+  };
+
+  const handleRemoveReminder = async () => {
+    if (!selectedNote) return;
+    await base44.entities.Note.update(selectedNote.id, { reminder: null });
+    queryClient.invalidateQueries(['notes']);
+  };
+
   const allTags = [...new Set(notes.flatMap(n => n.tags || []))];
   const allFolders = [...new Set(notes.map(n => n.folder || 'Uncategorized'))];
 
@@ -109,7 +124,13 @@ export default function ShortTermPage() {
       <div className={`${sidebarCollapsed ? 'w-16' : 'w-64'} flex-shrink-0 transition-all duration-300`}>
         <NotionSidebar
           activeView="short_term"
-          onViewChange={(view) => navigate(createPageUrl(view === 'short_term' ? 'ShortTerm' : view === 'long_term' ? 'LongTerm' : view === 'tags' ? 'TagManagement' : 'Create'))}
+          onViewChange={(view) => navigate(createPageUrl(
+            view === 'short_term' ? 'ShortTerm' : 
+            view === 'long_term' ? 'LongTerm' : 
+            view === 'tags' ? 'TagManagement' : 
+            view === 'reminders' ? 'Reminders' : 
+            'Create'
+          ))}
           onOpenSearch={() => navigate(createPageUrl('AISearch'))}
           onOpenChat={() => navigate(createPageUrl('MemoryChat'))}
           onOpenSettings={() => setSettingsOpen(true)}
@@ -140,6 +161,9 @@ export default function ShortTermPage() {
                 <div className="flex items-center gap-2">
                   {!isEditing ? (
                     <>
+                      <Button onClick={() => setShowReminderPicker(true)} variant="ghost" size="icon" className={`${selectedNote.reminder ? 'text-black bg-yellow-100' : 'text-black'} hover:bg-gray-100`}>
+                        <Bell className="w-5 h-5" />
+                      </Button>
                       <Button onClick={() => setShowLinkSelector(true)} variant="ghost" size="icon" className="text-black hover:bg-gray-100">
                         <Link2 className="w-5 h-5 text-black" />
                       </Button>
@@ -333,16 +357,26 @@ export default function ShortTermPage() {
         </div>
       </div>
 
+      <ReminderNotifications />
       <SettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
       {selectedNote && (
-        <NoteLinkSelector
-          isOpen={showLinkSelector}
-          onClose={() => setShowLinkSelector(false)}
-          notes={notes}
-          currentNoteId={selectedNote.id}
-          selectedNoteIds={selectedNote.connected_notes || []}
-          onToggleNote={handleToggleLink}
-        />
+        <>
+          <NoteLinkSelector
+            isOpen={showLinkSelector}
+            onClose={() => setShowLinkSelector(false)}
+            notes={notes}
+            currentNoteId={selectedNote.id}
+            selectedNoteIds={selectedNote.connected_notes || []}
+            onToggleNote={handleToggleLink}
+          />
+          <ReminderPicker
+            isOpen={showReminderPicker}
+            onClose={() => setShowReminderPicker(false)}
+            currentReminder={selectedNote.reminder}
+            onSet={handleSetReminder}
+            onRemove={handleRemoveReminder}
+          />
+        </>
       )}
     </div>
   );

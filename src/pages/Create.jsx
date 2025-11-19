@@ -22,7 +22,13 @@ export default function CreatePage() {
       <div className={`${sidebarCollapsed ? 'w-16' : 'w-64'} flex-shrink-0 transition-all duration-300`}>
         <NotionSidebar
           activeView="create"
-          onViewChange={(view) => navigate(createPageUrl(view === 'short_term' ? 'ShortTerm' : view === 'long_term' ? 'LongTerm' : view === 'tags' ? 'TagManagement' : 'Create'))}
+          onViewChange={(view) => navigate(createPageUrl(
+            view === 'short_term' ? 'ShortTerm' : 
+            view === 'long_term' ? 'LongTerm' : 
+            view === 'tags' ? 'TagManagement' : 
+            view === 'reminders' ? 'Reminders' : 
+            'Create'
+          ))}
           onOpenSearch={() => navigate(createPageUrl('AISearch'))}
           onOpenChat={() => navigate(createPageUrl('MemoryChat'))}
           onOpenSettings={() => setSettingsOpen(true)}
