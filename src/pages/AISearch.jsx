@@ -59,7 +59,7 @@ Return the IDs of the most relevant notes, ranked by relevance.`,
   };
 
   return (
-    <div className="min-h-screen bg-dark flex overflow-hidden">
+    <div className="min-h-screen bg-white flex overflow-hidden">
       <div className={`${sidebarCollapsed ? 'w-16' : 'w-64'} flex-shrink-0 transition-all duration-300`}>
         <NotionSidebar
           activeView="search"
@@ -73,8 +73,8 @@ Return the IDs of the most relevant notes, ranked by relevance.`,
       </div>
 
       <div className="flex-1 flex flex-col overflow-hidden">
-        <div className="p-6 border-b border-white/10">
-          <h1 className="text-2xl font-bold text-white mb-6">AI Search</h1>
+        <div className="p-6 border-b border-gray-200">
+          <h1 className="text-2xl font-bold text-black mb-6">AI Search</h1>
           <div className="flex gap-2 max-w-2xl">
             <Input
               value={query}

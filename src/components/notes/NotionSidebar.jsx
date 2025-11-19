@@ -10,7 +10,7 @@ import {
 export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, onOpenChat, onOpenSettings, isCollapsed, onToggleCollapse }) {
   if (isCollapsed) {
     return (
-      <div className="h-full bg-sidebar border-r border-white/10 flex flex-col p-3 w-16">
+      <div className="h-full bg-gray-100 border-r border-gray-200 flex flex-col p-3 w-16">
         <button
           onClick={onToggleCollapse}
           className="p-2 hover:bg-white/10 rounded-lg transition-all text-black bg-white"
@@ -23,7 +23,7 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
               <TooltipTrigger asChild>
                 <button
                   onClick={onOpenSettings}
-                  className="p-2 hover:bg-white/10 rounded-lg transition-all text-black"
+                  className="p-2 hover:bg-gray-200 rounded-lg transition-all text-black"
                 >
                   <Settings className="w-5 h-5" />
                 </button>
@@ -39,15 +39,15 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
   }
 
   return (
-    <div className="h-full bg-sidebar border-r border-white/10 flex flex-col p-4">
+    <div className="h-full bg-gray-100 border-r border-gray-200 flex flex-col p-4">
       <div className="flex items-center justify-between mb-8">
         <div>
-          <h1 className="text-2xl font-bold text-white tracking-tight">lykinsai</h1>
+          <h1 className="text-2xl font-bold text-black tracking-tight">lykinsai</h1>
           <p className="text-xs text-gray-500 mt-1">Your AI Memory Companion</p>
         </div>
         <button
           onClick={onToggleCollapse}
-          className="p-1 hover:bg-white/20 rounded transition-all text-black"
+          className="p-1 hover:bg-gray-200 rounded transition-all text-black"
         >
           <ChevronLeft className="w-5 h-5" />
         </button>
@@ -157,7 +157,7 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
             <TooltipTrigger asChild>
               <button
                 onClick={onOpenSettings}
-                className="p-2 hover:bg-white/10 rounded-lg transition-all text-black"
+                className="p-2 hover:bg-gray-200 rounded-lg transition-all text-black"
               >
                 <Settings className="w-5 h-5" />
               </button>

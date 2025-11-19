@@ -69,7 +69,7 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
   };
 
   return (
-    <div className="min-h-screen bg-dark flex overflow-hidden">
+    <div className="min-h-screen bg-white flex overflow-hidden">
       <div className={`${sidebarCollapsed ? 'w-16' : 'w-64'} flex-shrink-0 transition-all duration-300`}>
         <NotionSidebar
           activeView="chat"
@@ -98,19 +98,13 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
               messages.map((msg, idx) => (
                 <div key={idx} className={`flex gap-3 ${msg.role === 'user' ? 'justify-end' : ''}`}>
                   {msg.role === 'assistant' && (
-                    <div className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center flex-shrink-0">
+                    <div className="w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center flex-shrink-0">
                       <Bot className="w-4 h-4 text-black" />
                     </div>
                   )}
-                  <div className={`max-w-[80%] p-3 rounded-lg ${
-                    msg.role === 'user' 
-                      ? 'bg-white text-black' 
-                      : 'bg-dark-lighter border border-white/10 text-gray-400'
-                  }`}>
-                    <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
-                  </div>
+                ...
                   {msg.role === 'user' && (
-                    <div className="w-8 h-8 rounded-full bg-white text-black flex items-center justify-center flex-shrink-0">
+                    <div className="w-8 h-8 rounded-full bg-gray-200 text-black flex items-center justify-center flex-shrink-0">
                       <User className="w-4 h-4 text-black" />
                     </div>
                   )}
@@ -119,11 +113,11 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
             )}
             {isLoading && (
               <div className="flex gap-3">
-                <div className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center flex-shrink-0">
+                <div className="w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center flex-shrink-0">
                   <Bot className="w-4 h-4 text-black" />
                 </div>
-                <div className="bg-dark-lighter border border-white/10 p-3 rounded-lg">
-                  <Loader2 className="w-4 h-4 animate-spin text-gray-400" />
+                <div className="bg-white border border-gray-200 p-3 rounded-lg">
+                  <Loader2 className="w-4 h-4 animate-spin text-gray-600" />
                 </div>
               </div>
             )}

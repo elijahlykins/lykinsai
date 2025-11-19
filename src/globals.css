@@ -36,25 +36,25 @@
   }
 }
 
-/* Notion Dark Theme Colors */
+/* Light Theme Colors */
 .bg-dark {
-  background: #191919;
+  background: #ffffff;
 }
 
 .bg-dark-lighter {
-  background: #202020;
+  background: #f9fafb;
 }
 
 .bg-dark-card {
-  background: #252525;
+  background: #ffffff;
 }
 
 .bg-sidebar {
-  background: #252525;
+  background: #f3f4f6;
 }
 
 .bg-sidebar-hover {
-  background: #2e2e2e;
+  background: #e5e7eb;
 }
 
 /* Pastel Colors for Dark Theme */
@@ -106,23 +106,23 @@
   border-color: rgba(212, 184, 164, 0.2);
 }
 
-/* Notion-style Cards */
+/* Light Theme Cards */
 .clay-card {
-  background: #252525;
+  background: #ffffff;
   border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(0, 0, 0, 0.1);
   transition: all 0.2s ease;
 }
 
 .clay-card:hover {
-  background: #2a2a2a;
-  border-color: rgba(255, 255, 255, 0.15);
+  background: #f9fafb;
+  border-color: rgba(0, 0, 0, 0.15);
 }
 
 .clay-card-mini {
-  background: #2a2a2a;
+  background: #f9fafb;
   border-radius: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(0, 0, 0, 0.08);
   transition: all 0.2s ease;
 }
 

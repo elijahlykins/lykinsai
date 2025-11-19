@@ -109,7 +109,7 @@ export default function LongTermPage() {
   }
 
   return (
-    <div className="min-h-screen bg-dark flex overflow-hidden">
+    <div className="min-h-screen bg-white flex overflow-hidden">
       <div className={`${sidebarCollapsed ? 'w-16' : 'w-64'} flex-shrink-0 transition-all duration-300`}>
         <NotionSidebar
           activeView="long_term"
@@ -123,18 +123,18 @@ export default function LongTermPage() {
       </div>
 
       <div className="flex-1 flex flex-col overflow-hidden">
-        <div className="p-6 border-b border-white/10">
+        <div className="p-6 border-b border-gray-200">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-4">
               <Archive className="w-6 h-6 text-black" />
-              <h1 className="text-2xl font-bold text-white">Long Term Memory</h1>
+              <h1 className="text-2xl font-bold text-black">Long Term Memory</h1>
             </div>
             <div className="flex items-center gap-2">
               {!selectedNote && (
                 <Button
                   onClick={() => setShowGraphView(!showGraphView)}
                   variant="ghost"
-                  className="text-white hover:bg-white/10 flex items-center gap-2"
+                  className="text-black hover:bg-gray-100 flex items-center gap-2"
                 >
                   <Link2 className="w-4 h-4 text-black" />
                   {showGraphView ? 'List View' : 'Graph View'}
@@ -144,22 +144,22 @@ export default function LongTermPage() {
                 <div className="flex items-center gap-2">
                   {!isEditing ? (
                     <>
-                      <Button onClick={() => setShowLinkSelector(true)} variant="ghost" size="icon" className="text-white hover:bg-white/10">
+                      <Button onClick={() => setShowLinkSelector(true)} variant="ghost" size="icon" className="text-black hover:bg-gray-100">
                         <Link2 className="w-5 h-5 text-black" />
                       </Button>
-                      <Button onClick={startEditing} variant="ghost" size="icon" className="text-white hover:bg-white/10">
+                      <Button onClick={startEditing} variant="ghost" size="icon" className="text-black hover:bg-gray-100">
                         <Edit2 className="w-5 h-5 text-black" />
                       </Button>
-                      <Button onClick={handleDeleteNote} variant="ghost" size="icon" className="text-red-400 hover:bg-white/10">
+                      <Button onClick={handleDeleteNote} variant="ghost" size="icon" className="text-red-400 hover:bg-gray-100">
                         <Trash2 className="w-5 h-5" />
                       </Button>
                     </>
                   ) : (
                     <>
-                      <Button onClick={saveEdits} variant="ghost" size="icon" className="text-green-400 hover:bg-white/10">
-                        <Save className="w-5 h-5 text-black" />
+                      <Button onClick={saveEdits} variant="ghost" size="icon" className="text-green-600 hover:bg-gray-100">
+                        <Save className="w-5 h-5" />
                       </Button>
-                      <Button onClick={cancelEditing} variant="ghost" size="icon" className="text-white hover:bg-white/10">
+                      <Button onClick={cancelEditing} variant="ghost" size="icon" className="text-black hover:bg-gray-100">
                         <XCircle className="w-5 h-5 text-black" />
                       </Button>
                     </>
@@ -198,7 +198,7 @@ export default function LongTermPage() {
           )}
         </div>
 
-        <div className="flex-1 overflow-hidden bg-dark">
+        <div className="flex-1 overflow-hidden bg-gray-50">
           <ScrollArea className="h-full">
             {showGraphView && !selectedNote ? (
               <div className="h-[calc(100vh-200px)] p-8">
@@ -319,7 +319,7 @@ export default function LongTermPage() {
                 </div>
                 <NoteSummarization note={selectedNote} />
                 <AIAnalysisPanel note={selectedNote} allNotes={notes} onUpdate={handleUpdate} />
-                <Button onClick={() => setSelectedNote(null)} variant="outline" className="w-full bg-transparent border-white/10 text-white hover:bg-white/10">
+                <Button onClick={() => setSelectedNote(null)} variant="outline" className="w-full bg-transparent border-gray-300 text-black hover:bg-gray-100">
                   Back to Long Term
                 </Button>
               </div>
