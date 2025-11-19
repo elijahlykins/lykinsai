@@ -3,6 +3,7 @@ import ShortTerm from './pages/ShortTerm';
 import LongTerm from './pages/LongTerm';
 import AISearch from './pages/AISearch';
 import MemoryChat from './pages/MemoryChat';
+import Notes from './pages/Notes';
 
 
 export const PAGES = {
@@ -11,6 +12,7 @@ export const PAGES = {
     "LongTerm": LongTerm,
     "AISearch": AISearch,
     "MemoryChat": MemoryChat,
+    "Notes": Notes,
 }
 
 export const pagesConfig = {
