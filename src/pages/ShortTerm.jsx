@@ -16,6 +16,7 @@ import { createPageUrl } from '../utils';
 import TagInput from '../components/notes/TagInput';
 import NoteLinkSelector from '../components/notes/NoteLinkSelector';
 import KnowledgeGraph from '../components/notes/KnowledgeGraph';
+import NoteSummarization from '../components/notes/NoteSummarization';
 
 export default function ShortTermPage() {
   const [selectedNote, setSelectedNote] = useState(null);
@@ -312,6 +313,7 @@ export default function ShortTermPage() {
                     </audio>
                   )}
                 </div>
+                <NoteSummarization note={selectedNote} />
                 <AIAnalysisPanel note={selectedNote} allNotes={notes} onUpdate={handleUpdate} />
                 <Button onClick={() => setSelectedNote(null)} variant="outline" className="w-full bg-transparent border-white/10 text-white hover:bg-white/10">
                   Back to Short Term
