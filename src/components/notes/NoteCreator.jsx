@@ -4,13 +4,12 @@ import { Textarea } from '@/components/ui/textarea';
 import { Mic, Square, Sparkles, Loader2 } from 'lucide-react';
 import { base44 } from '@/api/base44Client';
 
-export default function NoteCreator({ onNoteCreated }) {
+export default function NoteCreator({ onNoteCreated, inputMode }) {
   const [content, setContent] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [audioFile, setAudioFile] = useState(null);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
-  const [inputMode, setInputMode] = useState('text'); // 'text' or 'audio'
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const timerRef = useRef(null);
@@ -143,30 +142,6 @@ Be constructive, insightful, and encouraging.`,
 
   return (
     <div className="h-full flex flex-col">
-      {/* Toggle Mode */}
-      <div className="p-4 border-b border-white/10 flex items-center gap-2">
-        <button
-          onClick={() => setInputMode('text')}
-          className={`px-4 py-2 rounded-full text-sm font-medium transition-all ${
-            inputMode === 'text'
-              ? 'bg-white text-black'
-              : 'bg-transparent text-gray-400 hover:text-white'
-          }`}
-        >
-          Text Idea
-        </button>
-        <button
-          onClick={() => setInputMode('audio')}
-          className={`px-4 py-2 rounded-full text-sm font-medium transition-all ${
-            inputMode === 'audio'
-              ? 'bg-white text-black'
-              : 'bg-transparent text-gray-400 hover:text-white'
-          }`}
-        >
-          Audio Idea
-        </button>
-      </div>
-
       {/* Content Area - Notion Style */}
       <div className="flex-1 overflow-auto px-8 md:px-12 lg:px-16 xl:px-24 py-12">
         {inputMode === 'text' ? (
