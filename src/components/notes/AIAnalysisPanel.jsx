@@ -86,7 +86,7 @@ Identify which note IDs are related or connected to the main note. Return only t
       <div className="clay-card p-6 space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <Sparkles className="w-5 h-5 text-lavender" />
+            <Sparkles className="w-5 h-5 text-black" />
             <h3 className="text-lg font-semibold text-white">AI Analysis</h3>
           </div>
           {!note.ai_analysis && (
@@ -113,7 +113,7 @@ Identify which note IDs are related or connected to the main note. Return only t
             {/* Validation */}
             <div className="clay-card-mini p-4">
               <div className="flex items-start gap-3">
-                <CheckCircle className="w-5 h-5 text-mint mt-0.5 flex-shrink-0" />
+                <CheckCircle className="w-5 h-5 text-black mt-0.5 flex-shrink-0" />
                 <div>
                   <h4 className="font-semibold text-white mb-2">Validation</h4>
                   <p className="text-sm text-gray-400 leading-relaxed">
@@ -127,7 +127,7 @@ Identify which note IDs are related or connected to the main note. Return only t
             {note.ai_analysis.questions?.length > 0 && (
               <div className="clay-card-mini p-4">
                 <div className="flex items-start gap-3">
-                  <HelpCircle className="w-5 h-5 text-blue mt-0.5 flex-shrink-0" />
+                  <HelpCircle className="w-5 h-5 text-black mt-0.5 flex-shrink-0" />
                   <div className="flex-1">
                     <h4 className="font-semibold text-white mb-3">Questions to Explore</h4>
                     <ul className="space-y-2">
@@ -146,7 +146,7 @@ Identify which note IDs are related or connected to the main note. Return only t
             {note.ai_analysis.insights && (
               <div className="clay-card-mini p-4">
                 <div className="flex items-start gap-3">
-                  <Sparkles className="w-5 h-5 text-lavender mt-0.5 flex-shrink-0" />
+                  <Sparkles className="w-5 h-5 text-black mt-0.5 flex-shrink-0" />
                   <div>
                     <h4 className="font-semibold text-white mb-2">Key Insights</h4>
                     <p className="text-sm text-gray-400 leading-relaxed">
@@ -168,7 +168,7 @@ Identify which note IDs are related or connected to the main note. Return only t
       <div className="clay-card p-6 space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <Link2 className="w-5 h-5 text-blue" />
+            <Link2 className="w-5 h-5 text-black" />
             <h3 className="text-lg font-semibold text-white">Connected Ideas</h3>
           </div>
           <Button
