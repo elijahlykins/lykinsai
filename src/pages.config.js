@@ -1,4 +1,3 @@
-import Notes from './pages/Notes';
 import Create from './pages/Create';
 import ShortTerm from './pages/ShortTerm';
 import LongTerm from './pages/LongTerm';
@@ -7,7 +6,6 @@ import MemoryChat from './pages/MemoryChat';
 
 
 export const PAGES = {
-    "Notes": Notes,
     "Create": Create,
     "ShortTerm": ShortTerm,
     "LongTerm": LongTerm,
@@ -16,6 +14,6 @@ export const PAGES = {
 }
 
 export const pagesConfig = {
-    mainPage: "Notes",
+    mainPage: "Create",
     Pages: PAGES,
 };
