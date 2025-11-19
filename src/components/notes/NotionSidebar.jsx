@@ -55,6 +55,25 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
 
       <TooltipProvider delayDuration={300}>
         <nav className="space-y-3 flex-1">
+          {/* Create */}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={() => onViewChange('create')}
+                className={`w-full px-6 py-3 rounded-full text-sm font-medium transition-all bg-white text-black ${
+                  activeView === 'create'
+                    ? 'ring-2 ring-white/50'
+                    : 'hover:ring-2 hover:ring-white/30'
+                }`}
+              >
+                Create
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right">
+              <p>Create new memories</p>
+            </TooltipContent>
+          </Tooltip>
+
           {/* Short Term */}
           <Tooltip>
             <TooltipTrigger asChild>
@@ -98,7 +117,11 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
             <TooltipTrigger asChild>
               <button
                 onClick={onOpenSearch}
-                className="w-full px-6 py-3 rounded-full text-sm font-medium bg-white text-black hover:ring-2 hover:ring-white/30 transition-all"
+                className={`w-full px-6 py-3 rounded-full text-sm font-medium bg-white text-black transition-all ${
+                  activeView === 'search'
+                    ? 'ring-2 ring-white/50'
+                    : 'hover:ring-2 hover:ring-white/30'
+                }`}
               >
                 AI Search
               </button>
@@ -113,7 +136,11 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
             <TooltipTrigger asChild>
               <button
                 onClick={onOpenChat}
-                className="w-full px-6 py-3 rounded-full text-sm font-medium bg-white text-black hover:ring-2 hover:ring-white/30 transition-all"
+                className={`w-full px-6 py-3 rounded-full text-sm font-medium bg-white text-black transition-all ${
+                  activeView === 'chat'
+                    ? 'ring-2 ring-white/50'
+                    : 'hover:ring-2 hover:ring-white/30'
+                }`}
               >
                 Memory Chat
               </button>
