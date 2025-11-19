@@ -145,6 +145,29 @@ Be constructive, insightful, and encouraging.`,
         finalContent = content + (content ? '\n\n' : '') + transcription;
       }
 
+      // Process attachments and extract content for AI analysis
+      for (const attachment of attachments) {
+        if (attachment.type === 'image' || attachment.type === 'file') {
+          try {
+            const attachmentDescription = await base44.integrations.Core.InvokeLLM({
+              prompt: 'Describe what you see in this file or image. Be detailed and comprehensive.',
+              file_urls: [attachment.url]
+            });
+            finalContent = finalContent + (finalContent ? '\n\n' : '') + `[Attachment: ${attachment.name}]\n${attachmentDescription}`;
+            if (attachment.caption) {
+              finalContent += `\nCaption: ${attachment.caption}`;
+            }
+          } catch (error) {
+            console.error('Error analyzing attachment:', error);
+          }
+        } else if (attachment.type === 'link') {
+          finalContent = finalContent + (finalContent ? '\n\n' : '') + `[Link: ${attachment.url}]`;
+          if (attachment.caption) {
+            finalContent += `\n${attachment.caption}`;
+          }
+        }
+      }
+
       // Generate AI analysis
       const aiAnalysis = await generateAIAnalysis(finalContent);
 
@@ -185,12 +208,14 @@ Note: "${finalContent.substring(0, 300)}"`,
         connected_notes: suggestedConnections,
         tags: finalTags,
         folder: folder,
-        reminder: reminder
+        reminder: reminder,
+        attachments: attachments
       });
 
       setTitle('');
       setContent('');
       setAudioFile(null);
+      setAttachments([]);
       setTags([]);
       setFolder('Uncategorized');
       setSuggestedConnections([]);
