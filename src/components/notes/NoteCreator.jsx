@@ -10,6 +10,7 @@ export default function NoteCreator({ onNoteCreated }) {
   const [audioFile, setAudioFile] = useState(null);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
+  const [inputMode, setInputMode] = useState('text'); // 'text' or 'audio'
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const timerRef = useRef(null);
@@ -141,61 +142,92 @@ Be constructive, insightful, and encouraging.`,
   };
 
   return (
-    <div className="clay-card p-8 space-y-6">
-      <div className="flex items-center gap-3 mb-2">
-        <div className="clay-icon p-3">
-          <Sparkles className="w-5 h-5 text-lavender" />
-        </div>
-        <h2 className="text-2xl font-semibold text-white">Capture Your Idea</h2>
+    <div className="h-full flex flex-col">
+      {/* Toggle Mode */}
+      <div className="p-4 border-b border-white/10 flex items-center gap-2">
+        <button
+          onClick={() => setInputMode('text')}
+          className={`px-4 py-2 rounded-full text-sm font-medium transition-all ${
+            inputMode === 'text'
+              ? 'bg-white text-black'
+              : 'bg-transparent text-gray-400 hover:text-white'
+          }`}
+        >
+          Text Idea
+        </button>
+        <button
+          onClick={() => setInputMode('audio')}
+          className={`px-4 py-2 rounded-full text-sm font-medium transition-all ${
+            inputMode === 'audio'
+              ? 'bg-white text-black'
+              : 'bg-transparent text-gray-400 hover:text-white'
+          }`}
+        >
+          Audio Idea
+        </button>
       </div>
 
-      <Textarea
-        value={content}
-        onChange={(e) => setContent(e.target.value)}
-        placeholder="Type your thoughts here..."
-        className="min-h-[200px] bg-dark-lighter border-0 text-black placeholder:text-gray-500 resize-none text-lg clay-input"
-        disabled={isProcessing}
-      />
+      {/* Content Area - Notion Style */}
+      <div className="flex-1 overflow-auto px-8 md:px-16 lg:px-32 xl:px-64 py-12">
+        {inputMode === 'text' ? (
+          <div className="space-y-4">
+            <input
+              type="text"
+              placeholder="Untitled"
+              className="w-full text-4xl font-bold bg-transparent border-none outline-none text-white placeholder:text-gray-600"
+              disabled={isProcessing}
+            />
+            <Textarea
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              placeholder="Start typing..."
+              className="w-full min-h-[400px] bg-transparent border-0 text-white placeholder:text-gray-500 resize-none text-lg focus:outline-none focus:ring-0"
+              disabled={isProcessing}
+            />
+          </div>
+        ) : (
+          <div className="space-y-6">
+            <h2 className="text-2xl font-semibold text-white">Record Your Idea</h2>
+            <div className="flex flex-col items-center justify-center py-16 space-y-6">
+              {!isRecording ? (
+                <Button
+                  onClick={startRecording}
+                  disabled={isProcessing || audioFile}
+                  className="clay-button flex items-center gap-2 px-8 py-6 text-lg"
+                >
+                  <Mic className="w-6 h-6" />
+                  <span>{audioFile ? 'Audio Recorded ✓' : 'Start Recording'}</span>
+                </Button>
+              ) : (
+                <Button
+                  onClick={stopRecording}
+                  className="clay-button-secondary flex items-center gap-2 px-8 py-6 text-lg animate-pulse border-red-400"
+                >
+                  <Square className="w-6 h-6 text-red-400" />
+                  <span className="text-red-400">Stop Recording ({formatTime(recordingTime)})</span>
+                </Button>
+              )}
 
-      <div className="space-y-4">
-        {/* Recording Controls */}
-        <div className="flex items-center gap-4">
-          {!isRecording ? (
-            <Button
-              onClick={startRecording}
-              disabled={isProcessing || audioFile}
-              className="clay-button-secondary flex items-center gap-2 px-6 py-3"
-            >
-              <Mic className="w-5 h-5" />
-              <span>{audioFile ? 'Audio Recorded ✓' : 'Record Audio'}</span>
-            </Button>
-          ) : (
-            <Button
-              onClick={stopRecording}
-              className="clay-button-secondary flex items-center gap-2 px-6 py-3 animate-pulse border-red-400"
-            >
-              <Square className="w-5 h-5 text-red-400" />
-              <span className="text-red-400">Stop Recording ({formatTime(recordingTime)})</span>
-            </Button>
-          )}
+              {audioFile && !isRecording && (
+                <Button
+                  onClick={() => setAudioFile(null)}
+                  variant="ghost"
+                  className="text-gray-400 hover:text-white"
+                >
+                  Clear Audio & Re-record
+                </Button>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
 
-          {audioFile && !isRecording && (
-            <Button
-              onClick={() => setAudioFile(null)}
-              variant="ghost"
-              size="sm"
-              className="text-gray-400 hover:text-white"
-            >
-              Clear Audio
-            </Button>
-          )}
-        </div>
-
-        {/* Submit Button */}
+      {/* Bottom Action Bar */}
+      <div className="p-4 border-t border-white/10 flex justify-end">
         <Button
           onClick={handleSubmit}
           disabled={isProcessing || isRecording || (!content.trim() && !audioFile)}
-          className="clay-button w-full flex items-center justify-center gap-2 h-12"
+          className="clay-button flex items-center justify-center gap-2 px-6 py-3"
         >
           {isProcessing ? (
             <>
