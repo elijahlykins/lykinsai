@@ -2,10 +2,12 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
-import { Mic, Square, Plus, Link as LinkIcon, Image, Video, FileText } from 'lucide-react';
+import { Mic, Square, Plus, Link as LinkIcon, Image, Video, FileText, Tag, Folder } from 'lucide-react';
 import { base44 } from '@/api/base44Client';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import AttachmentPanel from './AttachmentPanel';
+import TagInput from './TagInput';
 
 export default function NoteCreator({ onNoteCreated, inputMode }) {
   const [title, setTitle] = useState('');
@@ -16,6 +18,9 @@ export default function NoteCreator({ onNoteCreated, inputMode }) {
   const [recordingTime, setRecordingTime] = useState(0);
   const [attachments, setAttachments] = useState([]);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
+  const [tags, setTags] = useState([]);
+  const [folder, setFolder] = useState('Uncategorized');
+  const [showMetadata, setShowMetadata] = useState(false);
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const timerRef = useRef(null);
@@ -139,12 +144,16 @@ Be constructive, insightful, and encouraging.`,
         audio_url: audioUrl,
         ai_analysis: aiAnalysis,
         color: randomColor,
-        connected_notes: []
+        connected_notes: [],
+        tags: tags,
+        folder: folder
       });
 
       setTitle('');
       setContent('');
       setAudioFile(null);
+      setTags([]);
+      setFolder('Uncategorized');
       onNoteCreated();
     } catch (error) {
       console.error('Error creating note:', error);
@@ -225,6 +234,50 @@ Be constructive, insightful, and encouraging.`,
               className="text-6xl font-bold bg-transparent border-0 text-black placeholder:text-gray-400 focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0 h-auto px-0"
               disabled={isProcessing}
             />
+
+            {/* Metadata Bar */}
+            <div className="flex gap-2 items-center">
+              <button
+                onClick={() => setShowMetadata(!showMetadata)}
+                className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-dark-lighter/50 hover:bg-dark-lighter text-xs text-gray-600 transition-all"
+              >
+                <Tag className="w-3 h-3" />
+                Tags ({tags.length})
+              </button>
+              <button
+                onClick={() => setShowMetadata(!showMetadata)}
+                className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-dark-lighter/50 hover:bg-dark-lighter text-xs text-gray-600 transition-all"
+              >
+                <Folder className="w-3 h-3" />
+                {folder}
+              </button>
+            </div>
+
+            {showMetadata && (
+              <div className="space-y-4 p-4 bg-dark-lighter/30 rounded-lg">
+                <div>
+                  <label className="text-sm font-medium text-gray-700 mb-2 block">Tags</label>
+                  <TagInput tags={tags} onChange={setTags} />
+                </div>
+                <div>
+                  <label className="text-sm font-medium text-gray-700 mb-2 block">Folder</label>
+                  <Select value={folder} onValueChange={setFolder}>
+                    <SelectTrigger className="bg-white border-gray-300 text-black">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent className="bg-white">
+                      <SelectItem value="Uncategorized">Uncategorized</SelectItem>
+                      <SelectItem value="Projects">Projects</SelectItem>
+                      <SelectItem value="Ideas">Ideas</SelectItem>
+                      <SelectItem value="Research">Research</SelectItem>
+                      <SelectItem value="Personal">Personal</SelectItem>
+                      <SelectItem value="Work">Work</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            )}
+
             <Textarea
               value={content}
               onChange={(e) => setContent(e.target.value)}
