@@ -5,9 +5,10 @@ import NotionSidebar from '../components/notes/NotionSidebar';
 import SettingsModal from '../components/notes/SettingsModal';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-import { Search, Loader2, Clock, Filter, X, Calendar, Tag, Folder } from 'lucide-react';
+import { Search, Loader2, Clock, Filter, X, Calendar, Tag, Folder, Save, Bookmark, Trash2, Image, Video, FileText, Link } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { format } from 'date-fns';
 import { useNavigate } from 'react-router-dom';
 import { createPageUrl } from '../utils';
@@ -21,7 +22,17 @@ export default function AISearchPage() {
   const [selectedNote, setSelectedNote] = useState(null);
   const [suggestions, setSuggestions] = useState([]);
   const [isLoadingSuggestions, setIsLoadingSuggestions] = useState(false);
-  const [filters, setFilters] = useState({ dateRange: 'all', tags: [], folder: 'all' });
+  const [filters, setFilters] = useState({ 
+    dateRange: 'all', 
+    tags: [], 
+    folder: 'all',
+    attachmentType: 'all',
+    customDateFrom: null,
+    customDateTo: null
+  });
+  const [savedSearches, setSavedSearches] = useState([]);
+  const [showSaveDialog, setShowSaveDialog] = useState(false);
+  const [searchName, setSearchName] = useState('');
   const navigate = useNavigate();
   const suggestionTimeoutRef = React.useRef(null);
 
@@ -46,6 +57,14 @@ export default function AISearchPage() {
     });
     return Array.from(folderSet).sort();
   }, [notes]);
+
+  // Load saved searches
+  React.useEffect(() => {
+    const saved = localStorage.getItem('lykinsai_saved_searches');
+    if (saved) {
+      setSavedSearches(JSON.parse(saved));
+    }
+  }, []);
 
   const loadSuggestions = async (searchQuery) => {
     if (!searchQuery.trim() || searchQuery.length < 3) {
@@ -92,7 +111,14 @@ Return only the suggestions as an array.`,
       // Apply filters
       let filteredNotes = notes;
       
-      if (filters.dateRange !== 'all') {
+      if (filters.dateRange === 'custom' && filters.customDateFrom) {
+        const fromDate = new Date(filters.customDateFrom);
+        const toDate = filters.customDateTo ? new Date(filters.customDateTo) : new Date();
+        filteredNotes = filteredNotes.filter(n => {
+          const noteDate = new Date(n.created_date);
+          return noteDate >= fromDate && noteDate <= toDate;
+        });
+      } else if (filters.dateRange !== 'all') {
         const now = new Date();
         const dateThresholds = {
           'today': 1,
@@ -115,6 +141,12 @@ Return only the suggestions as an array.`,
         filteredNotes = filteredNotes.filter(n => n.folder === filters.folder);
       }
 
+      if (filters.attachmentType !== 'all') {
+        filteredNotes = filteredNotes.filter(n => 
+          n.attachments?.some(a => a.type === filters.attachmentType)
+        );
+      }
+
       const notesContext = filteredNotes.map(n => {
         let context = `ID: ${n.id}\nTitle: ${n.title}\nContent: ${n.content}\nType: ${n.storage_type}`;
         if (n.attachments && n.attachments.length > 0) {
@@ -127,9 +159,16 @@ Return only the suggestions as an array.`,
       }).join('\n\n---\n\n');
 
       const searchResults = await base44.integrations.Core.InvokeLLM({
-        prompt: `Given this search query: "${query}"
-        
-Find the most relevant notes based on ideas, concepts, meaning, attachments, and tags (semantic search, not just keyword matching).
+        prompt: `Process this natural language search query: "${query}"
+
+This is a semantic search that understands:
+- Questions (e.g., "What are my ideas about AI?")
+- Comparisons (e.g., "Notes similar to project X")
+- Temporal queries (e.g., "Recent thoughts about marketing")
+- Conceptual searches (e.g., "Everything related to productivity")
+- Complex requests (e.g., "Find notes with images about travel from this month")
+
+Find the most relevant notes based on ideas, concepts, meaning, attachments, tags, and the user's intent.
 For each relevant note, identify a matching text snippet (1-2 sentences) that shows why it matches the query.
 
 Available notes:
@@ -185,6 +224,35 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
       }
     };
   }, [query]);
+
+  const saveSearch = () => {
+    if (!searchName.trim() || !query.trim()) return;
+    
+    const newSearch = {
+      id: Date.now(),
+      name: searchName,
+      query: query,
+      filters: filters,
+      date: new Date().toISOString()
+    };
+    
+    const updated = [...savedSearches, newSearch];
+    setSavedSearches(updated);
+    localStorage.setItem('lykinsai_saved_searches', JSON.stringify(updated));
+    setSearchName('');
+    setShowSaveDialog(false);
+  };
+
+  const loadSearch = (search) => {
+    setQuery(search.query);
+    setFilters(search.filters);
+  };
+
+  const deleteSearch = (id) => {
+    const updated = savedSearches.filter(s => s.id !== id);
+    setSavedSearches(updated);
+    localStorage.setItem('lykinsai_saved_searches', JSON.stringify(updated));
+  };
 
   return (
     <div className="min-h-screen bg-white flex overflow-hidden">
@@ -248,6 +316,14 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
                 >
                   {isSearching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
                 </Button>
+                <Button
+                  onClick={() => setShowSaveDialog(true)}
+                  disabled={!query.trim()}
+                  variant="outline"
+                  className="border-gray-300 text-black hover:bg-gray-50"
+                >
+                  <Save className="w-4 h-4" />
+                </Button>
               </div>
             </div>
 
@@ -266,8 +342,28 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
                   <SelectItem value="week">This Week</SelectItem>
                   <SelectItem value="month">This Month</SelectItem>
                   <SelectItem value="year">This Year</SelectItem>
+                  <SelectItem value="custom">Custom Range</SelectItem>
                 </SelectContent>
               </Select>
+
+              {/* Custom Date Range */}
+              {filters.dateRange === 'custom' && (
+                <div className="flex gap-2 items-center">
+                  <Input
+                    type="date"
+                    value={filters.customDateFrom || ''}
+                    onChange={(e) => setFilters({...filters, customDateFrom: e.target.value})}
+                    className="w-36 h-8 bg-gray-50 border-gray-300 text-black text-xs"
+                  />
+                  <span className="text-xs text-gray-500">to</span>
+                  <Input
+                    type="date"
+                    value={filters.customDateTo || ''}
+                    onChange={(e) => setFilters({...filters, customDateTo: e.target.value})}
+                    className="w-36 h-8 bg-gray-50 border-gray-300 text-black text-xs"
+                  />
+                </div>
+              )}
 
               {/* Folder Filter */}
               <Select value={filters.folder} onValueChange={(value) => setFilters({...filters, folder: value})}>
@@ -279,6 +375,20 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
                   {allFolders.map(folder => (
                     <SelectItem key={folder} value={folder}>{folder}</SelectItem>
                   ))}
+                </SelectContent>
+              </Select>
+
+              {/* Attachment Type Filter */}
+              <Select value={filters.attachmentType} onValueChange={(value) => setFilters({...filters, attachmentType: value})}>
+                <SelectTrigger className="w-40 h-8 bg-gray-50 border-gray-300 text-black text-xs">
+                  <SelectValue placeholder="All Types" />
+                </SelectTrigger>
+                <SelectContent className="bg-white border-gray-200">
+                  <SelectItem value="all">All Types</SelectItem>
+                  <SelectItem value="image">Images</SelectItem>
+                  <SelectItem value="video">Videos</SelectItem>
+                  <SelectItem value="file">Files</SelectItem>
+                  <SelectItem value="link">Links</SelectItem>
                 </SelectContent>
               </Select>
 
@@ -314,15 +424,38 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
               )}
 
               {/* Clear Filters */}
-              {(filters.dateRange !== 'all' || filters.folder !== 'all' || filters.tags.length > 0) && (
+              {(filters.dateRange !== 'all' || filters.folder !== 'all' || filters.attachmentType !== 'all' || filters.tags.length > 0) && (
                 <button
-                  onClick={() => setFilters({ dateRange: 'all', tags: [], folder: 'all' })}
+                  onClick={() => setFilters({ dateRange: 'all', tags: [], folder: 'all', attachmentType: 'all', customDateFrom: null, customDateTo: null })}
                   className="text-xs text-gray-500 hover:text-black"
                 >
                   Clear all
                 </button>
               )}
             </div>
+
+            {/* Saved Searches */}
+            {savedSearches.length > 0 && (
+              <div className="flex gap-2 items-center overflow-x-auto pb-2">
+                <Bookmark className="w-4 h-4 text-gray-400 flex-shrink-0" />
+                {savedSearches.map(search => (
+                  <div key={search.id} className="flex items-center gap-1 bg-gray-100 rounded px-2 py-1 text-xs whitespace-nowrap">
+                    <button
+                      onClick={() => loadSearch(search)}
+                      className="text-black hover:underline"
+                    >
+                      {search.name}
+                    </button>
+                    <button
+                      onClick={() => deleteSearch(search.id)}
+                      className="text-gray-500 hover:text-red-600"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 
@@ -413,6 +546,53 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
       </div>
 
       <SettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
+
+      {/* Save Search Dialog */}
+      <Dialog open={showSaveDialog} onOpenChange={setShowSaveDialog}>
+        <DialogContent className="bg-white border-gray-200">
+          <DialogHeader>
+            <DialogTitle className="text-black">Save Search</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div>
+              <label className="text-sm font-medium text-black mb-2 block">Search Name</label>
+              <Input
+                value={searchName}
+                onChange={(e) => setSearchName(e.target.value)}
+                placeholder="e.g., Recent AI notes with images"
+                className="bg-gray-50 border-gray-300 text-black"
+              />
+            </div>
+            <div className="text-xs text-gray-500">
+              <p>Current query: "{query}"</p>
+              <p className="mt-1">Active filters: {
+                [
+                  filters.dateRange !== 'all' && `Date: ${filters.dateRange}`,
+                  filters.folder !== 'all' && `Folder: ${filters.folder}`,
+                  filters.attachmentType !== 'all' && `Type: ${filters.attachmentType}`,
+                  filters.tags.length > 0 && `Tags: ${filters.tags.join(', ')}`
+                ].filter(Boolean).join(', ') || 'None'
+              }</p>
+            </div>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button
+              onClick={() => setShowSaveDialog(false)}
+              variant="outline"
+              className="border-gray-300 text-black hover:bg-gray-50"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={saveSearch}
+              disabled={!searchName.trim()}
+              className="bg-black text-white hover:bg-gray-800"
+            >
+              Save
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
