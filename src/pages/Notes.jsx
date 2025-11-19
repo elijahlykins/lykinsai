@@ -24,6 +24,7 @@ export default function NotesPage() {
   const [chatOpen, setChatOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [textColor, setTextColor] = useState('white');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const queryClient = useQueryClient();
 
   useEffect(() => {
@@ -92,13 +93,15 @@ export default function NotesPage() {
   return (
     <div className="min-h-screen bg-dark flex overflow-hidden">
       {/* Notion-style Sidebar */}
-      <div className="w-64 flex-shrink-0">
+      <div className={`${sidebarCollapsed ? 'w-16' : 'w-64'} flex-shrink-0 transition-all duration-300`}>
         <NotionSidebar
           activeView={activeView}
           onViewChange={setActiveView}
           onOpenSearch={() => setSearchOpen(true)}
           onOpenChat={() => setChatOpen(true)}
           onOpenSettings={() => setSettingsOpen(true)}
+          isCollapsed={sidebarCollapsed}
+          onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
         />
       </div>
 

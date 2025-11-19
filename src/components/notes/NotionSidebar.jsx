@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Clock, Archive, Search, MessageSquare, Settings } from 'lucide-react';
+import React from 'react';
+import { Settings, ChevronLeft, ChevronRight } from 'lucide-react';
 import {
   Tooltip,
   TooltipContent,
@@ -7,25 +7,66 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 
-export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, onOpenChat, onOpenSettings }) {
+export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, onOpenChat, onOpenSettings, isCollapsed, onToggleCollapse }) {
+  if (isCollapsed) {
+    return (
+      <div className="h-full bg-sidebar border-r border-white/10 flex flex-col p-3 w-16">
+        <button
+          onClick={onToggleCollapse}
+          className="p-2 hover:bg-white/10 rounded-lg transition-all text-white"
+        >
+          <ChevronRight className="w-5 h-5" />
+        </button>
+        <TooltipProvider delayDuration={300}>
+          <div className="mt-auto">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={onOpenSettings}
+                  className="p-2 hover:bg-white/10 rounded-lg transition-all text-white"
+                >
+                  <Settings className="w-5 h-5" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right">
+                <p>Settings</p>
+              </TooltipContent>
+            </Tooltip>
+          </div>
+        </TooltipProvider>
+      </div>
+    );
+  }
+
   return (
-    <div className="h-full bg-sidebar border-r border-white/10 flex flex-col p-3">
-      <div className="mb-8 px-3 py-4">
-        <h1 className="text-2xl font-bold text-white tracking-tight">lykinsai</h1>
-        <p className="text-xs text-gray-500 mt-1">Your AI Memory Companion</p>
+    <div className="h-full bg-sidebar border-r border-white/10 flex flex-col p-4">
+      <div className="flex items-center justify-between mb-8">
+        <div>
+          <h1 className="text-2xl font-bold text-white tracking-tight">lykinsai</h1>
+          <p className="text-xs text-gray-500 mt-1">Your AI Memory Companion</p>
+        </div>
+        <button
+          onClick={onToggleCollapse}
+          className="p-1 hover:bg-white/10 rounded transition-all text-white"
+        >
+          <ChevronLeft className="w-5 h-5" />
+        </button>
       </div>
 
       <TooltipProvider delayDuration={300}>
-        <nav className="space-y-1 flex-1">
+        <nav className="space-y-3 flex-1">
           {/* Short Term */}
           <Tooltip>
             <TooltipTrigger asChild>
               <button
                 onClick={() => onViewChange('short_term')}
-                className={`notion-sidebar-button ${activeView === 'short_term' ? 'active' : ''}`}
+                className={`w-full px-6 py-3 rounded-full text-sm font-medium transition-all ${
+                  activeView === 'short_term'
+                    ? 'bg-white text-black'
+                    : 'bg-white/10 text-white hover:bg-white/20'
+                }`}
               >
-                <Clock className="w-4 h-4" />
-                <span>Short Term</span>
+                Short Term
               </button>
             </TooltipTrigger>
             <TooltipContent side="right">
@@ -38,10 +79,13 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
             <TooltipTrigger asChild>
               <button
                 onClick={() => onViewChange('long_term')}
-                className={`notion-sidebar-button ${activeView === 'long_term' ? 'active' : ''}`}
+                className={`w-full px-6 py-3 rounded-full text-sm font-medium transition-all ${
+                  activeView === 'long_term'
+                    ? 'bg-white text-black'
+                    : 'bg-white/10 text-white hover:bg-white/20'
+                }`}
               >
-                <Archive className="w-4 h-4" />
-                <span>Long Term</span>
+                Long Term
               </button>
             </TooltipTrigger>
             <TooltipContent side="right">
@@ -49,17 +93,14 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
             </TooltipContent>
           </Tooltip>
 
-          <div className="my-4 border-t border-white/10" />
-
           {/* Search */}
           <Tooltip>
             <TooltipTrigger asChild>
               <button
                 onClick={onOpenSearch}
-                className="notion-sidebar-button"
+                className="w-full px-6 py-3 rounded-full text-sm font-medium bg-white/10 text-white hover:bg-white/20 transition-all"
               >
-                <Search className="w-4 h-4" />
-                <span>AI Search</span>
+                AI Search
               </button>
             </TooltipTrigger>
             <TooltipContent side="right">
@@ -72,10 +113,9 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
             <TooltipTrigger asChild>
               <button
                 onClick={onOpenChat}
-                className="notion-sidebar-button"
+                className="w-full px-6 py-3 rounded-full text-sm font-medium bg-white/10 text-white hover:bg-white/20 transition-all"
               >
-                <MessageSquare className="w-4 h-4" />
-                <span>Memory Chat</span>
+                Memory Chat
               </button>
             </TooltipTrigger>
             <TooltipContent side="right">
@@ -85,15 +125,14 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
         </nav>
 
         {/* Settings at bottom */}
-        <div className="mt-auto pt-3 border-t border-white/10">
+        <div className="mt-auto pt-3">
           <Tooltip>
             <TooltipTrigger asChild>
               <button
                 onClick={onOpenSettings}
-                className="notion-sidebar-button"
+                className="p-2 hover:bg-white/10 rounded-lg transition-all text-white"
               >
-                <Settings className="w-4 h-4" />
-                <span>Settings</span>
+                <Settings className="w-5 h-5" />
               </button>
             </TooltipTrigger>
             <TooltipContent side="right">
