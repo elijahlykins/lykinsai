@@ -18,6 +18,7 @@ import KnowledgeGraph from '../components/notes/KnowledgeGraph';
 import NoteSummarization from '../components/notes/NoteSummarization';
 import MindMapGenerator from '../components/notes/MindMapGenerator';
 import ConnectionSuggestions from '../components/notes/ConnectionSuggestions';
+import FollowUpQuestions from '../components/notes/FollowUpQuestions';
 import ReminderPicker from '../components/notes/ReminderPicker';
 import DuplicateDetector from '../components/notes/DuplicateDetector';
 import EnhancedKnowledgeGraph from '../components/notes/EnhancedKnowledgeGraph';
@@ -386,6 +387,7 @@ export default function LongTermPage() {
                     queryClient.invalidateQueries(['notes']);
                   }}
                 />
+                <FollowUpQuestions note={selectedNote} allNotes={notes} />
                 <MindMapGenerator 
                   note={selectedNote} 
                   allNotes={notes}

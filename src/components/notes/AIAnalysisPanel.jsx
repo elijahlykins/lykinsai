@@ -45,20 +45,22 @@ export default function AIAnalysisPanel({ note, allNotes, onUpdate }) {
       }
 
       const analysis = await base44.integrations.Core.InvokeLLM({
-        prompt: `Analyze this idea/note and provide:
-1. A validation (Is this idea viable/interesting? Why or why not?)
-2. Three thought-provoking questions to explore this idea further
-3. Key insights or connections to consider
+        prompt: `Analyze this memory card and provide a validation opinion:
 
-Note content: "${note.content}"${attachmentContext}
+Memory Card Title: "${note.title}"
+Memory Card Content: "${note.content}"${attachmentContext}
+
+Provide a thoughtful validation that evaluates the value, clarity, and potential of this memory. Consider:
+- Is this idea clear and well-articulated?
+- What's valuable or interesting about it?
+- Are there any concerns or limitations?
+- How could it be developed further?
 
 ${personalityPrompts[personality]} ${detailPrompts[detailLevel]}`,
         response_json_schema: {
           type: 'object',
           properties: {
-            validation: { type: 'string' },
-            questions: { type: 'array', items: { type: 'string' } },
-            insights: { type: 'string' }
+            validation: { type: 'string' }
           }
         }
       });
@@ -84,13 +86,22 @@ ${personalityPrompts[personality]} ${detailPrompts[detailLevel]}`,
       const notesContext = otherNotes.map(n => `ID: ${n.id}\nTitle: ${n.title}\nContent: ${n.content.substring(0, 200)}`).join('\n\n');
 
       const connections = await base44.integrations.Core.InvokeLLM({
-        prompt: `Given this note:
-"${note.content}"
+        prompt: `Analyze this memory card and find meaningful connections to other memory cards:
 
-And these other notes:
+Current Memory Card:
+Title: "${note.title}"
+Content: "${note.content}"
+
+Other Available Memory Cards:
 ${notesContext}
 
-Identify which note IDs are related or connected to the main note. Return only the IDs that have meaningful connections.`,
+Find memory cards that correlate with the current one based on:
+- Shared themes, topics, or concepts
+- Related ideas or complementary insights
+- Similar contexts or applications
+- Common goals or problems being addressed
+
+Return the IDs of memory cards that have strong correlations.`,
         response_json_schema: {
           type: 'object',
           properties: {
@@ -143,57 +154,20 @@ Identify which note IDs are related or connected to the main note. Return only t
         </div>
 
         {note.ai_analysis ? (
-          <div className="space-y-4">
-            {/* Validation */}
-            <div className="clay-card-mini p-4">
-              <div className="flex items-start gap-3">
-                <CheckCircle className="w-5 h-5 text-mint mt-0.5 flex-shrink-0" />
-                <div>
-                  <h4 className="font-semibold text-black mb-2">Validation</h4>
-                  <p className="text-sm text-gray-400 leading-relaxed">
-                    {note.ai_analysis.validation}
-                  </p>
-                </div>
+          <div className="clay-card-mini p-4">
+            <div className="flex items-start gap-3">
+              <CheckCircle className="w-5 h-5 text-mint mt-0.5 flex-shrink-0" />
+              <div>
+                <h4 className="font-semibold text-black mb-2">Validation Opinion</h4>
+                <p className="text-sm text-gray-400 leading-relaxed">
+                  {note.ai_analysis.validation}
+                </p>
               </div>
             </div>
-
-            {/* Questions */}
-            {note.ai_analysis.questions?.length > 0 && (
-              <div className="clay-card-mini p-4">
-                <div className="flex items-start gap-3">
-                  <HelpCircle className="w-5 h-5 text-blue mt-0.5 flex-shrink-0" />
-                  <div className="flex-1">
-                    <h4 className="font-semibold text-black mb-3">Questions to Explore</h4>
-                    <ul className="space-y-2">
-                      {note.ai_analysis.questions.map((question, idx) => (
-                        <li key={idx} className="text-sm text-gray-400 leading-relaxed">
-                          • {question}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Insights */}
-            {note.ai_analysis.insights && (
-              <div className="clay-card-mini p-4">
-                <div className="flex items-start gap-3">
-                  <Sparkles className="w-5 h-5 text-lavender mt-0.5 flex-shrink-0" />
-                  <div>
-                    <h4 className="font-semibold text-black mb-2">Key Insights</h4>
-                    <p className="text-sm text-gray-400 leading-relaxed">
-                      {note.ai_analysis.insights}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            )}
           </div>
         ) : (
           <p className="text-sm text-gray-500 text-center py-8">
-            Run AI analysis to validate and explore this idea
+            Run AI analysis to validate this memory card
           </p>
         )}
       </div>

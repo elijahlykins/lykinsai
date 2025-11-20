@@ -19,6 +19,7 @@ import KnowledgeGraph from '../components/notes/KnowledgeGraph';
 import NoteSummarization from '../components/notes/NoteSummarization';
 import MindMapGenerator from '../components/notes/MindMapGenerator';
 import RecommendationsPanel from '../components/notes/RecommendationsPanel';
+import FollowUpQuestions from '../components/notes/FollowUpQuestions';
 import DuplicateDetector from '../components/notes/DuplicateDetector';
 import EnhancedKnowledgeGraph from '../components/notes/EnhancedKnowledgeGraph';
 import ConnectionSuggestions from '../components/notes/ConnectionSuggestions';
@@ -385,6 +386,7 @@ export default function ShortTermPage() {
                     queryClient.invalidateQueries(['notes']);
                   }}
                 />
+                <FollowUpQuestions note={selectedNote} allNotes={notes} />
                 <MindMapGenerator 
                   note={selectedNote} 
                   allNotes={notes}
