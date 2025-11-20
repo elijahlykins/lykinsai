@@ -262,7 +262,8 @@ Return only the title, nothing else.`,
         folder: finalFolder,
         reminder: reminder,
         attachments: attachments,
-        summary: summary
+        summary: summary,
+        source: 'user'
       });
 
       setTitle('');
