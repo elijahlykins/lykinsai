@@ -129,7 +129,8 @@ Be constructive, insightful, and encouraging.`,
   };
 
   const autoSave = async () => {
-    if (!content.trim() && !audioFile && attachments.length === 0) return;
+    // Allow saving if ANY content exists: title, text, audio, or attachments
+    if (!title.trim() && !content.trim() && !audioFile && attachments.length === 0) return;
 
     setIsProcessing(true);
     try {
@@ -180,7 +181,7 @@ Be constructive, insightful, and encouraging.`,
       let finalTags = tags;
       let finalFolder = folder;
       
-      if (tags.length === 0 || folder === 'Uncategorized') {
+      if ((tags.length === 0 || folder === 'Uncategorized') && finalContent.length > 0) {
         try {
           const suggestions = await base44.integrations.Core.InvokeLLM({
             prompt: `Analyze this note and provide:
@@ -226,11 +227,19 @@ Be concise and capture the key points.`
 
       // Use user's title or generate one
       let finalTitle = title.trim() || 'New Idea';
-      if (!title.trim()) {
-        const titleResponse = await base44.integrations.Core.InvokeLLM({
-          prompt: `Create a short, catchy title (max 5 words) for this note: "${finalContent.substring(0, 200)}"`,
-        });
-        finalTitle = titleResponse.trim();
+      if (!title.trim() && finalContent.length > 0) {
+        try {
+          const titleResponse = await base44.integrations.Core.InvokeLLM({
+            prompt: `Create a short, catchy title (max 5 words) for this note: "${finalContent.substring(0, 200)}"`,
+          });
+          finalTitle = titleResponse.trim();
+        } catch (error) {
+          finalTitle = 'New Idea';
+        }
+      } else if (!title.trim() && attachments.length > 0) {
+        finalTitle = `Note with ${attachments.length} attachment${attachments.length > 1 ? 's' : ''}`;
+      } else if (!title.trim() && audioFile) {
+        finalTitle = 'Voice Note';
       }
 
       const colors = ['lavender', 'mint', 'blue', 'peach'];
