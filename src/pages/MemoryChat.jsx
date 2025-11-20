@@ -6,7 +6,7 @@ import SettingsModal from '../components/notes/SettingsModal';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Send, Loader2, Bot, User, Plus, Mic, Type } from 'lucide-react';
+import { Send, Loader2, Bot, User, Plus, Mic, MessageSquare } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useNavigate } from 'react-router-dom';
 import { createPageUrl } from '../utils';
@@ -171,7 +171,7 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
                   onClick={() => setInputMode(inputMode === 'text' ? 'audio' : 'text')}
                   className="absolute right-2 top-1/2 -translate-y-1/2 bg-black dark:bg-white text-white dark:text-black hover:bg-gray-800 dark:hover:bg-gray-200 rounded-full h-12 w-12 p-0 transition-all"
                 >
-                  {inputMode === 'text' ? <Mic className="w-5 h-5" /> : <Type className="w-5 h-5" />}
+                  {inputMode === 'text' ? <Mic className="w-5 h-5" /> : <MessageSquare className="w-5 h-5" />}
                 </Button>
               </div>
             </div>
@@ -234,7 +234,7 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
                     onClick={() => setInputMode(inputMode === 'text' ? 'audio' : 'text')}
                     className="absolute right-2 top-1/2 -translate-y-1/2 bg-black dark:bg-white text-white dark:text-black hover:bg-gray-800 dark:hover:bg-gray-200 rounded-full h-10 w-10 p-0 transition-all"
                   >
-                    {inputMode === 'text' ? <Mic className="w-4 h-4" /> : <Type className="w-4 h-4" />}
+                    {inputMode === 'text' ? <Mic className="w-4 h-4" /> : <MessageSquare className="w-4 h-4" />}
                   </Button>
                 </div>
               </div>
