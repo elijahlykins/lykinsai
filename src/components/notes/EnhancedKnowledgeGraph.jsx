@@ -149,46 +149,35 @@ Find meaningful connections based on content, themes, and ideas - not just keywo
         applyForces();
       }
 
-      // Draw edges
+      // Draw edges with cleaner lines
       graphData.edges.forEach(edge => {
         const fromNode = nodesRef.current.find(n => n.id === edge.from_id);
         const toNode = nodesRef.current.find(n => n.id === edge.to_id);
         
         if (fromNode && toNode) {
-          const alpha = edge.strength || 0.3;
           const colors = {
-            similar_topic: `rgba(184, 164, 212, ${alpha})`,
-            builds_on: `rgba(141, 212, 184, ${alpha})`,
-            contrasts_with: `rgba(212, 184, 164, ${alpha})`,
-            references: `rgba(141, 180, 212, ${alpha})`,
-            complementary: `rgba(184, 212, 141, ${alpha})`
+            similar_topic: '#b8a4d4',
+            builds_on: '#8dd4b8',
+            contrasts_with: '#d4b8a4',
+            references: '#8db4d4',
+            complementary: '#b8d48d'
           };
+
+          const color = colors[edge.type] || colors.similar_topic;
+          const strength = edge.strength || 0.5;
 
           ctx.beginPath();
           ctx.moveTo(fromNode.x * zoom, fromNode.y * zoom);
           ctx.lineTo(toNode.x * zoom, toNode.y * zoom);
-          ctx.strokeStyle = colors[edge.type] || colors.similar_topic;
-          ctx.lineWidth = (edge.strength || 0.3) * 3;
-          ctx.stroke();
-
-          // Draw arrow
-          const angle = Math.atan2(toNode.y - fromNode.y, toNode.x - fromNode.x);
-          const arrowSize = 8;
-          ctx.save();
-          ctx.translate(toNode.x * zoom, toNode.y * zoom);
-          ctx.rotate(angle);
-          ctx.beginPath();
-          ctx.moveTo(-arrowSize, -arrowSize / 2);
-          ctx.lineTo(0, 0);
-          ctx.lineTo(-arrowSize, arrowSize / 2);
-          ctx.strokeStyle = colors[edge.type] || colors.similar_topic;
+          ctx.strokeStyle = color;
+          ctx.globalAlpha = 0.4 + (strength * 0.4);
           ctx.lineWidth = 2;
           ctx.stroke();
-          ctx.restore();
+          ctx.globalAlpha = 1;
         }
       });
 
-      // Draw nodes
+      // Draw nodes as clean colored dots
       nodesRef.current.forEach(node => {
         const colors = {
           lavender: '#b8a4d4',
@@ -197,26 +186,57 @@ Find meaningful connections based on content, themes, and ideas - not just keywo
           peach: '#d4b8a4'
         };
 
-        const radius = Math.max(15, Math.min(30, 15 + node.connectionCount * 2));
+        const baseRadius = 8;
+        const radius = baseRadius + Math.min(node.connectionCount * 1.5, 8);
         
+        // Draw shadow
+        ctx.beginPath();
+        ctx.arc(node.x * zoom + 1, node.y * zoom + 1, radius, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.15)';
+        ctx.fill();
+
+        // Draw node dot
         ctx.beginPath();
         ctx.arc(node.x * zoom, node.y * zoom, radius, 0, Math.PI * 2);
         ctx.fillStyle = colors[node.color] || colors.lavender;
         ctx.fill();
 
+        // Draw border if selected
         if (selectedNode?.id === node.id) {
-          ctx.strokeStyle = '#000';
+          ctx.strokeStyle = '#ffffff';
           ctx.lineWidth = 3;
+          ctx.stroke();
+          ctx.strokeStyle = '#000000';
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+        } else {
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+          ctx.lineWidth = 1;
           ctx.stroke();
         }
 
-        // Draw title
-        ctx.fillStyle = '#000';
-        ctx.font = `${Math.max(10, 12 * zoom)}px sans-serif`;
+        // Draw label below node
+        ctx.fillStyle = '#000000';
+        ctx.font = `${Math.max(10, 11 * zoom)}px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+        ctx.fontWeight = '500';
         ctx.textAlign = 'center';
-        const maxWidth = 100 * zoom;
-        const text = node.title.length > 20 ? node.title.substring(0, 20) + '...' : node.title;
-        ctx.fillText(text, node.x * zoom, node.y * zoom + radius + 15);
+        const text = node.title.length > 18 ? node.title.substring(0, 18) + '...' : node.title;
+        const textY = node.y * zoom + radius + 16;
+        
+        // Draw text background for readability
+        const textMetrics = ctx.measureText(text);
+        const padding = 4;
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+        ctx.fillRect(
+          node.x * zoom - textMetrics.width / 2 - padding,
+          textY - 10,
+          textMetrics.width + padding * 2,
+          14
+        );
+        
+        // Draw text
+        ctx.fillStyle = '#000000';
+        ctx.fillText(text, node.x * zoom, textY);
       });
 
       animationRef.current = requestAnimationFrame(animate);
@@ -535,22 +555,26 @@ Suggest up to 5 notes that would be most valuable to connect with the given note
 
       {/* Legend */}
       <div className="p-3 bg-white border-t border-gray-200">
-        <div className="flex gap-4 text-xs text-gray-600">
-          <div className="flex items-center gap-1">
-            <div className="w-3 h-0.5 bg-purple-400"></div>
+        <div className="flex flex-wrap gap-4 text-xs text-gray-600">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-0.5" style={{backgroundColor: '#b8a4d4'}}></div>
             <span>Similar Topic</span>
           </div>
-          <div className="flex items-center gap-1">
-            <div className="w-3 h-0.5 bg-green-400"></div>
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-0.5" style={{backgroundColor: '#8dd4b8'}}></div>
             <span>Builds On</span>
           </div>
-          <div className="flex items-center gap-1">
-            <div className="w-3 h-0.5 bg-orange-400"></div>
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-0.5" style={{backgroundColor: '#d4b8a4'}}></div>
             <span>Contrasts</span>
           </div>
-          <div className="flex items-center gap-1">
-            <div className="w-3 h-0.5 bg-blue-400"></div>
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-0.5" style={{backgroundColor: '#8db4d4'}}></div>
             <span>References</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-0.5" style={{backgroundColor: '#b8d48d'}}></div>
+            <span>Complementary</span>
           </div>
         </div>
       </div>
