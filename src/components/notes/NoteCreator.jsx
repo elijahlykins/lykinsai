@@ -407,8 +407,12 @@ Return only the title, nothing else.`,
             )}
           </div>
         ) : (
-          <div className="space-y-6">
-            <div className="flex flex-col items-center justify-center py-16 space-y-6">
+          <div className="space-y-6 h-full">
+            <div className="flex flex-col items-center justify-center h-full space-y-6">
+              <div className="text-center mb-4">
+                <h2 className="text-2xl font-semibold text-black dark:text-white mb-2">Record Your Memory</h2>
+                <p className="text-sm text-gray-600 dark:text-gray-400">Your audio will be transcribed by AI and saved with the recording</p>
+              </div>
               {!isRecording ? (
                 <Button
                   onClick={startRecording}
