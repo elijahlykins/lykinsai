@@ -6,8 +6,9 @@ import SettingsModal from '../components/notes/SettingsModal';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Send, Loader2, Bot, User, Plus, Mic, MessageSquare, X, File, Image as ImageIcon } from 'lucide-react';
+import { Send, Loader2, Bot, User, Plus, Mic, MessageSquare, X, File, Image as ImageIcon, Link as LinkIcon, Video, FileText } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { useNavigate } from 'react-router-dom';
 import { createPageUrl } from '../utils';
 
@@ -20,6 +21,7 @@ export default function MemoryChatPage() {
   const [currentModel, setCurrentModel] = useState('core');
   const [inputMode, setInputMode] = useState('text');
   const [attachments, setAttachments] = useState([]);
+  const [showAttachMenu, setShowAttachMenu] = useState(false);
   const scrollRef = useRef(null);
   const fileInputRef = useRef(null);
   const navigate = useNavigate();
@@ -105,19 +107,36 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
     localStorage.setItem('lykinsai_settings', JSON.stringify(settings));
   };
 
-  const handleFileSelect = async (e) => {
-    const files = Array.from(e.target.files);
-    const uploaded = await Promise.all(
-      files.map(async (file) => {
-        const { file_url } = await base44.integrations.Core.UploadFile({ file });
-        return { name: file.name, url: file_url, type: file.type };
-      })
-    );
-    setAttachments(prev => [...prev, ...uploaded]);
+  const handleFileUpload = async (file) => {
+    try {
+      const { file_url } = await base44.integrations.Core.UploadFile({ file });
+      const attachment = {
+        id: Date.now(),
+        type: file.type.startsWith('image/') ? 'image' : file.type.startsWith('video/') ? 'video' : 'file',
+        url: file_url,
+        name: file.name
+      };
+      setAttachments(prev => [...prev, attachment]);
+      setShowAttachMenu(false);
+    } catch (error) {
+      console.error('Error uploading file:', error);
+    }
   };
 
-  const removeAttachment = (index) => {
-    setAttachments(prev => prev.filter((_, i) => i !== index));
+  const handleLinkAdd = (url) => {
+    if (!url.trim()) return;
+    const attachment = {
+      id: Date.now(),
+      type: 'link',
+      url: url.trim(),
+      name: url.trim()
+    };
+    setAttachments(prev => [...prev, attachment]);
+    setShowAttachMenu(false);
+  };
+
+  const removeAttachment = (id) => {
+    setAttachments(prev => prev.filter(a => a.id !== id));
   };
 
   return (
@@ -173,11 +192,11 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
               </div>
               {attachments.length > 0 && (
                 <div className="flex flex-wrap gap-2 mb-4">
-                  {attachments.map((att, idx) => (
-                    <div key={idx} className="flex items-center gap-2 bg-gray-100 dark:bg-[#1f1d1d]/80 px-3 py-2 rounded-lg">
-                      {att.type?.startsWith('image/') ? <ImageIcon className="w-4 h-4" /> : <File className="w-4 h-4" />}
+                  {attachments.map((att) => (
+                    <div key={att.id} className="flex items-center gap-2 bg-gray-100 dark:bg-[#1f1d1d]/80 px-3 py-2 rounded-lg">
+                      {att.type === 'image' ? <ImageIcon className="w-4 h-4" /> : att.type === 'link' ? <LinkIcon className="w-4 h-4" /> : <File className="w-4 h-4" />}
                       <span className="text-sm text-black dark:text-white">{att.name}</span>
-                      <button onClick={() => removeAttachment(idx)} className="text-gray-500 hover:text-black dark:hover:text-white">
+                      <button onClick={() => removeAttachment(att.id)} className="text-gray-500 hover:text-black dark:hover:text-white">
                         <X className="w-3 h-3" />
                       </button>
                     </div>
@@ -185,16 +204,9 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
                 </div>
               )}
               <div className="relative">
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  multiple
-                  className="hidden"
-                  onChange={handleFileSelect}
-                />
                 <Button
                   variant="ghost"
-                  onClick={() => fileInputRef.current?.click()}
+                  onClick={() => setShowAttachMenu(true)}
                   className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-500 dark:text-gray-400 hover:text-black dark:hover:text-white hover:bg-transparent rounded-full h-10 w-10 p-0 z-10"
                 >
                   <Plus className="w-5 h-5" />
@@ -234,9 +246,9 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
                       <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
                       {msg.attachments && msg.attachments.length > 0 && (
                         <div className="flex flex-wrap gap-2 mt-2">
-                          {msg.attachments.map((att, i) => (
-                            <a key={i} href={att.url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-xs bg-white/50 dark:bg-black/20 px-2 py-1 rounded">
-                              {att.type?.startsWith('image/') ? <ImageIcon className="w-3 h-3" /> : <File className="w-3 h-3" />}
+                          {msg.attachments.map((att) => (
+                            <a key={att.id} href={att.url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-xs bg-white/50 dark:bg-black/20 px-2 py-1 rounded">
+                              {att.type === 'image' ? <ImageIcon className="w-3 h-3" /> : att.type === 'link' ? <LinkIcon className="w-3 h-3" /> : <File className="w-3 h-3" />}
                               {att.name}
                             </a>
                           ))}
@@ -267,11 +279,11 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
               <div className="max-w-4xl mx-auto">
                 {attachments.length > 0 && (
                   <div className="flex flex-wrap gap-2 mb-4">
-                    {attachments.map((att, idx) => (
-                      <div key={idx} className="flex items-center gap-2 bg-gray-100 dark:bg-[#1f1d1d]/80 px-3 py-2 rounded-lg">
-                        {att.type?.startsWith('image/') ? <ImageIcon className="w-4 h-4" /> : <File className="w-4 h-4" />}
+                    {attachments.map((att) => (
+                      <div key={att.id} className="flex items-center gap-2 bg-gray-100 dark:bg-[#1f1d1d]/80 px-3 py-2 rounded-lg">
+                        {att.type === 'image' ? <ImageIcon className="w-4 h-4" /> : att.type === 'link' ? <LinkIcon className="w-4 h-4" /> : <File className="w-4 h-4" />}
                         <span className="text-sm text-black dark:text-white">{att.name}</span>
-                        <button onClick={() => removeAttachment(idx)} className="text-gray-500 hover:text-black dark:hover:text-white">
+                        <button onClick={() => removeAttachment(att.id)} className="text-gray-500 hover:text-black dark:hover:text-white">
                           <X className="w-3 h-3" />
                         </button>
                       </div>
@@ -279,16 +291,9 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
                   </div>
                 )}
                 <div className="relative">
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    multiple
-                    className="hidden"
-                    onChange={handleFileSelect}
-                  />
                   <Button
                     variant="ghost"
-                    onClick={() => fileInputRef.current?.click()}
+                    onClick={() => setShowAttachMenu(true)}
                     className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-500 dark:text-gray-400 hover:text-black dark:hover:text-white hover:bg-transparent rounded-full h-9 w-9 p-0 z-10"
                   >
                     <Plus className="w-4 h-4" />
@@ -314,6 +319,64 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
       </div>
 
       <SettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
+
+      {/* Attachment Menu Dialog */}
+      <Dialog open={showAttachMenu} onOpenChange={setShowAttachMenu}>
+        <DialogContent className="bg-white dark:bg-[#1f1d1d]/95 border-gray-200 dark:border-gray-700 text-black dark:text-white">
+          <DialogHeader>
+            <DialogTitle className="text-black dark:text-white">Add Attachment</DialogTitle>
+          </DialogHeader>
+          
+          <div className="space-y-3 py-4">
+            <Button
+              onClick={() => {
+                const url = prompt('Enter link to video, article, or post:');
+                if (url) handleLinkAdd(url);
+              }}
+              className="w-full flex items-center gap-3 bg-gray-100 dark:bg-[#2a2828] hover:bg-gray-200 dark:hover:bg-[#333131] text-black dark:text-white justify-start"
+            >
+              <LinkIcon className="w-5 h-5 text-gray-600 dark:text-gray-300" />
+              Add Link (Video, Article, Post)
+            </Button>
+
+            <Button
+              onClick={() => fileInputRef.current?.click()}
+              className="w-full flex items-center gap-3 bg-gray-100 dark:bg-[#2a2828] hover:bg-gray-200 dark:hover:bg-[#333131] text-black dark:text-white justify-start"
+            >
+              <ImageIcon className="w-5 h-5 text-gray-600 dark:text-gray-300" />
+              Upload Image
+            </Button>
+
+            <Button
+              onClick={() => fileInputRef.current?.click()}
+              className="w-full flex items-center gap-3 bg-gray-100 dark:bg-[#2a2828] hover:bg-gray-200 dark:hover:bg-[#333131] text-black dark:text-white justify-start"
+            >
+              <Video className="w-5 h-5 text-gray-600 dark:text-gray-300" />
+              Upload Video
+            </Button>
+
+            <Button
+              onClick={() => fileInputRef.current?.click()}
+              className="w-full flex items-center gap-3 bg-gray-100 dark:bg-[#2a2828] hover:bg-gray-200 dark:hover:bg-[#333131] text-black dark:text-white justify-start"
+            >
+              <FileText className="w-5 h-5 text-gray-600 dark:text-gray-300" />
+              Upload File
+            </Button>
+          </div>
+
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*,video/*,*/*"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) handleFileUpload(file);
+              e.target.value = '';
+            }}
+            className="hidden"
+          />
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
