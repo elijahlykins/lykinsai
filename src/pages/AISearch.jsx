@@ -454,18 +454,18 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
             {/* Saved Searches */}
             {savedSearches.length > 0 && (
               <div className="flex gap-2 items-center overflow-x-auto pb-2">
-                <Bookmark className="w-4 h-4 text-gray-400 flex-shrink-0" />
+                <Bookmark className="w-4 h-4 text-gray-400 dark:text-gray-300 flex-shrink-0" />
                 {savedSearches.map(search => (
-                  <div key={search.id} className="flex items-center gap-1 bg-gray-100 rounded px-2 py-1 text-xs whitespace-nowrap">
+                  <div key={search.id} className="flex items-center gap-1 bg-gray-100 dark:bg-[#1f1d1d]/80 rounded px-2 py-1 text-xs whitespace-nowrap">
                     <button
                       onClick={() => loadSearch(search)}
-                      className="text-black hover:underline"
+                      className="text-black dark:text-white hover:underline"
                     >
                       {search.name}
                     </button>
                     <button
                       onClick={() => deleteSearch(search.id)}
-                      className="text-gray-500 hover:text-red-600"
+                      className="text-gray-500 dark:text-gray-400 hover:text-red-600 dark:hover:text-red-400"
                     >
                       <X className="w-3 h-3" />
                     </button>
@@ -482,15 +482,15 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
               <Button
                 onClick={() => setSelectedNote(null)}
                 variant="outline"
-                className="bg-transparent border-gray-300 text-black hover:bg-gray-100"
+                className="bg-transparent border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#1f1d1d]"
               >
                 ← Back to Results
               </Button>
               
               {/* Main Note Card */}
               <div className="clay-card p-8">
-                <h2 className="text-3xl font-bold text-black mb-4">{selectedNote.title}</h2>
-                <p className="leading-relaxed whitespace-pre-wrap text-black mb-4">{selectedNote.content}</p>
+                <h2 className="text-3xl font-bold text-black dark:text-white mb-4">{selectedNote.title}</h2>
+                <p className="leading-relaxed whitespace-pre-wrap text-black dark:text-white mb-4">{selectedNote.content}</p>
                 
                 {/* Audio */}
                 {selectedNote.audio_url && (
@@ -512,10 +512,10 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
                 {/* Tags and Folder */}
                 <div className="flex flex-wrap gap-2 mb-4">
                   {selectedNote.tags?.map(tag => (
-                    <Badge key={tag} className="bg-gray-100 text-gray-700">{tag}</Badge>
+                    <Badge key={tag} className="bg-gray-100 dark:bg-[#1f1d1d]/80 text-gray-700 dark:text-gray-300">{tag}</Badge>
                   ))}
                   {selectedNote.folder && (
-                    <Badge variant="outline" className="border-gray-300 text-gray-700">
+                    <Badge variant="outline" className="border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300">
                       <Folder className="w-3 h-3 mr-1" />
                       {selectedNote.folder}
                     </Badge>
@@ -523,7 +523,7 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
                 </div>
 
                 {/* Metadata */}
-                <div className="flex items-center gap-2 text-xs text-gray-500">
+                <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
                   <Clock className="w-3 h-3" />
                   <span>{format(new Date(selectedNote.created_date), 'MMM d, yyyy')}</span>
                   <span className="mx-2">•</span>
@@ -559,35 +559,35 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
                     className="clay-card p-4 w-full text-left hover:scale-[1.01] transition-all"
                   >
                     <div className="flex items-start justify-between mb-2">
-                      <h3 className="font-semibold text-black">{note.title}</h3>
-                      <span className="text-xs text-gray-500 px-2 py-1 bg-white/5 rounded">
+                      <h3 className="font-semibold text-black dark:text-white">{note.title}</h3>
+                      <span className="text-xs text-gray-500 dark:text-gray-400 px-2 py-1 bg-gray-100 dark:bg-[#1f1d1d]/60 rounded">
                         {note.storage_type === 'short_term' ? 'Short Term' : 'Long Term'}
                       </span>
                     </div>
-                    
+
                     {/* Matching Snippet */}
                     {note.snippet && (
-                      <div className="mb-2 p-2 bg-yellow-50 border-l-2 border-yellow-400 rounded">
-                        <p className="text-sm text-black italic">"{note.snippet}"</p>
+                      <div className="mb-2 p-2 bg-yellow-50 dark:bg-yellow-900/20 border-l-2 border-yellow-400 dark:border-yellow-600 rounded">
+                        <p className="text-sm text-black dark:text-white italic">"{note.snippet}"</p>
                       </div>
                     )}
-                    
-                    <p className="text-sm text-black line-clamp-2 mb-2">{note.content}</p>
-                    
+
+                    <p className="text-sm text-black dark:text-gray-300 line-clamp-2 mb-2">{note.content}</p>
+
                     {/* Tags and Attachments */}
                     <div className="flex items-center gap-2 mb-2 flex-wrap">
                       {note.tags?.slice(0, 3).map(tag => (
-                        <Badge key={tag} className="text-xs bg-gray-100 text-gray-700">{tag}</Badge>
+                        <Badge key={tag} className="text-xs bg-gray-100 dark:bg-[#1f1d1d]/80 text-gray-700 dark:text-gray-300">{tag}</Badge>
                       ))}
                       {note.attachments?.length > 0 && (
-                        <Badge className="text-xs bg-blue-100 text-blue-700">
+                        <Badge className="text-xs bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300">
                           {note.attachments.length} attachment{note.attachments.length > 1 ? 's' : ''}
                         </Badge>
                       )}
                     </div>
-                    
-                    <div className="flex items-center gap-1 text-xs text-gray-500">
-                      <Clock className="w-3 h-3 text-black" />
+
+                    <div className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400">
+                      <Clock className="w-3 h-3 text-black dark:text-gray-300" />
                       <span>{format(new Date(note.created_date), 'MMM d, yyyy')}</span>
                       {note.folder && (
                         <>
@@ -600,9 +600,9 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
                   </button>
                 ))
               ) : query && !isSearching ? (
-                <p className="text-center text-gray-500 py-12">No results found</p>
+                <p className="text-center text-gray-500 dark:text-gray-400 py-12">No results found</p>
               ) : (
-                <p className="text-center text-gray-500 py-12">Search for memories by ideas or concepts</p>
+                <p className="text-center text-gray-500 dark:text-gray-400 py-12">Search for memories by ideas or concepts</p>
               )}
             </div>
           )}
@@ -613,21 +613,21 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
 
       {/* Save Search Dialog */}
       <Dialog open={showSaveDialog} onOpenChange={setShowSaveDialog}>
-        <DialogContent className="bg-white border-gray-200">
+        <DialogContent className="bg-white dark:bg-[#1f1d1d]/95 border-gray-200 dark:border-gray-700">
           <DialogHeader>
-            <DialogTitle className="text-black">Save Search</DialogTitle>
+            <DialogTitle className="text-black dark:text-white">Save Search</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div>
-              <label className="text-sm font-medium text-black mb-2 block">Search Name</label>
+              <label className="text-sm font-medium text-black dark:text-white mb-2 block">Search Name</label>
               <Input
                 value={searchName}
                 onChange={(e) => setSearchName(e.target.value)}
                 placeholder="e.g., Recent AI notes with images"
-                className="bg-gray-50 border-gray-300 text-black"
+                className="bg-gray-50 dark:bg-[#1f1d1d]/80 border-gray-300 dark:border-gray-600 text-black dark:text-white"
               />
             </div>
-            <div className="text-xs text-gray-500">
+            <div className="text-xs text-gray-500 dark:text-gray-400">
               <p>Current query: "{query}"</p>
               <p className="mt-1">Active filters: {
                 [
@@ -643,14 +643,14 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
             <Button
               onClick={() => setShowSaveDialog(false)}
               variant="outline"
-              className="border-gray-300 text-black hover:bg-gray-50"
+              className="border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-50 dark:hover:bg-[#1f1d1d]"
             >
               Cancel
             </Button>
             <Button
               onClick={saveSearch}
               disabled={!searchName.trim()}
-              className="bg-black text-white hover:bg-gray-800"
+              className="bg-black dark:bg-white text-white dark:text-black hover:bg-gray-800 dark:hover:bg-gray-200"
             >
               Save
             </Button>

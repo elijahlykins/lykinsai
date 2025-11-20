@@ -86,7 +86,7 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-50 via-blue-50/30 to-gray-100 flex overflow-hidden">
+    <div className="min-h-screen bg-gradient-to-br from-gray-50 via-blue-50/30 to-gray-100 dark:from-[#171515] dark:via-[#171515] dark:to-[#171515] flex overflow-hidden">
       <div className={`${sidebarCollapsed ? 'w-16' : 'w-64'} flex-shrink-0 transition-all duration-300`}>
         <NotionSidebar
           activeView="chat"
@@ -106,14 +106,14 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
       </div>
 
       <div className="flex-1 flex flex-col overflow-hidden">
-        <div className="p-6 bg-glass border-b border-white/20">
-          <h1 className="text-2xl font-bold text-black">Memory Chat</h1>
+        <div className="p-6 bg-glass border-b border-white/20 dark:border-gray-700/30">
+          <h1 className="text-2xl font-bold text-black dark:text-white">Memory Chat</h1>
         </div>
 
         <ScrollArea ref={scrollRef} className="flex-1 p-8">
           <div className="max-w-4xl mx-auto space-y-4">
             {messages.length === 0 ? (
-              <div className="text-center py-12 text-gray-500">
+              <div className="text-center py-12 text-gray-500 dark:text-gray-400">
                 <Bot className="w-12 h-12 mx-auto mb-3 opacity-30" />
                 <p>Ask me anything about your memories</p>
               </div>
@@ -121,20 +121,20 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
               messages.map((msg, idx) => (
                 <div key={idx} className={`flex gap-3 ${msg.role === 'user' ? 'justify-end' : ''}`}>
                   {msg.role === 'assistant' && (
-                    <div className="w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center flex-shrink-0">
-                      <Bot className="w-4 h-4 text-black" />
+                    <div className="w-8 h-8 rounded-full bg-gray-200 dark:bg-[#1f1d1d]/80 flex items-center justify-center flex-shrink-0">
+                      <Bot className="w-4 h-4 text-black dark:text-gray-300" />
                     </div>
                   )}
                 <div className={`max-w-[80%] p-3 rounded-lg ${
                   msg.role === 'user' 
-                    ? 'bg-gray-200 text-black' 
-                    : 'bg-white border border-gray-200 text-gray-600'
+                    ? 'bg-gray-200 dark:bg-[#1f1d1d]/80 text-black dark:text-white' 
+                    : 'bg-white dark:bg-[#1f1d1d]/60 border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300'
                 }`}>
                   <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
                 </div>
                 {msg.role === 'user' && (
-                    <div className="w-8 h-8 rounded-full bg-gray-200 text-black flex items-center justify-center flex-shrink-0">
-                      <User className="w-4 h-4 text-black" />
+                    <div className="w-8 h-8 rounded-full bg-gray-200 dark:bg-[#1f1d1d]/80 text-black dark:text-white flex items-center justify-center flex-shrink-0">
+                      <User className="w-4 h-4 text-black dark:text-gray-300" />
                     </div>
                   )}
                 </div>
@@ -142,30 +142,30 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
             )}
             {isLoading && (
               <div className="flex gap-3">
-                <div className="w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center flex-shrink-0">
-                  <Bot className="w-4 h-4 text-black" />
+                <div className="w-8 h-8 rounded-full bg-gray-200 dark:bg-[#1f1d1d]/80 flex items-center justify-center flex-shrink-0">
+                  <Bot className="w-4 h-4 text-black dark:text-gray-300" />
                 </div>
-                <div className="bg-white border border-gray-200 p-3 rounded-lg">
-                  <Loader2 className="w-4 h-4 animate-spin text-gray-600" />
+                <div className="bg-white dark:bg-[#1f1d1d]/60 border border-gray-200 dark:border-gray-700 p-3 rounded-lg">
+                  <Loader2 className="w-4 h-4 animate-spin text-gray-600 dark:text-gray-300" />
                 </div>
               </div>
             )}
           </div>
         </ScrollArea>
 
-        <div className="p-6 bg-glass border-t border-white/20">
+        <div className="p-6 bg-glass border-t border-white/20 dark:border-gray-700/30">
           <div className="max-w-4xl mx-auto flex gap-2">
             <Input
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleSend()}
               placeholder="Ask about your memories..."
-              className="flex-1 bg-gray-50 border-gray-300 text-black placeholder:text-gray-500"
+              className="flex-1 bg-gray-50 dark:bg-[#1f1d1d]/80 border-gray-300 dark:border-gray-600 text-black dark:text-white placeholder:text-gray-500 dark:placeholder:text-gray-400"
             />
             <Button
               onClick={handleSend}
               disabled={isLoading || !input.trim()}
-              className="bg-black text-white hover:bg-gray-800"
+              className="bg-black dark:bg-white text-white dark:text-black hover:bg-gray-800 dark:hover:bg-gray-200"
             >
               {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
             </Button>

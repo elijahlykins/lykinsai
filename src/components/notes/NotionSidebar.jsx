@@ -23,7 +23,7 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
       <div className="h-full bg-glass-sidebar flex flex-col p-3 w-20">
         <button
           onClick={onToggleCollapse}
-          className="p-2 hover:bg-white/30 rounded-xl transition-all text-gray-900 backdrop-blur-sm"
+          className="p-2 hover:bg-white/30 dark:hover:bg-white/10 rounded-xl transition-all text-gray-900 dark:text-gray-300 backdrop-blur-sm"
         >
           <ChevronRight className="w-5 h-5" />
         </button>
@@ -36,8 +36,8 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
                     onClick={() => item.onClick ? item.onClick() : onViewChange(item.id)}
                     className={`p-3 rounded-2xl transition-all backdrop-blur-sm border ${
                       activeView === item.id
-                        ? 'bg-white/80 text-gray-900 shadow-lg border-white/50'
-                        : 'text-gray-700 hover:bg-white/40 hover:text-gray-900 border-white/20'
+                        ? 'bg-white/80 dark:bg-[#1f1d1d]/80 text-gray-900 dark:text-white shadow-lg border-white/50 dark:border-gray-600/50'
+                        : 'text-gray-700 dark:text-gray-300 hover:bg-white/40 dark:hover:bg-white/10 hover:text-gray-900 dark:hover:text-white border-white/20 dark:border-gray-700/20'
                     }`}
                   >
                     <item.icon className="w-5 h-5" />
@@ -54,7 +54,7 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
               <TooltipTrigger asChild>
                 <button
                   onClick={onOpenSettings}
-                  className="p-3 hover:bg-white/40 rounded-2xl transition-all text-gray-700 hover:text-gray-900 backdrop-blur-sm border border-white/20"
+                  className="p-3 hover:bg-white/40 dark:hover:bg-white/10 rounded-2xl transition-all text-gray-700 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white backdrop-blur-sm border border-white/20 dark:border-gray-700/20"
                 >
                   <Settings className="w-5 h-5" />
                 </button>
@@ -73,12 +73,12 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
     <div className="h-full bg-glass-sidebar flex flex-col p-4">
       <div className="flex items-center justify-between mb-8">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900 tracking-tight">lykinsai</h1>
-          <p className="text-xs text-gray-600 mt-1">Your AI Memory Companion</p>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-white tracking-tight">lykinsai</h1>
+          <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">Your AI Memory Companion</p>
         </div>
         <button
           onClick={onToggleCollapse}
-          className="p-1 hover:bg-white/30 rounded-xl transition-all text-gray-900 backdrop-blur-sm"
+          className="p-1 hover:bg-white/30 dark:hover:bg-white/10 rounded-xl transition-all text-gray-900 dark:text-gray-300 backdrop-blur-sm"
         >
           <ChevronLeft className="w-5 h-5" />
         </button>
@@ -93,8 +93,8 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
                   onClick={() => item.onClick ? item.onClick() : onViewChange(item.id)}
                   className={`w-full px-4 py-3 rounded-2xl text-sm font-medium transition-all flex items-center gap-3 backdrop-blur-sm border ${
                     activeView === item.id
-                      ? 'bg-white/80 text-gray-900 shadow-lg border-white/50'
-                      : 'text-gray-700 hover:bg-white/40 hover:text-gray-900 border-white/20'
+                      ? 'bg-white/80 dark:bg-[#1f1d1d]/80 text-gray-900 dark:text-white shadow-lg border-white/50 dark:border-gray-600/50'
+                      : 'text-gray-700 dark:text-gray-300 hover:bg-white/40 dark:hover:bg-white/10 hover:text-gray-900 dark:hover:text-white border-white/20 dark:border-gray-700/20'
                   }`}
                 >
                   <item.icon className="w-5 h-5" />
@@ -114,7 +114,7 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
             <TooltipTrigger asChild>
               <button
                 onClick={onOpenSettings}
-                className="p-3 hover:bg-white/40 rounded-2xl transition-all text-gray-700 hover:text-gray-900 flex items-center gap-2 backdrop-blur-sm border border-white/20"
+                className="p-3 hover:bg-white/40 dark:hover:bg-white/10 rounded-2xl transition-all text-gray-700 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white flex items-center gap-2 backdrop-blur-sm border border-white/20 dark:border-gray-700/20"
               >
                 <Settings className="w-5 h-5" />
                 <span className="text-sm">Settings</span>
