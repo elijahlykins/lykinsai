@@ -4,14 +4,17 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Sparkles, Loader2, Copy, Check } from 'lucide-react';
 import { base44 } from '@/api/base44Client';
 
-export default function NoteSummarization({ note }) {
-  const [summary, setSummary] = useState(null);
+export default function NoteSummarization({ note, onUpdate }) {
+  const [summary, setSummary] = useState(note.summary || null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [summaryType, setSummaryType] = useState('paragraph');
   const [copied, setCopied] = useState(false);
 
   React.useEffect(() => {
-    generateSummary();
+    // Only generate if not already saved
+    if (!note.summary && note.content) {
+      generateSummary();
+    }
   }, []);
 
   const generateSummary = async () => {
@@ -44,6 +47,11 @@ Provide a clear, well-structured summary.`
       });
 
       setSummary(summaryText);
+      
+      // Save to note
+      if (onUpdate) {
+        await onUpdate({ summary: summaryText });
+      }
     } catch (error) {
       console.error('Error generating summary:', error);
     } finally {
@@ -60,7 +68,7 @@ Provide a clear, well-structured summary.`
   return (
     <div className="clay-card p-6 space-y-4">
       <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold text-black flex items-center gap-2">
+        <h3 className="text-lg font-semibold text-black dark:text-white flex items-center gap-2">
           <Sparkles className="w-5 h-5 text-lavender" />
           AI Summary
         </h3>
@@ -69,7 +77,7 @@ Provide a clear, well-structured summary.`
             onClick={handleCopy}
             variant="ghost"
             size="sm"
-            className="text-gray-400 hover:text-white"
+            className="text-gray-400 dark:text-gray-400 hover:text-black dark:hover:text-white"
           >
             {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
           </Button>
@@ -83,14 +91,14 @@ Provide a clear, well-structured summary.`
       ) : summary ? (
         <div className="space-y-3">
           <div className="p-4 bg-lavender/10 rounded-lg border border-lavender/20">
-            <p className="text-gray-400 leading-relaxed">{summary}</p>
+            <p className="text-black dark:text-gray-300 leading-relaxed whitespace-pre-wrap">{summary}</p>
           </div>
           <div className="flex gap-2">
             <Select value={summaryType} onValueChange={setSummaryType}>
-              <SelectTrigger className="w-40 bg-dark-lighter border-white/10 text-white">
+              <SelectTrigger className="w-40 bg-gray-50 dark:bg-[#1f1d1d]/80 border-gray-300 dark:border-gray-600 text-black dark:text-white">
                 <SelectValue />
               </SelectTrigger>
-              <SelectContent className="bg-dark-card border-white/10">
+              <SelectContent className="bg-white dark:bg-[#1f1d1d] border-gray-200 dark:border-gray-700">
                 <SelectItem value="paragraph">Paragraph</SelectItem>
                 <SelectItem value="executive">Executive</SelectItem>
                 <SelectItem value="bullets">Bullet Points</SelectItem>
@@ -104,7 +112,7 @@ Provide a clear, well-structured summary.`
               }}
               disabled={isGenerating}
               variant="outline"
-              className="flex-1 bg-transparent border-white/10 text-white hover:bg-white/10"
+              className="flex-1 bg-transparent border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-50 dark:hover:bg-[#1f1d1d]"
             >
               Regenerate
             </Button>
