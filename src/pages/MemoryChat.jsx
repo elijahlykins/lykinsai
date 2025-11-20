@@ -122,64 +122,34 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
       </div>
 
       <div className="flex-1 flex flex-col overflow-hidden">
-        {messages.length > 0 && (
-          <div className="p-6 bg-glass border-b border-white/20 dark:border-gray-700/30">
-            <div className="flex items-center justify-between">
-              <h1 className="text-2xl font-bold text-black dark:text-white">Memory Chat</h1>
-              <div className="flex items-center gap-2">
-                <span className="text-sm text-gray-500 dark:text-gray-400">Model:</span>
-                <Select value={currentModel} onValueChange={handleModelChange}>
-                  <SelectTrigger className="w-48 h-9 bg-gray-50 dark:bg-[#1f1d1d]/80 border-gray-300 dark:border-gray-600 text-black dark:text-white text-sm">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent className="bg-white dark:bg-[#1f1d1d] border-gray-200 dark:border-gray-700">
-                    <SelectItem value="core">Core (Default)</SelectItem>
-                    <SelectItem value="gpt-3.5">GPT-3.5</SelectItem>
-                    <SelectItem value="gpt-4">GPT-4</SelectItem>
-                    <SelectItem value="gpt-4o">GPT-4o</SelectItem>
-                    <SelectItem value="gemini-pro">Gemini Pro</SelectItem>
-                    <SelectItem value="gemini-flash">Gemini Flash</SelectItem>
-                    <SelectItem value="claude-3-opus">Claude 3 Opus</SelectItem>
-                    <SelectItem value="claude-3-sonnet">Claude 3 Sonnet</SelectItem>
-                    <SelectItem value="claude-3-haiku">Claude 3 Haiku</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
+        <div className="p-6 bg-glass border-b border-white/20 dark:border-gray-700/30">
+          <div className="flex items-center justify-end">
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-gray-500 dark:text-gray-400">Model:</span>
+              <Select value={currentModel} onValueChange={handleModelChange}>
+                <SelectTrigger className="w-48 h-9 bg-gray-50 dark:bg-[#1f1d1d]/80 border-gray-300 dark:border-gray-600 text-black dark:text-white text-sm">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="bg-white dark:bg-[#1f1d1d] border-gray-200 dark:border-gray-700">
+                  <SelectItem value="core">Core (Default)</SelectItem>
+                  <SelectItem value="gpt-3.5">GPT-3.5</SelectItem>
+                  <SelectItem value="gpt-4">GPT-4</SelectItem>
+                  <SelectItem value="gpt-4o">GPT-4o</SelectItem>
+                  <SelectItem value="gemini-pro">Gemini Pro</SelectItem>
+                  <SelectItem value="gemini-flash">Gemini Flash</SelectItem>
+                  <SelectItem value="claude-3-opus">Claude 3 Opus</SelectItem>
+                  <SelectItem value="claude-3-sonnet">Claude 3 Sonnet</SelectItem>
+                  <SelectItem value="claude-3-haiku">Claude 3 Haiku</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
           </div>
-        )}
+        </div>
 
         {messages.length === 0 ? (
           <div className="flex-1 flex items-center justify-center p-8">
-            <div className="max-w-3xl w-full space-y-8">
-              <div className="text-center">
-                <Bot className="w-20 h-20 mx-auto mb-6 text-gray-300 dark:text-gray-600" />
-                <h1 className="text-4xl font-bold text-black dark:text-white mb-3">Memory Chat</h1>
-                <p className="text-gray-500 dark:text-gray-400">Ask me anything about your memories</p>
-              </div>
-              
-              <div className="space-y-4">
-                <div className="flex items-center justify-center gap-2 mb-4">
-                  <span className="text-sm text-gray-500 dark:text-gray-400">AI Model:</span>
-                  <Select value={currentModel} onValueChange={handleModelChange}>
-                    <SelectTrigger className="w-56 bg-gray-50 dark:bg-[#1f1d1d]/80 border-gray-300 dark:border-gray-600 text-black dark:text-white">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent className="bg-white dark:bg-[#1f1d1d] border-gray-200 dark:border-gray-700">
-                      <SelectItem value="core">Core (Default)</SelectItem>
-                      <SelectItem value="gpt-3.5">GPT-3.5</SelectItem>
-                      <SelectItem value="gpt-4">GPT-4</SelectItem>
-                      <SelectItem value="gpt-4o">GPT-4o</SelectItem>
-                      <SelectItem value="gemini-pro">Gemini Pro</SelectItem>
-                      <SelectItem value="gemini-flash">Gemini Flash</SelectItem>
-                      <SelectItem value="claude-3-opus">Claude 3 Opus</SelectItem>
-                      <SelectItem value="claude-3-sonnet">Claude 3 Sonnet</SelectItem>
-                      <SelectItem value="claude-3-haiku">Claude 3 Haiku</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="flex gap-3">
+            <div className="max-w-3xl w-full">
+              <div className="flex gap-3">
                   <Input
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
@@ -187,14 +157,13 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
                     placeholder="What's on your mind?"
                     className="flex-1 bg-gray-50 dark:bg-[#1f1d1d]/80 border-gray-300 dark:border-gray-600 text-black dark:text-white placeholder:text-gray-500 dark:placeholder:text-gray-400 h-14 text-lg"
                   />
-                  <Button
-                    onClick={handleSend}
-                    disabled={isLoading || !input.trim()}
-                    className="bg-black dark:bg-white text-white dark:text-black hover:bg-gray-800 dark:hover:bg-gray-200 h-14 px-8"
-                  >
-                    {isLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
-                  </Button>
-                </div>
+                <Button
+                  onClick={handleSend}
+                  disabled={isLoading || !input.trim()}
+                  className="bg-black dark:bg-white text-white dark:text-black hover:bg-gray-800 dark:hover:bg-gray-200 h-14 px-8"
+                >
+                  {isLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
+                </Button>
               </div>
             </div>
           </div>
