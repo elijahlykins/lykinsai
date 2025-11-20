@@ -120,18 +120,18 @@ export default function LongTermPage() {
   const allTags = [...new Set(notes.flatMap(n => n.tags || []))];
   const allFolders = [...new Set(notes.map(n => n.folder || 'Uncategorized'))];
 
-  let filteredNotes = notes.filter(note => note.storage_type === 'long_term');
+  let filteredNotes = notes.filter(note => note && note.storage_type === 'long_term');
   
   if (filterTag !== 'all') {
-    filteredNotes = filteredNotes.filter(note => note.tags?.includes(filterTag));
+    filteredNotes = filteredNotes.filter(note => note && note.tags?.includes(filterTag));
   }
   
   if (filterFolder !== 'all') {
-    filteredNotes = filteredNotes.filter(note => (note.folder || 'Uncategorized') === filterFolder);
+    filteredNotes = filteredNotes.filter(note => note && (note.folder || 'Uncategorized') === filterFolder);
   }
 
   if (sourceFilter !== 'all') {
-    filteredNotes = filteredNotes.filter(note => note.source === sourceFilter);
+    filteredNotes = filteredNotes.filter(note => note && note.source === sourceFilter);
   }
 
   return (

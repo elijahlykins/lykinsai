@@ -122,7 +122,7 @@ Return the IDs of memory cards that have strong correlations.`,
   };
 
   const connectedNotesList = note.connected_notes?.length > 0
-    ? allNotes.filter(n => note.connected_notes.includes(n.id))
+    ? allNotes.filter(n => n && note.connected_notes.includes(n.id))
     : [];
 
   return (
