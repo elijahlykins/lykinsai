@@ -318,7 +318,7 @@ Be concise and capture the key points.`
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               placeholder="New Idea"
-              className="text-6xl font-bold bg-transparent border-0 text-black placeholder:text-gray-400 focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0 h-auto px-0"
+              className="text-6xl font-bold bg-transparent border-0 text-black dark:text-white placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0 h-auto px-0"
               disabled={isProcessing}
             />
 
@@ -326,40 +326,40 @@ Be concise and capture the key points.`
             <div className="flex gap-2 items-center">
               <button
                 onClick={() => setShowMetadata(!showMetadata)}
-                className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-dark-lighter/50 hover:bg-dark-lighter text-xs text-black transition-all"
+                className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-gray-100 dark:bg-[#1f1d1d]/80 hover:bg-gray-200 dark:hover:bg-[#2a2828] text-xs text-black dark:text-gray-300 transition-all"
               >
-                <Tag className="w-3 h-3 text-black" />
+                <Tag className="w-3 h-3 text-black dark:text-gray-300" />
                 Tags ({tags.length})
               </button>
               <button
                 onClick={() => setShowMetadata(!showMetadata)}
-                className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-dark-lighter/50 hover:bg-dark-lighter text-xs text-black transition-all"
+                className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-gray-100 dark:bg-[#1f1d1d]/80 hover:bg-gray-200 dark:hover:bg-[#2a2828] text-xs text-black dark:text-gray-300 transition-all"
               >
-                <Folder className="w-3 h-3 text-black" />
+                <Folder className="w-3 h-3 text-black dark:text-gray-300" />
                 {folder}
               </button>
               <button
                 onClick={() => setShowReminderPicker(true)}
-                className={`flex items-center gap-2 px-3 py-1.5 rounded-full ${reminder ? 'bg-yellow-100' : 'bg-dark-lighter/50'} hover:bg-dark-lighter text-xs text-black transition-all`}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-full ${reminder ? 'bg-yellow-100 dark:bg-yellow-900/30' : 'bg-gray-100 dark:bg-[#1f1d1d]/80'} hover:bg-gray-200 dark:hover:bg-[#2a2828] text-xs text-black dark:text-gray-300 transition-all`}
               >
-                <Bell className="w-3 h-3 text-black" />
+                <Bell className="w-3 h-3 text-black dark:text-gray-300" />
                 {reminder ? 'Reminder Set' : 'Set Reminder'}
               </button>
             </div>
 
             {showMetadata && (
-              <div className="space-y-4 p-4 bg-dark-lighter/30 rounded-lg">
+              <div className="space-y-4 p-4 bg-gray-50 dark:bg-[#1f1d1d]/50 rounded-lg">
                 <div>
-                  <label className="text-sm font-medium text-gray-700 mb-2 block">Tags</label>
+                  <label className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2 block">Tags</label>
                   <TagInput tags={tags} onChange={setTags} />
                 </div>
                 <div>
-                  <label className="text-sm font-medium text-gray-700 mb-2 block">Folder</label>
+                  <label className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2 block">Folder</label>
                   <Select value={folder} onValueChange={setFolder}>
-                    <SelectTrigger className="bg-white border-gray-300 text-black">
+                    <SelectTrigger className="bg-white dark:bg-[#1f1d1d]/80 border-gray-300 dark:border-gray-600 text-black dark:text-white">
                       <SelectValue />
                     </SelectTrigger>
-                    <SelectContent className="bg-white">
+                    <SelectContent className="bg-white dark:bg-[#1f1d1d] border-gray-200 dark:border-gray-700">
                       <SelectItem value="Uncategorized">Uncategorized</SelectItem>
                       <SelectItem value="Projects">Projects</SelectItem>
                       <SelectItem value="Ideas">Ideas</SelectItem>
@@ -376,7 +376,7 @@ Be concise and capture the key points.`
               value={content}
               onChange={(e) => setContent(e.target.value)}
               placeholder="Start typing..."
-              className="flex-1 w-full bg-transparent border-0 text-black placeholder:text-gray-500 resize-none text-lg focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0"
+              className="flex-1 w-full bg-transparent border-0 text-black dark:text-white placeholder:text-gray-500 dark:placeholder:text-gray-400 resize-none text-lg focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0"
               disabled={isProcessing}
             />
 
@@ -398,9 +398,9 @@ Be concise and capture the key points.`
                 <Button
                   onClick={startRecording}
                   disabled={isProcessing || audioFile}
-                  className="clay-button flex items-center gap-2 px-8 py-6 text-lg"
+                  className="clay-button flex items-center gap-2 px-8 py-6 text-lg text-black dark:text-white"
                 >
-                  <Mic className="w-6 h-6 text-black" />
+                  <Mic className="w-6 h-6 text-black dark:text-gray-300" />
                   <span>{audioFile ? 'Audio Recorded ✓' : 'Start Recording'}</span>
                 </Button>
               ) : (
@@ -417,7 +417,7 @@ Be concise and capture the key points.`
                 <Button
                   onClick={() => setAudioFile(null)}
                   variant="ghost"
-                  className="text-black hover:text-gray-700"
+                  className="text-black dark:text-gray-300 hover:text-gray-700 dark:hover:text-white"
                 >
                   Clear Audio & Re-record
                 </Button>
@@ -440,17 +440,17 @@ Be concise and capture the key points.`
       {inputMode === 'text' && (
         <button
           onClick={() => setShowAttachMenu(true)}
-          className="fixed bottom-8 right-8 w-14 h-14 rounded-full bg-white text-black shadow-lg hover:shadow-xl transition-all flex items-center justify-center hover:scale-110"
+          className="fixed bottom-8 right-8 w-14 h-14 rounded-full bg-white dark:bg-[#1f1d1d]/90 text-black dark:text-white shadow-lg hover:shadow-xl transition-all flex items-center justify-center hover:scale-110 border border-gray-200 dark:border-gray-600"
         >
-          <Plus className="w-6 h-6 text-black" />
+          <Plus className="w-6 h-6 text-black dark:text-gray-300" />
         </button>
       )}
 
       {/* Attachment Menu Dialog */}
       <Dialog open={showAttachMenu} onOpenChange={setShowAttachMenu}>
-        <DialogContent className="bg-dark-card border-white/10 text-white">
+        <DialogContent className="bg-white dark:bg-[#1f1d1d]/95 border-gray-200 dark:border-gray-700 text-black dark:text-white">
           <DialogHeader>
-            <DialogTitle className="text-white">Add Attachment</DialogTitle>
+            <DialogTitle className="text-black dark:text-white">Add Attachment</DialogTitle>
           </DialogHeader>
           
           <div className="space-y-3 py-4">
@@ -459,33 +459,33 @@ Be concise and capture the key points.`
                 const url = prompt('Enter link to video, article, or post:');
                 if (url) handleLinkAdd(url);
               }}
-              className="w-full flex items-center gap-3 bg-dark-lighter hover:bg-white/10 text-white justify-start"
+              className="w-full flex items-center gap-3 bg-gray-100 dark:bg-[#2a2828] hover:bg-gray-200 dark:hover:bg-[#333131] text-black dark:text-white justify-start"
             >
-              <LinkIcon className="w-5 h-5 text-black" />
+              <LinkIcon className="w-5 h-5 text-gray-600 dark:text-gray-300" />
               Add Link (Video, Article, Post)
             </Button>
 
             <Button
               onClick={() => fileInputRef.current?.click()}
-              className="w-full flex items-center gap-3 bg-dark-lighter hover:bg-white/10 text-white justify-start"
+              className="w-full flex items-center gap-3 bg-gray-100 dark:bg-[#2a2828] hover:bg-gray-200 dark:hover:bg-[#333131] text-black dark:text-white justify-start"
             >
-              <Image className="w-5 h-5 text-black" />
+              <Image className="w-5 h-5 text-gray-600 dark:text-gray-300" />
               Upload Image
             </Button>
 
             <Button
               onClick={() => fileInputRef.current?.click()}
-              className="w-full flex items-center gap-3 bg-dark-lighter hover:bg-white/10 text-white justify-start"
+              className="w-full flex items-center gap-3 bg-gray-100 dark:bg-[#2a2828] hover:bg-gray-200 dark:hover:bg-[#333131] text-black dark:text-white justify-start"
             >
-              <Video className="w-5 h-5 text-black" />
+              <Video className="w-5 h-5 text-gray-600 dark:text-gray-300" />
               Upload Video
             </Button>
 
             <Button
               onClick={() => fileInputRef.current?.click()}
-              className="w-full flex items-center gap-3 bg-dark-lighter hover:bg-white/10 text-white justify-start"
+              className="w-full flex items-center gap-3 bg-gray-100 dark:bg-[#2a2828] hover:bg-gray-200 dark:hover:bg-[#333131] text-black dark:text-white justify-start"
             >
-              <FileText className="w-5 h-5 text-black" />
+              <FileText className="w-5 h-5 text-gray-600 dark:text-gray-300" />
               Upload File
             </Button>
           </div>
