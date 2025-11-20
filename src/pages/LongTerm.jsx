@@ -362,8 +362,21 @@ export default function LongTermPage() {
                     </audio>
                   )}
                 </div>
-                <NoteSummarization note={selectedNote} />
-                <MindMapGenerator note={selectedNote} allNotes={notes} />
+                <NoteSummarization 
+                  note={selectedNote}
+                  onUpdate={(data) => {
+                    base44.entities.Note.update(selectedNote.id, data);
+                    queryClient.invalidateQueries(['notes']);
+                  }}
+                />
+                <MindMapGenerator 
+                  note={selectedNote} 
+                  allNotes={notes}
+                  onUpdate={(data) => {
+                    base44.entities.Note.update(selectedNote.id, data);
+                    queryClient.invalidateQueries(['notes']);
+                  }}
+                />
                 <AIAnalysisPanel note={selectedNote} allNotes={notes} onUpdate={handleUpdate} />
                 <Button onClick={() => setSelectedNote(null)} variant="outline" className="w-full bg-transparent border-gray-300 text-black hover:bg-gray-100 flex items-center gap-2">
                   ← Back to All Notes
