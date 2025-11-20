@@ -6,7 +6,7 @@ import SettingsModal from '../components/notes/SettingsModal';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Send, Loader2, Bot, User, Paperclip, Mic, Type } from 'lucide-react';
+import { Send, Loader2, Bot, User, Plus, Mic, Type } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useNavigate } from 'react-router-dom';
 import { createPageUrl } from '../utils';
@@ -151,34 +151,28 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
           <div className="flex-1 flex items-center justify-center p-8">
             <div className="max-w-4xl w-full px-4">
               <div className="flex justify-center mb-8">
-                <img 
-                  src="https://qtrypzzcjebvfcihiynt.supabase.co/storage/v1/object/public/base44-prod/public/691cb340d7ac797597a137df/1d9fec4b7_lykinaI-Picsart-BackgroundRemover.png" 
-                  alt="Logo" 
-                  className="w-24 h-24 object-contain"
-                />
+                <h2 className="text-4xl font-bold text-black dark:text-white">Just Say The Word.</h2>
               </div>
               <div className="relative">
+                <Button
+                  variant="ghost"
+                  className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-500 dark:text-gray-400 hover:text-black dark:hover:text-white hover:bg-transparent rounded-full h-10 w-10 p-0 z-10"
+                >
+                  <Plus className="w-5 h-5" />
+                </Button>
                 <Input
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSend()}
                   placeholder="What's on your mind?"
-                  className="w-full bg-white dark:bg-[#2a2a2a] border-2 border-gray-200 dark:border-gray-700 rounded-3xl text-black dark:text-white placeholder:text-gray-400 dark:placeholder:text-gray-500 h-16 text-base px-6 pr-28 shadow-lg focus:border-gray-400 dark:focus:border-gray-500 focus:ring-0 transition-all"
+                  className="w-full bg-white dark:bg-[#2a2a2a] border-2 border-gray-200 dark:border-gray-700 rounded-3xl text-black dark:text-white placeholder:text-gray-400 dark:placeholder:text-gray-500 h-16 text-base pl-14 pr-14 shadow-lg focus:border-gray-400 dark:focus:border-gray-500 focus:ring-0 transition-all"
                 />
-                <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
-                  <Button
-                    variant="ghost"
-                    className="text-gray-500 dark:text-gray-400 hover:text-black dark:hover:text-white hover:bg-transparent rounded-full h-10 w-10 p-0"
-                  >
-                    <Paperclip className="w-5 h-5" />
-                  </Button>
-                  <Button
-                    onClick={() => setInputMode(inputMode === 'text' ? 'audio' : 'text')}
-                    className="bg-black dark:bg-white text-white dark:text-black hover:bg-gray-800 dark:hover:bg-gray-200 rounded-full h-12 w-12 p-0 transition-all"
-                  >
-                    {inputMode === 'text' ? <Mic className="w-5 h-5" /> : <Type className="w-5 h-5" />}
-                  </Button>
-                </div>
+                <Button
+                  onClick={() => setInputMode(inputMode === 'text' ? 'audio' : 'text')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 bg-black dark:bg-white text-white dark:text-black hover:bg-gray-800 dark:hover:bg-gray-200 rounded-full h-12 w-12 p-0 transition-all"
+                >
+                  {inputMode === 'text' ? <Mic className="w-5 h-5" /> : <Type className="w-5 h-5" />}
+                </Button>
               </div>
             </div>
           </div>
@@ -222,35 +216,26 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
 
             <div className="p-6 bg-glass border-t border-white/20 dark:border-gray-700/30">
               <div className="max-w-4xl mx-auto">
-                <div className="flex justify-center mb-4">
-                  <img 
-                    src="https://qtrypzzcjebvfcihiynt.supabase.co/storage/v1/object/public/base44-prod/public/691cb340d7ac797597a137df/1d9fec4b7_lykinaI-Picsart-BackgroundRemover.png" 
-                    alt="Logo" 
-                    className="w-16 h-16 object-contain"
-                  />
-                </div>
                 <div className="relative">
+                  <Button
+                    variant="ghost"
+                    className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-500 dark:text-gray-400 hover:text-black dark:hover:text-white hover:bg-transparent rounded-full h-9 w-9 p-0 z-10"
+                  >
+                    <Plus className="w-4 h-4" />
+                  </Button>
                   <Input
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSend()}
                     placeholder="What's on your mind?"
-                    className="w-full bg-white dark:bg-[#2a2a2a] border-2 border-gray-200 dark:border-gray-700 rounded-3xl text-black dark:text-white placeholder:text-gray-400 dark:placeholder:text-gray-500 h-14 text-base px-6 pr-24 shadow-md focus:border-gray-400 dark:focus:border-gray-500 focus:ring-0 transition-all"
+                    className="w-full bg-white dark:bg-[#2a2a2a] border-2 border-gray-200 dark:border-gray-700 rounded-3xl text-black dark:text-white placeholder:text-gray-400 dark:placeholder:text-gray-500 h-14 text-base pl-12 pr-12 shadow-md focus:border-gray-400 dark:focus:border-gray-500 focus:ring-0 transition-all"
                   />
-                  <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
-                    <Button
-                      variant="ghost"
-                      className="text-gray-500 dark:text-gray-400 hover:text-black dark:hover:text-white hover:bg-transparent rounded-full h-9 w-9 p-0"
-                    >
-                      <Paperclip className="w-4 h-4" />
-                    </Button>
-                    <Button
-                      onClick={() => setInputMode(inputMode === 'text' ? 'audio' : 'text')}
-                      className="bg-black dark:bg-white text-white dark:text-black hover:bg-gray-800 dark:hover:bg-gray-200 rounded-full h-10 w-10 p-0 transition-all"
-                    >
-                      {inputMode === 'text' ? <Mic className="w-4 h-4" /> : <Type className="w-4 h-4" />}
-                    </Button>
-                  </div>
+                  <Button
+                    onClick={() => setInputMode(inputMode === 'text' ? 'audio' : 'text')}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 bg-black dark:bg-white text-white dark:text-black hover:bg-gray-800 dark:hover:bg-gray-200 rounded-full h-10 w-10 p-0 transition-all"
+                  >
+                    {inputMode === 'text' ? <Mic className="w-4 h-4" /> : <Type className="w-4 h-4" />}
+                  </Button>
                 </div>
               </div>
             </div>
