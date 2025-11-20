@@ -33,9 +33,11 @@ export default function KnowledgeGraph({ notes, selectedNoteId, onSelectNote }) 
 
       // Apply forces
       nodes.forEach((node, i) => {
+        if (!node) return;
+        
         // Repulsion between nodes
         nodes.forEach((other, j) => {
-          if (i !== j) {
+          if (!other || i !== j) {
             const dx = node.x - other.x;
             const dy = node.y - other.y;
             const dist = Math.sqrt(dx * dx + dy * dy) || 1;
@@ -92,6 +94,8 @@ export default function KnowledgeGraph({ notes, selectedNoteId, onSelectNote }) 
 
       // Draw nodes
       nodes.forEach(node => {
+        if (!node) return;
+        
         const colors = {
           lavender: '#b8a4d4',
           mint: '#8dd4b8',
@@ -101,7 +105,7 @@ export default function KnowledgeGraph({ notes, selectedNoteId, onSelectNote }) 
 
         ctx.beginPath();
         ctx.arc(node.x, node.y, node.isSelected ? 20 : 15, 0, Math.PI * 2);
-        ctx.fillStyle = colors[node.color] || colors.lavender;
+        ctx.fillStyle = colors[node.color || 'lavender'] || colors.lavender;
         ctx.fill();
 
         if (node.isSelected) {

@@ -179,6 +179,8 @@ Find meaningful connections based on content, themes, and ideas - not just keywo
 
       // Draw nodes as clean colored dots
       nodesRef.current.forEach(node => {
+        if (!node) return;
+        
         const colors = {
           lavender: '#b8a4d4',
           mint: '#8dd4b8',
@@ -187,7 +189,7 @@ Find meaningful connections based on content, themes, and ideas - not just keywo
         };
 
         const baseRadius = 8;
-        const radius = baseRadius + Math.min(node.connectionCount * 1.5, 8);
+        const radius = baseRadius + Math.min((node.connectionCount || 0) * 1.5, 8);
         
         // Draw shadow
         ctx.beginPath();
@@ -198,7 +200,7 @@ Find meaningful connections based on content, themes, and ideas - not just keywo
         // Draw node dot
         ctx.beginPath();
         ctx.arc(node.x * zoom, node.y * zoom, radius, 0, Math.PI * 2);
-        ctx.fillStyle = colors[node.color] || colors.lavender;
+        ctx.fillStyle = colors[node.color || 'lavender'] || colors.lavender;
         ctx.fill();
 
         // Draw border if selected
@@ -341,9 +343,11 @@ Find meaningful connections based on content, themes, and ideas - not just keywo
     const height = canvasRef.current.offsetHeight;
 
     nodesRef.current.forEach((node, i) => {
+      if (!node) return;
+      
       // Repulsion
       nodesRef.current.forEach((other, j) => {
-        if (i !== j) {
+        if (!other || i !== j) {
           const dx = node.x - other.x;
           const dy = node.y - other.y;
           const dist = Math.sqrt(dx * dx + dy * dy) || 1;
