@@ -27,13 +27,30 @@ export default function AIAnalysisPanel({ note, allNotes, onUpdate }) {
         detailed: 'Provide comprehensive, in-depth analysis with examples.'
       };
 
+      // Fetch content from attached links/videos
+      let attachmentContext = '';
+      if (note.attachments && note.attachments.length > 0) {
+        const linkAttachments = note.attachments.filter(a => a.type === 'link');
+        for (const attachment of linkAttachments.slice(0, 3)) {
+          try {
+            const fetchedContent = await base44.integrations.Core.InvokeLLM({
+              prompt: `Fetch and summarize the key content from this URL: ${attachment.url}. Focus on main ideas, key points, and important information.`,
+              add_context_from_internet: true
+            });
+            attachmentContext += `\n\nContent from ${attachment.name || attachment.url}:\n${fetchedContent}`;
+          } catch (error) {
+            console.error('Error fetching attachment content:', error);
+          }
+        }
+      }
+
       const analysis = await base44.integrations.Core.InvokeLLM({
         prompt: `Analyze this idea/note and provide:
 1. A validation (Is this idea viable/interesting? Why or why not?)
 2. Three thought-provoking questions to explore this idea further
 3. Key insights or connections to consider
 
-Note content: "${note.content}"
+Note content: "${note.content}"${attachmentContext}
 
 ${personalityPrompts[personality]} ${detailPrompts[detailLevel]}`,
         response_json_schema: {
