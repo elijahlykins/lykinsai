@@ -6,7 +6,7 @@ import SettingsModal from '../components/notes/SettingsModal';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Send, Loader2, Bot, User, Plus, Mic, MessageSquare } from 'lucide-react';
+import { Send, Loader2, Bot, User, Plus, Mic, MessageSquare, X, File, Image as ImageIcon } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useNavigate } from 'react-router-dom';
 import { createPageUrl } from '../utils';
@@ -19,7 +19,9 @@ export default function MemoryChatPage() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [currentModel, setCurrentModel] = useState('core');
   const [inputMode, setInputMode] = useState('text');
+  const [attachments, setAttachments] = useState([]);
   const scrollRef = useRef(null);
+  const fileInputRef = useRef(null);
   const navigate = useNavigate();
 
   const { data: notes = [] } = useQuery({
@@ -41,9 +43,10 @@ export default function MemoryChatPage() {
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
 
-    const userMessage = { role: 'user', content: input };
+    const userMessage = { role: 'user', content: input, attachments: [...attachments] };
     setMessages(prev => [...prev, userMessage]);
     setInput('');
+    setAttachments([]);
     setIsLoading(true);
 
     try {
@@ -102,6 +105,21 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
     localStorage.setItem('lykinsai_settings', JSON.stringify(settings));
   };
 
+  const handleFileSelect = async (e) => {
+    const files = Array.from(e.target.files);
+    const uploaded = await Promise.all(
+      files.map(async (file) => {
+        const { file_url } = await base44.integrations.Core.UploadFile({ file });
+        return { name: file.name, url: file_url, type: file.type };
+      })
+    );
+    setAttachments(prev => [...prev, ...uploaded]);
+  };
+
+  const removeAttachment = (index) => {
+    setAttachments(prev => prev.filter((_, i) => i !== index));
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 via-blue-50/30 to-gray-100 dark:from-[#171515] dark:via-[#171515] dark:to-[#171515] flex overflow-hidden">
       <div className={`${sidebarCollapsed ? 'w-16' : 'w-64'} flex-shrink-0 transition-all duration-300`}>
@@ -153,9 +171,30 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
               <div className="flex justify-center mb-8">
                 <h2 className="text-4xl font-bold text-black dark:text-white">Just Say The Word.</h2>
               </div>
+              {attachments.length > 0 && (
+                <div className="flex flex-wrap gap-2 mb-4">
+                  {attachments.map((att, idx) => (
+                    <div key={idx} className="flex items-center gap-2 bg-gray-100 dark:bg-[#1f1d1d]/80 px-3 py-2 rounded-lg">
+                      {att.type?.startsWith('image/') ? <ImageIcon className="w-4 h-4" /> : <File className="w-4 h-4" />}
+                      <span className="text-sm text-black dark:text-white">{att.name}</span>
+                      <button onClick={() => removeAttachment(idx)} className="text-gray-500 hover:text-black dark:hover:text-white">
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
               <div className="relative">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  className="hidden"
+                  onChange={handleFileSelect}
+                />
                 <Button
                   variant="ghost"
+                  onClick={() => fileInputRef.current?.click()}
                   className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-500 dark:text-gray-400 hover:text-black dark:hover:text-white hover:bg-transparent rounded-full h-10 w-10 p-0 z-10"
                 >
                   <Plus className="w-5 h-5" />
@@ -193,6 +232,16 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
                         : 'bg-white dark:bg-[#1f1d1d]/60 border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300'
                     }`}>
                       <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                      {msg.attachments && msg.attachments.length > 0 && (
+                        <div className="flex flex-wrap gap-2 mt-2">
+                          {msg.attachments.map((att, i) => (
+                            <a key={i} href={att.url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-xs bg-white/50 dark:bg-black/20 px-2 py-1 rounded">
+                              {att.type?.startsWith('image/') ? <ImageIcon className="w-3 h-3" /> : <File className="w-3 h-3" />}
+                              {att.name}
+                            </a>
+                          ))}
+                        </div>
+                      )}
                     </div>
                     {msg.role === 'user' && (
                       <div className="w-8 h-8 rounded-full bg-gray-200 dark:bg-[#1f1d1d]/80 text-black dark:text-white flex items-center justify-center flex-shrink-0">
@@ -216,9 +265,30 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
 
             <div className="p-6 bg-glass border-t border-white/20 dark:border-gray-700/30">
               <div className="max-w-4xl mx-auto">
+                {attachments.length > 0 && (
+                  <div className="flex flex-wrap gap-2 mb-4">
+                    {attachments.map((att, idx) => (
+                      <div key={idx} className="flex items-center gap-2 bg-gray-100 dark:bg-[#1f1d1d]/80 px-3 py-2 rounded-lg">
+                        {att.type?.startsWith('image/') ? <ImageIcon className="w-4 h-4" /> : <File className="w-4 h-4" />}
+                        <span className="text-sm text-black dark:text-white">{att.name}</span>
+                        <button onClick={() => removeAttachment(idx)} className="text-gray-500 hover:text-black dark:hover:text-white">
+                          <X className="w-3 h-3" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 <div className="relative">
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    className="hidden"
+                    onChange={handleFileSelect}
+                  />
                   <Button
                     variant="ghost"
+                    onClick={() => fileInputRef.current?.click()}
                     className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-500 dark:text-gray-400 hover:text-black dark:hover:text-white hover:bg-transparent rounded-full h-9 w-9 p-0 z-10"
                   >
                     <Plus className="w-4 h-4" />
