@@ -64,6 +64,7 @@ export default function MemoryChatPage() {
           content: chatContent,
           attachments: allAttachments,
           storage_type: 'short_term',
+          source: 'ai',
           tags: ['chat', 'conversation']
         }).catch(err => console.error('Error saving chat:', err));
       }
