@@ -80,7 +80,8 @@ export default function ShortTermPage() {
     if (!selectedNote) return;
     await base44.entities.Note.update(selectedNote.id, {
       title: editedTitle,
-      content: editedContent
+      content: editedContent,
+      raw_text: editedContent
     });
     setIsEditing(false);
     queryClient.invalidateQueries(['notes']);

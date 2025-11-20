@@ -240,6 +240,7 @@ Be concise and capture the key points.`
       const newNote = await base44.entities.Note.create({
         title: finalTitle,
         content: finalContent,
+        raw_text: content,
         audio_url: audioUrl,
         ai_analysis: aiAnalysis,
         color: randomColor,
