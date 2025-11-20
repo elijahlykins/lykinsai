@@ -197,42 +197,6 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
       </div>
 
       <div className="flex-1 flex flex-col overflow-hidden">
-        {followUpQuestions && (
-          <div className="p-4 bg-blue-50 dark:bg-blue-900/20 border-b border-blue-200 dark:border-blue-800">
-            <div className="flex items-start justify-between mb-2">
-              <div>
-                <h3 className="text-sm font-semibold text-black dark:text-white flex items-center gap-2">
-                  <HelpCircle className="w-4 h-4" />
-                  Follow-Up Questions: {followUpQuestions.noteTitle}
-                </h3>
-                <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">Click a question to discuss it with AI</p>
-              </div>
-              <Button
-                onClick={() => setFollowUpQuestions(null)}
-                variant="ghost"
-                size="sm"
-                className="text-gray-500 hover:text-black dark:hover:text-white"
-              >
-                <X className="w-4 h-4" />
-              </Button>
-            </div>
-            <div className="space-y-2">
-              {followUpQuestions.questions.map((question, idx) => (
-                <button
-                  key={idx}
-                  onClick={() => {
-                    setInput(question);
-                    setFollowUpQuestions(null);
-                  }}
-                  className="w-full text-left p-2 rounded-lg bg-white dark:bg-[#1f1d1d]/60 hover:bg-gray-50 dark:hover:bg-[#2a2828] transition-all text-sm text-black dark:text-white"
-                >
-                  <span className="text-blue-600 dark:text-blue-400 font-semibold mr-2">{idx + 1}.</span>
-                  {question}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
         <div className="p-6 bg-glass border-b border-white/20 dark:border-gray-700/30">
           <div className="flex items-center justify-end">
             <div className="flex items-center gap-2">
@@ -298,6 +262,38 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
                   {inputMode === 'text' ? <Mic className="w-5 h-5" /> : <MessageSquare className="w-5 h-5" />}
                 </Button>
               </div>
+
+              {/* Follow-up questions as bubbles */}
+              {followUpQuestions && (
+                <div className="mt-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-xs text-gray-600 dark:text-gray-400 flex items-center gap-1">
+                      <HelpCircle className="w-3 h-3" />
+                      Suggested questions about "{followUpQuestions.noteTitle}"
+                    </p>
+                    <button
+                      onClick={() => setFollowUpQuestions(null)}
+                      className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {followUpQuestions.questions.map((question, idx) => (
+                      <button
+                        key={idx}
+                        onClick={() => {
+                          setInput(question);
+                          setFollowUpQuestions(null);
+                        }}
+                        className="px-4 py-2 bg-blue-50 dark:bg-blue-900/20 hover:bg-blue-100 dark:hover:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded-full text-sm transition-all border border-blue-200 dark:border-blue-800"
+                      >
+                        {question}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         ) : (
@@ -348,30 +344,62 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
                         </button>
                       </div>
                     ))}
-                  </div>
-                )}
-                <div className="relative">
-                  <Button
+                    </div>
+                    )}
+                    <div className="relative">
+                    <Button
                     variant="ghost"
                     onClick={() => setShowAttachMenu(true)}
                     className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-500 dark:text-gray-400 hover:text-black dark:hover:text-white hover:bg-transparent rounded-full h-9 w-9 p-0 z-10"
-                  >
+                    >
                     <Plus className="w-4 h-4" />
-                  </Button>
-                  <Input
+                    </Button>
+                    <Input
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSend()}
                     placeholder="What's on your mind?"
                     className="w-full bg-white dark:bg-[#2a2a2a] border-2 border-gray-200 dark:border-gray-700 rounded-3xl text-black dark:text-white placeholder:text-gray-400 dark:placeholder:text-gray-500 h-14 text-base pl-12 pr-12 shadow-md focus:border-gray-400 dark:focus:border-gray-500 focus:ring-0 transition-all"
-                  />
-                  <Button
+                    />
+                    <Button
                     onClick={() => setInputMode(inputMode === 'text' ? 'audio' : 'text')}
                     className="absolute right-2 top-1/2 -translate-y-1/2 bg-black dark:bg-white text-white dark:text-black hover:bg-gray-800 dark:hover:bg-gray-200 rounded-full h-10 w-10 p-0 transition-all"
-                  >
+                    >
                     {inputMode === 'text' ? <Mic className="w-4 h-4" /> : <MessageSquare className="w-4 h-4" />}
-                  </Button>
-                </div>
+                    </Button>
+                    </div>
+
+                    {/* Follow-up questions as bubbles */}
+                    {followUpQuestions && (
+                    <div className="mt-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-xs text-gray-600 dark:text-gray-400 flex items-center gap-1">
+                        <HelpCircle className="w-3 h-3" />
+                        Suggested questions about "{followUpQuestions.noteTitle}"
+                      </p>
+                      <button
+                        onClick={() => setFollowUpQuestions(null)}
+                        className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {followUpQuestions.questions.map((question, idx) => (
+                        <button
+                          key={idx}
+                          onClick={() => {
+                            setInput(question);
+                            setFollowUpQuestions(null);
+                          }}
+                          className="px-3 py-1.5 bg-blue-50 dark:bg-blue-900/20 hover:bg-blue-100 dark:hover:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded-full text-xs transition-all border border-blue-200 dark:border-blue-800"
+                        >
+                          {question}
+                        </button>
+                      ))}
+                    </div>
+                    </div>
+                    )}
               </div>
             </div>
           </>
