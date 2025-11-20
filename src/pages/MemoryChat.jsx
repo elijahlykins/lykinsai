@@ -150,6 +150,13 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
         {messages.length === 0 ? (
           <div className="flex-1 flex items-center justify-center p-8">
             <div className="max-w-4xl w-full px-4">
+              <div className="flex justify-center mb-8">
+                <img 
+                  src="https://qtrypzzcjebvfcihiynt.supabase.co/storage/v1/object/public/base44-prod/public/691cb340d7ac797597a137df/1d9fec4b7_lykinaI-Picsart-BackgroundRemover.png" 
+                  alt="Logo" 
+                  className="w-24 h-24 object-contain"
+                />
+              </div>
               <div className="relative">
                 <Input
                   value={input}
@@ -215,6 +222,13 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
 
             <div className="p-6 bg-glass border-t border-white/20 dark:border-gray-700/30">
               <div className="max-w-4xl mx-auto">
+                <div className="flex justify-center mb-4">
+                  <img 
+                    src="https://qtrypzzcjebvfcihiynt.supabase.co/storage/v1/object/public/base44-prod/public/691cb340d7ac797597a137df/1d9fec4b7_lykinaI-Picsart-BackgroundRemover.png" 
+                    alt="Logo" 
+                    className="w-16 h-16 object-contain"
+                  />
+                </div>
                 <div className="relative">
                   <Input
                     value={input}
