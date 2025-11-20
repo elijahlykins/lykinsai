@@ -1,5 +1,5 @@
 import React from 'react';
-import { Settings, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Settings, ChevronLeft, ChevronRight, Plus, Clock, Archive, Search, MessageCircle, Tags, Bell } from 'lucide-react';
 import {
   Tooltip,
   TooltipContent,
@@ -8,22 +8,53 @@ import {
 } from "@/components/ui/tooltip";
 
 export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, onOpenChat, onOpenSettings, isCollapsed, onToggleCollapse }) {
+  const navItems = [
+    { id: 'create', icon: Plus, label: 'Create', tooltip: 'Create new memories' },
+    { id: 'short_term', icon: Clock, label: 'Short Term', tooltip: 'Recent memories from the past 30 days' },
+    { id: 'long_term', icon: Archive, label: 'Long Term', tooltip: 'Archived memories older than 30 days' },
+    { id: 'search', icon: Search, label: 'AI Search', tooltip: 'Search memories by ideas and concepts', onClick: onOpenSearch },
+    { id: 'chat', icon: MessageCircle, label: 'Memory Chat', tooltip: 'Chat with AI about your memories', onClick: onOpenChat },
+    { id: 'tags', icon: Tags, label: 'Tags', tooltip: 'Manage your tags' },
+    { id: 'reminders', icon: Bell, label: 'Reminders', tooltip: 'View and manage reminders' },
+  ];
+
   if (isCollapsed) {
     return (
-      <div className="h-full bg-gray-100 border-r border-gray-200 flex flex-col p-3 w-16">
+      <div className="h-full bg-black/40 backdrop-blur-xl border-r border-white/10 flex flex-col p-3 w-20">
         <button
           onClick={onToggleCollapse}
-          className="p-2 hover:bg-white/10 rounded-lg transition-all text-black bg-white"
+          className="p-2 hover:bg-white/10 rounded-lg transition-all text-white"
         >
           <ChevronRight className="w-5 h-5" />
         </button>
         <TooltipProvider delayDuration={300}>
+          <div className="flex-1 flex flex-col items-center gap-3 mt-8">
+            {navItems.map((item) => (
+              <Tooltip key={item.id}>
+                <TooltipTrigger asChild>
+                  <button
+                    onClick={() => item.onClick ? item.onClick() : onViewChange(item.id)}
+                    className={`p-3 rounded-xl transition-all ${
+                      activeView === item.id
+                        ? 'bg-white/20 text-white shadow-lg'
+                        : 'text-white/70 hover:bg-white/10 hover:text-white'
+                    }`}
+                  >
+                    <item.icon className="w-5 h-5" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="right">
+                  <p>{item.tooltip}</p>
+                </TooltipContent>
+              </Tooltip>
+            ))}
+          </div>
           <div className="mt-auto">
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
                   onClick={onOpenSettings}
-                  className="p-2 hover:bg-gray-200 rounded-lg transition-all text-black"
+                  className="p-3 hover:bg-white/10 rounded-xl transition-all text-white/70 hover:text-white"
                 >
                   <Settings className="w-5 h-5" />
                 </button>
@@ -39,155 +70,43 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
   }
 
   return (
-    <div className="h-full bg-gray-100 border-r border-gray-200 flex flex-col p-4">
+    <div className="h-full bg-black/40 backdrop-blur-xl border-r border-white/10 flex flex-col p-4">
       <div className="flex items-center justify-between mb-8">
         <div>
-          <h1 className="text-2xl font-bold text-black tracking-tight">lykinsai</h1>
-          <p className="text-xs text-gray-500 mt-1">Your AI Memory Companion</p>
+          <h1 className="text-2xl font-bold text-white tracking-tight">lykinsai</h1>
+          <p className="text-xs text-white/60 mt-1">Your AI Memory Companion</p>
         </div>
         <button
           onClick={onToggleCollapse}
-          className="p-1 hover:bg-gray-200 rounded transition-all text-black"
+          className="p-1 hover:bg-white/10 rounded transition-all text-white"
         >
           <ChevronLeft className="w-5 h-5" />
         </button>
       </div>
 
       <TooltipProvider delayDuration={300}>
-        <nav className="space-y-3 flex-1">
-          {/* Create */}
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                onClick={() => onViewChange('create')}
-                className={`w-full px-6 py-3 rounded-full text-sm font-medium transition-all bg-white text-black ${
-                  activeView === 'create'
-                    ? 'ring-2 ring-white/50'
-                    : 'hover:ring-2 hover:ring-white/30'
-                }`}
-              >
-                Create
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="right">
-              <p>Create new memories</p>
-            </TooltipContent>
-          </Tooltip>
-
-          {/* Short Term */}
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                onClick={() => onViewChange('short_term')}
-                className={`w-full px-6 py-3 rounded-full text-sm font-medium transition-all bg-white text-black ${
-                  activeView === 'short_term'
-                    ? 'ring-2 ring-white/50'
-                    : 'hover:ring-2 hover:ring-white/30'
-                }`}
-              >
-                Short Term
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="right">
-              <p>Recent memories from the past 30 days</p>
-            </TooltipContent>
-          </Tooltip>
-
-          {/* Long Term */}
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                onClick={() => onViewChange('long_term')}
-                className={`w-full px-6 py-3 rounded-full text-sm font-medium transition-all bg-white text-black ${
-                  activeView === 'long_term'
-                    ? 'ring-2 ring-white/50'
-                    : 'hover:ring-2 hover:ring-white/30'
-                }`}
-              >
-                Long Term
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="right">
-              <p>Archived memories older than 30 days</p>
-            </TooltipContent>
-          </Tooltip>
-
-          {/* Search */}
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                onClick={onOpenSearch}
-                className={`w-full px-6 py-3 rounded-full text-sm font-medium bg-white text-black transition-all ${
-                  activeView === 'search'
-                    ? 'ring-2 ring-white/50'
-                    : 'hover:ring-2 hover:ring-white/30'
-                }`}
-              >
-                AI Search
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="right">
-              <p>Search memories by ideas and concepts</p>
-            </TooltipContent>
-          </Tooltip>
-
-          {/* Chat */}
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                onClick={onOpenChat}
-                className={`w-full px-6 py-3 rounded-full text-sm font-medium bg-white text-black transition-all ${
-                  activeView === 'chat'
-                    ? 'ring-2 ring-white/50'
-                    : 'hover:ring-2 hover:ring-white/30'
-                }`}
-              >
-                Memory Chat
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="right">
-              <p>Chat with AI about your memories</p>
-            </TooltipContent>
-          </Tooltip>
-
-          {/* Tags */}
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                onClick={() => onViewChange('tags')}
-                className={`w-full px-6 py-3 rounded-full text-sm font-medium bg-white text-black transition-all ${
-                  activeView === 'tags'
-                    ? 'ring-2 ring-white/50'
-                    : 'hover:ring-2 hover:ring-white/30'
-                }`}
-              >
-                Tags
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="right">
-              <p>Manage your tags</p>
-            </TooltipContent>
-          </Tooltip>
-
-          {/* Reminders */}
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                onClick={() => onViewChange('reminders')}
-                className={`w-full px-6 py-3 rounded-full text-sm font-medium bg-white text-black transition-all ${
-                  activeView === 'reminders'
-                    ? 'ring-2 ring-white/50'
-                    : 'hover:ring-2 hover:ring-white/30'
-                }`}
-              >
-                Reminders
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="right">
-              <p>View and manage reminders</p>
-            </TooltipContent>
-          </Tooltip>
-          </nav>
+        <nav className="space-y-2 flex-1">
+          {navItems.map((item) => (
+            <Tooltip key={item.id}>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={() => item.onClick ? item.onClick() : onViewChange(item.id)}
+                  className={`w-full px-4 py-3 rounded-xl text-sm font-medium transition-all flex items-center gap-3 ${
+                    activeView === item.id
+                      ? 'bg-white/20 text-white shadow-lg'
+                      : 'text-white/70 hover:bg-white/10 hover:text-white'
+                  }`}
+                >
+                  <item.icon className="w-5 h-5" />
+                  {item.label}
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right">
+                <p>{item.tooltip}</p>
+              </TooltipContent>
+            </Tooltip>
+          ))}
+        </nav>
 
         {/* Settings at bottom */}
         <div className="mt-auto pt-3">
@@ -195,9 +114,10 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
             <TooltipTrigger asChild>
               <button
                 onClick={onOpenSettings}
-                className="p-2 hover:bg-gray-200 rounded-lg transition-all text-black"
+                className="p-3 hover:bg-white/10 rounded-xl transition-all text-white/70 hover:text-white flex items-center gap-2"
               >
                 <Settings className="w-5 h-5" />
+                <span className="text-sm">Settings</span>
               </button>
             </TooltipTrigger>
             <TooltipContent side="right">
