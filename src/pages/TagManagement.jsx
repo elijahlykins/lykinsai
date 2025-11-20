@@ -85,7 +85,7 @@ export default function TagManagementPage() {
   };
 
   return (
-    <div className="min-h-screen bg-white flex overflow-hidden">
+    <div className="min-h-screen bg-gradient-to-br from-purple-50 via-blue-50 to-pink-50 flex overflow-hidden">
       <div className={`${sidebarCollapsed ? 'w-16' : 'w-64'} flex-shrink-0 transition-all duration-300`}>
         <NotionSidebar
           activeView="tags"
@@ -99,7 +99,7 @@ export default function TagManagementPage() {
       </div>
 
       <div className="flex-1 flex flex-col overflow-hidden">
-        <div className="p-6 border-b border-gray-200">
+        <div className="p-6 bg-glass border-b border-white/20">
           <div className="flex items-center gap-4">
             <Tag className="w-6 h-6 text-black" />
             <h1 className="text-2xl font-bold text-black">Tag Management</h1>
@@ -107,7 +107,7 @@ export default function TagManagementPage() {
           <p className="text-sm text-gray-500 mt-2">Manage and organize your tags</p>
         </div>
 
-        <div className="flex-1 overflow-hidden bg-gray-50">
+        <div className="flex-1 overflow-hidden">
           <ScrollArea className="h-full">
             <div className="max-w-4xl mx-auto p-8">
               {tagStats.length === 0 ? (

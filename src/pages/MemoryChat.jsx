@@ -86,7 +86,7 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
   };
 
   return (
-    <div className="min-h-screen bg-white flex overflow-hidden">
+    <div className="min-h-screen bg-gradient-to-br from-purple-50 via-blue-50 to-pink-50 flex overflow-hidden">
       <div className={`${sidebarCollapsed ? 'w-16' : 'w-64'} flex-shrink-0 transition-all duration-300`}>
         <NotionSidebar
           activeView="chat"
@@ -106,7 +106,7 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
       </div>
 
       <div className="flex-1 flex flex-col overflow-hidden">
-        <div className="p-6 border-b border-gray-200">
+        <div className="p-6 bg-glass border-b border-white/20">
           <h1 className="text-2xl font-bold text-black">Memory Chat</h1>
         </div>
 
@@ -153,7 +153,7 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
           </div>
         </ScrollArea>
 
-        <div className="p-6 border-t border-gray-200 bg-white">
+        <div className="p-6 bg-glass border-t border-white/20">
           <div className="max-w-4xl mx-auto flex gap-2">
             <Input
               value={input}

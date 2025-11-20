@@ -40,20 +40,20 @@ export default function SettingsModal({ isOpen, onClose }) {
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="bg-dark-card border-white/10 text-white max-w-md">
+      <DialogContent className="bg-glass-card border-white/30 text-gray-900 max-w-md backdrop-blur-2xl">
         <DialogHeader>
-          <DialogTitle className="text-white">Settings</DialogTitle>
+          <DialogTitle className="text-gray-900">Settings</DialogTitle>
         </DialogHeader>
 
         <div className="space-y-6 py-4">
           {/* Text Color */}
           <div className="space-y-2">
-            <Label className="text-white">Note Text Color</Label>
+            <Label className="text-gray-900">Note Text Color</Label>
             <Select value={settings.textColor} onValueChange={(value) => setSettings({...settings, textColor: value})}>
-              <SelectTrigger className="bg-dark-lighter border-white/10 text-white">
+              <SelectTrigger className="bg-white/60 border-white/40 text-gray-900 backdrop-blur-md rounded-xl">
                 <SelectValue />
               </SelectTrigger>
-              <SelectContent className="bg-dark-card border-white/10">
+              <SelectContent className="bg-glass-card border-white/30 backdrop-blur-2xl">
                 <SelectItem value="white">White</SelectItem>
                 <SelectItem value="black">Black</SelectItem>
                 <SelectItem value="#b8a4d4">Lavender</SelectItem>

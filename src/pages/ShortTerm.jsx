@@ -124,7 +124,7 @@ export default function ShortTermPage() {
   }
 
   return (
-    <div className="min-h-screen bg-white flex overflow-hidden">
+    <div className="min-h-screen bg-gradient-to-br from-purple-50 via-blue-50 to-pink-50 flex overflow-hidden">
       <div className={`${sidebarCollapsed ? 'w-16' : 'w-64'} flex-shrink-0 transition-all duration-300`}>
         <NotionSidebar
           activeView="short_term"
@@ -144,7 +144,7 @@ export default function ShortTermPage() {
       </div>
 
       <div className="flex-1 flex flex-col overflow-hidden">
-        <div className="p-6 border-b border-gray-200">
+        <div className="p-6 bg-glass border-b border-white/20">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-4">
               <Clock className="w-6 h-6 text-black" />

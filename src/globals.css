@@ -23,7 +23,7 @@
     --border: 214.3 31.8% 91.4%;
     --input: 214.3 31.8% 91.4%;
     --ring: 222.2 84% 4.9%;
-    --radius: 1rem;
+    --radius: 1.25rem;
   }
 }
 
@@ -32,29 +32,44 @@
     @apply border-border;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply bg-gradient-to-br from-purple-50 via-blue-50 to-pink-50 text-foreground;
+    min-height: 100vh;
   }
 }
 
-/* Light Theme Colors */
-.bg-dark {
-  background: #ffffff;
+/* Glassmorphic Theme */
+.bg-glass {
+  background: rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
 }
 
-.bg-dark-lighter {
-  background: #f9fafb;
+.bg-glass-dark {
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
 }
 
-.bg-dark-card {
-  background: #ffffff;
+.bg-glass-card {
+  background: rgba(255, 255, 255, 0.8);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.08);
 }
 
-.bg-sidebar {
-  background: #f3f4f6;
+.bg-glass-sidebar {
+  background: rgba(255, 255, 255, 0.65);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border-right: 1px solid rgba(255, 255, 255, 0.2);
 }
 
-.bg-sidebar-hover {
-  background: #e5e7eb;
+.bg-glass-hover {
+  background: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
 }
 
 /* Pastel Colors for Dark Theme */
@@ -106,79 +121,90 @@
   border-color: rgba(212, 184, 164, 0.2);
 }
 
-/* Light Theme Cards */
+/* Glassmorphic Cards */
 .clay-card {
-  background: #ffffff;
-  border-radius: 8px;
-  border: 1px solid rgba(0, 0, 0, 0.1);
-  transition: all 0.2s ease;
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .clay-card:hover {
-  background: #f9fafb;
-  border-color: rgba(0, 0, 0, 0.15);
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  transform: translateY(-2px);
 }
 
 .clay-card-mini {
-  background: #f9fafb;
-  border-radius: 6px;
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  transition: all 0.2s ease;
+  background: rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.notion-sidebar-button {
-  background: transparent;
-  border-radius: 6px;
-  padding: 0.5rem 0.75rem;
-  transition: all 0.2s ease;
-  border: none;
-  color: rgba(255, 255, 255, 0.7);
+.glass-button {
+  background: rgba(255, 255, 255, 0.2);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-radius: 16px;
+  padding: 0.75rem 1.25rem;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  color: rgba(0, 0, 0, 0.8);
   display: flex;
   align-items: center;
   gap: 0.75rem;
   width: 100%;
   font-size: 0.875rem;
   cursor: pointer;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
 }
 
-.notion-sidebar-button:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: white;
-  box-shadow: 0 0 12px rgba(255, 255, 255, 0.1);
+.glass-button:hover {
+  background: rgba(255, 255, 255, 0.35);
+  border-color: rgba(255, 255, 255, 0.4);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
+  transform: translateY(-1px);
 }
 
-.notion-sidebar-button.active {
-  background: rgba(255, 255, 255, 0.1);
-  color: white;
+.glass-button.active {
+  background: rgba(255, 255, 255, 0.45);
+  border-color: rgba(255, 255, 255, 0.5);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.5);
 }
 
 .clay-button {
-  background: linear-gradient(145deg, #b8a4d4, #9d8ab8);
-  border-radius: 18px;
-  border: none;
-  color: #0a0a15;
+  background: linear-gradient(135deg, rgba(184, 164, 212, 0.9), rgba(157, 138, 184, 0.9));
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  color: #ffffff;
   font-weight: 600;
   box-shadow: 
-    6px 6px 12px rgba(0, 0, 0, 0.4),
-    -6px -6px 12px rgba(200, 180, 230, 0.1),
-    inset 1px 1px 2px rgba(255, 255, 255, 0.2);
-  transition: all 0.3s ease;
+    0 8px 24px rgba(0, 0, 0, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .clay-button:hover:not(:disabled) {
-  background: linear-gradient(145deg, #c4b0e0, #b8a4d4);
+  background: linear-gradient(135deg, rgba(196, 176, 224, 0.95), rgba(184, 164, 212, 0.95));
   box-shadow: 
-    8px 8px 16px rgba(0, 0, 0, 0.5),
-    -8px -8px 16px rgba(200, 180, 230, 0.15),
-    inset 1px 1px 2px rgba(255, 255, 255, 0.3);
-  transform: translateY(-1px);
+    0 12px 32px rgba(0, 0, 0, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.4);
+  transform: translateY(-2px);
 }
 
 .clay-button:active:not(:disabled) {
   box-shadow: 
-    4px 4px 8px rgba(0, 0, 0, 0.4),
-    -4px -4px 8px rgba(200, 180, 230, 0.1),
-    inset 2px 2px 4px rgba(0, 0, 0, 0.2);
+    0 4px 12px rgba(0, 0, 0, 0.1),
+    inset 0 2px 4px rgba(0, 0, 0, 0.1);
   transform: translateY(0);
 }
 
@@ -268,20 +294,26 @@
 }
 
 .clay-input {
-  background: linear-gradient(145deg, #e8e4f0, #d8d4e0);
+  background: rgba(255, 255, 255, 0.6);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
   box-shadow: 
-    inset 4px 4px 8px rgba(0, 0, 0, 0.4),
-    inset -4px -4px 8px rgba(30, 30, 50, 0.1);
+    inset 0 2px 4px rgba(0, 0, 0, 0.06),
+    0 4px 16px rgba(0, 0, 0, 0.04);
   padding: 1rem;
-  color: #0a0a15;
+  color: rgba(0, 0, 0, 0.9);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .clay-input:focus {
+  background: rgba(255, 255, 255, 0.8);
+  border-color: rgba(184, 164, 212, 0.5);
   box-shadow: 
-    inset 6px 6px 12px rgba(0, 0, 0, 0.3),
-    inset -6px -6px 12px rgba(255, 255, 255, 0.2),
-    0 0 0 2px rgba(184, 164, 212, 0.5);
+    inset 0 2px 4px rgba(0, 0, 0, 0.04),
+    0 0 0 3px rgba(184, 164, 212, 0.15),
+    0 8px 24px rgba(0, 0, 0, 0.08);
   outline: none;
 }
 
