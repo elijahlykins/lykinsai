@@ -21,7 +21,7 @@ export default function CreatePage() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-50 via-blue-50/30 to-gray-100 flex overflow-hidden">
+    <div className="min-h-screen bg-gradient-to-br from-gray-50 via-blue-50/30 to-gray-100 dark:from-[#171515] dark:via-[#171515] dark:to-[#171515] flex overflow-hidden">
       <div className={`${sidebarCollapsed ? 'w-16' : 'w-64'} flex-shrink-0 transition-all duration-300`}>
         <NotionSidebar
           activeView="create"
@@ -41,19 +41,19 @@ export default function CreatePage() {
       </div>
 
       <div className="flex-1 flex flex-col overflow-hidden">
-      <div className="flex items-center justify-between p-6 bg-glass border-b border-white/20">
-        <h1 className="text-2xl font-bold text-gray-900">Create Memory</h1>
+      <div className="flex items-center justify-between p-6 bg-glass border-b border-white/20 dark:border-gray-700/30">
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Create Memory</h1>
           <div className="flex items-center gap-2">
             <Button
               onClick={() => noteCreatorRef.current?.handleSave()}
               variant="ghost"
-              className="text-gray-900 hover:bg-white/40 w-10 h-10 p-0 rounded-2xl backdrop-blur-sm"
+              className="text-gray-900 dark:text-gray-300 hover:bg-white/40 dark:hover:bg-white/10 w-10 h-10 p-0 rounded-2xl backdrop-blur-sm"
             >
               <Save className="w-5 h-5" />
             </Button>
             <button
               onClick={() => setInputMode(inputMode === 'text' ? 'audio' : 'text')}
-              className="px-6 py-2 rounded-full bg-white/80 backdrop-blur-md text-gray-900 font-medium hover:bg-white/90 transition-all border border-white/40 shadow-lg"
+              className="px-6 py-2 rounded-full bg-white/80 dark:bg-[#1f1d1d]/80 backdrop-blur-md text-gray-900 dark:text-white font-medium hover:bg-white/90 dark:hover:bg-[#2a2828]/90 transition-all border border-white/40 dark:border-gray-600/40 shadow-lg"
             >
               {inputMode === 'text' ? 'Text' : 'Audio'}
             </button>

@@ -34,9 +34,9 @@ export default function RemindersPage() {
     <div className={`clay-card p-4 ${isOverdue ? 'border-l-4 border-red-500' : ''}`}>
       <div className="flex items-start justify-between gap-3">
         <div className="flex-1 min-w-0">
-          <h3 className="font-semibold text-black mb-1">{note.title}</h3>
-          <p className="text-sm text-gray-600 line-clamp-2 mb-2">{note.content}</p>
-          <div className="flex items-center gap-3 text-xs text-gray-500">
+          <h3 className="font-semibold text-black dark:text-white mb-1">{note.title}</h3>
+          <p className="text-sm text-gray-600 dark:text-gray-400 line-clamp-2 mb-2">{note.content}</p>
+          <div className="flex items-center gap-3 text-xs text-gray-500 dark:text-gray-400">
             <div className="flex items-center gap-1">
               <CalendarIcon className="w-3 h-3" />
               <span>{format(new Date(note.reminder), 'MMM d, yyyy')}</span>
@@ -60,7 +60,7 @@ export default function RemindersPage() {
   );
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-50 via-blue-50/30 to-gray-100 flex overflow-hidden">
+    <div className="min-h-screen bg-gradient-to-br from-gray-50 via-blue-50/30 to-gray-100 dark:from-[#171515] dark:via-[#171515] dark:to-[#171515] flex overflow-hidden">
       <div className={`${sidebarCollapsed ? 'w-16' : 'w-64'} flex-shrink-0 transition-all duration-300`}>
         <NotionSidebar
           activeView="reminders"
@@ -80,10 +80,10 @@ export default function RemindersPage() {
       </div>
 
       <div className="flex-1 flex flex-col overflow-hidden">
-        <div className="p-6 bg-glass border-b border-white/20">
+        <div className="p-6 bg-glass border-b border-white/20 dark:border-gray-700/30">
           <div className="flex items-center gap-4">
-            <Bell className="w-6 h-6 text-black" />
-            <h1 className="text-2xl font-bold text-black">Reminders</h1>
+            <Bell className="w-6 h-6 text-black dark:text-gray-300" />
+            <h1 className="text-2xl font-bold text-black dark:text-white">Reminders</h1>
           </div>
         </div>
 
@@ -92,7 +92,7 @@ export default function RemindersPage() {
             {/* Overdue */}
             {overdueReminders.length > 0 && (
               <div>
-                <h2 className="text-lg font-semibold text-red-600 mb-4 flex items-center gap-2">
+                <h2 className="text-lg font-semibold text-red-600 dark:text-red-400 mb-4 flex items-center gap-2">
                   <Bell className="w-5 h-5" />
                   Overdue ({overdueReminders.length})
                 </h2>
@@ -107,7 +107,7 @@ export default function RemindersPage() {
             {/* Upcoming */}
             {upcomingReminders.length > 0 && (
               <div>
-                <h2 className="text-lg font-semibold text-black mb-4 flex items-center gap-2">
+                <h2 className="text-lg font-semibold text-black dark:text-white mb-4 flex items-center gap-2">
                   <Clock className="w-5 h-5" />
                   Upcoming ({upcomingReminders.length})
                 </h2>
@@ -122,9 +122,9 @@ export default function RemindersPage() {
             {/* Empty state */}
             {notesWithReminders.length === 0 && (
               <div className="text-center py-12">
-                <Bell className="w-16 h-16 mx-auto mb-4 text-gray-300" />
-                <p className="text-gray-500">No reminders set yet</p>
-                <p className="text-sm text-gray-400 mt-2">Add reminders to your notes to see them here</p>
+                <Bell className="w-16 h-16 mx-auto mb-4 text-gray-300 dark:text-gray-600" />
+                <p className="text-gray-500 dark:text-gray-400">No reminders set yet</p>
+                <p className="text-sm text-gray-400 dark:text-gray-500 mt-2">Add reminders to your notes to see them here</p>
               </div>
             )}
           </div>
