@@ -230,9 +230,13 @@ Be concise and capture the key points.`
       if (!title.trim() && finalContent.length > 0) {
         try {
           const titleResponse = await base44.integrations.Core.InvokeLLM({
-            prompt: `Create a short, catchy title (max 5 words) for this note: "${finalContent.substring(0, 200)}"`,
+            prompt: `Read this note and create a clear, descriptive title that captures the main topic or idea. Use simple, everyday language. Keep it under 6 words. Be specific about what the note is about, not vague.
+
+Note content: "${finalContent.substring(0, 300)}"
+
+Return only the title, nothing else.`,
           });
-          finalTitle = titleResponse.trim();
+          finalTitle = titleResponse.trim().replace(/^["']|["']$/g, '');
         } catch (error) {
           finalTitle = 'New Idea';
         }
