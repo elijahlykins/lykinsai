@@ -117,8 +117,8 @@ export default function LongTermPage() {
     queryClient.invalidateQueries(['notes']);
   };
 
-  const allTags = [...new Set(notes.flatMap(n => n.tags || []))];
-  const allFolders = [...new Set(notes.map(n => n.folder || 'Uncategorized'))];
+  const allTags = [...new Set(notes.filter(n => n).flatMap(n => n.tags || []))];
+  const allFolders = [...new Set(notes.filter(n => n).map(n => n.folder || 'Uncategorized'))];
 
   let filteredNotes = notes.filter(note => note && note.storage_type === 'long_term');
   
@@ -344,7 +344,7 @@ export default function LongTermPage() {
                           </h3>
                           <div className="grid grid-cols-1 gap-2">
                             {selectedNote.connected_notes.map(connectedId => {
-                              const connectedNote = notes.find(n => n.id === connectedId);
+                              const connectedNote = notes.find(n => n && n.id === connectedId);
                               return connectedNote ? (
                                 <button
                                   key={connectedId}
