@@ -32,7 +32,7 @@
     @apply border-border;
   }
   body {
-    @apply bg-gradient-to-br from-purple-50 via-blue-50 to-pink-50 text-foreground;
+    @apply bg-gradient-to-br from-gray-50 via-blue-50/30 to-gray-100 text-foreground;
     min-height: 100vh;
   }
 }

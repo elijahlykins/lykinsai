@@ -124,7 +124,7 @@ export default function ShortTermPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-purple-50 via-blue-50 to-pink-50 flex overflow-hidden">
+    <div className="min-h-screen bg-gradient-to-br from-gray-50 via-blue-50/30 to-gray-100 flex overflow-hidden">
       <div className={`${sidebarCollapsed ? 'w-16' : 'w-64'} flex-shrink-0 transition-all duration-300`}>
         <NotionSidebar
           activeView="short_term"
