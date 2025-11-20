@@ -232,16 +232,11 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
             <ScrollArea ref={scrollRef} className="flex-1 p-8">
               <div className="max-w-4xl mx-auto space-y-4">
                 {messages.map((msg, idx) => (
-                  <div key={idx} className={`flex gap-3 ${msg.role === 'user' ? 'justify-end' : ''}`}>
-                    {msg.role === 'assistant' && (
-                      <div className="w-8 h-8 rounded-full bg-gray-200 dark:bg-[#1f1d1d]/80 flex items-center justify-center flex-shrink-0">
-                        <Bot className="w-4 h-4 text-black dark:text-gray-300" />
-                      </div>
-                    )}
-                    <div className={`max-w-[80%] p-3 rounded-lg ${
+                  <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : ''}`}>
+                    <div className={`max-w-[80%] ${
                       msg.role === 'user' 
-                        ? 'bg-gray-200 dark:bg-[#1f1d1d]/80 text-black dark:text-white' 
-                        : 'bg-white dark:bg-[#1f1d1d]/60 border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300'
+                        ? 'bg-gray-200 dark:bg-[#1f1d1d]/80 text-black dark:text-white p-4 rounded-3xl' 
+                        : 'text-gray-800 dark:text-gray-200'
                     }`}>
                       <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
                       {msg.attachments && msg.attachments.length > 0 && (
@@ -255,20 +250,12 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
                         </div>
                       )}
                     </div>
-                    {msg.role === 'user' && (
-                      <div className="w-8 h-8 rounded-full bg-gray-200 dark:bg-[#1f1d1d]/80 text-black dark:text-white flex items-center justify-center flex-shrink-0">
-                        <User className="w-4 h-4 text-black dark:text-gray-300" />
-                      </div>
-                    )}
                   </div>
                 ))}
                 {isLoading && (
-                  <div className="flex gap-3">
-                    <div className="w-8 h-8 rounded-full bg-gray-200 dark:bg-[#1f1d1d]/80 flex items-center justify-center flex-shrink-0">
-                      <Bot className="w-4 h-4 text-black dark:text-gray-300" />
-                    </div>
-                    <div className="bg-white dark:bg-[#1f1d1d]/60 border border-gray-200 dark:border-gray-700 p-3 rounded-lg">
-                      <Loader2 className="w-4 h-4 animate-spin text-gray-600 dark:text-gray-300" />
+                  <div className="flex">
+                    <div className="text-gray-600 dark:text-gray-400 text-sm">
+                      <span className="inline-block animate-pulse">Thinking...</span>
                     </div>
                   </div>
                 )}
