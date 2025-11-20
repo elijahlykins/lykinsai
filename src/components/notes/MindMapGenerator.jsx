@@ -18,12 +18,29 @@ export default function MindMapGenerator({ note, allNotes, onUpdate }) {
             .join('\n')
         : 'No connected notes';
 
+      // Fetch content from attached links/videos
+      let attachmentContext = '';
+      if (note.attachments && note.attachments.length > 0) {
+        const linkAttachments = note.attachments.filter(a => a.type === 'link');
+        for (const attachment of linkAttachments.slice(0, 3)) {
+          try {
+            const fetchedContent = await base44.integrations.Core.InvokeLLM({
+              prompt: `Fetch and summarize the key content from this URL: ${attachment.url}. Focus on main ideas, key points, and important information.`,
+              add_context_from_internet: true
+            });
+            attachmentContext += `\n\nContent from ${attachment.name || attachment.url}:\n${fetchedContent}`;
+          } catch (error) {
+            console.error('Error fetching attachment content:', error);
+          }
+        }
+      }
+
       const mindMapData = await base44.integrations.Core.InvokeLLM({
         prompt: `Create a mind map structure for this note and its connections.
 
 Main Note:
 Title: ${note.title}
-Content: ${note.content}
+Content: ${note.content}${attachmentContext}
 Tags: ${note.tags?.join(', ') || 'None'}
 
 Connected Notes:
