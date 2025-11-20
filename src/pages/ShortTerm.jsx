@@ -39,6 +39,7 @@ export default function ShortTermPage() {
   const [filterTag, setFilterTag] = useState('all');
   const [filterFolder, setFilterFolder] = useState('all');
   const [showReminderPicker, setShowReminderPicker] = useState(false);
+  const [sourceFilter, setSourceFilter] = useState('all');
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
@@ -125,6 +126,10 @@ export default function ShortTermPage() {
     filteredNotes = filteredNotes.filter(note => (note.folder || 'Uncategorized') === filterFolder);
   }
 
+  if (sourceFilter !== 'all') {
+    filteredNotes = filteredNotes.filter(note => note.source === sourceFilter);
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 via-blue-50/30 to-gray-100 flex overflow-hidden">
       <div className={`${sidebarCollapsed ? 'w-16' : 'w-64'} flex-shrink-0 transition-all duration-300`}>
@@ -154,14 +159,26 @@ export default function ShortTermPage() {
             </div>
             <div className="flex items-center gap-2">
               {!selectedNote && (
-                <Button
-                  onClick={() => setShowGraphView(!showGraphView)}
-                  variant="ghost"
-                  className="text-black hover:bg-gray-100 flex items-center gap-2"
-                >
-                  <Link2 className="w-4 h-4 text-black" />
-                  {showGraphView ? 'List View' : 'Graph View'}
-                </Button>
+                <>
+                  <Select value={sourceFilter} onValueChange={setSourceFilter}>
+                    <SelectTrigger className="w-40 h-9 bg-gray-50 border-gray-300 text-black text-sm">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent className="bg-white border-gray-200">
+                      <SelectItem value="all">All Memories</SelectItem>
+                      <SelectItem value="user">Idea Cards</SelectItem>
+                      <SelectItem value="ai">Chat Cards</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <Button
+                    onClick={() => setShowGraphView(!showGraphView)}
+                    variant="ghost"
+                    className="text-black hover:bg-gray-100 flex items-center gap-2"
+                  >
+                    <Link2 className="w-4 h-4 text-black" />
+                    {showGraphView ? 'List View' : 'Graph View'}
+                  </Button>
+                </>
               )}
               {selectedNote && (
                 <div className="flex items-center gap-2">
