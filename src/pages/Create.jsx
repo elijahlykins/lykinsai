@@ -42,7 +42,7 @@ export default function CreatePage() {
 
       <div className="flex-1 flex flex-col overflow-hidden">
       <div className="flex items-center justify-between p-6 bg-glass border-b border-white/20 dark:border-gray-700/30">
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Create Memory</h1>
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Create Idea</h1>
           <div className="flex items-center gap-2">
             <Button
               onClick={() => noteCreatorRef.current?.handleSave()}
