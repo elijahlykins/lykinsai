@@ -66,13 +66,13 @@ export default function AttachmentPanel({ attachments, onRemove, onUpdate }) {
   };
 
   return (
-    <div className="w-1/2 border-l border-white/10 p-4 overflow-auto flex-shrink-0">
+    <div className="w-1/2 border-l border-white/10 dark:border-gray-700/30 p-4 overflow-auto flex-shrink-0">
       {groups.map(group => (
         <div key={group} className="mb-6">
           <div className="flex items-center gap-2 mb-3 px-2">
-            <FolderOpen className="w-4 h-4 text-gray-400" />
-            <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wide">{group}</h3>
-            <span className="text-xs text-gray-500">({attachments.filter(a => (a.group || 'Ungrouped') === group).length})</span>
+            <FolderOpen className="w-4 h-4 text-gray-400 dark:text-gray-300" />
+            <h3 className="text-sm font-semibold text-gray-400 dark:text-gray-300 uppercase tracking-wide">{group}</h3>
+            <span className="text-xs text-gray-500 dark:text-gray-400">({attachments.filter(a => (a.group || 'Ungrouped') === group).length})</span>
           </div>
           
           <div className="space-y-3">
@@ -99,20 +99,20 @@ export default function AttachmentPanel({ attachments, onRemove, onUpdate }) {
                     )}
                     {attachment.type === 'link' && (
                       <div className="flex items-center gap-2 p-2">
-                        <LinkIcon className="w-4 h-4 text-white flex-shrink-0" />
-                        <span className="text-xs text-white truncate">{attachment.name}</span>
+                        <LinkIcon className="w-4 h-4 text-black dark:text-gray-300 flex-shrink-0" />
+                        <span className="text-xs text-black dark:text-white truncate">{attachment.name}</span>
                       </div>
                     )}
                     {attachment.type === 'file' && (
                       <div className="flex items-center gap-2 p-2">
-                        <FileText className="w-4 h-4 text-white flex-shrink-0" />
-                        <span className="text-xs text-white truncate">{attachment.name}</span>
+                        <FileText className="w-4 h-4 text-black dark:text-gray-300 flex-shrink-0" />
+                        <span className="text-xs text-black dark:text-white truncate">{attachment.name}</span>
                       </div>
                     )}
                   </div>
 
                   {attachment.caption && (
-                    <p className="text-xs text-gray-400 mt-2 px-2">{attachment.caption}</p>
+                    <p className="text-xs text-gray-400 dark:text-gray-300 mt-2 px-2">{attachment.caption}</p>
                   )}
 
                   <div className="flex gap-2 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -121,7 +121,7 @@ export default function AttachmentPanel({ attachments, onRemove, onUpdate }) {
                         setEditingCaption(attachment.id);
                         setCaptionText(attachment.caption || '');
                       }}
-                      className="text-xs text-gray-400 hover:text-white flex items-center gap-1"
+                      className="text-xs text-gray-400 dark:text-gray-300 hover:text-black dark:hover:text-white flex items-center gap-1"
                     >
                       <Edit2 className="w-3 h-3" />
                       Caption
@@ -131,7 +131,7 @@ export default function AttachmentPanel({ attachments, onRemove, onUpdate }) {
                         setEditingGroup(attachment.id);
                         setGroupName(attachment.group || '');
                       }}
-                      className="text-xs text-gray-400 hover:text-white flex items-center gap-1"
+                      className="text-xs text-gray-400 dark:text-gray-300 hover:text-black dark:hover:text-white flex items-center gap-1"
                     >
                       <FolderOpen className="w-3 h-3" />
                       Group
@@ -145,14 +145,14 @@ export default function AttachmentPanel({ attachments, onRemove, onUpdate }) {
 
       {/* Preview Dialog */}
       <Dialog open={!!previewAttachment} onOpenChange={() => setPreviewAttachment(null)}>
-        <DialogContent className="bg-dark-card border-white/10 text-white max-w-4xl">
+        <DialogContent className="bg-white dark:bg-[#1f1d1d]/95 border-gray-200 dark:border-gray-700 text-black dark:text-white max-w-4xl">
           <DialogHeader>
-            <DialogTitle className="text-white">{previewAttachment?.name || 'Preview'}</DialogTitle>
+            <DialogTitle className="text-black dark:text-white">{previewAttachment?.name || 'Preview'}</DialogTitle>
           </DialogHeader>
           <div className="py-4">
             {previewAttachment && renderPreview(previewAttachment)}
             {previewAttachment?.caption && (
-              <p className="text-gray-400 mt-4 text-center">{previewAttachment.caption}</p>
+              <p className="text-gray-600 dark:text-gray-400 mt-4 text-center">{previewAttachment.caption}</p>
             )}
           </div>
         </DialogContent>
@@ -160,28 +160,28 @@ export default function AttachmentPanel({ attachments, onRemove, onUpdate }) {
 
       {/* Caption Editor Dialog */}
       <Dialog open={!!editingCaption} onOpenChange={() => setEditingCaption(null)}>
-        <DialogContent className="bg-dark-card border-white/10 text-white">
+        <DialogContent className="bg-white dark:bg-[#1f1d1d]/95 border-gray-200 dark:border-gray-700 text-black dark:text-white">
           <DialogHeader>
-            <DialogTitle className="text-white">Add Caption</DialogTitle>
+            <DialogTitle className="text-black dark:text-white">Add Caption</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-4">
             <Input
               value={captionText}
               onChange={(e) => setCaptionText(e.target.value)}
               placeholder="Enter caption..."
-              className="bg-dark-lighter border-white/10 text-white"
+              className="bg-gray-50 dark:bg-[#1f1d1d]/80 border-gray-300 dark:border-gray-600 text-black dark:text-white"
             />
             <div className="flex justify-end gap-2">
               <Button
                 onClick={() => setEditingCaption(null)}
                 variant="ghost"
-                className="text-gray-400"
+                className="text-gray-600 dark:text-gray-400"
               >
                 Cancel
               </Button>
               <Button
                 onClick={handleSaveCaption}
-                className="bg-white text-black hover:bg-gray-200"
+                className="bg-gray-900 dark:bg-white text-white dark:text-black hover:bg-gray-800 dark:hover:bg-gray-200"
               >
                 Save
               </Button>
@@ -192,16 +192,16 @@ export default function AttachmentPanel({ attachments, onRemove, onUpdate }) {
 
       {/* Group Editor Dialog */}
       <Dialog open={!!editingGroup} onOpenChange={() => setEditingGroup(null)}>
-        <DialogContent className="bg-dark-card border-white/10 text-white">
+        <DialogContent className="bg-white dark:bg-[#1f1d1d]/95 border-gray-200 dark:border-gray-700 text-black dark:text-white">
           <DialogHeader>
-            <DialogTitle className="text-white">Set Group</DialogTitle>
+            <DialogTitle className="text-black dark:text-white">Set Group</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-4">
             <Select value={groupName} onValueChange={setGroupName}>
-              <SelectTrigger className="bg-dark-lighter border-white/10 text-white">
+              <SelectTrigger className="bg-gray-50 dark:bg-[#1f1d1d]/80 border-gray-300 dark:border-gray-600 text-black dark:text-white">
                 <SelectValue placeholder="Select or create group..." />
               </SelectTrigger>
-              <SelectContent className="bg-dark-card border-white/10">
+              <SelectContent className="bg-white dark:bg-[#1f1d1d] border-gray-200 dark:border-gray-700">
                 {groups.filter(g => g !== 'Ungrouped').map(g => (
                   <SelectItem key={g} value={g}>{g}</SelectItem>
                 ))}
@@ -211,19 +211,19 @@ export default function AttachmentPanel({ attachments, onRemove, onUpdate }) {
               value={groupName}
               onChange={(e) => setGroupName(e.target.value)}
               placeholder="Or enter new group name..."
-              className="bg-dark-lighter border-white/10 text-white"
+              className="bg-gray-50 dark:bg-[#1f1d1d]/80 border-gray-300 dark:border-gray-600 text-black dark:text-white"
             />
             <div className="flex justify-end gap-2">
               <Button
                 onClick={() => setEditingGroup(null)}
                 variant="ghost"
-                className="text-gray-400"
+                className="text-gray-600 dark:text-gray-400"
               >
                 Cancel
               </Button>
               <Button
                 onClick={handleSaveGroup}
-                className="bg-white text-black hover:bg-gray-200"
+                className="bg-gray-900 dark:bg-white text-white dark:text-black hover:bg-gray-800 dark:hover:bg-gray-200"
               >
                 Save
               </Button>

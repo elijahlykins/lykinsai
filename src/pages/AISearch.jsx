@@ -272,7 +272,7 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-50 via-blue-50/30 to-gray-100 flex overflow-hidden">
+    <div className="min-h-screen bg-gradient-to-br from-gray-50 via-blue-50/30 to-gray-100 dark:from-[#171515] dark:via-[#171515] dark:to-[#171515] flex overflow-hidden">
       <div className={`${sidebarCollapsed ? 'w-16' : 'w-64'} flex-shrink-0 transition-all duration-300`}>
         <NotionSidebar
           activeView="search"
@@ -292,8 +292,8 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
       </div>
 
       <div className="flex-1 flex flex-col overflow-hidden">
-        <div className="p-6 bg-glass border-b border-white/20">
-          <h1 className="text-2xl font-bold text-black mb-6">AI Search</h1>
+        <div className="p-6 bg-glass border-b border-white/20 dark:border-gray-700/30">
+          <h1 className="text-2xl font-bold text-black dark:text-white mb-6">AI Search</h1>
           
           <div className="max-w-2xl space-y-4">
             {/* Search Input */}
@@ -305,12 +305,12 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
                     onChange={(e) => setQuery(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
                     placeholder="Search by ideas, concepts, or keywords..."
-                    className="flex-1 bg-gray-50 border-gray-300 text-black placeholder:text-gray-500"
+                    className="flex-1 bg-gray-50 dark:bg-[#1f1d1d]/80 border-gray-300 dark:border-gray-600 text-black dark:text-white placeholder:text-gray-500 dark:placeholder:text-gray-400"
                   />
                   
                   {/* Suggestions Dropdown */}
                   {suggestions.length > 0 && (
-                    <div className="absolute top-full mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg z-50">
+                    <div className="absolute top-full mt-1 w-full bg-white dark:bg-[#1f1d1d] border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-50">
                       {suggestions.map((suggestion, idx) => (
                         <button
                           key={idx}
@@ -318,7 +318,7 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
                             setQuery(suggestion);
                             setSuggestions([]);
                           }}
-                          className="w-full px-4 py-2 text-left text-sm text-black hover:bg-gray-50 first:rounded-t-lg last:rounded-b-lg"
+                          className="w-full px-4 py-2 text-left text-sm text-black dark:text-white hover:bg-gray-50 dark:hover:bg-[#2a2828] first:rounded-t-lg last:rounded-b-lg"
                         >
                           {suggestion}
                         </button>
@@ -329,7 +329,7 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
                 <Button
                   onClick={handleSearch}
                   disabled={isSearching || !query.trim()}
-                  className="bg-black text-white hover:bg-gray-800"
+                  className="bg-black dark:bg-white text-white dark:text-black hover:bg-gray-800 dark:hover:bg-gray-200"
                 >
                   {isSearching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
                 </Button>
@@ -337,7 +337,7 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
                   onClick={() => setShowSaveDialog(true)}
                   disabled={!query.trim()}
                   variant="outline"
-                  className="border-gray-300 text-black hover:bg-gray-50"
+                  className="border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-50 dark:hover:bg-[#1f1d1d]"
                 >
                   <Save className="w-4 h-4" />
                 </Button>
