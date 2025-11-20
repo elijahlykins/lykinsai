@@ -1,11 +1,14 @@
 import React, { useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { HelpCircle, Loader2 } from 'lucide-react';
+import { HelpCircle, Loader2, MessageCircle } from 'lucide-react';
 import { base44 } from '@/api/base44Client';
+import { useNavigate } from 'react-router-dom';
+import { createPageUrl } from '../../utils';
 
 export default function FollowUpQuestions({ note, allNotes }) {
   const [questions, setQuestions] = useState([]);
   const [isGenerating, setIsGenerating] = useState(false);
+  const navigate = useNavigate();
 
   const generateQuestions = async () => {
     setIsGenerating(true);
@@ -74,6 +77,17 @@ ${personalityPrompts[personality]} ${detailPrompts[detailLevel]}`,
     }
   }, []);
 
+  const handleChatWithQuestions = () => {
+    // Store questions and note context in localStorage
+    localStorage.setItem('chat_followup_questions', JSON.stringify({
+      questions,
+      noteTitle: note.title,
+      noteContent: note.content,
+      noteId: note.id
+    }));
+    navigate(createPageUrl('MemoryChat'));
+  };
+
   if (allNotes.length <= 1) {
     return null;
   }
@@ -86,21 +100,32 @@ ${personalityPrompts[personality]} ${detailPrompts[detailLevel]}`,
           <h3 className="text-lg font-semibold text-black">Follow-Up Questions</h3>
         </div>
         {questions.length > 0 && (
-          <Button
-            onClick={generateQuestions}
-            disabled={isGenerating}
-            size="sm"
-            className="clay-button-small"
-          >
-            {isGenerating ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin mr-2" />
-                Generating...
-              </>
-            ) : (
-              'Regenerate'
-            )}
-          </Button>
+          <div className="flex gap-2">
+            <Button
+              onClick={handleChatWithQuestions}
+              size="sm"
+              className="clay-button-small flex items-center gap-2"
+            >
+              <MessageCircle className="w-4 h-4" />
+              Discuss
+            </Button>
+            <Button
+              onClick={generateQuestions}
+              disabled={isGenerating}
+              size="sm"
+              variant="outline"
+              className="border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-50 dark:hover:bg-[#1f1d1d]"
+            >
+              {isGenerating ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                  Generating...
+                </>
+              ) : (
+                'Regenerate'
+              )}
+            </Button>
+          </div>
         )}
       </div>
 

@@ -6,7 +6,7 @@ import SettingsModal from '../components/notes/SettingsModal';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Send, Loader2, Bot, User, Plus, Mic, MessageSquare, X, File, Image as ImageIcon, Link as LinkIcon, Video, FileText } from 'lucide-react';
+import { Send, Loader2, Bot, User, Plus, Mic, MessageSquare, X, File, Image as ImageIcon, Link as LinkIcon, Video, FileText, HelpCircle } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { useNavigate } from 'react-router-dom';
@@ -22,6 +22,7 @@ export default function MemoryChatPage() {
   const [inputMode, setInputMode] = useState('text');
   const [attachments, setAttachments] = useState([]);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
+  const [followUpQuestions, setFollowUpQuestions] = useState(null);
   const scrollRef = useRef(null);
   const fileInputRef = useRef(null);
   const navigate = useNavigate();
@@ -40,6 +41,13 @@ export default function MemoryChatPage() {
   useEffect(() => {
     const settings = JSON.parse(localStorage.getItem('lykinsai_settings') || '{}');
     setCurrentModel(settings.aiModel || 'core');
+    
+    // Check for follow-up questions
+    const storedQuestions = localStorage.getItem('chat_followup_questions');
+    if (storedQuestions) {
+      setFollowUpQuestions(JSON.parse(storedQuestions));
+      localStorage.removeItem('chat_followup_questions');
+    }
   }, []);
 
   // Save chat as a memory card when user leaves
@@ -189,6 +197,42 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
       </div>
 
       <div className="flex-1 flex flex-col overflow-hidden">
+        {followUpQuestions && (
+          <div className="p-4 bg-blue-50 dark:bg-blue-900/20 border-b border-blue-200 dark:border-blue-800">
+            <div className="flex items-start justify-between mb-2">
+              <div>
+                <h3 className="text-sm font-semibold text-black dark:text-white flex items-center gap-2">
+                  <HelpCircle className="w-4 h-4" />
+                  Follow-Up Questions: {followUpQuestions.noteTitle}
+                </h3>
+                <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">Click a question to discuss it with AI</p>
+              </div>
+              <Button
+                onClick={() => setFollowUpQuestions(null)}
+                variant="ghost"
+                size="sm"
+                className="text-gray-500 hover:text-black dark:hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </Button>
+            </div>
+            <div className="space-y-2">
+              {followUpQuestions.questions.map((question, idx) => (
+                <button
+                  key={idx}
+                  onClick={() => {
+                    setInput(question);
+                    setFollowUpQuestions(null);
+                  }}
+                  className="w-full text-left p-2 rounded-lg bg-white dark:bg-[#1f1d1d]/60 hover:bg-gray-50 dark:hover:bg-[#2a2828] transition-all text-sm text-black dark:text-white"
+                >
+                  <span className="text-blue-600 dark:text-blue-400 font-semibold mr-2">{idx + 1}.</span>
+                  {question}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         <div className="p-6 bg-glass border-b border-white/20 dark:border-gray-700/30">
           <div className="flex items-center justify-end">
             <div className="flex items-center gap-2">
