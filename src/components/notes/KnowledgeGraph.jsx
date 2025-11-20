@@ -15,7 +15,7 @@ export default function KnowledgeGraph({ notes, selectedNoteId, onSelectNote }) 
     const height = canvas.height = canvas.offsetHeight;
 
     // Create nodes
-    const nodes = notes.map((note, index) => ({
+    const nodes = notes.filter(note => note).map((note, index) => ({
       id: note.id,
       title: note.title,
       x: Math.random() * (width - 100) + 50,

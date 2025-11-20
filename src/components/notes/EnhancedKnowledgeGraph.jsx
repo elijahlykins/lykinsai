@@ -45,7 +45,7 @@ export default function EnhancedKnowledgeGraph({ notes, onSelectNote, onUpdateCo
     setIsAnalyzing(true);
     try {
       // Analyze relationships using AI
-      const notesContext = notes.map(n => 
+      const notesContext = notes.filter(n => n).map(n => 
         `ID: ${n.id}\nTitle: ${n.title}\nContent: ${n.content.substring(0, 300)}\nTags: ${n.tags?.join(', ') || 'None'}\nFolder: ${n.folder || 'Uncategorized'}`
       ).join('\n\n---\n\n');
 
@@ -90,7 +90,7 @@ Find meaningful connections based on content, themes, and ideas - not just keywo
       });
 
       setGraphData({
-        nodes: notes.map(n => ({
+        nodes: notes.filter(n => n).map(n => ({
           id: n.id,
           title: n.title,
           color: n.color || 'lavender',
@@ -106,7 +106,7 @@ Find meaningful connections based on content, themes, and ideas - not just keywo
       console.error('Error building graph:', error);
       // Fallback to basic graph
       setGraphData({
-        nodes: notes.map(n => ({
+        nodes: notes.filter(n => n).map(n => ({
           id: n.id,
           title: n.title,
           color: n.color || 'lavender',
