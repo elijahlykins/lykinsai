@@ -3,8 +3,8 @@ import { Button } from '@/components/ui/button';
 import { Brain, Loader2, Download } from 'lucide-react';
 import { base44 } from '@/api/base44Client';
 
-export default function MindMapGenerator({ note, allNotes }) {
-  const [mindMap, setMindMap] = useState(null);
+export default function MindMapGenerator({ note, allNotes, onUpdate }) {
+  const [mindMap, setMindMap] = useState(note.mind_map || null);
   const [isGenerating, setIsGenerating] = useState(false);
 
   const generateMindMap = async () => {
@@ -84,6 +84,11 @@ Return as a structured tree with nodes and their relationships.`,
       });
 
       setMindMap(mindMapData);
+      
+      // Save to note
+      if (onUpdate) {
+        await onUpdate({ mind_map: mindMapData });
+      }
     } catch (error) {
       console.error('Error generating mind map:', error);
     } finally {
@@ -106,7 +111,10 @@ Return as a structured tree with nodes and their relationships.`,
   };
 
   React.useEffect(() => {
-    generateMindMap();
+    // Only generate if not already saved
+    if (!note.mind_map) {
+      generateMindMap();
+    }
   }, []);
 
   return (
