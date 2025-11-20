@@ -282,10 +282,7 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
                     {followUpQuestions.questions.map((question, idx) => (
                       <button
                         key={idx}
-                        onClick={() => {
-                          setInput(question);
-                          setFollowUpQuestions(null);
-                        }}
+                        onClick={() => setInput(question)}
                         className="px-4 py-2 bg-blue-50 dark:bg-blue-900/20 hover:bg-blue-100 dark:hover:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded-full text-sm transition-all border border-blue-200 dark:border-blue-800"
                       >
                         {question}
@@ -388,10 +385,7 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
                       {followUpQuestions.questions.map((question, idx) => (
                         <button
                           key={idx}
-                          onClick={() => {
-                            setInput(question);
-                            setFollowUpQuestions(null);
-                          }}
+                          onClick={() => setInput(question)}
                           className="px-3 py-1.5 bg-blue-50 dark:bg-blue-900/20 hover:bg-blue-100 dark:hover:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded-full text-xs transition-all border border-blue-200 dark:border-blue-800"
                         >
                           {question}
