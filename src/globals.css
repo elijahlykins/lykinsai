@@ -28,22 +28,22 @@ css
   }
 
   .dark {
-    --background: 0 0% 7%;
-    --foreground: 0 0% 98%;
-    --card: 0 0% 10%;
-    --card-foreground: 0 0% 98%;
-    --popover: 0 0% 10%;
-    --popover-foreground: 0 0% 98%;
-    --primary: 0 0% 98%;
+    --background: 0 0% 9%;
+    --foreground: 0 0% 100%;
+    --card: 0 0% 9%;
+    --card-foreground: 0 0% 100%;
+    --popover: 0 0% 9%;
+    --popover-foreground: 0 0% 100%;
+    --primary: 0 0% 100%;
     --primary-foreground: 0 0% 9%;
-    --secondary: 0 0% 14.9%;
-    --secondary-foreground: 0 0% 98%;
-    --muted: 0 0% 14.9%;
-    --muted-foreground: 0 0% 63.9%;
-    --accent: 0 0% 14.9%;
-    --accent-foreground: 0 0% 98%;
+    --secondary: 0 0% 12%;
+    --secondary-foreground: 0 0% 100%;
+    --muted: 0 0% 12%;
+    --muted-foreground: 0 0% 70%;
+    --accent: 0 0% 12%;
+    --accent-foreground: 0 0% 100%;
     --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 0 0% 98%;
+    --destructive-foreground: 0 0% 100%;
     --border: 0 0% 20%;
     --input: 0 0% 20%;
     --ring: 0 0% 83.1%;
@@ -68,10 +68,10 @@ css
 
   /* Dark theme styles */
   .dark {
-    --note-text-color: #fff;
-    --bg-gradient-from: #0f172a;
-    --bg-gradient-via: rgba(15, 23, 42, 0.8);
-    --bg-gradient-to: #1e293b;
+    --note-text-color: #ffffff;
+    --bg-gradient-from: #171515;
+    --bg-gradient-via: rgba(23, 21, 21, 0.9);
+    --bg-gradient-to: #171515;
   }
 }
 
@@ -82,23 +82,23 @@ css
   }
 
   .bg-glass-sidebar {
-    @apply bg-white/60 dark:bg-gray-900/60 backdrop-blur-2xl border-r border-white/20 dark:border-gray-700/30;
+    @apply bg-white/60 dark:bg-[#1f1d1d]/80 backdrop-blur-2xl border-r border-white/20 dark:border-gray-700/30;
   }
 
   .bg-glass-card {
-    @apply bg-white/70 dark:bg-gray-800/70 backdrop-blur-2xl shadow-lg;
+    @apply bg-white/70 dark:bg-[#1f1d1d]/80 backdrop-blur-2xl shadow-lg;
   }
 
   .clay-card {
-    @apply bg-white/90 dark:bg-gray-800/90 backdrop-blur-xl rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.08)] dark:shadow-[0_8px_32px_rgba(0,0,0,0.3)] border border-white/40 dark:border-gray-700/40;
+    @apply bg-white/90 dark:bg-[#1f1d1d]/90 backdrop-blur-xl rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.08)] dark:shadow-[0_8px_32px_rgba(0,0,0,0.3)] border border-white/40 dark:border-gray-700/40;
   }
 
   .clay-input {
-    @apply bg-white/60 dark:bg-gray-800/60 backdrop-blur-md border border-gray-200/60 dark:border-gray-700/60 rounded-xl focus:ring-2 focus:ring-blue-400/50 dark:focus:ring-blue-500/50 focus:border-transparent transition-all;
+    @apply bg-white/60 dark:bg-[#1f1d1d]/80 backdrop-blur-md border border-gray-200/60 dark:border-gray-600/60 rounded-xl focus:ring-2 focus:ring-blue-400/50 dark:focus:ring-blue-500/50 focus:border-transparent transition-all;
   }
 
   .glass-button {
-    @apply bg-white/80 dark:bg-gray-800/80 backdrop-blur-md hover:bg-white/90 dark:hover:bg-gray-700/90 border border-white/40 dark:border-gray-700/40 rounded-xl transition-all shadow-sm;
+    @apply bg-white/80 dark:bg-[#1f1d1d]/80 backdrop-blur-md hover:bg-white/90 dark:hover:bg-[#2a2828]/90 border border-white/40 dark:border-gray-600/40 rounded-xl transition-all shadow-sm;
   }
 }
 
