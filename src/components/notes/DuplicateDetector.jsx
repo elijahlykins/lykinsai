@@ -4,6 +4,8 @@ import { Button } from '@/components/ui/button';
 import { AlertCircle, Merge, X } from 'lucide-react';
 import { base44 } from '@/api/base44Client';
 import { format } from 'date-fns';
+import { Label } from '@/components/ui/label';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import {
   Dialog,
   DialogContent,
@@ -17,6 +19,7 @@ export default function DuplicateDetector({ notes, onMerge }) {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [dismissed, setDismissed] = useState([]);
   const [mergeDialog, setMergeDialog] = useState(null);
+  const [deleteOption, setDeleteOption] = useState('delete');
 
   useEffect(() => {
     if (notes.length > 1) {
@@ -115,11 +118,14 @@ Create a well-structured merged note that captures all important information fro
         color: note1.color || note2.color
       });
 
-      // Delete original notes
-      await base44.entities.Note.delete(note1.id);
-      await base44.entities.Note.delete(note2.id);
+      // Delete original notes if user chose to delete
+      if (deleteOption === 'delete') {
+        await base44.entities.Note.delete(note1.id);
+        await base44.entities.Note.delete(note2.id);
+      }
 
       setMergeDialog(null);
+      setDeleteOption('delete');
       if (onMerge) onMerge();
     } catch (error) {
       console.error('Error merging notes:', error);
@@ -217,9 +223,24 @@ Create a well-structured merged note that captures all important information fro
                   </div>
                 );
               })()}
-              <p className="text-xs text-gray-500">
-                The original notes will be deleted and replaced with a merged version that combines all unique content.
-              </p>
+              
+              <div className="space-y-3 pt-4 border-t">
+                <Label className="text-sm font-medium text-black">What should happen to the original notes?</Label>
+                <RadioGroup value={deleteOption} onValueChange={setDeleteOption}>
+                  <div className="flex items-center space-x-2">
+                    <RadioGroupItem value="delete" id="delete" />
+                    <Label htmlFor="delete" className="text-sm text-gray-700 cursor-pointer">
+                      Delete originals (keep only merged note)
+                    </Label>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <RadioGroupItem value="keep" id="keep" />
+                    <Label htmlFor="keep" className="text-sm text-gray-700 cursor-pointer">
+                      Keep originals (have both merged and original notes)
+                    </Label>
+                  </div>
+                </RadioGroup>
+              </div>
             </div>
             <DialogFooter>
               <Button
