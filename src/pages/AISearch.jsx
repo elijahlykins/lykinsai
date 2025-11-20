@@ -1,8 +1,12 @@
 import React, { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { base44 } from '@/api/base44Client';
 import NotionSidebar from '../components/notes/NotionSidebar';
 import SettingsModal from '../components/notes/SettingsModal';
+import AIAnalysisPanel from '../components/notes/AIAnalysisPanel';
+import NoteSummarization from '../components/notes/NoteSummarization';
+import MindMapGenerator from '../components/notes/MindMapGenerator';
+import AttachmentPanel from '../components/notes/AttachmentPanel';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Search, Loader2, Clock, Filter, X, Calendar, Tag, Folder, Save, Bookmark, Trash2, Image, Video, FileText, Link } from 'lucide-react';
@@ -35,11 +39,24 @@ export default function AISearchPage() {
   const [searchName, setSearchName] = useState('');
   const navigate = useNavigate();
   const suggestionTimeoutRef = React.useRef(null);
+  const queryClient = useQueryClient();
 
   const { data: notes = [] } = useQuery({
     queryKey: ['notes'],
     queryFn: () => base44.entities.Note.list('-created_date'),
   });
+
+  const updateNoteMutation = useMutation({
+    mutationFn: ({ id, data }) => base44.entities.Note.update(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['notes'] });
+    },
+  });
+
+  const handleUpdateNote = async (id, data) => {
+    await updateNoteMutation.mutateAsync({ id, data });
+    setSelectedNote(prev => ({ ...prev, ...data }));
+  };
 
   // Extract unique tags and folders
   const allTags = React.useMemo(() => {
@@ -469,21 +486,68 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
               >
                 ← Back to Results
               </Button>
+              
+              {/* Main Note Card */}
               <div className="clay-card p-8">
                 <h2 className="text-3xl font-bold text-black mb-4">{selectedNote.title}</h2>
-                <p className="leading-relaxed whitespace-pre-wrap text-black">{selectedNote.content}</p>
+                <p className="leading-relaxed whitespace-pre-wrap text-black mb-4">{selectedNote.content}</p>
+                
+                {/* Audio */}
                 {selectedNote.audio_url && (
-                  <audio controls className="w-full mt-4">
+                  <audio controls className="w-full mb-4">
                     <source src={selectedNote.audio_url} />
                   </audio>
                 )}
-                <div className="flex items-center gap-2 text-xs text-gray-500 mt-4">
+
+                {/* Attachments */}
+                {selectedNote.attachments && selectedNote.attachments.length > 0 && (
+                  <div className="mb-4">
+                    <AttachmentPanel 
+                      attachments={selectedNote.attachments}
+                      onUpdate={(attachments) => handleUpdateNote(selectedNote.id, { attachments })}
+                    />
+                  </div>
+                )}
+
+                {/* Tags and Folder */}
+                <div className="flex flex-wrap gap-2 mb-4">
+                  {selectedNote.tags?.map(tag => (
+                    <Badge key={tag} className="bg-gray-100 text-gray-700">{tag}</Badge>
+                  ))}
+                  {selectedNote.folder && (
+                    <Badge variant="outline" className="border-gray-300 text-gray-700">
+                      <Folder className="w-3 h-3 mr-1" />
+                      {selectedNote.folder}
+                    </Badge>
+                  )}
+                </div>
+
+                {/* Metadata */}
+                <div className="flex items-center gap-2 text-xs text-gray-500">
                   <Clock className="w-3 h-3" />
                   <span>{format(new Date(selectedNote.created_date), 'MMM d, yyyy')}</span>
                   <span className="mx-2">•</span>
                   <span>{selectedNote.storage_type === 'short_term' ? 'Short Term' : 'Long Term'}</span>
                 </div>
               </div>
+
+              {/* AI Analysis Panel */}
+              <AIAnalysisPanel 
+                note={selectedNote}
+                allNotes={notes}
+                onUpdate={(data) => handleUpdateNote(selectedNote.id, data)}
+              />
+
+              {/* Note Summarization */}
+              <NoteSummarization note={selectedNote} />
+
+              {/* Mind Map Generator */}
+              {selectedNote.connected_notes && selectedNote.connected_notes.length > 0 && (
+                <MindMapGenerator 
+                  note={selectedNote}
+                  allNotes={notes}
+                />
+              )}
             </div>
           ) : (
             <div className="max-w-4xl mx-auto space-y-3">
