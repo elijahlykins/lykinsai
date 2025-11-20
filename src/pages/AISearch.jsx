@@ -346,14 +346,14 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
 
             {/* Filters */}
             <div className="flex gap-2 flex-wrap items-center">
-              <Filter className="w-4 h-4 text-gray-500" />
+              <Filter className="w-4 h-4 text-gray-500 dark:text-gray-400" />
               
               {/* Date Range Filter */}
               <Select value={filters.dateRange} onValueChange={(value) => setFilters({...filters, dateRange: value})}>
-                <SelectTrigger className="w-32 h-8 bg-gray-50 border-gray-300 text-black text-xs">
+                <SelectTrigger className="w-32 h-8 bg-gray-50 dark:bg-[#1f1d1d]/80 border-gray-300 dark:border-gray-600 text-black dark:text-white text-xs">
                   <SelectValue />
                 </SelectTrigger>
-                <SelectContent className="bg-white border-gray-200">
+                <SelectContent className="bg-white dark:bg-[#1f1d1d] border-gray-200 dark:border-gray-700">
                   <SelectItem value="all">All Time</SelectItem>
                   <SelectItem value="today">Today</SelectItem>
                   <SelectItem value="week">This Week</SelectItem>
@@ -370,24 +370,24 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
                     type="date"
                     value={filters.customDateFrom || ''}
                     onChange={(e) => setFilters({...filters, customDateFrom: e.target.value})}
-                    className="w-36 h-8 bg-gray-50 border-gray-300 text-black text-xs"
+                    className="w-36 h-8 bg-gray-50 dark:bg-[#1f1d1d]/80 border-gray-300 dark:border-gray-600 text-black dark:text-white text-xs"
                   />
-                  <span className="text-xs text-gray-500">to</span>
+                  <span className="text-xs text-gray-500 dark:text-gray-400">to</span>
                   <Input
                     type="date"
                     value={filters.customDateTo || ''}
                     onChange={(e) => setFilters({...filters, customDateTo: e.target.value})}
-                    className="w-36 h-8 bg-gray-50 border-gray-300 text-black text-xs"
+                    className="w-36 h-8 bg-gray-50 dark:bg-[#1f1d1d]/80 border-gray-300 dark:border-gray-600 text-black dark:text-white text-xs"
                   />
                 </div>
               )}
 
               {/* Folder Filter */}
               <Select value={filters.folder} onValueChange={(value) => setFilters({...filters, folder: value})}>
-                <SelectTrigger className="w-40 h-8 bg-gray-50 border-gray-300 text-black text-xs">
+                <SelectTrigger className="w-40 h-8 bg-gray-50 dark:bg-[#1f1d1d]/80 border-gray-300 dark:border-gray-600 text-black dark:text-white text-xs">
                   <SelectValue placeholder="All Folders" />
                 </SelectTrigger>
-                <SelectContent className="bg-white border-gray-200">
+                <SelectContent className="bg-white dark:bg-[#1f1d1d] border-gray-200 dark:border-gray-700">
                   <SelectItem value="all">All Folders</SelectItem>
                   {allFolders.map(folder => (
                     <SelectItem key={folder} value={folder}>{folder}</SelectItem>
@@ -397,10 +397,10 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
 
               {/* Attachment Type Filter */}
               <Select value={filters.attachmentType} onValueChange={(value) => setFilters({...filters, attachmentType: value})}>
-                <SelectTrigger className="w-40 h-8 bg-gray-50 border-gray-300 text-black text-xs">
+                <SelectTrigger className="w-40 h-8 bg-gray-50 dark:bg-[#1f1d1d]/80 border-gray-300 dark:border-gray-600 text-black dark:text-white text-xs">
                   <SelectValue placeholder="All Types" />
                 </SelectTrigger>
-                <SelectContent className="bg-white border-gray-200">
+                <SelectContent className="bg-white dark:bg-[#1f1d1d] border-gray-200 dark:border-gray-700">
                   <SelectItem value="all">All Types</SelectItem>
                   <SelectItem value="image">Images</SelectItem>
                   <SelectItem value="video">Videos</SelectItem>
@@ -411,7 +411,7 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
 
               {/* Tag Badges */}
               {filters.tags.map(tag => (
-                <Badge key={tag} className="bg-gray-200 text-black hover:bg-gray-300">
+                <Badge key={tag} className="bg-gray-200 dark:bg-[#1f1d1d]/80 text-black dark:text-white hover:bg-gray-300 dark:hover:bg-[#2a2828]">
                   {tag}
                   <button
                     onClick={() => setFilters({...filters, tags: filters.tags.filter(t => t !== tag)})}
@@ -429,10 +429,10 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
                     setFilters({...filters, tags: [...filters.tags, value]});
                   }
                 }}>
-                  <SelectTrigger className="w-32 h-8 bg-gray-50 border-gray-300 text-black text-xs">
+                  <SelectTrigger className="w-32 h-8 bg-gray-50 dark:bg-[#1f1d1d]/80 border-gray-300 dark:border-gray-600 text-black dark:text-white text-xs">
                     <SelectValue placeholder="+ Add Tag" />
                   </SelectTrigger>
-                  <SelectContent className="bg-white border-gray-200">
+                  <SelectContent className="bg-white dark:bg-[#1f1d1d] border-gray-200 dark:border-gray-700">
                     {allTags.map(tag => (
                       <SelectItem key={tag} value={tag}>{tag}</SelectItem>
                     ))}
@@ -444,7 +444,7 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
               {(filters.dateRange !== 'all' || filters.folder !== 'all' || filters.attachmentType !== 'all' || filters.tags.length > 0) && (
                 <button
                   onClick={() => setFilters({ dateRange: 'all', tags: [], folder: 'all', attachmentType: 'all', customDateFrom: null, customDateTo: null })}
-                  className="text-xs text-gray-500 hover:text-black"
+                  className="text-xs text-gray-500 dark:text-gray-400 hover:text-black dark:hover:text-white"
                 >
                   Clear all
                 </button>
