@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Send, Loader2, Bot, User } from 'lucide-react';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useNavigate } from 'react-router-dom';
 import { createPageUrl } from '../utils';
 
@@ -16,6 +17,7 @@ export default function MemoryChatPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [currentModel, setCurrentModel] = useState('core');
   const scrollRef = useRef(null);
   const navigate = useNavigate();
 
@@ -30,6 +32,11 @@ export default function MemoryChatPage() {
     }
   }, [messages]);
 
+  useEffect(() => {
+    const settings = JSON.parse(localStorage.getItem('lykinsai_settings') || '{}');
+    setCurrentModel(settings.aiModel || 'core');
+  }, []);
+
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
 
@@ -42,6 +49,7 @@ export default function MemoryChatPage() {
       const settings = JSON.parse(localStorage.getItem('lykinsai_settings') || '{}');
       const personality = settings.aiPersonality || 'balanced';
       const detailLevel = settings.aiDetailLevel || 'medium';
+      const aiModel = currentModel || settings.aiModel || 'core';
 
       const personalityStyles = {
         professional: 'You are a professional memory assistant. Be formal, precise, and objective.',
@@ -62,6 +70,7 @@ export default function MemoryChatPage() {
 
       const conversationHistory = messages.map(m => `${m.role}: ${m.content}`).join('\n');
 
+      // For now, all models use Core.InvokeLLM until backend integrations are set up
       const response = await base44.integrations.Core.InvokeLLM({
         prompt: `${personalityStyles[personality]} ${detailStyles[detailLevel]}
 
@@ -83,6 +92,13 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleModelChange = (model) => {
+    setCurrentModel(model);
+    const settings = JSON.parse(localStorage.getItem('lykinsai_settings') || '{}');
+    settings.aiModel = model;
+    localStorage.setItem('lykinsai_settings', JSON.stringify(settings));
   };
 
   return (
@@ -107,7 +123,28 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
 
       <div className="flex-1 flex flex-col overflow-hidden">
         <div className="p-6 bg-glass border-b border-white/20 dark:border-gray-700/30">
-          <h1 className="text-2xl font-bold text-black dark:text-white">Memory Chat</h1>
+          <div className="flex items-center justify-between">
+            <h1 className="text-2xl font-bold text-black dark:text-white">Memory Chat</h1>
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-gray-500 dark:text-gray-400">Model:</span>
+              <Select value={currentModel} onValueChange={handleModelChange}>
+                <SelectTrigger className="w-48 h-9 bg-gray-50 dark:bg-[#1f1d1d]/80 border-gray-300 dark:border-gray-600 text-black dark:text-white text-sm">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="bg-white dark:bg-[#1f1d1d] border-gray-200 dark:border-gray-700">
+                  <SelectItem value="core">Core (Default)</SelectItem>
+                  <SelectItem value="gpt-3.5">GPT-3.5</SelectItem>
+                  <SelectItem value="gpt-4">GPT-4</SelectItem>
+                  <SelectItem value="gpt-4o">GPT-4o</SelectItem>
+                  <SelectItem value="gemini-pro">Gemini Pro</SelectItem>
+                  <SelectItem value="gemini-flash">Gemini Flash</SelectItem>
+                  <SelectItem value="claude-3-opus">Claude 3 Opus</SelectItem>
+                  <SelectItem value="claude-3-sonnet">Claude 3 Sonnet</SelectItem>
+                  <SelectItem value="claude-3-haiku">Claude 3 Haiku</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
         </div>
 
         <ScrollArea ref={scrollRef} className="flex-1 p-8">

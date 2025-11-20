@@ -16,7 +16,8 @@ export default function SettingsModal({ isOpen, onClose }) {
     fontSize: 'medium',
     layoutDensity: 'comfortable',
     aiPersonality: 'balanced',
-    aiDetailLevel: 'medium'
+    aiDetailLevel: 'medium',
+    aiModel: 'core'
   });
 
   useEffect(() => {
@@ -69,7 +70,7 @@ export default function SettingsModal({ isOpen, onClose }) {
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="bg-glass-card border-white/30 text-gray-900 max-w-md backdrop-blur-2xl">
+      <DialogContent className="bg-glass-card border-white/30 text-gray-900 max-w-md backdrop-blur-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="text-gray-900">Settings</DialogTitle>
         </DialogHeader>
@@ -174,6 +175,27 @@ export default function SettingsModal({ isOpen, onClose }) {
                 <SelectItem value="compact">Compact</SelectItem>
                 <SelectItem value="comfortable">Comfortable</SelectItem>
                 <SelectItem value="spacious">Spacious</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* AI Model */}
+          <div className="space-y-2">
+            <Label className="text-gray-900 dark:text-white">AI Model</Label>
+            <Select value={settings.aiModel} onValueChange={(value) => setSettings({...settings, aiModel: value})}>
+              <SelectTrigger className="bg-white/60 dark:bg-gray-800/60 border-white/40 dark:border-gray-700/40 text-gray-900 dark:text-white backdrop-blur-md rounded-xl">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="bg-glass-card border-white/30 dark:border-gray-700/30 backdrop-blur-2xl">
+                <SelectItem value="core">Core (Default)</SelectItem>
+                <SelectItem value="gpt-3.5">GPT-3.5</SelectItem>
+                <SelectItem value="gpt-4">GPT-4</SelectItem>
+                <SelectItem value="gpt-4o">GPT-4o</SelectItem>
+                <SelectItem value="gemini-pro">Gemini Pro</SelectItem>
+                <SelectItem value="gemini-flash">Gemini Flash</SelectItem>
+                <SelectItem value="claude-3-opus">Claude 3 Opus</SelectItem>
+                <SelectItem value="claude-3-sonnet">Claude 3 Sonnet</SelectItem>
+                <SelectItem value="claude-3-haiku">Claude 3 Haiku</SelectItem>
               </SelectContent>
             </Select>
           </div>
