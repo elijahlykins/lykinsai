@@ -64,6 +64,8 @@ css
     --bg-gradient-from: #f9fafb;
     --bg-gradient-via: rgba(239, 246, 255, 0.3);
     --bg-gradient-to: #f3f4f6;
+    --layout-density: 1;
+    --accent-color: #b8a4d4;
   }
 
   /* Dark theme styles */
@@ -91,6 +93,7 @@ css
 
   .clay-card {
     @apply bg-white/90 dark:bg-[#1f1d1d]/90 backdrop-blur-xl rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.08)] dark:shadow-[0_8px_32px_rgba(0,0,0,0.3)] border border-white/40 dark:border-gray-700/40;
+    padding: calc(1rem * var(--layout-density));
   }
 
   .clay-input {

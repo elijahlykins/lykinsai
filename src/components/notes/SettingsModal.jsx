@@ -35,11 +35,36 @@ export default function SettingsModal({ isOpen, onClose }) {
     
     // Apply theme globally
     document.documentElement.classList.toggle('dark', settings.theme === 'dark');
-    document.documentElement.style.setProperty('--note-text-color', settings.textColor);
-    document.documentElement.style.setProperty('--accent-color', settings.accentColor);
-    document.documentElement.style.setProperty('--font-size', settings.fontSize === 'small' ? '14px' : settings.fontSize === 'large' ? '18px' : '16px');
+    
+    // Apply font size
+    const fontSizes = {
+      small: '14px',
+      medium: '16px',
+      large: '18px'
+    };
+    document.documentElement.style.fontSize = fontSizes[settings.fontSize];
+    
+    // Apply layout density
+    const densities = {
+      compact: '0.75',
+      comfortable: '1',
+      spacious: '1.25'
+    };
+    document.documentElement.style.setProperty('--layout-density', densities[settings.layoutDensity]);
+    
+    // Apply accent color
+    const accentColors = {
+      lavender: '#b8a4d4',
+      mint: '#8dd4b8',
+      blue: '#8db4d4',
+      peach: '#d4b8a4'
+    };
+    document.documentElement.style.setProperty('--accent-color', accentColors[settings.accentColor]);
     
     onClose();
+    
+    // Reload to apply all changes
+    window.location.reload();
   };
 
   return (

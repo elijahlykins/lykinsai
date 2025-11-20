@@ -173,7 +173,8 @@ Be constructive, insightful, and encouraging.`,
       }
 
       // Generate AI analysis
-      const aiAnalysis = await generateAIAnalysis(finalContent);
+      const settings = JSON.parse(localStorage.getItem('lykinsai_settings') || '{}');
+      const aiAnalysis = settings.aiAnalysisAuto ? await generateAIAnalysis(finalContent) : null;
 
       // Auto-generate tags and folder suggestions
       let finalTags = tags;

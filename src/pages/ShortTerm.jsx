@@ -24,6 +24,7 @@ import EnhancedKnowledgeGraph from '../components/notes/EnhancedKnowledgeGraph';
 import ConnectionSuggestions from '../components/notes/ConnectionSuggestions';
 import ReminderPicker from '../components/notes/ReminderPicker';
 import ReminderNotifications from '../components/notes/ReminderNotifications';
+import AutoArchive from '../components/notes/AutoArchive';
 
 export default function ShortTermPage() {
   const [selectedNote, setSelectedNote] = useState(null);
@@ -372,6 +373,7 @@ export default function ShortTermPage() {
       </div>
 
       <ReminderNotifications />
+      <AutoArchive notes={notes} />
       <SettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
       {selectedNote && (
         <>
