@@ -148,19 +148,19 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
 
         {messages.length === 0 ? (
           <div className="flex-1 flex items-center justify-center p-8">
-            <div className="max-w-3xl w-full">
-              <div className="flex gap-3">
-                  <Input
-                    value={input}
-                    onChange={(e) => setInput(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-                    placeholder="What's on your mind?"
-                    className="flex-1 bg-gray-50 dark:bg-[#1f1d1d]/80 border-gray-300 dark:border-gray-600 text-black dark:text-white placeholder:text-gray-500 dark:placeholder:text-gray-400 h-14 text-lg"
-                  />
+            <div className="max-w-4xl w-full px-4">
+              <div className="relative">
+                <Input
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSend()}
+                  placeholder="What's on your mind?"
+                  className="w-full bg-white dark:bg-[#2a2a2a] border-2 border-gray-200 dark:border-gray-700 rounded-3xl text-black dark:text-white placeholder:text-gray-400 dark:placeholder:text-gray-500 h-16 text-base px-6 pr-14 shadow-lg focus:border-gray-400 dark:focus:border-gray-500 focus:ring-0 transition-all"
+                />
                 <Button
                   onClick={handleSend}
                   disabled={isLoading || !input.trim()}
-                  className="bg-black dark:bg-white text-white dark:text-black hover:bg-gray-800 dark:hover:bg-gray-200 h-14 px-8"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 bg-black dark:bg-white text-white dark:text-black hover:bg-gray-800 dark:hover:bg-gray-200 rounded-full h-12 w-12 p-0 disabled:opacity-30 transition-all"
                 >
                   {isLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
                 </Button>
@@ -206,21 +206,23 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
             </ScrollArea>
 
             <div className="p-6 bg-glass border-t border-white/20 dark:border-gray-700/30">
-              <div className="max-w-4xl mx-auto flex gap-2">
-                <Input
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-                  placeholder="What's on your mind?"
-                  className="flex-1 bg-gray-50 dark:bg-[#1f1d1d]/80 border-gray-300 dark:border-gray-600 text-black dark:text-white placeholder:text-gray-500 dark:placeholder:text-gray-400"
-                />
-                <Button
-                  onClick={handleSend}
-                  disabled={isLoading || !input.trim()}
-                  className="bg-black dark:bg-white text-white dark:text-black hover:bg-gray-800 dark:hover:bg-gray-200"
-                >
-                  {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-                </Button>
+              <div className="max-w-4xl mx-auto">
+                <div className="relative">
+                  <Input
+                    value={input}
+                    onChange={(e) => setInput(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSend()}
+                    placeholder="What's on your mind?"
+                    className="w-full bg-white dark:bg-[#2a2a2a] border-2 border-gray-200 dark:border-gray-700 rounded-3xl text-black dark:text-white placeholder:text-gray-400 dark:placeholder:text-gray-500 h-14 text-base px-6 pr-14 shadow-md focus:border-gray-400 dark:focus:border-gray-500 focus:ring-0 transition-all"
+                  />
+                  <Button
+                    onClick={handleSend}
+                    disabled={isLoading || !input.trim()}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 bg-black dark:bg-white text-white dark:text-black hover:bg-gray-800 dark:hover:bg-gray-200 rounded-full h-10 w-10 p-0 disabled:opacity-30 transition-all"
+                  >
+                    {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                  </Button>
+                </div>
               </div>
             </div>
           </>
