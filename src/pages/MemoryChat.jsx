@@ -42,6 +42,34 @@ export default function MemoryChatPage() {
     setCurrentModel(settings.aiModel || 'core');
   }, []);
 
+  // Save chat as a memory card when user leaves
+  useEffect(() => {
+    return () => {
+      if (messages.length > 0) {
+        const chatContent = messages.map(m => 
+          `${m.role === 'user' ? 'Me' : 'AI'}: ${m.content}`
+        ).join('\n\n');
+        
+        const allAttachments = messages
+          .filter(m => m.attachments && m.attachments.length > 0)
+          .flatMap(m => m.attachments);
+        
+        const firstUserMessage = messages.find(m => m.role === 'user')?.content || 'Chat conversation';
+        const title = firstUserMessage.length > 50 
+          ? firstUserMessage.substring(0, 50) + '...' 
+          : firstUserMessage;
+        
+        base44.entities.Note.create({
+          title: title,
+          content: chatContent,
+          attachments: allAttachments,
+          storage_type: 'short_term',
+          tags: ['chat', 'conversation']
+        }).catch(err => console.error('Error saving chat:', err));
+      }
+    };
+  }, [messages]);
+
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
 
