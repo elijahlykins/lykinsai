@@ -453,12 +453,12 @@ Rules:
                     <button
                       onClick={() => handleToggleMerging(!aiMergingEnabled)}
                       className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                        aiMergingEnabled ? 'bg-purple-500' : 'bg-gray-300 dark:bg-gray-600'
+                        aiMergingEnabled ? 'bg-black dark:bg-white' : 'bg-gray-300 dark:bg-gray-600'
                       }`}
                     >
                       <span
-                        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                          aiMergingEnabled ? 'translate-x-6' : 'translate-x-1'
+                        className={`inline-block h-4 w-4 transform rounded-full transition-transform ${
+                          aiMergingEnabled ? 'bg-white dark:bg-black translate-x-6' : 'bg-gray-600 dark:bg-gray-300 translate-x-1'
                         }`}
                       />
                     </button>
