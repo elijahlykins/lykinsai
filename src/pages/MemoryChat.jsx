@@ -27,6 +27,10 @@ export default function MemoryChatPage() {
   const fileInputRef = useRef(null);
   const navigate = useNavigate();
   const [lastMessageTime, setLastMessageTime] = useState(Date.now());
+  const [isRecording, setIsRecording] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
 
   const { data: notes = [] } = useQuery({
     queryKey: ['notes'],
@@ -213,6 +217,68 @@ export default function MemoryChatPage() {
     setAttachments(prev => prev.filter(a => a.id !== id));
   };
 
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = async () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        await transcribeAudio(audioBlob);
+        stream.getTracks().forEach(track => track.stop());
+      };
+
+      mediaRecorder.start();
+      setIsRecording(true);
+    } catch (error) {
+      console.error('Error starting recording:', error);
+      alert('Could not access microphone. Please check permissions.');
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+    }
+  };
+
+  const transcribeAudio = async (audioBlob) => {
+    setIsTranscribing(true);
+    try {
+      const audioFile = new File([audioBlob], 'recording.webm', { type: 'audio/webm' });
+      const { file_url } = await base44.integrations.Core.UploadFile({ file: audioFile });
+
+      const transcription = await base44.integrations.Core.InvokeLLM({
+        prompt: 'Transcribe this audio recording accurately. Return only the transcribed text without any additional commentary.',
+        file_urls: [file_url]
+      });
+
+      setInput(transcription);
+    } catch (error) {
+      console.error('Error transcribing audio:', error);
+      alert('Failed to transcribe audio. Please try again.');
+    } finally {
+      setIsTranscribing(false);
+    }
+  };
+
+  const handleAudioToggle = () => {
+    if (isRecording) {
+      stopRecording();
+    } else {
+      startRecording();
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 via-blue-50/30 to-gray-100 dark:from-[#171515] dark:via-[#171515] dark:to-[#171515] flex overflow-hidden">
       <div className={`${sidebarCollapsed ? 'w-16' : 'w-64'} flex-shrink-0 transition-all duration-300`}>
@@ -303,10 +369,11 @@ export default function MemoryChatPage() {
                   className="w-full bg-white dark:bg-[#171515] border-2 border-gray-200 dark:border-gray-700 rounded-3xl text-black dark:text-white placeholder:text-gray-400 h-16 text-base pl-14 pr-14 shadow-lg focus:border-gray-400 dark:focus:border-gray-500 focus:ring-0 transition-all"
                 />
                 <Button
-                  onClick={() => setInputMode(inputMode === 'text' ? 'audio' : 'text')}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 bg-black dark:bg-white text-white dark:text-black hover:bg-black/90 dark:hover:bg-white/90 rounded-full h-12 w-12 p-0 transition-all"
+                  onClick={handleAudioToggle}
+                  disabled={isTranscribing}
+                  className={`absolute right-2 top-1/2 -translate-y-1/2 ${isRecording ? 'bg-red-600 hover:bg-red-700' : 'bg-black dark:bg-white'} text-white ${isRecording ? '' : 'dark:text-black'} hover:bg-black/90 dark:hover:bg-white/90 rounded-full h-12 w-12 p-0 transition-all`}
                 >
-                  {inputMode === 'text' ? <Mic className="w-5 h-5" /> : <MessageSquare className="w-5 h-5" />}
+                  {isTranscribing ? <Loader2 className="w-5 h-5 animate-spin" /> : <Mic className={`w-5 h-5 ${isRecording ? 'animate-pulse' : ''}`} />}
                 </Button>
               </div>
 
@@ -406,10 +473,11 @@ export default function MemoryChatPage() {
                     className="w-full bg-white dark:bg-[#171515] border-2 border-gray-200 dark:border-gray-700 rounded-3xl text-black dark:text-white placeholder:text-gray-400 h-14 text-base pl-12 pr-12 shadow-md focus:border-gray-400 dark:focus:border-gray-500 focus:ring-0 transition-all"
                     />
                     <Button
-                    onClick={() => setInputMode(inputMode === 'text' ? 'audio' : 'text')}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 bg-black dark:bg-white text-white dark:text-black hover:bg-black/90 dark:hover:bg-white/90 rounded-full h-10 w-10 p-0 transition-all"
+                    onClick={handleAudioToggle}
+                    disabled={isTranscribing}
+                    className={`absolute right-2 top-1/2 -translate-y-1/2 ${isRecording ? 'bg-red-600 hover:bg-red-700' : 'bg-black dark:bg-white'} text-white ${isRecording ? '' : 'dark:text-black'} hover:bg-black/90 dark:hover:bg-white/90 rounded-full h-10 w-10 p-0 transition-all`}
                     >
-                    {inputMode === 'text' ? <Mic className="w-4 h-4" /> : <MessageSquare className="w-4 h-4" />}
+                    {isTranscribing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Mic className={`w-4 h-4 ${isRecording ? 'animate-pulse' : ''}`} />}
                     </Button>
                     </div>
 
