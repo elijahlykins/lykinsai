@@ -20,6 +20,7 @@ export default function DuplicateDetector({ notes, onMerge }) {
   const [dismissed, setDismissed] = useState([]);
   const [mergeDialog, setMergeDialog] = useState(null);
   const [deleteOption, setDeleteOption] = useState('delete');
+  const [showPanel, setShowPanel] = useState(false);
 
   useEffect(() => {
     if (notes.length > 1) {
@@ -66,7 +67,26 @@ Return pairs of note IDs that are duplicates or very similar, with a reason why 
         }
       });
 
-      setDuplicates(duplicateAnalysis.duplicates || []);
+      const foundDuplicates = duplicateAnalysis.duplicates || [];
+      
+      // Auto-delete duplicates in long term memory only
+      for (const duplicate of foundDuplicates) {
+        const note1 = notes.find(n => n.id === duplicate.note1_id);
+        const note2 = notes.find(n => n.id === duplicate.note2_id);
+        
+        if (note1 && note2 && 
+            note1.storage_type === 'long_term' && 
+            note2.storage_type === 'long_term' &&
+            duplicate.similarity >= 0.85) {
+          // Keep the newer one, delete the older one
+          const olderNote = new Date(note1.created_date) < new Date(note2.created_date) ? note1 : note2;
+          await base44.entities.Note.delete(olderNote.id);
+          foundDuplicates.splice(foundDuplicates.indexOf(duplicate), 1);
+        }
+      }
+      
+      setDuplicates(foundDuplicates);
+      if (foundDuplicates.length > 0 && onMerge) onMerge();
     } catch (error) {
       console.error('Error detecting duplicates:', error);
       setDuplicates([]);
@@ -149,62 +169,77 @@ Create a well-structured merged note that captures all important information fro
   return (
     <>
       <div className="mb-6">
-        <div className="flex items-center gap-2 mb-3">
-          <AlertCircle className="w-4 h-4 text-orange-600" />
-          <h3 className="text-sm font-semibold text-black">Potential Duplicates Detected</h3>
-        </div>
-        
-        <div className="grid gap-2">
-          {visibleDuplicates.slice(0, 3).map((duplicate, idx) => {
-            const note1 = notes.find(n => n.id === duplicate.note1_id);
-            const note2 = notes.find(n => n.id === duplicate.note2_id);
-            
-            if (!note1 || !note2) return null;
+        <Button
+          onClick={() => setShowPanel(true)}
+          variant="outline"
+          className="border-orange-300 dark:border-orange-600 text-orange-700 dark:text-orange-400 hover:bg-orange-50 dark:hover:bg-orange-900/20"
+        >
+          <Merge className="w-4 h-4 mr-2" />
+          {visibleDuplicates.length} Potential Duplicate{visibleDuplicates.length !== 1 ? 's' : ''} Found
+        </Button>
+      </div>
 
-            return (
-              <Card key={idx} className="p-3 bg-orange-50 border-orange-200">
-                <div className="flex items-start gap-3">
-                  <AlertCircle className="w-4 h-4 text-orange-600 mt-0.5 flex-shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-black mb-1">
-                      "{note1.title}" and "{note2.title}"
-                    </p>
-                    <p className="text-xs text-gray-600 mb-2">{duplicate.reason}</p>
-                    <div className="flex gap-2">
-                      <Button
-                        onClick={() => setMergeDialog(duplicate)}
-                        size="sm"
-                        className="bg-orange-600 text-white hover:bg-orange-700 h-7 text-xs"
-                      >
-                        <Merge className="w-3 h-3 mr-1" />
-                        Merge
-                      </Button>
-                      <Button
-                        onClick={() => handleDismiss(idx)}
-                        size="sm"
-                        variant="ghost"
-                        className="text-gray-600 hover:text-black h-7 text-xs"
-                      >
-                        Dismiss
-                      </Button>
+      {/* Duplicates Panel */}
+      <Dialog open={showPanel} onOpenChange={setShowPanel}>
+        <DialogContent className="bg-white dark:bg-[#171515] border-gray-200 dark:border-gray-700 max-w-3xl">
+          <DialogHeader>
+            <DialogTitle className="text-black dark:text-white">Merge Suggestions</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-4 max-h-[60vh] overflow-y-auto">
+            {visibleDuplicates.map((duplicate, idx) => {
+              const note1 = notes.find(n => n.id === duplicate.note1_id);
+              const note2 = notes.find(n => n.id === duplicate.note2_id);
+              
+              if (!note1 || !note2) return null;
+
+              return (
+                <Card key={idx} className="p-4 bg-orange-50 dark:bg-orange-900/20 border-orange-200 dark:border-orange-800">
+                  <div className="flex items-start gap-3">
+                    <AlertCircle className="w-5 h-5 text-orange-600 dark:text-orange-400 mt-0.5 flex-shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-black dark:text-white mb-1">
+                        "{note1.title}" and "{note2.title}"
+                      </p>
+                      <p className="text-xs text-gray-600 dark:text-gray-400 mb-3">{duplicate.reason}</p>
+                      <div className="flex gap-2">
+                        <Button
+                          onClick={() => {
+                            setMergeDialog(duplicate);
+                            setShowPanel(false);
+                          }}
+                          size="sm"
+                          className="bg-orange-600 text-white hover:bg-orange-700 dark:bg-orange-700 dark:hover:bg-orange-800 h-8 text-xs"
+                        >
+                          <Merge className="w-3 h-3 mr-1" />
+                          Merge These
+                        </Button>
+                        <Button
+                          onClick={() => handleDismiss(idx)}
+                          size="sm"
+                          variant="ghost"
+                          className="text-gray-600 dark:text-gray-400 hover:text-black dark:hover:text-white h-8 text-xs"
+                        >
+                          Dismiss
+                        </Button>
+                      </div>
                     </div>
                   </div>
-                </div>
-              </Card>
-            );
-          })}
-        </div>
-      </div>
+                </Card>
+              );
+            })}
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Merge Confirmation Dialog */}
       {mergeDialog && (
         <Dialog open={!!mergeDialog} onOpenChange={() => setMergeDialog(null)}>
-          <DialogContent className="bg-white border-gray-200">
+          <DialogContent className="bg-white dark:bg-[#171515] border-gray-200 dark:border-gray-700">
             <DialogHeader>
-              <DialogTitle className="text-black">Merge Notes</DialogTitle>
+              <DialogTitle className="text-black dark:text-white">Merge Notes</DialogTitle>
             </DialogHeader>
             <div className="space-y-4 py-4">
-              <p className="text-sm text-gray-600">
+              <p className="text-sm text-gray-600 dark:text-gray-400">
                 This will merge the following notes into one comprehensive note:
               </p>
               {(() => {
@@ -212,15 +247,15 @@ Create a well-structured merged note that captures all important information fro
                 const note2 = notes.find(n => n.id === mergeDialog.note2_id);
                 return (
                   <div className="space-y-2">
-                    <div className="p-3 bg-gray-50 rounded">
-                      <p className="font-medium text-black">{note1?.title}</p>
-                      <p className="text-xs text-gray-500">
+                    <div className="p-3 bg-gray-50 dark:bg-[#1f1d1d]/80 rounded">
+                      <p className="font-medium text-black dark:text-white">{note1?.title}</p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">
                         {format(new Date(note1?.created_date), 'MMM d, yyyy')}
                       </p>
                     </div>
-                    <div className="p-3 bg-gray-50 rounded">
-                      <p className="font-medium text-black">{note2?.title}</p>
-                      <p className="text-xs text-gray-500">
+                    <div className="p-3 bg-gray-50 dark:bg-[#1f1d1d]/80 rounded">
+                      <p className="font-medium text-black dark:text-white">{note2?.title}</p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">
                         {format(new Date(note2?.created_date), 'MMM d, yyyy')}
                       </p>
                     </div>
@@ -228,18 +263,18 @@ Create a well-structured merged note that captures all important information fro
                 );
               })()}
               
-              <div className="space-y-3 pt-4 border-t">
-                <Label className="text-sm font-medium text-black">What should happen to the original notes?</Label>
+              <div className="space-y-3 pt-4 border-t border-gray-200 dark:border-gray-700">
+                <Label className="text-sm font-medium text-black dark:text-white">What should happen to the original notes?</Label>
                 <RadioGroup value={deleteOption} onValueChange={setDeleteOption}>
                   <div className="flex items-center space-x-2">
                     <RadioGroupItem value="delete" id="delete" />
-                    <Label htmlFor="delete" className="text-sm text-gray-700 cursor-pointer">
+                    <Label htmlFor="delete" className="text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
                       Delete originals (keep only merged note)
                     </Label>
                   </div>
                   <div className="flex items-center space-x-2">
                     <RadioGroupItem value="keep" id="keep" />
-                    <Label htmlFor="keep" className="text-sm text-gray-700 cursor-pointer">
+                    <Label htmlFor="keep" className="text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
                       Keep originals (have both merged and original notes)
                     </Label>
                   </div>
@@ -250,13 +285,13 @@ Create a well-structured merged note that captures all important information fro
               <Button
                 onClick={() => setMergeDialog(null)}
                 variant="outline"
-                className="border-gray-300 text-black hover:bg-gray-50"
+                className="border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-50 dark:hover:bg-[#171515]"
               >
                 Cancel
               </Button>
               <Button
                 onClick={() => handleMerge(mergeDialog)}
-                className="bg-orange-600 text-white hover:bg-orange-700"
+                className="bg-orange-600 text-white hover:bg-orange-700 dark:bg-orange-700 dark:hover:bg-orange-800"
               >
                 Merge Notes
               </Button>
