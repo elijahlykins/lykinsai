@@ -160,7 +160,8 @@ Make questions specific, insightful, and encouraging deeper thinking.`,
   }, [content]);
 
   React.useImperativeHandle(ref, () => ({
-    handleSave: autoSave
+    handleSave: autoSave,
+    getCurrentContent: () => content
   }));
 
   const startRecording = async () => {
