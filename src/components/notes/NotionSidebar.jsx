@@ -6,9 +6,8 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { ScrollArea } from "@/components/ui/scroll-area";
 
-export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, onOpenChat, isCollapsed, onToggleCollapse }) {
+export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, onOpenChat, onOpenSettings, isCollapsed, onToggleCollapse }) {
   const navItems = [
     { id: 'create', icon: Plus, label: 'Create', tooltip: 'Create new memories' },
     { id: 'short_term', icon: Clock, label: 'Short Term', tooltip: 'Recent memories from the past 30 days' },
@@ -30,29 +29,42 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
           <ChevronRight className="w-5 h-5" />
         </button>
         <TooltipProvider delayDuration={300}>
-          <ScrollArea className="flex-1">
-            <div className="flex flex-col items-center gap-3 mt-8 px-3 pb-3">
-              {navItems.map((item) => (
-                <Tooltip key={item.id}>
-                  <TooltipTrigger asChild>
-                    <button
-                      onClick={() => item.onClick ? item.onClick() : onViewChange(item.id)}
-                      className={`p-3 rounded-2xl transition-all backdrop-blur-sm border ${
-                        activeView === item.id
-                          ? 'bg-white dark:bg-[#171515] text-black dark:text-white shadow-lg border-white/50 dark:border-gray-600/50'
-                          : 'text-black dark:text-white hover:bg-white/40 dark:hover:bg-[#171515]/40 hover:text-black dark:hover:text-white border-white/20 dark:border-gray-700/20'
-                      }`}
-                    >
-                      <item.icon className="w-5 h-5" />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="right">
-                    <p>{item.tooltip}</p>
-                  </TooltipContent>
-                </Tooltip>
-              ))}
-            </div>
-          </ScrollArea>
+          <div className="flex-1 flex flex-col items-center gap-3 mt-8">
+            {navItems.map((item) => (
+              <Tooltip key={item.id}>
+                <TooltipTrigger asChild>
+                  <button
+                    onClick={() => item.onClick ? item.onClick() : onViewChange(item.id)}
+                    className={`p-3 rounded-2xl transition-all backdrop-blur-sm border ${
+                      activeView === item.id
+                        ? 'bg-white dark:bg-[#171515] text-black dark:text-white shadow-lg border-white/50 dark:border-gray-600/50'
+                        : 'text-black dark:text-white hover:bg-white/40 dark:hover:bg-[#171515]/40 hover:text-black dark:hover:text-white border-white/20 dark:border-gray-700/20'
+                    }`}
+                  >
+                    <item.icon className="w-5 h-5" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="right">
+                  <p>{item.tooltip}</p>
+                </TooltipContent>
+              </Tooltip>
+            ))}
+          </div>
+          <div className="mt-auto">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={onOpenSettings}
+                  className="p-3 hover:bg-white/40 dark:hover:bg-white/10 rounded-2xl transition-all text-gray-700 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white backdrop-blur-sm border border-white/20 dark:border-gray-700/20"
+                >
+                  <Settings className="w-5 h-5" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right">
+                <p>Settings</p>
+              </TooltipContent>
+            </Tooltip>
+          </div>
         </TooltipProvider>
       </div>
     );
@@ -74,30 +86,46 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
       </div>
 
       <TooltipProvider delayDuration={300}>
-        <ScrollArea className="flex-1">
-          <nav className="space-y-2 pr-4 pb-4">
-            {navItems.map((item) => (
-              <Tooltip key={item.id}>
-                <TooltipTrigger asChild>
-                  <button
-                    onClick={() => item.onClick ? item.onClick() : onViewChange(item.id)}
-                    className={`w-full px-4 py-3 rounded-2xl text-sm font-medium transition-all flex items-center gap-3 backdrop-blur-sm border ${
-                      activeView === item.id
-                        ? 'bg-white dark:bg-[#171515] text-black dark:text-white shadow-lg border-white/50 dark:border-gray-600/50'
-                        : 'text-black dark:text-white hover:bg-white/40 dark:hover:bg-[#171515]/40 hover:text-black dark:hover:text-white border-white/20 dark:border-gray-700/20'
-                    }`}
-                  >
-                    <item.icon className="w-5 h-5" />
-                    {item.label}
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="right">
-                  <p>{item.tooltip}</p>
-                </TooltipContent>
-              </Tooltip>
-            ))}
-          </nav>
-        </ScrollArea>
+        <nav className="space-y-2 flex-1">
+          {navItems.map((item) => (
+            <Tooltip key={item.id}>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={() => item.onClick ? item.onClick() : onViewChange(item.id)}
+                  className={`w-full px-4 py-3 rounded-2xl text-sm font-medium transition-all flex items-center gap-3 backdrop-blur-sm border ${
+                    activeView === item.id
+                      ? 'bg-white dark:bg-[#171515] text-black dark:text-white shadow-lg border-white/50 dark:border-gray-600/50'
+                      : 'text-black dark:text-white hover:bg-white/40 dark:hover:bg-[#171515]/40 hover:text-black dark:hover:text-white border-white/20 dark:border-gray-700/20'
+                  }`}
+                >
+                  <item.icon className="w-5 h-5" />
+                  {item.label}
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right">
+                <p>{item.tooltip}</p>
+              </TooltipContent>
+            </Tooltip>
+          ))}
+        </nav>
+
+        {/* Settings at bottom */}
+        <div className="mt-auto pt-3">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={onOpenSettings}
+                className="p-3 hover:bg-white/40 dark:hover:bg-[#171515]/40 rounded-2xl transition-all text-black dark:text-white hover:text-black dark:hover:text-white flex items-center gap-2 backdrop-blur-sm border border-white/20 dark:border-gray-700/20"
+              >
+                <Settings className="w-5 h-5" />
+                <span className="text-sm">Settings</span>
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right">
+              <p>Customize your preferences</p>
+            </TooltipContent>
+          </Tooltip>
+        </div>
       </TooltipProvider>
     </div>
   );
