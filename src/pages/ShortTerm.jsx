@@ -156,10 +156,10 @@ export default function ShortTermPage() {
       <div className="flex-1 flex flex-col overflow-hidden">
         <div className="p-6 bg-glass border-b border-white/20">
           <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-4">
-              <Clock className="w-6 h-6 text-black" />
-              <h1 className="text-2xl font-bold text-black">Short Term Memory</h1>
-            </div>
+            <h1 className="text-2xl font-bold text-black flex items-center gap-2">
+              <Clock className="w-6 h-6" />
+              Short Term Memory
+            </h1>
             <div className="flex items-center gap-2">
               {!selectedNote && (
                 <>
