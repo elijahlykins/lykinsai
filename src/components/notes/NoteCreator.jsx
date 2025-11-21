@@ -517,9 +517,9 @@ Return only the title, nothing else.`,
                 <Button
                   onClick={startRecording}
                   disabled={isProcessing || audioFile}
-                  className="clay-button flex items-center gap-2 px-8 py-6 text-lg text-white"
+                  className="clay-button flex items-center gap-2 px-8 py-6 text-lg text-black dark:text-white"
                 >
-                  <Mic className="w-6 h-6 text-white" />
+                  <Mic className="w-6 h-6 text-black dark:text-white" />
                   <span>{audioFile ? 'Audio Recorded ✓' : 'Start Recording'}</span>
                 </Button>
               ) : (
