@@ -623,7 +623,9 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
           </div>
         </div>
 
-        <SettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      </div>
+
+      <SettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
 
       {/* Save Search Dialog */}
       <Dialog open={showSaveDialog} onOpenChange={setShowSaveDialog}>
