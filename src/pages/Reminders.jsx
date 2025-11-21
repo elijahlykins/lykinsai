@@ -82,10 +82,10 @@ export default function RemindersPage() {
 
       <div className="flex-1 flex flex-col overflow-hidden">
         <div className="p-6 bg-glass border-b border-white/20 dark:border-gray-700/30">
-          <div className="flex items-center gap-4">
-            <Bell className="w-6 h-6 text-black dark:text-gray-300" />
-            <h1 className="text-2xl font-bold text-black dark:text-white">Reminders</h1>
-          </div>
+          <h1 className="text-2xl font-bold text-black dark:text-white flex items-center gap-2">
+            <Bell className="w-6 h-6" />
+            Reminders
+          </h1>
         </div>
 
         <ScrollArea className="flex-1">

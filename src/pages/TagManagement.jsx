@@ -107,10 +107,10 @@ export default function TagManagementPage() {
 
       <div className="flex-1 flex flex-col overflow-hidden">
         <div className="p-6 bg-glass border-b border-white/20">
-          <div className="flex items-center gap-4">
-            <Tag className="w-6 h-6 text-black" />
-            <h1 className="text-2xl font-bold text-black">Tag Management</h1>
-          </div>
+          <h1 className="text-2xl font-bold text-black flex items-center gap-2">
+            <Tag className="w-6 h-6" />
+            Tag Management
+          </h1>
           <p className="text-sm text-gray-500 mt-2">Manage and organize your tags</p>
         </div>
 

@@ -294,7 +294,10 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
 
       <div className="flex-1 flex flex-col overflow-hidden">
         <div className="p-6 bg-glass border-b border-white/20 dark:border-gray-700/30">
-          <h1 className="text-2xl font-bold text-black dark:text-white mb-6">AI Search</h1>
+          <h1 className="text-2xl font-bold text-black dark:text-white mb-6 flex items-center gap-2">
+            <Search className="w-6 h-6" />
+            AI Search
+          </h1>
           
           <div className="max-w-2xl space-y-4">
             {/* Search Input */}
