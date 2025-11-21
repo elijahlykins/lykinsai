@@ -23,6 +23,7 @@ import ReminderPicker from '../components/notes/ReminderPicker';
 import DuplicateDetector from '../components/notes/DuplicateDetector';
 import EnhancedKnowledgeGraph from '../components/notes/EnhancedKnowledgeGraph';
 import AutoArchive from '../components/notes/AutoArchive';
+import TrashCleanup from '../components/notes/TrashCleanup';
 
 export default function LongTermPage() {
   const [selectedNote, setSelectedNote] = useState(null);
@@ -60,7 +61,7 @@ export default function LongTermPage() {
 
   const handleDeleteNote = async () => {
     if (!selectedNote) return;
-    await base44.entities.Note.delete(selectedNote.id);
+    await base44.entities.Note.update(selectedNote.id, { trashed: true, trash_date: new Date().toISOString() });
     setSelectedNote(null);
     queryClient.invalidateQueries(['notes']);
   };
@@ -120,7 +121,7 @@ export default function LongTermPage() {
   const allTags = [...new Set(notes.filter(n => n).flatMap(n => n.tags || []))];
   const allFolders = [...new Set(notes.filter(n => n).map(n => n.folder || 'Uncategorized'))];
 
-  let filteredNotes = notes.filter(note => note && note.storage_type === 'long_term');
+  let filteredNotes = notes.filter(note => note && !note.trashed && note.storage_type === 'long_term');
   
   if (filterTag !== 'all') {
     filteredNotes = filteredNotes.filter(note => note && note.tags?.includes(filterTag));
@@ -408,6 +409,7 @@ export default function LongTermPage() {
       </div>
 
       <AutoArchive notes={notes} />
+      <TrashCleanup notes={notes} />
       <SettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
       {selectedNote && (
         <>
