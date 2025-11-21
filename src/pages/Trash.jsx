@@ -103,8 +103,8 @@ export default function TrashPage() {
         />
       </div>
 
-      <div className="flex-1 overflow-auto p-8">
-        <div className="max-w-5xl mx-auto">
+      <div className="flex-1 overflow-auto p-8 flex flex-col">
+        <div className="max-w-5xl mx-auto flex-1 flex flex-col">
           <div className="flex items-center justify-between mb-8">
             <div>
               <h1 className="text-3xl font-bold text-black dark:text-white">Trash</h1>
@@ -133,9 +133,11 @@ export default function TrashPage() {
           </div>
 
           {trashedNotes.length === 0 ? (
-            <div className="text-center py-16">
-              <Trash2 className="w-16 h-16 mx-auto mb-4 text-gray-400 dark:text-gray-600" />
-              <p className="text-gray-500 dark:text-gray-400">Trash is empty</p>
+            <div className="flex-1 flex items-center justify-center">
+              <div className="text-center">
+                <Trash2 className="w-16 h-16 mx-auto mb-4 text-gray-400 dark:text-gray-600" />
+                <p className="text-gray-500 dark:text-gray-400">Trash is empty</p>
+              </div>
             </div>
           ) : (
             <div className="space-y-3">
