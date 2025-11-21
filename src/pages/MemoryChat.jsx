@@ -119,6 +119,10 @@ export default function MemoryChatPage() {
     setIsLoading(true);
     setLastMessageTime(Date.now());
 
+    // Add empty assistant message for streaming
+    const assistantMessageIndex = messages.length + 1;
+    setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
+
     try {
       const settings = JSON.parse(localStorage.getItem('lykinsai_settings') || '{}');
       const personality = settings.aiPersonality || 'balanced';
@@ -148,22 +152,41 @@ export default function MemoryChatPage() {
       const response = await base44.integrations.Core.InvokeLLM({
         prompt: `${personalityStyles[personality]} ${detailStyles[detailLevel]}
 
-      User's memories:
-      ${notesContext}
+    User's memories:
+    ${notesContext}
 
-      Conversation history:
-      ${conversationHistory}
+    Conversation history:
+    ${conversationHistory}
 
-      User: ${input}
+    User: ${input}
 
-      Provide thoughtful, insightful responses based on their memories. Reference specific memories when relevant. Do not use emojis in your responses unless the user explicitly asks for them.`,
+    Provide thoughtful, insightful responses based on their memories. Reference specific memories when relevant. Do not use emojis in your responses unless the user explicitly asks for them.`,
       });
 
-      setMessages(prev => [...prev, { role: 'assistant', content: response }]);
+      // Stream the response word by word
+      const words = response.split(' ');
+      let currentText = '';
+
+      for (let i = 0; i < words.length; i++) {
+        currentText += (i === 0 ? '' : ' ') + words[i];
+        setMessages(prev => {
+          const newMessages = [...prev];
+          newMessages[assistantMessageIndex] = { role: 'assistant', content: currentText };
+          return newMessages;
+        });
+
+        // Delay between words (adjust for faster/slower typing)
+        await new Promise(resolve => setTimeout(resolve, 30));
+      }
+
       setLastMessageTime(Date.now());
     } catch (error) {
       console.error('Chat error:', error);
-      setMessages(prev => [...prev, { role: 'assistant', content: 'Sorry, I encountered an error.' }]);
+      setMessages(prev => {
+        const newMessages = [...prev];
+        newMessages[assistantMessageIndex] = { role: 'assistant', content: 'Sorry, I encountered an error.' };
+        return newMessages;
+      });
     } finally {
       setIsLoading(false);
     }
