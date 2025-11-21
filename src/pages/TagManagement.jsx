@@ -85,7 +85,7 @@ export default function TagManagementPage() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-50 via-blue-50/30 to-gray-100 flex overflow-hidden">
+    <div className="min-h-screen bg-gradient-to-br from-gray-50 via-blue-50/30 to-gray-100 dark:from-[#171515] dark:via-[#171515] dark:to-[#171515] flex overflow-hidden">
       <div className={`${sidebarCollapsed ? 'w-16' : 'w-64'} flex-shrink-0 transition-all duration-300`}>
         <NotionSidebar
           activeView="tags"
@@ -106,19 +106,19 @@ export default function TagManagementPage() {
       </div>
 
       <div className="flex-1 flex flex-col overflow-hidden">
-        <div className="p-6 bg-glass border-b border-white/20">
-          <h1 className="text-2xl font-bold text-black flex items-center gap-2">
+        <div className="p-6 bg-glass border-b border-white/20 dark:border-gray-700/30">
+          <h1 className="text-2xl font-bold text-black dark:text-white flex items-center gap-2">
             <Tag className="w-6 h-6" />
             Tag Management
           </h1>
-          <p className="text-sm text-gray-500 mt-2">Manage and organize your tags</p>
+          <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">Manage and organize your tags</p>
         </div>
 
         <div className="flex-1 overflow-hidden">
           <ScrollArea className="h-full">
             <div className="max-w-4xl mx-auto p-8">
               {tagStats.length === 0 ? (
-                <div className="text-center py-12 text-gray-500">
+                <div className="text-center py-12 text-gray-500 dark:text-gray-400">
                   <Tag className="w-12 h-12 mx-auto mb-3 opacity-30" />
                   <p>No tags yet. Create notes with tags to see them here.</p>
                 </div>
