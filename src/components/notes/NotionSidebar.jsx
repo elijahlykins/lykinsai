@@ -53,7 +53,9 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
               ))}
             </div>
           </ScrollArea>
-          <div className="mt-auto">
+        </TooltipProvider>
+        <div className="mt-auto flex-shrink-0">
+          <TooltipProvider delayDuration={300}>
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
@@ -67,8 +69,8 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
                 <p>Settings</p>
               </TooltipContent>
             </Tooltip>
-          </div>
-        </TooltipProvider>
+          </TooltipProvider>
+        </div>
       </div>
     );
   }
@@ -113,9 +115,11 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
             ))}
           </nav>
         </ScrollArea>
+      </TooltipProvider>
 
-        {/* Settings at bottom */}
-        <div className="mt-auto pt-3">
+      {/* Settings at bottom */}
+      <div className="mt-auto pt-3 flex-shrink-0">
+        <TooltipProvider delayDuration={300}>
           <Tooltip>
             <TooltipTrigger asChild>
               <button
@@ -130,8 +134,8 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
               <p>Customize your preferences</p>
             </TooltipContent>
           </Tooltip>
-        </div>
-      </TooltipProvider>
+        </TooltipProvider>
+      </div>
     </div>
   );
 }
