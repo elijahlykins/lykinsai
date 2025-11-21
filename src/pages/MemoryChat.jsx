@@ -56,6 +56,49 @@ export default function MemoryChatPage() {
       localStorage.removeItem('chat_followup_questions');
     }
 
+    // Check if continuing a chat from a note
+    const continueChat = localStorage.getItem('chat_continue_note');
+    if (continueChat) {
+      const { noteId, content, title, attachments } = JSON.parse(continueChat);
+      
+      // Parse the chat content back to messages
+      const lines = content.split('\n\n');
+      const parsedMessages = [];
+      
+      for (const line of lines) {
+        if (line.startsWith('Me: ')) {
+          parsedMessages.push({
+            role: 'user',
+            content: line.substring(4),
+            attachments: []
+          });
+        } else if (line.startsWith('AI: ')) {
+          parsedMessages.push({
+            role: 'assistant',
+            content: line.substring(4)
+          });
+        }
+      }
+      
+      setMessages(parsedMessages);
+      setCurrentChatNoteId(noteId);
+      setLastMessageTime(Date.now());
+      localStorage.removeItem('chat_continue_note');
+      return;
+    }
+
+    // Check if starting chat with an idea
+    const ideaContext = localStorage.getItem('chat_idea_context');
+    if (ideaContext) {
+      const { title, content, attachments } = JSON.parse(ideaContext);
+      setInput(`Tell me more about: ${title}\n\n${content}`);
+      if (attachments && attachments.length > 0) {
+        setAttachments(attachments);
+      }
+      localStorage.removeItem('chat_idea_context');
+      return;
+    }
+
     // Load persisted chat
     const savedChat = localStorage.getItem('lykinsai_chat');
     if (savedChat) {

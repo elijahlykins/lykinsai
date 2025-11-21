@@ -5,7 +5,7 @@ import NotionSidebar from '../components/notes/NotionSidebar';
 import SettingsModal from '../components/notes/SettingsModal';
 import AIAnalysisPanel from '../components/notes/AIAnalysisPanel';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Clock, Trash2, Edit2, Save, XCircle, Tag, Folder as FolderIcon, Link2, Filter, Bell } from 'lucide-react';
+import { Clock, Trash2, Edit2, Save, XCircle, Tag, Folder as FolderIcon, Link2, Filter, Bell, MessageCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Input } from '@/components/ui/input';
@@ -115,6 +115,30 @@ export default function ShortTermPage() {
     queryClient.invalidateQueries(['notes']);
   };
 
+  const handleOpenInChat = (note) => {
+    const isChatCard = note.source === 'ai' && note.tags?.includes('chat');
+    
+    if (isChatCard) {
+      // For chat cards, load the conversation
+      localStorage.setItem('chat_continue_note', JSON.stringify({
+        noteId: note.id,
+        content: note.content,
+        title: note.title,
+        attachments: note.attachments || []
+      }));
+    } else {
+      // For idea cards, start new chat with context
+      localStorage.setItem('chat_idea_context', JSON.stringify({
+        noteId: note.id,
+        title: note.title,
+        content: note.content,
+        attachments: note.attachments || []
+      }));
+    }
+    
+    navigate(createPageUrl('MemoryChat'));
+  };
+
   const allTags = [...new Set(notes.filter(n => n).flatMap(n => n.tags || []))];
   const allFolders = [...new Set(notes.filter(n => n).map(n => n.folder || 'Uncategorized'))];
 
@@ -187,6 +211,9 @@ export default function ShortTermPage() {
                 <div className="flex items-center gap-2">
                   {!isEditing ? (
                     <>
+                      <Button onClick={() => handleOpenInChat(selectedNote)} variant="ghost" size="icon" className="text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#171515]">
+                        <MessageCircle className="w-5 h-5" />
+                      </Button>
                       <Button onClick={() => setShowReminderPicker(true)} variant="ghost" size="icon" className={`${selectedNote.reminder ? 'text-black dark:text-white bg-yellow-100 dark:bg-yellow-900/30' : 'text-black dark:text-white'} hover:bg-gray-100 dark:hover:bg-[#171515]`}>
                         <Bell className="w-5 h-5" />
                       </Button>
