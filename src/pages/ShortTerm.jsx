@@ -312,10 +312,9 @@ export default function ShortTermPage() {
                 />
               </div>
             ) : !selectedNote ? (
-              <div className="max-w-4xl mx-auto p-8">
-                <RecommendationsPanel notes={filteredNotes} onSelectNote={setSelectedNote} />
-                <DuplicateDetector notes={filteredNotes} onMerge={handleUpdate} />
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              <div className="flex gap-8 p-8">
+                <div className="flex-1">
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                   {filteredNotes.map((note) => (
                     <div
                       key={note.id}
@@ -369,11 +368,16 @@ export default function ShortTermPage() {
                       </button>
                     </div>
                   ))}
-                  {filteredNotes.length === 0 && (
-                    <div className="col-span-full text-center py-12 text-gray-500">
-                      <p>No memories match the filters</p>
-                    </div>
-                  )}
+                    {filteredNotes.length === 0 && (
+                      <div className="col-span-full text-center py-12 text-gray-500">
+                        <p>No memories match the filters</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div className="w-80 flex-shrink-0 space-y-4">
+                  <RecommendationsPanel notes={filteredNotes} onSelectNote={setSelectedNote} />
+                  <DuplicateDetector notes={filteredNotes} onMerge={handleUpdate} />
                 </div>
               </div>
             ) : (
