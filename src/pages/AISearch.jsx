@@ -9,7 +9,7 @@ import MindMapGenerator from '../components/notes/MindMapGenerator';
 import AttachmentPanel from '../components/notes/AttachmentPanel';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-import { Search, Loader2, Clock, Filter, X, Calendar, Tag, Folder, Save, Bookmark, Trash2, Image, Video, FileText, Link } from 'lucide-react';
+import { Search, Loader2, Clock, Filter, X, Calendar, Tag, Folder, Save, Bookmark, Trash2, Image, Video, FileText, Link, Settings } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -609,22 +609,21 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
               )}
             </div>
             )}
-            </div>
 
-            {/* Settings Button at Bottom */}
-            <div className="p-6 flex justify-center">
+          {/* Settings Button at Bottom */}
+          <div className="p-6 flex justify-center">
             <Button
-            onClick={() => setSettingsOpen(true)}
-            variant="outline"
-            className="border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-50 dark:hover:bg-[#171515] flex items-center gap-2"
+              onClick={() => setSettingsOpen(true)}
+              variant="outline"
+              className="border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-50 dark:hover:bg-[#171515] flex items-center gap-2"
             >
-            <Settings className="w-4 h-4" />
-            Settings
+              <Settings className="w-4 h-4" />
+              Settings
             </Button>
-            </div>
-            </div>
+          </div>
+        </div>
 
-            <SettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
+        <SettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
 
       {/* Save Search Dialog */}
       <Dialog open={showSaveDialog} onOpenChange={setShowSaveDialog}>
