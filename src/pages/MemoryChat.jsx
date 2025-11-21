@@ -34,12 +34,14 @@ export default function MemoryChatPage() {
   const messagesRef = useRef([]);
   const [currentChatNoteId, setCurrentChatNoteId] = useState(null);
 
-  const { data: notes = [] } = useQuery({
+  const { data: notes = [], isError } = useQuery({
     queryKey: ['notes'],
     queryFn: () => base44.entities.Note.list('-created_date'),
     retry: 3,
     retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000),
     refetchOnWindowFocus: false,
+    staleTime: 30000,
+    cacheTime: 300000,
   });
 
   useEffect(() => {
