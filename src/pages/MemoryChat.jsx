@@ -6,7 +6,7 @@ import SettingsModal from '../components/notes/SettingsModal';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Send, Loader2, Bot, User, Plus, Mic, MessageSquare, X, File, Image as ImageIcon, Link as LinkIcon, Video, FileText, HelpCircle, PlusCircle } from 'lucide-react';
+import { Send, Loader2, Bot, User, Plus, Mic, MessageSquare, X, File, Image as ImageIcon, Link as LinkIcon, Video, FileText, HelpCircle, PlusCircle, Settings } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { useNavigate } from 'react-router-dom';
@@ -508,13 +508,25 @@ export default function MemoryChatPage() {
                     </div>
                     </div>
                     )}
-              </div>
-            </div>
-          </>
-        )}
-      </div>
+                    </div>
+                    </div>
 
-      <SettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
+                    {/* Settings Button at Bottom */}
+                    <div className="p-6 flex justify-center">
+                    <Button
+                    onClick={() => setSettingsOpen(true)}
+                    variant="outline"
+                    className="border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-50 dark:hover:bg-[#171515] flex items-center gap-2"
+                    >
+                    <Settings className="w-4 h-4" />
+                    Settings
+                    </Button>
+                    </div>
+                    </>
+                    )}
+                    </div>
+
+                    <SettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
 
       {/* Attachment Menu Dialog */}
       <Dialog open={showAttachMenu} onOpenChange={setShowAttachMenu}>
