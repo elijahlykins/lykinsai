@@ -106,9 +106,9 @@ export default function TrashPage() {
       <div className="flex-1 overflow-auto p-8 flex flex-col">
         <div className="max-w-5xl mx-auto flex-1 flex flex-col">
           <div className="flex items-center justify-between mb-8">
-            <div>
+            <div className="flex items-center gap-4">
               <h1 className="text-3xl font-bold text-black dark:text-white">Trash</h1>
-              <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+              <p className="text-sm text-gray-600 dark:text-gray-400">
                 Items will be permanently deleted after 7 days
               </p>
             </div>
