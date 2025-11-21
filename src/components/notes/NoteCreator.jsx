@@ -54,7 +54,7 @@ const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, showSuggestion
   // Generate suggested questions when content changes
   useEffect(() => {
     const generateQuestions = async () => {
-      if (content.length > 100) {
+      if (content.length > 50) {
         try {
           const result = await base44.integrations.Core.InvokeLLM({
             prompt: `Based on this note content, generate 3-5 thought-provoking questions that would help the user explore this idea further.
@@ -79,7 +79,7 @@ Make questions specific, insightful, and encouraging deeper thinking.`,
       }
     };
 
-    const timeout = setTimeout(generateQuestions, 1000);
+    const timeout = setTimeout(generateQuestions, 1500);
     return () => clearTimeout(timeout);
   }, [content]);
 
@@ -360,7 +360,7 @@ Return only the title, nothing else.`,
   return (
     <div className="h-full flex relative">
         {/* Content Area - Notion Style */}
-        <div className={`overflow-auto ${(attachments.length > 0 || (showSuggestions && content.length > 50)) && inputMode === 'text' ? 'w-1/2' : 'flex-1'}`}>
+        <div className={`overflow-auto ${attachments.length > 0 && inputMode === 'text' ? 'w-1/2' : 'flex-1'}`}>
         {inputMode === 'text' ? (
           <div className="h-full flex flex-col gap-6 py-12 px-8 md:px-12 lg:px-16 xl:px-24">
             <Input
@@ -469,9 +469,9 @@ Return only the title, nothing else.`,
         )}
       </div>
 
-      {/* Suggestions Panel */}
+      {/* Suggestions Panel - Fixed position on right */}
       {showSuggestions && content.length > 50 && inputMode === 'text' && (
-        <div className="w-1/2 border-l border-gray-200 dark:border-gray-700 overflow-auto p-6 space-y-6">
+        <div className="fixed right-0 top-0 bottom-0 w-96 border-l border-gray-200 dark:border-gray-700 overflow-auto p-6 space-y-6 bg-white dark:bg-[#171515] z-10">
           {/* Suggested Connections */}
           {allNotes.length > 0 && (
             <ConnectionSuggestions
