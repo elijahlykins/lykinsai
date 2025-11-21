@@ -180,7 +180,7 @@ Find meaningful connections based on content, themes, and ideas - not just keywo
 
       // Draw nodes as clean colored dots
       nodesRef.current.forEach(node => {
-        if (!node) return;
+        if (!node || !node.x || !node.y) return;
         
         const colors = {
           lavender: '#b8a4d4',
@@ -201,7 +201,7 @@ Find meaningful connections based on content, themes, and ideas - not just keywo
         // Draw node dot
         ctx.beginPath();
         ctx.arc(node.x * zoom, node.y * zoom, radius, 0, Math.PI * 2);
-        ctx.fillStyle = colors[node.color || 'lavender'] || colors.lavender;
+        ctx.fillStyle = colors[node.color] || colors.lavender;
         ctx.fill();
 
         // Draw border if selected
@@ -219,6 +219,7 @@ Find meaningful connections based on content, themes, and ideas - not just keywo
         }
 
         // Draw label below node
+        if (!node.title) return;
         ctx.fillStyle = '#000000';
         ctx.font = `${Math.max(10, 11 * zoom)}px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
         ctx.fontWeight = '500';

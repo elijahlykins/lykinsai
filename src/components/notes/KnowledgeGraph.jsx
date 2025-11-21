@@ -97,7 +97,7 @@ export default function KnowledgeGraph({ notes, selectedNoteId, onSelectNote }) 
 
       // Draw nodes
       nodes.forEach(node => {
-        if (!node) return;
+        if (!node || !node.x || !node.y) return;
         
         const colors = {
           lavender: '#b8a4d4',
@@ -108,7 +108,7 @@ export default function KnowledgeGraph({ notes, selectedNoteId, onSelectNote }) 
 
         ctx.beginPath();
         ctx.arc(node.x, node.y, node.isSelected ? 20 : 15, 0, Math.PI * 2);
-        ctx.fillStyle = colors[node.color || 'lavender'] || colors.lavender;
+        ctx.fillStyle = colors[node.color] || colors.lavender;
         ctx.fill();
 
         if (node.isSelected) {
@@ -118,14 +118,16 @@ export default function KnowledgeGraph({ notes, selectedNoteId, onSelectNote }) 
         }
 
         // Draw title
-        ctx.fillStyle = '#000';
-        ctx.font = '12px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText(
-          node.title.length > 20 ? node.title.substring(0, 20) + '...' : node.title,
-          node.x,
-          node.y + 30
-        );
+        if (node.title) {
+          ctx.fillStyle = '#000';
+          ctx.font = '12px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText(
+            node.title.length > 20 ? node.title.substring(0, 20) + '...' : node.title,
+            node.x,
+            node.y + 30
+          );
+        }
       });
 
       requestAnimationFrame(simulate);
