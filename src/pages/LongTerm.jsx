@@ -154,6 +154,10 @@ export default function LongTermPage() {
   };
 
   const organizeIntoFolders = async () => {
+    if (!aiMergingEnabled) {
+      return;
+    }
+
     setIsOrganizing(true);
     try {
       // Only process notes in "Uncategorized" folder
@@ -167,30 +171,31 @@ export default function LongTermPage() {
       if (uncategorizedNotes.length === 0) {
         return;
       }
+
+      const newlyCreatedNoteIds = [];
       
-      // Step 1: Detect duplicates and similar notes in Uncategorized
+      // Step 1: Detect and merge similar notes (80%+ similarity)
       const notesContext = uncategorizedNotes.map(n => 
         `ID: ${n.id}\nTitle: ${n.title}\nContent: ${n.content}\nTags: ${n.tags?.join(', ') || 'None'}\nCreated: ${n.created_date}`
       ).join('\n\n---\n\n');
 
       const duplicateAnalysis = await base44.integrations.Core.InvokeLLM({
-        prompt: `CRITICAL: Be EXTREMELY CAUTIOUS. Only identify notes as duplicates if you are absolutely certain they contain the same information.
-
-Analyze these uncategorized notes for duplicates and similar content:
+        prompt: `Analyze these uncategorized notes and identify pairs that should be merged.
 
 Notes:
 ${notesContext}
 
-STRICT CRITERIA:
-1. EXACT duplicates (similarity 0.98-1.0): IDENTICAL or near-identical content, same core information, only minor wording differences
-2. SIMILAR notes (similarity 0.75-0.97): Related topics with overlapping information that would benefit from merging
+CRITERIA for merging (must have 80% or more of the same content):
+- Notes with highly similar or overlapping information
+- Notes about the same topic/event with similar details
+- Be confident they contain mostly the same content (80%+ similarity)
 
-Only return pairs where you are HIGHLY CONFIDENT they should be combined. When in doubt, DO NOT mark as duplicate.
-Return an EMPTY array if you find no clear duplicates.`,
+Only return pairs where content overlap is 80% or higher. When in doubt, DO NOT mark for merging.
+Return an EMPTY array if no clear matches exist.`,
         response_json_schema: {
           type: 'object',
           properties: {
-            duplicates: {
+            merges: {
               type: 'array',
               items: {
                 type: 'object',
@@ -206,35 +211,26 @@ Return an EMPTY array if you find no clear duplicates.`,
         }
       });
 
-      // Step 2: Handle duplicates and merges
+      // Step 2: Perform merges
       const processedNoteIds = new Set();
       
-      for (const duplicate of duplicateAnalysis.duplicates || []) {
-        if (processedNoteIds.has(duplicate.note1_id) || processedNoteIds.has(duplicate.note2_id)) {
+      for (const merge of duplicateAnalysis.merges || []) {
+        if (processedNoteIds.has(merge.note1_id) || processedNoteIds.has(merge.note2_id)) {
           continue;
         }
 
-        const note1 = uncategorizedNotes.find(n => n.id === duplicate.note1_id);
-        const note2 = uncategorizedNotes.find(n => n.id === duplicate.note2_id);
+        if (merge.similarity < 0.8) {
+          continue; // Skip if below 80% threshold
+        }
+
+        const note1 = uncategorizedNotes.find(n => n.id === merge.note1_id);
+        const note2 = uncategorizedNotes.find(n => n.id === merge.note2_id);
         
         if (!note1 || !note2) continue;
 
-        if (duplicate.similarity >= 0.98) {
-          // Exact duplicate - keep newer, soft-delete older
-          const olderNote = new Date(note1.created_date) < new Date(note2.created_date) ? note1 : note2;
-          try {
-            await base44.entities.Note.update(olderNote.id, { 
-              trashed: true, 
-              trash_date: new Date().toISOString() 
-            });
-            processedNoteIds.add(olderNote.id);
-          } catch (error) {
-            console.log(`Failed to trash note ${olderNote.id}, may have been already deleted`);
-          }
-        } else if (duplicate.similarity >= 0.75) {
-          // Similar notes - merge them into a NEW note in Uncategorized
-          const mergeResult = await base44.integrations.Core.InvokeLLM({
-            prompt: `Merge these two similar notes into one comprehensive note, combining all unique information:
+        // Merge the two notes
+        const mergeResult = await base44.integrations.Core.InvokeLLM({
+          prompt: `Merge these two similar notes into one comprehensive note, combining all unique information:
 
 Note 1: ${note1.title}
 ${note1.content}
@@ -246,69 +242,69 @@ Create a merged note with:
 1. A clear, descriptive title
 2. Content that includes ALL unique information from both notes
 3. Organized, coherent structure`,
-            response_json_schema: {
-              type: 'object',
-              properties: {
-                title: { type: 'string' },
-                content: { type: 'string' }
-              }
+          response_json_schema: {
+            type: 'object',
+            properties: {
+              title: { type: 'string' },
+              content: { type: 'string' }
             }
-          });
-
-          // Create merged note with combined tags and attachments
-          const combinedTags = [...new Set([...(note1.tags || []), ...(note2.tags || [])])];
-          const combinedAttachments = [...(note1.attachments || []), ...(note2.attachments || [])];
-          const combinedConnections = [...new Set([...(note1.connected_notes || []), ...(note2.connected_notes || [])]
-            .filter(id => id !== note1.id && id !== note2.id))];
-
-          // Create NEW merged note in Uncategorized
-          await base44.entities.Note.create({
-            title: mergeResult.title,
-            content: mergeResult.content,
-            tags: combinedTags,
-            attachments: combinedAttachments,
-            connected_notes: combinedConnections,
-            storage_type: 'long_term',
-            source: 'user',
-            folder: 'Uncategorized'
-          });
-
-          // Soft-delete both original notes
-          try {
-            await base44.entities.Note.update(note1.id, { 
-              trashed: true, 
-              trash_date: new Date().toISOString() 
-            });
-          } catch (error) {
-            console.log(`Failed to trash note ${note1.id}`);
           }
-          try {
-            await base44.entities.Note.update(note2.id, { 
-              trashed: true, 
-              trash_date: new Date().toISOString() 
-            });
-          } catch (error) {
-            console.log(`Failed to trash note ${note2.id}`);
-          }
-          processedNoteIds.add(note1.id);
-          processedNoteIds.add(note2.id);
+        });
+
+        // Combine metadata
+        const combinedTags = [...new Set([...(note1.tags || []), ...(note2.tags || [])])];
+        const combinedAttachments = [...(note1.attachments || []), ...(note2.attachments || [])];
+        const combinedConnections = [...new Set([...(note1.connected_notes || []), ...(note2.connected_notes || [])]
+          .filter(id => id !== note1.id && id !== note2.id))];
+
+        // Create the new merged note in Uncategorized
+        const newNote = await base44.entities.Note.create({
+          title: mergeResult.title,
+          content: mergeResult.content,
+          tags: combinedTags,
+          attachments: combinedAttachments,
+          connected_notes: combinedConnections,
+          storage_type: 'long_term',
+          source: 'user',
+          folder: 'Uncategorized'
+        });
+
+        newlyCreatedNoteIds.push(newNote.id);
+
+        // Soft-delete both original notes
+        try {
+          await base44.entities.Note.update(note1.id, { 
+            trashed: true, 
+            trash_date: new Date().toISOString() 
+          });
+        } catch (error) {
+          console.log(`Failed to trash note ${note1.id}`);
         }
+        try {
+          await base44.entities.Note.update(note2.id, { 
+            trashed: true, 
+            trash_date: new Date().toISOString() 
+          });
+        } catch (error) {
+          console.log(`Failed to trash note ${note2.id}`);
+        }
+        processedNoteIds.add(note1.id);
+        processedNoteIds.add(note2.id);
       }
 
-      // Refresh notes list to get newly merged notes
+      // Refresh notes to get newly merged notes
       await queryClient.invalidateQueries(['notes']);
       const refreshedNotes = await base44.entities.Note.list('-created_date');
       
-      // Step 3: Organize remaining uncategorized notes into existing or new folders
-      const remainingUncategorized = refreshedNotes.filter(n => 
+      // Step 3: Organize ALL uncategorized notes (including newly merged ones) into folders
+      const allUncategorized = refreshedNotes.filter(n => 
         n && 
         n.storage_type === 'long_term' && 
         !n.trashed && 
-        (n.folder === 'Uncategorized' || !n.folder) &&
-        !processedNoteIds.has(n.id)
+        (n.folder === 'Uncategorized' || !n.folder)
       );
 
-      if (remainingUncategorized.length === 0) {
+      if (allUncategorized.length === 0) {
         return;
       }
 
@@ -317,12 +313,12 @@ Create a merged note with:
         .filter(n => n && n.storage_type === 'long_term' && !n.trashed && n.folder && n.folder !== 'Uncategorized')
         .map(n => n.folder))];
       
-      const folderContext = remainingUncategorized.map(n => 
+      const folderContext = allUncategorized.map(n => 
         `ID: ${n.id}\nTitle: ${n.title}\nContent: ${n.content.substring(0, 300)}\nTags: ${n.tags?.join(', ') || 'None'}`
       ).join('\n\n---\n\n');
 
       const folderOrganization = await base44.integrations.Core.InvokeLLM({
-        prompt: `Organize these uncategorized notes into folders. You can assign them to existing folders or create NEW folders.
+        prompt: `Organize these uncategorized notes into folders. Assign to existing folders OR create new ones.
 
 Existing folders: ${existingFolders.length > 0 ? existingFolders.join(', ') : 'None yet'}
 
@@ -330,11 +326,11 @@ Notes to organize:
 ${folderContext}
 
 Rules:
-- If a note's content matches an existing folder's theme, use that folder
-- If no existing folder fits, create a NEW descriptive folder name
-- Folder names should be clear (e.g., "Work Projects", "Health & Fitness", "Travel Memories")
-- Aim for 5-15 total folders across the system
-- DO NOT assign to "Uncategorized"`,
+- Match notes to existing folders if their content fits the theme
+- Create NEW descriptive folders when no existing folder fits
+- Folder names: "Work Projects", "Health & Fitness", "Travel Memories", etc.
+- NEVER assign to "Uncategorized" - always use a specific descriptive folder
+- Aim for 5-15 total folders`,
         response_json_schema: {
           type: 'object',
           properties: {
@@ -356,8 +352,7 @@ Rules:
       for (const assignment of folderOrganization.assignments || []) {
         if (assignment.folder && assignment.folder !== 'Uncategorized') {
           try {
-            // Verify note still exists before updating
-            const noteExists = remainingUncategorized.find(n => n.id === assignment.note_id);
+            const noteExists = allUncategorized.find(n => n.id === assignment.note_id);
             if (noteExists) {
               await base44.entities.Note.update(assignment.note_id, {
                 folder: assignment.folder
