@@ -171,56 +171,72 @@ Provide helpful guidance, suggestions, or answers to help develop this idea. Do 
             {/* AI Chat Panel - Fixed position on right */}
             {showChat && inputMode === 'text' && (
               <div className="fixed right-0 top-20 bottom-0 w-96 border-l border-white/20 dark:border-gray-700/30 overflow-hidden flex flex-col bg-glass backdrop-blur-2xl z-10">
-                <div className="p-4 border-b border-white/20 dark:border-gray-700/30">
-                  <h3 className="font-semibold text-black dark:text-white flex items-center gap-2">
-                    <MessageSquare className="w-5 h-5" />
-                    AI Chat
-                  </h3>
-                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Ask me about your idea</p>
-                </div>
-
-                <ScrollArea ref={chatScrollRef} className="flex-1 p-4">
-                  {chatMessages.length === 0 ? (
-                    <div className="text-center text-gray-400 dark:text-gray-500 text-sm py-12">
-                      Ask questions to brainstorm and develop your idea!
+                {chatMessages.length === 0 ? (
+                  <div className="flex-1 flex items-center justify-center p-8">
+                    <div className="max-w-md w-full px-4">
+                      <div className="flex justify-center mb-8">
+                        <h2 className="text-3xl font-bold text-black dark:text-white">Just Say The Word.</h2>
+                      </div>
+                      <div className="relative">
+                        <Input
+                          value={chatInput}
+                          onChange={(e) => setChatInput(e.target.value)}
+                          onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleChatSend()}
+                          placeholder="Ask about your idea..."
+                          className="w-full bg-white dark:bg-[#171515] border-2 border-gray-200 dark:border-gray-700 rounded-3xl text-black dark:text-white placeholder:text-gray-400 h-16 text-base pr-14 shadow-lg focus:border-gray-400 dark:focus:border-gray-500 focus:ring-0 transition-all"
+                          disabled={isChatLoading}
+                        />
+                        <Button
+                          onClick={handleChatSend}
+                          disabled={isChatLoading || !chatInput.trim()}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 bg-black dark:bg-white text-white dark:text-black hover:bg-black/90 dark:hover:bg-white/90 rounded-full h-12 w-12 p-0 transition-all"
+                        >
+                          {isChatLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
+                        </Button>
+                      </div>
                     </div>
-                  ) : (
-                    <div className="space-y-4">
-                      {chatMessages.map((msg, idx) => (
-                        <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : ''}`}>
-                          <div className={`max-w-[85%] ${
-                            msg.role === 'user' 
-                              ? 'bg-gray-200 dark:bg-[#1f1d1d]/80 text-black dark:text-white p-3 rounded-2xl' 
-                              : 'text-gray-800 dark:text-gray-200'
-                          }`}>
-                            <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </ScrollArea>
-
-                <div className="p-4 border-t border-white/20 dark:border-gray-700/30">
-                  <div className="flex gap-2">
-                    <Input
-                      value={chatInput}
-                      onChange={(e) => setChatInput(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleChatSend()}
-                      placeholder="Ask about your idea..."
-                      className="flex-1 bg-white dark:bg-[#171515] border-gray-300 dark:border-gray-600 text-black dark:text-white text-sm"
-                      disabled={isChatLoading}
-                    />
-                    <Button
-                      onClick={handleChatSend}
-                      disabled={isChatLoading || !chatInput.trim()}
-                      size="sm"
-                      className="bg-black dark:bg-white text-white dark:text-black hover:bg-black/90 dark:hover:bg-white/90"
-                    >
-                      {isChatLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-                    </Button>
                   </div>
-                </div>
+                ) : (
+                  <>
+                    <ScrollArea ref={chatScrollRef} className="flex-1 p-8">
+                      <div className="max-w-md mx-auto space-y-4">
+                        {chatMessages.map((msg, idx) => (
+                          <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : ''}`}>
+                            <div className={`max-w-[80%] ${
+                              msg.role === 'user' 
+                                ? 'bg-gray-200 dark:bg-[#1f1d1d]/80 text-black dark:text-white p-4 rounded-3xl' 
+                                : 'text-gray-800 dark:text-gray-200'
+                            }`}>
+                              <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </ScrollArea>
+
+                    <div className="p-6 bg-glass border-t border-white/20 dark:border-gray-700/30">
+                      <div className="max-w-md mx-auto">
+                        <div className="relative">
+                          <Input
+                            value={chatInput}
+                            onChange={(e) => setChatInput(e.target.value)}
+                            onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleChatSend()}
+                            placeholder="Ask about your idea..."
+                            className="w-full bg-white dark:bg-[#171515] border-2 border-gray-200 dark:border-gray-700 rounded-3xl text-black dark:text-white placeholder:text-gray-400 h-14 text-base pr-12 shadow-md focus:border-gray-400 dark:focus:border-gray-500 focus:ring-0 transition-all"
+                            disabled={isChatLoading}
+                          />
+                          <Button
+                            onClick={handleChatSend}
+                            disabled={isChatLoading || !chatInput.trim()}
+                            className="absolute right-2 top-1/2 -translate-y-1/2 bg-black dark:bg-white text-white dark:text-black hover:bg-black/90 dark:hover:bg-white/90 rounded-full h-10 w-10 p-0 transition-all"
+                          >
+                            {isChatLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                )}
               </div>
             )}
           </div>
