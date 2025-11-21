@@ -9,13 +9,14 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { base44 } from '@/api/base44Client';
-import { Save, ChevronDown, ChevronUp, Plus, Send, Loader2, Bot, User } from 'lucide-react';
+import { Save, ChevronDown, ChevronUp, Plus, Send, Loader2, MessageSquare } from 'lucide-react';
 
 export default function CreatePage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [inputMode, setInputMode] = useState('text'); // 'text' or 'audio'
   const [showSuggestions, setShowSuggestions] = useState(true);
+  const [showChat, setShowChat] = useState(false);
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState('');
   const [isChatLoading, setIsChatLoading] = useState(false);
@@ -133,10 +134,19 @@ Provide helpful guidance, suggestions, or answers to help develop this idea. Do 
               onClick={() => setShowSuggestions(!showSuggestions)}
               variant="ghost"
               className="text-black dark:text-white hover:bg-white/40 dark:hover:bg-[#171515]/40 rounded-2xl backdrop-blur-sm flex items-center gap-2 px-3 py-2 h-10"
-              title={showSuggestions ? "Show suggestions" : "Hide suggestions"}
+              title={showSuggestions ? "Hide suggestions" : "Show suggestions"}
             >
               {showSuggestions ? <ChevronDown className="w-5 h-5" /> : <ChevronUp className="w-5 h-5" />}
               <span className="text-sm">Suggestions</span>
+            </Button>
+            <Button
+              onClick={() => setShowChat(!showChat)}
+              variant="ghost"
+              className="text-black dark:text-white hover:bg-white/40 dark:hover:bg-[#171515]/40 rounded-2xl backdrop-blur-sm flex items-center gap-2 px-3 py-2 h-10"
+              title={showChat ? "Hide chat" : "Show chat"}
+            >
+              {showChat ? <ChevronDown className="w-5 h-5" /> : <ChevronUp className="w-5 h-5" />}
+              <span className="text-sm">AI Chat</span>
             </Button>
             <Button
               onClick={() => noteCreatorRef.current?.handleSave()}
@@ -154,66 +164,65 @@ Provide helpful guidance, suggestions, or answers to help develop this idea. Do 
           </div>
         </div>
 
-        <div className="flex-1 flex gap-4 p-6 overflow-hidden">
-          {/* Chat Panel */}
-          <div className="w-80 flex-shrink-0 flex flex-col clay-card">
-            <div className="p-4 border-b border-gray-200 dark:border-gray-700">
-              <h3 className="font-semibold text-black dark:text-white flex items-center gap-2">
-                <Bot className="w-5 h-5" />
-                AI Assistant
-              </h3>
-              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Ask me about your idea</p>
-            </div>
-
-            <ScrollArea ref={chatScrollRef} className="flex-1 p-4">
-              {chatMessages.length === 0 ? (
-                <div className="text-center text-gray-400 dark:text-gray-500 text-sm py-8">
-                  Start chatting to get help with your idea!
+        <div className="flex-1 flex items-center justify-center">
+          <div className="w-full max-w-4xl h-full relative">
+            <NoteCreator ref={noteCreatorRef} onNoteCreated={handleNoteCreated} inputMode={inputMode} showSuggestions={showSuggestions} />
+            
+            {/* AI Chat Panel - Fixed position on right */}
+            {showChat && inputMode === 'text' && (
+              <div className="fixed right-0 top-20 bottom-0 w-96 border-l border-white/20 dark:border-gray-700/30 overflow-hidden flex flex-col bg-glass backdrop-blur-2xl z-10">
+                <div className="p-4 border-b border-white/20 dark:border-gray-700/30">
+                  <h3 className="font-semibold text-black dark:text-white flex items-center gap-2">
+                    <MessageSquare className="w-5 h-5" />
+                    AI Chat
+                  </h3>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Ask me about your idea</p>
                 </div>
-              ) : (
-                <div className="space-y-4">
-                  {chatMessages.map((msg, idx) => (
-                    <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                      <div className={`max-w-[85%] ${
-                        msg.role === 'user' 
-                          ? 'bg-gray-200 dark:bg-[#1f1d1d]/80 text-black dark:text-white p-3 rounded-2xl' 
-                          : 'text-gray-800 dark:text-gray-200'
-                      }`}>
-                        <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
-                      </div>
+
+                <ScrollArea ref={chatScrollRef} className="flex-1 p-4">
+                  {chatMessages.length === 0 ? (
+                    <div className="text-center text-gray-400 dark:text-gray-500 text-sm py-12">
+                      Ask questions to brainstorm and develop your idea!
                     </div>
-                  ))}
+                  ) : (
+                    <div className="space-y-4">
+                      {chatMessages.map((msg, idx) => (
+                        <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : ''}`}>
+                          <div className={`max-w-[85%] ${
+                            msg.role === 'user' 
+                              ? 'bg-gray-200 dark:bg-[#1f1d1d]/80 text-black dark:text-white p-3 rounded-2xl' 
+                              : 'text-gray-800 dark:text-gray-200'
+                          }`}>
+                            <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </ScrollArea>
+
+                <div className="p-4 border-t border-white/20 dark:border-gray-700/30">
+                  <div className="flex gap-2">
+                    <Input
+                      value={chatInput}
+                      onChange={(e) => setChatInput(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleChatSend()}
+                      placeholder="Ask about your idea..."
+                      className="flex-1 bg-white dark:bg-[#171515] border-gray-300 dark:border-gray-600 text-black dark:text-white text-sm"
+                      disabled={isChatLoading}
+                    />
+                    <Button
+                      onClick={handleChatSend}
+                      disabled={isChatLoading || !chatInput.trim()}
+                      size="sm"
+                      className="bg-black dark:bg-white text-white dark:text-black hover:bg-black/90 dark:hover:bg-white/90"
+                    >
+                      {isChatLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                    </Button>
+                  </div>
                 </div>
-              )}
-            </ScrollArea>
-
-            <div className="p-4 border-t border-gray-200 dark:border-gray-700">
-              <div className="flex gap-2">
-                <Input
-                  value={chatInput}
-                  onChange={(e) => setChatInput(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleChatSend()}
-                  placeholder="Ask about your idea..."
-                  className="flex-1 bg-white dark:bg-[#171515] border-gray-300 dark:border-gray-600 text-black dark:text-white text-sm"
-                  disabled={isChatLoading}
-                />
-                <Button
-                  onClick={handleChatSend}
-                  disabled={isChatLoading || !chatInput.trim()}
-                  size="sm"
-                  className="bg-black dark:bg-white text-white dark:text-black hover:bg-black/90 dark:hover:bg-white/90"
-                >
-                  {isChatLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-                </Button>
               </div>
-            </div>
-          </div>
-
-          {/* Note Creator */}
-          <div className="flex-1 flex items-center justify-center overflow-hidden">
-            <div className="w-full h-full">
-              <NoteCreator ref={noteCreatorRef} onNoteCreated={handleNoteCreated} inputMode={inputMode} showSuggestions={showSuggestions} />
-            </div>
+            )}
           </div>
         </div>
       </div>
