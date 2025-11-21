@@ -191,18 +191,20 @@ export default function LongTermPage() {
       ).join('\n\n---\n\n');
 
       const duplicateAnalysis = await base44.integrations.Core.InvokeLLM({
-        prompt: `Analyze these uncategorized notes and identify pairs that should be merged.
+        prompt: `CRITICAL: Be EXTREMELY CAUTIOUS. Only identify notes for merging if you are ABSOLUTELY CERTAIN they contain redundant information. The original notes WILL BE MOVED TO TRASH (soft-deleted, NOT permanently deleted).
+
+Analyze these uncategorized notes for pairs that should be merged:
 
 Notes:
 ${notesContext}
 
-CRITERIA for merging (must have 80% or more of the same content):
-- Notes with highly similar or overlapping information
+STRICT CRITERIA for merging (content similarity >= 0.80 for combining substantially overlapping content):
+- Notes with highly similar or overlapping information (80%+ content overlap)
 - Notes about the same topic/event with similar details
 - Be confident they contain mostly the same content (80%+ similarity)
+- If notes are merged, the originals will be moved to trash (not permanently deleted)
 
-Only return pairs where content overlap is 80% or higher. When in doubt, DO NOT mark for merging.
-Return an EMPTY array if no clear matches exist.`,
+Return an EMPTY array if you find no clear merges that meet these strict criteria. When in doubt, DO NOT mark for merging.`,
         response_json_schema: {
           type: 'object',
           properties: {
@@ -282,23 +284,19 @@ Create a merged note with:
 
         newlyCreatedNoteIds.push(newNote.id);
 
-        // Soft-delete both original notes
-        try {
-          await base44.entities.Note.update(note1.id, { 
-            trashed: true, 
-            trash_date: new Date().toISOString() 
-          });
-        } catch (error) {
-          console.log(`Failed to trash note ${note1.id}`);
-        }
-        try {
-          await base44.entities.Note.update(note2.id, { 
-            trashed: true, 
-            trash_date: new Date().toISOString() 
-          });
-        } catch (error) {
-          console.log(`Failed to trash note ${note2.id}`);
-        }
+        // Soft-delete both original notes (move to trash)
+        console.log(`Moving note ${note1.id} to trash due to merge`);
+        await base44.entities.Note.update(note1.id, { 
+          trashed: true, 
+          trash_date: new Date().toISOString() 
+        });
+        
+        console.log(`Moving note ${note2.id} to trash due to merge`);
+        await base44.entities.Note.update(note2.id, { 
+          trashed: true, 
+          trash_date: new Date().toISOString() 
+        });
+        
         processedNoteIds.add(note1.id);
         processedNoteIds.add(note2.id);
       }
@@ -362,15 +360,11 @@ Rules:
       // Apply folder assignments
       for (const assignment of folderOrganization.assignments || []) {
         if (assignment.folder && assignment.folder !== 'Uncategorized') {
-          try {
-            const noteExists = allUncategorized.find(n => n.id === assignment.note_id);
-            if (noteExists) {
-              await base44.entities.Note.update(assignment.note_id, {
-                folder: assignment.folder
-              });
-            }
-          } catch (error) {
-            console.log(`Note ${assignment.note_id} no longer exists, skipping`);
+          const noteExists = allUncategorized.find(n => n.id === assignment.note_id);
+          if (noteExists) {
+            await base44.entities.Note.update(assignment.note_id, {
+              folder: assignment.folder
+            });
           }
         }
       }
@@ -387,6 +381,11 @@ Rules:
   const longTermNotes = notes.filter(note => note && !note.trashed && note.storage_type === 'long_term');
   const allFolders = [...new Set(longTermNotes.map(n => n.folder || 'Uncategorized'))];
   
+  // Ensure 'Uncategorized' is always visible, even if empty
+  if (!allFolders.includes('Uncategorized')) {
+    allFolders.push('Uncategorized');
+  }
+  
   // Get folder structure with counts and preview
   const folderStructure = allFolders.map(folder => {
     const folderNotes = longTermNotes.filter(n => (n.folder || 'Uncategorized') === folder);
@@ -399,7 +398,12 @@ Rules:
       videoCount,
       preview: folderNotes.slice(0, 3)
     };
-  }).sort((a, b) => b.noteCount - a.noteCount);
+  }).sort((a, b) => {
+    // Always show Uncategorized first
+    if (a.name === 'Uncategorized') return -1;
+    if (b.name === 'Uncategorized') return 1;
+    return b.noteCount - a.noteCount;
+  });
 
   let filteredNotes = currentFolder 
     ? longTermNotes.filter(note => (note.folder || 'Uncategorized') === currentFolder)
