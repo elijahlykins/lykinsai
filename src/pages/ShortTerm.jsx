@@ -42,6 +42,7 @@ export default function ShortTermPage() {
   const [filterFolder, setFilterFolder] = useState('all');
   const [showReminderPicker, setShowReminderPicker] = useState(false);
   const [sourceFilter, setSourceFilter] = useState('all');
+  const [selectedCards, setSelectedCards] = useState([]);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
@@ -115,7 +116,13 @@ export default function ShortTermPage() {
     queryClient.invalidateQueries(['notes']);
   };
 
-  const handleOpenInChat = (note) => {
+  const handleOpenInChat = async (note) => {
+    // If note is from long term, move it to short term first
+    if (note.storage_type === 'long_term') {
+      await base44.entities.Note.update(note.id, { storage_type: 'short_term' });
+      queryClient.invalidateQueries(['notes']);
+    }
+    
     const isChatCard = note.source === 'ai' && note.tags?.includes('chat');
     
     if (isChatCard) {
@@ -137,6 +144,20 @@ export default function ShortTermPage() {
     }
     
     navigate(createPageUrl('MemoryChat'));
+  };
+
+  const handleToggleSelect = (noteId) => {
+    setSelectedCards(prev => 
+      prev.includes(noteId) ? prev.filter(id => id !== noteId) : [...prev, noteId]
+    );
+  };
+
+  const handleSendToLongTerm = async () => {
+    for (const noteId of selectedCards) {
+      await base44.entities.Note.update(noteId, { storage_type: 'long_term' });
+    }
+    setSelectedCards([]);
+    queryClient.invalidateQueries(['notes']);
   };
 
   const allTags = [...new Set(notes.filter(n => n).flatMap(n => n.tags || []))];
@@ -187,6 +208,14 @@ export default function ShortTermPage() {
             <div className="flex items-center gap-2">
               {!selectedNote && (
                 <>
+                  {selectedCards.length > 0 && (
+                    <Button
+                      onClick={handleSendToLongTerm}
+                      className="bg-black dark:bg-white text-white dark:text-black hover:bg-black/90 dark:hover:bg-white/90"
+                    >
+                      Send {selectedCards.length} to Long Term
+                    </Button>
+                  )}
                   <Select value={sourceFilter} onValueChange={setSourceFilter}>
                     <SelectTrigger className="w-40 h-9 bg-white dark:bg-[#171515] border-gray-300 dark:border-gray-600 text-black dark:text-white text-sm">
                       <SelectValue />
@@ -288,11 +317,25 @@ export default function ShortTermPage() {
                 <DuplicateDetector notes={filteredNotes} onMerge={handleUpdate} />
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                   {filteredNotes.map((note) => (
-                    <button
+                    <div
                       key={note.id}
-                      onClick={() => setSelectedNote(note)}
-                      className="clay-card p-4 text-left hover:scale-[1.02] transition-all"
+                      className={`clay-card p-4 text-left hover:scale-[1.02] transition-all relative ${
+                        selectedCards.includes(note.id) ? 'ring-2 ring-black dark:ring-white' : ''
+                      }`}
                     >
+                      <input
+                        type="checkbox"
+                        checked={selectedCards.includes(note.id)}
+                        onChange={(e) => {
+                          e.stopPropagation();
+                          handleToggleSelect(note.id);
+                        }}
+                        className="absolute top-3 right-3 w-4 h-4 cursor-pointer"
+                      />
+                      <button
+                        onClick={() => setSelectedNote(note)}
+                        className="w-full text-left"
+                      >
                       <div className="flex items-center gap-2 mb-2">
                         {note.folder && (
                           <span className="text-xs px-2 py-1 bg-white dark:bg-[#171515] rounded text-gray-400 flex items-center gap-1 border border-gray-200 dark:border-gray-600">
@@ -323,7 +366,8 @@ export default function ShortTermPage() {
                           </>
                         )}
                       </div>
-                    </button>
+                      </button>
+                    </div>
                   ))}
                   {filteredNotes.length === 0 && (
                     <div className="col-span-full text-center py-12 text-gray-500">

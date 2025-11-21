@@ -118,7 +118,11 @@ export default function LongTermPage() {
     queryClient.invalidateQueries(['notes']);
   };
 
-  const handleOpenInChat = (note) => {
+  const handleOpenInChat = async (note) => {
+    // Always move long term notes back to short term when opened in chat
+    await base44.entities.Note.update(note.id, { storage_type: 'short_term' });
+    queryClient.invalidateQueries(['notes']);
+    
     const isChatCard = note.source === 'ai' && note.tags?.includes('chat');
     
     if (isChatCard) {

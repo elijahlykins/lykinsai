@@ -106,13 +106,17 @@ Create a well-structured merged note that captures all important information fro
       const mergedAttachments = [...(note1.attachments || []), ...(note2.attachments || [])];
       const mergedConnections = [...new Set([...(note1.connected_notes || []), ...(note2.connected_notes || [])])];
 
-      // Create merged note
+      // Create merged note - always in short_term if either note is short_term
+      const mergedStorageType = (note1.storage_type === 'short_term' || note2.storage_type === 'short_term') 
+        ? 'short_term' 
+        : 'long_term';
+      
       await base44.entities.Note.create({
         title: mergedTitle.trim(),
         content: mergedContent,
         tags: mergedTags,
         folder: note1.folder || note2.folder || 'Uncategorized',
-        storage_type: note1.storage_type,
+        storage_type: mergedStorageType,
         connected_notes: mergedConnections.filter(id => id !== note1.id && id !== note2.id),
         attachments: mergedAttachments,
         color: note1.color || note2.color
