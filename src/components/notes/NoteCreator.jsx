@@ -475,7 +475,7 @@ Return only the title, nothing else.`,
           {/* Suggested Questions */}
           <div className="clay-card p-4 space-y-3">
             <div className="flex items-center gap-2">
-              <span className="text-lg">💡</span>
+              <Lightbulb className="w-5 h-5 text-black dark:text-white" />
               <h3 className="font-semibold text-black dark:text-white">Suggested Questions</h3>
             </div>
             {suggestedQuestions.length > 0 ? (
