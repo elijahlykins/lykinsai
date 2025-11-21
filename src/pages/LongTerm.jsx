@@ -222,11 +222,15 @@ Return an EMPTY array if you find no clear duplicates.`,
         if (duplicate.similarity >= 0.98) {
           // Exact duplicate - keep newer, soft-delete older
           const olderNote = new Date(note1.created_date) < new Date(note2.created_date) ? note1 : note2;
-          await base44.entities.Note.update(olderNote.id, { 
-            trashed: true, 
-            trash_date: new Date().toISOString() 
-          });
-          processedNoteIds.add(olderNote.id);
+          try {
+            await base44.entities.Note.update(olderNote.id, { 
+              trashed: true, 
+              trash_date: new Date().toISOString() 
+            });
+            processedNoteIds.add(olderNote.id);
+          } catch (error) {
+            console.log(`Failed to trash note ${olderNote.id}, may have been already deleted`);
+          }
         } else if (duplicate.similarity >= 0.75) {
           // Similar notes - merge them into a NEW note in Uncategorized
           const mergeResult = await base44.integrations.Core.InvokeLLM({
@@ -270,14 +274,22 @@ Create a merged note with:
           });
 
           // Soft-delete both original notes
-          await base44.entities.Note.update(note1.id, { 
-            trashed: true, 
-            trash_date: new Date().toISOString() 
-          });
-          await base44.entities.Note.update(note2.id, { 
-            trashed: true, 
-            trash_date: new Date().toISOString() 
-          });
+          try {
+            await base44.entities.Note.update(note1.id, { 
+              trashed: true, 
+              trash_date: new Date().toISOString() 
+            });
+          } catch (error) {
+            console.log(`Failed to trash note ${note1.id}`);
+          }
+          try {
+            await base44.entities.Note.update(note2.id, { 
+              trashed: true, 
+              trash_date: new Date().toISOString() 
+            });
+          } catch (error) {
+            console.log(`Failed to trash note ${note2.id}`);
+          }
           processedNoteIds.add(note1.id);
           processedNoteIds.add(note2.id);
         }
@@ -343,9 +355,17 @@ Rules:
       // Apply folder assignments
       for (const assignment of folderOrganization.assignments || []) {
         if (assignment.folder && assignment.folder !== 'Uncategorized') {
-          await base44.entities.Note.update(assignment.note_id, {
-            folder: assignment.folder
-          });
+          try {
+            // Verify note still exists before updating
+            const noteExists = remainingUncategorized.find(n => n.id === assignment.note_id);
+            if (noteExists) {
+              await base44.entities.Note.update(assignment.note_id, {
+                folder: assignment.folder
+              });
+            }
+          } catch (error) {
+            console.log(`Note ${assignment.note_id} no longer exists, skipping`);
+          }
         }
       }
 
