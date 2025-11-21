@@ -6,7 +6,7 @@ import SettingsModal from '../components/notes/SettingsModal';
 import { useNavigate } from 'react-router-dom';
 import { createPageUrl } from '../utils';
 import { Button } from '@/components/ui/button';
-import { Save, ChevronDown, ChevronUp } from 'lucide-react';
+import { Save, ChevronDown, ChevronUp, Plus } from 'lucide-react';
 
 export default function CreatePage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
