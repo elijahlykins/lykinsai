@@ -229,13 +229,13 @@ Return an EMPTY array if you find no clear merges that meet these strict criteri
       // Step 2: Perform merges (with rate limiting)
       const processedNoteIds = new Set();
       const merges = duplicateAnalysis.merges || [];
-      
+
       // Limit to 3 merges max to avoid rate limits
       const limitedMerges = merges.slice(0, 3);
-      
+
       for (let i = 0; i < limitedMerges.length; i++) {
         const merge = limitedMerges[i];
-        
+
         // Add delay between merges to avoid rate limits
         if (i > 0) {
           await delay(2000);
@@ -250,8 +250,14 @@ Return an EMPTY array if you find no clear merges that meet these strict criteri
 
         const note1 = uncategorizedNotes.find(n => n.id === merge.note1_id);
         const note2 = uncategorizedNotes.find(n => n.id === merge.note2_id);
-        
+
         if (!note1 || !note2) continue;
+
+        // Double-check both notes are STILL in Uncategorized before merging
+        if ((note1.folder && note1.folder !== 'Uncategorized') || 
+            (note2.folder && note2.folder !== 'Uncategorized')) {
+          continue;
+        }
 
         // Merge the two notes
         const mergeResult = await base44.integrations.Core.InvokeLLM({
