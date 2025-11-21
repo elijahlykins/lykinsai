@@ -97,7 +97,7 @@ ${personalityPrompts[personality]} ${detailPrompts[detailLevel]}`,
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <HelpCircle className="w-5 h-5 text-blue" />
-          <h3 className="text-lg font-semibold text-black">Follow-Up Questions</h3>
+          <h3 className="text-lg font-semibold text-black dark:text-white">Follow-Up Questions</h3>
         </div>
         {questions.length > 0 && (
           <div className="flex gap-2">

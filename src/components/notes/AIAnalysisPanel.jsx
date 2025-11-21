@@ -132,7 +132,7 @@ Return the IDs of memory cards that have strong correlations.`,
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Sparkles className="w-5 h-5 text-lavender" />
-            <h3 className="text-lg font-semibold text-black">AI Analysis</h3>
+            <h3 className="text-lg font-semibold text-black dark:text-white">AI Analysis</h3>
           </div>
           {!note.ai_analysis && (
             <Button
@@ -177,7 +177,7 @@ Return the IDs of memory cards that have strong correlations.`,
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Link2 className="w-5 h-5 text-blue" />
-            <h3 className="text-lg font-semibold text-black">Connected Ideas</h3>
+            <h3 className="text-lg font-semibold text-black dark:text-white">Connected Ideas</h3>
           </div>
           <Button
             onClick={findConnections}
