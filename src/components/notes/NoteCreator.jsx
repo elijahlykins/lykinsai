@@ -27,6 +27,7 @@ const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, showSuggestion
   const [allNotes, setAllNotes] = useState([]);
   const [reminder, setReminder] = useState(null);
   const [showReminderPicker, setShowReminderPicker] = useState(false);
+  const [suggestedQuestions, setSuggestedQuestions] = useState([]);
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const timerRef = useRef(null);
@@ -49,6 +50,38 @@ const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, showSuggestion
   const handleAddConnection = (noteId) => {
     setSuggestedConnections([...suggestedConnections, noteId]);
   };
+
+  // Generate suggested questions when content changes
+  useEffect(() => {
+    const generateQuestions = async () => {
+      if (content.length > 100) {
+        try {
+          const result = await base44.integrations.Core.InvokeLLM({
+            prompt: `Based on this note content, generate 3-5 thought-provoking questions that would help the user explore this idea further.
+
+Content: "${content}"
+
+Make questions specific, insightful, and encouraging deeper thinking.`,
+            response_json_schema: {
+              type: 'object',
+              properties: {
+                questions: { type: 'array', items: { type: 'string' } }
+              }
+            }
+          });
+          setSuggestedQuestions(result.questions || []);
+        } catch (error) {
+          console.error('Error generating questions:', error);
+          setSuggestedQuestions([]);
+        }
+      } else {
+        setSuggestedQuestions([]);
+      }
+    };
+
+    const timeout = setTimeout(generateQuestions, 1000);
+    return () => clearTimeout(timeout);
+  }, [content]);
 
   React.useImperativeHandle(ref, () => ({
     handleSave: autoSave
@@ -327,9 +360,9 @@ Return only the title, nothing else.`,
   return (
     <div className="h-full flex relative">
         {/* Content Area - Notion Style */}
-        <div className={`overflow-auto ${attachments.length > 0 && inputMode === 'text' ? 'w-1/2' : 'flex-1'}`}>
+        <div className={`overflow-auto ${(attachments.length > 0 || (showSuggestions && content.length > 50)) && inputMode === 'text' ? 'w-1/2' : 'flex-1'}`}>
         {inputMode === 'text' ? (
-          <div className={`h-full flex flex-col gap-6 py-12 ${attachments.length > 0 ? 'pl-2 pr-6' : 'px-8 md:px-12 lg:px-16 xl:px-24'}`}>
+          <div className="h-full flex flex-col gap-6 py-12 px-8 md:px-12 lg:px-16 xl:px-24">
             <Input
               value={title}
               onChange={(e) => setTitle(e.target.value)}
@@ -395,17 +428,6 @@ Return only the title, nothing else.`,
               className="flex-1 w-full bg-transparent border-0 text-black dark:text-white placeholder:text-gray-500 dark:placeholder:text-gray-400 resize-none text-lg focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0"
               disabled={isProcessing}
             />
-
-            {showSuggestions && content.length > 50 && allNotes.length > 0 && (
-              <div className="mt-4">
-                <ConnectionSuggestions
-                  content={content}
-                  currentNoteId={null}
-                  allNotes={allNotes}
-                  onConnect={handleAddConnection}
-                />
-              </div>
-            )}
           </div>
         ) : (
           <div className="space-y-6 h-full">
@@ -447,8 +469,40 @@ Return only the title, nothing else.`,
         )}
       </div>
 
+      {/* Suggestions Panel */}
+      {showSuggestions && content.length > 50 && inputMode === 'text' && (
+        <div className="w-1/2 border-l border-gray-200 dark:border-gray-700 overflow-auto p-6 space-y-6">
+          {/* Suggested Connections */}
+          {allNotes.length > 0 && (
+            <ConnectionSuggestions
+              content={content}
+              currentNoteId={null}
+              allNotes={allNotes}
+              onConnect={handleAddConnection}
+            />
+          )}
+
+          {/* Suggested Questions */}
+          {suggestedQuestions.length > 0 && (
+            <div className="clay-card p-4 space-y-3">
+              <div className="flex items-center gap-2">
+                <span className="text-lg">💡</span>
+                <h3 className="font-semibold text-black dark:text-white">Suggested Questions</h3>
+              </div>
+              <div className="space-y-2">
+                {suggestedQuestions.map((question, idx) => (
+                  <div key={idx} className="p-3 bg-gray-50 dark:bg-[#1f1d1d]/50 rounded-lg border border-gray-200 dark:border-gray-700">
+                    <p className="text-sm text-black dark:text-white">{question}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Attachments Panel */}
-      {attachments.length > 0 && inputMode === 'text' && (
+      {attachments.length > 0 && !showSuggestions && inputMode === 'text' && (
         <AttachmentPanel
           attachments={attachments}
           onRemove={removeAttachment}
