@@ -62,6 +62,52 @@ const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, showSuggestion
     }
   }, []);
 
+  // Auto-trash draft after 1 hour of inactivity
+  useEffect(() => {
+    const checkAndTrashDraft = async () => {
+      const savedDraft = localStorage.getItem('lykinsai_draft');
+      if (!savedDraft) return;
+
+      const draft = JSON.parse(savedDraft);
+      const lastEditTime = draft.lastEditTime || Date.now();
+      const oneHourAgo = Date.now() - (60 * 60 * 1000);
+
+      if (lastEditTime < oneHourAgo) {
+        // Draft is older than 1 hour, move to trash
+        if (draft.title || draft.content || draft.attachments?.length > 0) {
+          try {
+            const colors = ['lavender', 'mint', 'blue', 'peach'];
+            const randomColor = colors[Math.floor(Math.random() * colors.length)];
+            
+            await base44.entities.Note.create({
+              title: draft.title || 'Unsaved Draft',
+              content: draft.content || '',
+              attachments: draft.attachments || [],
+              tags: draft.tags || [],
+              folder: draft.folder || 'Uncategorized',
+              reminder: draft.reminder || null,
+              connected_notes: draft.suggestedConnections || [],
+              color: randomColor,
+              trashed: true,
+              trash_date: new Date().toISOString(),
+              source: 'user'
+            });
+            localStorage.removeItem('lykinsai_draft');
+          } catch (error) {
+            console.error('Error moving draft to trash:', error);
+          }
+        }
+      }
+    };
+
+    // Check immediately on mount
+    checkAndTrashDraft();
+
+    // Check every 5 minutes
+    const interval = setInterval(checkAndTrashDraft, 5 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, []);
+
   // Save draft to localStorage whenever state changes
   useEffect(() => {
     const draft = {
@@ -71,7 +117,8 @@ const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, showSuggestion
       tags,
       folder,
       reminder,
-      suggestedConnections
+      suggestedConnections,
+      lastEditTime: Date.now()
     };
     localStorage.setItem('lykinsai_draft', JSON.stringify(draft));
   }, [title, content, attachments, tags, folder, reminder, suggestedConnections]);
