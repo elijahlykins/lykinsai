@@ -6,12 +6,13 @@ import SettingsModal from '../components/notes/SettingsModal';
 import { useNavigate } from 'react-router-dom';
 import { createPageUrl } from '../utils';
 import { Button } from '@/components/ui/button';
-import { Save } from 'lucide-react';
+import { Save, ChevronDown, ChevronUp } from 'lucide-react';
 
 export default function CreatePage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [inputMode, setInputMode] = useState('text'); // 'text' or 'audio'
+  const [showSuggestions, setShowSuggestions] = useState(true);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const noteCreatorRef = useRef(null);
@@ -45,6 +46,15 @@ export default function CreatePage() {
         <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Create Idea</h1>
           <div className="flex items-center gap-2">
             <Button
+              onClick={() => setShowSuggestions(!showSuggestions)}
+              variant="ghost"
+              className="text-gray-900 dark:text-gray-300 hover:bg-white/40 dark:hover:bg-white/10 rounded-2xl backdrop-blur-sm flex items-center gap-2 px-3 py-2 h-10"
+              title={showSuggestions ? "Hide suggestions" : "Show suggestions"}
+            >
+              {showSuggestions ? <ChevronUp className="w-5 h-5" /> : <ChevronDown className="w-5 h-5" />}
+              <span className="text-sm">Suggestions</span>
+            </Button>
+            <Button
               onClick={() => noteCreatorRef.current?.handleSave()}
               variant="ghost"
               className="text-gray-900 dark:text-gray-300 hover:bg-white/40 dark:hover:bg-white/10 w-10 h-10 p-0 rounded-2xl backdrop-blur-sm"
@@ -62,7 +72,7 @@ export default function CreatePage() {
 
         <div className="flex-1 flex items-center justify-center">
           <div className="w-full max-w-4xl h-full">
-            <NoteCreator ref={noteCreatorRef} onNoteCreated={handleNoteCreated} inputMode={inputMode} />
+            <NoteCreator ref={noteCreatorRef} onNoteCreated={handleNoteCreated} inputMode={inputMode} showSuggestions={showSuggestions} />
           </div>
         </div>
       </div>

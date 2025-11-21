@@ -11,7 +11,7 @@ import TagInput from './TagInput';
 import ConnectionSuggestions from './ConnectionSuggestions';
 import ReminderPicker from './ReminderPicker';
 
-const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode }, ref) => {
+const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, showSuggestions = true }, ref) => {
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
@@ -396,7 +396,7 @@ Return only the title, nothing else.`,
               disabled={isProcessing}
             />
 
-            {content.length > 50 && allNotes.length > 0 && (
+            {showSuggestions && content.length > 50 && allNotes.length > 0 && (
               <div className="mt-4">
                 <ConnectionSuggestions
                   content={content}
