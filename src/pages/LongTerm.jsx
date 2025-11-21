@@ -252,10 +252,10 @@ Rules:
   const handleDirectUpload = async (file) => {
     try {
       const { file_url } = await base44.integrations.Core.UploadFile({ file });
-      
+
       const isImage = file.type.startsWith('image/');
       const isVideo = file.type.startsWith('video/');
-      
+
       const attachment = {
         id: Date.now(),
         type: isImage ? 'image' : isVideo ? 'video' : 'file',
@@ -271,14 +271,28 @@ Rules:
         source: 'user',
         folder: 'Uncategorized'
       });
+      await new Promise(resolve => setTimeout(resolve, 300));
 
       queryClient.invalidateQueries(['notes']);
       setShowUploadDialog(false);
-      
+
       // Auto-organize after upload
       setTimeout(() => organizeIntoFolders(), 500);
     } catch (error) {
       console.error('Error uploading file:', error);
+    }
+  };
+
+  const handleFolderUpload = async (files) => {
+    try {
+      for (const file of files) {
+        await handleDirectUpload(file);
+      }
+      queryClient.invalidateQueries(['notes']);
+      setShowUploadDialog(false);
+      setTimeout(() => organizeIntoFolders(), 500);
+    } catch (error) {
+      console.error('Error uploading folder:', error);
     }
   };
 
@@ -685,6 +699,14 @@ Rules:
           
           <div className="space-y-3 py-4">
             <Button
+              onClick={() => document.getElementById('folder-upload-lt')?.click()}
+              className="w-full flex items-center gap-3 bg-gray-100 dark:bg-[#2a2828] hover:bg-gray-200 dark:hover:bg-[#333131] text-black dark:text-white justify-start"
+            >
+              <FolderIcon className="w-5 h-5 text-gray-600 dark:text-gray-300" />
+              Upload Folder
+            </Button>
+
+            <Button
               onClick={() => document.getElementById('image-upload-lt')?.click()}
               className="w-full flex items-center gap-3 bg-gray-100 dark:bg-[#2a2828] hover:bg-gray-200 dark:hover:bg-[#333131] text-black dark:text-white justify-start"
             >
@@ -709,6 +731,19 @@ Rules:
             </Button>
           </div>
 
+          <input
+            id="folder-upload-lt"
+            type="file"
+            webkitdirectory="true"
+            directory="true"
+            multiple
+            onChange={(e) => {
+              const files = Array.from(e.target.files || []);
+              if (files.length > 0) handleFolderUpload(files);
+              e.target.value = '';
+            }}
+            className="hidden"
+          />
           <input
             id="image-upload-lt"
             type="file"
