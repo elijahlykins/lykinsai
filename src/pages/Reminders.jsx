@@ -51,7 +51,7 @@ export default function RemindersPage() {
           onClick={() => handleRemoveReminder(note.id)}
           variant="ghost"
           size="icon"
-          className="text-gray-400 hover:text-red-500"
+          className="text-gray-400 dark:text-gray-400 hover:text-red-500 dark:hover:text-red-400"
         >
           <Trash2 className="w-4 h-4" />
         </Button>

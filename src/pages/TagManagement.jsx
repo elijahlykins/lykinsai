@@ -135,7 +135,7 @@ export default function TagManagementPage() {
                               if (e.key === 'Enter') handleRenameTag(tag.name, newTagName);
                               if (e.key === 'Escape') setEditingTag(null);
                             }}
-                            className="flex-1 bg-gray-50 border-gray-300"
+                            className="flex-1 bg-gray-50 dark:bg-[#1f1d1d]/80 border-gray-300 dark:border-gray-600 text-black dark:text-white"
                             autoFocus
                           />
                           <Button
@@ -149,7 +149,7 @@ export default function TagManagementPage() {
                             onClick={() => setEditingTag(null)}
                             size="sm"
                             variant="ghost"
-                            className="text-black hover:bg-gray-100"
+                            className="text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#1f1d1d]"
                           >
                             <X className="w-4 h-4" />
                           </Button>
@@ -158,10 +158,10 @@ export default function TagManagementPage() {
                         <>
                           <div className="flex items-center gap-3">
                             <span className="px-3 py-1 bg-lavender/20 text-lavender rounded-full text-sm font-medium flex items-center gap-2">
-                              <Tag className="w-3 h-3 text-black" />
+                              <Tag className="w-3 h-3 text-black dark:text-white" />
                               {tag.name}
                             </span>
-                            <span className="text-sm text-gray-500">
+                            <span className="text-sm text-gray-500 dark:text-gray-400">
                               {tag.count} note{tag.count !== 1 ? 's' : ''}
                             </span>
                           </div>
@@ -173,7 +173,7 @@ export default function TagManagementPage() {
                               }}
                               size="sm"
                               variant="ghost"
-                              className="text-black hover:bg-gray-100"
+                              className="text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#1f1d1d]"
                             >
                               <Edit2 className="w-4 h-4" />
                             </Button>
@@ -181,7 +181,7 @@ export default function TagManagementPage() {
                               onClick={() => handleDeleteTag(tag.name)}
                               size="sm"
                               variant="ghost"
-                              className="text-red-400 hover:bg-gray-100"
+                              className="text-red-400 dark:text-red-400 hover:bg-gray-100 dark:hover:bg-[#1f1d1d]"
                             >
                               <Trash2 className="w-4 h-4" />
                             </Button>
