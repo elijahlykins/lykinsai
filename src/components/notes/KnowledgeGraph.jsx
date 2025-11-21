@@ -48,17 +48,19 @@ export default function KnowledgeGraph({ notes, selectedNoteId, onSelectNote }) 
         });
 
         // Attraction to connected nodes
-        node.connected.forEach(connectedId => {
-          const connected = nodes.find(n => n.id === connectedId);
-          if (connected) {
-            const dx = connected.x - node.x;
-            const dy = connected.y - node.y;
-            const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-            const force = dist * 0.001;
-            node.vx += dx * force;
-            node.vy += dy * force;
-          }
-        });
+        if (node.connected && Array.isArray(node.connected)) {
+          node.connected.forEach(connectedId => {
+            const connected = nodes.find(n => n && n.id === connectedId);
+            if (connected) {
+              const dx = connected.x - node.x;
+              const dy = connected.y - node.y;
+              const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+              const force = dist * 0.001;
+              node.vx += dx * force;
+              node.vy += dy * force;
+            }
+          });
+        }
 
         // Center attraction
         const centerX = width / 2;
@@ -81,8 +83,9 @@ export default function KnowledgeGraph({ notes, selectedNoteId, onSelectNote }) 
       ctx.strokeStyle = 'rgba(184, 164, 212, 0.2)';
       ctx.lineWidth = 2;
       nodes.forEach(node => {
+        if (!node || !node.connected) return;
         node.connected.forEach(connectedId => {
-          const connected = nodes.find(n => n.id === connectedId);
+          const connected = nodes.find(n => n && n.id === connectedId);
           if (connected) {
             ctx.beginPath();
             ctx.moveTo(node.x, node.y);
@@ -137,6 +140,7 @@ export default function KnowledgeGraph({ notes, selectedNoteId, onSelectNote }) 
       const y = e.clientY - rect.top;
 
       nodes.forEach(node => {
+        if (!node) return;
         const dist = Math.sqrt((node.x - x) ** 2 + (node.y - y) ** 2);
         if (dist < 20) {
           onSelectNote(node.id);

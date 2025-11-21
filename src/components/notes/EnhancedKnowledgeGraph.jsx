@@ -151,8 +151,9 @@ Find meaningful connections based on content, themes, and ideas - not just keywo
 
       // Draw edges with cleaner lines
       graphData.edges.forEach(edge => {
-        const fromNode = nodesRef.current.find(n => n.id === edge.from_id);
-        const toNode = nodesRef.current.find(n => n.id === edge.to_id);
+        if (!edge) return;
+        const fromNode = nodesRef.current.find(n => n && n.id === edge.from_id);
+        const toNode = nodesRef.current.find(n => n && n.id === edge.to_id);
         
         if (fromNode && toNode) {
           const colors = {
@@ -253,10 +254,11 @@ Find meaningful connections based on content, themes, and ideas - not just keywo
       const y = (e.clientY - rect.top) / zoom;
 
       nodesRef.current.forEach(node => {
+        if (!node) return;
         const dist = Math.sqrt((node.x - x) ** 2 + (node.y - y) ** 2);
         if (dist < 30) {
           setSelectedNode(node);
-          onSelectNote(notes.find(n => n.id === node.id));
+          onSelectNote(notes.find(n => n && n.id === node.id));
         }
       });
     };
@@ -359,11 +361,12 @@ Find meaningful connections based on content, themes, and ideas - not just keywo
 
       // Attraction for connected nodes
       graphData.edges.forEach(edge => {
+        if (!edge) return;
         let connected = null;
         if (edge.from_id === node.id) {
-          connected = nodesRef.current.find(n => n.id === edge.to_id);
+          connected = nodesRef.current.find(n => n && n.id === edge.to_id);
         } else if (edge.to_id === node.id) {
-          connected = nodesRef.current.find(n => n.id === edge.from_id);
+          connected = nodesRef.current.find(n => n && n.id === edge.from_id);
         }
 
         if (connected) {
