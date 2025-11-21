@@ -228,6 +228,7 @@ Rules:
             folder: assignment.folder
           });
           processedByAI.add(assignment.note_id);
+          await new Promise(resolve => setTimeout(resolve, 300));
         }
       }
 
@@ -236,6 +237,7 @@ Rules:
           await base44.entities.Note.update(noteId, {
             folder: 'Miscellaneous'
           });
+          await new Promise(resolve => setTimeout(resolve, 300));
         }
       }
 
