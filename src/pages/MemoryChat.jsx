@@ -368,6 +368,20 @@ export default function MemoryChatPage() {
     }
   };
 
+  if (isError) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-gray-50 via-blue-50/30 to-gray-100 dark:from-[#171515] dark:via-[#171515] dark:to-[#171515] flex items-center justify-center">
+        <div className="text-center p-8 max-w-md">
+          <h2 className="text-xl font-bold text-black dark:text-white mb-4">Connection Error</h2>
+          <p className="text-gray-600 dark:text-gray-400 mb-4">Unable to load chat. Please check your connection and try again.</p>
+          <Button onClick={() => queryClient.invalidateQueries(['notes'])} className="bg-black dark:bg-white text-white dark:text-black">
+            Retry
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 via-blue-50/30 to-gray-100 dark:from-[#171515] dark:via-[#171515] dark:to-[#171515] flex overflow-hidden">
       <div className={`${sidebarCollapsed ? 'w-16' : 'w-64'} flex-shrink-0 transition-all duration-300`}>
