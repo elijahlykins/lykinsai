@@ -115,7 +115,7 @@ export default function TrashPage() {
                 <Button
                   onClick={handleRestoreAll}
                   variant="outline"
-                  className="border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-50 dark:hover:bg-[#1f1d1d]"
+                  className="border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-50 dark:hover:bg-[#171515]"
                 >
                   Restore All
                 </Button>

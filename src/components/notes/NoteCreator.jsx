@@ -452,16 +452,16 @@ Return only the title, nothing else.`,
             <div className="flex gap-2 items-center">
               <button
                 onClick={() => setShowMetadata(!showMetadata)}
-                className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-gray-100 dark:bg-[#1f1d1d]/80 hover:bg-gray-200 dark:hover:bg-[#2a2828] text-xs text-black dark:text-gray-300 transition-all"
+                className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white dark:bg-[#171515] hover:bg-gray-200 dark:hover:bg-[#171515]/80 text-xs text-black dark:text-white transition-all border border-gray-200 dark:border-gray-600"
               >
-                <Tag className="w-3 h-3 text-black dark:text-gray-300" />
+                <Tag className="w-3 h-3 text-black dark:text-white" />
                 Tags ({tags.length})
               </button>
               <button
                 onClick={() => setShowMetadata(!showMetadata)}
-                className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-gray-100 dark:bg-[#1f1d1d]/80 hover:bg-gray-200 dark:hover:bg-[#2a2828] text-xs text-black dark:text-gray-300 transition-all"
+                className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white dark:bg-[#171515] hover:bg-gray-200 dark:hover:bg-[#171515]/80 text-xs text-black dark:text-white transition-all border border-gray-200 dark:border-gray-600"
               >
-                <Folder className="w-3 h-3 text-black dark:text-gray-300" />
+                <Folder className="w-3 h-3 text-black dark:text-white" />
                 {folder}
               </button>
               <button
@@ -612,7 +612,7 @@ Return only the title, nothing else.`,
                 const url = prompt('Enter link to video, article, or post:');
                 if (url) handleLinkAdd(url);
               }}
-              className="w-full flex items-center gap-3 bg-gray-100 dark:bg-[#2a2828] hover:bg-gray-200 dark:hover:bg-[#333131] text-black dark:text-white justify-start"
+              className="w-full flex items-center gap-3 bg-white dark:bg-[#171515] hover:bg-gray-100 dark:hover:bg-[#171515]/80 text-black dark:text-white justify-start border border-gray-200 dark:border-gray-600"
             >
               <LinkIcon className="w-5 h-5 text-gray-600 dark:text-gray-300" />
               Add Link (Video, Article, Post)
@@ -620,7 +620,7 @@ Return only the title, nothing else.`,
 
             <Button
               onClick={() => fileInputRef.current?.click()}
-              className="w-full flex items-center gap-3 bg-gray-100 dark:bg-[#2a2828] hover:bg-gray-200 dark:hover:bg-[#333131] text-black dark:text-white justify-start"
+              className="w-full flex items-center gap-3 bg-white dark:bg-[#171515] hover:bg-gray-100 dark:hover:bg-[#171515]/80 text-black dark:text-white justify-start border border-gray-200 dark:border-gray-600"
             >
               <Image className="w-5 h-5 text-gray-600 dark:text-gray-300" />
               Upload Image
@@ -628,7 +628,7 @@ Return only the title, nothing else.`,
 
             <Button
               onClick={() => fileInputRef.current?.click()}
-              className="w-full flex items-center gap-3 bg-gray-100 dark:bg-[#2a2828] hover:bg-gray-200 dark:hover:bg-[#333131] text-black dark:text-white justify-start"
+              className="w-full flex items-center gap-3 bg-white dark:bg-[#171515] hover:bg-gray-100 dark:hover:bg-[#171515]/80 text-black dark:text-white justify-start border border-gray-200 dark:border-gray-600"
             >
               <Video className="w-5 h-5 text-gray-600 dark:text-gray-300" />
               Upload Video
@@ -636,7 +636,7 @@ Return only the title, nothing else.`,
 
             <Button
               onClick={() => fileInputRef.current?.click()}
-              className="w-full flex items-center gap-3 bg-gray-100 dark:bg-[#2a2828] hover:bg-gray-200 dark:hover:bg-[#333131] text-black dark:text-white justify-start"
+              className="w-full flex items-center gap-3 bg-white dark:bg-[#171515] hover:bg-gray-100 dark:hover:bg-[#171515]/80 text-black dark:text-white justify-start border border-gray-200 dark:border-gray-600"
             >
               <FileText className="w-5 h-5 text-gray-600 dark:text-gray-300" />
               Upload File
