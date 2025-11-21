@@ -117,15 +117,15 @@ export default function MemoryChatPage() {
       const response = await base44.integrations.Core.InvokeLLM({
         prompt: `${personalityStyles[personality]} ${detailStyles[detailLevel]}
 
-User's memories:
-${notesContext}
+      User's memories:
+      ${notesContext}
 
-Conversation history:
-${conversationHistory}
+      Conversation history:
+      ${conversationHistory}
 
-User: ${input}
+      User: ${input}
 
-Provide thoughtful, insightful responses based on their memories. Reference specific memories when relevant.`,
+      Provide thoughtful, insightful responses based on their memories. Reference specific memories when relevant. Do not use emojis in your responses unless the user explicitly asks for them.`,
       });
 
       setMessages(prev => [...prev, { role: 'assistant', content: response }]);
