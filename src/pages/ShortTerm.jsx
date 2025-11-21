@@ -160,6 +160,14 @@ export default function ShortTermPage() {
     queryClient.invalidateQueries(['notes']);
   };
 
+  const handleBulkDelete = async () => {
+    for (const noteId of selectedCards) {
+      await base44.entities.Note.update(noteId, { trashed: true, trash_date: new Date().toISOString() });
+    }
+    setSelectedCards([]);
+    queryClient.invalidateQueries(['notes']);
+  };
+
   const allTags = [...new Set(notes.filter(n => n).flatMap(n => n.tags || []))];
   const allFolders = [...new Set(notes.filter(n => n).map(n => n.folder || 'Uncategorized'))];
 
@@ -209,12 +217,22 @@ export default function ShortTermPage() {
               {!selectedNote && (
                 <>
                   {selectedCards.length > 0 && (
-                    <Button
-                      onClick={handleSendToLongTerm}
-                      className="bg-black dark:bg-white text-white dark:text-black hover:bg-black/90 dark:hover:bg-white/90"
-                    >
-                      Send {selectedCards.length} to Long Term
-                    </Button>
+                    <>
+                      <Button
+                        onClick={handleBulkDelete}
+                        variant="outline"
+                        className="border-red-300 dark:border-red-600 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20"
+                      >
+                        <Trash2 className="w-4 h-4 mr-2" />
+                        Delete {selectedCards.length}
+                      </Button>
+                      <Button
+                        onClick={handleSendToLongTerm}
+                        className="bg-black dark:bg-white text-white dark:text-black hover:bg-black/90 dark:hover:bg-white/90"
+                      >
+                        Send {selectedCards.length} to Long Term
+                      </Button>
+                    </>
                   )}
                   <Select value={sourceFilter} onValueChange={setSourceFilter}>
                     <SelectTrigger className="w-40 h-9 bg-white dark:bg-[#171515] border-gray-300 dark:border-gray-600 text-black dark:text-white text-sm">
