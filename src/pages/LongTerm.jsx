@@ -164,6 +164,8 @@ export default function LongTermPage() {
     navigate(createPageUrl('MemoryChat'));
   };
 
+  const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
   const organizeIntoFolders = async () => {
     if (!aiMergingEnabled) {
       return;
@@ -224,10 +226,20 @@ Return an EMPTY array if you find no clear merges that meet these strict criteri
         }
       });
 
-      // Step 2: Perform merges
+      // Step 2: Perform merges (with rate limiting)
       const processedNoteIds = new Set();
+      const merges = duplicateAnalysis.merges || [];
       
-      for (const merge of duplicateAnalysis.merges || []) {
+      // Limit to 3 merges max to avoid rate limits
+      const limitedMerges = merges.slice(0, 3);
+      
+      for (let i = 0; i < limitedMerges.length; i++) {
+        const merge = limitedMerges[i];
+        
+        // Add delay between merges to avoid rate limits
+        if (i > 0) {
+          await delay(2000);
+        }
         if (processedNoteIds.has(merge.note1_id) || processedNoteIds.has(merge.note2_id)) {
           continue;
         }
@@ -299,6 +311,11 @@ Create a merged note with:
         
         processedNoteIds.add(note1.id);
         processedNoteIds.add(note2.id);
+      }
+
+      // Add delay before folder organization
+      if (limitedMerges.length > 0) {
+        await delay(2000);
       }
 
       // Refresh notes to get newly merged notes
