@@ -294,7 +294,6 @@ export default function MemoryChatPage() {
           ))}
           onOpenSearch={() => navigate(createPageUrl('AISearch'))}
           onOpenChat={() => navigate(createPageUrl('MemoryChat'))}
-          onOpenSettings={() => setSettingsOpen(true)}
           isCollapsed={sidebarCollapsed}
           onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
         />

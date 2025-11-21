@@ -8,7 +8,7 @@ import {
 } from "@/components/ui/tooltip";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
-export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, onOpenChat, onOpenSettings, isCollapsed, onToggleCollapse }) {
+export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, onOpenChat, isCollapsed, onToggleCollapse }) {
   const navItems = [
     { id: 'create', icon: Plus, label: 'Create', tooltip: 'Create new memories' },
     { id: 'short_term', icon: Clock, label: 'Short Term', tooltip: 'Recent memories from the past 30 days' },
@@ -54,23 +54,6 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
             </div>
           </ScrollArea>
         </TooltipProvider>
-        <div className="mt-auto flex-shrink-0">
-          <TooltipProvider delayDuration={300}>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  onClick={onOpenSettings}
-                  className="p-3 hover:bg-white/40 dark:hover:bg-white/10 rounded-2xl transition-all text-gray-700 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white backdrop-blur-sm border border-white/20 dark:border-gray-700/20"
-                >
-                  <Settings className="w-5 h-5" />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="right">
-                <p>Settings</p>
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
-        </div>
       </div>
     );
   }
@@ -116,26 +99,6 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
           </nav>
         </ScrollArea>
       </TooltipProvider>
-
-      {/* Settings at bottom */}
-      <div className="mt-auto pt-3 flex-shrink-0">
-        <TooltipProvider delayDuration={300}>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                onClick={onOpenSettings}
-                className="p-3 hover:bg-white/40 dark:hover:bg-[#171515]/40 rounded-2xl transition-all text-black dark:text-white hover:text-black dark:hover:text-white flex items-center gap-2 backdrop-blur-sm border border-white/20 dark:border-gray-700/20"
-              >
-                <Settings className="w-5 h-5" />
-                <span className="text-sm">Settings</span>
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="right">
-              <p>Customize your preferences</p>
-            </TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
-      </div>
     </div>
   );
 }

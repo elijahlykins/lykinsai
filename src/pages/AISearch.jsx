@@ -286,7 +286,6 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
           ))}
           onOpenSearch={() => navigate(createPageUrl('AISearch'))}
           onOpenChat={() => navigate(createPageUrl('MemoryChat'))}
-          onOpenSettings={() => setSettingsOpen(true)}
           isCollapsed={sidebarCollapsed}
           onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
         />
@@ -609,11 +608,23 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
                 <p className="text-center text-gray-500 dark:text-gray-400 py-12">Search for memories by ideas or concepts</p>
               )}
             </div>
-          )}
-        </div>
-      </div>
+            )}
+            </div>
 
-      <SettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
+            {/* Settings Button at Bottom */}
+            <div className="p-6 flex justify-center">
+            <Button
+            onClick={() => setSettingsOpen(true)}
+            variant="outline"
+            className="border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-50 dark:hover:bg-[#171515] flex items-center gap-2"
+            >
+            <Settings className="w-4 h-4" />
+            Settings
+            </Button>
+            </div>
+            </div>
+
+            <SettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
 
       {/* Save Search Dialog */}
       <Dialog open={showSaveDialog} onOpenChange={setShowSaveDialog}>
