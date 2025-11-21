@@ -37,7 +37,7 @@ export default function KnowledgeGraph({ notes, selectedNoteId, onSelectNote }) 
         
         // Repulsion between nodes
         nodes.forEach((other, j) => {
-          if (!other || i !== j) {
+          if (i !== j && other) {
             const dx = node.x - other.x;
             const dy = node.y - other.y;
             const dist = Math.sqrt(dx * dx + dy * dy) || 1;
