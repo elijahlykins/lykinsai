@@ -85,10 +85,10 @@ Return up to 5 note IDs that are most relevant, along with a brief reason for ea
     <div className="clay-card p-4 space-y-3">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <Link2 className="w-4 h-4 text-black" />
-          <h3 className="font-semibold text-black">Suggested Connections</h3>
+          <Link2 className="w-4 h-4 text-black dark:text-white" />
+          <h3 className="font-semibold text-black dark:text-white">Suggested Connections</h3>
         </div>
-        {isAnalyzing && <Loader2 className="w-4 h-4 animate-spin text-gray-600" />}
+        {isAnalyzing && <Loader2 className="w-4 h-4 animate-spin text-gray-600 dark:text-gray-400" />}
       </div>
 
       {suggestions.length > 0 ? (
@@ -96,18 +96,18 @@ Return up to 5 note IDs that are most relevant, along with a brief reason for ea
           {suggestions.map(({ note, reason }) => {
             const isConnected = connectedIds.includes(note.id);
             return (
-              <div key={note.id} className="p-3 bg-gray-50 rounded-lg border border-gray-200">
+              <div key={note.id} className="p-3 bg-gray-50 dark:bg-[#1f1d1d] rounded-lg border border-gray-200 dark:border-gray-700">
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex-1 min-w-0">
-                    <h4 className="font-medium text-black text-sm mb-1">{note.title}</h4>
-                    <p className="text-xs text-gray-600 mb-2">{reason}</p>
-                    <p className="text-xs text-gray-500 line-clamp-1">{note.content}</p>
+                    <h4 className="font-medium text-black dark:text-white text-sm mb-1">{note.title}</h4>
+                    <p className="text-xs text-gray-600 dark:text-gray-400 mb-2">{reason}</p>
+                    <p className="text-xs text-gray-500 dark:text-gray-500 line-clamp-1">{note.content}</p>
                   </div>
                   <Button
                     onClick={() => handleConnect(note.id)}
                     disabled={isConnected}
                     size="sm"
-                    className={isConnected ? 'bg-green-600 text-white' : 'bg-black text-white hover:bg-gray-800'}
+                    className={isConnected ? 'bg-green-600 dark:bg-green-700 text-white' : 'bg-black dark:bg-white text-white dark:text-black hover:bg-gray-800 dark:hover:bg-gray-200'}
                   >
                     {isConnected ? (
                       <>
@@ -127,7 +127,7 @@ Return up to 5 note IDs that are most relevant, along with a brief reason for ea
           })}
         </div>
       ) : !isAnalyzing && (
-        <p className="text-sm text-gray-500 text-center py-4">
+        <p className="text-sm text-gray-500 dark:text-gray-400 text-center py-4">
           No similar notes found
         </p>
       )}
