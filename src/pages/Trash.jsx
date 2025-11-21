@@ -45,6 +45,16 @@ export default function TrashPage() {
     },
   });
 
+  const restoreAllMutation = useMutation({
+    mutationFn: async () => {
+      const trashedNotes = notes.filter(n => n.trashed);
+      await Promise.all(trashedNotes.map(note => base44.entities.Note.update(note.id, { trashed: false, trash_date: null })));
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['notes'] });
+    },
+  });
+
   const trashedNotes = notes.filter(n => n.trashed);
 
   const getDaysRemaining = (trashDate) => {
@@ -66,6 +76,10 @@ export default function TrashPage() {
     if (confirm(`Are you sure? This will permanently delete ${trashedNotes.length} items.`)) {
       await emptyTrashMutation.mutateAsync();
     }
+  };
+
+  const handleRestoreAll = async () => {
+    await restoreAllMutation.mutateAsync();
   };
 
   return (
@@ -99,13 +113,22 @@ export default function TrashPage() {
               </p>
             </div>
             {trashedNotes.length > 0 && (
-              <Button
-                onClick={handleEmptyTrash}
-                variant="destructive"
-                className="bg-red-600 hover:bg-red-700 text-white"
-              >
-                Empty Trash
-              </Button>
+              <div className="flex gap-2">
+                <Button
+                  onClick={handleRestoreAll}
+                  variant="outline"
+                  className="border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-50 dark:hover:bg-[#1f1d1d]"
+                >
+                  Restore All
+                </Button>
+                <Button
+                  onClick={handleEmptyTrash}
+                  variant="destructive"
+                  className="bg-red-600 hover:bg-red-700 text-white"
+                >
+                  Delete All Permanently
+                </Button>
+              </div>
             )}
           </div>
 
