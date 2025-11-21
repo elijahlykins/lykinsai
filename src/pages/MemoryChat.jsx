@@ -6,7 +6,7 @@ import SettingsModal from '../components/notes/SettingsModal';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Send, Loader2, Bot, User, Plus, Mic, MessageSquare, X, File, Image as ImageIcon, Link as LinkIcon, Video, FileText, HelpCircle } from 'lucide-react';
+import { Send, Loader2, Bot, User, Plus, Mic, MessageSquare, X, File, Image as ImageIcon, Link as LinkIcon, Video, FileText, HelpCircle, PlusCircle } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { useNavigate } from 'react-router-dom';
@@ -26,6 +26,7 @@ export default function MemoryChatPage() {
   const scrollRef = useRef(null);
   const fileInputRef = useRef(null);
   const navigate = useNavigate();
+  const [lastMessageTime, setLastMessageTime] = useState(Date.now());
 
   const { data: notes = [] } = useQuery({
     queryKey: ['notes'],
@@ -48,7 +49,32 @@ export default function MemoryChatPage() {
       setFollowUpQuestions(JSON.parse(storedQuestions));
       localStorage.removeItem('chat_followup_questions');
     }
+
+    // Load persisted chat
+    const savedChat = localStorage.getItem('lykinsai_chat');
+    if (savedChat) {
+      const { messages: savedMessages, timestamp } = JSON.parse(savedChat);
+      const oneHourAgo = Date.now() - (60 * 60 * 1000);
+      
+      if (timestamp > oneHourAgo) {
+        setMessages(savedMessages);
+        setLastMessageTime(timestamp);
+      } else {
+        localStorage.removeItem('lykinsai_chat');
+      }
+    }
   }, []);
+
+  // Persist chat to localStorage
+  useEffect(() => {
+    if (messages.length > 0) {
+      const chatData = {
+        messages,
+        timestamp: lastMessageTime
+      };
+      localStorage.setItem('lykinsai_chat', JSON.stringify(chatData));
+    }
+  }, [messages, lastMessageTime]);
 
   // Save chat as a memory card when user leaves
   useEffect(() => {
@@ -87,6 +113,7 @@ export default function MemoryChatPage() {
     setInput('');
     setAttachments([]);
     setIsLoading(true);
+    setLastMessageTime(Date.now());
 
     try {
       const settings = JSON.parse(localStorage.getItem('lykinsai_settings') || '{}');
@@ -129,6 +156,7 @@ export default function MemoryChatPage() {
       });
 
       setMessages(prev => [...prev, { role: 'assistant', content: response }]);
+      setLastMessageTime(Date.now());
     } catch (error) {
       console.error('Chat error:', error);
       setMessages(prev => [...prev, { role: 'assistant', content: 'Sorry, I encountered an error.' }]);
@@ -142,6 +170,15 @@ export default function MemoryChatPage() {
     const settings = JSON.parse(localStorage.getItem('lykinsai_settings') || '{}');
     settings.aiModel = model;
     localStorage.setItem('lykinsai_settings', JSON.stringify(settings));
+  };
+
+  const handleNewChat = () => {
+    setMessages([]);
+    setInput('');
+    setAttachments([]);
+    setFollowUpQuestions(null);
+    localStorage.removeItem('lykinsai_chat');
+    setLastMessageTime(Date.now());
   };
 
   const handleFileUpload = async (file) => {
@@ -199,10 +236,12 @@ export default function MemoryChatPage() {
 
       <div className="flex-1 flex flex-col overflow-hidden">
         <div className="p-6 bg-glass border-b border-white/20 dark:border-gray-700/30">
-          <div className="flex items-center justify-end">
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-gray-500 dark:text-gray-400">Model:</span>
-              <Select value={currentModel} onValueChange={handleModelChange}>
+          <div className="flex items-center justify-between">
+            <div></div>
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-gray-500 dark:text-gray-400">Model:</span>
+                <Select value={currentModel} onValueChange={handleModelChange}>
                 <SelectTrigger className="w-48 h-9 bg-white dark:bg-[#171515] border-gray-300 dark:border-gray-600 text-black dark:text-white text-sm">
                   <SelectValue />
                 </SelectTrigger>
@@ -217,10 +256,17 @@ export default function MemoryChatPage() {
                   <SelectItem value="claude-3-sonnet">Claude 3 Sonnet</SelectItem>
                   <SelectItem value="claude-3-haiku">Claude 3 Haiku</SelectItem>
                 </SelectContent>
-              </Select>
-            </div>
-          </div>
-        </div>
+                </Select>
+                </div>
+                <Button
+                onClick={handleNewChat}
+                className="bg-black dark:bg-white text-white dark:text-black hover:bg-black/90 dark:hover:bg-white/90"
+                >
+                New Chat
+                </Button>
+                </div>
+                </div>
+                </div>
 
         {messages.length === 0 ? (
           <div className="flex-1 flex items-center justify-center p-8">
