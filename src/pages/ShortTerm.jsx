@@ -154,9 +154,9 @@ export default function ShortTermPage() {
       </div>
 
       <div className="flex-1 flex flex-col overflow-hidden">
-        <div className="p-6 bg-glass border-b border-white/20">
+        <div className="p-6 bg-glass border-b border-white/20 dark:border-gray-700/30">
           <div className="flex items-center justify-between mb-4">
-            <h1 className="text-2xl font-bold text-black flex items-center gap-2">
+            <h1 className="text-2xl font-bold text-black dark:text-white flex items-center gap-2">
               <Clock className="w-6 h-6" />
               Short Term Memory
             </h1>
@@ -164,10 +164,10 @@ export default function ShortTermPage() {
               {!selectedNote && (
                 <>
                   <Select value={sourceFilter} onValueChange={setSourceFilter}>
-                    <SelectTrigger className="w-40 h-9 bg-gray-50 border-gray-300 text-black text-sm">
+                    <SelectTrigger className="w-40 h-9 bg-white dark:bg-[#171515] border-gray-300 dark:border-gray-600 text-black dark:text-white text-sm">
                       <SelectValue />
                     </SelectTrigger>
-                    <SelectContent className="bg-white border-gray-200">
+                    <SelectContent className="bg-white dark:bg-[#171515] border-gray-200 dark:border-gray-700">
                       <SelectItem value="all">All Memories</SelectItem>
                       <SelectItem value="user">Idea Cards</SelectItem>
                       <SelectItem value="ai">Chat Cards</SelectItem>
@@ -176,9 +176,9 @@ export default function ShortTermPage() {
                   <Button
                     onClick={() => setShowGraphView(!showGraphView)}
                     variant="ghost"
-                    className="text-black hover:bg-gray-100 flex items-center gap-2"
+                    className="text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#171515] flex items-center gap-2"
                   >
-                    <Link2 className="w-4 h-4 text-black" />
+                    <Link2 className="w-4 h-4 text-black dark:text-white" />
                     {showGraphView ? 'List View' : 'Graph View'}
                   </Button>
                 </>
@@ -187,26 +187,26 @@ export default function ShortTermPage() {
                 <div className="flex items-center gap-2">
                   {!isEditing ? (
                     <>
-                      <Button onClick={() => setShowReminderPicker(true)} variant="ghost" size="icon" className={`${selectedNote.reminder ? 'text-black bg-yellow-100' : 'text-black'} hover:bg-gray-100`}>
+                      <Button onClick={() => setShowReminderPicker(true)} variant="ghost" size="icon" className={`${selectedNote.reminder ? 'text-black dark:text-white bg-yellow-100 dark:bg-yellow-900/30' : 'text-black dark:text-white'} hover:bg-gray-100 dark:hover:bg-[#171515]`}>
                         <Bell className="w-5 h-5" />
                       </Button>
-                      <Button onClick={() => setShowLinkSelector(true)} variant="ghost" size="icon" className="text-black hover:bg-gray-100">
-                        <Link2 className="w-5 h-5 text-black" />
+                      <Button onClick={() => setShowLinkSelector(true)} variant="ghost" size="icon" className="text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#171515]">
+                        <Link2 className="w-5 h-5 text-black dark:text-white" />
                       </Button>
-                      <Button onClick={startEditing} variant="ghost" size="icon" className="text-black hover:bg-gray-100">
-                        <Edit2 className="w-5 h-5 text-black" />
+                      <Button onClick={startEditing} variant="ghost" size="icon" className="text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#171515]">
+                        <Edit2 className="w-5 h-5 text-black dark:text-white" />
                       </Button>
-                      <Button onClick={handleDeleteNote} variant="ghost" size="icon" className="text-red-400 hover:bg-gray-100">
+                      <Button onClick={handleDeleteNote} variant="ghost" size="icon" className="text-red-400 hover:bg-gray-100 dark:hover:bg-[#171515]">
                         <Trash2 className="w-5 h-5" />
                       </Button>
                     </>
                   ) : (
                     <>
-                      <Button onClick={saveEdits} variant="ghost" size="icon" className="text-green-600 hover:bg-gray-100">
+                      <Button onClick={saveEdits} variant="ghost" size="icon" className="text-green-600 hover:bg-gray-100 dark:hover:bg-[#171515]">
                         <Save className="w-5 h-5" />
                       </Button>
-                      <Button onClick={cancelEditing} variant="ghost" size="icon" className="text-black hover:bg-gray-100">
-                        <XCircle className="w-5 h-5 text-black" />
+                      <Button onClick={cancelEditing} variant="ghost" size="icon" className="text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#171515]">
+                        <XCircle className="w-5 h-5 text-black dark:text-white" />
                       </Button>
                     </>
                   )}
@@ -218,12 +218,12 @@ export default function ShortTermPage() {
           {/* Filters */}
           {!selectedNote && !showGraphView && (
             <div className="flex gap-3 items-center">
-              <Filter className="w-4 h-4 text-black" />
+              <Filter className="w-4 h-4 text-black dark:text-white" />
               <Select value={filterTag} onValueChange={setFilterTag}>
-                <SelectTrigger className="w-40 bg-dark-lighter border-white/10 text-black">
+                <SelectTrigger className="w-40 bg-white dark:bg-[#171515] border-gray-300 dark:border-gray-600 text-black dark:text-white">
                   <SelectValue placeholder="Filter by tag" />
                 </SelectTrigger>
-                <SelectContent className="bg-dark-card border-white/10">
+                <SelectContent className="bg-white dark:bg-[#171515] border-gray-200 dark:border-gray-700">
                   <SelectItem value="all">All Tags</SelectItem>
                   {allTags.map(tag => (
                     <SelectItem key={tag} value={tag}>{tag}</SelectItem>
@@ -231,10 +231,10 @@ export default function ShortTermPage() {
                 </SelectContent>
               </Select>
               <Select value={filterFolder} onValueChange={setFilterFolder}>
-                <SelectTrigger className="w-40 bg-dark-lighter border-white/10 text-black">
+                <SelectTrigger className="w-40 bg-white dark:bg-[#171515] border-gray-300 dark:border-gray-600 text-black dark:text-white">
                   <SelectValue placeholder="Filter by folder" />
                 </SelectTrigger>
-                <SelectContent className="bg-dark-card border-white/10">
+                <SelectContent className="bg-white dark:bg-[#171515] border-gray-200 dark:border-gray-700">
                   <SelectItem value="all">All Folders</SelectItem>
                   {allFolders.map(folder => (
                     <SelectItem key={folder} value={folder}>{folder}</SelectItem>
@@ -245,7 +245,7 @@ export default function ShortTermPage() {
           )}
         </div>
 
-        <div className="flex-1 overflow-hidden bg-gray-50">
+        <div className="flex-1 overflow-hidden bg-white dark:bg-[#171515]">
           <ScrollArea className="h-full">
             {showGraphView && !selectedNote ? (
               <div className="h-[calc(100vh-200px)]">
@@ -268,30 +268,30 @@ export default function ShortTermPage() {
                     >
                       <div className="flex items-center gap-2 mb-2">
                         {note.folder && (
-                          <span className="text-xs px-2 py-1 bg-white/5 rounded text-gray-400 flex items-center gap-1">
-                            <FolderIcon className="w-3 h-3 text-black" />
+                          <span className="text-xs px-2 py-1 bg-white dark:bg-[#171515] rounded text-gray-400 flex items-center gap-1 border border-gray-200 dark:border-gray-600">
+                            <FolderIcon className="w-3 h-3 text-black dark:text-white" />
                             {note.folder}
                           </span>
                         )}
                       </div>
-                      <h3 className="font-semibold text-black mb-2 line-clamp-1">{note.title}</h3>
-                      <p className="text-sm text-black line-clamp-3 mb-3">{note.content}</p>
+                      <h3 className="font-semibold text-black dark:text-white mb-2 line-clamp-1">{note.title}</h3>
+                      <p className="text-sm text-black dark:text-white line-clamp-3 mb-3">{note.content}</p>
                       {note.tags?.length > 0 && (
                         <div className="flex flex-wrap gap-1 mb-2">
                           {note.tags.map(tag => (
-                            <span key={tag} className="text-xs px-1.5 py-0.5 bg-gray-100 text-gray-700 rounded">
+                            <span key={tag} className="text-xs px-1.5 py-0.5 bg-white dark:bg-[#171515] text-black dark:text-gray-300 rounded border border-gray-200 dark:border-gray-600">
                               {tag}
                             </span>
                           ))}
                         </div>
                       )}
                       <div className="flex items-center gap-1 text-xs text-gray-500">
-                        <Clock className="w-3 h-3 text-black" />
+                        <Clock className="w-3 h-3 text-black dark:text-gray-300" />
                         <span>{format(new Date(note.created_date), 'MMM d, yyyy')}</span>
                         {note.connected_notes?.length > 0 && (
                           <>
                             <span className="mx-1">•</span>
-                            <Link2 className="w-3 h-3 text-black" />
+                            <Link2 className="w-3 h-3 text-black dark:text-white" />
                             <span>{note.connected_notes.length}</span>
                           </>
                         )}
@@ -310,7 +310,7 @@ export default function ShortTermPage() {
                 <Button
                   onClick={() => setSelectedNote(null)}
                   variant="ghost"
-                  className="text-black hover:bg-gray-100 flex items-center gap-2 -ml-2"
+                  className="text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#171515] flex items-center gap-2 -ml-2"
                 >
                   ← Back to All Notes
                 </Button>
@@ -319,28 +319,28 @@ export default function ShortTermPage() {
                     <>
                       <div className="flex items-center gap-2 mb-4">
                         {selectedNote.folder && (
-                          <span className="px-3 py-1 bg-white/5 rounded-full text-sm text-gray-400 flex items-center gap-2">
-                            <FolderIcon className="w-4 h-4 text-black" />
+                          <span className="px-3 py-1 bg-white dark:bg-[#171515] rounded-full text-sm text-gray-400 flex items-center gap-2 border border-gray-200 dark:border-gray-600">
+                            <FolderIcon className="w-4 h-4 text-black dark:text-white" />
                             {selectedNote.folder}
                           </span>
                         )}
                       </div>
-                      <h2 className="text-3xl font-bold text-black">{selectedNote.title}</h2>
+                      <h2 className="text-3xl font-bold text-black dark:text-white">{selectedNote.title}</h2>
                       {selectedNote.tags?.length > 0 && (
                         <div className="flex flex-wrap gap-2">
                           {selectedNote.tags.map(tag => (
-                            <span key={tag} className="px-3 py-1 bg-gray-100 text-gray-700 rounded-full text-sm flex items-center gap-1">
-                              <Tag className="w-3 h-3 text-gray-600" />
+                            <span key={tag} className="px-3 py-1 bg-white dark:bg-[#171515] text-black dark:text-gray-300 rounded-full text-sm flex items-center gap-1 border border-gray-200 dark:border-gray-600">
+                              <Tag className="w-3 h-3 text-gray-600 dark:text-gray-300" />
                               {tag}
                             </span>
                           ))}
                         </div>
                       )}
-                      <p className="leading-relaxed whitespace-pre-wrap text-black">{selectedNote.content}</p>
+                      <p className="leading-relaxed whitespace-pre-wrap text-black dark:text-white">{selectedNote.content}</p>
                       {selectedNote.connected_notes?.length > 0 && (
-                        <div className="pt-4 border-t border-white/10">
-                          <h3 className="text-sm font-medium text-gray-400 mb-3 flex items-center gap-2">
-                            <Link2 className="w-4 h-4 text-black" />
+                        <div className="pt-4 border-t border-gray-200 dark:border-gray-700">
+                          <h3 className="text-sm font-medium text-gray-400 dark:text-gray-300 mb-3 flex items-center gap-2">
+                            <Link2 className="w-4 h-4 text-black dark:text-white" />
                             Linked Notes ({selectedNote.connected_notes.length})
                           </h3>
                           <div className="grid grid-cols-1 gap-2">
@@ -350,10 +350,10 @@ export default function ShortTermPage() {
                                 <button
                                   key={connectedId}
                                   onClick={() => setSelectedNote(connectedNote)}
-                                  className="p-3 bg-white/5 rounded-lg text-left hover:bg-white/10 transition-all"
+                                  className="p-3 bg-white dark:bg-[#171515] rounded-lg text-left hover:bg-gray-100 dark:hover:bg-[#171515]/80 transition-all border border-gray-200 dark:border-gray-600"
                                 >
-                                  <p className="text-sm font-medium text-black">{connectedNote.title}</p>
-                                  <p className="text-xs text-black line-clamp-1">{connectedNote.content}</p>
+                                  <p className="text-sm font-medium text-black dark:text-white">{connectedNote.title}</p>
+                                  <p className="text-xs text-black dark:text-white line-clamp-1">{connectedNote.content}</p>
                                 </button>
                               ) : null;
                             })}
@@ -398,7 +398,7 @@ export default function ShortTermPage() {
                   }}
                 />
                 <AIAnalysisPanel note={selectedNote} allNotes={notes} onUpdate={handleUpdate} />
-                <Button onClick={() => setSelectedNote(null)} variant="outline" className="w-full bg-transparent border-gray-300 text-black hover:bg-gray-100 flex items-center gap-2">
+                <Button onClick={() => setSelectedNote(null)} variant="outline" className="w-full bg-transparent border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#171515] flex items-center gap-2">
                   ← Back to All Notes
                 </Button>
               </div>
