@@ -25,7 +25,10 @@ export default function AutoArchive({ notes }) {
       if (notesToArchive.length > 0) {
         await Promise.all(
           notesToArchive.map(note => 
-            base44.entities.Note.update(note.id, { storage_type: 'long_term' })
+            base44.entities.Note.update(note.id, { 
+              storage_type: 'long_term',
+              folder: 'Uncategorized'
+            })
           )
         );
         queryClient.invalidateQueries(['notes']);
