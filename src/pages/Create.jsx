@@ -31,6 +31,7 @@ export default function CreatePage() {
             view === 'long_term' ? 'LongTerm' : 
             view === 'tags' ? 'TagManagement' : 
             view === 'reminders' ? 'Reminders' : 
+            view === 'trash' ? 'Trash' :
             'Create'
           ))}
           onOpenSearch={() => navigate(createPageUrl('AISearch'))}
@@ -49,9 +50,9 @@ export default function CreatePage() {
               onClick={() => setShowSuggestions(!showSuggestions)}
               variant="ghost"
               className="text-gray-900 dark:text-gray-300 hover:bg-white/40 dark:hover:bg-white/10 rounded-2xl backdrop-blur-sm flex items-center gap-2 px-3 py-2 h-10"
-              title={showSuggestions ? "Hide suggestions" : "Show suggestions"}
+              title={showSuggestions ? "Show suggestions" : "Hide suggestions"}
             >
-              {showSuggestions ? <ChevronUp className="w-5 h-5" /> : <ChevronDown className="w-5 h-5" />}
+              {showSuggestions ? <ChevronDown className="w-5 h-5" /> : <ChevronUp className="w-5 h-5" />}
               <span className="text-sm">Suggestions</span>
             </Button>
             <Button

@@ -281,6 +281,7 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
             view === 'long_term' ? 'LongTerm' : 
             view === 'tags' ? 'TagManagement' : 
             view === 'reminders' ? 'Reminders' : 
+            view === 'trash' ? 'Trash' :
             'Create'
           ))}
           onOpenSearch={() => navigate(createPageUrl('AISearch'))}
