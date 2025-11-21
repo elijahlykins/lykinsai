@@ -381,28 +381,24 @@ Rules:
         }
       });
 
+      // Track all original uncategorized note IDs to ensure complete processing
+      const originalUncategorizedIds = allUncategorized.map(n => n.id);
+      
       // Apply folder assignments from AI
-      const assignedNoteIds = new Set();
+      const processedByAI = new Set();
       for (const assignment of folderOrganization.assignments || []) {
-        // Skip if AI tried to assign to Uncategorized or if folder is missing
-        if (!assignment.folder || assignment.folder === 'Uncategorized') {
-          continue;
-        }
-        
-        const noteExists = allUncategorized.find(n => n.id === assignment.note_id);
-        if (noteExists) {
+        if (assignment.folder && assignment.folder !== 'Uncategorized') {
           await base44.entities.Note.update(assignment.note_id, {
             folder: assignment.folder
           });
-          assignedNoteIds.add(assignment.note_id);
+          processedByAI.add(assignment.note_id);
         }
       }
 
-      // CRITICAL: Move ALL remaining uncategorized notes to "Miscellaneous"
-      // This ensures NO notes stay in Uncategorized
-      for (const note of allUncategorized) {
-        if (!assignedNoteIds.has(note.id)) {
-          await base44.entities.Note.update(note.id, {
+      // CRITICAL: Ensure every single original uncategorized note is now assigned
+      for (const noteId of originalUncategorizedIds) {
+        if (!processedByAI.has(noteId)) {
+          await base44.entities.Note.update(noteId, {
             folder: 'Miscellaneous'
           });
         }
