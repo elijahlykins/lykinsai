@@ -92,8 +92,13 @@ export default function LongTermPage() {
   };
 
   const handleSelectNote = async (note) => {
-    await base44.entities.Note.update(note.id, { storage_type: 'short_term' });
-    queryClient.invalidateQueries(['notes']);
+    try {
+      await base44.entities.Note.update(note.id, { storage_type: 'short_term' });
+      queryClient.invalidateQueries(['notes']);
+    } catch (error) {
+      console.error('Error updating note:', error);
+      queryClient.invalidateQueries(['notes']);
+    }
     setSelectedNote(note);
   };
 
@@ -104,15 +109,20 @@ export default function LongTermPage() {
 
   const handleToggleLink = async (noteId) => {
     if (!selectedNote) return;
-    const currentLinks = selectedNote.connected_notes || [];
-    const newLinks = currentLinks.includes(noteId)
-      ? currentLinks.filter(id => id !== noteId)
-      : [...currentLinks, noteId];
-    
-    await base44.entities.Note.update(selectedNote.id, {
-      connected_notes: newLinks
-    });
-    queryClient.invalidateQueries(['notes']);
+    try {
+      const currentLinks = selectedNote.connected_notes || [];
+      const newLinks = currentLinks.includes(noteId)
+        ? currentLinks.filter(id => id !== noteId)
+        : [...currentLinks, noteId];
+      
+      await base44.entities.Note.update(selectedNote.id, {
+        connected_notes: newLinks
+      });
+      queryClient.invalidateQueries(['notes']);
+    } catch (error) {
+      console.error('Error updating note links:', error);
+      queryClient.invalidateQueries(['notes']);
+    }
   };
 
   const handleSetReminder = async (reminderDate) => {
@@ -576,11 +586,11 @@ Rules:
                         <div className="pt-4 border-t border-gray-200 dark:border-gray-700">
                           <h3 className="text-sm font-medium text-gray-400 dark:text-gray-300 mb-3 flex items-center gap-2">
                             <Link2 className="w-4 h-4 text-black dark:text-white" />
-                            Linked Notes ({selectedNote.connected_notes.length})
-                          </h3>
-                          <div className="grid grid-cols-1 gap-2">
+                            Linked Notes ({selectedNote.connected_notes.filter(id => notes.find(n => n && n.id === id && !n.trashed)).length})
+                            </h3>
+                            <div className="grid grid-cols-1 gap-2">
                             {selectedNote.connected_notes.map(connectedId => {
-                              const connectedNote = notes.find(n => n && n.id === connectedId);
+                              const connectedNote = notes.find(n => n && n.id === connectedId && !n.trashed);
                               return connectedNote ? (
                                 <button
                                   key={connectedId}
