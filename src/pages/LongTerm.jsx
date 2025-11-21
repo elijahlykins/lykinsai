@@ -227,20 +227,30 @@ Rules:
       
       for (const assignment of folderOrganization.assignments || []) {
         if (assignment.folder && assignment.folder !== 'Uncategorized') {
-          await base44.entities.Note.update(assignment.note_id, {
-            folder: assignment.folder
-          });
-          processedByAI.add(assignment.note_id);
-          await new Promise(resolve => setTimeout(resolve, 300));
+          try {
+            await base44.entities.Note.update(assignment.note_id, {
+              folder: assignment.folder
+            });
+            processedByAI.add(assignment.note_id);
+            await new Promise(resolve => setTimeout(resolve, 500));
+          } catch (error) {
+            console.error('Error updating note:', error);
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
         }
       }
 
       for (const noteId of originalUncategorizedIds) {
         if (!processedByAI.has(noteId)) {
-          await base44.entities.Note.update(noteId, {
-            folder: 'Miscellaneous'
-          });
-          await new Promise(resolve => setTimeout(resolve, 300));
+          try {
+            await base44.entities.Note.update(noteId, {
+              folder: 'Miscellaneous'
+            });
+            await new Promise(resolve => setTimeout(resolve, 500));
+          } catch (error) {
+            console.error('Error updating note:', error);
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
         }
       }
 
@@ -290,10 +300,11 @@ Rules:
     try {
       for (const file of files) {
         await handleDirectUpload(file);
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
       queryClient.invalidateQueries(['notes']);
       setShowUploadDialog(false);
-      setTimeout(() => organizeIntoFolders(), 500);
+      setTimeout(() => organizeIntoFolders(), 1000);
     } catch (error) {
       console.error('Error uploading folder:', error);
     }

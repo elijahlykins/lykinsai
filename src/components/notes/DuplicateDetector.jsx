@@ -78,11 +78,16 @@ Return pairs of note IDs that are duplicates or very similar, with a reason why 
             note1.storage_type === 'long_term' && 
             note2.storage_type === 'long_term' &&
             duplicate.similarity >= 0.85) {
-          // Keep the newer one, delete the older one
-          const olderNote = new Date(note1.created_date) < new Date(note2.created_date) ? note1 : note2;
-          await base44.entities.Note.delete(olderNote.id);
-          await new Promise(resolve => setTimeout(resolve, 300));
-          foundDuplicates.splice(foundDuplicates.indexOf(duplicate), 1);
+          try {
+            // Keep the newer one, delete the older one
+            const olderNote = new Date(note1.created_date) < new Date(note2.created_date) ? note1 : note2;
+            await base44.entities.Note.delete(olderNote.id);
+            await new Promise(resolve => setTimeout(resolve, 500));
+            foundDuplicates.splice(foundDuplicates.indexOf(duplicate), 1);
+          } catch (error) {
+            console.error('Error deleting duplicate:', error);
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
         }
       }
       

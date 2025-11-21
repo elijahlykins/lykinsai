@@ -463,7 +463,7 @@ Suggest up to 5 notes that would be most valuable to connect with the given note
         const toConnections = [...new Set([...(toNote.connected_notes || []), fromNote.id])];
 
         await base44.entities.Note.update(fromNote.id, { connected_notes: fromConnections });
-        await new Promise(resolve => setTimeout(resolve, 300));
+        await new Promise(resolve => setTimeout(resolve, 500));
         await base44.entities.Note.update(toNote.id, { connected_notes: toConnections });
 
         setSuggestions(suggestions.filter(s => s.note_id !== suggestion.note_id));

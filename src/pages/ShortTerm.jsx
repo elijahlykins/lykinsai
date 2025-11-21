@@ -158,8 +158,13 @@ export default function ShortTermPage() {
 
   const handleSendToLongTerm = async () => {
     for (const noteId of selectedCards) {
-      await base44.entities.Note.update(noteId, { storage_type: 'long_term' });
-      await new Promise(resolve => setTimeout(resolve, 300));
+      try {
+        await base44.entities.Note.update(noteId, { storage_type: 'long_term' });
+        await new Promise(resolve => setTimeout(resolve, 500));
+      } catch (error) {
+        console.error('Error updating note:', error);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
     }
     setSelectedCards([]);
     setBulkMode(false);
@@ -168,8 +173,13 @@ export default function ShortTermPage() {
 
   const handleBulkDelete = async () => {
     for (const noteId of selectedCards) {
-      await base44.entities.Note.update(noteId, { trashed: true, trash_date: new Date().toISOString() });
-      await new Promise(resolve => setTimeout(resolve, 300));
+      try {
+        await base44.entities.Note.update(noteId, { trashed: true, trash_date: new Date().toISOString() });
+        await new Promise(resolve => setTimeout(resolve, 500));
+      } catch (error) {
+        console.error('Error updating note:', error);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
     }
     setSelectedCards([]);
     setBulkMode(false);
