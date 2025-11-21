@@ -31,6 +31,7 @@ export default function MemoryChatPage() {
   const [isTranscribing, setIsTranscribing] = useState(false);
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
+  const messagesRef = useRef([]);
 
   const { data: notes = [] } = useQuery({
     queryKey: ['notes'],
@@ -69,6 +70,11 @@ export default function MemoryChatPage() {
     }
   }, []);
 
+  // Update ref whenever messages change
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
   // Persist chat to localStorage
   useEffect(() => {
     if (messages.length > 0) {
@@ -83,16 +89,17 @@ export default function MemoryChatPage() {
   // Save chat as a memory card when user leaves
   useEffect(() => {
     return () => {
-      if (messages.length > 0) {
-        const chatContent = messages.map(m => 
+      const currentMessages = messagesRef.current;
+      if (currentMessages.length > 0) {
+        const chatContent = currentMessages.map(m => 
           `${m.role === 'user' ? 'Me' : 'AI'}: ${m.content}`
         ).join('\n\n');
         
-        const allAttachments = messages
+        const allAttachments = currentMessages
           .filter(m => m.attachments && m.attachments.length > 0)
           .flatMap(m => m.attachments);
         
-        const firstUserMessage = messages.find(m => m.role === 'user')?.content || 'Chat conversation';
+        const firstUserMessage = currentMessages.find(m => m.role === 'user')?.content || 'Chat conversation';
         const title = firstUserMessage.length > 50 
           ? firstUserMessage.substring(0, 50) + '...' 
           : firstUserMessage;
@@ -107,7 +114,7 @@ export default function MemoryChatPage() {
         }).catch(err => console.error('Error saving chat:', err));
       }
     };
-  }, [messages]);
+  }, []);
 
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
@@ -199,7 +206,36 @@ export default function MemoryChatPage() {
     localStorage.setItem('lykinsai_settings', JSON.stringify(settings));
   };
 
-  const handleNewChat = () => {
+  const handleNewChat = async () => {
+    // Save current chat before starting new one
+    if (messages.length > 0) {
+      const chatContent = messages.map(m => 
+        `${m.role === 'user' ? 'Me' : 'AI'}: ${m.content}`
+      ).join('\n\n');
+      
+      const allAttachments = messages
+        .filter(m => m.attachments && m.attachments.length > 0)
+        .flatMap(m => m.attachments);
+      
+      const firstUserMessage = messages.find(m => m.role === 'user')?.content || 'Chat conversation';
+      const title = firstUserMessage.length > 50 
+        ? firstUserMessage.substring(0, 50) + '...' 
+        : firstUserMessage;
+      
+      try {
+        await base44.entities.Note.create({
+          title: title,
+          content: chatContent,
+          attachments: allAttachments,
+          storage_type: 'short_term',
+          source: 'ai',
+          tags: ['chat', 'conversation']
+        });
+      } catch (err) {
+        console.error('Error saving chat:', err);
+      }
+    }
+
     setMessages([]);
     setInput('');
     setAttachments([]);
