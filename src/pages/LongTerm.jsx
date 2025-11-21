@@ -5,7 +5,7 @@ import NotionSidebar from '../components/notes/NotionSidebar';
 import SettingsModal from '../components/notes/SettingsModal';
 import AIAnalysisPanel from '../components/notes/AIAnalysisPanel';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Archive, Clock, Trash2, Edit2, Save, XCircle, Tag, Folder as FolderIcon, Link2, Filter, Bell, MessageCircle } from 'lucide-react';
+import { Archive, Clock, Trash2, Edit2, Save, XCircle, Tag, Folder as FolderIcon, Link2, Filter, Bell, MessageCircle, Upload, File, Image as ImageIcon, Video } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Input } from '@/components/ui/input';
@@ -21,6 +21,7 @@ import ConnectionSuggestions from '../components/notes/ConnectionSuggestions';
 import FollowUpQuestions from '../components/notes/FollowUpQuestions';
 import ReminderPicker from '../components/notes/ReminderPicker';
 import DuplicateDetector from '../components/notes/DuplicateDetector';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import EnhancedKnowledgeGraph from '../components/notes/EnhancedKnowledgeGraph';
 import AutoArchive from '../components/notes/AutoArchive';
 import TrashCleanup from '../components/notes/TrashCleanup';
@@ -41,7 +42,7 @@ export default function LongTermPage() {
   const [sourceFilter, setSourceFilter] = useState('all');
   const [currentFolder, setCurrentFolder] = useState(null);
   const [isOrganizing, setIsOrganizing] = useState(false);
-  const [aiMergingEnabled, setAiMergingEnabled] = useState(true);
+  const [showUploadDialog, setShowUploadDialog] = useState(false);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
@@ -51,17 +52,7 @@ export default function LongTermPage() {
       const settings = JSON.parse(saved);
       setTextColor(settings.textColor || 'white');
     }
-    
-    const mergingSetting = localStorage.getItem('ai_merging_enabled');
-    if (mergingSetting !== null) {
-      setAiMergingEnabled(mergingSetting === 'true');
-    }
   }, []);
-
-  const handleToggleMerging = (enabled) => {
-    setAiMergingEnabled(enabled);
-    localStorage.setItem('ai_merging_enabled', enabled.toString());
-  };
 
   const { data: notes = [] } = useQuery({
     queryKey: ['notes'],
@@ -164,16 +155,9 @@ export default function LongTermPage() {
     navigate(createPageUrl('MemoryChat'));
   };
 
-  const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
   const organizeIntoFolders = async () => {
-    if (!aiMergingEnabled) {
-      return;
-    }
-
     setIsOrganizing(true);
     try {
-      // Only process notes in "Uncategorized" folder
       const uncategorizedNotes = notes.filter(n => 
         n && 
         n.storage_type === 'long_term' && 
@@ -185,167 +169,11 @@ export default function LongTermPage() {
         return;
       }
 
-      const newlyCreatedNoteIds = [];
-      
-      // Step 1: Detect and merge similar notes (80%+ similarity)
-      const notesContext = uncategorizedNotes.map(n => 
-        `ID: ${n.id}\nTitle: ${n.title}\nContent: ${n.content}\nTags: ${n.tags?.join(', ') || 'None'}\nCreated: ${n.created_date}`
-      ).join('\n\n---\n\n');
-
-      const duplicateAnalysis = await base44.integrations.Core.InvokeLLM({
-        prompt: `CRITICAL: Be EXTREMELY CAUTIOUS. Only identify notes for merging if you are ABSOLUTELY CERTAIN they contain redundant information. The original notes WILL BE MOVED TO TRASH (soft-deleted, NOT permanently deleted).
-
-Analyze these uncategorized notes for pairs that should be merged:
-
-Notes:
-${notesContext}
-
-STRICT CRITERIA for merging (content similarity >= 0.80 for combining substantially overlapping content):
-- Notes with highly similar or overlapping information (80%+ content overlap)
-- Notes about the same topic/event with similar details
-- Be confident they contain mostly the same content (80%+ similarity)
-- If notes are merged, the originals will be moved to trash (not permanently deleted)
-
-Return an EMPTY array if you find no clear merges that meet these strict criteria. When in doubt, DO NOT mark for merging.`,
-        response_json_schema: {
-          type: 'object',
-          properties: {
-            merges: {
-              type: 'array',
-              items: {
-                type: 'object',
-                properties: {
-                  note1_id: { type: 'string' },
-                  note2_id: { type: 'string' },
-                  similarity: { type: 'number' },
-                  reason: { type: 'string' }
-                }
-              }
-            }
-          }
-        }
-      });
-
-      // Step 2: Perform merges (with rate limiting)
-      const processedNoteIds = new Set();
-      const merges = duplicateAnalysis.merges || [];
-
-      // Limit to 3 merges max to avoid rate limits
-      const limitedMerges = merges.slice(0, 3);
-
-      for (let i = 0; i < limitedMerges.length; i++) {
-        const merge = limitedMerges[i];
-
-        // Add delay between merges to avoid rate limits
-        if (i > 0) {
-          await delay(2000);
-        }
-        if (processedNoteIds.has(merge.note1_id) || processedNoteIds.has(merge.note2_id)) {
-          continue;
-        }
-
-        if (merge.similarity < 0.8) {
-          continue; // Skip if below 80% threshold
-        }
-
-        const note1 = uncategorizedNotes.find(n => n.id === merge.note1_id);
-        const note2 = uncategorizedNotes.find(n => n.id === merge.note2_id);
-
-        if (!note1 || !note2) continue;
-
-        // Double-check both notes are STILL in Uncategorized before merging
-        if ((note1.folder && note1.folder !== 'Uncategorized') || 
-            (note2.folder && note2.folder !== 'Uncategorized')) {
-          continue;
-        }
-
-        // Merge the two notes
-        const mergeResult = await base44.integrations.Core.InvokeLLM({
-          prompt: `Merge these two similar notes into one comprehensive note, combining all unique information:
-
-Note 1: ${note1.title}
-${note1.content}
-
-Note 2: ${note2.title}
-${note2.content}
-
-Create a merged note with:
-1. A clear, descriptive title
-2. Content that includes ALL unique information from both notes
-3. Organized, coherent structure`,
-          response_json_schema: {
-            type: 'object',
-            properties: {
-              title: { type: 'string' },
-              content: { type: 'string' }
-            }
-          }
-        });
-
-        // Combine metadata
-        const combinedTags = [...new Set([...(note1.tags || []), ...(note2.tags || [])])];
-        const combinedAttachments = [...(note1.attachments || []), ...(note2.attachments || [])];
-        const combinedConnections = [...new Set([...(note1.connected_notes || []), ...(note2.connected_notes || [])]
-          .filter(id => id !== note1.id && id !== note2.id))];
-
-        // Create the new merged note in Uncategorized
-        const newNote = await base44.entities.Note.create({
-          title: mergeResult.title,
-          content: mergeResult.content,
-          tags: combinedTags,
-          attachments: combinedAttachments,
-          connected_notes: combinedConnections,
-          storage_type: 'long_term',
-          source: 'user',
-          folder: 'Uncategorized'
-        });
-
-        newlyCreatedNoteIds.push(newNote.id);
-
-        // Soft-delete both original notes (move to trash)
-        console.log(`Moving note ${note1.id} to trash due to merge`);
-        await base44.entities.Note.update(note1.id, { 
-          trashed: true, 
-          trash_date: new Date().toISOString() 
-        });
-        
-        console.log(`Moving note ${note2.id} to trash due to merge`);
-        await base44.entities.Note.update(note2.id, { 
-          trashed: true, 
-          trash_date: new Date().toISOString() 
-        });
-        
-        processedNoteIds.add(note1.id);
-        processedNoteIds.add(note2.id);
-      }
-
-      // Add delay before folder organization
-      if (limitedMerges.length > 0) {
-        await delay(2000);
-      }
-
-      // Refresh notes to get newly merged notes
-      await queryClient.invalidateQueries(['notes']);
-      const refreshedNotes = await base44.entities.Note.list('-created_date');
-      
-      // Step 3: Organize ALL uncategorized notes (including newly merged ones) into folders
-      const allUncategorized = refreshedNotes.filter(n => 
-        n && 
-        n.storage_type === 'long_term' && 
-        !n.trashed && 
-        (n.folder === 'Uncategorized' || !n.folder)
-      );
-
-      if (allUncategorized.length === 0) {
-        return;
-      }
-
-      // Get existing folders
-      const existingFolders = [...new Set(refreshedNotes
+      const existingFolders = [...new Set(notes
         .filter(n => n && n.storage_type === 'long_term' && !n.trashed && n.folder && n.folder !== 'Uncategorized')
         .map(n => n.folder))];
       
-      const folderContext = allUncategorized.map(n => 
+      const folderContext = uncategorizedNotes.map(n => 
         `ID: ${n.id}\nTitle: ${n.title}\nContent: ${n.content.substring(0, 300)}\nTags: ${n.tags?.join(', ') || 'None'}`
       ).join('\n\n---\n\n');
 
@@ -381,11 +209,9 @@ Rules:
         }
       });
 
-      // Track all original uncategorized note IDs to ensure complete processing
-      const originalUncategorizedIds = allUncategorized.map(n => n.id);
-      
-      // Apply folder assignments from AI
+      const originalUncategorizedIds = uncategorizedNotes.map(n => n.id);
       const processedByAI = new Set();
+      
       for (const assignment of folderOrganization.assignments || []) {
         if (assignment.folder && assignment.folder !== 'Uncategorized') {
           await base44.entities.Note.update(assignment.note_id, {
@@ -395,7 +221,6 @@ Rules:
         }
       }
 
-      // CRITICAL: Ensure every single original uncategorized note is now assigned
       for (const noteId of originalUncategorizedIds) {
         if (!processedByAI.has(noteId)) {
           await base44.entities.Note.update(noteId, {
@@ -409,6 +234,39 @@ Rules:
       console.error('Error organizing folders:', error);
     } finally {
       setIsOrganizing(false);
+    }
+  };
+
+  const handleDirectUpload = async (file) => {
+    try {
+      const { file_url } = await base44.integrations.Core.UploadFile({ file });
+      
+      const isImage = file.type.startsWith('image/');
+      const isVideo = file.type.startsWith('video/');
+      
+      const attachment = {
+        id: Date.now(),
+        type: isImage ? 'image' : isVideo ? 'video' : 'file',
+        url: file_url,
+        name: file.name
+      };
+
+      await base44.entities.Note.create({
+        title: file.name,
+        content: `Uploaded file: ${file.name}`,
+        attachments: [attachment],
+        storage_type: 'long_term',
+        source: 'user',
+        folder: 'Uncategorized'
+      });
+
+      queryClient.invalidateQueries(['notes']);
+      setShowUploadDialog(false);
+      
+      // Auto-organize after upload
+      setTimeout(() => organizeIntoFolders(), 500);
+    } catch (error) {
+      console.error('Error uploading file:', error);
     }
   };
 
@@ -487,24 +345,15 @@ Rules:
             <div className="flex items-center gap-3">
               {!selectedNote && !currentFolder && (
                 <>
-                  <div className="flex items-center gap-2 px-3 py-2 bg-white/70 dark:bg-[#1f1d1d]/80 backdrop-blur-xl rounded-xl border border-gray-200 dark:border-gray-600">
-                    <span className="text-sm text-black dark:text-white">AI Merging</span>
-                    <button
-                      onClick={() => handleToggleMerging(!aiMergingEnabled)}
-                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                        aiMergingEnabled ? 'bg-black dark:bg-white' : 'bg-gray-300 dark:bg-gray-600'
-                      }`}
-                    >
-                      <span
-                        className={`inline-block h-4 w-4 transform rounded-full transition-transform ${
-                          aiMergingEnabled ? 'bg-white dark:bg-black translate-x-6' : 'bg-gray-600 dark:bg-gray-300 translate-x-1'
-                        }`}
-                      />
-                    </button>
-                  </div>
+                  <Button
+                    onClick={() => setShowUploadDialog(true)}
+                    className="bg-black dark:bg-white text-white dark:text-black hover:bg-black/90 dark:hover:bg-white/90"
+                  >
+                    Upload to Long Term
+                  </Button>
                   <Button
                     onClick={organizeIntoFolders}
-                    disabled={isOrganizing || !aiMergingEnabled}
+                    disabled={isOrganizing}
                     variant="outline"
                     className="border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#171515]"
                   >
@@ -645,8 +494,6 @@ Rules:
               </div>
             ) : !selectedNote ? (
               <div className="max-w-5xl mx-auto p-8">
-                <DuplicateDetector notes={longTermNotes} onMerge={handleUpdate} />
-                
                 <div className="mb-6">
                   <h2 className="text-xl font-semibold text-black dark:text-white mb-4">Folders</h2>
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -817,6 +664,74 @@ Rules:
           />
         </>
       )}
+      
+      <Dialog open={showUploadDialog} onOpenChange={setShowUploadDialog}>
+        <DialogContent className="bg-white dark:bg-[#171515] border-gray-200 dark:border-gray-700 text-black dark:text-white">
+          <DialogHeader>
+            <DialogTitle className="text-black dark:text-white">Upload to Long Term</DialogTitle>
+          </DialogHeader>
+          
+          <div className="space-y-3 py-4">
+            <Button
+              onClick={() => document.getElementById('image-upload-lt')?.click()}
+              className="w-full flex items-center gap-3 bg-gray-100 dark:bg-[#2a2828] hover:bg-gray-200 dark:hover:bg-[#333131] text-black dark:text-white justify-start"
+            >
+              <ImageIcon className="w-5 h-5 text-gray-600 dark:text-gray-300" />
+              Upload Image
+            </Button>
+
+            <Button
+              onClick={() => document.getElementById('video-upload-lt')?.click()}
+              className="w-full flex items-center gap-3 bg-gray-100 dark:bg-[#2a2828] hover:bg-gray-200 dark:hover:bg-[#333131] text-black dark:text-white justify-start"
+            >
+              <Video className="w-5 h-5 text-gray-600 dark:text-gray-300" />
+              Upload Video
+            </Button>
+
+            <Button
+              onClick={() => document.getElementById('file-upload-lt')?.click()}
+              className="w-full flex items-center gap-3 bg-gray-100 dark:bg-[#2a2828] hover:bg-gray-200 dark:hover:bg-[#333131] text-black dark:text-white justify-start"
+            >
+              <File className="w-5 h-5 text-gray-600 dark:text-gray-300" />
+              Upload File
+            </Button>
+          </div>
+
+          <input
+            id="image-upload-lt"
+            type="file"
+            accept="image/*"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) handleDirectUpload(file);
+              e.target.value = '';
+            }}
+            className="hidden"
+          />
+          <input
+            id="video-upload-lt"
+            type="file"
+            accept="video/*"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) handleDirectUpload(file);
+              e.target.value = '';
+            }}
+            className="hidden"
+          />
+          <input
+            id="file-upload-lt"
+            type="file"
+            accept="*/*"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) handleDirectUpload(file);
+              e.target.value = '';
+            }}
+            className="hidden"
+          />
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
