@@ -103,11 +103,11 @@ export default function TrashPage() {
         />
       </div>
 
-      <div className="flex-1 overflow-auto p-8 flex flex-col">
-        <div className="max-w-5xl mx-auto flex-1 flex flex-col">
-          <div className="flex items-center justify-between mb-8">
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <div className="p-6 bg-glass border-b border-white/20 dark:border-gray-700/30">
+          <div className="flex items-center justify-between">
             <div className="flex items-center gap-4">
-              <h1 className="text-3xl font-bold text-black dark:text-white">Trash</h1>
+              <h1 className="text-2xl font-bold text-black dark:text-white">Trash</h1>
               <p className="text-sm text-gray-600 dark:text-gray-400">
                 Items will be permanently deleted after 7 days
               </p>
@@ -131,6 +131,10 @@ export default function TrashPage() {
               </div>
             )}
           </div>
+        </div>
+
+        <div className="flex-1 overflow-auto p-8">
+          <div className="max-w-5xl mx-auto flex-1 flex flex-col">
 
           {trashedNotes.length === 0 ? (
             <div className="flex-1 flex items-center justify-center">
@@ -194,6 +198,7 @@ export default function TrashPage() {
               })}
             </div>
           )}
+          </div>
         </div>
       </div>
 
