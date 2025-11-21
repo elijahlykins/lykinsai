@@ -47,6 +47,35 @@ const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, showSuggestion
     fetchNotes();
   }, []);
 
+  // Load saved draft from localStorage on mount
+  useEffect(() => {
+    const savedDraft = localStorage.getItem('lykinsai_draft');
+    if (savedDraft) {
+      const draft = JSON.parse(savedDraft);
+      setTitle(draft.title || '');
+      setContent(draft.content || '');
+      setAttachments(draft.attachments || []);
+      setTags(draft.tags || []);
+      setFolder(draft.folder || 'Uncategorized');
+      setReminder(draft.reminder || null);
+      setSuggestedConnections(draft.suggestedConnections || []);
+    }
+  }, []);
+
+  // Save draft to localStorage whenever state changes
+  useEffect(() => {
+    const draft = {
+      title,
+      content,
+      attachments,
+      tags,
+      folder,
+      reminder,
+      suggestedConnections
+    };
+    localStorage.setItem('lykinsai_draft', JSON.stringify(draft));
+  }, [title, content, attachments, tags, folder, reminder, suggestedConnections]);
+
   const handleAddConnection = (noteId) => {
     setSuggestedConnections([...suggestedConnections, noteId]);
   };
@@ -307,6 +336,7 @@ Return only the title, nothing else.`,
       setFolder('Uncategorized');
       setSuggestedConnections([]);
       setReminder(null);
+      localStorage.removeItem('lykinsai_draft');
       onNoteCreated();
     } catch (error) {
       console.error('Error creating note:', error);
