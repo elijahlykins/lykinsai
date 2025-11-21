@@ -13,7 +13,7 @@ export default function MindMapGenerator({ note, allNotes, onUpdate }) {
       // Get connected notes content
       const connectedNotesContent = note.connected_notes 
         ? allNotes
-            .filter(n => note.connected_notes.includes(n.id))
+            .filter(n => n && note.connected_notes.includes(n.id))
             .map(n => `- ${n.title}: ${n.content.substring(0, 100)}`)
             .join('\n')
         : 'No connected notes';
@@ -157,7 +157,7 @@ Return as a structured tree with nodes and their relationships.`,
         <div className="flex items-center justify-center py-12">
           <Loader2 className="w-6 h-6 animate-spin text-blue" />
         </div>
-      ) : mindMap ? (
+      ) : mindMap && mindMap.central && mindMap.branches ? (
         <div className="space-y-4">
           <svg
             id="mindmap-svg"
@@ -169,7 +169,7 @@ Return as a structured tree with nodes and their relationships.`,
               cx="400"
               cy="300"
               r="60"
-              fill={mindMap.central.color || '#8db4d4'}
+              fill={mindMap.central?.color || '#8db4d4'}
               opacity="0.3"
             />
             <text
@@ -180,11 +180,11 @@ Return as a structured tree with nodes and their relationships.`,
               fontSize="14"
               fontWeight="bold"
             >
-              {mindMap.central.label}
+              {mindMap.central?.label || 'Central'}
             </text>
 
             {/* Branches */}
-            {mindMap.branches.map((branch, idx) => {
+            {mindMap.branches.filter(b => b).map((branch, idx) => {
               const angle = (idx * 360) / mindMap.branches.length;
               const radians = (angle * Math.PI) / 180;
               const branchX = 400 + Math.cos(radians) * 200;
@@ -198,7 +198,7 @@ Return as a structured tree with nodes and their relationships.`,
                     y1="300"
                     x2={branchX}
                     y2={branchY}
-                    stroke={branch.color || '#b8a4d4'}
+                    stroke={branch?.color || '#b8a4d4'}
                     strokeWidth="2"
                     opacity="0.5"
                   />
@@ -208,7 +208,7 @@ Return as a structured tree with nodes and their relationships.`,
                     cx={branchX}
                     cy={branchY}
                     r="45"
-                    fill={branch.color || '#b8a4d4'}
+                    fill={branch?.color || '#b8a4d4'}
                     opacity="0.3"
                   />
                   <text
@@ -218,11 +218,11 @@ Return as a structured tree with nodes and their relationships.`,
                     fill="black"
                     fontSize="12"
                   >
-                    {branch.label.substring(0, 15)}
+                    {branch?.label?.substring(0, 15) || 'Branch'}
                   </text>
 
                   {/* Subnodes */}
-                  {branch.subnodes?.map((subnode, subIdx) => {
+                  {branch.subnodes?.filter(s => s).map((subnode, subIdx) => {
                     const subAngle = angle + ((subIdx - branch.subnodes.length / 2) * 30);
                     const subRadians = (subAngle * Math.PI) / 180;
                     const subX = branchX + Math.cos(subRadians) * 100;
@@ -253,7 +253,7 @@ Return as a structured tree with nodes and their relationships.`,
                           fill="black"
                           fontSize="10"
                         >
-                          {subnode.label.substring(0, 10)}
+                          {subnode?.label?.substring(0, 10) || 'Node'}
                         </text>
                       </g>
                     );
