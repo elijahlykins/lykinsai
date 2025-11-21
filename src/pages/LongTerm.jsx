@@ -41,6 +41,7 @@ export default function LongTermPage() {
   const [sourceFilter, setSourceFilter] = useState('all');
   const [currentFolder, setCurrentFolder] = useState(null);
   const [isOrganizing, setIsOrganizing] = useState(false);
+  const [aiMergingEnabled, setAiMergingEnabled] = useState(true);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
@@ -50,7 +51,17 @@ export default function LongTermPage() {
       const settings = JSON.parse(saved);
       setTextColor(settings.textColor || 'white');
     }
+    
+    const mergingSetting = localStorage.getItem('ai_merging_enabled');
+    if (mergingSetting !== null) {
+      setAiMergingEnabled(mergingSetting === 'true');
+    }
   }, []);
+
+  const handleToggleMerging = (enabled) => {
+    setAiMergingEnabled(enabled);
+    localStorage.setItem('ai_merging_enabled', enabled.toString());
+  };
 
   const { data: notes = [] } = useQuery({
     queryKey: ['notes'],
@@ -434,16 +445,33 @@ Rules:
               <Archive className="w-6 h-6" />
               Long Term Memory
             </h1>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-3">
               {!selectedNote && !currentFolder && (
-                <Button
-                  onClick={organizeIntoFolders}
-                  disabled={isOrganizing}
-                  variant="outline"
-                  className="border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#171515]"
-                >
-                  {isOrganizing ? 'Organizing...' : 'AI Organize'}
-                </Button>
+                <>
+                  <div className="flex items-center gap-2 px-3 py-2 bg-white/70 dark:bg-[#1f1d1d]/80 backdrop-blur-xl rounded-xl border border-gray-200 dark:border-gray-600">
+                    <span className="text-sm text-black dark:text-white">AI Merging</span>
+                    <button
+                      onClick={() => handleToggleMerging(!aiMergingEnabled)}
+                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                        aiMergingEnabled ? 'bg-purple-500' : 'bg-gray-300 dark:bg-gray-600'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                          aiMergingEnabled ? 'translate-x-6' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
+                  </div>
+                  <Button
+                    onClick={organizeIntoFolders}
+                    disabled={isOrganizing || !aiMergingEnabled}
+                    variant="outline"
+                    className="border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#171515]"
+                  >
+                    {isOrganizing ? 'Organizing...' : 'AI Organize'}
+                  </Button>
+                </>
               )}
               {!selectedNote && (
                 <>
