@@ -129,16 +129,15 @@ export default function TrashPage() {
         </div>
 
         <div className="flex-1 overflow-auto p-8">
-          <div className="max-w-5xl mx-auto flex-1 flex flex-col">
-
           {trashedNotes.length === 0 ? (
-            <div className="flex-1 flex items-center justify-center">
+            <div className="flex-1 flex items-center justify-center h-full">
               <div className="text-center">
                 <Trash2 className="w-16 h-16 mx-auto mb-4 text-gray-400 dark:text-gray-600" />
                 <p className="text-gray-500 dark:text-gray-400">Trash is empty</p>
               </div>
             </div>
           ) : (
+            <div className="max-w-5xl mx-auto">
             <div className="space-y-3">
               {trashedNotes.map((note) => {
                 const daysRemaining = getDaysRemaining(note.trash_date);
@@ -192,8 +191,8 @@ export default function TrashPage() {
                 );
               })}
             </div>
+            </div>
           )}
-          </div>
         </div>
       </div>
 
