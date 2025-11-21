@@ -95,6 +95,11 @@ export default function LongTermPage() {
     setSelectedNote(note);
   };
 
+  const handleMoveToFolder = async (noteId, newFolder) => {
+    await base44.entities.Note.update(noteId, { folder: newFolder });
+    queryClient.invalidateQueries(['notes']);
+  };
+
   const handleToggleLink = async (noteId) => {
     if (!selectedNote) return;
     const currentLinks = selectedNote.connected_notes || [];
@@ -151,17 +156,27 @@ export default function LongTermPage() {
   const organizeIntoFolders = async () => {
     setIsOrganizing(true);
     try {
-      const longTermNotes = notes.filter(n => n && n.storage_type === 'long_term' && !n.trashed);
+      // Only process notes in "Uncategorized" folder
+      const uncategorizedNotes = notes.filter(n => 
+        n && 
+        n.storage_type === 'long_term' && 
+        !n.trashed && 
+        (n.folder === 'Uncategorized' || !n.folder)
+      );
+
+      if (uncategorizedNotes.length === 0) {
+        return;
+      }
       
-      // Step 1: Detect duplicates and similar notes (BE VERY CAUTIOUS)
-      const notesContext = longTermNotes.map(n => 
+      // Step 1: Detect duplicates and similar notes in Uncategorized
+      const notesContext = uncategorizedNotes.map(n => 
         `ID: ${n.id}\nTitle: ${n.title}\nContent: ${n.content}\nTags: ${n.tags?.join(', ') || 'None'}\nCreated: ${n.created_date}`
       ).join('\n\n---\n\n');
 
       const duplicateAnalysis = await base44.integrations.Core.InvokeLLM({
         prompt: `CRITICAL: Be EXTREMELY CAUTIOUS. Only identify notes as duplicates if you are absolutely certain they contain the same information.
 
-Analyze these long-term memory notes for duplicates and similar content:
+Analyze these uncategorized notes for duplicates and similar content:
 
 Notes:
 ${notesContext}
@@ -191,7 +206,7 @@ Return an EMPTY array if you find no clear duplicates.`,
         }
       });
 
-      // Step 2: Handle duplicates
+      // Step 2: Handle duplicates and merges
       const processedNoteIds = new Set();
       
       for (const duplicate of duplicateAnalysis.duplicates || []) {
@@ -199,8 +214,8 @@ Return an EMPTY array if you find no clear duplicates.`,
           continue;
         }
 
-        const note1 = longTermNotes.find(n => n.id === duplicate.note1_id);
-        const note2 = longTermNotes.find(n => n.id === duplicate.note2_id);
+        const note1 = uncategorizedNotes.find(n => n.id === duplicate.note1_id);
+        const note2 = uncategorizedNotes.find(n => n.id === duplicate.note2_id);
         
         if (!note1 || !note2) continue;
 
@@ -213,7 +228,7 @@ Return an EMPTY array if you find no clear duplicates.`,
           });
           processedNoteIds.add(olderNote.id);
         } else if (duplicate.similarity >= 0.75) {
-          // Similar notes - merge them into a NEW note
+          // Similar notes - merge them into a NEW note in Uncategorized
           const mergeResult = await base44.integrations.Core.InvokeLLM({
             prompt: `Merge these two similar notes into one comprehensive note, combining all unique information:
 
@@ -242,7 +257,7 @@ Create a merged note with:
           const combinedConnections = [...new Set([...(note1.connected_notes || []), ...(note2.connected_notes || [])]
             .filter(id => id !== note1.id && id !== note2.id))];
 
-          // Create NEW merged note
+          // Create NEW merged note in Uncategorized
           await base44.entities.Note.create({
             title: mergeResult.title,
             content: mergeResult.content,
@@ -251,7 +266,7 @@ Create a merged note with:
             connected_notes: combinedConnections,
             storage_type: 'long_term',
             source: 'user',
-            folder: note1.folder || note2.folder || 'Uncategorized'
+            folder: 'Uncategorized'
           });
 
           // Soft-delete both original notes
@@ -268,26 +283,46 @@ Create a merged note with:
         }
       }
 
-      // Step 3: Organize remaining notes into folders
-      const remainingNotes = longTermNotes.filter(n => !processedNoteIds.has(n.id));
+      // Refresh notes list to get newly merged notes
+      await queryClient.invalidateQueries(['notes']);
+      const refreshedNotes = await base44.entities.Note.list('-created_date');
       
-      const folderContext = remainingNotes.map(n => 
+      // Step 3: Organize remaining uncategorized notes into existing or new folders
+      const remainingUncategorized = refreshedNotes.filter(n => 
+        n && 
+        n.storage_type === 'long_term' && 
+        !n.trashed && 
+        (n.folder === 'Uncategorized' || !n.folder) &&
+        !processedNoteIds.has(n.id)
+      );
+
+      if (remainingUncategorized.length === 0) {
+        return;
+      }
+
+      // Get existing folders
+      const existingFolders = [...new Set(refreshedNotes
+        .filter(n => n && n.storage_type === 'long_term' && !n.trashed && n.folder && n.folder !== 'Uncategorized')
+        .map(n => n.folder))];
+      
+      const folderContext = remainingUncategorized.map(n => 
         `ID: ${n.id}\nTitle: ${n.title}\nContent: ${n.content.substring(0, 300)}\nTags: ${n.tags?.join(', ') || 'None'}`
       ).join('\n\n---\n\n');
 
       const folderOrganization = await base44.integrations.Core.InvokeLLM({
-        prompt: `Organize these notes into logical folders like Google Drive. You can create NEW folders or use existing concepts.
+        prompt: `Organize these uncategorized notes into folders. You can assign them to existing folders or create NEW folders.
 
-Notes:
+Existing folders: ${existingFolders.length > 0 ? existingFolders.join(', ') : 'None yet'}
+
+Notes to organize:
 ${folderContext}
 
-Create folder names that are:
-- Clear and descriptive (e.g., "Work Projects", "Personal Goals", "Health & Fitness", "Travel Memories")
-- Broad enough to contain multiple related notes
-- Not too granular (aim for 5-15 folders total)
-- Can be completely NEW folders based on the content
-
-For each note, assign the most appropriate folder name (new or existing).`,
+Rules:
+- If a note's content matches an existing folder's theme, use that folder
+- If no existing folder fits, create a NEW descriptive folder name
+- Folder names should be clear (e.g., "Work Projects", "Health & Fitness", "Travel Memories")
+- Aim for 5-15 total folders across the system
+- DO NOT assign to "Uncategorized"`,
         response_json_schema: {
           type: 'object',
           properties: {
@@ -307,9 +342,11 @@ For each note, assign the most appropriate folder name (new or existing).`,
 
       // Apply folder assignments
       for (const assignment of folderOrganization.assignments || []) {
-        await base44.entities.Note.update(assignment.note_id, {
-          folder: assignment.folder
-        });
+        if (assignment.folder && assignment.folder !== 'Uncategorized') {
+          await base44.entities.Note.update(assignment.note_id, {
+            folder: assignment.folder
+          });
+        }
       }
 
       queryClient.invalidateQueries(['notes']);
@@ -578,12 +615,21 @@ For each note, assign the most appropriate folder name (new or existing).`,
                   {!isEditing ? (
                     <>
                       <div className="flex items-center gap-2 mb-4">
-                        {selectedNote.folder && (
-                          <span className="px-3 py-1 bg-white dark:bg-[#171515] rounded-full text-sm text-gray-400 flex items-center gap-2 border border-gray-200 dark:border-gray-600">
-                            <FolderIcon className="w-4 h-4 text-black dark:text-white" />
-                            {selectedNote.folder}
-                          </span>
-                        )}
+                        <span className="text-sm text-gray-500 dark:text-gray-400">Folder:</span>
+                        <Select 
+                          value={selectedNote.folder || 'Uncategorized'} 
+                          onValueChange={(newFolder) => handleMoveToFolder(selectedNote.id, newFolder)}
+                        >
+                          <SelectTrigger className="w-48 h-9 bg-white dark:bg-[#171515] border-gray-300 dark:border-gray-600 text-black dark:text-white text-sm">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent className="bg-white dark:bg-[#171515] border-gray-200 dark:border-gray-700">
+                            <SelectItem value="Uncategorized">Uncategorized</SelectItem>
+                            {allFolders.filter(f => f !== 'Uncategorized').map(folder => (
+                              <SelectItem key={folder} value={folder}>{folder}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
                       </div>
                       <h2 className="text-3xl font-bold text-black dark:text-white">{selectedNote.title}</h2>
                       {selectedNote.tags?.length > 0 && (
