@@ -73,7 +73,7 @@ Return pairs of note IDs that are duplicates or very similar, with a reason why 
       for (const duplicate of foundDuplicates) {
         const note1 = notes.find(n => n.id === duplicate.note1_id);
         const note2 = notes.find(n => n.id === duplicate.note2_id);
-        
+
         if (note1 && note2 && 
             note1.storage_type === 'long_term' && 
             note2.storage_type === 'long_term' &&
@@ -81,6 +81,7 @@ Return pairs of note IDs that are duplicates or very similar, with a reason why 
           // Keep the newer one, delete the older one
           const olderNote = new Date(note1.created_date) < new Date(note2.created_date) ? note1 : note2;
           await base44.entities.Note.delete(olderNote.id);
+          await new Promise(resolve => setTimeout(resolve, 300));
           foundDuplicates.splice(foundDuplicates.indexOf(duplicate), 1);
         }
       }
@@ -145,6 +146,7 @@ Create a well-structured merged note that captures all important information fro
       // Delete original notes if user chose to delete
       if (deleteOption === 'delete') {
         await base44.entities.Note.delete(note1.id);
+        await new Promise(resolve => setTimeout(resolve, 300));
         await base44.entities.Note.delete(note2.id);
       }
 
