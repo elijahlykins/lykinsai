@@ -471,7 +471,7 @@ Return only the title, nothing else.`,
 
       {/* Suggestions Panel - Fixed position on right */}
       {showSuggestions && content.length > 50 && inputMode === 'text' && (
-        <div className="fixed right-0 top-0 bottom-0 w-96 border-l border-gray-200 dark:border-gray-700 overflow-auto p-6 space-y-6 bg-white dark:bg-[#171515] z-10">
+        <div className="fixed right-0 top-0 bottom-0 w-96 border-l border-gray-200 dark:border-gray-700 overflow-auto p-6 space-y-6 bg-gradient-to-br from-gray-50 via-blue-50/30 to-gray-100 dark:from-[#171515] dark:via-[#171515] dark:to-[#171515] z-10">
           {/* Suggested Connections */}
           {allNotes.length > 0 && (
             <ConnectionSuggestions
