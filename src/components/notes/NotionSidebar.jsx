@@ -1,5 +1,5 @@
 import React from 'react';
-import { Settings, ChevronLeft, ChevronRight, Plus, Clock, Archive, Search, MessageCircle, Tags, Bell } from 'lucide-react';
+import { Settings, ChevronLeft, ChevronRight, Plus, Clock, Archive, Search, MessageCircle, Tags, Bell, Trash2 } from 'lucide-react';
 import {
   Tooltip,
   TooltipContent,
@@ -16,6 +16,7 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
     { id: 'chat', icon: MessageCircle, label: 'Memory Chat', tooltip: 'Chat with AI about your memories', onClick: onOpenChat },
     { id: 'tags', icon: Tags, label: 'Tags', tooltip: 'Manage your tags' },
     { id: 'reminders', icon: Bell, label: 'Reminders', tooltip: 'View and manage reminders' },
+    { id: 'trash', icon: Trash2, label: 'Trash', tooltip: 'View deleted items (auto-delete after 7 days)' },
   ];
 
   if (isCollapsed) {

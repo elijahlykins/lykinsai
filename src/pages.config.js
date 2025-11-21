@@ -6,6 +6,7 @@ import MemoryChat from './pages/MemoryChat';
 import Notes from './pages/Notes';
 import TagManagement from './pages/TagManagement';
 import Reminders from './pages/Reminders';
+import Trash from './pages/Trash';
 
 
 export const PAGES = {
@@ -17,6 +18,7 @@ export const PAGES = {
     "Notes": Notes,
     "TagManagement": TagManagement,
     "Reminders": Reminders,
+    "Trash": Trash,
 }
 
 export const pagesConfig = {
