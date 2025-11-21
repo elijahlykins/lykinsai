@@ -153,7 +153,7 @@ export default function TrashPage() {
                         
                         <div className="flex items-center gap-2 flex-wrap">
                           {note.tags?.slice(0, 3).map(tag => (
-                            <Badge key={tag} className="text-xs bg-gray-100 dark:bg-[#1f1d1d]/80 text-gray-700 dark:text-gray-300">
+                            <Badge key={tag} className="text-xs bg-white dark:bg-[#171515] text-black dark:text-white border border-gray-200 dark:border-gray-600">
                               {tag}
                             </Badge>
                           ))}
@@ -175,7 +175,7 @@ export default function TrashPage() {
                           onClick={() => handleRestore(note.id)}
                           size="sm"
                           variant="outline"
-                          className="border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-50 dark:hover:bg-[#1f1d1d]"
+                          className="border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-50 dark:hover:bg-[#171515]"
                         >
                           <RotateCcw className="w-4 h-4 mr-1" />
                           Restore

@@ -444,7 +444,7 @@ Return only the title, nothing else.`,
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               placeholder="New Idea"
-              className="text-6xl font-bold bg-transparent border-0 text-black dark:text-white placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0 h-auto px-0"
+              className="text-6xl font-bold bg-transparent border-0 text-black dark:text-white placeholder:text-gray-400 focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0 h-auto px-0"
               disabled={isProcessing}
             />
 
@@ -466,7 +466,7 @@ Return only the title, nothing else.`,
               </button>
               <button
                 onClick={() => setShowReminderPicker(true)}
-                className={`flex items-center gap-2 px-3 py-1.5 rounded-full ${reminder ? 'bg-yellow-100 dark:bg-yellow-900/30' : 'bg-gray-100 dark:bg-[#1f1d1d]/80'} hover:bg-gray-200 dark:hover:bg-[#2a2828] text-xs text-black dark:text-gray-300 transition-all`}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-full ${reminder ? 'bg-yellow-100 dark:bg-yellow-900/30' : 'bg-white dark:bg-[#171515]'} hover:bg-gray-200 dark:hover:bg-[#171515]/80 text-xs text-black dark:text-white transition-all border border-gray-200 dark:border-gray-600`}
               >
                 <Bell className="w-3 h-3 text-black dark:text-gray-300" />
                 {reminder ? 'Reminder Set' : 'Set Reminder'}
@@ -474,7 +474,7 @@ Return only the title, nothing else.`,
             </div>
 
             {showMetadata && (
-              <div className="space-y-4 p-4 bg-gray-50 dark:bg-[#1f1d1d]/50 rounded-lg">
+              <div className="space-y-4 p-4 bg-white dark:bg-[#171515] rounded-lg border border-gray-200 dark:border-gray-600">
                 <div>
                   <label className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2 block">Tags</label>
                   <TagInput tags={tags} onChange={setTags} />
@@ -482,10 +482,10 @@ Return only the title, nothing else.`,
                 <div>
                   <label className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2 block">Folder</label>
                   <Select value={folder} onValueChange={setFolder}>
-                    <SelectTrigger className="bg-white dark:bg-[#1f1d1d]/80 border-gray-300 dark:border-gray-600 text-black dark:text-white">
+                    <SelectTrigger className="bg-white dark:bg-[#171515] border-gray-300 dark:border-gray-600 text-black dark:text-white">
                       <SelectValue />
                     </SelectTrigger>
-                    <SelectContent className="bg-white dark:bg-[#1f1d1d] border-gray-200 dark:border-gray-700">
+                    <SelectContent className="bg-white dark:bg-[#171515] border-gray-200 dark:border-gray-700">
                       <SelectItem value="Uncategorized">Uncategorized</SelectItem>
                       <SelectItem value="Projects">Projects</SelectItem>
                       <SelectItem value="Ideas">Ideas</SelectItem>
@@ -502,7 +502,7 @@ Return only the title, nothing else.`,
               value={content}
               onChange={(e) => setContent(e.target.value)}
               placeholder="Start typing..."
-              className="flex-1 w-full bg-transparent border-0 text-black dark:text-white placeholder:text-gray-500 dark:placeholder:text-gray-400 resize-none text-lg focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0"
+              className="flex-1 w-full bg-transparent border-0 text-black dark:text-white placeholder:text-gray-400 resize-none text-lg focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0"
               disabled={isProcessing}
             />
           </div>
@@ -558,7 +558,7 @@ Return only the title, nothing else.`,
             {suggestedQuestions.length > 0 ? (
               <div className="space-y-2">
                 {suggestedQuestions.map((question, idx) => (
-                  <div key={idx} className="p-3 bg-gray-50 dark:bg-[#1f1d1d]/50 rounded-lg border border-gray-200 dark:border-gray-700">
+                  <div key={idx} className="p-3 bg-white dark:bg-[#171515] rounded-lg border border-gray-200 dark:border-gray-700">
                     <p className="text-sm text-black dark:text-white">{question}</p>
                   </div>
                 ))}
@@ -593,7 +593,7 @@ Return only the title, nothing else.`,
       {inputMode === 'text' && (
         <button
           onClick={() => setShowAttachMenu(true)}
-          className="fixed bottom-8 right-8 w-14 h-14 rounded-full bg-white dark:bg-[#1f1d1d]/90 text-black dark:text-white shadow-lg hover:shadow-xl transition-all flex items-center justify-center hover:scale-110 border border-gray-200 dark:border-gray-600"
+          className="fixed bottom-8 right-8 w-14 h-14 rounded-full bg-white dark:bg-[#171515] text-black dark:text-white shadow-lg hover:shadow-xl transition-all flex items-center justify-center hover:scale-110 border border-gray-200 dark:border-gray-600"
         >
           <Plus className="w-6 h-6 text-black dark:text-gray-300" />
         </button>
@@ -601,7 +601,7 @@ Return only the title, nothing else.`,
 
       {/* Attachment Menu Dialog */}
       <Dialog open={showAttachMenu} onOpenChange={setShowAttachMenu}>
-        <DialogContent className="bg-white dark:bg-[#1f1d1d]/95 border-gray-200 dark:border-gray-700 text-black dark:text-white">
+        <DialogContent className="bg-white dark:bg-[#171515] border-gray-200 dark:border-gray-700 text-black dark:text-white">
           <DialogHeader>
             <DialogTitle className="text-black dark:text-white">Add Attachment</DialogTitle>
           </DialogHeader>

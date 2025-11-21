@@ -44,7 +44,7 @@ export default function CreatePage() {
 
       <div className="flex-1 flex flex-col overflow-hidden">
       <div className="flex items-center justify-between p-6 bg-glass border-b border-white/20 dark:border-gray-700/30">
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
+        <h1 className="text-2xl font-bold text-black dark:text-white flex items-center gap-2">
           <Plus className="w-6 h-6" />
           Create Idea
         </h1>
@@ -52,7 +52,7 @@ export default function CreatePage() {
             <Button
               onClick={() => setShowSuggestions(!showSuggestions)}
               variant="ghost"
-              className="text-gray-900 dark:text-gray-300 hover:bg-white/40 dark:hover:bg-white/10 rounded-2xl backdrop-blur-sm flex items-center gap-2 px-3 py-2 h-10"
+              className="text-black dark:text-white hover:bg-white/40 dark:hover:bg-[#171515]/40 rounded-2xl backdrop-blur-sm flex items-center gap-2 px-3 py-2 h-10"
               title={showSuggestions ? "Show suggestions" : "Hide suggestions"}
             >
               {showSuggestions ? <ChevronDown className="w-5 h-5" /> : <ChevronUp className="w-5 h-5" />}
@@ -61,13 +61,13 @@ export default function CreatePage() {
             <Button
               onClick={() => noteCreatorRef.current?.handleSave()}
               variant="ghost"
-              className="text-gray-900 dark:text-gray-300 hover:bg-white/40 dark:hover:bg-white/10 w-10 h-10 p-0 rounded-2xl backdrop-blur-sm"
+              className="text-black dark:text-white hover:bg-white/40 dark:hover:bg-[#171515]/40 w-10 h-10 p-0 rounded-2xl backdrop-blur-sm"
             >
               <Save className="w-5 h-5" />
             </Button>
             <button
               onClick={() => setInputMode(inputMode === 'text' ? 'audio' : 'text')}
-              className="px-6 py-2 rounded-full bg-white/80 dark:bg-[#1f1d1d]/80 backdrop-blur-md text-gray-900 dark:text-white font-medium hover:bg-white/90 dark:hover:bg-[#2a2828]/90 transition-all border border-white/40 dark:border-gray-600/40 shadow-lg"
+              className="px-6 py-2 rounded-full bg-white dark:bg-[#171515] backdrop-blur-md text-black dark:text-white font-medium hover:bg-white/90 dark:hover:bg-[#171515]/90 transition-all border border-white/40 dark:border-gray-600/40 shadow-lg"
             >
               {inputMode === 'text' ? 'Text' : 'Audio'}
             </button>

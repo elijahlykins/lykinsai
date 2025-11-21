@@ -70,20 +70,20 @@ export default function SettingsModal({ isOpen, onClose }) {
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="bg-glass-card border-white/30 text-gray-900 max-w-md backdrop-blur-2xl max-h-[90vh] overflow-y-auto">
+      <DialogContent className="bg-white dark:bg-[#171515] border-white/30 dark:border-gray-700 text-black dark:text-white max-w-md backdrop-blur-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle className="text-gray-900">Settings</DialogTitle>
+          <DialogTitle className="text-black dark:text-white">Settings</DialogTitle>
         </DialogHeader>
 
         <div className="space-y-6 py-4">
           {/* Text Color */}
           <div className="space-y-2">
-            <Label className="text-gray-900">Note Text Color</Label>
+            <Label className="text-black dark:text-white">Note Text Color</Label>
             <Select value={settings.textColor} onValueChange={(value) => setSettings({...settings, textColor: value})}>
-              <SelectTrigger className="bg-white/60 border-white/40 text-gray-900 backdrop-blur-md rounded-xl">
+              <SelectTrigger className="bg-white dark:bg-[#171515] border-gray-300 dark:border-gray-600 text-black dark:text-white backdrop-blur-md rounded-xl">
                 <SelectValue />
               </SelectTrigger>
-              <SelectContent className="bg-glass-card border-white/30 backdrop-blur-2xl">
+              <SelectContent className="bg-white dark:bg-[#171515] border-gray-200 dark:border-gray-700 backdrop-blur-2xl">
                 <SelectItem value="white">White</SelectItem>
                 <SelectItem value="black">Black</SelectItem>
                 <SelectItem value="#b8a4d4">Lavender</SelectItem>
@@ -236,13 +236,13 @@ export default function SettingsModal({ isOpen, onClose }) {
           <Button
             onClick={onClose}
             variant="ghost"
-            className="text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white"
+            className="text-black hover:text-black dark:text-white dark:hover:text-white"
           >
             Cancel
           </Button>
           <Button
             onClick={handleSave}
-            className="bg-gray-900 text-white hover:bg-gray-800 dark:bg-white dark:text-black dark:hover:bg-gray-200 flex items-center gap-2"
+            className="bg-black text-white hover:bg-black/90 dark:bg-white dark:text-black dark:hover:bg-white/90 flex items-center gap-2"
           >
             <Save className="w-4 h-4" />
             Save

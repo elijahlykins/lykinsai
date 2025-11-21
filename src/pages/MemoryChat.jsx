@@ -203,10 +203,10 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
             <div className="flex items-center gap-2">
               <span className="text-sm text-gray-500 dark:text-gray-400">Model:</span>
               <Select value={currentModel} onValueChange={handleModelChange}>
-                <SelectTrigger className="w-48 h-9 bg-gray-50 dark:bg-[#1f1d1d]/80 border-gray-300 dark:border-gray-600 text-black dark:text-white text-sm">
+                <SelectTrigger className="w-48 h-9 bg-white dark:bg-[#171515] border-gray-300 dark:border-gray-600 text-black dark:text-white text-sm">
                   <SelectValue />
                 </SelectTrigger>
-                <SelectContent className="bg-white dark:bg-[#1f1d1d] border-gray-200 dark:border-gray-700">
+                <SelectContent className="bg-white dark:bg-[#171515] border-gray-200 dark:border-gray-700">
                   <SelectItem value="core">Core (Default)</SelectItem>
                   <SelectItem value="gpt-3.5">GPT-3.5</SelectItem>
                   <SelectItem value="gpt-4">GPT-4</SelectItem>
@@ -254,11 +254,11 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSend()}
                   placeholder="What's on your mind?"
-                  className="w-full bg-white dark:bg-[#2a2a2a] border-2 border-gray-200 dark:border-gray-700 rounded-3xl text-black dark:text-white placeholder:text-gray-400 dark:placeholder:text-gray-500 h-16 text-base pl-14 pr-14 shadow-lg focus:border-gray-400 dark:focus:border-gray-500 focus:ring-0 transition-all"
+                  className="w-full bg-white dark:bg-[#171515] border-2 border-gray-200 dark:border-gray-700 rounded-3xl text-black dark:text-white placeholder:text-gray-400 h-16 text-base pl-14 pr-14 shadow-lg focus:border-gray-400 dark:focus:border-gray-500 focus:ring-0 transition-all"
                 />
                 <Button
                   onClick={() => setInputMode(inputMode === 'text' ? 'audio' : 'text')}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 bg-black dark:bg-white text-white dark:text-black hover:bg-gray-800 dark:hover:bg-gray-200 rounded-full h-12 w-12 p-0 transition-all"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 bg-black dark:bg-white text-white dark:text-black hover:bg-black/90 dark:hover:bg-white/90 rounded-full h-12 w-12 p-0 transition-all"
                 >
                   {inputMode === 'text' ? <Mic className="w-5 h-5" /> : <MessageSquare className="w-5 h-5" />}
                 </Button>
@@ -309,7 +309,7 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
                       {msg.attachments && msg.attachments.length > 0 && (
                         <div className="flex flex-wrap gap-2 mt-2">
                           {msg.attachments.map((att) => (
-                            <a key={att.id} href={att.url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-xs bg-white/50 dark:bg-black/20 px-2 py-1 rounded">
+                            <a key={att.id} href={att.url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-xs bg-gray-100 dark:bg-[#171515]/60 px-2 py-1 rounded border border-gray-200 dark:border-gray-600">
                               {att.type === 'image' ? <ImageIcon className="w-3 h-3" /> : att.type === 'link' ? <LinkIcon className="w-3 h-3" /> : <File className="w-3 h-3" />}
                               {att.name}
                             </a>
@@ -357,11 +357,11 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
                     onChange={(e) => setInput(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSend()}
                     placeholder="What's on your mind?"
-                    className="w-full bg-white dark:bg-[#2a2a2a] border-2 border-gray-200 dark:border-gray-700 rounded-3xl text-black dark:text-white placeholder:text-gray-400 dark:placeholder:text-gray-500 h-14 text-base pl-12 pr-12 shadow-md focus:border-gray-400 dark:focus:border-gray-500 focus:ring-0 transition-all"
+                    className="w-full bg-white dark:bg-[#171515] border-2 border-gray-200 dark:border-gray-700 rounded-3xl text-black dark:text-white placeholder:text-gray-400 h-14 text-base pl-12 pr-12 shadow-md focus:border-gray-400 dark:focus:border-gray-500 focus:ring-0 transition-all"
                     />
                     <Button
                     onClick={() => setInputMode(inputMode === 'text' ? 'audio' : 'text')}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 bg-black dark:bg-white text-white dark:text-black hover:bg-gray-800 dark:hover:bg-gray-200 rounded-full h-10 w-10 p-0 transition-all"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 bg-black dark:bg-white text-white dark:text-black hover:bg-black/90 dark:hover:bg-white/90 rounded-full h-10 w-10 p-0 transition-all"
                     >
                     {inputMode === 'text' ? <Mic className="w-4 h-4" /> : <MessageSquare className="w-4 h-4" />}
                     </Button>
@@ -405,7 +405,7 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
 
       {/* Attachment Menu Dialog */}
       <Dialog open={showAttachMenu} onOpenChange={setShowAttachMenu}>
-        <DialogContent className="bg-white dark:bg-[#1f1d1d]/95 border-gray-200 dark:border-gray-700 text-black dark:text-white">
+        <DialogContent className="bg-white dark:bg-[#171515] border-gray-200 dark:border-gray-700 text-black dark:text-white">
           <DialogHeader>
             <DialogTitle className="text-black dark:text-white">Add Attachment</DialogTitle>
           </DialogHeader>

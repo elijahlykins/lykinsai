@@ -309,12 +309,12 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
                     onChange={(e) => setQuery(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
                     placeholder="Search by ideas, concepts, or keywords..."
-                    className="flex-1 bg-gray-50 dark:bg-[#1f1d1d]/80 border-gray-300 dark:border-gray-600 text-black dark:text-white placeholder:text-gray-500 dark:placeholder:text-gray-400"
+                    className="flex-1 bg-white dark:bg-[#171515] border-gray-300 dark:border-gray-600 text-black dark:text-white placeholder:text-gray-400"
                   />
                   
                   {/* Suggestions Dropdown */}
                   {suggestions.length > 0 && (
-                    <div className="absolute top-full mt-1 w-full bg-white dark:bg-[#1f1d1d] border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-50">
+                    <div className="absolute top-full mt-1 w-full bg-white dark:bg-[#171515] border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-50">
                       {suggestions.map((suggestion, idx) => (
                         <button
                           key={idx}
@@ -322,7 +322,7 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
                             setQuery(suggestion);
                             setSuggestions([]);
                           }}
-                          className="w-full px-4 py-2 text-left text-sm text-black dark:text-white hover:bg-gray-50 dark:hover:bg-[#2a2828] first:rounded-t-lg last:rounded-b-lg"
+                          className="w-full px-4 py-2 text-left text-sm text-black dark:text-white hover:bg-gray-50 dark:hover:bg-[#171515]/60 first:rounded-t-lg last:rounded-b-lg"
                         >
                           {suggestion}
                         </button>
@@ -333,7 +333,7 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
                 <Button
                   onClick={handleSearch}
                   disabled={isSearching || !query.trim()}
-                  className="bg-black dark:bg-white text-white dark:text-black hover:bg-gray-800 dark:hover:bg-gray-200"
+                  className="bg-black dark:bg-white text-white dark:text-black hover:bg-black/90 dark:hover:bg-white/90"
                 >
                   {isSearching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
                 </Button>
@@ -341,7 +341,7 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
                   onClick={() => setShowSaveDialog(true)}
                   disabled={!query.trim()}
                   variant="outline"
-                  className="border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-50 dark:hover:bg-[#1f1d1d]"
+                  className="border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-50 dark:hover:bg-[#171515]"
                 >
                   <Save className="w-4 h-4" />
                 </Button>
@@ -415,7 +415,7 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
 
               {/* Tag Badges */}
               {filters.tags.map(tag => (
-                <Badge key={tag} className="bg-gray-200 dark:bg-[#1f1d1d]/80 text-black dark:text-white hover:bg-gray-300 dark:hover:bg-[#2a2828]">
+                <Badge key={tag} className="bg-white dark:bg-[#171515] text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#171515]/80 border border-gray-200 dark:border-gray-600">
                   {tag}
                   <button
                     onClick={() => setFilters({...filters, tags: filters.tags.filter(t => t !== tag)})}
@@ -460,7 +460,7 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
               <div className="flex gap-2 items-center overflow-x-auto pb-2">
                 <Bookmark className="w-4 h-4 text-gray-400 dark:text-gray-300 flex-shrink-0" />
                 {savedSearches.map(search => (
-                  <div key={search.id} className="flex items-center gap-1 bg-gray-100 dark:bg-[#1f1d1d]/80 rounded px-2 py-1 text-xs whitespace-nowrap">
+                  <div key={search.id} className="flex items-center gap-1 bg-white dark:bg-[#171515] rounded px-2 py-1 text-xs whitespace-nowrap border border-gray-200 dark:border-gray-600">
                     <button
                       onClick={() => loadSearch(search)}
                       className="text-black dark:text-white hover:underline"
@@ -486,7 +486,7 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
               <Button
                 onClick={() => setSelectedNote(null)}
                 variant="outline"
-                className="bg-transparent border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#1f1d1d]"
+                className="bg-transparent border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#171515]"
               >
                 ← Back to Results
               </Button>
@@ -581,7 +581,7 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
                     {/* Tags and Attachments */}
                     <div className="flex items-center gap-2 mb-2 flex-wrap">
                       {note.tags?.slice(0, 3).map(tag => (
-                        <Badge key={tag} className="text-xs bg-gray-100 dark:bg-[#1f1d1d]/80 text-gray-700 dark:text-gray-300">{tag}</Badge>
+                        <Badge key={tag} className="text-xs bg-white dark:bg-[#171515] text-black dark:text-white border border-gray-200 dark:border-gray-600">{tag}</Badge>
                       ))}
                       {note.attachments?.length > 0 && (
                         <Badge className="text-xs bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300">
@@ -617,7 +617,7 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
 
       {/* Save Search Dialog */}
       <Dialog open={showSaveDialog} onOpenChange={setShowSaveDialog}>
-        <DialogContent className="bg-white dark:bg-[#1f1d1d]/95 border-gray-200 dark:border-gray-700">
+        <DialogContent className="bg-white dark:bg-[#171515] border-gray-200 dark:border-gray-700">
           <DialogHeader>
             <DialogTitle className="text-black dark:text-white">Save Search</DialogTitle>
           </DialogHeader>
@@ -628,7 +628,7 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
                 value={searchName}
                 onChange={(e) => setSearchName(e.target.value)}
                 placeholder="e.g., Recent AI notes with images"
-                className="bg-gray-50 dark:bg-[#1f1d1d]/80 border-gray-300 dark:border-gray-600 text-black dark:text-white"
+                className="bg-white dark:bg-[#171515] border-gray-300 dark:border-gray-600 text-black dark:text-white"
               />
             </div>
             <div className="text-xs text-gray-500 dark:text-gray-400">
@@ -647,14 +647,14 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
             <Button
               onClick={() => setShowSaveDialog(false)}
               variant="outline"
-              className="border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-50 dark:hover:bg-[#1f1d1d]"
+              className="border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-50 dark:hover:bg-[#171515]"
             >
               Cancel
             </Button>
             <Button
               onClick={saveSearch}
               disabled={!searchName.trim()}
-              className="bg-black dark:bg-white text-white dark:text-black hover:bg-gray-800 dark:hover:bg-gray-200"
+              className="bg-black dark:bg-white text-white dark:text-black hover:bg-black/90 dark:hover:bg-white/90"
             >
               Save
             </Button>

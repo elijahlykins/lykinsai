@@ -135,7 +135,7 @@ export default function TagManagementPage() {
                               if (e.key === 'Enter') handleRenameTag(tag.name, newTagName);
                               if (e.key === 'Escape') setEditingTag(null);
                             }}
-                            className="flex-1 bg-gray-50 dark:bg-[#1f1d1d]/80 border-gray-300 dark:border-gray-600 text-black dark:text-white"
+                            className="flex-1 bg-white dark:bg-[#171515] border-gray-300 dark:border-gray-600 text-black dark:text-white"
                             autoFocus
                           />
                           <Button
@@ -173,7 +173,7 @@ export default function TagManagementPage() {
                               }}
                               size="sm"
                               variant="ghost"
-                              className="text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#1f1d1d]"
+                              className="text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#171515]"
                             >
                               <Edit2 className="w-4 h-4" />
                             </Button>
@@ -181,7 +181,7 @@ export default function TagManagementPage() {
                               onClick={() => handleDeleteTag(tag.name)}
                               size="sm"
                               variant="ghost"
-                              className="text-red-400 dark:text-red-400 hover:bg-gray-100 dark:hover:bg-[#1f1d1d]"
+                              className="text-red-400 dark:text-red-400 hover:bg-gray-100 dark:hover:bg-[#171515]"
                             >
                               <Trash2 className="w-4 h-4" />
                             </Button>
