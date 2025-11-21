@@ -6,19 +6,99 @@ import SettingsModal from '../components/notes/SettingsModal';
 import { useNavigate } from 'react-router-dom';
 import { createPageUrl } from '../utils';
 import { Button } from '@/components/ui/button';
-import { Save, ChevronDown, ChevronUp, Plus } from 'lucide-react';
+import { Input } from '@/components/ui/input';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { base44 } from '@/api/base44Client';
+import { Save, ChevronDown, ChevronUp, Plus, Send, Loader2, Bot, User } from 'lucide-react';
 
 export default function CreatePage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [inputMode, setInputMode] = useState('text'); // 'text' or 'audio'
   const [showSuggestions, setShowSuggestions] = useState(true);
+  const [chatMessages, setChatMessages] = useState([]);
+  const [chatInput, setChatInput] = useState('');
+  const [isChatLoading, setIsChatLoading] = useState(false);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const noteCreatorRef = useRef(null);
+  const chatScrollRef = useRef(null);
 
   const handleNoteCreated = () => {
     queryClient.invalidateQueries(['notes']);
+  };
+
+  useEffect(() => {
+    if (chatScrollRef.current) {
+      chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+    }
+  }, [chatMessages]);
+
+  const handleChatSend = async () => {
+    if (!chatInput.trim() || isChatLoading) return;
+
+    const currentContent = noteCreatorRef.current?.getCurrentContent() || '';
+    const userMessage = { role: 'user', content: chatInput };
+    setChatMessages(prev => [...prev, userMessage]);
+    setChatInput('');
+    setIsChatLoading(true);
+
+    const assistantMessageIndex = chatMessages.length + 1;
+    setChatMessages(prev => [...prev, { role: 'assistant', content: '' }]);
+
+    try {
+      const settings = JSON.parse(localStorage.getItem('lykinsai_settings') || '{}');
+      const personality = settings.aiPersonality || 'balanced';
+      const detailLevel = settings.aiDetailLevel || 'medium';
+
+      const personalityStyles = {
+        professional: 'You are a professional writing assistant. Be formal, precise, and objective.',
+        balanced: 'You are a helpful AI assistant. Be friendly yet professional.',
+        casual: 'You are a friendly companion. Be warm, conversational, and supportive.',
+        enthusiastic: 'You are an enthusiastic creative coach. Be energetic, motivating, and positive!'
+      };
+
+      const detailStyles = {
+        brief: 'Keep responses concise and under 3 sentences.',
+        medium: 'Provide clear responses with moderate detail.',
+        detailed: 'Give comprehensive, detailed responses with examples and explanations.'
+      };
+
+      const response = await base44.integrations.Core.InvokeLLM({
+        prompt: `${personalityStyles[personality]} ${detailStyles[detailLevel]}
+
+You are helping the user brainstorm and develop their idea. Here's what they're working on:
+
+Current Idea Content:
+${currentContent || 'The user is just starting their idea...'}
+
+User's question: ${chatInput}
+
+Provide helpful guidance, suggestions, or answers to help develop this idea. Do not use emojis unless explicitly asked.`
+      });
+
+      const words = response.split(' ');
+      let currentText = '';
+
+      for (let i = 0; i < words.length; i++) {
+        currentText += (i === 0 ? '' : ' ') + words[i];
+        setChatMessages(prev => {
+          const newMessages = [...prev];
+          newMessages[assistantMessageIndex] = { role: 'assistant', content: currentText };
+          return newMessages;
+        });
+        await new Promise(resolve => setTimeout(resolve, 30));
+      }
+    } catch (error) {
+      console.error('Chat error:', error);
+      setChatMessages(prev => {
+        const newMessages = [...prev];
+        newMessages[assistantMessageIndex] = { role: 'assistant', content: 'Sorry, I encountered an error.' };
+        return newMessages;
+      });
+    } finally {
+      setIsChatLoading(false);
+    }
   };
 
   return (
@@ -74,9 +154,66 @@ export default function CreatePage() {
           </div>
         </div>
 
-        <div className="flex-1 flex items-center justify-center">
-          <div className="w-full max-w-4xl h-full">
-            <NoteCreator ref={noteCreatorRef} onNoteCreated={handleNoteCreated} inputMode={inputMode} showSuggestions={showSuggestions} />
+        <div className="flex-1 flex gap-4 p-6 overflow-hidden">
+          {/* Chat Panel */}
+          <div className="w-80 flex-shrink-0 flex flex-col clay-card">
+            <div className="p-4 border-b border-gray-200 dark:border-gray-700">
+              <h3 className="font-semibold text-black dark:text-white flex items-center gap-2">
+                <Bot className="w-5 h-5" />
+                AI Assistant
+              </h3>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Ask me about your idea</p>
+            </div>
+
+            <ScrollArea ref={chatScrollRef} className="flex-1 p-4">
+              {chatMessages.length === 0 ? (
+                <div className="text-center text-gray-400 dark:text-gray-500 text-sm py-8">
+                  Start chatting to get help with your idea!
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {chatMessages.map((msg, idx) => (
+                    <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                      <div className={`max-w-[85%] ${
+                        msg.role === 'user' 
+                          ? 'bg-gray-200 dark:bg-[#1f1d1d]/80 text-black dark:text-white p-3 rounded-2xl' 
+                          : 'text-gray-800 dark:text-gray-200'
+                      }`}>
+                        <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </ScrollArea>
+
+            <div className="p-4 border-t border-gray-200 dark:border-gray-700">
+              <div className="flex gap-2">
+                <Input
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleChatSend()}
+                  placeholder="Ask about your idea..."
+                  className="flex-1 bg-white dark:bg-[#171515] border-gray-300 dark:border-gray-600 text-black dark:text-white text-sm"
+                  disabled={isChatLoading}
+                />
+                <Button
+                  onClick={handleChatSend}
+                  disabled={isChatLoading || !chatInput.trim()}
+                  size="sm"
+                  className="bg-black dark:bg-white text-white dark:text-black hover:bg-black/90 dark:hover:bg-white/90"
+                >
+                  {isChatLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                </Button>
+              </div>
+            </div>
+          </div>
+
+          {/* Note Creator */}
+          <div className="flex-1 flex items-center justify-center overflow-hidden">
+            <div className="w-full h-full">
+              <NoteCreator ref={noteCreatorRef} onNoteCreated={handleNoteCreated} inputMode={inputMode} showSuggestions={showSuggestions} />
+            </div>
           </div>
         </div>
       </div>
