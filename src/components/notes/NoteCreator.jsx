@@ -471,7 +471,26 @@ Return only the title, nothing else.`,
 
       {/* Suggestions Panel - Fixed position on right */}
       {showSuggestions && content.length > 50 && inputMode === 'text' && (
-        <div className="fixed right-0 top-20 bottom-0 w-96 border-l border-gray-200 dark:border-gray-700 overflow-auto p-6 space-y-6 bg-white dark:bg-[#171515] z-10">
+        <div className="fixed right-0 top-20 bottom-0 w-96 border-l border-white/20 dark:border-gray-700/30 overflow-auto p-6 space-y-6 bg-glass backdrop-blur-2xl z-10">
+          {/* Suggested Questions */}
+          <div className="clay-card p-4 space-y-3">
+            <div className="flex items-center gap-2">
+              <span className="text-lg">💡</span>
+              <h3 className="font-semibold text-black dark:text-white">Suggested Questions</h3>
+            </div>
+            {suggestedQuestions.length > 0 ? (
+              <div className="space-y-2">
+                {suggestedQuestions.map((question, idx) => (
+                  <div key={idx} className="p-3 bg-gray-50 dark:bg-[#1f1d1d]/50 rounded-lg border border-gray-200 dark:border-gray-700">
+                    <p className="text-sm text-black dark:text-white">{question}</p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-xs text-gray-500 dark:text-gray-400">Generating questions...</p>
+            )}
+          </div>
+
           {/* Suggested Connections */}
           {allNotes.length > 0 && (
             <ConnectionSuggestions
@@ -480,23 +499,6 @@ Return only the title, nothing else.`,
               allNotes={allNotes}
               onConnect={handleAddConnection}
             />
-          )}
-
-          {/* Suggested Questions */}
-          {suggestedQuestions.length > 0 && (
-            <div className="clay-card p-4 space-y-3">
-              <div className="flex items-center gap-2">
-                <span className="text-lg">💡</span>
-                <h3 className="font-semibold text-black dark:text-white">Suggested Questions</h3>
-              </div>
-              <div className="space-y-2">
-                {suggestedQuestions.map((question, idx) => (
-                  <div key={idx} className="p-3 bg-gray-50 dark:bg-[#1f1d1d]/50 rounded-lg border border-gray-200 dark:border-gray-700">
-                    <p className="text-sm text-black dark:text-white">{question}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
           )}
         </div>
       )}
