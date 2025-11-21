@@ -153,25 +153,25 @@ export default function LongTermPage() {
     try {
       const longTermNotes = notes.filter(n => n && n.storage_type === 'long_term' && !n.trashed);
       
-      // Step 1: Detect duplicates and similar notes
+      // Step 1: Detect duplicates and similar notes (BE VERY CAUTIOUS)
       const notesContext = longTermNotes.map(n => 
         `ID: ${n.id}\nTitle: ${n.title}\nContent: ${n.content}\nTags: ${n.tags?.join(', ') || 'None'}\nCreated: ${n.created_date}`
       ).join('\n\n---\n\n');
 
       const duplicateAnalysis = await base44.integrations.Core.InvokeLLM({
-        prompt: `Analyze these long-term memory notes for duplicates and similar content.
+        prompt: `CRITICAL: Be EXTREMELY CAUTIOUS. Only identify notes as duplicates if you are absolutely certain they contain the same information.
+
+Analyze these long-term memory notes for duplicates and similar content:
 
 Notes:
 ${notesContext}
 
-Identify:
-1. EXACT/NEAR-EXACT duplicates (similarity >= 0.95) - same information, minimal differences
-2. SIMILAR notes (similarity 0.7-0.94) - related content that should be merged with extra info combined
+STRICT CRITERIA:
+1. EXACT duplicates (similarity 0.98-1.0): IDENTICAL or near-identical content, same core information, only minor wording differences
+2. SIMILAR notes (similarity 0.75-0.97): Related topics with overlapping information that would benefit from merging
 
-For each duplicate/similar pair found, provide:
-- Both note IDs
-- Similarity score (0.0 to 1.0)
-- Brief reason why they're duplicates/similar`,
+Only return pairs where you are HIGHLY CONFIDENT they should be combined. When in doubt, DO NOT mark as duplicate.
+Return an EMPTY array if you find no clear duplicates.`,
         response_json_schema: {
           type: 'object',
           properties: {
@@ -204,13 +204,16 @@ For each duplicate/similar pair found, provide:
         
         if (!note1 || !note2) continue;
 
-        if (duplicate.similarity >= 0.95) {
-          // Exact duplicate - keep newer, delete older
+        if (duplicate.similarity >= 0.98) {
+          // Exact duplicate - keep newer, soft-delete older
           const olderNote = new Date(note1.created_date) < new Date(note2.created_date) ? note1 : note2;
-          await base44.entities.Note.delete(olderNote.id);
+          await base44.entities.Note.update(olderNote.id, { 
+            trashed: true, 
+            trash_date: new Date().toISOString() 
+          });
           processedNoteIds.add(olderNote.id);
-        } else if (duplicate.similarity >= 0.7) {
-          // Similar notes - merge them
+        } else if (duplicate.similarity >= 0.75) {
+          // Similar notes - merge them into a NEW note
           const mergeResult = await base44.integrations.Core.InvokeLLM({
             prompt: `Merge these two similar notes into one comprehensive note, combining all unique information:
 
@@ -239,20 +242,29 @@ Create a merged note with:
           const combinedConnections = [...new Set([...(note1.connected_notes || []), ...(note2.connected_notes || [])]
             .filter(id => id !== note1.id && id !== note2.id))];
 
-          const newerNote = new Date(note1.created_date) > new Date(note2.created_date) ? note1 : note2;
-          
-          await base44.entities.Note.update(newerNote.id, {
+          // Create NEW merged note
+          await base44.entities.Note.create({
             title: mergeResult.title,
             content: mergeResult.content,
             tags: combinedTags,
             attachments: combinedAttachments,
-            connected_notes: combinedConnections
+            connected_notes: combinedConnections,
+            storage_type: 'long_term',
+            source: 'user',
+            folder: note1.folder || note2.folder || 'Uncategorized'
           });
 
-          // Delete the older note
-          const olderNote = newerNote.id === note1.id ? note2 : note1;
-          await base44.entities.Note.delete(olderNote.id);
-          processedNoteIds.add(olderNote.id);
+          // Soft-delete both original notes
+          await base44.entities.Note.update(note1.id, { 
+            trashed: true, 
+            trash_date: new Date().toISOString() 
+          });
+          await base44.entities.Note.update(note2.id, { 
+            trashed: true, 
+            trash_date: new Date().toISOString() 
+          });
+          processedNoteIds.add(note1.id);
+          processedNoteIds.add(note2.id);
         }
       }
 
