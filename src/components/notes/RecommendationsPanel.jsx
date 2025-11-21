@@ -4,11 +4,13 @@ import { Button } from '@/components/ui/button';
 import { Sparkles, TrendingUp, Clock, X } from 'lucide-react';
 import { base44 } from '@/api/base44Client';
 import { format } from 'date-fns';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 
 export default function RecommendationsPanel({ notes, onSelectNote }) {
   const [recommendations, setRecommendations] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [dismissed, setDismissed] = useState([]);
+  const [showPanel, setShowPanel] = useState(false);
 
   useEffect(() => {
     generateRecommendations();
@@ -114,40 +116,57 @@ Return specific, actionable recommendations.`,
   if (isLoading || visibleRecommendations.length === 0) return null;
 
   return (
-    <div className="mb-6">
-      <div className="flex items-center gap-2 mb-3">
-        <Sparkles className="w-4 h-4 text-blue" />
-        <h3 className="text-sm font-semibold text-black">Recommended for You</h3>
+    <>
+      <div className="mb-6">
+        <Button
+          onClick={() => setShowPanel(true)}
+          variant="outline"
+          className="border-blue-300 dark:border-blue-600 text-blue-700 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20"
+        >
+          <Sparkles className="w-4 h-4 mr-2" />
+          {visibleRecommendations.length} Recommendation{visibleRecommendations.length !== 1 ? 's' : ''} for You
+        </Button>
       </div>
-      
-      <div className="grid gap-2">
-        {visibleRecommendations.slice(0, 3).map((rec, idx) => (
-          <Card key={idx} className="p-3 bg-blue-50 border-blue-200 hover:bg-blue-100 transition-colors">
-            <div className="flex items-start gap-3">
-              <TrendingUp className="w-4 h-4 text-blue-600 mt-0.5 flex-shrink-0" />
-              <div className="flex-1 min-w-0">
-                <h4 className="text-sm font-medium text-black">{rec.title}</h4>
-                <p className="text-xs text-gray-600 mt-1">{rec.description}</p>
-                {rec.noteId && (
-                  <Button
-                    onClick={() => handleAction(rec)}
-                    variant="link"
-                    className="text-xs text-blue-600 hover:text-blue-800 p-0 h-auto mt-1"
+
+      {/* Recommendations Panel */}
+      <Dialog open={showPanel} onOpenChange={setShowPanel}>
+        <DialogContent className="bg-white dark:bg-[#171515] border-gray-200 dark:border-gray-700 max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="text-black dark:text-white">Recommended for You</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-4 max-h-[60vh] overflow-y-auto">
+            {visibleRecommendations.map((rec, idx) => (
+              <Card key={idx} className="p-4 bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-800 hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors">
+                <div className="flex items-start gap-3">
+                  <TrendingUp className="w-5 h-5 text-blue-600 dark:text-blue-400 mt-0.5 flex-shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <h4 className="text-sm font-medium text-black dark:text-white">{rec.title}</h4>
+                    <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">{rec.description}</p>
+                    {rec.noteId && (
+                      <Button
+                        onClick={() => {
+                          handleAction(rec);
+                          setShowPanel(false);
+                        }}
+                        variant="link"
+                        className="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 p-0 h-auto mt-2"
+                      >
+                        View Note →
+                      </Button>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => handleDismiss(idx)}
+                    className="text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300"
                   >
-                    View Note →
-                  </Button>
-                )}
-              </div>
-              <button
-                onClick={() => handleDismiss(idx)}
-                className="text-gray-400 hover:text-gray-600"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-          </Card>
-        ))}
-      </div>
-    </div>
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              </Card>
+            ))}
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
