@@ -356,6 +356,7 @@ Rules:
 - Create NEW descriptive folders when no existing folder fits
 - Folder names: "Work Projects", "Health & Fitness", "Travel Memories", etc.
 - NEVER assign to "Uncategorized" - always use a specific descriptive folder
+- You MUST assign EVERY SINGLE note to a folder - no note should be left out
 - Aim for 5-15 total folders`,
         response_json_schema: {
           type: 'object',
@@ -375,6 +376,7 @@ Rules:
       });
 
       // Apply folder assignments
+      const assignedNoteIds = new Set();
       for (const assignment of folderOrganization.assignments || []) {
         if (assignment.folder && assignment.folder !== 'Uncategorized') {
           const noteExists = allUncategorized.find(n => n.id === assignment.note_id);
@@ -382,8 +384,17 @@ Rules:
             await base44.entities.Note.update(assignment.note_id, {
               folder: assignment.folder
             });
+            assignedNoteIds.add(assignment.note_id);
           }
         }
+      }
+
+      // Move any remaining uncategorized notes to "Miscellaneous" folder
+      const unassignedNotes = allUncategorized.filter(n => !assignedNoteIds.has(n.id));
+      for (const note of unassignedNotes) {
+        await base44.entities.Note.update(note.id, {
+          folder: 'Miscellaneous'
+        });
       }
 
       queryClient.invalidateQueries(['notes']);
