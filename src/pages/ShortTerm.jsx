@@ -43,6 +43,7 @@ export default function ShortTermPage() {
   const [showReminderPicker, setShowReminderPicker] = useState(false);
   const [sourceFilter, setSourceFilter] = useState('all');
   const [selectedCards, setSelectedCards] = useState([]);
+  const [bulkMode, setBulkMode] = useState(false);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
@@ -157,6 +158,7 @@ export default function ShortTermPage() {
       await base44.entities.Note.update(noteId, { storage_type: 'long_term' });
     }
     setSelectedCards([]);
+    setBulkMode(false);
     queryClient.invalidateQueries(['notes']);
   };
 
@@ -165,7 +167,15 @@ export default function ShortTermPage() {
       await base44.entities.Note.update(noteId, { trashed: true, trash_date: new Date().toISOString() });
     }
     setSelectedCards([]);
+    setBulkMode(false);
     queryClient.invalidateQueries(['notes']);
+  };
+
+  const toggleBulkMode = () => {
+    setBulkMode(!bulkMode);
+    if (bulkMode) {
+      setSelectedCards([]);
+    }
   };
 
   const allTags = [...new Set(notes.filter(n => n).flatMap(n => n.tags || []))];
@@ -216,7 +226,7 @@ export default function ShortTermPage() {
             <div className="flex items-center gap-2">
               {!selectedNote && (
                 <>
-                  {selectedCards.length > 0 && (
+                  {bulkMode && selectedCards.length > 0 && (
                     <>
                       <Button
                         onClick={handleBulkDelete}
@@ -234,6 +244,13 @@ export default function ShortTermPage() {
                       </Button>
                     </>
                   )}
+                  <Button
+                    onClick={toggleBulkMode}
+                    variant={bulkMode ? "default" : "outline"}
+                    className={bulkMode ? "bg-black dark:bg-white text-white dark:text-black" : "border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#171515]"}
+                  >
+                    {bulkMode ? 'Cancel Selection' : 'Select Multiple'}
+                  </Button>
                   <Select value={sourceFilter} onValueChange={setSourceFilter}>
                     <SelectTrigger className="w-40 h-9 bg-white dark:bg-[#171515] border-gray-300 dark:border-gray-600 text-black dark:text-white text-sm">
                       <SelectValue />
@@ -340,17 +357,19 @@ export default function ShortTermPage() {
                         selectedCards.includes(note.id) ? 'ring-2 ring-black dark:ring-white' : ''
                       }`}
                     >
-                      <input
-                        type="checkbox"
-                        checked={selectedCards.includes(note.id)}
-                        onChange={(e) => {
-                          e.stopPropagation();
-                          handleToggleSelect(note.id);
-                        }}
-                        className="absolute top-3 right-3 w-4 h-4 cursor-pointer"
-                      />
+                      {bulkMode && (
+                        <input
+                          type="checkbox"
+                          checked={selectedCards.includes(note.id)}
+                          onChange={(e) => {
+                            e.stopPropagation();
+                            handleToggleSelect(note.id);
+                          }}
+                          className="absolute top-3 right-3 w-4 h-4 cursor-pointer"
+                        />
+                      )}
                       <button
-                        onClick={() => setSelectedNote(note)}
+                        onClick={() => !bulkMode && setSelectedNote(note)}
                         className="w-full text-left"
                       >
                       <div className="flex items-center gap-2 mb-2">
