@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
-import { Mic, Square, Plus, Link as LinkIcon, Image, Video, FileText, Tag, Folder, Bell, Loader2, ChevronDown, ChevronUp } from 'lucide-react';
+import { Mic, Square, Plus, Link as LinkIcon, Image, Video, FileText, Tag, Folder, Bell, Loader2 } from 'lucide-react';
 import { base44 } from '@/api/base44Client';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -25,7 +25,6 @@ const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode }, ref) => {
   const [showMetadata, setShowMetadata] = useState(false);
   const [suggestedConnections, setSuggestedConnections] = useState([]);
   const [allNotes, setAllNotes] = useState([]);
-  const [showConnections, setShowConnections] = useState(false);
   const [reminder, setReminder] = useState(null);
   const [showReminderPicker, setShowReminderPicker] = useState(false);
   const mediaRecorderRef = useRef(null);
@@ -327,27 +326,6 @@ Return only the title, nothing else.`,
 
   return (
     <div className="h-full flex relative">
-        {/* Connection Suggestions Sidebar */}
-        {inputMode === 'text' && showConnections && content.length > 50 && allNotes.length > 0 && (
-          <div className="w-80 overflow-auto border-r border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-[#1f1d1d]/50 p-4">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-sm font-semibold text-black dark:text-white">Suggested Connections</h3>
-              <button
-                onClick={() => setShowConnections(false)}
-                className="text-gray-500 hover:text-black dark:hover:text-white"
-              >
-                <ChevronUp className="w-4 h-4" />
-              </button>
-            </div>
-            <ConnectionSuggestions
-              content={content}
-              currentNoteId={null}
-              allNotes={allNotes}
-              onConnect={handleAddConnection}
-            />
-          </div>
-        )}
-
         {/* Content Area - Notion Style */}
         <div className={`overflow-auto ${attachments.length > 0 && inputMode === 'text' ? 'w-1/2' : 'flex-1'}`}>
         {inputMode === 'text' ? (
@@ -362,15 +340,6 @@ Return only the title, nothing else.`,
 
             {/* Metadata Bar */}
             <div className="flex gap-2 items-center">
-              {content.length > 50 && allNotes.length > 0 && (
-                <button
-                  onClick={() => setShowConnections(!showConnections)}
-                  className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-gray-100 dark:bg-[#1f1d1d]/80 hover:bg-gray-200 dark:hover:bg-[#2a2828] text-xs text-black dark:text-gray-300 transition-all"
-                >
-                  {showConnections ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-                  Connections
-                </button>
-              )}
               <button
                 onClick={() => setShowMetadata(!showMetadata)}
                 className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-gray-100 dark:bg-[#1f1d1d]/80 hover:bg-gray-200 dark:hover:bg-[#2a2828] text-xs text-black dark:text-gray-300 transition-all"
@@ -426,6 +395,17 @@ Return only the title, nothing else.`,
               className="flex-1 w-full bg-transparent border-0 text-black dark:text-white placeholder:text-gray-500 dark:placeholder:text-gray-400 resize-none text-lg focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0"
               disabled={isProcessing}
             />
+
+            {content.length > 50 && allNotes.length > 0 && (
+              <div className="mt-4">
+                <ConnectionSuggestions
+                  content={content}
+                  currentNoteId={null}
+                  allNotes={allNotes}
+                  onConnect={handleAddConnection}
+                />
+              </div>
+            )}
           </div>
         ) : (
           <div className="space-y-6 h-full">
