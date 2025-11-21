@@ -39,6 +39,8 @@ export default function LongTermPage() {
   const [filterFolder, setFilterFolder] = useState('all');
   const [showReminderPicker, setShowReminderPicker] = useState(false);
   const [sourceFilter, setSourceFilter] = useState('all');
+  const [currentFolder, setCurrentFolder] = useState(null);
+  const [isOrganizing, setIsOrganizing] = useState(false);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
@@ -146,10 +148,79 @@ export default function LongTermPage() {
     navigate(createPageUrl('MemoryChat'));
   };
 
-  const allTags = [...new Set(notes.filter(n => n).flatMap(n => n.tags || []))];
-  const allFolders = [...new Set(notes.filter(n => n).map(n => n.folder || 'Uncategorized'))];
+  const organizeIntoFolders = async () => {
+    setIsOrganizing(true);
+    try {
+      const longTermNotes = notes.filter(n => n && n.storage_type === 'long_term');
+      
+      const notesContext = longTermNotes.map(n => 
+        `ID: ${n.id}\nTitle: ${n.title}\nContent: ${n.content.substring(0, 300)}\nTags: ${n.tags?.join(', ') || 'None'}\nCurrent Folder: ${n.folder || 'Uncategorized'}`
+      ).join('\n\n---\n\n');
 
-  let filteredNotes = notes.filter(note => note && !note.trashed && note.storage_type === 'long_term');
+      const folderOrganization = await base44.integrations.Core.InvokeLLM({
+        prompt: `Analyze these long-term memory notes and organize them into logical folders like Google Drive. Create folder names that group related content.
+
+Notes:
+${notesContext}
+
+Create folder names that are:
+- Clear and descriptive (e.g., "Work Projects", "Personal Goals", "Health & Fitness", "Travel Memories")
+- Broad enough to contain multiple related notes
+- Not too granular (aim for 5-15 folders max)
+
+For each note, assign it to the most appropriate folder.`,
+        response_json_schema: {
+          type: 'object',
+          properties: {
+            assignments: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  note_id: { type: 'string' },
+                  folder: { type: 'string' }
+                }
+              }
+            }
+          }
+        }
+      });
+
+      for (const assignment of folderOrganization.assignments || []) {
+        await base44.entities.Note.update(assignment.note_id, {
+          folder: assignment.folder
+        });
+      }
+
+      queryClient.invalidateQueries(['notes']);
+    } catch (error) {
+      console.error('Error organizing folders:', error);
+    } finally {
+      setIsOrganizing(false);
+    }
+  };
+
+  const allTags = [...new Set(notes.filter(n => n).flatMap(n => n.tags || []))];
+  const longTermNotes = notes.filter(note => note && !note.trashed && note.storage_type === 'long_term');
+  const allFolders = [...new Set(longTermNotes.map(n => n.folder || 'Uncategorized'))];
+  
+  // Get folder structure with counts and preview
+  const folderStructure = allFolders.map(folder => {
+    const folderNotes = longTermNotes.filter(n => (n.folder || 'Uncategorized') === folder);
+    const imageCount = folderNotes.reduce((acc, n) => acc + (n.attachments?.filter(a => a.type === 'image').length || 0), 0);
+    const videoCount = folderNotes.reduce((acc, n) => acc + (n.attachments?.filter(a => a.type === 'video').length || 0), 0);
+    return {
+      name: folder,
+      noteCount: folderNotes.length,
+      imageCount,
+      videoCount,
+      preview: folderNotes.slice(0, 3)
+    };
+  }).sort((a, b) => b.noteCount - a.noteCount);
+
+  let filteredNotes = currentFolder 
+    ? longTermNotes.filter(note => (note.folder || 'Uncategorized') === currentFolder)
+    : longTermNotes;
   
   if (filterTag !== 'all') {
     filteredNotes = filteredNotes.filter(note => note && note.tags?.includes(filterTag));
@@ -192,6 +263,16 @@ export default function LongTermPage() {
               Long Term Memory
             </h1>
             <div className="flex items-center gap-2">
+              {!selectedNote && !currentFolder && (
+                <Button
+                  onClick={organizeIntoFolders}
+                  disabled={isOrganizing}
+                  variant="outline"
+                  className="border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#171515]"
+                >
+                  {isOrganizing ? 'Organizing...' : 'AI Organize'}
+                </Button>
+              )}
               {!selectedNote && (
                 <>
                   <Select value={sourceFilter} onValueChange={setSourceFilter}>
@@ -249,32 +330,15 @@ export default function LongTermPage() {
             </div>
           </div>
 
-          {!selectedNote && !showGraphView && (
-            <div className="flex gap-3 items-center">
-              <Filter className="w-4 h-4 text-black dark:text-white" />
-              <Select value={filterTag} onValueChange={setFilterTag}>
-                <SelectTrigger className="w-40 bg-white dark:bg-[#171515] border-gray-300 dark:border-gray-600 text-black dark:text-white">
-                  <SelectValue placeholder="Filter by tag" />
-                </SelectTrigger>
-                <SelectContent className="bg-white dark:bg-[#171515] border-gray-200 dark:border-gray-700">
-                  <SelectItem value="all">All Tags</SelectItem>
-                  {allTags.map(tag => (
-                    <SelectItem key={tag} value={tag}>{tag}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Select value={filterFolder} onValueChange={setFilterFolder}>
-                <SelectTrigger className="w-40 bg-white dark:bg-[#171515] border-gray-300 dark:border-gray-600 text-black dark:text-white">
-                  <SelectValue placeholder="Filter by folder" />
-                </SelectTrigger>
-                <SelectContent className="bg-white dark:bg-[#171515] border-gray-200 dark:border-gray-700">
-                  <SelectItem value="all">All Folders</SelectItem>
-                  {allFolders.map(folder => (
-                    <SelectItem key={folder} value={folder}>{folder}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+          {!selectedNote && !showGraphView && currentFolder && (
+            <Button
+              onClick={() => setCurrentFolder(null)}
+              variant="ghost"
+              className="text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#171515] flex items-center gap-2"
+            >
+              <FolderIcon className="w-4 h-4" />
+              ← Back to Folders
+            </Button>
           )}
         </div>
 
@@ -288,9 +352,12 @@ export default function LongTermPage() {
                   onUpdateConnections={handleUpdate}
                 />
               </div>
-            ) : !selectedNote ? (
+            ) : !selectedNote && currentFolder ? (
               <div className="max-w-4xl mx-auto p-8">
-                <DuplicateDetector notes={filteredNotes} onMerge={handleUpdate} />
+                <div className="mb-6">
+                  <h2 className="text-2xl font-bold text-black dark:text-white mb-2">{currentFolder}</h2>
+                  <p className="text-sm text-gray-500 dark:text-gray-400">{filteredNotes.length} items</p>
+                </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                   {filteredNotes.map((note) => (
                     <button
@@ -331,10 +398,51 @@ export default function LongTermPage() {
                     </button>
                   ))}
                   {filteredNotes.length === 0 && (
-                    <div className="col-span-full text-center py-12 text-gray-500">
-                      <p>No memories match the filters</p>
+                    <div className="col-span-full text-center py-12 text-gray-500 dark:text-gray-400">
+                      <p>No memories in this folder</p>
                     </div>
                   )}
+                </div>
+              </div>
+            ) : !selectedNote ? (
+              <div className="max-w-5xl mx-auto p-8">
+                <DuplicateDetector notes={longTermNotes} onMerge={handleUpdate} />
+                
+                <div className="mb-6">
+                  <h2 className="text-xl font-semibold text-black dark:text-white mb-4">Folders</h2>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {folderStructure.map((folder) => (
+                      <button
+                        key={folder.name}
+                        onClick={() => setCurrentFolder(folder.name)}
+                        className="clay-card p-5 text-left hover:scale-[1.02] transition-all"
+                      >
+                        <div className="flex items-start gap-3 mb-3">
+                          <div className="p-2 bg-white dark:bg-[#171515] rounded-lg">
+                            <FolderIcon className="w-6 h-6 text-black dark:text-white" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <h3 className="font-semibold text-black dark:text-white mb-1 line-clamp-1">{folder.name}</h3>
+                            <p className="text-xs text-gray-500 dark:text-gray-400">
+                              {folder.noteCount} note{folder.noteCount !== 1 ? 's' : ''}
+                              {folder.imageCount > 0 && ` • ${folder.imageCount} image${folder.imageCount !== 1 ? 's' : ''}`}
+                              {folder.videoCount > 0 && ` • ${folder.videoCount} video${folder.videoCount !== 1 ? 's' : ''}`}
+                            </p>
+                          </div>
+                        </div>
+                        
+                        {folder.preview.length > 0 && (
+                          <div className="space-y-1 pt-2 border-t border-gray-200 dark:border-gray-700">
+                            {folder.preview.map(note => (
+                              <p key={note.id} className="text-xs text-gray-600 dark:text-gray-400 line-clamp-1">
+                                • {note.title}
+                              </p>
+                            ))}
+                          </div>
+                        )}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
             ) : (
