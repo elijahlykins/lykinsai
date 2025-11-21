@@ -151,24 +151,131 @@ export default function LongTermPage() {
   const organizeIntoFolders = async () => {
     setIsOrganizing(true);
     try {
-      const longTermNotes = notes.filter(n => n && n.storage_type === 'long_term');
+      const longTermNotes = notes.filter(n => n && n.storage_type === 'long_term' && !n.trashed);
       
+      // Step 1: Detect duplicates and similar notes
       const notesContext = longTermNotes.map(n => 
-        `ID: ${n.id}\nTitle: ${n.title}\nContent: ${n.content.substring(0, 300)}\nTags: ${n.tags?.join(', ') || 'None'}\nCurrent Folder: ${n.folder || 'Uncategorized'}`
+        `ID: ${n.id}\nTitle: ${n.title}\nContent: ${n.content}\nTags: ${n.tags?.join(', ') || 'None'}\nCreated: ${n.created_date}`
       ).join('\n\n---\n\n');
 
-      const folderOrganization = await base44.integrations.Core.InvokeLLM({
-        prompt: `Analyze these long-term memory notes and organize them into logical folders like Google Drive. Create folder names that group related content.
+      const duplicateAnalysis = await base44.integrations.Core.InvokeLLM({
+        prompt: `Analyze these long-term memory notes for duplicates and similar content.
 
 Notes:
 ${notesContext}
 
+Identify:
+1. EXACT/NEAR-EXACT duplicates (similarity >= 0.95) - same information, minimal differences
+2. SIMILAR notes (similarity 0.7-0.94) - related content that should be merged with extra info combined
+
+For each duplicate/similar pair found, provide:
+- Both note IDs
+- Similarity score (0.0 to 1.0)
+- Brief reason why they're duplicates/similar`,
+        response_json_schema: {
+          type: 'object',
+          properties: {
+            duplicates: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  note1_id: { type: 'string' },
+                  note2_id: { type: 'string' },
+                  similarity: { type: 'number' },
+                  reason: { type: 'string' }
+                }
+              }
+            }
+          }
+        }
+      });
+
+      // Step 2: Handle duplicates
+      const processedNoteIds = new Set();
+      
+      for (const duplicate of duplicateAnalysis.duplicates || []) {
+        if (processedNoteIds.has(duplicate.note1_id) || processedNoteIds.has(duplicate.note2_id)) {
+          continue;
+        }
+
+        const note1 = longTermNotes.find(n => n.id === duplicate.note1_id);
+        const note2 = longTermNotes.find(n => n.id === duplicate.note2_id);
+        
+        if (!note1 || !note2) continue;
+
+        if (duplicate.similarity >= 0.95) {
+          // Exact duplicate - keep newer, delete older
+          const olderNote = new Date(note1.created_date) < new Date(note2.created_date) ? note1 : note2;
+          await base44.entities.Note.delete(olderNote.id);
+          processedNoteIds.add(olderNote.id);
+        } else if (duplicate.similarity >= 0.7) {
+          // Similar notes - merge them
+          const mergeResult = await base44.integrations.Core.InvokeLLM({
+            prompt: `Merge these two similar notes into one comprehensive note, combining all unique information:
+
+Note 1: ${note1.title}
+${note1.content}
+
+Note 2: ${note2.title}
+${note2.content}
+
+Create a merged note with:
+1. A clear, descriptive title
+2. Content that includes ALL unique information from both notes
+3. Organized, coherent structure`,
+            response_json_schema: {
+              type: 'object',
+              properties: {
+                title: { type: 'string' },
+                content: { type: 'string' }
+              }
+            }
+          });
+
+          // Create merged note with combined tags and attachments
+          const combinedTags = [...new Set([...(note1.tags || []), ...(note2.tags || [])])];
+          const combinedAttachments = [...(note1.attachments || []), ...(note2.attachments || [])];
+          const combinedConnections = [...new Set([...(note1.connected_notes || []), ...(note2.connected_notes || [])]
+            .filter(id => id !== note1.id && id !== note2.id))];
+
+          const newerNote = new Date(note1.created_date) > new Date(note2.created_date) ? note1 : note2;
+          
+          await base44.entities.Note.update(newerNote.id, {
+            title: mergeResult.title,
+            content: mergeResult.content,
+            tags: combinedTags,
+            attachments: combinedAttachments,
+            connected_notes: combinedConnections
+          });
+
+          // Delete the older note
+          const olderNote = newerNote.id === note1.id ? note2 : note1;
+          await base44.entities.Note.delete(olderNote.id);
+          processedNoteIds.add(olderNote.id);
+        }
+      }
+
+      // Step 3: Organize remaining notes into folders
+      const remainingNotes = longTermNotes.filter(n => !processedNoteIds.has(n.id));
+      
+      const folderContext = remainingNotes.map(n => 
+        `ID: ${n.id}\nTitle: ${n.title}\nContent: ${n.content.substring(0, 300)}\nTags: ${n.tags?.join(', ') || 'None'}`
+      ).join('\n\n---\n\n');
+
+      const folderOrganization = await base44.integrations.Core.InvokeLLM({
+        prompt: `Organize these notes into logical folders like Google Drive. You can create NEW folders or use existing concepts.
+
+Notes:
+${folderContext}
+
 Create folder names that are:
 - Clear and descriptive (e.g., "Work Projects", "Personal Goals", "Health & Fitness", "Travel Memories")
 - Broad enough to contain multiple related notes
-- Not too granular (aim for 5-15 folders max)
+- Not too granular (aim for 5-15 folders total)
+- Can be completely NEW folders based on the content
 
-For each note, assign it to the most appropriate folder.`,
+For each note, assign the most appropriate folder name (new or existing).`,
         response_json_schema: {
           type: 'object',
           properties: {
@@ -186,6 +293,7 @@ For each note, assign it to the most appropriate folder.`,
         }
       });
 
+      // Apply folder assignments
       for (const assignment of folderOrganization.assignments || []) {
         await base44.entities.Note.update(assignment.note_id, {
           folder: assignment.folder
