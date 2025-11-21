@@ -106,12 +106,7 @@ export default function TrashPage() {
       <div className="flex-1 flex flex-col overflow-hidden">
         <div className="p-6 bg-glass border-b border-white/20 dark:border-gray-700/30">
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-4">
-              <h1 className="text-2xl font-bold text-black dark:text-white">Trash</h1>
-              <p className="text-sm text-gray-600 dark:text-gray-400">
-                Items will be permanently deleted after 7 days
-              </p>
-            </div>
+            <h1 className="text-2xl font-bold text-black dark:text-white">Trash</h1>
             {trashedNotes.length > 0 && (
               <div className="flex gap-2">
                 <Button
