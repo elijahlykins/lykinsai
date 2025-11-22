@@ -64,32 +64,46 @@ export default function MemoryChatPage() {
     // Check if continuing a chat from a note
     const continueChat = localStorage.getItem('chat_continue_note');
     if (continueChat) {
-      const { noteId, content, title, attachments } = JSON.parse(continueChat);
-      
-      // Parse the chat content back to messages
-      const lines = content.split('\n\n');
-      const parsedMessages = [];
-      
-      for (const line of lines) {
-        if (line.startsWith('Me: ')) {
-          parsedMessages.push({
-            role: 'user',
-            content: line.substring(4),
-            attachments: []
-          });
-        } else if (line.startsWith('AI: ')) {
-          parsedMessages.push({
-            role: 'assistant',
-            content: line.substring(4)
-          });
+      try {
+        const { noteId, content, title, attachments } = JSON.parse(continueChat);
+
+        // Verify the note still exists
+        const noteExists = notes.some(n => n.id === noteId);
+        if (!noteExists) {
+          localStorage.removeItem('chat_continue_note');
+          localStorage.removeItem('lykinsai_chat');
+          return;
         }
+
+        // Parse the chat content back to messages
+        const lines = content.split('\n\n');
+        const parsedMessages = [];
+
+        for (const line of lines) {
+          if (line.startsWith('Me: ')) {
+            parsedMessages.push({
+              role: 'user',
+              content: line.substring(4),
+              attachments: []
+            });
+          } else if (line.startsWith('AI: ')) {
+            parsedMessages.push({
+              role: 'assistant',
+              content: line.substring(4)
+            });
+          }
+        }
+
+        setMessages(parsedMessages);
+        setCurrentChatNoteId(noteId);
+        setLastMessageTime(Date.now());
+        localStorage.removeItem('chat_continue_note');
+        return;
+      } catch (error) {
+        console.error('Error loading chat:', error);
+        localStorage.removeItem('chat_continue_note');
+        localStorage.removeItem('lykinsai_chat');
       }
-      
-      setMessages(parsedMessages);
-      setCurrentChatNoteId(noteId);
-      setLastMessageTime(Date.now());
-      localStorage.removeItem('chat_continue_note');
-      return;
     }
 
     // Check if starting chat with an idea
@@ -107,16 +121,27 @@ export default function MemoryChatPage() {
     // Load persisted chat
     const savedChat = localStorage.getItem('lykinsai_chat');
     if (savedChat) {
-      const { messages: savedMessages, timestamp, chatNoteId } = JSON.parse(savedChat);
-      const oneHourAgo = Date.now() - (60 * 60 * 1000);
-      
-      if (timestamp > oneHourAgo) {
-        setMessages(savedMessages);
-        setLastMessageTime(timestamp);
-        if (chatNoteId) {
-          setCurrentChatNoteId(chatNoteId);
+      try {
+        const { messages: savedMessages, timestamp, chatNoteId } = JSON.parse(savedChat);
+        const oneHourAgo = Date.now() - (60 * 60 * 1000);
+
+        if (timestamp > oneHourAgo) {
+          // Verify the chat note still exists if there's a chatNoteId
+          if (chatNoteId && !notes.some(n => n.id === chatNoteId)) {
+            localStorage.removeItem('lykinsai_chat');
+            return;
+          }
+
+          setMessages(savedMessages);
+          setLastMessageTime(timestamp);
+          if (chatNoteId) {
+            setCurrentChatNoteId(chatNoteId);
+          }
+        } else {
+          localStorage.removeItem('lykinsai_chat');
         }
-      } else {
+      } catch (error) {
+        console.error('Error loading saved chat:', error);
         localStorage.removeItem('lykinsai_chat');
       }
     }
@@ -229,11 +254,25 @@ export default function MemoryChatPage() {
         : firstUserMessage;
 
       if (currentChatNoteId) {
-        await base44.entities.Note.update(currentChatNoteId, {
-          title: title,
-          content: chatContent,
-          attachments: allAttachments,
-        });
+        try {
+          await base44.entities.Note.update(currentChatNoteId, {
+            title: title,
+            content: chatContent,
+            attachments: allAttachments,
+          });
+        } catch (error) {
+          console.error('Error updating note:', error);
+          // Note was deleted, create a new one instead
+          const newNote = await base44.entities.Note.create({
+            title: title,
+            content: chatContent,
+            attachments: allAttachments,
+            storage_type: 'short_term',
+            source: 'ai',
+            tags: ['chat', 'conversation']
+          });
+          setCurrentChatNoteId(newNote.id);
+        }
       } else {
         const newNote = await base44.entities.Note.create({
           title: title,
