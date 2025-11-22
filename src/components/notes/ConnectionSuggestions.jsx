@@ -107,11 +107,11 @@ Return up to 5 note IDs that are most relevant, along with a brief reason for ea
                     onClick={() => handleConnect(note.id)}
                     disabled={isConnected}
                     size="sm"
-                    className={isConnected ? 'bg-green-600 text-white' : 'bg-black text-white hover:bg-gray-800'}
+                    className={isConnected ? 'bg-green-600 hover:bg-green-600 text-white' : 'bg-black dark:bg-white text-white dark:text-black hover:bg-gray-800 dark:hover:bg-gray-200'}
                   >
                     {isConnected ? (
                       <>
-                        <Check className="w-3 h-3 mr-1" />
+                        <Check className="w-3 h-3 mr-1 text-white" />
                         Linked
                       </>
                     ) : (
