@@ -314,9 +314,90 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
       </div>
 
       <div className="flex-1 flex flex-col overflow-hidden">
-        {hasSearched ? (
-          <div className="p-6 bg-glass border-b border-white/20 dark:border-gray-700/30">
-            <div className="max-w-2xl mx-auto space-y-4">
+        {!hasSearched ? (
+          <div className="flex-1 flex items-center justify-center p-8">
+            <div className="max-w-2xl w-full space-y-6">
+              <h1 className="text-5xl font-bold text-black dark:text-white text-center flex items-center justify-center gap-3">
+                <Search className="w-12 h-12" />
+                Search Your Memories
+              </h1>
+              
+              {/* Search Input */}
+              <div className="relative">
+                <div className="flex gap-2">
+                  <div className="flex-1 relative">
+                    <Input
+                      value={query}
+                      onChange={(e) => setQuery(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                      placeholder="Search by ideas, concepts, or keywords..."
+                      className="flex-1 bg-white dark:bg-[#171515] border-gray-300 dark:border-gray-600 text-black dark:text-white placeholder:text-gray-400"
+                    />
+                    
+                    {/* Suggestions Dropdown */}
+                    {suggestions.length > 0 && (
+                      <div className="absolute top-full mt-1 w-full bg-white dark:bg-[#171515] border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-50">
+                        {suggestions.map((suggestion, idx) => (
+                          <button
+                            key={idx}
+                            onClick={() => {
+                              setQuery(suggestion);
+                              setSuggestions([]);
+                            }}
+                            className="w-full px-4 py-2 text-left text-sm text-black dark:text-white hover:bg-gray-50 dark:hover:bg-[#171515]/60 first:rounded-t-lg last:rounded-b-lg"
+                          >
+                            {suggestion}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <Button
+                    onClick={handleSearch}
+                    disabled={isSearching || !query.trim()}
+                    className="bg-black dark:bg-white text-white dark:text-black hover:bg-black/90 dark:hover:bg-white/90"
+                  >
+                    {isSearching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+                  </Button>
+                  <Button
+                    onClick={() => setShowSaveDialog(true)}
+                    disabled={!query.trim()}
+                    variant="outline"
+                    className="border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-50 dark:hover:bg-[#171515]"
+                  >
+                    <Save className="w-4 h-4" />
+                  </Button>
+                </div>
+              </div>
+
+              {/* Saved Searches */}
+              {savedSearches.length > 0 && (
+                <div className="flex gap-2 items-center overflow-x-auto pb-2">
+                  <Bookmark className="w-4 h-4 text-gray-400 dark:text-gray-300 flex-shrink-0" />
+                  {savedSearches.map(search => (
+                    <div key={search.id} className="flex items-center gap-1 bg-white dark:bg-[#171515] rounded px-2 py-1 text-xs whitespace-nowrap border border-gray-200 dark:border-gray-600">
+                      <button
+                        onClick={() => loadSearch(search)}
+                        className="text-black dark:text-white hover:underline"
+                      >
+                        {search.name}
+                      </button>
+                      <button
+                        onClick={() => deleteSearch(search.id)}
+                        className="text-gray-500 dark:text-gray-400 hover:text-red-600 dark:hover:text-red-400"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="p-6 bg-glass border-b border-white/20 dark:border-gray-700/30">
+              <div className="max-w-2xl mx-auto space-y-4">
             {/* Search Input */}
             <div className="relative">
               <div className="flex gap-2">
@@ -704,8 +785,9 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
               ) : query && !isSearching ? (
                 <p className="text-center text-gray-500 dark:text-gray-400 py-12">No results found</p>
               ) : null}
+              </div>
             </div>
-          </div>
+          </>
         )}
       </div>
 
