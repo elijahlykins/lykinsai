@@ -405,6 +405,27 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
                 </div>
               </div>
 
+              {/* Suggested Searches */}
+              {suggestedSearches.length > 0 && (
+                <div className="space-y-2">
+                  <p className="text-xs text-gray-500 dark:text-gray-400">Try searching for:</p>
+                  <div className="flex gap-2 flex-wrap">
+                    {suggestedSearches.map((suggestion, idx) => (
+                      <button
+                        key={idx}
+                        onClick={() => {
+                          setQuery(suggestion);
+                          handleSearch();
+                        }}
+                        className="px-4 py-2 bg-white dark:bg-[#171515] hover:bg-gray-50 dark:hover:bg-[#1f1d1d]/80 text-black dark:text-white rounded-full text-sm transition-all border border-gray-200 dark:border-gray-600 hover:border-gray-300 dark:hover:border-gray-500"
+                      >
+                        {suggestion}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* Saved Searches */}
               {savedSearches.length > 0 && (
                 <div className="flex gap-2 items-center overflow-x-auto pb-2">
