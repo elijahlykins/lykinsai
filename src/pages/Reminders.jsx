@@ -89,7 +89,7 @@ export default function RemindersPage() {
         </div>
 
         <ScrollArea className="flex-1">
-          <div className={`max-w-4xl mx-auto p-8 ${notesWithReminders.length === 0 ? 'h-full flex items-center justify-center' : 'space-y-8'}`}>
+          <div className={`max-w-4xl mx-auto p-8 ${notesWithReminders.length === 0 ? 'min-h-[calc(100vh-120px)] flex items-center justify-center' : 'space-y-8'}`}>
             {/* Overdue */}
             {overdueReminders.length > 0 && (
               <div>
