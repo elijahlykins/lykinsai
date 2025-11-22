@@ -85,10 +85,10 @@ Return up to 5 note IDs that are most relevant, along with a brief reason for ea
     <div className="clay-card p-4 space-y-3">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <Link2 className="w-4 h-4 text-black" />
-          <h3 className="font-semibold text-black">Suggested Connections</h3>
+          <Link2 className="w-4 h-4 text-black dark:text-white" />
+          <h3 className="font-semibold text-black dark:text-white">Suggested Connections</h3>
         </div>
-        {isAnalyzing && <Loader2 className="w-4 h-4 animate-spin text-gray-600" />}
+        {isAnalyzing && <Loader2 className="w-4 h-4 animate-spin text-gray-600 dark:text-gray-400" />}
       </div>
 
       {suggestions.length > 0 ? (
