@@ -84,7 +84,7 @@ ${notesContext}
 
 User's question: ${chatInput}
 
-If the user asks about old memories or references past ideas, refer to the memories above. When referencing a specific memory, mention its title so the user knows which one you're talking about. Provide helpful guidance, suggestions, or answers to help develop this idea. Do not use emojis unless explicitly asked.`
+If the user asks about old memories or references past ideas, refer to the memories above. When referencing a specific memory, wrap the note title in double brackets like this: [[Note Title]]. This will make it clickable for the user. Provide helpful guidance, suggestions, or answers to help develop this idea. Do not use emojis unless explicitly asked.`
       });
 
       const words = response.split(' ');
@@ -94,7 +94,7 @@ If the user asks about old memories or references past ideas, refer to the memor
         currentText += (i === 0 ? '' : ' ') + words[i];
         setChatMessages(prev => {
           const newMessages = [...prev];
-          newMessages[assistantMessageIndex] = { role: 'assistant', content: currentText };
+          newMessages[assistantMessageIndex] = { role: 'assistant', content: currentText, notes: allNotes };
           return newMessages;
         });
         await new Promise(resolve => setTimeout(resolve, 30));
@@ -206,17 +206,56 @@ If the user asks about old memories or references past ideas, refer to the memor
                   <>
                     <ScrollArea ref={chatScrollRef} className="flex-1 p-8">
                       <div className="max-w-md mx-auto space-y-4">
-                        {chatMessages.map((msg, idx) => (
-                          <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : ''}`}>
-                            <div className={`max-w-[80%] ${
-                              msg.role === 'user' 
-                                ? 'bg-gray-200 dark:bg-[#1f1d1d]/80 text-black dark:text-white p-4 rounded-3xl' 
-                                : 'text-gray-800 dark:text-gray-200'
-                            }`}>
-                              <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                        {chatMessages.map((msg, idx) => {
+                          const renderContent = (text) => {
+                            if (!text) return null;
+                            const parts = text.split(/(\[\[.*?\]\])/g);
+                            return parts.map((part, i) => {
+                              const match = part.match(/\[\[(.*?)\]\]/);
+                              if (match) {
+                                const noteTitle = match[1];
+                                const note = msg.notes?.find(n => n.title === noteTitle);
+                                if (note) {
+                                  return (
+                                    <button
+                                      key={i}
+                                      onClick={() => {
+                                        localStorage.setItem('lykinsai_draft', JSON.stringify({
+                                          title: note.title,
+                                          content: note.content,
+                                          attachments: note.attachments || [],
+                                          tags: note.tags || [],
+                                          folder: note.folder || 'Uncategorized',
+                                          reminder: note.reminder || null,
+                                          suggestedConnections: note.connected_notes || [],
+                                          lastEditTime: Date.now()
+                                        }));
+                                        window.location.reload();
+                                      }}
+                                      className="text-blue-600 dark:text-blue-400 hover:underline font-medium"
+                                    >
+                                      {noteTitle}
+                                    </button>
+                                  );
+                                }
+                                return <span key={i} className="font-medium">{noteTitle}</span>;
+                              }
+                              return <span key={i}>{part}</span>;
+                            });
+                          };
+
+                          return (
+                            <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : ''}`}>
+                              <div className={`max-w-[80%] ${
+                                msg.role === 'user' 
+                                  ? 'bg-gray-200 dark:bg-[#1f1d1d]/80 text-black dark:text-white p-4 rounded-3xl' 
+                                  : 'text-gray-800 dark:text-gray-200'
+                              }`}>
+                                <p className="text-sm whitespace-pre-wrap">{renderContent(msg.content)}</p>
+                              </div>
                             </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     </ScrollArea>
 
@@ -278,17 +317,56 @@ If the user asks about old memories or references past ideas, refer to the memor
                 <>
                   <ScrollArea ref={chatScrollRef} className="flex-1 p-8">
                     <div className="max-w-md mx-auto space-y-4">
-                      {chatMessages.map((msg, idx) => (
-                        <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : ''}`}>
-                          <div className={`max-w-[80%] ${
-                            msg.role === 'user' 
-                              ? 'bg-gray-200 dark:bg-[#1f1d1d]/80 text-black dark:text-white p-4 rounded-3xl' 
-                              : 'text-gray-800 dark:text-gray-200'
-                          }`}>
-                            <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                      {chatMessages.map((msg, idx) => {
+                        const renderContent = (text) => {
+                          if (!text) return null;
+                          const parts = text.split(/(\[\[.*?\]\])/g);
+                          return parts.map((part, i) => {
+                            const match = part.match(/\[\[(.*?)\]\]/);
+                            if (match) {
+                              const noteTitle = match[1];
+                              const note = msg.notes?.find(n => n.title === noteTitle);
+                              if (note) {
+                                return (
+                                  <button
+                                    key={i}
+                                    onClick={() => {
+                                      localStorage.setItem('lykinsai_draft', JSON.stringify({
+                                        title: note.title,
+                                        content: note.content,
+                                        attachments: note.attachments || [],
+                                        tags: note.tags || [],
+                                        folder: note.folder || 'Uncategorized',
+                                        reminder: note.reminder || null,
+                                        suggestedConnections: note.connected_notes || [],
+                                        lastEditTime: Date.now()
+                                      }));
+                                      window.location.reload();
+                                    }}
+                                    className="text-blue-600 dark:text-blue-400 hover:underline font-medium"
+                                  >
+                                    {noteTitle}
+                                  </button>
+                                );
+                              }
+                              return <span key={i} className="font-medium">{noteTitle}</span>;
+                            }
+                            return <span key={i}>{part}</span>;
+                          });
+                        };
+
+                        return (
+                          <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : ''}`}>
+                            <div className={`max-w-[80%] ${
+                              msg.role === 'user' 
+                                ? 'bg-gray-200 dark:bg-[#1f1d1d]/80 text-black dark:text-white p-4 rounded-3xl' 
+                                : 'text-gray-800 dark:text-gray-200'
+                            }`}>
+                              <p className="text-sm whitespace-pre-wrap">{renderContent(msg.content)}</p>
+                            </div>
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </ScrollArea>
 
