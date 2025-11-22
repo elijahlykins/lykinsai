@@ -122,7 +122,7 @@ export default function RemindersPage() {
 
             {/* Empty state */}
             {notesWithReminders.length === 0 && (
-              <div className="text-center py-12">
+              <div className="text-center">
                 <Bell className="w-16 h-16 mx-auto mb-4 text-gray-300 dark:text-gray-600" />
                 <p className="text-gray-500 dark:text-gray-400">No reminders set yet</p>
                 <p className="text-sm text-gray-400 dark:text-gray-500 mt-2">Add reminders to your notes to see them here</p>
