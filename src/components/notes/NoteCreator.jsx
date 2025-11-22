@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
-import { Mic, Square, Plus, Link as LinkIcon, Image, Video, FileText, Tag, Folder, Bell, Loader2, Lightbulb, Send } from 'lucide-react';
+import { Mic, Square, Plus, Link as LinkIcon, Image, Video, FileText, Tag, Folder, Bell, Loader2, Lightbulb } from 'lucide-react';
 import { base44 } from '@/api/base44Client';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -11,7 +11,7 @@ import TagInput from './TagInput';
 import ConnectionSuggestions from './ConnectionSuggestions';
 import ReminderPicker from './ReminderPicker';
 
-const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, showSuggestions = true, showChat = false, chatMessages = [], chatInput = '', setChatInput, isChatLoading = false, onChatSend, onQuestionClick }, ref) => {
+const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, showSuggestions = true }, ref) => {
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
@@ -435,22 +435,12 @@ Return only the title, nothing else.`,
     setAttachments(attachments.map(a => a.id === id ? { ...a, ...updates } : a));
   };
 
-  const chatScrollRef = React.useRef(null);
-
-  React.useEffect(() => {
-    if (chatScrollRef.current) {
-      chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
-    }
-  }, [chatMessages]);
-
-  const bothActive = showSuggestions && showChat;
-
   return (
     <div className="h-full flex relative">
         {/* Content Area - Notion Style */}
-        <div className={`overflow-auto flex-shrink-0 ${bothActive ? 'w-1/3' : 'flex-1 flex justify-center'}`}>
+        <div className={`overflow-auto ${attachments.length > 0 && inputMode === 'text' ? 'w-1/2' : 'flex-1'}`}>
         {inputMode === 'text' ? (
-          <div className={`h-full flex flex-col gap-6 py-12 ${bothActive ? 'w-full px-8 md:px-12 lg:px-16 xl:px-24' : 'max-w-4xl px-8 md:px-12'}`}>
+          <div className="h-full flex flex-col gap-6 py-12 px-8 md:px-12 lg:px-16 xl:px-24">
             <Input
               value={title}
               onChange={(e) => setTitle(e.target.value)}
@@ -557,9 +547,9 @@ Return only the title, nothing else.`,
         )}
       </div>
 
-      {/* Suggestions Panel */}
+      {/* Suggestions Panel - Fixed position on right */}
       {showSuggestions && content.length > 50 && inputMode === 'text' && (
-        <div className={`w-96 flex-shrink-0 border-l border-white/20 dark:border-gray-700/30 overflow-auto p-6 space-y-6 bg-glass backdrop-blur-2xl`}>
+        <div className="fixed right-0 top-20 bottom-0 w-96 border-l border-white/20 dark:border-gray-700/30 overflow-auto p-6 space-y-6 bg-glass backdrop-blur-2xl z-10">
           {/* Suggested Questions */}
           <div className="clay-card p-4 space-y-3">
             <div className="flex items-center gap-2">
@@ -569,13 +559,9 @@ Return only the title, nothing else.`,
             {suggestedQuestions.length > 0 ? (
               <div className="space-y-2">
                 {suggestedQuestions.map((question, idx) => (
-                  <button
-                    key={idx}
-                    onClick={() => onQuestionClick?.(question)}
-                    className="w-full p-3 bg-white dark:bg-[#171515] rounded-lg border border-gray-200 dark:border-gray-700 hover:border-gray-400 dark:hover:border-gray-500 transition-all text-left"
-                  >
+                  <div key={idx} className="p-3 bg-white dark:bg-[#171515] rounded-lg border border-gray-200 dark:border-gray-700">
                     <p className="text-sm text-black dark:text-white">{question}</p>
-                  </button>
+                  </div>
                 ))}
               </div>
             ) : (
@@ -595,94 +581,20 @@ Return only the title, nothing else.`,
         </div>
       )}
 
-      {/* AI Chat Panel */}
-      {showChat && inputMode === 'text' && (
-        <div className={`w-96 flex-shrink-0 border-l border-white/20 dark:border-gray-700/30 overflow-hidden flex flex-col bg-glass backdrop-blur-2xl`}>
-          {chatMessages.length === 0 ? (
-            <div className="flex-1 flex items-center justify-center p-8">
-              <div className="max-w-md w-full px-4">
-                <div className="flex justify-center mb-8">
-                  <h2 className="text-3xl font-bold text-black dark:text-white">Just Say The Word.</h2>
-                </div>
-                <div className="relative">
-                  <Input
-                    value={chatInput}
-                    onChange={(e) => setChatInput?.(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && onChatSend?.()}
-                    placeholder="Ask about your idea..."
-                    className="w-full bg-white dark:bg-[#171515] border-2 border-gray-200 dark:border-gray-700 rounded-3xl text-black dark:text-white placeholder:text-gray-400 h-16 text-base pr-14 shadow-lg focus:border-gray-400 dark:focus:border-gray-500 focus:ring-0 transition-all"
-                    disabled={isChatLoading}
-                  />
-                  <Button
-                    onClick={onChatSend}
-                    disabled={isChatLoading || !chatInput.trim()}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 bg-black dark:bg-white text-white dark:text-black hover:bg-black/90 dark:hover:bg-white/90 rounded-full h-12 w-12 p-0 transition-all"
-                  >
-                    {isChatLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
-                  </Button>
-                </div>
-              </div>
-            </div>
-          ) : (
-            <>
-              <ScrollArea ref={chatScrollRef} className="flex-1 p-8">
-                <div className="max-w-md mx-auto space-y-4">
-                  {chatMessages.map((msg, idx) => (
-                    <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : ''}`}>
-                      <div className={`max-w-[80%] ${
-                        msg.role === 'user' 
-                          ? 'bg-gray-200 dark:bg-[#1f1d1d]/80 text-black dark:text-white p-4 rounded-3xl' 
-                          : 'text-gray-800 dark:text-gray-200'
-                      }`}>
-                        <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </ScrollArea>
-
-              <div className="p-6 bg-glass border-t border-white/20 dark:border-gray-700/30">
-                <div className="max-w-md mx-auto">
-                  <div className="relative">
-                    <Input
-                      value={chatInput}
-                      onChange={(e) => setChatInput?.(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && onChatSend?.()}
-                      placeholder="Ask about your idea..."
-                      className="w-full bg-white dark:bg-[#171515] border-2 border-gray-200 dark:border-gray-700 rounded-3xl text-black dark:text-white placeholder:text-gray-400 h-14 text-base pr-12 shadow-md focus:border-gray-400 dark:focus:border-gray-500 focus:ring-0 transition-all"
-                      disabled={isChatLoading}
-                    />
-                    <Button
-                      onClick={onChatSend}
-                      disabled={isChatLoading || !chatInput.trim()}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 bg-black dark:bg-white text-white dark:text-black hover:bg-black/90 dark:hover:bg-white/90 rounded-full h-10 w-10 p-0 transition-all"
-                    >
-                      {isChatLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            </>
-          )}
-        </div>
-      )}
-
-      {/* Attachments Panel - Bottom */}
-      {attachments.length > 0 && inputMode === 'text' && (
-        <div className="absolute bottom-0 left-0 right-0 border-t border-white/20 dark:border-gray-700/30 bg-glass backdrop-blur-2xl p-4 max-h-48 overflow-auto z-20">
-          <AttachmentPanel
-            attachments={attachments}
-            onRemove={removeAttachment}
-            onUpdate={updateAttachment}
-          />
-        </div>
+      {/* Attachments Panel */}
+      {attachments.length > 0 && !showSuggestions && inputMode === 'text' && (
+        <AttachmentPanel
+          attachments={attachments}
+          onRemove={removeAttachment}
+          onUpdate={updateAttachment}
+        />
       )}
 
       {/* Plus Button */}
       {inputMode === 'text' && (
         <button
           onClick={() => setShowAttachMenu(true)}
-          className="fixed bottom-8 right-8 w-14 h-14 rounded-full bg-white dark:bg-[#171515] text-black dark:text-white shadow-lg hover:shadow-xl transition-all flex items-center justify-center hover:scale-110 border border-gray-200 dark:border-gray-600 z-30"
+          className="fixed bottom-8 right-8 w-14 h-14 rounded-full bg-white dark:bg-[#171515] text-black dark:text-white shadow-lg hover:shadow-xl transition-all flex items-center justify-center hover:scale-110 border border-gray-200 dark:border-gray-600"
         >
           <Plus className="w-6 h-6 text-black dark:text-gray-300" />
         </button>
