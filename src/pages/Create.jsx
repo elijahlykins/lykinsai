@@ -84,7 +84,7 @@ ${notesContext}
 
 User's question: ${chatInput}
 
-If the user asks about old memories or references past ideas, refer to the memories above. When referencing a specific memory, wrap the note title in double brackets like this: [[Note Title]]. This will make it clickable for the user. Provide helpful guidance, suggestions, or answers to help develop this idea. Do not use emojis unless explicitly asked.`
+If the user asks about old memories or references past ideas, refer to the memories above. When referencing a specific memory, you MUST wrap the exact note title in double brackets like this: [[Note Title]]. For example, if there's a note titled "Project Ideas for AI App", you would write [[Project Ideas for AI App]]. This makes it clickable. Always use the exact title from the memories list above. Provide helpful guidance, suggestions, or answers to help develop this idea. Do not use emojis unless explicitly asked.`
       });
 
       const words = response.split(' ');

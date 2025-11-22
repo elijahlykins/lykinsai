@@ -73,8 +73,12 @@ Return up to 5 note IDs that are most relevant, along with a brief reason for ea
   };
 
   const handleConnect = (noteId) => {
-    setConnectedIds([...connectedIds, noteId]);
-    onConnect(noteId);
+    if (connectedIds.includes(noteId)) {
+      setConnectedIds(connectedIds.filter(id => id !== noteId));
+    } else {
+      setConnectedIds([...connectedIds, noteId]);
+      onConnect(noteId);
+    }
   };
 
   if (!content || content.length < 50) {
@@ -105,15 +109,11 @@ Return up to 5 note IDs that are most relevant, along with a brief reason for ea
                   </div>
                   <Button
                     onClick={() => handleConnect(note.id)}
-                    disabled={isConnected}
                     size="sm"
-                    className={isConnected ? 'bg-green-600 hover:bg-green-600 text-white' : 'bg-black dark:bg-white text-white dark:text-black hover:bg-gray-800 dark:hover:bg-gray-200'}
+                    className={isConnected ? 'bg-green-600 hover:bg-green-700 text-white w-8 h-8 p-0' : 'bg-black dark:bg-white text-white dark:text-black hover:bg-gray-800 dark:hover:bg-gray-200'}
                   >
                     {isConnected ? (
-                      <>
-                        <Check className="w-3 h-3 mr-1 text-white" />
-                        Linked
-                      </>
+                      <Check className="w-4 h-4 text-white" />
                     ) : (
                       <>
                         <Plus className="w-3 h-3 mr-1" />
