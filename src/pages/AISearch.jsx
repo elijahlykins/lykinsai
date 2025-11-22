@@ -89,6 +89,41 @@ export default function AISearchPage() {
     }
   }, []);
 
+  // Generate suggested searches based on user's notes
+  const suggestedSearches = React.useMemo(() => {
+    const searches = [];
+    
+    // Recent notes
+    if (notes.length > 0) {
+      searches.push('Recent thoughts and ideas');
+    }
+    
+    // Common tags
+    if (allTags.length > 0) {
+      searches.push(`Notes about ${allTags[0]}`);
+      if (allTags.length > 1) {
+        searches.push(`${allTags[1]} related memories`);
+      }
+    }
+    
+    // Notes with attachments
+    const notesWithImages = notes.filter(n => n.attachments?.some(a => a.type === 'image'));
+    if (notesWithImages.length > 0) {
+      searches.push('Notes with images');
+    }
+    
+    // Recent folders
+    if (allFolders.length > 0) {
+      searches.push(`Everything in ${allFolders[0]}`);
+    }
+    
+    // Time-based
+    searches.push('What did I learn this week?');
+    searches.push('Important ideas from last month');
+    
+    return searches.slice(0, 6);
+  }, [notes, allTags, allFolders]);
+
   const loadSuggestions = async (searchQuery) => {
     if (!searchQuery.trim() || searchQuery.length < 3) {
       setSuggestions([]);
