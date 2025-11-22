@@ -312,9 +312,13 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
       </div>
 
       <div className="flex-1 flex flex-col overflow-hidden">
-        {results.length === 0 && !query ? (
-          <div className="flex-1 flex items-center justify-center p-6">
-            <div className="w-full max-w-2xl space-y-4">
+        <div className="p-6 bg-glass border-b border-white/20 dark:border-gray-700/30">
+          <h1 className="text-2xl font-bold text-black dark:text-white mb-6 flex items-center gap-2">
+            <Search className="w-6 h-6" />
+            AI Search
+          </h1>
+          
+          <div className="max-w-2xl space-y-4">
             {/* Search Input */}
             <div className="relative">
               <div className="flex gap-2">
@@ -493,192 +497,9 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
               </div>
             )}
           </div>
-          </div>
-        ) : (
-          <>
-            <div className="p-6 bg-glass border-b border-white/20 dark:border-gray-700/30">
-              <div className="max-w-2xl mx-auto space-y-4">
-                {/* Search Input */}
-                <div className="relative">
-                  <div className="flex gap-2">
-                    <div className="flex-1 relative">
-                      <Input
-                        value={query}
-                        onChange={(e) => setQuery(e.target.value)}
-                        onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-                        placeholder="Search by ideas, concepts, or keywords..."
-                        className="flex-1 bg-white dark:bg-[#171515] border-gray-300 dark:border-gray-600 text-black dark:text-white placeholder:text-gray-400"
-                      />
-                      
-                      {/* Suggestions Dropdown */}
-                      {suggestions.length > 0 && (
-                        <div className="absolute top-full mt-1 w-full bg-white dark:bg-[#171515] border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-50">
-                          {suggestions.map((suggestion, idx) => (
-                            <button
-                              key={idx}
-                              onClick={() => {
-                                setQuery(suggestion);
-                                setSuggestions([]);
-                              }}
-                              className="w-full px-4 py-2 text-left text-sm text-black dark:text-white hover:bg-gray-50 dark:hover:bg-[#171515]/60 first:rounded-t-lg last:rounded-b-lg"
-                            >
-                              {suggestion}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                    <Button
-                      onClick={handleSearch}
-                      disabled={isSearching || !query.trim()}
-                      className="bg-black dark:bg-white text-white dark:text-black hover:bg-black/90 dark:hover:bg-white/90"
-                    >
-                      {isSearching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
-                    </Button>
-                    <Button
-                      onClick={() => setShowSaveDialog(true)}
-                      disabled={!query.trim()}
-                      variant="outline"
-                      className="border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-50 dark:hover:bg-[#171515]"
-                    >
-                      <Save className="w-4 h-4" />
-                    </Button>
-                  </div>
-                </div>
+        </div>
 
-                {/* Filters */}
-                <div className="flex gap-2 flex-wrap items-center">
-                  <Filter className="w-4 h-4 text-gray-500 dark:text-gray-400" />
-                  
-                  {/* Date Range Filter */}
-                  <Select value={filters.dateRange} onValueChange={(value) => setFilters({...filters, dateRange: value})}>
-                    <SelectTrigger className="w-32 h-8 bg-gray-50 dark:bg-[#1f1d1d]/80 border-gray-300 dark:border-gray-600 text-black dark:text-white text-xs">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent className="bg-white dark:bg-[#1f1d1d] border-gray-200 dark:border-gray-700">
-                      <SelectItem value="all">All Time</SelectItem>
-                      <SelectItem value="today">Today</SelectItem>
-                      <SelectItem value="week">This Week</SelectItem>
-                      <SelectItem value="month">This Month</SelectItem>
-                      <SelectItem value="year">This Year</SelectItem>
-                      <SelectItem value="custom">Custom Range</SelectItem>
-                    </SelectContent>
-                  </Select>
-
-                  {/* Custom Date Range */}
-                  {filters.dateRange === 'custom' && (
-                    <div className="flex gap-2 items-center">
-                      <Input
-                        type="date"
-                        value={filters.customDateFrom || ''}
-                        onChange={(e) => setFilters({...filters, customDateFrom: e.target.value})}
-                        className="w-36 h-8 bg-gray-50 dark:bg-[#1f1d1d]/80 border-gray-300 dark:border-gray-600 text-black dark:text-white text-xs"
-                      />
-                      <span className="text-xs text-gray-500 dark:text-gray-400">to</span>
-                      <Input
-                        type="date"
-                        value={filters.customDateTo || ''}
-                        onChange={(e) => setFilters({...filters, customDateTo: e.target.value})}
-                        className="w-36 h-8 bg-gray-50 dark:bg-[#1f1d1d]/80 border-gray-300 dark:border-gray-600 text-black dark:text-white text-xs"
-                      />
-                    </div>
-                  )}
-
-                  {/* Folder Filter */}
-                  <Select value={filters.folder} onValueChange={(value) => setFilters({...filters, folder: value})}>
-                    <SelectTrigger className="w-40 h-8 bg-gray-50 dark:bg-[#1f1d1d]/80 border-gray-300 dark:border-gray-600 text-black dark:text-white text-xs">
-                      <SelectValue placeholder="All Folders" />
-                    </SelectTrigger>
-                    <SelectContent className="bg-white dark:bg-[#1f1d1d] border-gray-200 dark:border-gray-700">
-                      <SelectItem value="all">All Folders</SelectItem>
-                      {allFolders.map(folder => (
-                        <SelectItem key={folder} value={folder}>{folder}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-
-                  {/* Attachment Type Filter */}
-                  <Select value={filters.attachmentType} onValueChange={(value) => setFilters({...filters, attachmentType: value})}>
-                    <SelectTrigger className="w-40 h-8 bg-gray-50 dark:bg-[#1f1d1d]/80 border-gray-300 dark:border-gray-600 text-black dark:text-white text-xs">
-                      <SelectValue placeholder="All Types" />
-                    </SelectTrigger>
-                    <SelectContent className="bg-white dark:bg-[#1f1d1d] border-gray-200 dark:border-gray-700">
-                      <SelectItem value="all">All Types</SelectItem>
-                      <SelectItem value="image">Images</SelectItem>
-                      <SelectItem value="video">Videos</SelectItem>
-                      <SelectItem value="file">Files</SelectItem>
-                      <SelectItem value="link">Links</SelectItem>
-                    </SelectContent>
-                  </Select>
-
-                  {/* Tag Badges */}
-                  {filters.tags.map(tag => (
-                    <Badge key={tag} className="bg-white dark:bg-[#171515] text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#171515]/80 border border-gray-200 dark:border-gray-600">
-                      {tag}
-                      <button
-                        onClick={() => setFilters({...filters, tags: filters.tags.filter(t => t !== tag)})}
-                        className="ml-1"
-                      >
-                        <X className="w-3 h-3" />
-                      </button>
-                    </Badge>
-                  ))}
-
-                  {/* Tag Filter Dropdown */}
-                  {allTags.length > 0 && (
-                    <Select value="" onValueChange={(value) => {
-                      if (!filters.tags.includes(value)) {
-                        setFilters({...filters, tags: [...filters.tags, value]});
-                      }
-                    }}>
-                      <SelectTrigger className="w-32 h-8 bg-gray-50 dark:bg-[#1f1d1d]/80 border-gray-300 dark:border-gray-600 text-black dark:text-white text-xs">
-                        <SelectValue placeholder="+ Add Tag" />
-                      </SelectTrigger>
-                      <SelectContent className="bg-white dark:bg-[#1f1d1d] border-gray-200 dark:border-gray-700">
-                        {allTags.map(tag => (
-                          <SelectItem key={tag} value={tag}>{tag}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  )}
-
-                  {/* Clear Filters */}
-                  {(filters.dateRange !== 'all' || filters.folder !== 'all' || filters.attachmentType !== 'all' || filters.tags.length > 0) && (
-                    <button
-                      onClick={() => setFilters({ dateRange: 'all', tags: [], folder: 'all', attachmentType: 'all', customDateFrom: null, customDateTo: null })}
-                      className="text-xs text-gray-500 dark:text-gray-400 hover:text-black dark:hover:text-white"
-                    >
-                      Clear all
-                    </button>
-                  )}
-                </div>
-
-                {/* Saved Searches */}
-                {savedSearches.length > 0 && (
-                  <div className="flex gap-2 items-center overflow-x-auto pb-2">
-                    <Bookmark className="w-4 h-4 text-gray-400 dark:text-gray-300 flex-shrink-0" />
-                    {savedSearches.map(search => (
-                      <div key={search.id} className="flex items-center gap-1 bg-white dark:bg-[#171515] rounded px-2 py-1 text-xs whitespace-nowrap border border-gray-200 dark:border-gray-600">
-                        <button
-                          onClick={() => loadSearch(search)}
-                          className="text-black dark:text-white hover:underline"
-                        >
-                          {search.name}
-                        </button>
-                        <button
-                          onClick={() => deleteSearch(search.id)}
-                          className="text-gray-500 dark:text-gray-400 hover:text-red-600 dark:hover:text-red-400"
-                        >
-                          <X className="w-3 h-3" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <div className="flex-1 overflow-auto p-8">
+        <div className="flex-1 overflow-auto p-8">
           {selectedNote ? (
             <div className="max-w-4xl mx-auto space-y-4">
               <Button
