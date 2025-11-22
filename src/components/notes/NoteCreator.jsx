@@ -448,9 +448,9 @@ Return only the title, nothing else.`,
   return (
     <div className="h-full flex relative">
         {/* Content Area - Notion Style */}
-        <div className={`overflow-auto flex-shrink-0 ${bothActive ? 'w-1/3' : 'flex-1 flex items-start justify-center'}`}>
+        <div className={`overflow-auto flex-shrink-0 ${bothActive ? 'w-1/3' : 'flex-1 flex justify-center'}`}>
         {inputMode === 'text' ? (
-          <div className={`h-full flex flex-col gap-6 py-12 ${bothActive ? 'px-8 md:px-12 lg:px-16 xl:px-24' : 'w-full max-w-4xl mx-auto px-8 md:px-12'}`}>
+          <div className={`h-full flex flex-col gap-6 py-12 ${bothActive ? 'w-full px-8 md:px-12 lg:px-16 xl:px-24' : 'max-w-4xl px-8 md:px-12'}`}>
             <Input
               value={title}
               onChange={(e) => setTitle(e.target.value)}
