@@ -89,7 +89,7 @@ export default function RemindersPage() {
         </div>
 
         <ScrollArea className="flex-1">
-          <div className="max-w-4xl mx-auto p-8 space-y-8">
+          <div className="max-w-4xl mx-auto p-8 space-y-8 min-h-full flex flex-col justify-center">
             {/* Overdue */}
             {overdueReminders.length > 0 && (
               <div>
