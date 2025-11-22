@@ -3,7 +3,7 @@ import { Button } from '@/components/ui/button';
 import { Sparkles, Link2, Loader2, CheckCircle, XCircle, HelpCircle } from 'lucide-react';
 import { base44 } from '@/api/base44Client';
 
-export default function AIAnalysisPanel({ note, allNotes, onUpdate }) {
+export default function AIAnalysisPanel({ note, allNotes, onUpdate, onViewNote }) {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isFindingConnections, setIsFindingConnections] = useState(false);
 
@@ -199,14 +199,18 @@ Return the IDs of memory cards that have strong correlations.`,
         {connectedNotesList.length > 0 ? (
           <div className="space-y-2">
             {connectedNotesList.map((connectedNote) => (
-              <div key={connectedNote.id} className="clay-card-mini p-3">
-                <h4 className="font-medium text-black text-sm mb-1">
+              <button
+                key={connectedNote.id}
+                onClick={() => onViewNote?.(connectedNote)}
+                className="w-full clay-card-mini p-3 hover:opacity-70 transition-opacity text-left"
+              >
+                <h4 className="font-medium text-black dark:text-white text-sm mb-1">
                   {connectedNote.title}
                 </h4>
-                <p className="text-xs text-gray-400 line-clamp-2">
+                <p className="text-xs text-gray-400 dark:text-gray-500 line-clamp-2">
                   {connectedNote.content}
                 </p>
-              </div>
+              </button>
             ))}
           </div>
         ) : (
