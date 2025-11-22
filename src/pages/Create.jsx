@@ -15,7 +15,7 @@ export default function CreatePage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [inputMode, setInputMode] = useState('text'); // 'text' or 'audio'
-  const [showSuggestions, setShowSuggestions] = useState(true);
+  const [showSuggestions, setShowSuggestions] = useState(false);
   const [showChat, setShowChat] = useState(false);
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState('');
@@ -164,13 +164,10 @@ Provide helpful guidance, suggestions, or answers to help develop this idea. Do 
           </div>
         </div>
 
-        <div className="flex-1 flex items-center justify-center">
-          <div className="w-full max-w-4xl h-full relative">
-            <NoteCreator ref={noteCreatorRef} onNoteCreated={handleNoteCreated} inputMode={inputMode} showSuggestions={showSuggestions} />
-            
-            {/* AI Chat Panel - Fixed position on right */}
-            {showChat && inputMode === 'text' && (
-              <div className="fixed right-0 top-20 bottom-0 w-96 border-l border-white/20 dark:border-gray-700/30 overflow-hidden flex flex-col bg-glass backdrop-blur-2xl z-10">
+        <div className="flex-1 flex items-center justify-center relative">
+          {/* AI Chat Panel - Left side when both are on */}
+          {showChat && showSuggestions && inputMode === 'text' && (
+            <div className="absolute left-0 top-0 bottom-0 w-96 border-r border-white/20 dark:border-gray-700/30 overflow-hidden flex flex-col bg-glass backdrop-blur-2xl z-10">
                 {chatMessages.length === 0 ? (
                   <div className="flex-1 flex items-center justify-center p-8">
                     <div className="max-w-md w-full px-4">
@@ -237,8 +234,83 @@ Provide helpful guidance, suggestions, or answers to help develop this idea. Do 
                     </div>
                   </>
                 )}
-              </div>
-            )}
+            </div>
+          )}
+
+          {/* AI Chat Panel - Right side when only chat is on */}
+          {showChat && !showSuggestions && inputMode === 'text' && (
+            <div className="absolute right-0 top-0 bottom-0 w-96 border-l border-white/20 dark:border-gray-700/30 overflow-hidden flex flex-col bg-glass backdrop-blur-2xl z-10">
+              {chatMessages.length === 0 ? (
+                <div className="flex-1 flex items-center justify-center p-8">
+                  <div className="max-w-md w-full px-4">
+                    <div className="flex justify-center mb-8">
+                      <h2 className="text-3xl font-bold text-black dark:text-white">Just Say The Word.</h2>
+                    </div>
+                    <div className="relative">
+                      <Input
+                        value={chatInput}
+                        onChange={(e) => setChatInput(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleChatSend()}
+                        placeholder="Ask about your idea..."
+                        className="w-full bg-white dark:bg-[#171515] border-2 border-gray-200 dark:border-gray-700 rounded-3xl text-black dark:text-white placeholder:text-gray-400 h-16 text-base pr-14 shadow-lg focus:border-gray-400 dark:focus:border-gray-500 focus:ring-0 transition-all"
+                        disabled={isChatLoading}
+                      />
+                      <Button
+                        onClick={handleChatSend}
+                        disabled={isChatLoading || !chatInput.trim()}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 bg-black dark:bg-white text-white dark:text-black hover:bg-black/90 dark:hover:bg-white/90 rounded-full h-12 w-12 p-0 transition-all"
+                      >
+                        {isChatLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <ScrollArea ref={chatScrollRef} className="flex-1 p-8">
+                    <div className="max-w-md mx-auto space-y-4">
+                      {chatMessages.map((msg, idx) => (
+                        <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : ''}`}>
+                          <div className={`max-w-[80%] ${
+                            msg.role === 'user' 
+                              ? 'bg-gray-200 dark:bg-[#1f1d1d]/80 text-black dark:text-white p-4 rounded-3xl' 
+                              : 'text-gray-800 dark:text-gray-200'
+                          }`}>
+                            <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </ScrollArea>
+
+                  <div className="p-6 bg-glass border-t border-white/20 dark:border-gray-700/30">
+                    <div className="max-w-md mx-auto">
+                      <div className="relative">
+                        <Input
+                          value={chatInput}
+                          onChange={(e) => setChatInput(e.target.value)}
+                          onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleChatSend()}
+                          placeholder="Ask about your idea..."
+                          className="w-full bg-white dark:bg-[#171515] border-2 border-gray-200 dark:border-gray-700 rounded-3xl text-black dark:text-white placeholder:text-gray-400 h-14 text-base pr-12 shadow-md focus:border-gray-400 dark:focus:border-gray-500 focus:ring-0 transition-all"
+                          disabled={isChatLoading}
+                        />
+                        <Button
+                          onClick={handleChatSend}
+                          disabled={isChatLoading || !chatInput.trim()}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 bg-black dark:bg-white text-white dark:text-black hover:bg-black/90 dark:hover:bg-white/90 rounded-full h-10 w-10 p-0 transition-all"
+                        >
+                          {isChatLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          <div className="w-full max-w-4xl h-full mx-auto">
+            <NoteCreator ref={noteCreatorRef} onNoteCreated={handleNoteCreated} inputMode={inputMode} showSuggestions={showSuggestions} />
           </div>
         </div>
       </div>
