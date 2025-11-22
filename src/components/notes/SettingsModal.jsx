@@ -4,21 +4,21 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
-import { Save } from 'lucide-react';
+import { Save, LogOut, User } from 'lucide-react';
+import { base44 } from '@/api/base44Client';
 
 export default function SettingsModal({ isOpen, onClose }) {
   const [settings, setSettings] = useState({
-    textColor: 'black',
     autoArchiveDays: '30',
     aiAnalysisAuto: false,
     theme: 'light',
-    accentColor: 'lavender',
     fontSize: 'medium',
     layoutDensity: 'comfortable',
     aiPersonality: 'balanced',
     aiDetailLevel: 'medium',
     aiModel: 'core'
   });
+  const [user, setUser] = useState(null);
 
   useEffect(() => {
     const saved = localStorage.getItem('lykinsai_settings');
@@ -29,6 +29,20 @@ export default function SettingsModal({ isOpen, onClose }) {
     // Apply current theme on mount
     const currentTheme = saved ? JSON.parse(saved).theme : 'light';
     document.documentElement.classList.toggle('dark', currentTheme === 'dark');
+
+    // Load user profile
+    const loadUser = async () => {
+      try {
+        const currentUser = await base44.auth.me();
+        setUser(currentUser);
+      } catch (error) {
+        console.error('Error loading user:', error);
+      }
+    };
+    
+    if (isOpen) {
+      loadUser();
+    }
   }, [isOpen]);
 
   const handleSave = () => {
@@ -53,19 +67,14 @@ export default function SettingsModal({ isOpen, onClose }) {
     };
     document.documentElement.style.setProperty('--layout-density', densities[settings.layoutDensity]);
     
-    // Apply accent color
-    const accentColors = {
-      lavender: '#b8a4d4',
-      mint: '#8dd4b8',
-      blue: '#8db4d4',
-      peach: '#d4b8a4'
-    };
-    document.documentElement.style.setProperty('--accent-color', accentColors[settings.accentColor]);
-    
     onClose();
     
     // Reload to apply all changes
     window.location.reload();
+  };
+
+  const handleLogout = () => {
+    base44.auth.logout();
   };
 
   return (
@@ -76,22 +85,28 @@ export default function SettingsModal({ isOpen, onClose }) {
         </DialogHeader>
 
         <div className="space-y-6 py-4">
-          {/* Text Color */}
-          <div className="space-y-2">
-            <Label className="text-black dark:text-white">Note Text Color</Label>
-            <Select value={settings.textColor} onValueChange={(value) => setSettings({...settings, textColor: value})}>
-              <SelectTrigger className="bg-white dark:bg-[#171515] border-gray-300 dark:border-gray-600 text-black dark:text-white backdrop-blur-md rounded-xl">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent className="bg-white dark:bg-[#171515] border-gray-200 dark:border-gray-700 backdrop-blur-2xl">
-                <SelectItem value="white">White</SelectItem>
-                <SelectItem value="black">Black</SelectItem>
-                <SelectItem value="#b8a4d4">Lavender</SelectItem>
-                <SelectItem value="#8dd4b8">Mint</SelectItem>
-                <SelectItem value="#8db4d4">Blue</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
+          {/* Profile Section */}
+          {user && (
+            <div className="p-4 bg-gray-50 dark:bg-[#1f1d1d]/80 rounded-xl border border-gray-200 dark:border-gray-700">
+              <div className="flex items-center gap-3 mb-3">
+                <div className="w-12 h-12 rounded-full bg-gray-200 dark:bg-gray-700 flex items-center justify-center">
+                  <User className="w-6 h-6 text-gray-600 dark:text-gray-300" />
+                </div>
+                <div className="flex-1">
+                  <p className="font-semibold text-black dark:text-white">{user.full_name}</p>
+                  <p className="text-sm text-gray-600 dark:text-gray-400">{user.email}</p>
+                </div>
+              </div>
+              <Button
+                onClick={handleLogout}
+                variant="outline"
+                className="w-full border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#171515] flex items-center justify-center gap-2"
+              >
+                <LogOut className="w-4 h-4" />
+                Sign Out
+              </Button>
+            </div>
+          )}
 
           {/* Auto Archive Days */}
           <div className="space-y-2">
@@ -129,22 +144,6 @@ export default function SettingsModal({ isOpen, onClose }) {
               <SelectContent className="bg-glass-card border-white/30 dark:border-gray-700/30 backdrop-blur-2xl">
                 <SelectItem value="light">Light</SelectItem>
                 <SelectItem value="dark">Dark</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          {/* Accent Color */}
-          <div className="space-y-2">
-            <Label className="text-gray-900 dark:text-white">Accent Color</Label>
-            <Select value={settings.accentColor} onValueChange={(value) => setSettings({...settings, accentColor: value})}>
-              <SelectTrigger className="bg-white/60 dark:bg-gray-800/60 border-white/40 dark:border-gray-700/40 text-gray-900 dark:text-white backdrop-blur-md rounded-xl">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent className="bg-glass-card border-white/30 dark:border-gray-700/30 backdrop-blur-2xl">
-                <SelectItem value="lavender">Lavender</SelectItem>
-                <SelectItem value="mint">Mint</SelectItem>
-                <SelectItem value="blue">Blue</SelectItem>
-                <SelectItem value="peach">Peach</SelectItem>
               </SelectContent>
             </Select>
           </div>
