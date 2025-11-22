@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import NoteCreator from '../components/notes/NoteCreator';
 import NotionSidebar from '../components/notes/NotionSidebar';
 import SettingsModal from '../components/notes/SettingsModal';
+import NoteViewer from '../components/notes/NoteViewer';
 import { useNavigate } from 'react-router-dom';
 import { createPageUrl } from '../utils';
 import { Button } from '@/components/ui/button';
@@ -20,6 +21,7 @@ export default function CreatePage() {
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState('');
   const [isChatLoading, setIsChatLoading] = useState(false);
+  const [viewingNote, setViewingNote] = useState(null);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const noteCreatorRef = useRef(null);
@@ -219,19 +221,7 @@ If the user asks about old memories or references past ideas, refer to the memor
                                   return (
                                     <button
                                       key={i}
-                                      onClick={() => {
-                                        localStorage.setItem('lykinsai_draft', JSON.stringify({
-                                          title: note.title,
-                                          content: note.content,
-                                          attachments: note.attachments || [],
-                                          tags: note.tags || [],
-                                          folder: note.folder || 'Uncategorized',
-                                          reminder: note.reminder || null,
-                                          suggestedConnections: note.connected_notes || [],
-                                          lastEditTime: Date.now()
-                                        }));
-                                        window.location.reload();
-                                      }}
+                                      onClick={() => setViewingNote(note)}
                                       className="text-blue-600 dark:text-blue-400 hover:underline font-medium"
                                     >
                                       {noteTitle}
@@ -397,7 +387,17 @@ If the user asks about old memories or references past ideas, refer to the memor
           )}
 
           <div className="w-full max-w-4xl h-full mx-auto">
-            <NoteCreator ref={noteCreatorRef} onNoteCreated={handleNoteCreated} inputMode={inputMode} showSuggestions={showSuggestions} />
+            <NoteCreator 
+              ref={noteCreatorRef} 
+              onNoteCreated={handleNoteCreated} 
+              inputMode={inputMode} 
+              showSuggestions={showSuggestions}
+              onQuestionClick={(question) => {
+                setShowChat(true);
+                setChatInput(question);
+              }}
+              onConnectionClick={(note) => setViewingNote(note)}
+            />
           </div>
         </div>
       </div>
@@ -405,6 +405,12 @@ If the user asks about old memories or references past ideas, refer to the memor
       <SettingsModal
         isOpen={settingsOpen}
         onClose={() => setSettingsOpen(false)}
+      />
+      
+      <NoteViewer
+        note={viewingNote}
+        isOpen={!!viewingNote}
+        onClose={() => setViewingNote(null)}
       />
     </div>
   );

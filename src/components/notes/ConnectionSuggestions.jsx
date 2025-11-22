@@ -3,7 +3,7 @@ import { Button } from '@/components/ui/button';
 import { Link2, Loader2, Plus, Check } from 'lucide-react';
 import { base44 } from '@/api/base44Client';
 
-export default function ConnectionSuggestions({ content, currentNoteId, allNotes, onConnect }) {
+export default function ConnectionSuggestions({ content, currentNoteId, allNotes, onConnect, onViewNote }) {
   const [suggestions, setSuggestions] = useState([]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [connectedIds, setConnectedIds] = useState([]);
@@ -100,13 +100,16 @@ Return up to 5 note IDs that are most relevant, along with a brief reason for ea
           {suggestions.map(({ note, reason }) => {
             const isConnected = connectedIds.includes(note.id);
             return (
-              <div key={note.id} className="p-3 bg-gray-50 rounded-lg border border-gray-200">
+              <div key={note.id} className="p-3 bg-gray-50 dark:bg-[#1f1d1d] rounded-lg border border-gray-200 dark:border-gray-700">
                 <div className="flex items-start justify-between gap-3">
-                  <div className="flex-1 min-w-0">
-                    <h4 className="font-medium text-black text-sm mb-1">{note.title}</h4>
-                    <p className="text-xs text-gray-600 mb-2">{reason}</p>
-                    <p className="text-xs text-gray-500 line-clamp-1">{note.content}</p>
-                  </div>
+                  <button
+                    onClick={() => onViewNote?.(note)}
+                    className="flex-1 min-w-0 text-left hover:opacity-70 transition-opacity"
+                  >
+                    <h4 className="font-medium text-black dark:text-white text-sm mb-1">{note.title}</h4>
+                    <p className="text-xs text-gray-600 dark:text-gray-400 mb-2">{reason}</p>
+                    <p className="text-xs text-gray-500 dark:text-gray-500 line-clamp-1">{note.content}</p>
+                  </button>
                   <Button
                     onClick={() => handleConnect(note.id)}
                     size="sm"

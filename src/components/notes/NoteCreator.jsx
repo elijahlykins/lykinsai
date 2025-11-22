@@ -11,7 +11,7 @@ import TagInput from './TagInput';
 import ConnectionSuggestions from './ConnectionSuggestions';
 import ReminderPicker from './ReminderPicker';
 
-const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, showSuggestions = true }, ref) => {
+const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, showSuggestions = true, onQuestionClick, onConnectionClick }, ref) => {
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
@@ -559,9 +559,13 @@ Return only the title, nothing else.`,
             {suggestedQuestions.length > 0 ? (
               <div className="space-y-2">
                 {suggestedQuestions.map((question, idx) => (
-                  <div key={idx} className="p-3 bg-white dark:bg-[#171515] rounded-lg border border-gray-200 dark:border-gray-700">
+                  <button
+                    key={idx}
+                    onClick={() => onQuestionClick?.(question)}
+                    className="w-full p-3 bg-white dark:bg-[#171515] rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-[#1f1d1d] transition-all text-left"
+                  >
                     <p className="text-sm text-black dark:text-white">{question}</p>
-                  </div>
+                  </button>
                 ))}
               </div>
             ) : (
@@ -576,6 +580,7 @@ Return only the title, nothing else.`,
               currentNoteId={null}
               allNotes={allNotes}
               onConnect={handleAddConnection}
+              onViewNote={onConnectionClick}
             />
           )}
         </div>
