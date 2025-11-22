@@ -65,6 +65,12 @@ export default function CreatePage() {
         detailed: 'Give comprehensive, detailed responses with examples and explanations.'
       };
 
+      // Fetch all notes to provide context
+      const allNotes = await base44.entities.Note.list('-created_date');
+      const notesContext = allNotes.slice(0, 20).map(n => 
+        `ID: ${n.id}\nTitle: ${n.title}\nContent: ${n.content.substring(0, 200)}\nDate: ${n.created_date}`
+      ).join('\n\n---\n\n');
+
       const response = await base44.integrations.Core.InvokeLLM({
         prompt: `${personalityStyles[personality]} ${detailStyles[detailLevel]}
 
@@ -73,9 +79,12 @@ You are helping the user brainstorm and develop their idea. Here's what they're 
 Current Idea Content:
 ${currentContent || 'The user is just starting their idea...'}
 
+User's recent memories:
+${notesContext}
+
 User's question: ${chatInput}
 
-Provide helpful guidance, suggestions, or answers to help develop this idea. Do not use emojis unless explicitly asked.`
+If the user asks about old memories or references past ideas, refer to the memories above. When referencing a specific memory, mention its title so the user knows which one you're talking about. Provide helpful guidance, suggestions, or answers to help develop this idea. Do not use emojis unless explicitly asked.`
       });
 
       const words = response.split(' ');
