@@ -7,6 +7,7 @@ import Notes from './pages/Notes';
 import TagManagement from './pages/TagManagement';
 import Reminders from './pages/Reminders';
 import Trash from './pages/Trash';
+import Billing from './pages/Billing';
 
 
 export const PAGES = {
@@ -19,6 +20,7 @@ export const PAGES = {
     "TagManagement": TagManagement,
     "Reminders": Reminders,
     "Trash": Trash,
+    "Billing": Billing,
 }
 
 export const pagesConfig = {

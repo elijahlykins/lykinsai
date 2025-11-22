@@ -1,5 +1,5 @@
 import React from 'react';
-import { Settings, ChevronLeft, ChevronRight, Plus, Clock, Archive, Search, MessageCircle, Tags, Bell, Trash2 } from 'lucide-react';
+import { Settings, ChevronLeft, ChevronRight, Plus, Clock, Archive, Search, MessageCircle, Tags, Bell, Trash2, Crown } from 'lucide-react';
 import {
   Tooltip,
   TooltipContent,
@@ -18,6 +18,10 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
     { id: 'reminders', icon: Bell, label: 'Reminders', tooltip: 'View and manage reminders' },
     { id: 'trash', icon: Trash2, label: 'Trash', tooltip: 'View deleted items (auto-delete after 7 days)' },
   ];
+
+  const handleBillingClick = () => {
+    window.location.href = '/Billing';
+  };
 
   if (isCollapsed) {
     return (
@@ -50,7 +54,20 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
               </Tooltip>
             ))}
           </div>
-          <div className="mt-auto">
+          <div className="mt-auto space-y-2">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={handleBillingClick}
+                  className="p-3 hover:bg-white/40 dark:hover:bg-white/10 rounded-2xl transition-all text-gray-700 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white backdrop-blur-sm border border-white/20 dark:border-gray-700/20"
+                >
+                  <Crown className="w-5 h-5" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right">
+                <p>Upgrade</p>
+              </TooltipContent>
+            </Tooltip>
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
@@ -109,13 +126,27 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
           ))}
         </nav>
 
-        {/* Settings at bottom */}
-        <div className="mt-auto pt-3">
+        {/* Settings and Billing at bottom */}
+        <div className="mt-auto pt-3 space-y-2">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={handleBillingClick}
+                className="w-full p-3 hover:bg-white/40 dark:hover:bg-[#171515]/40 rounded-2xl transition-all text-black dark:text-white hover:text-black dark:hover:text-white flex items-center gap-2 backdrop-blur-sm border border-white/20 dark:border-gray-700/20"
+              >
+                <Crown className="w-5 h-5" />
+                <span className="text-sm">Upgrade</span>
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right">
+              <p>View plans and upgrade</p>
+            </TooltipContent>
+          </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
               <button
                 onClick={onOpenSettings}
-                className="p-3 hover:bg-white/40 dark:hover:bg-[#171515]/40 rounded-2xl transition-all text-black dark:text-white hover:text-black dark:hover:text-white flex items-center gap-2 backdrop-blur-sm border border-white/20 dark:border-gray-700/20"
+                className="w-full p-3 hover:bg-white/40 dark:hover:bg-[#171515]/40 rounded-2xl transition-all text-black dark:text-white hover:text-black dark:hover:text-white flex items-center gap-2 backdrop-blur-sm border border-white/20 dark:border-gray-700/20"
               >
                 <Settings className="w-5 h-5" />
                 <span className="text-sm">Settings</span>
