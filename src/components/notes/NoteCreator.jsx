@@ -436,9 +436,9 @@ Return only the title, nothing else.`,
   };
 
   return (
-    <div className="h-full flex relative">
+    <div className="h-full flex flex-col relative">
         {/* Content Area - Notion Style */}
-        <div className={`overflow-auto ${attachments.length > 0 && inputMode === 'text' ? 'w-1/2' : 'flex-1'}`}>
+        <div className="flex-1 overflow-auto">
         {inputMode === 'text' ? (
           <div className="h-full flex flex-col gap-6 py-12 px-8 md:px-12 lg:px-16 xl:px-24">
             <Input
@@ -581,13 +581,15 @@ Return only the title, nothing else.`,
         </div>
       )}
 
-      {/* Attachments Panel */}
-      {attachments.length > 0 && !showSuggestions && inputMode === 'text' && (
-        <AttachmentPanel
-          attachments={attachments}
-          onRemove={removeAttachment}
-          onUpdate={updateAttachment}
-        />
+      {/* Attachments Panel - Always at bottom */}
+      {attachments.length > 0 && inputMode === 'text' && (
+        <div className="border-t border-white/20 dark:border-gray-700/30 p-4 bg-glass backdrop-blur-2xl">
+          <AttachmentPanel
+            attachments={attachments}
+            onRemove={removeAttachment}
+            onUpdate={updateAttachment}
+          />
+        </div>
       )}
 
       {/* Plus Button */}
