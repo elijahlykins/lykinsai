@@ -4,6 +4,7 @@ import { base44 } from '@/api/base44Client';
 import NotionSidebar from '../components/notes/NotionSidebar';
 import SettingsModal from '../components/notes/SettingsModal';
 import AIAnalysisPanel from '../components/notes/AIAnalysisPanel';
+import NoteViewer from '../components/notes/NoteViewer';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Clock, Trash2, Edit2, Save, XCircle, Tag, Folder as FolderIcon, Link2, Filter, Bell, MessageCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -44,6 +45,7 @@ export default function ShortTermPage() {
   const [sourceFilter, setSourceFilter] = useState('all');
   const [selectedCards, setSelectedCards] = useState([]);
   const [bulkMode, setBulkMode] = useState(false);
+  const [viewingNote, setViewingNote] = useState(null);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
@@ -540,7 +542,7 @@ export default function ShortTermPage() {
                     queryClient.invalidateQueries(['notes']);
                   }}
                 />
-                <AIAnalysisPanel note={selectedNote} allNotes={notes} onUpdate={handleUpdate} />
+                <AIAnalysisPanel note={selectedNote} allNotes={notes} onUpdate={handleUpdate} onViewNote={setViewingNote} />
                 <Button onClick={() => setSelectedNote(null)} variant="outline" className="w-full bg-transparent border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#171515] flex items-center gap-2">
                   ← Back to All Notes
                 </Button>
@@ -554,6 +556,7 @@ export default function ShortTermPage() {
       <AutoArchive notes={notes} />
       <TrashCleanup notes={notes} />
       <SettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <NoteViewer note={viewingNote} isOpen={!!viewingNote} onClose={() => setViewingNote(null)} />
       {selectedNote && (
         <>
           <NoteLinkSelector
