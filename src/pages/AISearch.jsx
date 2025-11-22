@@ -22,6 +22,7 @@ export default function AISearchPage() {
   const [results, setResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [hasSearched, setHasSearched] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [selectedNote, setSelectedNote] = useState(null);
   const [suggestions, setSuggestions] = useState([]);
@@ -129,6 +130,7 @@ Return only the suggestions as an array.`,
     
     setIsSearching(true);
     setSuggestions([]);
+    setHasSearched(true);
     try {
       // Apply filters
       let filteredNotes = notes;
@@ -312,13 +314,9 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
       </div>
 
       <div className="flex-1 flex flex-col overflow-hidden">
-        <div className="p-6 bg-glass border-b border-white/20 dark:border-gray-700/30">
-          <h1 className="text-2xl font-bold text-black dark:text-white mb-6 flex items-center gap-2">
-            <Search className="w-6 h-6" />
-            AI Search
-          </h1>
-          
-          <div className="max-w-2xl space-y-4">
+        {hasSearched ? (
+          <div className="p-6 bg-glass border-b border-white/20 dark:border-gray-700/30">
+            <div className="max-w-2xl mx-auto space-y-4">
             {/* Search Input */}
             <div className="relative">
               <div className="flex gap-2">
@@ -572,7 +570,7 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
                 />
               )}
             </div>
-          ) : (
+          ) : results.length > 0 || query ? (
             <div className="max-w-4xl mx-auto space-y-3">
               {results.length > 0 ? (
                 results.map((note) => (
@@ -624,9 +622,7 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
                 ))
               ) : query && !isSearching ? (
                 <p className="text-center text-gray-500 dark:text-gray-400 py-12">No results found</p>
-              ) : (
-                <p className="text-center text-gray-500 dark:text-gray-400 py-12">Search for memories by ideas or concepts</p>
-              )}
+              ) : null}
             </div>
           )}
         </div>
