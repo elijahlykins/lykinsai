@@ -443,10 +443,12 @@ Return only the title, nothing else.`,
     }
   }, [chatMessages]);
 
+  const bothActive = showSuggestions && showChat;
+
   return (
     <div className="h-full flex relative">
         {/* Content Area - Notion Style */}
-        <div className={`overflow-auto ${showSuggestions || showChat ? 'w-1/3' : 'flex-1'} flex-shrink-0`}>
+        <div className={`overflow-auto ${bothActive ? 'w-1/3' : 'flex-1'} flex-shrink-0`}>
         {inputMode === 'text' ? (
           <div className="h-full flex flex-col gap-6 py-12 px-8 md:px-12 lg:px-16 xl:px-24">
             <Input
@@ -557,7 +559,7 @@ Return only the title, nothing else.`,
 
       {/* Suggestions Panel */}
       {showSuggestions && content.length > 50 && inputMode === 'text' && (
-        <div className="w-1/3 flex-shrink-0 border-l border-white/20 dark:border-gray-700/30 overflow-auto p-6 space-y-6 bg-glass backdrop-blur-2xl">
+        <div className={`${bothActive ? 'w-1/3 flex-shrink-0' : 'fixed right-0 top-20 bottom-0 w-96 z-10'} border-l border-white/20 dark:border-gray-700/30 overflow-auto p-6 space-y-6 bg-glass backdrop-blur-2xl`}>
           {/* Suggested Questions */}
           <div className="clay-card p-4 space-y-3">
             <div className="flex items-center gap-2">
@@ -595,7 +597,7 @@ Return only the title, nothing else.`,
 
       {/* AI Chat Panel */}
       {showChat && inputMode === 'text' && (
-        <div className="w-1/3 flex-shrink-0 border-l border-white/20 dark:border-gray-700/30 overflow-hidden flex flex-col bg-glass backdrop-blur-2xl">
+        <div className={`${bothActive ? 'w-1/3 flex-shrink-0' : 'fixed right-0 top-20 bottom-0 w-96 z-10'} border-l border-white/20 dark:border-gray-700/30 overflow-hidden flex flex-col bg-glass backdrop-blur-2xl`}>
           {chatMessages.length === 0 ? (
             <div className="flex-1 flex items-center justify-center p-8">
               <div className="max-w-md w-full px-4">
@@ -680,7 +682,7 @@ Return only the title, nothing else.`,
       {inputMode === 'text' && (
         <button
           onClick={() => setShowAttachMenu(true)}
-          className="fixed bottom-8 left-8 w-14 h-14 rounded-full bg-white dark:bg-[#171515] text-black dark:text-white shadow-lg hover:shadow-xl transition-all flex items-center justify-center hover:scale-110 border border-gray-200 dark:border-gray-600 z-30"
+          className="fixed bottom-8 right-8 w-14 h-14 rounded-full bg-white dark:bg-[#171515] text-black dark:text-white shadow-lg hover:shadow-xl transition-all flex items-center justify-center hover:scale-110 border border-gray-200 dark:border-gray-600 z-30"
         >
           <Plus className="w-6 h-6 text-black dark:text-gray-300" />
         </button>
