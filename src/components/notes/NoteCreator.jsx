@@ -448,9 +448,9 @@ Return only the title, nothing else.`,
   return (
     <div className="h-full flex relative">
         {/* Content Area - Notion Style */}
-        <div className={`overflow-auto ${bothActive ? 'w-1/3' : 'flex-1'} flex-shrink-0`}>
+        <div className={`overflow-auto ${bothActive ? 'w-1/3' : 'flex-1'} flex-shrink-0 ${!bothActive && (showSuggestions || showChat) ? 'flex items-center justify-center' : ''}`}>
         {inputMode === 'text' ? (
-          <div className="h-full flex flex-col gap-6 py-12 px-8 md:px-12 lg:px-16 xl:px-24">
+          <div className={`h-full flex flex-col gap-6 py-12 ${bothActive ? 'px-8 md:px-12 lg:px-16 xl:px-24' : 'w-full max-w-4xl px-8 md:px-12'}`}>
             <Input
               value={title}
               onChange={(e) => setTitle(e.target.value)}
@@ -559,7 +559,7 @@ Return only the title, nothing else.`,
 
       {/* Suggestions Panel */}
       {showSuggestions && content.length > 50 && inputMode === 'text' && (
-        <div className={`${bothActive ? 'w-1/3 flex-shrink-0' : 'fixed right-0 top-20 bottom-0 w-96 z-10'} border-l border-white/20 dark:border-gray-700/30 overflow-auto p-6 space-y-6 bg-glass backdrop-blur-2xl`}>
+        <div className={`w-96 flex-shrink-0 border-l border-white/20 dark:border-gray-700/30 overflow-auto p-6 space-y-6 bg-glass backdrop-blur-2xl`}>
           {/* Suggested Questions */}
           <div className="clay-card p-4 space-y-3">
             <div className="flex items-center gap-2">
@@ -597,7 +597,7 @@ Return only the title, nothing else.`,
 
       {/* AI Chat Panel */}
       {showChat && inputMode === 'text' && (
-        <div className={`${bothActive ? 'w-1/3 flex-shrink-0' : 'fixed right-0 top-20 bottom-0 w-96 z-10'} border-l border-white/20 dark:border-gray-700/30 overflow-hidden flex flex-col bg-glass backdrop-blur-2xl`}>
+        <div className={`w-96 flex-shrink-0 border-l border-white/20 dark:border-gray-700/30 overflow-hidden flex flex-col bg-glass backdrop-blur-2xl`}>
           {chatMessages.length === 0 ? (
             <div className="flex-1 flex items-center justify-center p-8">
               <div className="max-w-md w-full px-4">
