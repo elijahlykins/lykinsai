@@ -45,11 +45,11 @@ export default function AISearchPage() {
   const { data: notes = [], isError, error } = useQuery({
     queryKey: ['notes'],
     queryFn: () => base44.entities.Note.list('-created_date'),
-    retry: 3,
-    retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000),
+    retry: 2,
+    retryDelay: (attemptIndex) => Math.min(2000 * 2 ** attemptIndex, 30000),
     refetchOnWindowFocus: false,
-    staleTime: 30000,
-    cacheTime: 300000,
+    staleTime: 5 * 60 * 1000, // 5 minutes
+    cacheTime: 10 * 60 * 1000, // 10 minutes
   });
 
   const updateNoteMutation = useMutation({
@@ -272,7 +272,7 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
     if (query.trim().length >= 3) {
       suggestionTimeoutRef.current = setTimeout(() => {
         loadSuggestions(query);
-      }, 500);
+      }, 1000);
     } else {
       setSuggestions([]);
     }
