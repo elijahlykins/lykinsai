@@ -519,7 +519,7 @@ Return only the title, nothing else.`,
         {/* Content Area - Whiteboard Style */}
         <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-hide">
         {inputMode === 'text' ? (
-          <div className="min-h-full flex flex-col justify-center max-w-4xl mx-auto py-20 px-8 md:px-12 transition-all duration-500 relative group">
+          <div className="min-h-full flex flex-col max-w-4xl mx-auto py-20 px-8 md:px-12 transition-all duration-500 relative group">
             <div className="absolute top-4 right-8 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
                <Button 
                  onClick={handleAIOrganize}
@@ -562,8 +562,8 @@ Return only the title, nothing else.`,
                 value={content}
                 onChange={setContent}
                 modules={modules}
-                placeholder="Start writing..."
-                className="h-full min-h-[50vh]"
+                placeholder="Press '/' for commands..."
+                className="h-full"
                 readOnly={isProcessing}
               />
             </div>
