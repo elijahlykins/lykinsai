@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
-import { Mic, Square, Plus, Link as LinkIcon, Image, Video, FileText, Tag, Folder, Bell, Loader2, Lightbulb, Wand2 } from 'lucide-react';
+import { Mic, Square, Plus, Link as LinkIcon, Image, Video, FileText, Tag, Folder, Bell, Loader2, Lightbulb, Wand2, X } from 'lucide-react';
 import { base44 } from '@/api/base44Client';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -663,9 +663,69 @@ Return only the title, nothing else.`,
   };
 
   return (
-    <div className="h-full flex flex-col relative">
+    <div className="h-full flex flex-row relative">
+        {/* Left Sidebar - Grid/Pinterest Style Resources */}
+        {(attachments.length > 0 || suggestedConnections.length > 0) && (
+          <div className="w-64 h-full overflow-y-auto p-4 border-r border-gray-100 dark:border-gray-800 hidden xl:block scrollbar-hide bg-gray-50/50 dark:bg-[#1f1d1d]/30">
+             <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-4">Resources</h3>
+             
+             <div className="columns-2 gap-3 space-y-3">
+                {/* Attachments */}
+                {attachments.map(att => (
+                   <div key={att.id} className="break-inside-avoid mb-3 bg-white dark:bg-[#1f1d1d] rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden shadow-sm hover:shadow-md transition-all group relative">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); removeAttachment(att.id); }}
+                        className="absolute top-1 right-1 p-1 bg-red-500 rounded-full opacity-0 group-hover:opacity-100 transition-opacity z-10"
+                      >
+                        <X className="w-3 h-3 text-white" />
+                      </button>
+                      
+                      <div className="cursor-pointer" onClick={() => window.open(att.url, '_blank')}>
+                         {att.type === 'image' ? (
+                            <img src={att.url} alt={att.name} className="w-full h-auto object-cover" />
+                         ) : att.type === 'video' ? (
+                            <video src={att.url} className="w-full h-auto object-cover" />
+                         ) : att.type === 'link' ? (
+                            <div className="p-3 text-center bg-blue-50 dark:bg-blue-900/20">
+                               <LinkIcon className="w-6 h-6 mx-auto text-blue-500 mb-1" />
+                               <p className="text-[10px] truncate text-blue-700 dark:text-blue-300">{att.name}</p>
+                            </div>
+                         ) : (
+                            <div className="p-3 text-center bg-gray-50 dark:bg-gray-800">
+                               <FileText className="w-6 h-6 mx-auto text-gray-500 mb-1" />
+                               <p className="text-[10px] truncate text-gray-700 dark:text-gray-300">{att.name}</p>
+                            </div>
+                         )}
+                      </div>
+                   </div>
+                ))}
+
+                {/* Connected Notes */}
+                {suggestedConnections.map(connId => {
+                   const note = allNotes.find(n => n.id === connId);
+                   if(!note) return null;
+                   return (
+                      <div key={connId} className="break-inside-avoid mb-3 p-3 bg-indigo-50 dark:bg-indigo-900/20 rounded-lg border border-indigo-100 dark:border-indigo-800/30 relative group">
+                          <button
+                            onClick={(e) => { 
+                                e.stopPropagation(); 
+                                setSuggestedConnections(prev => prev.filter(id => id !== connId));
+                            }}
+                            className="absolute top-1 right-1 p-1 bg-red-500 rounded-full opacity-0 group-hover:opacity-100 transition-opacity z-10"
+                          >
+                            <X className="w-3 h-3 text-white" />
+                          </button>
+                          <h4 className="text-xs font-medium text-indigo-900 dark:text-indigo-100 mb-1 line-clamp-2">{note.title || 'Untitled'}</h4>
+                          <p className="text-[10px] text-indigo-700 dark:text-indigo-300 line-clamp-3 opacity-80" dangerouslySetInnerHTML={{ __html: note.content?.substring(0, 100) }} />
+                      </div>
+                   )
+                })}
+             </div>
+          </div>
+        )}
+
         {/* Content Area - Whiteboard Style */}
-        <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-hide">
+        <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-hide relative">
         {inputMode === 'text' ? (
           <div 
             className="min-h-full flex flex-col max-w-3xl mx-auto py-12 px-8 md:px-12 transition-all duration-500 relative group cursor-text"
@@ -675,17 +735,24 @@ Return only the title, nothing else.`,
               }
             }}
           >
-            <div className="absolute top-4 right-8 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
-               <Button 
-                 onClick={handleAIOrganize}
-                 disabled={isProcessing || !content}
-                 variant="outline" 
-                 className="bg-white dark:bg-black backdrop-blur-sm border-gray-200 dark:border-gray-800 text-black dark:text-white hover:bg-gray-100 dark:hover:bg-gray-900"
-               >
-                 <Wand2 className="w-4 h-4 mr-2" />
-                 Organize
-               </Button>
-            </div>
+            {/* Organize Button - Floating next to text area */}
+            {content && content.length > 20 && (
+              <div className="absolute top-16 -right-32 hidden 2xl:block">
+                 <div className="sticky top-20">
+                   <Button 
+                     onClick={handleAIOrganize}
+                     disabled={isProcessing}
+                     variant="ghost" 
+                     className="bg-white/80 dark:bg-black/50 backdrop-blur-md border border-gray-200 dark:border-gray-800 text-gray-500 hover:text-black dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-800 shadow-sm transition-all rounded-full p-3 h-12 w-12 flex items-center justify-center group/btn"
+                   >
+                     <Wand2 className="w-5 h-5" />
+                     <span className="absolute right-full mr-2 bg-black text-white text-xs px-2 py-1 rounded opacity-0 group-hover/btn:opacity-100 transition-opacity whitespace-nowrap pointer-events-none">
+                        Organize Note
+                     </span>
+                   </Button>
+                 </div>
+              </div>
+            )}
 
             <Input
               value={title}
@@ -887,16 +954,8 @@ Return only the title, nothing else.`,
         </div>
       )}
 
-      {/* Attachments Panel - Always at bottom */}
-      {attachments.length > 0 && inputMode === 'text' && (
-        <div className="border-t border-white/20 dark:border-gray-700/30 p-4 bg-glass backdrop-blur-2xl">
-          <AttachmentPanel
-            attachments={attachments}
-            onRemove={removeAttachment}
-            onUpdate={updateAttachment}
-          />
-        </div>
-      )}
+      {/* Attachments Panel - Removed from bottom as requested */}
+      {/* Hidden on small screens, mobile users might need a fallback but user asked for left side */}
 
       {/* Plus Button */}
       {inputMode === 'text' && (
