@@ -9,8 +9,8 @@ import {
 
 export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, onOpenChat, onOpenSettings, isCollapsed, onToggleCollapse }) {
   const navItems = [
-    { id: 'create', icon: Plus, label: 'Create', tooltip: 'Create new memories' },
-    { id: 'memory', icon: Clock, label: 'Memory', tooltip: 'View all your memories' },
+    { id: 'create', icon: Plus, label: 'Create', tooltip: 'Create new memories', onClick: () => window.location.href = '/Create' },
+    { id: 'memory', icon: Clock, label: 'Memory', tooltip: 'View all your memories', onClick: () => window.location.href = '/Memory' },
     { id: 'chat', icon: MessageCircle, label: 'Memory Chat', tooltip: 'Chat with AI about your memories', onClick: onOpenChat },
     { id: 'reminders', icon: Bell, label: 'Reminders', tooltip: 'View and manage reminders' },
     { id: 'trash', icon: Trash2, label: 'Trash', tooltip: 'View deleted items (auto-delete after 7 days)' },
