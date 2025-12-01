@@ -13,6 +13,7 @@ import AttachmentPanel from './AttachmentPanel';
 import TagInput from './TagInput';
 import ConnectionSuggestions from './ConnectionSuggestions';
 import ReminderPicker from './ReminderPicker';
+import SlashCommandMenu from './SlashCommandMenu';
 
 const modules = {
   toolbar: [
@@ -26,6 +27,12 @@ const modules = {
 
 const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, showSuggestions = true, onQuestionClick, onConnectionClick, noteId }, ref) => {
   const [title, setTitle] = useState('');
+  // Slash Menu State
+  const [showSlashMenu, setShowSlashMenu] = useState(false);
+  const [slashMenuPos, setSlashMenuPos] = useState({ top: 0, left: 0 });
+  const [slashFilter, setSlashFilter] = useState('');
+  const [slashSelectedIndex, setSlashSelectedIndex] = useState(0);
+  const [slashStartIndex, setSlashStartIndex] = useState(null);
   const [content, setContent] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [audioFile, setAudioFile] = useState(null);
