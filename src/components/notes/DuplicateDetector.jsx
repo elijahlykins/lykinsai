@@ -77,30 +77,11 @@ Return pairs of note IDs that are duplicates or very similar, with a reason why 
       });
 
       const foundDuplicates = duplicateAnalysis.duplicates || [];
-      
-      // Auto-delete duplicates in long term memory only
-      for (const duplicate of foundDuplicates) {
-        const note1 = notes.find(n => n.id === duplicate.note1_id);
-        const note2 = notes.find(n => n.id === duplicate.note2_id);
-
-        if (note1 && note2 && 
-            note1.storage_type === 'long_term' && 
-            note2.storage_type === 'long_term' &&
-            duplicate.similarity >= 0.85) {
-          try {
-            // Keep the newer one, delete the older one
-            const olderNote = new Date(note1.created_date) < new Date(note2.created_date) ? note1 : note2;
-            await base44.entities.Note.delete(olderNote.id);
-            await new Promise(resolve => setTimeout(resolve, 500));
-            foundDuplicates.splice(foundDuplicates.indexOf(duplicate), 1);
-          } catch (error) {
-            console.error('Error deleting duplicate:', error);
-            await new Promise(resolve => setTimeout(resolve, 1000));
-          }
-        }
-      }
-      
       setDuplicates(foundDuplicates);
+      localStorage.setItem('lykinsai_duplicates', JSON.stringify({
+        duplicates: foundDuplicates,
+        timestamp: Date.now()
+      }));
       if (foundDuplicates.length > 0 && onMerge) onMerge();
     } catch (error) {
       console.error('Error detecting duplicates:', error);
