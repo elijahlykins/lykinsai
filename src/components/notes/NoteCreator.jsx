@@ -303,7 +303,10 @@ const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, showSuggestion
   }, [title, content, attachments, tags, folder, reminder, suggestedConnections]);
 
   const handleAddConnection = (noteId) => {
-    setSuggestedConnections([...suggestedConnections, noteId]);
+    setSuggestedConnections(prev => {
+      if (prev.includes(noteId)) return prev;
+      return [...prev, noteId];
+    });
   };
 
   // Generate suggested questions when content changes
@@ -340,7 +343,8 @@ Make questions specific, insightful, and encouraging deeper thinking.`,
 
   React.useImperativeHandle(ref, () => ({
     handleSave: autoSave,
-    getCurrentContent: () => content
+    getCurrentContent: () => content,
+    addConnection: handleAddConnection
   }));
 
   const startRecording = async () => {

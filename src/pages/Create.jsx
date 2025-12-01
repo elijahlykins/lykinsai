@@ -423,7 +423,12 @@ If the user asks about old memories or references past ideas, refer to the memor
       <NoteViewer
         note={viewingNote}
         isOpen={!!viewingNote}
-        onClose={() => setViewingNote(null)}
+        onClose={() => {
+          if (viewingNote && noteCreatorRef.current) {
+            noteCreatorRef.current.addConnection(viewingNote.id);
+          }
+          setViewingNote(null);
+        }}
       />
 
       <AISearchOverlay 
