@@ -37,6 +37,17 @@ export default function SlashCommandMenu({ position, filter, onSelect, onClose, 
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [onClose]);
 
+  // Handle Enter key from parent
+  useEffect(() => {
+    const handleEnter = () => {
+        if (filteredCommands[selectedIndex]) {
+            onSelect(filteredCommands[selectedIndex]);
+        }
+    };
+    document.addEventListener('slash-enter', handleEnter);
+    return () => document.removeEventListener('slash-enter', handleEnter);
+  }, [selectedIndex, filteredCommands, onSelect]);
+
   return createPortal(
     <div 
       ref={menuRef}
