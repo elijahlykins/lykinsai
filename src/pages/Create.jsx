@@ -202,7 +202,7 @@ If the user asks about old memories or references past ideas, refer to the memor
             />
           )}
 
-          <div className="w-full max-w-4xl h-full mx-auto">
+          <div className="w-full h-full">
             <NoteCreator 
               ref={noteCreatorRef} 
               noteId={noteId}
