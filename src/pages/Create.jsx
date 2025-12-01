@@ -4,20 +4,22 @@ import NoteCreator from '../components/notes/NoteCreator';
 import NotionSidebar from '../components/notes/NotionSidebar';
 import SettingsModal from '../components/notes/SettingsModal';
 import NoteViewer from '../components/notes/NoteViewer';
+import AISearchOverlay from '../components/notes/AISearchOverlay';
 import { useNavigate } from 'react-router-dom';
 import { createPageUrl } from '../utils';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { base44 } from '@/api/base44Client';
-import { Save, ChevronDown, ChevronUp, Plus, Send, Loader2, MessageSquare } from 'lucide-react';
+import { Save, ChevronDown, ChevronUp, Plus, Send, Loader2, MessageSquare, Search } from 'lucide-react';
 
 export default function CreatePage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [inputMode, setInputMode] = useState('text'); // 'text' or 'audio'
-  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [showSuggestions, setShowSuggestions] = useState(true);
   const [showChat, setShowChat] = useState(false);
+  const [showSearch, setShowSearch] = useState(false);
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState('');
   const [isChatLoading, setIsChatLoading] = useState(false);
@@ -134,7 +136,7 @@ If the user asks about old memories or references past ideas, refer to the memor
             view === 'trash' ? 'Trash' :
             'Create'
           ))}
-          onOpenSearch={() => navigate(createPageUrl('AISearch'))}
+          onOpenSearch={() => setShowSearch(true)}
           onOpenChat={() => navigate(createPageUrl('MemoryChat'))}
           onOpenSettings={() => setSettingsOpen(true)}
           isCollapsed={sidebarCollapsed}
@@ -143,43 +145,42 @@ If the user asks about old memories or references past ideas, refer to the memor
       </div>
 
       <div className="flex-1 flex flex-col overflow-hidden">
-      <div className="flex items-center justify-between p-6 bg-glass border-b border-white/20 dark:border-gray-700/30">
-        <h1 className="text-2xl font-bold text-black dark:text-white flex items-center gap-2">
-          <Plus className="w-6 h-6" />
-          Create Idea
-        </h1>
-          <div className="flex items-center gap-2">
+      <div className="absolute top-0 left-0 right-0 p-6 flex items-center justify-between z-20 pointer-events-none">
+          <div className="pointer-events-auto">
+            {/* Left side empty or breadcrumbs if needed */}
+          </div>
+          <div className="flex items-center gap-2 pointer-events-auto bg-white/50 dark:bg-black/50 p-1.5 rounded-full backdrop-blur-md shadow-sm border border-white/20 dark:border-gray-700/30">
+            <Button
+              onClick={() => setShowSearch(true)}
+              variant="ghost"
+              className="rounded-full w-10 h-10 p-0 hover:bg-white/60 dark:hover:bg-white/10"
+              title="Search Memories"
+            >
+              <Search className="w-5 h-5" />
+            </Button>
+            <div className="w-px h-4 bg-gray-300 dark:bg-gray-700 mx-1" />
             <Button
               onClick={() => setShowSuggestions(!showSuggestions)}
               variant="ghost"
-              className="text-black dark:text-white hover:bg-white/40 dark:hover:bg-[#171515]/40 rounded-2xl backdrop-blur-sm flex items-center gap-2 px-3 py-2 h-10"
-              title={showSuggestions ? "Hide suggestions" : "Show suggestions"}
+              className={`rounded-full px-4 h-10 ${showSuggestions ? 'bg-white dark:bg-white/10 shadow-sm' : ''}`}
             >
-              {showSuggestions ? <ChevronDown className="w-5 h-5" /> : <ChevronUp className="w-5 h-5" />}
-              <span className="text-sm">Suggestions</span>
+              Live AI
             </Button>
             <Button
               onClick={() => setShowChat(!showChat)}
               variant="ghost"
-              className="text-black dark:text-white hover:bg-white/40 dark:hover:bg-[#171515]/40 rounded-2xl backdrop-blur-sm flex items-center gap-2 px-3 py-2 h-10"
-              title={showChat ? "Hide chat" : "Show chat"}
+              className={`rounded-full px-4 h-10 ${showChat ? 'bg-white dark:bg-white/10 shadow-sm' : ''}`}
             >
-              {showChat ? <ChevronDown className="w-5 h-5" /> : <ChevronUp className="w-5 h-5" />}
-              <span className="text-sm">AI Chat</span>
+              Chat
             </Button>
-            <Button
+            <div className="w-px h-4 bg-gray-300 dark:bg-gray-700 mx-1" />
+             <Button
               onClick={() => noteCreatorRef.current?.handleSave()}
               variant="ghost"
-              className="text-black dark:text-white hover:bg-white/40 dark:hover:bg-[#171515]/40 w-10 h-10 p-0 rounded-2xl backdrop-blur-sm"
+              className="rounded-full w-10 h-10 p-0 hover:bg-green-100 hover:text-green-600 dark:hover:bg-green-900/30 dark:hover:text-green-400"
             >
               <Save className="w-5 h-5" />
             </Button>
-            <button
-              onClick={() => setInputMode(inputMode === 'text' ? 'audio' : 'text')}
-              className="px-6 py-2 rounded-full bg-white dark:bg-[#171515] backdrop-blur-md text-black dark:text-white font-medium hover:bg-white/90 dark:hover:bg-[#171515]/90 transition-all border border-white/40 dark:border-gray-600/40 shadow-lg"
-            >
-              {inputMode === 'text' ? 'Text' : 'Audio'}
-            </button>
           </div>
         </div>
 
@@ -419,6 +420,12 @@ If the user asks about old memories or references past ideas, refer to the memor
         note={viewingNote}
         isOpen={!!viewingNote}
         onClose={() => setViewingNote(null)}
+      />
+
+      <AISearchOverlay 
+        isOpen={showSearch}
+        onClose={() => setShowSearch(false)}
+        onNavigate={(note) => setViewingNote(note)}
       />
     </div>
   );
