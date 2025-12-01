@@ -5,7 +5,10 @@ import { Clock, Folder, Tag, X } from 'lucide-react';
 import { format } from 'date-fns';
 import AttachmentPanel from './AttachmentPanel';
 
-export default function NoteViewer({ note, isOpen, onClose }) {
+import { Button } from '@/components/ui/button';
+import { Merge } from 'lucide-react';
+
+export default function NoteViewer({ note, isOpen, onClose, onMerge }) {
   if (!note) return null;
 
   return (
@@ -47,11 +50,26 @@ export default function NoteViewer({ note, isOpen, onClose }) {
             )}
           </div>
           
-          <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
-            <Clock className="w-3 h-3" />
-            <span>{format(new Date(note.created_date), 'MMM d, yyyy')}</span>
-            <span className="mx-2">•</span>
-            <span>{note.storage_type === 'short_term' ? 'Short Term' : 'Long Term'}</span>
+          <div className="flex items-center justify-between pt-4 mt-4 border-t border-gray-100 dark:border-gray-800">
+            <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+                <Clock className="w-3 h-3" />
+                <span>{format(new Date(note.created_date), 'MMM d, yyyy')}</span>
+                <span className="mx-2">•</span>
+                <span>{note.storage_type === 'short_term' ? 'Short Term' : 'Long Term'}</span>
+            </div>
+            
+            {onMerge && (
+                <Button 
+                    onClick={() => {
+                        onMerge(note);
+                        onClose();
+                    }}
+                    className="bg-indigo-600 hover:bg-indigo-700 text-white flex items-center gap-2"
+                >
+                    <Merge className="w-4 h-4" />
+                    Merge into Current
+                </Button>
+            )}
           </div>
         </div>
       </DialogContent>

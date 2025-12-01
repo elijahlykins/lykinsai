@@ -47,6 +47,7 @@ const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, showSuggestion
   const [reminder, setReminder] = useState(null);
   const [showReminderPicker, setShowReminderPicker] = useState(false);
   const [suggestedQuestions, setSuggestedQuestions] = useState([]);
+  const [previewAttachment, setPreviewAttachment] = useState(null);
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const timerRef = useRef(null);
@@ -344,7 +345,36 @@ Make questions specific, insightful, and encouraging deeper thinking.`,
   React.useImperativeHandle(ref, () => ({
     handleSave: autoSave,
     getCurrentContent: () => content,
-    addConnection: handleAddConnection
+    addConnection: handleAddConnection,
+    mergeNote: (noteToMerge) => {
+      if (!noteToMerge) return;
+      
+      // Merge Content
+      const separator = `<br/><br/><h2>Merged Note: ${noteToMerge.title}</h2><br/>`;
+      setContent(prev => prev + separator + noteToMerge.content);
+      
+      // Merge Attachments
+      if (noteToMerge.attachments && noteToMerge.attachments.length > 0) {
+        setAttachments(prev => {
+          // Avoid duplicates by ID or URL
+          const newAtts = noteToMerge.attachments.filter(na => !prev.some(pa => pa.url === na.url));
+          return [...prev, ...newAtts];
+        });
+      }
+      
+      // Merge Tags
+      if (noteToMerge.tags && noteToMerge.tags.length > 0) {
+        setTags(prev => [...new Set([...prev, ...noteToMerge.tags])]);
+      }
+
+      // Merge Connections
+      if (noteToMerge.id) {
+          setSuggestedConnections(prev => {
+              if (prev.includes(noteToMerge.id)) return prev;
+              return [...prev, noteToMerge.id];
+          });
+      }
+    }
   }));
 
   const startRecording = async () => {
@@ -684,7 +714,7 @@ Return only the title, nothing else.`,
                         <X className="w-3 h-3 text-white" />
                       </button>
                       
-                      <div className="cursor-pointer" onClick={() => window.open(att.url, '_blank')}>
+                      <div className="cursor-pointer" onClick={() => setPreviewAttachment(att)}>
                          {att.type === 'image' ? (
                             <img src={att.url} alt={att.name} className="w-full h-auto object-cover" />
                          ) : att.type === 'video' ? (
@@ -1035,10 +1065,42 @@ Return only the title, nothing else.`,
         currentReminder={reminder}
         onSet={setReminder}
         onRemove={() => setReminder(null)}
-      />
-    </div>
-  );
-});
+        />
+
+        {/* Preview Dialog */}
+        <Dialog open={!!previewAttachment} onOpenChange={() => setPreviewAttachment(null)}>
+          <DialogContent className="bg-white dark:bg-[#1f1d1d]/95 border-gray-200 dark:border-gray-700 text-black dark:text-white max-w-4xl">
+          <DialogHeader>
+              <DialogTitle className="text-black dark:text-white">{previewAttachment?.name || 'Preview'}</DialogTitle>
+          </DialogHeader>
+          <div className="py-4 flex flex-col items-center">
+              {previewAttachment?.type === 'image' && (
+                  <img src={previewAttachment.url} alt="" className="max-w-full max-h-[70vh] object-contain rounded" />
+              )}
+              {previewAttachment?.type === 'video' && (
+                  <video src={previewAttachment.url} className="max-w-full max-h-[70vh] rounded" controls />
+              )}
+              {previewAttachment?.type === 'link' && (
+                  <div className="text-center">
+                      <LinkIcon className="w-16 h-16 text-blue-500 mx-auto mb-4" />
+                      <Button onClick={() => window.open(previewAttachment.url, '_blank')}>Open Link</Button>
+                  </div>
+              )}
+              {previewAttachment?.type === 'file' && (
+                  <div className="text-center">
+                      <FileText className="w-16 h-16 text-gray-500 mx-auto mb-4" />
+                      <Button onClick={() => window.open(previewAttachment.url, '_blank')}>Download File</Button>
+                  </div>
+              )}
+              {previewAttachment?.caption && (
+              <p className="text-gray-600 dark:text-gray-400 mt-4 text-center">{previewAttachment.caption}</p>
+              )}
+          </div>
+          </DialogContent>
+        </Dialog>
+        </div>
+        );
+        });
 
 NoteCreator.displayName = 'NoteCreator';
 

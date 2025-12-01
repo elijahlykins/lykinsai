@@ -429,6 +429,11 @@ If the user asks about old memories or references past ideas, refer to the memor
           }
           setViewingNote(null);
         }}
+        onMerge={(note) => {
+            if (noteCreatorRef.current) {
+                noteCreatorRef.current.mergeNote(note);
+            }
+        }}
       />
 
       <AISearchOverlay 
