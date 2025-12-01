@@ -520,7 +520,14 @@ Return only the title, nothing else.`,
         {/* Content Area - Whiteboard Style */}
         <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-hide">
         {inputMode === 'text' ? (
-          <div className="min-h-full flex flex-col max-w-3xl mx-auto py-12 px-8 md:px-12 transition-all duration-500 relative group cursor-text">
+          <div 
+            className="min-h-full flex flex-col max-w-3xl mx-auto py-12 px-8 md:px-12 transition-all duration-500 relative group cursor-text"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) {
+                quillRef.current?.focus();
+              }
+            }}
+          >
             <div className="absolute top-4 right-8 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
                <Button 
                  onClick={handleAIOrganize}
