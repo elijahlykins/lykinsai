@@ -15,7 +15,7 @@ export default function ConnectionSuggestions({ content, currentNoteId, allNotes
       } else {
         setSuggestions([]);
       }
-    }, 2000); // Debounce for 2 seconds
+    }, 3000); // Debounce for 3 seconds
 
     return () => clearTimeout(timer);
   }, [content]);
