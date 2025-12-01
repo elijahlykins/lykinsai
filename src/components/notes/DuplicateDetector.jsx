@@ -40,7 +40,8 @@ export default function DuplicateDetector({ notes, onMerge }) {
     setIsAnalyzing(true);
     try {
       // Group notes by similar characteristics
-      const notesContext = notes.map(n => 
+      // Limit to recent 50 notes to prevent rate limits
+      const notesContext = notes.slice(0, 50).map(n => 
         `ID: ${n.id}\nTitle: ${n.title}\nContent: ${n.content.substring(0, 200)}\nTags: ${n.tags?.join(', ') || 'None'}\nFolder: ${n.folder || 'Uncategorized'}`
       ).join('\n\n---\n\n');
 
