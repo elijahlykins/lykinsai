@@ -44,6 +44,7 @@ export default function MemoryPage() {
   const [selectedCards, setSelectedCards] = useState([]);
   const [bulkMode, setBulkMode] = useState(false);
   const [viewingNote, setViewingNote] = useState(null);
+  const [interactionNote, setInteractionNote] = useState(null);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
@@ -369,8 +370,7 @@ export default function MemoryPage() {
                       <button
                         onClick={() => {
                           if (!bulkMode) {
-                            // Navigate to create page with note id to edit
-                            navigate(createPageUrl('Create') + `?id=${note.id}`);
+                            setInteractionNote(note);
                           }
                         }}
                         className="w-full text-left"
@@ -527,6 +527,41 @@ export default function MemoryPage() {
       <TrashCleanup notes={notes} />
       <SettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <NoteViewer note={viewingNote} isOpen={!!viewingNote} onClose={() => setViewingNote(null)} />
+      
+      <Dialog open={!!interactionNote} onOpenChange={() => setInteractionNote(null)}>
+        <DialogContent className="bg-white dark:bg-[#171515] border-gray-200 dark:border-gray-700 text-black dark:text-white">
+          <DialogHeader>
+            <DialogTitle>Open Memory</DialogTitle>
+            <DialogDescription className="text-gray-500 dark:text-gray-400">
+              How would you like to view this memory?
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-4">
+            <Button 
+              onClick={() => {
+                setSelectedNote(interactionNote);
+                setInteractionNote(null);
+              }}
+              className="bg-indigo-600 hover:bg-indigo-700 text-white w-full h-12 text-lg justify-start px-6"
+            >
+              <Clock className="w-5 h-5 mr-3" />
+              View as Memory Card
+            </Button>
+            <Button 
+              onClick={() => {
+                navigate(createPageUrl('Create') + `?id=${interactionNote.id}`);
+                setInteractionNote(null);
+              }}
+              variant="outline"
+              className="border-gray-200 dark:border-gray-700 w-full h-12 text-lg justify-start px-6 hover:bg-gray-50 dark:hover:bg-white/5 text-black dark:text-white"
+            >
+              <Edit2 className="w-5 h-5 mr-3" />
+              Open in Create Studio
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {selectedNote && (
         <>
           <NoteLinkSelector
