@@ -60,8 +60,15 @@ export default function AISearchPage() {
   });
 
   const handleUpdateNote = async (id, data) => {
-    await updateNoteMutation.mutateAsync({ id, data });
-    setSelectedNote(prev => ({ ...prev, ...data }));
+    try {
+      await updateNoteMutation.mutateAsync({ id, data });
+      setSelectedNote(prev => ({ ...prev, ...data }));
+    } catch (error) {
+      console.warn('Error updating note:', error);
+      if (error.message && (error.message.includes('not found') || error.message.includes('404'))) {
+        setSelectedNote(null);
+      }
+    }
   };
 
   // Extract unique tags and folders
