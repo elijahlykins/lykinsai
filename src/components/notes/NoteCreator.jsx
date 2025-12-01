@@ -561,6 +561,7 @@ Return only the title, nothing else.`,
                 `}
               </style>
               <ReactQuill 
+                ref={quillRef}
                 theme="bubble"
                 value={content}
                 onChange={setContent}
