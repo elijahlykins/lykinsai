@@ -30,7 +30,8 @@ export default function ConnectionSuggestions({ content, currentNoteId, allNotes
         return;
       }
 
-      const notesContext = availableNotes.map((n, idx) => 
+      // Limit context to top 20 recent notes to prevent rate limits
+      const notesContext = availableNotes.slice(0, 20).map((n, idx) => 
         `[${idx}] ID: ${n.id}\nTitle: ${n.title}\nContent: ${n.content.substring(0, 200)}`
       ).join('\n\n');
 
