@@ -30,21 +30,18 @@ export default function EnhancedKnowledgeGraph({ notes, onSelectNote, onUpdateCo
       if (cachedGraph) {
         try {
           const parsed = JSON.parse(cachedGraph);
-          // Check if cache is valid (e.g. same number of notes)
-          if (parsed.nodes.length === notes.length) {
-            setGraphData(parsed);
-            return;
-          }
+          setGraphData(parsed);
+          return;
         } catch (e) {
           console.error('Error parsing graph cache', e);
         }
       }
-      // Only build if no valid cache or forced
-      if (!graphData) {
+      // Initial build only if no cache exists
+      if (!graphData && !cachedGraph) {
         buildGraph();
       }
     }
-  }, [notes]);
+  }, []); // Only run on mount, don't rebuild automatically on notes change
 
   useEffect(() => {
     if (graphData) {
@@ -60,8 +57,8 @@ export default function EnhancedKnowledgeGraph({ notes, onSelectNote, onUpdateCo
   const buildGraph = async () => {
     setIsAnalyzing(true);
     try {
-      // Analyze relationships using AI
-      const notesContext = notes.filter(n => n).map(n => 
+      // Limit to 40 recent notes to prevent rate limits
+      const notesContext = notes.slice(0, 40).filter(n => n).map(n => 
         `ID: ${n.id}\nTitle: ${n.title}\nContent: ${n.content.substring(0, 300)}\nTags: ${n.tags?.join(', ') || 'None'}\nFolder: ${n.folder || 'Uncategorized'}`
       ).join('\n\n---\n\n');
 

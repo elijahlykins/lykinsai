@@ -213,8 +213,11 @@ Return only the suggestions as an array.`,
         );
       }
 
-      const notesContext = filteredNotes.map(n => {
-        let context = `ID: ${n.id}\nTitle: ${n.title}\nContent: ${n.content}\nType: ${n.storage_type}`;
+      // Limit to top 30 matches to prevent rate limits
+      const limitedNotes = filteredNotes.slice(0, 30);
+      
+      const notesContext = limitedNotes.map(n => {
+        let context = `ID: ${n.id}\nTitle: ${n.title}\nContent: ${n.content.substring(0, 500)}\nType: ${n.storage_type}`;
         if (n.attachments && n.attachments.length > 0) {
           context += `\nAttachments: ${n.attachments.map(a => a.name || a.url).join(', ')}`;
         }
@@ -279,7 +282,7 @@ Return the IDs of relevant notes with their matching snippets, ranked by relevan
     if (query.trim().length >= 3) {
       suggestionTimeoutRef.current = setTimeout(() => {
         loadSuggestions(query);
-      }, 1000);
+      }, 2000);
     } else {
       setSuggestions([]);
     }

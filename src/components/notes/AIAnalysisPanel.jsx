@@ -87,7 +87,8 @@ ${personalityPrompts[personality]} ${detailPrompts[detailLevel]}`,
         return;
       }
 
-      const notesContext = otherNotes.map(n => `ID: ${n.id}\nTitle: ${n.title}\nContent: ${n.content.substring(0, 200)}`).join('\n\n');
+      // Limit to top 30 for connections
+      const notesContext = otherNotes.slice(0, 30).map(n => `ID: ${n.id}\nTitle: ${n.title}\nContent: ${n.content.substring(0, 200)}`).join('\n\n');
 
       const connections = await base44.integrations.Core.InvokeLLM({
         prompt: `Analyze this memory card and find meaningful connections to other memory cards:
