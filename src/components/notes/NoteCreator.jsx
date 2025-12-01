@@ -122,7 +122,10 @@ const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, showSuggestion
         // Adjust for scrolling container if needed, but fixed position usually works with getBounds relative to viewport if we offset
         // ReactQuill getBounds returns relative to editor container. 
         // We need screen coordinates for fixed menu.
-        const editorRect = editor.root.getBoundingClientRect();
+        // Fix: Use quillRef to get the full editor instance which has the root DOM node
+        const quillInstance = quillRef.current?.getEditor();
+        if (!quillInstance) return;
+        const editorRect = quillInstance.root.getBoundingClientRect();
         
         setSlashStartIndex(lastSlashIndex);
         setSlashFilter(filterText);
