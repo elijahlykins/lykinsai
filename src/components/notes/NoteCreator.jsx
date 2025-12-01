@@ -433,26 +433,35 @@ Return only the title, nothing else.`,
 
   return (
     <div className="h-full flex flex-col relative">
-        {/* Content Area - Notion Style */}
-        <div className="flex-1 overflow-auto">
+        {/* Content Area - Whiteboard Style */}
+        <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-hide">
         {inputMode === 'text' ? (
-          <div className="h-full flex flex-col gap-6 py-12 px-8 md:px-12 lg:px-16 xl:px-24">
+          <div className="min-h-full flex flex-col justify-center max-w-4xl mx-auto py-20 px-8 md:px-12 transition-all duration-500">
             <Input
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              placeholder="New Idea"
-              className="text-6xl font-bold bg-transparent border-0 text-black dark:text-white placeholder:text-gray-400 focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0 h-auto px-0"
+              placeholder="Untitled Idea"
+              className="text-5xl md:text-6xl font-bold bg-transparent border-0 text-black dark:text-white placeholder:text-gray-300/50 focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0 h-auto px-0 mb-6"
               disabled={isProcessing}
             />
 
-            {/* Metadata Bar */}
-            <div className="flex gap-2 items-center">
+            <Textarea
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              placeholder="Start typing..."
+              className="flex-1 w-full bg-transparent border-0 text-black dark:text-white placeholder:text-gray-300/50 resize-none text-xl md:text-2xl leading-relaxed focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0 min-h-[50vh]"
+              disabled={isProcessing}
+              autoFocus
+            />
+
+            {/* Metadata Bar - Subtle & Bottom */}
+            <div className="mt-8 flex flex-wrap gap-2 items-center opacity-50 hover:opacity-100 transition-opacity">
               <button
                 onClick={() => setShowMetadata(!showMetadata)}
-                className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white dark:bg-[#171515] hover:bg-gray-200 dark:hover:bg-[#171515]/80 text-xs text-black dark:text-white transition-all border border-gray-200 dark:border-gray-600"
+                className="flex items-center gap-2 px-3 py-1.5 rounded-full hover:bg-gray-100 dark:hover:bg-white/10 text-xs text-black dark:text-white transition-all"
               >
-                <Tag className="w-3 h-3 text-black dark:text-white" />
-                Tags ({tags.length})
+                <Tag className="w-3 h-3" />
+                {tags.length > 0 ? tags.join(', ') : 'Add Tags'}
               </button>
               <button
                 onClick={() => setShowMetadata(!showMetadata)}
@@ -471,37 +480,31 @@ Return only the title, nothing else.`,
             </div>
 
             {showMetadata && (
-              <div className="space-y-4 p-4 bg-white dark:bg-[#171515] rounded-lg border border-gray-200 dark:border-gray-600">
-                <div>
-                  <label className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2 block">Tags</label>
-                  <TagInput tags={tags} onChange={setTags} />
-                </div>
-                <div>
-                  <label className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2 block">Folder</label>
-                  <Select value={folder} onValueChange={setFolder}>
-                    <SelectTrigger className="bg-white dark:bg-[#171515] border-gray-300 dark:border-gray-600 text-black dark:text-white">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent className="bg-white dark:bg-[#171515] border-gray-200 dark:border-gray-700">
-                      <SelectItem value="Uncategorized">Uncategorized</SelectItem>
-                      <SelectItem value="Projects">Projects</SelectItem>
-                      <SelectItem value="Ideas">Ideas</SelectItem>
-                      <SelectItem value="Research">Research</SelectItem>
-                      <SelectItem value="Personal">Personal</SelectItem>
-                      <SelectItem value="Work">Work</SelectItem>
-                    </SelectContent>
-                  </Select>
+              <div className="w-full mt-4 p-6 bg-white/50 dark:bg-white/5 backdrop-blur-xl rounded-2xl border border-white/20 dark:border-white/10 shadow-lg">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div>
+                    <label className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2 block">Tags</label>
+                    <TagInput tags={tags} onChange={setTags} />
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2 block">Folder</label>
+                    <Select value={folder} onValueChange={setFolder}>
+                      <SelectTrigger className="bg-transparent border-gray-200 dark:border-gray-700">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="Uncategorized">Uncategorized</SelectItem>
+                        <SelectItem value="Projects">Projects</SelectItem>
+                        <SelectItem value="Ideas">Ideas</SelectItem>
+                        <SelectItem value="Research">Research</SelectItem>
+                        <SelectItem value="Personal">Personal</SelectItem>
+                        <SelectItem value="Work">Work</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </div>
               </div>
             )}
-
-            <Textarea
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              placeholder="Start typing..."
-              className="flex-1 w-full bg-transparent border-0 text-black dark:text-white placeholder:text-gray-400 resize-none text-lg focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0"
-              disabled={isProcessing}
-            />
           </div>
         ) : (
           <div className="space-y-6 h-full">
@@ -543,41 +546,46 @@ Return only the title, nothing else.`,
         )}
       </div>
 
-      {/* Suggestions Panel - Fixed position on right */}
-      {showSuggestions && content.length > 50 && inputMode === 'text' && (
-        <div className="fixed right-0 top-20 bottom-0 w-96 border-l border-white/20 dark:border-gray-700/30 overflow-auto p-6 space-y-6 bg-glass backdrop-blur-2xl z-10">
-          {/* Suggested Questions */}
-          <div className="clay-card p-4 space-y-3">
-            <div className="flex items-center gap-2">
-              <Lightbulb className="w-5 h-5 text-black dark:text-white" />
-              <h3 className="font-semibold text-black dark:text-white">Suggested Questions</h3>
+      {/* Live AI Feedback - Floating Panel */}
+      {showSuggestions && content.length > 30 && inputMode === 'text' && (
+        <div className="absolute right-8 top-1/2 -translate-y-1/2 w-80 space-y-4 pointer-events-none">
+          <div className="pointer-events-auto bg-white/80 dark:bg-[#1f1d1d]/80 backdrop-blur-xl rounded-2xl p-5 shadow-xl border border-white/20 dark:border-white/10 transition-all duration-500 animate-in fade-in slide-in-from-right-4">
+            <div className="flex items-center gap-2 mb-3">
+              <Lightbulb className="w-4 h-4 text-yellow-500" />
+              <h3 className="text-sm font-semibold text-black dark:text-white">AI Thoughts</h3>
             </div>
+            
             {suggestedQuestions.length > 0 ? (
               <div className="space-y-2">
-                {suggestedQuestions.map((question, idx) => (
+                {suggestedQuestions.slice(0, 2).map((question, idx) => (
                   <button
                     key={idx}
                     onClick={() => onQuestionClick?.(question)}
-                    className="w-full p-3 bg-white dark:bg-[#171515] rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-[#1f1d1d] transition-all text-left"
+                    className="w-full p-3 bg-white/50 dark:bg-black/20 rounded-xl hover:bg-white dark:hover:bg-black/40 transition-all text-left text-xs leading-relaxed text-gray-800 dark:text-gray-200"
                   >
-                    <p className="text-sm text-black dark:text-white">{question}</p>
+                    {question}
                   </button>
                 ))}
               </div>
             ) : (
-              <p className="text-xs text-gray-500 dark:text-gray-400">Generating questions...</p>
+              <div className="flex items-center gap-2 text-xs text-gray-400">
+                <Loader2 className="w-3 h-3 animate-spin" />
+                <span>Thinking...</span>
+              </div>
             )}
           </div>
-
-          {/* Suggested Connections */}
+          
           {allNotes.length > 0 && (
-            <ConnectionSuggestions
-              content={content}
-              currentNoteId={null}
-              allNotes={allNotes}
-              onConnect={handleAddConnection}
-              onViewNote={onConnectionClick}
-            />
+             <div className="pointer-events-auto bg-white/80 dark:bg-[#1f1d1d]/80 backdrop-blur-xl rounded-2xl p-5 shadow-xl border border-white/20 dark:border-white/10 transition-all duration-500 delay-100 animate-in fade-in slide-in-from-right-4">
+               <ConnectionSuggestions
+                 content={content}
+                 currentNoteId={null}
+                 allNotes={allNotes}
+                 onConnect={handleAddConnection}
+                 onViewNote={onConnectionClick}
+                 compact={true}
+               />
+             </div>
           )}
         </div>
       )}
