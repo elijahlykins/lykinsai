@@ -1,8 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
+import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
-import { Mic, Square, Plus, Link as LinkIcon, Image, Video, FileText, Tag, Folder, Bell, Lightbulb, Loader2, Bold, Italic, List, Heading1, Heading2, Quote, MoreHorizontal, Grid } from 'lucide-react';
+import { Mic, Square, Plus, Link as LinkIcon, Image, Video, FileText, Tag, Folder, Bell, Loader2, Lightbulb } from 'lucide-react';
 import { base44 } from '@/api/base44Client';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -10,64 +11,129 @@ import AttachmentPanel from './AttachmentPanel';
 import TagInput from './TagInput';
 import ConnectionSuggestions from './ConnectionSuggestions';
 import ReminderPicker from './ReminderPicker';
-import ReactQuill from 'react-quill';
-import 'react-quill/dist/quill.snow.css';
 
-const NoteCreator = React.forwardRef(({ 
-  onNoteCreated, 
-  inputMode, 
-  showSuggestions = true, 
-  onQuestionClick, 
-  onConnectionClick,
-  activeItem,
-  gridItems,
-  onUpdateActiveItem,
-  onSwapItem
-}, ref) => {
+const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, showSuggestions = true, onQuestionClick, onConnectionClick }, ref) => {
+  const [title, setTitle] = useState('');
+  const [content, setContent] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [audioFile, setAudioFile] = useState(null);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
+  const [attachments, setAttachments] = useState([]);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
+  const [tags, setTags] = useState([]);
+  const [folder, setFolder] = useState('Uncategorized');
   const [showMetadata, setShowMetadata] = useState(false);
-  const [suggestedQuestions, setSuggestedQuestions] = useState([]);
+  const [suggestedConnections, setSuggestedConnections] = useState([]);
+  const [reminder, setReminder] = useState(null);
   const [showReminderPicker, setShowReminderPicker] = useState(false);
-  
+  const [suggestedQuestions, setSuggestedQuestions] = useState([]);
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const timerRef = useRef(null);
+  const saveTimeoutRef = useRef(null);
   const fileInputRef = useRef(null);
 
   const { data: allNotes = [] } = useQuery({
     queryKey: ['notes'],
     queryFn: () => base44.entities.Note.list('-created_date'),
-    staleTime: 5 * 60 * 1000,
+    retry: 2,
+    refetchOnWindowFocus: false,
+    staleTime: 5 * 60 * 1000, // 5 minutes
+    cacheTime: 10 * 60 * 1000, // 10 minutes
   });
 
-  // Extract active item properties for easier access
-  const { title, content, attachments, tags, folder, reminder } = activeItem;
+  // Load saved draft from localStorage on mount
+  useEffect(() => {
+    const savedDraft = localStorage.getItem('lykinsai_draft');
+    if (savedDraft) {
+      const draft = JSON.parse(savedDraft);
+      setTitle(draft.title || '');
+      setContent(draft.content || '');
+      setAttachments(draft.attachments || []);
+      setTags(draft.tags || []);
+      setFolder(draft.folder || 'Uncategorized');
+      setReminder(draft.reminder || null);
+      setSuggestedConnections(draft.suggestedConnections || []);
+    }
+  }, []);
 
-  // Helpers to update active item
-  const updateTitle = (val) => onUpdateActiveItem({ title: val });
-  const updateContent = (val) => onUpdateActiveItem({ content: val });
-  const updateTags = (val) => onUpdateActiveItem({ tags: val });
-  const updateFolder = (val) => onUpdateActiveItem({ folder: val });
-  const updateReminder = (val) => onUpdateActiveItem({ reminder: val });
-  const addAttachment = (att) => onUpdateActiveItem({ attachments: [...(attachments || []), att] });
-  const updateAttachments = (newAtts) => onUpdateActiveItem({ attachments: newAtts });
+  // Auto-trash draft after 1 hour of inactivity
+  useEffect(() => {
+    const checkAndTrashDraft = async () => {
+      const savedDraft = localStorage.getItem('lykinsai_draft');
+      if (!savedDraft) return;
+
+      const draft = JSON.parse(savedDraft);
+      const lastEditTime = draft.lastEditTime || Date.now();
+      const oneHourAgo = Date.now() - (60 * 60 * 1000);
+
+      if (lastEditTime < oneHourAgo) {
+        // Draft is older than 1 hour, move to trash
+        if (draft.title || draft.content || draft.attachments?.length > 0) {
+          try {
+            const colors = ['lavender', 'mint', 'blue', 'peach'];
+            const randomColor = colors[Math.floor(Math.random() * colors.length)];
+            
+            await base44.entities.Note.create({
+              title: draft.title || 'Unsaved Draft',
+              content: draft.content || '',
+              attachments: draft.attachments || [],
+              tags: draft.tags || [],
+              folder: draft.folder || 'Uncategorized',
+              reminder: draft.reminder || null,
+              connected_notes: draft.suggestedConnections || [],
+              color: randomColor,
+              trashed: true,
+              trash_date: new Date().toISOString(),
+              source: 'user'
+            });
+            localStorage.removeItem('lykinsai_draft');
+          } catch (error) {
+            console.error('Error moving draft to trash:', error);
+          }
+        }
+      }
+    };
+
+    // Check immediately on mount
+    checkAndTrashDraft();
+
+    // Check every 5 minutes
+    const interval = setInterval(checkAndTrashDraft, 5 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Save draft to localStorage whenever state changes
+  useEffect(() => {
+    const draft = {
+      title,
+      content,
+      attachments,
+      tags,
+      folder,
+      reminder,
+      suggestedConnections,
+      lastEditTime: Date.now()
+    };
+    localStorage.setItem('lykinsai_draft', JSON.stringify(draft));
+  }, [title, content, attachments, tags, folder, reminder, suggestedConnections]);
+
+  const handleAddConnection = (noteId) => {
+    setSuggestedConnections([...suggestedConnections, noteId]);
+  };
 
   // Generate suggested questions when content changes
   useEffect(() => {
     const generateQuestions = async () => {
-      if (content && content.length > 50 && activeItem.type === 'draft') {
+      if (content.length > 50) {
         try {
-          // Strip HTML for analysis
-          const plainText = content.replace(/<[^>]*>?/gm, '');
-          if (plainText.length < 50) return;
-
           const result = await base44.integrations.Core.InvokeLLM({
-            prompt: `Based on this note content, generate 3 brief, thought-provoking questions.
-Content: "${plainText.substring(0, 1000)}"`,
+            prompt: `Based on this note content, generate 3-5 thought-provoking questions that would help the user explore this idea further.
+
+Content: "${content}"
+
+Make questions specific, insightful, and encouraging deeper thinking.`,
             response_json_schema: {
               type: 'object',
               properties: {
@@ -78,68 +144,244 @@ Content: "${plainText.substring(0, 1000)}"`,
           setSuggestedQuestions(result.questions || []);
         } catch (error) {
           console.error('Error generating questions:', error);
+          setSuggestedQuestions([]);
         }
+      } else {
+        setSuggestedQuestions([]);
       }
     };
 
-    const timeout = setTimeout(generateQuestions, 2000);
+    const timeout = setTimeout(generateQuestions, 1500);
     return () => clearTimeout(timeout);
-  }, [content, activeItem.type]);
+  }, [content]);
 
   React.useImperativeHandle(ref, () => ({
     handleSave: autoSave,
     getCurrentContent: () => content
   }));
 
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        const audioFile = new File([audioBlob], 'recording.webm', { type: 'audio/webm' });
+        setAudioFile(audioFile);
+        stream.getTracks().forEach(track => track.stop());
+      };
+
+      mediaRecorder.start();
+      setIsRecording(true);
+      setRecordingTime(0);
+
+      // Start timer
+      timerRef.current = setInterval(() => {
+        setRecordingTime(prev => prev + 1);
+      }, 1000);
+    } catch (error) {
+      console.error('Error accessing microphone:', error);
+      alert('Unable to access microphone. Please grant permission.');
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+      clearInterval(timerRef.current);
+    }
+  };
+
+  const formatTime = (seconds) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const generateAIAnalysis = async (noteContent) => {
+    try {
+      const analysis = await base44.integrations.Core.InvokeLLM({
+        prompt: `Analyze this idea/note and provide:
+1. A validation (Is this idea viable/interesting? Why or why not?)
+2. Three thought-provoking questions to explore this idea further
+3. Key insights or connections to consider
+
+Note content: "${noteContent}"
+
+Be constructive, insightful, and encouraging.`,
+        response_json_schema: {
+          type: 'object',
+          properties: {
+            validation: { type: 'string' },
+            questions: { type: 'array', items: { type: 'string' } },
+            insights: { type: 'string' }
+          }
+        }
+      });
+      return analysis;
+    } catch (error) {
+      return null;
+    }
+  };
+
   const autoSave = async () => {
-    if (!title?.trim() && !content?.trim() && !audioFile && (!attachments || attachments.length === 0)) return;
+    // Allow saving if ANY content exists: title, text, audio, or attachments
+    if (!title.trim() && !content.trim() && !audioFile && attachments.length === 0) return;
 
     setIsProcessing(true);
     try {
       let audioUrl = null;
-      let finalContent = content; // This is HTML now
-      let plainTextContent = content.replace(/<[^>]*>?/gm, '');
+      let finalContent = content;
 
       // Upload audio if present
       if (audioFile) {
         const { file_url } = await base44.integrations.Core.UploadFile({ file: audioFile });
         audioUrl = file_url;
+        
+        // Extract text from audio
         const transcription = await base44.integrations.Core.InvokeLLM({
           prompt: 'Transcribe this audio file and return only the transcribed text.',
           file_urls: [file_url]
         });
-        finalContent += `<p><strong>Transcription:</strong> ${transcription}</p>`;
-        plainTextContent += `\nTranscription: ${transcription}`;
+        finalContent = content + (content ? '\n\n' : '') + transcription;
       }
 
-      // Generate Title if missing
-      let finalTitle = title?.trim() || 'Untitled Idea';
-      if ((!title || !title.trim()) && plainTextContent.length > 10) {
-         try {
-          const titleRes = await base44.integrations.Core.InvokeLLM({
-            prompt: `Create a short title (max 5 words) for this text: "${plainTextContent.substring(0, 300)}"`,
+      // Process attachments and extract content for AI analysis
+      for (const attachment of attachments) {
+        if (attachment.type === 'image' || attachment.type === 'file') {
+          try {
+            const attachmentDescription = await base44.integrations.Core.InvokeLLM({
+              prompt: 'Describe what you see in this file or image. Be detailed and comprehensive.',
+              file_urls: [attachment.url]
+            });
+            finalContent = finalContent + (finalContent ? '\n\n' : '') + `[Attachment: ${attachment.name}]\n${attachmentDescription}`;
+            if (attachment.caption) {
+              finalContent += `\nCaption: ${attachment.caption}`;
+            }
+          } catch (error) {
+            console.error('Error analyzing attachment:', error);
+          }
+        } else if (attachment.type === 'link') {
+          finalContent = finalContent + (finalContent ? '\n\n' : '') + `[Link: ${attachment.url}]`;
+          if (attachment.caption) {
+            finalContent += `\n${attachment.caption}`;
+          }
+        }
+      }
+
+      // Generate AI analysis
+      const settings = JSON.parse(localStorage.getItem('lykinsai_settings') || '{}');
+      const aiAnalysis = settings.aiAnalysisAuto ? await generateAIAnalysis(finalContent) : null;
+
+      // Auto-generate tags and folder suggestions
+      let finalTags = tags;
+      let finalFolder = folder;
+      
+      if ((tags.length === 0 || folder === 'Uncategorized') && finalContent.length > 0) {
+        try {
+          const suggestions = await base44.integrations.Core.InvokeLLM({
+            prompt: `Analyze this note and provide:
+1. 3-5 relevant tags (single words or short phrases, lowercase)
+2. Best folder category from: Projects, Ideas, Research, Personal, Work, or Uncategorized
+
+Note: "${finalContent.substring(0, 500)}"`,
+            response_json_schema: {
+              type: 'object',
+              properties: {
+                tags: { type: 'array', items: { type: 'string' } },
+                folder: { type: 'string' }
+              }
+            }
           });
-          finalTitle = titleRes.replace(/^"|"$/g, '');
-         } catch (e) {}
+          
+          if (tags.length === 0 && suggestions.tags) {
+            finalTags = suggestions.tags.slice(0, 5);
+          }
+          if (folder === 'Uncategorized' && suggestions.folder) {
+            finalFolder = suggestions.folder;
+          }
+        } catch (error) {
+          finalTags = tags.length > 0 ? tags : [];
+        }
+      }
+      
+      // Auto-generate summary
+      let summary = null;
+      if (finalContent.length > 100) {
+        try {
+          summary = await base44.integrations.Core.InvokeLLM({
+            prompt: `Create a brief 2-3 sentence summary of this note:
+
+"${finalContent.substring(0, 800)}"
+
+Be concise and capture the key points.`
+          });
+        } catch (error) {
+          summary = null;
+        }
+      }
+
+      // Use user's title or generate one
+      let finalTitle = title.trim() || 'New Idea';
+      if (!title.trim() && finalContent.length > 0) {
+        try {
+          const titleResponse = await base44.integrations.Core.InvokeLLM({
+            prompt: `Read this note and create a clear, descriptive title that captures the main topic or idea. Use simple, everyday language. Keep it under 6 words. Be specific about what the note is about, not vague.
+
+Note content: "${finalContent.substring(0, 300)}"
+
+Return only the title, nothing else.`,
+          });
+          finalTitle = titleResponse.trim().replace(/^["']|["']$/g, '');
+        } catch (error) {
+          finalTitle = 'New Idea';
+        }
+      } else if (!title.trim() && attachments.length > 0) {
+        finalTitle = `Note with ${attachments.length} attachment${attachments.length > 1 ? 's' : ''}`;
+      } else if (!title.trim() && audioFile) {
+        finalTitle = 'Voice Note';
       }
 
       const colors = ['lavender', 'mint', 'blue', 'peach'];
-      
-      await base44.entities.Note.create({
+      const randomColor = colors[Math.floor(Math.random() * colors.length)];
+
+      // Create note
+      const newNote = await base44.entities.Note.create({
         title: finalTitle,
-        content: plainTextContent, // Searchable plain text
-        raw_text: finalContent, // HTML content stored here
+        content: finalContent,
+        raw_text: content,
         audio_url: audioUrl,
-        attachments: attachments || [],
-        tags: tags || [],
-        folder: folder || 'Uncategorized',
-        reminder: reminder || null,
-        color: colors[Math.floor(Math.random() * colors.length)],
+        ai_analysis: aiAnalysis,
+        color: randomColor,
+        connected_notes: suggestedConnections,
+        tags: finalTags,
+        folder: finalFolder,
+        reminder: reminder,
+        attachments: attachments,
+        summary: summary,
         source: 'user'
       });
 
-      onNoteCreated();
+      setTitle('');
+      setContent('');
       setAudioFile(null);
+      setAttachments([]);
+      setTags([]);
+      setFolder('Uncategorized');
+      setSuggestedConnections([]);
+      setReminder(null);
+      localStorage.removeItem('lykinsai_draft');
+      onNoteCreated();
     } catch (error) {
       console.error('Error creating note:', error);
     } finally {
@@ -147,122 +389,114 @@ Content: "${plainText.substring(0, 1000)}"`,
     }
   };
 
-  // --- Grid Item Renderer ---
-  const renderGridItem = (item) => {
-    return (
-      <div 
-        key={item.id}
-        onClick={() => onSwapItem(item)}
-        className="w-full aspect-square bg-white dark:bg-[#1f1d1d] rounded-xl border border-gray-200 dark:border-gray-700 p-3 cursor-pointer hover:ring-2 hover:ring-blue-400 transition-all flex flex-col gap-2 overflow-hidden relative group"
-      >
-        <div className="flex items-center justify-between">
-          <span className="text-[10px] font-medium text-gray-400 uppercase tracking-wider truncate">
-            {item.type === 'draft' ? 'Draft' : 'Imported'}
-          </span>
-          {item.type === 'image' && <Image className="w-3 h-3 text-gray-400" />}
-        </div>
-        
-        <h4 className="font-medium text-xs text-black dark:text-white line-clamp-2 leading-tight">
-          {item.title || item.name || 'Untitled'}
-        </h4>
-        
-        {item.content && (
-          <div className="text-[10px] text-gray-500 line-clamp-3" dangerouslySetInnerHTML={{ __html: item.content }} />
-        )}
 
-        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/5 dark:group-hover:bg-white/5 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100">
-           <span className="text-xs font-medium bg-white dark:bg-black px-2 py-1 rounded-full shadow-sm">Open</span>
-        </div>
-      </div>
-    );
+
+  const handleFileUpload = async (file) => {
+    try {
+      const { file_url } = await base44.integrations.Core.UploadFile({ file });
+      const attachment = {
+        id: Date.now(),
+        type: file.type.startsWith('image/') ? 'image' : file.type.startsWith('video/') ? 'video' : 'file',
+        url: file_url,
+        name: file.name,
+        caption: '',
+        group: 'Ungrouped'
+      };
+      setAttachments([...attachments, attachment]);
+      setShowAttachMenu(false);
+    } catch (error) {
+      console.error('Error uploading file:', error);
+    }
   };
 
-  // --- Toolbar for Quill ---
-  const modules = {
-    toolbar: [
-      [{ 'header': [1, 2, false] }],
-      ['bold', 'italic', 'underline', 'strike'],
-      [{ 'list': 'ordered'}, { 'list': 'bullet' }],
-      ['blockquote', 'code-block'],
-      ['clean']
-    ],
+  const handleLinkAdd = (url) => {
+    if (!url.trim()) return;
+    const attachment = {
+      id: Date.now(),
+      type: 'link',
+      url: url.trim(),
+      name: url.trim(),
+      caption: '',
+      group: 'Ungrouped'
+    };
+    setAttachments([...attachments, attachment]);
+    setShowAttachMenu(false);
   };
 
-  const formats = [
-    'header',
-    'bold', 'italic', 'underline', 'strike',
-    'list', 'bullet',
-    'blockquote', 'code-block'
-  ];
+  const removeAttachment = (id) => {
+    setAttachments(attachments.filter(a => a.id !== id));
+  };
+
+  const updateAttachment = (id, updates) => {
+    setAttachments(attachments.map(a => a.id === id ? { ...a, ...updates } : a));
+  };
 
   return (
-    <div className="h-full flex overflow-hidden">
-      {/* LEFT GRID COLUMN */}
-      <div className="w-64 flex-shrink-0 border-r border-white/20 dark:border-gray-700/30 bg-glass-sidebar p-4 overflow-y-auto space-y-4 hidden md:block">
-        <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider flex items-center gap-2">
-          <Grid className="w-3 h-3" />
-          Context & Imports
-        </h3>
-        
-        <div className="grid grid-cols-1 gap-3">
-           {/* Placeholder if empty */}
-           {gridItems.length === 0 && (
-             <div className="border border-dashed border-gray-300 dark:border-gray-700 rounded-xl p-6 text-center">
-               <p className="text-xs text-gray-400">Imported ideas and files will appear here.</p>
-             </div>
-           )}
-
-           {gridItems.map(renderGridItem)}
-        </div>
-      </div>
-
-      {/* CENTER MAIN STAGE */}
-      <div className="flex-1 overflow-y-auto relative bg-white/50 dark:bg-[#121212]/50">
+    <div className="h-full flex flex-col relative">
+        {/* Content Area - Whiteboard Style */}
+        <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-hide">
         {inputMode === 'text' ? (
-          <div className="max-w-3xl mx-auto py-16 px-8 min-h-full flex flex-col">
-            
-            {/* Header / Title */}
+          <div className="min-h-full flex flex-col justify-center max-w-4xl mx-auto py-20 px-8 md:px-12 transition-all duration-500">
             <Input
               value={title}
-              onChange={(e) => updateTitle(e.target.value)}
+              onChange={(e) => setTitle(e.target.value)}
               placeholder="Untitled Idea"
-              className="text-4xl font-medium text-black dark:text-white bg-transparent border-0 placeholder:text-gray-300 focus:ring-0 px-0 mb-4"
+              className="text-5xl md:text-6xl font-bold bg-transparent border-0 text-black dark:text-white placeholder:text-gray-300/50 focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0 h-auto px-0 mb-6"
               disabled={isProcessing}
             />
 
-            {/* Metadata Toggles */}
-            <div className="flex flex-wrap gap-2 mb-6">
-               <button 
-                 onClick={() => setShowMetadata(!showMetadata)}
-                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm text-gray-500 hover:bg-gray-100 dark:hover:bg-white/5 transition-colors"
-               >
-                 <Tag className="w-4 h-4" />
-                 {tags && tags.length > 0 ? tags.join(', ') : 'Add tags'}
-               </button>
-               <button 
-                 onClick={() => setShowMetadata(!showMetadata)}
-                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm text-gray-500 hover:bg-gray-100 dark:hover:bg-white/5 transition-colors"
-               >
-                 <Folder className="w-4 h-4" />
-                 {folder || 'No Folder'}
-               </button>
+            <Textarea
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              placeholder="Start typing..."
+              className="flex-1 w-full bg-transparent border-0 text-black dark:text-white placeholder:text-gray-300/50 resize-none text-xl md:text-2xl leading-relaxed focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0 min-h-[50vh]"
+              disabled={isProcessing}
+              autoFocus
+            />
+
+            {/* Metadata Bar - Subtle & Bottom */}
+            <div className="mt-8 flex flex-wrap gap-2 items-center opacity-50 hover:opacity-100 transition-opacity">
+              <button
+                onClick={() => setShowMetadata(!showMetadata)}
+                className="flex items-center gap-2 px-3 py-1.5 rounded-full hover:bg-gray-100 dark:hover:bg-white/10 text-xs text-black dark:text-white transition-all"
+              >
+                <Tag className="w-3 h-3" />
+                {tags.length > 0 ? tags.join(', ') : 'Add Tags'}
+              </button>
+              <button
+                onClick={() => setShowMetadata(!showMetadata)}
+                className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white dark:bg-[#171515] hover:bg-gray-200 dark:hover:bg-[#171515]/80 text-xs text-black dark:text-white transition-all border border-gray-200 dark:border-gray-600"
+              >
+                <Folder className="w-3 h-3 text-black dark:text-white" />
+                {folder}
+              </button>
+              <button
+                onClick={() => setShowReminderPicker(true)}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-full ${reminder ? 'bg-yellow-100 dark:bg-yellow-900/30' : 'bg-white dark:bg-[#171515]'} hover:bg-gray-200 dark:hover:bg-[#171515]/80 text-xs text-black dark:text-white transition-all border border-gray-200 dark:border-gray-600`}
+              >
+                <Bell className="w-3 h-3 text-black dark:text-gray-300" />
+                {reminder ? 'Reminder Set' : 'Set Reminder'}
+              </button>
             </div>
 
             {showMetadata && (
-              <div className="mb-8 p-6 bg-white dark:bg-[#1f1d1d] rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm animate-in slide-in-from-top-2">
+              <div className="w-full mt-4 p-6 bg-white/50 dark:bg-white/5 backdrop-blur-xl rounded-2xl border border-white/20 dark:border-white/10 shadow-lg">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div>
-                    <label className="text-xs font-bold text-gray-400 uppercase mb-2 block">Tags</label>
-                    <TagInput tags={tags || []} onChange={updateTags} />
+                    <label className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2 block">Tags</label>
+                    <TagInput tags={tags} onChange={setTags} />
                   </div>
                   <div>
-                    <label className="text-xs font-bold text-gray-400 uppercase mb-2 block">Folder</label>
-                    <Select value={folder} onValueChange={updateFolder}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
+                    <label className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2 block">Folder</label>
+                    <Select value={folder} onValueChange={setFolder}>
+                      <SelectTrigger className="bg-transparent border-gray-200 dark:border-gray-700">
+                        <SelectValue />
+                      </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="Uncategorized">Uncategorized</SelectItem>
                         <SelectItem value="Projects">Projects</SelectItem>
                         <SelectItem value="Ideas">Ideas</SelectItem>
+                        <SelectItem value="Research">Research</SelectItem>
                         <SelectItem value="Personal">Personal</SelectItem>
                         <SelectItem value="Work">Work</SelectItem>
                       </SelectContent>
@@ -271,201 +505,181 @@ Content: "${plainText.substring(0, 1000)}"`,
                 </div>
               </div>
             )}
-
-            {/* Rich Text Editor */}
-            <div className="flex-1 active-editor-wrapper">
-              <style>{`
-                .ql-toolbar { border: none !important; border-bottom: 1px solid #eee !important; padding-left: 0 !important; }
-                .ql-container { border: none !important; font-size: 1.125rem; }
-                .ql-editor { padding: 1.5rem 0 !important; min-height: 300px; }
-                .ql-editor.ql-blank::before { color: #a0aec0; font-style: normal; }
-                .dark .ql-toolbar { border-bottom: 1px solid #333 !important; }
-                .dark .ql-stroke { stroke: #a0aec0 !important; }
-                .dark .ql-fill { fill: #a0aec0 !important; }
-                .dark .ql-picker { color: #a0aec0 !important; }
-              `}</style>
-              <ReactQuill 
-                theme="snow"
-                value={content || ''}
-                onChange={updateContent}
-                modules={modules}
-                formats={formats}
-                placeholder="Type something amazing..."
-                className="h-full"
-              />
-            </div>
           </div>
         ) : (
-          /* Audio Recorder UI */
-          <div className="h-full flex flex-col items-center justify-center p-8">
-             <div className="text-center space-y-6">
-               <div className={`w-32 h-32 rounded-full flex items-center justify-center transition-all ${isRecording ? 'bg-red-100 dark:bg-red-900/20 animate-pulse' : 'bg-gray-100 dark:bg-gray-800'}`}>
-                 <Mic className={`w-12 h-12 ${isRecording ? 'text-red-500' : 'text-gray-400'}`} />
-               </div>
-               
-               <div>
-                 <h2 className="text-2xl font-semibold text-black dark:text-white">
-                   {isRecording ? 'Recording...' : audioFile ? 'Recording Saved' : 'Voice Note'}
-                 </h2>
-                 <p className="text-gray-500 mt-2 font-mono">
-                   {Math.floor(recordingTime / 60)}:{(recordingTime % 60).toString().padStart(2, '0')}
-                 </p>
-               </div>
-
-               <div className="flex gap-4 justify-center">
-                 {!isRecording ? (
-                   <Button 
-                     size="lg" 
-                     onClick={() => {
-                       setRecordingTime(0);
-                       // Start recording logic needs to be moved here or passed down
-                       // Re-implementing minimal logic for this view
-                       navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
-                         const mr = new MediaRecorder(stream);
-                         mediaRecorderRef.current = mr;
-                         audioChunksRef.current = [];
-                         mr.ondataavailable = e => audioChunksRef.current.push(e.data);
-                         mr.onstop = () => {
-                           const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-                           setAudioFile(new File([blob], 'rec.webm'));
-                           stream.getTracks().forEach(t => t.stop());
-                         };
-                         mr.start();
-                         setIsRecording(true);
-                         timerRef.current = setInterval(() => setRecordingTime(t => t + 1), 1000);
-                       });
-                     }}
-                     disabled={!!audioFile}
-                     className="rounded-full px-8"
-                   >
-                     Start Recording
-                   </Button>
-                 ) : (
-                   <Button 
-                     size="lg" 
-                     variant="destructive"
-                     onClick={() => {
-                       mediaRecorderRef.current?.stop();
-                       setIsRecording(false);
-                       clearInterval(timerRef.current);
-                     }}
-                     className="rounded-full px-8"
-                   >
-                     Stop
-                   </Button>
-                 )}
-                 
-                 {audioFile && (
-                   <Button variant="outline" className="rounded-full" onClick={() => { setAudioFile(null); setRecordingTime(0); }}>
-                     Discard
-                   </Button>
-                 )}
-               </div>
-             </div>
-          </div>
-        )}
-
-        {/* Live AI Feedback (Floating Right) */}
-        {showSuggestions && inputMode === 'text' && (content?.length > 50 || attachments?.length > 0) && (
-          <div className="absolute right-8 top-32 w-72 pointer-events-none hidden lg:block">
-            <div className="pointer-events-auto space-y-4">
-              {/* AI Thoughts */}
-              <div className="bg-white/80 dark:bg-[#1f1d1d]/80 backdrop-blur-xl rounded-xl p-4 shadow-lg border border-white/20 dark:border-white/10">
-                <div className="flex items-center gap-2 mb-3">
-                  <Lightbulb className="w-4 h-4 text-yellow-500" />
-                  <h4 className="text-xs font-bold uppercase text-gray-500">AI Thoughts</h4>
-                </div>
-                {suggestedQuestions.length > 0 ? (
-                   <div className="space-y-2">
-                     {suggestedQuestions.map((q, i) => (
-                       <button key={i} onClick={() => onQuestionClick?.(q)} className="w-full text-left text-xs p-2 hover:bg-black/5 rounded transition-colors">
-                         {q}
-                       </button>
-                     ))}
-                   </div>
-                ) : (
-                  <div className="text-xs text-gray-400 italic">Analyzing your thoughts...</div>
-                )}
+          <div className="space-y-6 h-full">
+            <div className="flex flex-col items-center justify-center h-full space-y-6">
+              <div className="text-center mb-4">
+                <h2 className="text-2xl font-semibold text-black dark:text-white mb-2">Record your idea</h2>
+                <p className="text-sm text-gray-600 dark:text-gray-400">Your audio will be transcribed by AI and saved with the recording</p>
               </div>
-              
-              {/* Connections */}
-              {allNotes.length > 0 && (
-                <div className="bg-white/80 dark:bg-[#1f1d1d]/80 backdrop-blur-xl rounded-xl p-4 shadow-lg border border-white/20 dark:border-white/10">
-                   <ConnectionSuggestions 
-                     content={content?.replace(/<[^>]*>?/gm, '') || ''} 
-                     currentNoteId={activeItem.id} 
-                     allNotes={allNotes}
-                     compact={true}
-                     onConnect={(id) => {
-                        const note = allNotes.find(n => n.id === id);
-                        if(note) onConnectionClick(note);
-                     }}
-                     onViewNote={(note) => onConnectionClick(note)} // Add to grid instead of view
-                   />
-                </div>
+              {!isRecording ? (
+                <Button
+                  onClick={startRecording}
+                  disabled={isProcessing || audioFile}
+                  className="bg-white dark:bg-black hover:bg-gray-100 dark:hover:bg-gray-900 flex items-center gap-2 px-8 py-6 text-lg text-black dark:text-white border border-gray-200 dark:border-gray-700"
+                >
+                  <Mic className="w-6 h-6 text-black dark:text-white" />
+                  <span>{audioFile ? 'Audio Recorded ✓' : 'Start Recording'}</span>
+                </Button>
+              ) : (
+                <Button
+                  onClick={stopRecording}
+                  className="clay-button-secondary flex items-center gap-2 px-8 py-6 text-lg animate-pulse border-red-400"
+                >
+                  <Square className="w-6 h-6 text-red-400" />
+                  <span className="text-red-400">Stop Recording ({formatTime(recordingTime)})</span>
+                </Button>
+              )}
+
+              {audioFile && !isRecording && (
+                <Button
+                  onClick={() => setAudioFile(null)}
+                  variant="ghost"
+                  className="text-black dark:text-gray-300 hover:text-gray-700 dark:hover:text-white"
+                >
+                  Clear Audio & Re-record
+                </Button>
               )}
             </div>
           </div>
         )}
-
-        {/* Attachments (Bottom) */}
-        {attachments && attachments.length > 0 && (
-          <div className="max-w-3xl mx-auto px-8 pb-24">
-             <AttachmentPanel attachments={attachments} onRemove={(id) => updateAttachments(attachments.filter(a => a.id !== id))} />
-          </div>
-        )}
       </div>
 
-      {/* Floating Action Button */}
+      {/* Live AI Feedback - Floating Panel */}
+      {showSuggestions && content.length > 30 && inputMode === 'text' && (
+        <div className="absolute right-8 top-1/2 -translate-y-1/2 w-80 space-y-4 pointer-events-none">
+          <div className="pointer-events-auto bg-white/80 dark:bg-[#1f1d1d]/80 backdrop-blur-xl rounded-2xl p-5 shadow-xl border border-white/20 dark:border-white/10 transition-all duration-500 animate-in fade-in slide-in-from-right-4">
+            <div className="flex items-center gap-2 mb-3">
+              <Lightbulb className="w-4 h-4 text-yellow-500" />
+              <h3 className="text-sm font-semibold text-black dark:text-white">AI Thoughts</h3>
+            </div>
+            
+            {suggestedQuestions.length > 0 ? (
+              <div className="space-y-2">
+                {suggestedQuestions.slice(0, 2).map((question, idx) => (
+                  <button
+                    key={idx}
+                    onClick={() => onQuestionClick?.(question)}
+                    className="w-full p-3 bg-white/50 dark:bg-black/20 rounded-xl hover:bg-white dark:hover:bg-black/40 transition-all text-left text-xs leading-relaxed text-gray-800 dark:text-gray-200"
+                  >
+                    {question}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 text-xs text-gray-400">
+                <Loader2 className="w-3 h-3 animate-spin" />
+                <span>Thinking...</span>
+              </div>
+            )}
+          </div>
+          
+          {allNotes.length > 0 && (
+             <div className="pointer-events-auto bg-white/80 dark:bg-[#1f1d1d]/80 backdrop-blur-xl rounded-2xl p-5 shadow-xl border border-white/20 dark:border-white/10 transition-all duration-500 delay-100 animate-in fade-in slide-in-from-right-4">
+               <ConnectionSuggestions
+                 content={content}
+                 currentNoteId={null}
+                 allNotes={allNotes}
+                 onConnect={handleAddConnection}
+                 onViewNote={onConnectionClick}
+                 compact={true}
+               />
+             </div>
+          )}
+        </div>
+      )}
+
+      {/* Attachments Panel - Always at bottom */}
+      {attachments.length > 0 && inputMode === 'text' && (
+        <div className="border-t border-white/20 dark:border-gray-700/30 p-4 bg-glass backdrop-blur-2xl">
+          <AttachmentPanel
+            attachments={attachments}
+            onRemove={removeAttachment}
+            onUpdate={updateAttachment}
+          />
+        </div>
+      )}
+
+      {/* Plus Button */}
       {inputMode === 'text' && (
         <button
           onClick={() => setShowAttachMenu(true)}
-          className="absolute bottom-8 right-8 w-12 h-12 bg-black dark:bg-white text-white dark:text-black rounded-full shadow-xl flex items-center justify-center hover:scale-105 transition-transform"
+          className="fixed bottom-8 right-8 w-14 h-14 rounded-full bg-white dark:bg-[#171515] text-black dark:text-white shadow-lg hover:shadow-xl transition-all flex items-center justify-center hover:scale-110 border border-gray-200 dark:border-gray-600"
         >
-          <Plus className="w-6 h-6" />
+          <Plus className="w-6 h-6 text-black dark:text-gray-300" />
         </button>
       )}
 
-      {/* Dialogs */}
+      {/* Attachment Menu Dialog */}
       <Dialog open={showAttachMenu} onOpenChange={setShowAttachMenu}>
-        <DialogContent>
-          <DialogHeader><DialogTitle>Add to Idea</DialogTitle></DialogHeader>
-          <div className="grid grid-cols-2 gap-4 py-4">
-             <Button variant="outline" className="h-20 flex flex-col gap-2" onClick={() => {
-               const url = prompt('URL:');
-               if(url) addAttachment({ id: Date.now(), type: 'link', url, name: url });
-               setShowAttachMenu(false);
-             }}>
-               <LinkIcon className="w-6 h-6" />
-               <span>Link</span>
-             </Button>
-             <Button variant="outline" className="h-20 flex flex-col gap-2" onClick={() => fileInputRef.current?.click()}>
-               <Image className="w-6 h-6" />
-               <span>Media</span>
-             </Button>
+        <DialogContent className="bg-white dark:bg-[#171515] border-gray-200 dark:border-gray-700 text-black dark:text-white">
+          <DialogHeader>
+            <DialogTitle className="text-black dark:text-white">Add Attachment</DialogTitle>
+          </DialogHeader>
+          
+          <div className="space-y-3 py-4">
+            <Button
+              onClick={() => {
+                const url = prompt('Enter link to video, article, or post:');
+                if (url) handleLinkAdd(url);
+              }}
+              className="w-full flex items-center gap-3 bg-white dark:bg-[#171515] hover:bg-gray-100 dark:hover:bg-[#171515]/80 text-black dark:text-white justify-start border border-gray-200 dark:border-gray-600"
+            >
+              <LinkIcon className="w-5 h-5 text-gray-600 dark:text-gray-300" />
+              Add Link (Video, Article, Post)
+            </Button>
+
+            <Button
+              onClick={() => fileInputRef.current?.click()}
+              className="w-full flex items-center gap-3 bg-white dark:bg-[#171515] hover:bg-gray-100 dark:hover:bg-[#171515]/80 text-black dark:text-white justify-start border border-gray-200 dark:border-gray-600"
+            >
+              <Image className="w-5 h-5 text-gray-600 dark:text-gray-300" />
+              Upload Image
+            </Button>
+
+            <Button
+              onClick={() => fileInputRef.current?.click()}
+              className="w-full flex items-center gap-3 bg-white dark:bg-[#171515] hover:bg-gray-100 dark:hover:bg-[#171515]/80 text-black dark:text-white justify-start border border-gray-200 dark:border-gray-600"
+            >
+              <Video className="w-5 h-5 text-gray-600 dark:text-gray-300" />
+              Upload Video
+            </Button>
+
+            <Button
+              onClick={() => fileInputRef.current?.click()}
+              className="w-full flex items-center gap-3 bg-white dark:bg-[#171515] hover:bg-gray-100 dark:hover:bg-[#171515]/80 text-black dark:text-white justify-start border border-gray-200 dark:border-gray-600"
+            >
+              <FileText className="w-5 h-5 text-gray-600 dark:text-gray-300" />
+              Upload File
+            </Button>
           </div>
-          <input ref={fileInputRef} type="file" className="hidden" onChange={(e) => {
-             if(e.target.files?.[0]) {
-                // In a real app we'd upload here, simulating for UI
-                // We need to upload using the provided tools in the real component, simplified here for brevity
-                // Assuming handleFileUpload logic exists or can be adapted
-                const file = e.target.files[0];
-                base44.integrations.Core.UploadFile({ file }).then(({file_url}) => {
-                   addAttachment({ id: Date.now(), type: file.type.startsWith('video') ? 'video' : 'image', url: file_url, name: file.name });
-                });
-             }
-          }} />
+
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*,video/*,*/*"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) handleFileUpload(file);
+              e.target.value = '';
+            }}
+            className="hidden"
+          />
         </DialogContent>
       </Dialog>
-      
-      <ReminderPicker 
-        isOpen={showReminderPicker} 
+
+      <ReminderPicker
+        isOpen={showReminderPicker}
         onClose={() => setShowReminderPicker(false)}
-        onSet={updateReminder}
+        currentReminder={reminder}
+        onSet={setReminder}
+        onRemove={() => setReminder(null)}
       />
     </div>
   );
 });
 
 NoteCreator.displayName = 'NoteCreator';
+
 export default NoteCreator;

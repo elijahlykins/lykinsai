@@ -23,10 +23,7 @@ export default function CreatePage() {
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState('');
   const [isChatLoading, setIsChatLoading] = useState(false);
-  // Workspace state
-  const [activeItem, setActiveItem] = useState({ type: 'draft', id: 'current-draft', title: '', content: '', tags: [], folder: 'Uncategorized', attachments: [] });
-  const [gridItems, setGridItems] = useState([]); // Items on the left grid
-  const [viewingNote, setViewingNote] = useState(null); // Kept for legacy or specific view actions if needed, but mostly replaced by grid logic
+  const [viewingNote, setViewingNote] = useState(null);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const noteCreatorRef = useRef(null);
@@ -43,27 +40,6 @@ export default function CreatePage() {
 
   const handleNoteCreated = () => {
     queryClient.invalidateQueries(['notes']);
-    // Reset current draft
-    setActiveItem({ type: 'draft', id: 'new-draft-' + Date.now(), title: '', content: '', tags: [], folder: 'Uncategorized', attachments: [] });
-  };
-
-  const handleImportItem = (item) => {
-    // Add item to grid items
-    setGridItems(prev => [...prev, { ...item, type: item.type || 'note' }]);
-  };
-
-  const handleSwapItem = (itemToActivate) => {
-    // Move current active item to grid
-    const previousActive = { ...activeItem };
-    
-    // Remove the item being activated from grid and add the previous active item
-    setGridItems(prev => [
-      ...prev.filter(i => i.id !== itemToActivate.id),
-      previousActive
-    ]);
-    
-    // Set new active item
-    setActiveItem(itemToActivate);
   };
 
   useEffect(() => {
@@ -419,24 +395,17 @@ If the user asks about old memories or references past ideas, refer to the memor
             </div>
           )}
 
-          <div className="w-full h-full">
+          <div className="w-full max-w-4xl h-full mx-auto">
             <NoteCreator 
               ref={noteCreatorRef} 
               onNoteCreated={handleNoteCreated} 
               inputMode={inputMode} 
               showSuggestions={showSuggestions}
-              
-              // Workspace props
-              activeItem={activeItem}
-              gridItems={gridItems}
-              onUpdateActiveItem={(updates) => setActiveItem(prev => ({ ...prev, ...updates }))}
-              onSwapItem={handleSwapItem}
-              
               onQuestionClick={(question) => {
                 setShowChat(true);
                 setChatInput(question);
               }}
-              onConnectionClick={(note) => handleImportItem(note)}
+              onConnectionClick={(note) => setViewingNote(note)}
             />
           </div>
         </div>
@@ -456,7 +425,7 @@ If the user asks about old memories or references past ideas, refer to the memor
       <AISearchOverlay 
         isOpen={showSearch}
         onClose={() => setShowSearch(false)}
-        onNavigate={(note) => handleImportItem(note)}
+        onNavigate={(note) => setViewingNote(note)}
       />
     </div>
   );
