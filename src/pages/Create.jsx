@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import NoteCreator from '../components/notes/NoteCreator';
 import NotionSidebar from '../components/notes/NotionSidebar';
 import SettingsModal from '../components/notes/SettingsModal';
@@ -26,6 +26,15 @@ export default function CreatePage() {
   const navigate = useNavigate();
   const noteCreatorRef = useRef(null);
   const chatScrollRef = useRef(null);
+
+  const { data: allNotes = [] } = useQuery({
+    queryKey: ['notes'],
+    queryFn: () => base44.entities.Note.list('-created_date'),
+    retry: 2,
+    refetchOnWindowFocus: false,
+    staleTime: 5 * 60 * 1000, // 5 minutes
+    cacheTime: 10 * 60 * 1000, // 10 minutes
+  });
 
   const handleNoteCreated = () => {
     queryClient.invalidateQueries(['notes']);
@@ -67,8 +76,7 @@ export default function CreatePage() {
         detailed: 'Give comprehensive, detailed responses with examples and explanations.'
       };
 
-      // Fetch all notes to provide context
-      const allNotes = await base44.entities.Note.list('-created_date');
+      // Use cached notes for context
       const notesContext = allNotes.slice(0, 20).map(n => 
         `ID: ${n.id}\nTitle: ${n.title}\nContent: ${n.content.substring(0, 200)}\nDate: ${n.created_date}`
       ).join('\n\n---\n\n');
