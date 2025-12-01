@@ -19,6 +19,10 @@ export default function RemindersPage() {
   const { data: notes = [] } = useQuery({
     queryKey: ['notes'],
     queryFn: () => base44.entities.Note.list('-created_date'),
+    retry: 2,
+    refetchOnWindowFocus: false,
+    staleTime: 5 * 60 * 1000, // 5 minutes
+    cacheTime: 10 * 60 * 1000, // 10 minutes
   });
 
   const notesWithReminders = notes.filter(note => note.reminder);

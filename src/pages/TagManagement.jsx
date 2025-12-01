@@ -21,6 +21,10 @@ export default function TagManagementPage() {
   const { data: notes = [] } = useQuery({
     queryKey: ['notes'],
     queryFn: () => base44.entities.Note.list('-created_date'),
+    retry: 2,
+    refetchOnWindowFocus: false,
+    staleTime: 5 * 60 * 1000, // 5 minutes
+    cacheTime: 10 * 60 * 1000, // 10 minutes
   });
 
   // Get all unique tags with their usage counts

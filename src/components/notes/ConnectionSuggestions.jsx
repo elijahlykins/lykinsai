@@ -9,11 +9,15 @@ export default function ConnectionSuggestions({ content, currentNoteId, allNotes
   const [connectedIds, setConnectedIds] = useState([]);
 
   useEffect(() => {
-    if (content && content.length > 50) {
-      analyzeSuggestions();
-    } else {
-      setSuggestions([]);
-    }
+    const timer = setTimeout(() => {
+      if (content && content.length > 50) {
+        analyzeSuggestions();
+      } else {
+        setSuggestions([]);
+      }
+    }, 2000); // Debounce for 2 seconds
+
+    return () => clearTimeout(timer);
   }, [content]);
 
   const analyzeSuggestions = async () => {
