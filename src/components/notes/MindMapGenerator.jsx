@@ -131,12 +131,8 @@ Return as a structured tree with nodes and their relationships.`,
     }
   };
 
-  React.useEffect(() => {
-    // Only generate if not already saved
-    if (!note.mind_map) {
-      generateMindMap();
-    }
-  }, []);
+  // Removed auto-generation to prevent rate limits
+  // Mind map must be triggered manually via button
 
   return (
     <div className="clay-card p-6 space-y-4">
@@ -160,6 +156,14 @@ Return as a structured tree with nodes and their relationships.`,
       {isGenerating ? (
         <div className="flex items-center justify-center py-12">
           <Loader2 className="w-6 h-6 animate-spin text-blue" />
+        </div>
+      ) : !mindMap ? (
+        <div className="flex flex-col items-center justify-center py-8 text-center">
+          <p className="text-sm text-gray-500 mb-4">Generate a mind map to visualize this note and its connections.</p>
+          <Button onClick={generateMindMap} className="bg-blue-600 text-white hover:bg-blue-700">
+            <Sparkles className="w-4 h-4 mr-2" />
+            Generate Mind Map
+          </Button>
         </div>
       ) : mindMap && mindMap.central && mindMap.branches ? (
         <div className="space-y-4">
