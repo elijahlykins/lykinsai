@@ -23,10 +23,18 @@ export default function DuplicateDetector({ notes, onMerge }) {
   const [showPanel, setShowPanel] = useState(false);
 
   useEffect(() => {
-    if (notes.length > 1) {
-      detectDuplicates();
+    // Check if we have cached duplicates
+    const cached = localStorage.getItem('lykinsai_duplicates');
+    if (cached) {
+      try {
+        const { duplicates, timestamp } = JSON.parse(cached);
+        // Use cache if less than 1 hour old
+        if (Date.now() - timestamp < 60 * 60 * 1000) {
+          setDuplicates(duplicates);
+        }
+      } catch (e) {}
     }
-  }, [notes]);
+  }, []);
 
   const detectDuplicates = async () => {
     setIsAnalyzing(true);
