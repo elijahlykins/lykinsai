@@ -45,6 +45,7 @@ const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, showSuggestion
   const timerRef = useRef(null);
   const saveTimeoutRef = useRef(null);
   const fileInputRef = useRef(null);
+  const quillRef = useRef(null);
 
   const { data: allNotes = [] } = useQuery({
     queryKey: ['notes'],
