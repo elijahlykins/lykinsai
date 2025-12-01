@@ -519,7 +519,7 @@ Return only the title, nothing else.`,
         {/* Content Area - Whiteboard Style */}
         <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-hide">
         {inputMode === 'text' ? (
-          <div className="min-h-full flex flex-col max-w-4xl mx-auto py-20 px-8 md:px-12 transition-all duration-500 relative group">
+          <div className="min-h-full flex flex-col max-w-3xl mx-auto py-12 px-8 md:px-12 transition-all duration-500 relative group cursor-text">
             <div className="absolute top-4 right-8 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
                <Button 
                  onClick={handleAIOrganize}
@@ -543,17 +543,19 @@ Return only the title, nothing else.`,
             <div className="flex-1 w-full min-h-[50vh] text-xl md:text-2xl leading-relaxed text-black dark:text-white">
               <style>
                 {`
-                  .ql-container { font-size: 1.25rem; font-family: inherit; }
-                  .ql-editor { padding: 0; min-height: 50vh; overflow-y: visible; }
-                  .ql-editor p { margin-bottom: 1em; line-height: 1.8; }
-                  .ql-editor h1, .ql-editor h2, .ql-editor h3 { margin-top: 1.5em; margin-bottom: 0.5em; font-weight: bold; line-height: 1.3; }
-                  .ql-editor h1 { font-size: 2em; }
-                  .ql-editor h2 { font-size: 1.5em; }
-                  .ql-editor blockquote { border-left: 4px solid #e5e7eb; padding-left: 1em; font-style: italic; color: #6b7280; }
-                  .ql-tooltip { z-index: 50 !important; border-radius: 12px !important; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1) !important; border: none !important; background-color: #1f2937 !important; color: white !important; }
-                  .ql-tooltip-arrow { border-bottom-color: #1f2937 !important; }
+                  .ql-container { font-size: 1.125rem; font-family: inherit; }
+                  .ql-editor { padding: 0; min-height: 60vh; overflow-y: visible; }
+                  .ql-editor p { margin-bottom: 0.75em; line-height: 1.6; }
+                  .ql-editor h1, .ql-editor h2, .ql-editor h3 { margin-top: 1.5em; margin-bottom: 0.5em; font-weight: 600; line-height: 1.25; letter-spacing: -0.02em; }
+                  .ql-editor h1 { font-size: 2.25em; }
+                  .ql-editor h2 { font-size: 1.75em; }
+                  .ql-editor blockquote { border-left: 3px solid #e5e7eb; padding-left: 1em; font-style: italic; color: #6b7280; }
+                  .ql-tooltip { z-index: 50 !important; border-radius: 8px !important; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1) !important; border: 1px solid #e5e7eb !important; background-color: white !important; color: black !important; padding: 8px !important; }
+                  .dark .ql-tooltip { background-color: #1f2937 !important; border-color: #374151 !important; color: white !important; }
+                  .ql-tooltip-arrow { border-bottom-color: white !important; }
+                  .dark .ql-tooltip-arrow { border-bottom-color: #1f2937 !important; }
                   .dark .ql-editor { color: #e5e7eb; }
-                  .ql-editor.ql-blank::before { color: #9ca3af; font-style: normal; }
+                  .ql-editor.ql-blank::before { color: #9ca3af; font-style: normal; opacity: 0.6; }
                   .dark .ql-editor.ql-blank::before { color: #6b7280; }
                 `}
               </style>
