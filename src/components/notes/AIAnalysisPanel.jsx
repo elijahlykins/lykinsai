@@ -65,8 +65,12 @@ ${personalityPrompts[personality]} ${detailPrompts[detailLevel]}`,
         }
       });
 
-      await base44.entities.Note.update(note.id, { ai_analysis: analysis });
-      onUpdate();
+      try {
+        await base44.entities.Note.update(note.id, { ai_analysis: analysis });
+        onUpdate();
+      } catch (updateError) {
+        console.warn('Note may have been deleted, skipping update', updateError);
+      }
     } catch (error) {
       console.error('Error analyzing note:', error);
     } finally {
@@ -110,10 +114,14 @@ Return the IDs of memory cards that have strong correlations.`,
         }
       });
 
-      await base44.entities.Note.update(note.id, {
-        connected_notes: connections.connected_note_ids || []
-      });
-      onUpdate();
+      try {
+        await base44.entities.Note.update(note.id, {
+          connected_notes: connections.connected_note_ids || []
+        });
+        onUpdate();
+      } catch (updateError) {
+         console.warn('Note may have been deleted, skipping update', updateError);
+      }
     } catch (error) {
       console.error('Error finding connections:', error);
     } finally {

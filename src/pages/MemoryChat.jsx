@@ -199,8 +199,9 @@ export default function MemoryChatPage() {
         detailed: 'Give comprehensive, detailed responses with examples and explanations.'
       };
 
-      const notesContext = notes.map(n => 
-        `Title: ${n.title}\nContent: ${n.content}\nDate: ${n.created_date}\nType: ${n.storage_type}`
+      // Use top 20 most recent notes for context to prevent rate limits
+      const notesContext = notes.slice(0, 20).map(n => 
+        `Title: ${n.title}\nContent: ${n.content.substring(0, 500)}\nDate: ${n.created_date}\nType: ${n.storage_type}`
       ).join('\n\n---\n\n');
 
       const conversationHistory = messages.map(m => `${m.role}: ${m.content}`).join('\n');

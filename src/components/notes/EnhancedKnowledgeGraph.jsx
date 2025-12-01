@@ -26,9 +26,25 @@ export default function EnhancedKnowledgeGraph({ notes, onSelectNote, onUpdateCo
 
   useEffect(() => {
     if (notes.length > 0) {
-      buildGraph();
+      const cachedGraph = localStorage.getItem('lykinsai_graph_cache');
+      if (cachedGraph) {
+        try {
+          const parsed = JSON.parse(cachedGraph);
+          // Check if cache is valid (e.g. same number of notes)
+          if (parsed.nodes.length === notes.length) {
+            setGraphData(parsed);
+            return;
+          }
+        } catch (e) {
+          console.error('Error parsing graph cache', e);
+        }
+      }
+      // Only build if no valid cache or forced
+      if (!graphData) {
+        buildGraph();
+      }
     }
-  }, [notes, viewMode]);
+  }, [notes]);
 
   useEffect(() => {
     if (graphData) {
@@ -89,7 +105,7 @@ Find meaningful connections based on content, themes, and ideas - not just keywo
         }
       });
 
-      setGraphData({
+      const newGraphData = {
         nodes: notes.filter(n => n).map(n => ({
           id: n.id,
           title: n.title,
@@ -100,7 +116,10 @@ Find meaningful connections based on content, themes, and ideas - not just keywo
         })),
         edges: analysis.relationships || [],
         clusters: analysis.clusters || []
-      });
+      };
+
+      setGraphData(newGraphData);
+      localStorage.setItem('lykinsai_graph_cache', JSON.stringify(newGraphData));
 
     } catch (error) {
       console.error('Error building graph:', error);

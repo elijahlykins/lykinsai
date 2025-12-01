@@ -104,7 +104,11 @@ Return as a structured tree with nodes and their relationships.`,
       
       // Save to note
       if (onUpdate) {
-        await onUpdate({ mind_map: mindMapData });
+        try {
+          await onUpdate({ mind_map: mindMapData });
+        } catch (updateError) {
+          console.warn('Note may have been deleted, skipping update', updateError);
+        }
       }
     } catch (error) {
       console.error('Error generating mind map:', error);
