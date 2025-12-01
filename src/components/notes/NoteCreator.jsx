@@ -8,7 +8,7 @@ import { base44 } from '@/api/base44Client';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import ReactQuill from 'react-quill';
-import 'react-quill/dist/quill.snow.css';
+import 'react-quill/dist/quill.bubble.css';
 import AttachmentPanel from './AttachmentPanel';
 import TagInput from './TagInput';
 import ConnectionSuggestions from './ConnectionSuggestions';
@@ -16,9 +16,10 @@ import ReminderPicker from './ReminderPicker';
 
 const modules = {
   toolbar: [
-    [{ 'header': [1, 2, 3, false] }],
-    ['bold', 'italic', 'underline', 'strike'],
+    [{ 'header': [1, 2, false] }],
+    ['bold', 'italic', 'underline', 'strike', 'blockquote', 'code-block'],
     [{ 'list': 'ordered'}, { 'list': 'bullet' }],
+    ['link', 'image'],
     ['clean']
   ],
 };
@@ -542,23 +543,25 @@ Return only the title, nothing else.`,
             <div className="flex-1 w-full min-h-[50vh] text-xl md:text-2xl leading-relaxed text-black dark:text-white">
               <style>
                 {`
-                  .ql-toolbar { border: none !important; border-bottom: 1px solid rgba(0,0,0,0.1) !important; }
-                  .ql-container { border: none !important; font-size: 1.25rem; }
-                  .ql-editor { padding: 0; min-height: 50vh; }
-                  .ql-editor p { margin-bottom: 1em; }
-                  .ql-editor h1, .ql-editor h2, .ql-editor h3 { margin-top: 1.5em; margin-bottom: 0.5em; font-weight: bold; }
-                  .dark .ql-toolbar .ql-stroke { stroke: #e5e7eb; }
-                  .dark .ql-toolbar .ql-fill { fill: #e5e7eb; }
+                  .ql-container { font-size: 1.25rem; font-family: inherit; }
+                  .ql-editor { padding: 0; min-height: 50vh; overflow-y: visible; }
+                  .ql-editor p { margin-bottom: 1em; line-height: 1.8; }
+                  .ql-editor h1, .ql-editor h2, .ql-editor h3 { margin-top: 1.5em; margin-bottom: 0.5em; font-weight: bold; line-height: 1.3; }
+                  .ql-editor h1 { font-size: 2em; }
+                  .ql-editor h2 { font-size: 1.5em; }
+                  .ql-editor blockquote { border-left: 4px solid #e5e7eb; padding-left: 1em; font-style: italic; color: #6b7280; }
+                  .ql-tooltip { z-index: 50 !important; border-radius: 12px !important; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1) !important; border: none !important; background-color: #1f2937 !important; color: white !important; }
+                  .ql-tooltip-arrow { border-bottom-color: #1f2937 !important; }
                   .dark .ql-editor { color: #e5e7eb; }
-                  .dark .ql-editor.ql-blank::before { color: rgba(255,255,255,0.3); }
+                  .dark .ql-editor.ql-blank::before { color: rgba(255,255,255,0.3); font-style: normal; }
                 `}
               </style>
               <ReactQuill 
-                theme="snow"
+                theme="bubble"
                 value={content}
                 onChange={setContent}
                 modules={modules}
-                placeholder="Start typing..."
+                placeholder="Type '/' for commands..."
                 className="h-full"
                 readOnly={isProcessing}
               />
