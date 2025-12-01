@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { Brain, Loader2, Download } from 'lucide-react';
+import { Brain, Loader2, Download, Sparkles } from 'lucide-react';
 import { base44 } from '@/api/base44Client';
 
 export default function MindMapGenerator({ note, allNotes, onUpdate }) {
