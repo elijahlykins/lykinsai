@@ -24,7 +24,6 @@ const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, showSuggestion
   const [folder, setFolder] = useState('Uncategorized');
   const [showMetadata, setShowMetadata] = useState(false);
   const [suggestedConnections, setSuggestedConnections] = useState([]);
-  const [allNotes, setAllNotes] = useState([]);
   const [reminder, setReminder] = useState(null);
   const [showReminderPicker, setShowReminderPicker] = useState(false);
   const [suggestedQuestions, setSuggestedQuestions] = useState([]);
@@ -34,18 +33,14 @@ const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, showSuggestion
   const saveTimeoutRef = useRef(null);
   const fileInputRef = useRef(null);
 
-  // Fetch all notes for suggestions
-  useEffect(() => {
-    const fetchNotes = async () => {
-      try {
-        const notes = await base44.entities.Note.list('-created_date');
-        setAllNotes(notes);
-      } catch (error) {
-        console.error('Error fetching notes:', error);
-      }
-    };
-    fetchNotes();
-  }, []);
+  const { data: allNotes = [] } = useQuery({
+    queryKey: ['notes'],
+    queryFn: () => base44.entities.Note.list('-created_date'),
+    retry: 2,
+    refetchOnWindowFocus: false,
+    staleTime: 5 * 60 * 1000, // 5 minutes
+    cacheTime: 10 * 60 * 1000, // 10 minutes
+  });
 
   // Load saved draft from localStorage on mount
   useEffect(() => {
