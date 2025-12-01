@@ -53,6 +53,143 @@ const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, showSuggestion
   const saveTimeoutRef = useRef(null);
   const fileInputRef = useRef(null);
   const quillRef = useRef(null);
+  
+  // Handle Slash Command Navigation & Events
+  useEffect(() => {
+    if (!quillRef.current) return;
+    const editor = quillRef.current.getEditor();
+    
+    const handleKeyDown = (e) => {
+      if (!showSlashMenu) return;
+
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSlashSelectedIndex(prev => Math.max(0, prev - 1));
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        // We assume max 10 items for now or check filter length if possible, 
+        // but checking state inside listener is tricky without deps.
+        // Let's just increment and let render cap it or use functional state
+        setSlashSelectedIndex(prev => prev + 1); 
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        // Dispatch a custom event or use a ref to trigger selection
+        // Since we can't easily pass the selection logic here without recreating the listener
+        // We'll rely on the menu component or a separate effect, 
+        // actually, let's use a Ref to hold the current 'execute' function or current filter
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        setShowSlashMenu(false);
+      }
+    };
+
+    // We attach to root to capture before Quill handles some things
+    editor.root.addEventListener('keydown', handleKeyDown);
+    return () => editor.root.removeEventListener('keydown', handleKeyDown);
+  }, [showSlashMenu]); 
+
+  // Monitor content changes for Slash Command trigger
+  const handleEditorChange = (content, delta, source, editor) => {
+    setContent(content);
+    
+    if (source !== 'user') return;
+    
+    const range = editor.getSelection();
+    if (!range) return;
+    
+    const textBefore = editor.getText(0, range.index);
+    const slashMatch = textBefore.match(/\/(.*)$/);
+    
+    // Simple detection: slash is the last thing typed or part of the last word
+    // We want to trigger if it's at start of line or after space
+    const lastSlashIndex = textBefore.lastIndexOf('/');
+    if (lastSlashIndex === -1) {
+      setShowSlashMenu(false);
+      return;
+    }
+
+    // Check if slash is at start or preceded by space
+    const charBeforeSlash = lastSlashIndex > 0 ? textBefore[lastSlashIndex - 1] : null;
+    if (lastSlashIndex === 0 || charBeforeSlash === ' ' || charBeforeSlash === '\n') {
+        const filterText = textBefore.substring(lastSlashIndex + 1);
+        // If filter text contains space, probably not a command anymore
+        if (filterText.includes(' ')) {
+            setShowSlashMenu(false);
+            return;
+        }
+
+        const bounds = editor.getBounds(lastSlashIndex);
+        // Adjust for scrolling container if needed, but fixed position usually works with getBounds relative to viewport if we offset
+        // ReactQuill getBounds returns relative to editor container. 
+        // We need screen coordinates for fixed menu.
+        const editorRect = editor.root.getBoundingClientRect();
+        
+        setSlashStartIndex(lastSlashIndex);
+        setSlashFilter(filterText);
+        setSlashMenuPos({
+            top: editorRect.top + bounds.top,
+            left: editorRect.left + bounds.left
+        });
+        setShowSlashMenu(true);
+        setSlashSelectedIndex(0);
+    } else {
+        setShowSlashMenu(false);
+    }
+  };
+
+  const executeSlashCommand = (cmd) => {
+    if (!quillRef.current || slashStartIndex === null) return;
+    const editor = quillRef.current.getEditor();
+    
+    // Delete the slash + filter text
+    const filterLength = slashFilter.length + 1; // +1 for the slash
+    editor.deleteText(slashStartIndex, filterLength);
+    
+    // Execute Command
+    switch (cmd.id) {
+        case 'h1':
+            editor.formatLine(slashStartIndex, 1, 'header', 1);
+            break;
+        case 'h2':
+            editor.formatLine(slashStartIndex, 1, 'header', 2);
+            break;
+        case 'h3':
+            editor.formatLine(slashStartIndex, 1, 'header', 3);
+            break;
+        case 'bullet':
+            editor.formatLine(slashStartIndex, 1, 'list', 'bullet');
+            break;
+        case 'ordered':
+            editor.formatLine(slashStartIndex, 1, 'list', 'ordered');
+            break;
+        case 'check':
+            // Checkbox list - Quill requires module or specific format, 'list': 'checked' works in newer versions or specific themes
+            // standard quill uses 'list': 'checked' often with specific setup. 
+            // Let's try 'list': 'unchecked' or 'bullet' fallback
+            editor.formatLine(slashStartIndex, 1, 'list', 'bullet'); 
+            // Or better, code block for now if checklist isn't configured in modules
+            break;
+        case 'quote':
+            editor.formatLine(slashStartIndex, 1, 'blockquote', true);
+            break;
+        case 'code':
+            editor.formatLine(slashStartIndex, 1, 'code-block', true);
+            break;
+        case 'divider':
+             editor.insertEmbed(slashStartIndex, 'divider', true); // Requires divider module or custom blot
+             // Fallback: insert horizontal rule text? No, let's skip or just ignore if not supported
+             break;
+        case 'image':
+             // Trigger existing file upload
+             if (fileInputRef.current) fileInputRef.current.click();
+             break;
+        default:
+            break;
+    }
+    
+    setShowSlashMenu(false);
+    setSlashFilter('');
+  };
 
   const { data: allNotes = [] } = useQuery({
     queryKey: ['notes'],
