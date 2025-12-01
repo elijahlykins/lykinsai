@@ -367,7 +367,12 @@ export default function MemoryPage() {
                         />
                       )}
                       <button
-                        onClick={() => !bulkMode && setSelectedNote(note)}
+                        onClick={() => {
+                          if (!bulkMode) {
+                            // Navigate to create page with note id to edit
+                            navigate(createPageUrl('Create') + `?id=${note.id}`);
+                          }
+                        }}
                         className="w-full text-left"
                       >
                       <div className="flex items-center gap-2 mb-2">

@@ -3,16 +3,27 @@ import { useQuery } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
-import { Mic, Square, Plus, Link as LinkIcon, Image, Video, FileText, Tag, Folder, Bell, Loader2, Lightbulb } from 'lucide-react';
+import { Mic, Square, Plus, Link as LinkIcon, Image, Video, FileText, Tag, Folder, Bell, Loader2, Lightbulb, Wand2 } from 'lucide-react';
 import { base44 } from '@/api/base44Client';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import ReactQuill from 'react-quill';
+import 'react-quill/dist/quill.snow.css';
 import AttachmentPanel from './AttachmentPanel';
 import TagInput from './TagInput';
 import ConnectionSuggestions from './ConnectionSuggestions';
 import ReminderPicker from './ReminderPicker';
 
-const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, showSuggestions = true, onQuestionClick, onConnectionClick }, ref) => {
+const modules = {
+  toolbar: [
+    [{ 'header': [1, 2, 3, false] }],
+    ['bold', 'italic', 'underline', 'strike'],
+    [{ 'list': 'ordered'}, { 'list': 'bullet' }],
+    ['clean']
+  ],
+};
+
+const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, showSuggestions = true, onQuestionClick, onConnectionClick, noteId }, ref) => {
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
@@ -43,20 +54,43 @@ const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, showSuggestion
     cacheTime: 10 * 60 * 1000, // 10 minutes
   });
 
-  // Load saved draft from localStorage on mount
+  // Load saved draft from localStorage on mount or load note if noteId is present
   useEffect(() => {
-    const savedDraft = localStorage.getItem('lykinsai_draft');
-    if (savedDraft) {
-      const draft = JSON.parse(savedDraft);
-      setTitle(draft.title || '');
-      setContent(draft.content || '');
-      setAttachments(draft.attachments || []);
-      setTags(draft.tags || []);
-      setFolder(draft.folder || 'Uncategorized');
-      setReminder(draft.reminder || null);
-      setSuggestedConnections(draft.suggestedConnections || []);
+    if (noteId) {
+      const loadNote = async () => {
+        try {
+          // Since we already fetch allNotes, we can try to find it there first, but for reliability fetching single note is better if API supports it, 
+          // or just finding it in allNotes. Since user might navigate directly, let's use allNotes if available or fetch.
+          // The hook `useQuery` above fetches `allNotes`.
+          const note = allNotes.find(n => n.id === noteId);
+          if (note) {
+            setTitle(note.title || '');
+            setContent(note.content || '');
+            setAttachments(note.attachments || []);
+            setTags(note.tags || []);
+            setFolder(note.folder || 'Uncategorized');
+            setReminder(note.reminder || null);
+            setSuggestedConnections(note.connected_notes || []);
+          }
+        } catch (error) {
+          console.error("Error loading note", error);
+        }
+      };
+      if (allNotes.length > 0) loadNote();
+    } else {
+      const savedDraft = localStorage.getItem('lykinsai_draft');
+      if (savedDraft) {
+        const draft = JSON.parse(savedDraft);
+        setTitle(draft.title || '');
+        setContent(draft.content || '');
+        setAttachments(draft.attachments || []);
+        setTags(draft.tags || []);
+        setFolder(draft.folder || 'Uncategorized');
+        setReminder(draft.reminder || null);
+        setSuggestedConnections(draft.suggestedConnections || []);
+      }
     }
-  }, []);
+  }, [noteId, allNotes]);
 
   // Auto-trash draft after 1 hour of inactivity
   useEffect(() => {
@@ -236,7 +270,9 @@ Be constructive, insightful, and encouraging.`,
 
   const autoSave = async () => {
     // Allow saving if ANY content exists: title, text, audio, or attachments
-    if (!title.trim() && !content.trim() && !audioFile && attachments.length === 0) return;
+    // For Quill, empty content is often "<p><br></p>"
+    const isContentEmpty = !content || content.trim() === '' || content === '<p><br></p>';
+    if (!title.trim() && isContentEmpty && !audioFile && attachments.length === 0) return;
 
     setIsProcessing(true);
     try {
@@ -253,7 +289,7 @@ Be constructive, insightful, and encouraging.`,
           prompt: 'Transcribe this audio file and return only the transcribed text.',
           file_urls: [file_url]
         });
-        finalContent = content + (content ? '\n\n' : '') + transcription;
+        finalContent = content + (content ? '<br/><br/>' : '') + transcription;
       }
 
       // Process attachments and extract content for AI analysis
@@ -355,33 +391,57 @@ Return only the title, nothing else.`,
       const colors = ['lavender', 'mint', 'blue', 'peach'];
       const randomColor = colors[Math.floor(Math.random() * colors.length)];
 
-      // Create note
-      const newNote = await base44.entities.Note.create({
-        title: finalTitle,
-        content: finalContent,
-        raw_text: content,
-        audio_url: audioUrl,
-        ai_analysis: aiAnalysis,
-        color: randomColor,
-        connected_notes: suggestedConnections,
-        tags: finalTags,
-        folder: finalFolder,
-        reminder: reminder,
-        attachments: attachments,
-        summary: summary,
-        source: 'user'
-      });
-
-      setTitle('');
-      setContent('');
-      setAudioFile(null);
-      setAttachments([]);
-      setTags([]);
-      setFolder('Uncategorized');
-      setSuggestedConnections([]);
-      setReminder(null);
-      localStorage.removeItem('lykinsai_draft');
-      onNoteCreated();
+      // Create or Update note
+      if (noteId) {
+        await base44.entities.Note.update(noteId, {
+          title: finalTitle,
+          content: finalContent,
+          raw_text: content, // Storing raw html in raw_text for now or content
+          // If audioUrl is new, update it, otherwise keep existing? 
+          // For simplicity, we assume if new audio is recorded it replaces or we handle it.
+          // But here audioUrl is only set if audioFile exists.
+          ...(audioUrl ? { audio_url: audioUrl } : {}),
+          ai_analysis: aiAnalysis || undefined,
+          connected_notes: suggestedConnections,
+          tags: finalTags,
+          folder: finalFolder,
+          reminder: reminder,
+          attachments: attachments,
+          summary: summary || undefined,
+          updated_date: new Date().toISOString() // Manual update if needed, but system does it
+        });
+        onNoteCreated(); 
+        // Don't clear state if editing, maybe user wants to keep editing?
+        // But usually "Save" implies "Done".
+        // Let's clear for now as per original behavior, but navigating back might be better.
+      } else {
+        await base44.entities.Note.create({
+          title: finalTitle,
+          content: finalContent,
+          raw_text: content,
+          audio_url: audioUrl,
+          ai_analysis: aiAnalysis,
+          color: randomColor,
+          connected_notes: suggestedConnections,
+          tags: finalTags,
+          folder: finalFolder,
+          reminder: reminder,
+          attachments: attachments,
+          summary: summary,
+          source: 'user'
+        });
+        
+        setTitle('');
+        setContent('');
+        setAudioFile(null);
+        setAttachments([]);
+        setTags([]);
+        setFolder('Uncategorized');
+        setSuggestedConnections([]);
+        setReminder(null);
+        localStorage.removeItem('lykinsai_draft');
+        onNoteCreated();
+      }
     } catch (error) {
       console.error('Error creating note:', error);
     } finally {
@@ -431,12 +491,46 @@ Return only the title, nothing else.`,
     setAttachments(attachments.map(a => a.id === id ? { ...a, ...updates } : a));
   };
 
+  const handleAIOrganize = async () => {
+    if (!content || content.length < 10) return;
+    setIsProcessing(true);
+    try {
+      const organized = await base44.integrations.Core.InvokeLLM({
+        prompt: `Organize and format the following note content into clean HTML. Use headings (h1, h2), bullet points (ul, li), and paragraphs (p) to structure the information logically. Do not change the meaning, just improve the structure and readability.
+        
+        Content:
+        ${content}
+        
+        Return only the HTML.`,
+      });
+      // Clean up potential markdown code blocks if LLM wraps it
+      const cleanHtml = organized.replace(/```html/g, '').replace(/```/g, '').trim();
+      setContent(cleanHtml);
+    } catch (error) {
+      console.error("Error organizing content", error);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
   return (
     <div className="h-full flex flex-col relative">
         {/* Content Area - Whiteboard Style */}
         <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-hide">
         {inputMode === 'text' ? (
-          <div className="min-h-full flex flex-col justify-center max-w-4xl mx-auto py-20 px-8 md:px-12 transition-all duration-500">
+          <div className="min-h-full flex flex-col justify-center max-w-4xl mx-auto py-20 px-8 md:px-12 transition-all duration-500 relative">
+            <div className="absolute top-4 right-8">
+               <Button 
+                 onClick={handleAIOrganize}
+                 disabled={isProcessing || !content}
+                 variant="outline" 
+                 className="bg-white/50 dark:bg-black/50 backdrop-blur-sm border-purple-200 dark:border-purple-900 text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/30"
+               >
+                 <Wand2 className="w-4 h-4 mr-2" />
+                 AI Organize
+               </Button>
+            </div>
+
             <Input
               value={title}
               onChange={(e) => setTitle(e.target.value)}
@@ -445,14 +539,30 @@ Return only the title, nothing else.`,
               disabled={isProcessing}
             />
 
-            <Textarea
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              placeholder="Start typing..."
-              className="flex-1 w-full bg-transparent border-0 text-black dark:text-white placeholder:text-gray-300/50 resize-none text-xl md:text-2xl leading-relaxed focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0 min-h-[50vh]"
-              disabled={isProcessing}
-              autoFocus
-            />
+            <div className="flex-1 w-full min-h-[50vh] text-xl md:text-2xl leading-relaxed text-black dark:text-white">
+              <style>
+                {`
+                  .ql-toolbar { border: none !important; border-bottom: 1px solid rgba(0,0,0,0.1) !important; }
+                  .ql-container { border: none !important; font-size: 1.25rem; }
+                  .ql-editor { padding: 0; min-height: 50vh; }
+                  .ql-editor p { margin-bottom: 1em; }
+                  .ql-editor h1, .ql-editor h2, .ql-editor h3 { margin-top: 1.5em; margin-bottom: 0.5em; font-weight: bold; }
+                  .dark .ql-toolbar .ql-stroke { stroke: #e5e7eb; }
+                  .dark .ql-toolbar .ql-fill { fill: #e5e7eb; }
+                  .dark .ql-editor { color: #e5e7eb; }
+                  .dark .ql-editor.ql-blank::before { color: rgba(255,255,255,0.3); }
+                `}
+              </style>
+              <ReactQuill 
+                theme="snow"
+                value={content}
+                onChange={setContent}
+                modules={modules}
+                placeholder="Start typing..."
+                className="h-full"
+                readOnly={isProcessing}
+              />
+            </div>
 
             {/* Metadata Bar - Subtle & Bottom */}
             <div className="mt-8 flex flex-wrap gap-2 items-center opacity-50 hover:opacity-100 transition-opacity">

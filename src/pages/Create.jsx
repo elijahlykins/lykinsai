@@ -28,6 +28,9 @@ export default function CreatePage() {
   const navigate = useNavigate();
   const noteCreatorRef = useRef(null);
   const chatScrollRef = useRef(null);
+  
+  const urlParams = new URLSearchParams(window.location.search);
+  const noteId = urlParams.get('id');
 
   const { data: allNotes = [] } = useQuery({
     queryKey: ['notes'],
@@ -398,6 +401,7 @@ If the user asks about old memories or references past ideas, refer to the memor
           <div className="w-full max-w-4xl h-full mx-auto">
             <NoteCreator 
               ref={noteCreatorRef} 
+              noteId={noteId}
               onNoteCreated={handleNoteCreated} 
               inputMode={inputMode} 
               showSuggestions={showSuggestions}
