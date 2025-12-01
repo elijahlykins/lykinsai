@@ -161,7 +161,33 @@ Create a well-structured merged note that captures all important information fro
     .filter((_, idx) => !dismissed.includes(idx))
     .filter(d => d.similarity >= 0.7);
 
-  if (isAnalyzing || visibleDuplicates.length === 0) return null;
+  if (isAnalyzing) {
+    return (
+        <div className="mb-6 flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
+            <Loader2 className="w-4 h-4 animate-spin" />
+            Scanning for duplicates...
+        </div>
+    );
+  }
+
+  if (visibleDuplicates.length === 0) {
+      if (notes.length > 1) {
+         return (
+            <div className="mb-6">
+                <Button 
+                    onClick={detectDuplicates}
+                    variant="ghost"
+                    size="sm"
+                    className="text-gray-500 hover:text-black dark:text-gray-400 dark:hover:text-white text-xs"
+                >
+                    <Merge className="w-3 h-3 mr-2" />
+                    Scan for Duplicates
+                </Button>
+            </div>
+         );
+      }
+      return null;
+  }
 
   return (
     <>
