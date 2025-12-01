@@ -3,7 +3,7 @@ import { Button } from '@/components/ui/button';
 import { Link2, Loader2, Plus, Check } from 'lucide-react';
 import { base44 } from '@/api/base44Client';
 
-export default function ConnectionSuggestions({ content, currentNoteId, allNotes, onConnect, onViewNote }) {
+export default function ConnectionSuggestions({ content, currentNoteId, allNotes, onConnect, onViewNote, compact = false }) {
   const [suggestions, setSuggestions] = useState([]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [connectedIds, setConnectedIds] = useState([]);
@@ -88,6 +88,47 @@ Return up to 5 note IDs that are most relevant, along with a brief reason for ea
 
   if (!content || content.length < 50) {
     return null;
+  }
+
+  if (compact) {
+    return (
+      <div className="space-y-3">
+        <div className="flex items-center gap-2 mb-2">
+          <Link2 className="w-4 h-4 text-blue-500" />
+          <h3 className="text-sm font-semibold text-black dark:text-white">Related Memories</h3>
+        </div>
+        
+        {suggestions.length > 0 ? (
+          <div className="space-y-2">
+            {suggestions.slice(0, 3).map(({ note, reason }) => {
+              const isConnected = connectedIds.includes(note.id);
+              return (
+                <div key={note.id} className="group relative">
+                  <button
+                    onClick={() => onViewNote?.(note)}
+                    className="w-full p-3 bg-white/50 dark:bg-black/20 rounded-xl hover:bg-white dark:hover:bg-black/40 transition-all text-left"
+                  >
+                    <h4 className="font-medium text-black dark:text-white text-xs mb-1">{note.title}</h4>
+                    <p className="text-[10px] text-gray-500 dark:text-gray-400 leading-tight line-clamp-2">{reason}</p>
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleConnect(note.id); }}
+                    className={`absolute top-2 right-2 w-6 h-6 rounded-full flex items-center justify-center transition-all ${isConnected ? 'bg-green-500 text-white' : 'bg-gray-200 dark:bg-gray-700 text-gray-500 opacity-0 group-hover:opacity-100'}`}
+                  >
+                    {isConnected ? <Check className="w-3 h-3" /> : <Plus className="w-3 h-3" />}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        ) : isAnalyzing ? (
+          <div className="flex items-center gap-2 text-xs text-gray-400">
+            <Loader2 className="w-3 h-3 animate-spin" />
+            <span>Scanning memories...</span>
+          </div>
+        ) : null}
+      </div>
+    );
   }
 
   return (
