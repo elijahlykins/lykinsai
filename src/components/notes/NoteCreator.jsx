@@ -519,16 +519,16 @@ Return only the title, nothing else.`,
         {/* Content Area - Whiteboard Style */}
         <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-hide">
         {inputMode === 'text' ? (
-          <div className="min-h-full flex flex-col justify-center max-w-4xl mx-auto py-20 px-8 md:px-12 transition-all duration-500 relative">
-            <div className="absolute top-4 right-8">
+          <div className="min-h-full flex flex-col justify-center max-w-4xl mx-auto py-20 px-8 md:px-12 transition-all duration-500 relative group">
+            <div className="absolute top-4 right-8 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
                <Button 
                  onClick={handleAIOrganize}
                  disabled={isProcessing || !content}
                  variant="outline" 
-                 className="bg-white/50 dark:bg-black/50 backdrop-blur-sm border-purple-200 dark:border-purple-900 text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/30"
+                 className="bg-white dark:bg-black backdrop-blur-sm border-gray-200 dark:border-gray-800 text-black dark:text-white hover:bg-gray-100 dark:hover:bg-gray-900"
                >
                  <Wand2 className="w-4 h-4 mr-2" />
-                 AI Organize
+                 Organize
                </Button>
             </div>
 
@@ -553,7 +553,8 @@ Return only the title, nothing else.`,
                   .ql-tooltip { z-index: 50 !important; border-radius: 12px !important; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1) !important; border: none !important; background-color: #1f2937 !important; color: white !important; }
                   .ql-tooltip-arrow { border-bottom-color: #1f2937 !important; }
                   .dark .ql-editor { color: #e5e7eb; }
-                  .dark .ql-editor.ql-blank::before { color: rgba(255,255,255,0.3); font-style: normal; }
+                  .ql-editor.ql-blank::before { color: #9ca3af; font-style: normal; }
+                  .dark .ql-editor.ql-blank::before { color: #6b7280; }
                 `}
               </style>
               <ReactQuill 
@@ -561,8 +562,8 @@ Return only the title, nothing else.`,
                 value={content}
                 onChange={setContent}
                 modules={modules}
-                placeholder="Type '/' for commands..."
-                className="h-full"
+                placeholder="Start writing..."
+                className="h-full min-h-[50vh]"
                 readOnly={isProcessing}
               />
             </div>
