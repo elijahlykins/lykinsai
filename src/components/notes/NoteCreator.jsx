@@ -288,8 +288,10 @@ const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, showSuggestion
     return () => clearInterval(interval);
   }, []);
 
-  // Save draft to localStorage whenever state changes
+  // Save draft to localStorage whenever state changes (ONLY if not editing an existing note)
   useEffect(() => {
+    if (noteId) return; // Don't overwrite draft with existing note data
+    
     const draft = {
       title,
       content,
@@ -301,7 +303,7 @@ const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, showSuggestion
       lastEditTime: Date.now()
     };
     localStorage.setItem('lykinsai_draft', JSON.stringify(draft));
-  }, [title, content, attachments, tags, folder, reminder, suggestedConnections]);
+  }, [title, content, attachments, tags, folder, reminder, suggestedConnections, noteId]);
 
   const handleAddConnection = (noteId) => {
     setSuggestedConnections(prev => {
@@ -700,7 +702,7 @@ Return only the title, nothing else.`,
     <div className="h-full flex flex-row relative">
         {/* Left Sidebar - Grid/Pinterest Style Resources */}
         {(attachments.length > 0 || suggestedConnections.length > 0) && (
-          <div className="w-64 h-full overflow-y-auto p-4 border-r border-gray-100 dark:border-gray-800 hidden xl:block scrollbar-hide bg-gray-50/50 dark:bg-[#1f1d1d]/30">
+          <div className="absolute left-0 top-0 bottom-0 w-64 h-full overflow-y-auto p-4 border-r border-gray-100 dark:border-gray-800 hidden xl:block scrollbar-hide bg-gray-50/50 dark:bg-[#1f1d1d]/30 z-10 backdrop-blur-sm">
              <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-4">Resources</h3>
              
              <div className="columns-2 gap-3 space-y-3">
