@@ -715,12 +715,37 @@ Return only the title, nothing else.`,
                 ref={quillRef}
                 theme="bubble"
                 value={content}
-                onChange={setContent}
+                onChange={handleEditorChange}
+                onKeyDown={(e) => {
+                  // Capture enter to execute selected command
+                  if (showSlashMenu && e.key === 'Enter') {
+                      // We need to execute the command corresponding to slashSelectedIndex
+                      // But we don't have access to the filtered list here easily without duplicating logic
+                      // So we trigger a click on the currently selected item in the menu via DOM or ref?
+                      // Or we pass a 'triggerSelect' prop to menu?
+                      // Simpler: Prevent default here, and let the useEffect or Menu handle it?
+                      // Actually, we can pass a ref to the Menu to 'executeSelected'
+                      e.preventDefault();
+                      e.stopPropagation();
+                      // Dispatch event for Menu to catch?
+                      const event = new CustomEvent('slash-enter');
+                      document.dispatchEvent(event);
+                  }
+                }}
                 modules={modules}
                 placeholder="Press '/' for commands..."
                 className="h-full"
                 readOnly={isProcessing}
               />
+              {showSlashMenu && (
+                  <SlashCommandMenu 
+                      position={slashMenuPos}
+                      filter={slashFilter}
+                      onSelect={executeSlashCommand}
+                      onClose={() => setShowSlashMenu(false)}
+                      selectedIndex={slashSelectedIndex}
+                  />
+              )}
             </div>
 
             {/* Metadata Bar - Subtle & Bottom */}
