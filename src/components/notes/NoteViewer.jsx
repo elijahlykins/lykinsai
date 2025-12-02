@@ -7,6 +7,7 @@ import AttachmentPanel from './AttachmentPanel';
 
 import { Button } from '@/components/ui/button';
 import { Merge } from 'lucide-react';
+import RichTextRenderer from './RichTextRenderer';
 
 export default function NoteViewer({ note, isOpen, onClose, onMerge }) {
   if (!note) return null;
@@ -19,7 +20,7 @@ export default function NoteViewer({ note, isOpen, onClose, onMerge }) {
         </DialogHeader>
         
         <div className="space-y-4 py-4">
-          <p className="text-black dark:text-white whitespace-pre-wrap">{note.content}</p>
+          <RichTextRenderer content={note.content} className="text-black dark:text-white" />
           
           {note.audio_url && (
             <audio controls className="w-full">

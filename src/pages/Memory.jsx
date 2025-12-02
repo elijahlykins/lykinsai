@@ -28,6 +28,9 @@ import ConnectionSuggestions from '../components/notes/ConnectionSuggestions';
 import ReminderPicker from '../components/notes/ReminderPicker';
 import ReminderNotifications from '../components/notes/ReminderNotifications';
 import TrashCleanup from '../components/notes/TrashCleanup';
+import RichTextRenderer from '../components/notes/RichTextRenderer';
+import ReactQuill from 'react-quill';
+import 'react-quill/dist/quill.bubble.css';
 
 export default function MemoryPage() {
   const [selectedNote, setSelectedNote] = useState(null);
@@ -466,7 +469,9 @@ If the user asks about old memories or references past ideas, refer to the memor
                         )}
                       </div>
                       <h3 className="font-semibold text-black dark:text-white mb-2 line-clamp-1">{note.title}</h3>
-                      <p className="text-sm text-black dark:text-white line-clamp-3 mb-3">{note.content}</p>
+                      <div className="text-sm text-black dark:text-white line-clamp-3 mb-3 h-[4.5em] overflow-hidden">
+                        <RichTextRenderer content={note.content} />
+                      </div>
                       {note.tags?.length > 0 && (
                         <div className="flex flex-wrap gap-1 mb-2">
                           {note.tags.map(tag => (
@@ -533,7 +538,7 @@ If the user asks about old memories or references past ideas, refer to the memor
                           ))}
                         </div>
                       )}
-                      <p className="leading-relaxed whitespace-pre-wrap text-black dark:text-white">{selectedNote.content}</p>
+                      <RichTextRenderer content={selectedNote.content} className="text-black dark:text-white" />
                       {selectedNote.connected_notes?.length > 0 && (
                         <div className="pt-4 border-t border-gray-200 dark:border-gray-700">
                           <h3 className="text-sm font-medium text-gray-400 dark:text-gray-300 mb-3 flex items-center gap-2">
@@ -561,7 +566,23 @@ If the user asks about old memories or references past ideas, refer to the memor
                   ) : (
                     <>
                       <Input value={editedTitle} onChange={(e) => setEditedTitle(e.target.value)} className="text-2xl font-bold clay-input" />
-                      <Textarea value={editedContent} onChange={(e) => setEditedContent(e.target.value)} className="min-h-[300px] clay-input" />
+                      <div className="bg-white dark:bg-[#1f1d1d] rounded-xl border border-gray-200 dark:border-gray-700 min-h-[300px]">
+                        <ReactQuill 
+                          theme="bubble"
+                          value={editedContent} 
+                          onChange={setEditedContent}
+                          className="min-h-[300px]"
+                          modules={{
+                            toolbar: [
+                                [{ 'header': [1, 2, false] }],
+                                ['bold', 'italic', 'underline', 'strike', 'blockquote', 'code-block'],
+                                [{ 'list': 'ordered'}, { 'list': 'bullet' }],
+                                ['link', 'image'],
+                                ['clean']
+                            ]
+                          }}
+                        />
+                      </div>
                       {editedContent.length > 50 && (
                         <ConnectionSuggestions
                           content={editedContent}
