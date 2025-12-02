@@ -774,21 +774,31 @@ Return only the title, nothing else.`,
     if (!content || content.length < 10) return;
     setIsProcessing(true);
     try {
-      const organized = await base44.integrations.Core.InvokeLLM({
-        prompt: `Reorganize and structure the following note content. 
-        1. Combine related ideas and titles into a cohesive structure.
-        2. Use Headers (h1, h2) for main topics.
-        3. Use Bullet points (ul, li) for lists and key details.
-        4. Ensure the format is clean HTML.
+      const result = await base44.integrations.Core.InvokeLLM({
+        prompt: `Reorganize the following note content into a cohesive structure and generate a fitting title.
+        1. Create a short, descriptive title for the note.
+        2. Combine related ideas.
+        3. Use Headers (h1, h2) for main topics.
+        4. Use Bullet points (ul, li) for lists.
+        5. Return clean HTML for the content.
 
         Content:
-        ${content}
-
-        Return ONLY the HTML.`,
+        ${content}`,
+        response_json_schema: {
+          type: "object",
+          properties: {
+            title: { type: "string" },
+            html_content: { type: "string" }
+          }
+        }
       });
-      // Clean up potential markdown code blocks if LLM wraps it
-      const cleanHtml = organized.replace(/```html/g, '').replace(/```/g, '').trim();
-      setContent(cleanHtml);
+
+      if (result.html_content) {
+        setContent(result.html_content);
+      }
+      if (result.title) {
+        setTitle(result.title);
+      }
     } catch (error) {
       console.error("Error organizing content", error);
     } finally {

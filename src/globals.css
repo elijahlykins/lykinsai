@@ -56,14 +56,15 @@ css
   body {
     @apply bg-background text-foreground;
     min-height: 100vh;
+    background: linear-gradient(to bottom right, var(--bg-gradient-from), var(--bg-gradient-via), var(--bg-gradient-to));
   }
 
   /* Light theme styles */
   :root {
     --note-text-color: #000;
-    --bg-gradient-from: #f9fafb;
-    --bg-gradient-via: rgba(239, 246, 255, 0.3);
-    --bg-gradient-to: #f3f4f6;
+    --bg-gradient-from: #eff6ff; /* blue-50 */
+    --bg-gradient-via: #dbeafe; /* blue-100 */
+    --bg-gradient-to: #eff6ff; /* blue-50 */
     --layout-density: 1;
     --accent-color: #b8a4d4;
   }
