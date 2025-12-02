@@ -50,6 +50,24 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
                 </TooltipContent>
               </Tooltip>
             ))}
+            
+            <div className="w-full h-px bg-white/20 dark:bg-gray-700/30 my-2" />
+            
+            {/* Folders collapsed */}
+            {folders.map(folder => (
+                <Tooltip key={folder.id}>
+                    <TooltipTrigger asChild>
+                    <button
+                        className="p-3 rounded-2xl transition-all backdrop-blur-sm border text-black dark:text-white hover:bg-white/40 dark:hover:bg-[#171515]/40 border-white/20 dark:border-gray-700/20"
+                    >
+                        <Folder className="w-5 h-5" />
+                    </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="right">
+                    <p>{folder.name}</p>
+                    </TooltipContent>
+                </Tooltip>
+            ))}
           </div>
           <div className="mt-auto space-y-2">
             <Tooltip>
@@ -121,6 +139,23 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
               </TooltipContent>
             </Tooltip>
           ))}
+
+          {folders.length > 0 && (
+            <div className="pt-4">
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 px-2">Folders</p>
+                <div className="space-y-1">
+                    {folders.map(folder => (
+                        <button
+                            key={folder.id}
+                            className="w-full px-4 py-2 rounded-xl text-sm font-medium transition-all flex items-center gap-3 text-gray-700 dark:text-gray-300 hover:bg-white/30 dark:hover:bg-[#171515]/30 hover:text-black dark:hover:text-white"
+                        >
+                            <Folder className="w-4 h-4" />
+                            {folder.name}
+                        </button>
+                    ))}
+                </div>
+            </div>
+          )}
         </nav>
 
         {/* Settings and Billing at bottom */}

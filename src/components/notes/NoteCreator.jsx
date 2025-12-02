@@ -79,8 +79,39 @@ const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, activeAITools 
   // Styling state
   const [styling, setStyling] = useState({});
   const [contextMenu, setContextMenu] = useState({ isOpen: false, type: null, x: 0, y: 0 });
+  
+  // Folders
+  const [folders, setFolders] = useState([]);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [showNewFolderDialog, setShowNewFolderDialog] = useState(false);
 
   const mediaRecorderRef = useRef(null);
+
+  // Fetch folders
+  const { data: fetchedFolders = [] } = useQuery({
+    queryKey: ['folders'],
+    queryFn: () => base44.entities.Folder.list(),
+    staleTime: 60000,
+  });
+
+  useEffect(() => {
+    if (fetchedFolders.length > 0) {
+      setFolders(fetchedFolders);
+    }
+  }, [fetchedFolders]);
+
+  const handleCreateFolder = async () => {
+    if (!newFolderName.trim()) return;
+    try {
+      const newFolder = await base44.entities.Folder.create({ name: newFolderName.trim() });
+      setFolders(prev => [...prev, newFolder]);
+      setFolder(newFolder.name);
+      setShowNewFolderDialog(false);
+      setNewFolderName('');
+    } catch (error) {
+      console.error('Error creating folder:', error);
+    }
+  };
   const audioChunksRef = useRef([]);
   const timerRef = useRef(null);
   const saveTimeoutRef = useRef(null);
@@ -779,14 +810,34 @@ Be constructive, insightful, and encouraging.`,
     });
   };
 
+  const handleEditorContextMenu = (e) => {
+    const selection = quillRef.current?.getEditor()?.getSelection();
+    if (selection && selection.length > 0) {
+        e.preventDefault();
+        setContextMenu({
+            isOpen: true,
+            type: 'text',
+            x: e.clientX,
+            y: e.clientY
+        });
+    }
+  };
+
   const handleColorChange = (property, value) => {
-    setStyling(prev => ({
-        ...prev,
-        [contextMenu.type]: {
-            ...prev[contextMenu.type],
-            [property]: value
+    if (contextMenu.type === 'text') {
+        const editor = quillRef.current?.getEditor();
+        if (editor) {
+            editor.format(property, value);
         }
-    }));
+    } else {
+        setStyling(prev => ({
+            ...prev,
+            [contextMenu.type]: {
+                ...prev[contextMenu.type],
+                [property]: value
+            }
+        }));
+    }
   };
 
   const handleColorReset = () => {
@@ -939,7 +990,7 @@ Be constructive, insightful, and encouraging.`,
               disabled={isProcessing}
             />
 
-            <div className="flex-1 w-full min-h-[50vh] text-xl md:text-2xl leading-relaxed text-black dark:text-white">
+            <div className="flex-1 w-full min-h-[50vh] text-xl md:text-2xl leading-relaxed text-black dark:text-white" onContextMenu={handleEditorContextMenu}>
               <style>
                 {`
                   .ql-container { font-size: 1.125rem; font-family: inherit; }
@@ -1049,17 +1100,22 @@ Be constructive, insightful, and encouraging.`,
                   </div>
                   <div>
                     <label className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2 block">Folder</label>
-                    <Select value={folder} onValueChange={setFolder}>
+                    <Select value={folder} onValueChange={(val) => {
+                        if (val === 'new_folder_action') {
+                            setShowNewFolderDialog(true);
+                        } else {
+                            setFolder(val);
+                        }
+                    }}>
                       <SelectTrigger className="bg-transparent border-gray-200 dark:border-gray-700">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="Uncategorized">Uncategorized</SelectItem>
-                        <SelectItem value="Projects">Projects</SelectItem>
-                        <SelectItem value="Ideas">Ideas</SelectItem>
-                        <SelectItem value="Research">Research</SelectItem>
-                        <SelectItem value="Personal">Personal</SelectItem>
-                        <SelectItem value="Work">Work</SelectItem>
+                        {folders.map(f => (
+                            <SelectItem key={f.id} value={f.name}>{f.name}</SelectItem>
+                        ))}
+                        <SelectItem value="new_folder_action" className="text-blue-500 font-medium">+ Create New Folder</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
@@ -1439,10 +1495,27 @@ Be constructive, insightful, and encouraging.`,
             isOpen={contextMenu.isOpen}
             position={{ x: contextMenu.x, y: contextMenu.y }}
             onClose={() => setContextMenu(prev => ({ ...prev, isOpen: false }))}
-            currentColors={styling[contextMenu.type]}
+            currentColors={contextMenu.type === 'text' ? {} : styling[contextMenu.type]}
+            type={contextMenu.type}
             onChange={handleColorChange}
             onReset={handleColorReset}
         />
+
+        <Dialog open={showNewFolderDialog} onOpenChange={setShowNewFolderDialog}>
+            <DialogContent>
+                <DialogHeader>
+                    <DialogTitle>Create New Folder</DialogTitle>
+                </DialogHeader>
+                <div className="py-4 flex gap-2">
+                    <Input 
+                        placeholder="Folder Name" 
+                        value={newFolderName}
+                        onChange={(e) => setNewFolderName(e.target.value)}
+                    />
+                    <Button onClick={handleCreateFolder}>Create</Button>
+                </div>
+            </DialogContent>
+        </Dialog>
         </div>
         );
         });
