@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
-import { Mic, Square, Plus, Link as LinkIcon, Image, Video, FileText, Tag, Folder, Bell, Loader2, Lightbulb, Wand2, X, GripHorizontal, Brain, Sparkles, Network, SearchCheck } from 'lucide-react';
+import { Mic, Square, Plus, Link as LinkIcon, Image, Video, FileText, Tag, Folder, Bell, Loader2, Lightbulb, AlignLeft, X, GripHorizontal, Brain, Sparkles, Network, SearchCheck } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { base44 } from '@/api/base44Client';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -885,7 +885,7 @@ Return only the title, nothing else.`,
           >
             {/* Organize Button - Floating next to text area */}
             {content && content.length > 20 && (
-              <div className="absolute top-16 -right-32 hidden 2xl:block">
+              <div className="absolute top-16 -right-32 hidden 2xl:block opacity-0 group-hover:opacity-100 transition-opacity duration-300">
                  <div className="sticky top-20">
                    <Button 
                      onClick={handleAIOrganize}
@@ -893,7 +893,7 @@ Return only the title, nothing else.`,
                      variant="ghost" 
                      className="bg-white/80 dark:bg-black/50 backdrop-blur-md border border-gray-200 dark:border-gray-800 text-gray-500 hover:text-black dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-800 shadow-sm transition-all rounded-full p-3 h-12 w-12 flex items-center justify-center group/btn"
                    >
-                     <Wand2 className="w-5 h-5" />
+                     <AlignLeft className="w-5 h-5" />
                      <span className="absolute right-full mr-2 bg-black text-white text-xs px-2 py-1 rounded opacity-0 group-hover/btn:opacity-100 transition-opacity whitespace-nowrap pointer-events-none">
                         Organize Note
                      </span>
@@ -920,6 +920,15 @@ Return only the title, nothing else.`,
                   .ql-editor h1 { font-size: 2.25em; }
                   .ql-editor h2 { font-size: 1.75em; }
                   .ql-editor blockquote { border-left: 3px solid #e5e7eb; padding-left: 1em; font-style: italic; color: #6b7280; }
+                  .ql-editor pre { 
+                    background-color: #282c34 !important; 
+                    color: #abb2bf !important; 
+                    padding: 1rem !important; 
+                    border-radius: 0.5rem !important;
+                    font-family: 'JetBrains Mono', 'Fira Code', monospace !important;
+                    font-size: 0.9em !important;
+                    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1) !important;
+                  }
                   .ql-tooltip { z-index: 50 !important; border-radius: 8px !important; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1) !important; border: 1px solid #e5e7eb !important; background-color: white !important; color: black !important; padding: 8px !important; }
                   .dark .ql-tooltip { background-color: #1f2937 !important; border-color: #374151 !important; color: white !important; }
                   .ql-tooltip-arrow { border-bottom-color: white !important; }
