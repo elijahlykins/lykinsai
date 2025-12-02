@@ -1,12 +1,20 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { X, RotateCcw, Check, Plus, Trash2 } from 'lucide-react';
+import { X, RotateCcw, Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { base44 } from '@/api/base44Client';
 
 export default function ColorMenu({ isOpen, position, onClose, currentColors, onChange, onReset, type = 'box' }) {
   const menuRef = useRef(null);
   const [savedColors, setSavedColors] = useState([]);
-  const [customColor, setCustomColor] = useState('#000000');
+  
+  const isText = type === 'text';
+  const bgLabel = isText ? 'Highlight' : 'Background';
+  const bgKey = isText ? 'background' : 'bg';
+  const textKey = isText ? 'color' : 'text';
+  
+  // Use props directly, defaulting to white/black if undefined
+  const currentColorBg = currentColors?.[bgKey] || '#ffffff';
+  const currentColorText = currentColors?.[textKey] || '#000000';
 
   useEffect(() => {
     const loadSavedColors = async () => {
@@ -37,9 +45,10 @@ export default function ColorMenu({ isOpen, position, onClose, currentColors, on
     };
   }, [isOpen, onClose]);
 
-  const handleSaveColor = async () => {
-      if (!savedColors.includes(customColor)) {
-          const newColors = [...savedColors, customColor];
+  const handleSaveColor = async (colorToSave) => {
+      if (!colorToSave) return;
+      if (!savedColors.includes(colorToSave)) {
+          const newColors = [...savedColors, colorToSave];
           setSavedColors(newColors);
           try {
               await base44.auth.updateMe({ saved_colors: newColors });
@@ -61,17 +70,6 @@ export default function ColorMenu({ isOpen, position, onClose, currentColors, on
 
   if (!isOpen) return null;
 
-  const colors = [
-    { name: 'Default', value: 'transparent', text: 'inherit' },
-    { name: 'Red', value: '#fee2e2', text: '#991b1b' },
-    { name: 'Yellow', value: '#fef9c3', text: '#854d0e' },
-    { name: 'Green', value: '#dcfce7', text: '#166534' },
-    { name: 'Blue', value: '#dbeafe', text: '#1e40af' },
-    { name: 'Purple', value: '#f3e8ff', text: '#6b21a8' },
-    { name: 'Pink', value: '#fce7f3', text: '#9d174d' },
-    { name: 'Gray', value: '#f3f4f6', text: '#374151' },
-  ];
-
   return (
     <div 
       ref={menuRef}
@@ -85,125 +83,37 @@ export default function ColorMenu({ isOpen, position, onClose, currentColors, on
     >
       <div className="flex items-center justify-between mb-4">
         <h4 className="text-sm font-semibold text-black dark:text-white">
-          {type === 'text' ? 'Text Color' : 'Customize Appearance'}
+          {isText ? 'Text Appearance' : 'Customize Appearance'}
         </h4>
         <button onClick={onClose} className="text-gray-500 hover:text-black dark:hover:text-white">
           <X className="w-4 h-4" />
         </button>
       </div>
 
-      {type === 'text' ? (
-        <div className="space-y-4">
-           <div className="grid grid-cols-4 gap-2">
-             {colors.map(c => (
-               <button
-                 key={c.name}
-                 onClick={() => onChange('color', c.text === 'inherit' ? false : c.text)}
-                 className="w-full aspect-square rounded-lg border border-gray-200 dark:border-gray-700 hover:scale-110 transition-transform flex items-center justify-center"
-                 style={{ backgroundColor: c.text === 'inherit' ? 'transparent' : c.text }}
-                 title={c.name}
-               >
-                 {c.text === 'inherit' && <RotateCcw className="w-3 h-3 text-black dark:text-white" />}
-               </button>
-             ))}
-             {/* Saved Colors for Text */}
-             {savedColors.map((c, i) => (
-               <button
-                 key={'saved-text-' + i}
-                 onClick={() => onChange('color', c)}
-                 className="w-full aspect-square rounded-lg border border-gray-200 dark:border-gray-700 hover:scale-110 transition-transform flex items-center justify-center relative group"
-                 style={{ backgroundColor: c }}
-                 title={c}
-               >
-                  <div 
-                    onClick={(e) => { e.stopPropagation(); handleRemoveColor(c); }}
-                    className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
-                  >
-                    <X className="w-2 h-2" />
-                  </div>
-               </button>
-             ))}
-           </div>
-           
-           <div className="pt-2 border-t border-gray-100 dark:border-gray-800">
-             <div className="flex items-center justify-between mb-2">
-                <label className="text-xs text-gray-500 block">Highlight</label>
-                <div className="flex items-center gap-1">
-                    <input 
-                        type="color" 
-                        value={customColor} 
-                        onChange={(e) => setCustomColor(e.target.value)}
-                        className="w-5 h-5 rounded cursor-pointer border-0 p-0 bg-transparent"
-                    />
-                    <button onClick={handleSaveColor} className="text-gray-500 hover:text-black dark:hover:text-white">
-                        <Plus className="w-4 h-4" />
-                    </button>
-                </div>
-             </div>
-             <div className="grid grid-cols-4 gap-2">
-               {colors.map(c => (
-                 <button
-                   key={c.name + 'bg'}
-                   onClick={() => onChange('background', c.value === 'transparent' ? false : c.value)}
-                   className="w-full aspect-square rounded-lg border border-gray-200 dark:border-gray-700 hover:scale-110 transition-transform flex items-center justify-center"
-                   style={{ backgroundColor: c.value }}
-                   title={c.name}
-                 >
-                   {c.value === 'transparent' && <RotateCcw className="w-3 h-3 text-black dark:text-white" />}
-                 </button>
-               ))}
-               {/* Saved Colors for Highlight */}
-               {savedColors.map((c, i) => (
-                 <button
-                   key={'saved-bg-' + i}
-                   onClick={() => onChange('background', c)}
-                   className="w-full aspect-square rounded-lg border border-gray-200 dark:border-gray-700 hover:scale-110 transition-transform flex items-center justify-center relative group"
-                   style={{ backgroundColor: c }}
-                   title={c}
-                 >
-                    <div 
-                        onClick={(e) => { e.stopPropagation(); handleRemoveColor(c); }}
-                        className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
-                    >
-                        <X className="w-2 h-2" />
-                    </div>
-                 </button>
-               ))}
-             </div>
-           </div>
-        </div>
-      ) : (
-        <div className="space-y-4">
+      <div className="space-y-4">
+          {/* Background / Highlight Section */}
           <div className="flex items-center justify-between">
-            <label className="text-xs text-gray-600 dark:text-gray-400">Background</label>
+            <label className="text-xs text-gray-600 dark:text-gray-400">{bgLabel}</label>
             <div className="flex items-center gap-2">
               {/* Quick pick from saved colors */}
               {savedColors.slice(0, 3).map((c, i) => (
                   <button 
                     key={i}
-                    onClick={() => onChange('bg', c)}
+                    onClick={() => onChange(bgKey, c)}
                     className="w-4 h-4 rounded-full border border-gray-300"
                     style={{ backgroundColor: c }}
+                    title={c}
                   />
               ))}
               <div className="w-px h-4 bg-gray-200 dark:bg-gray-700 mx-1"></div>
               <input
                 type="color"
-                value={currentColors?.bg || '#ffffff'}
-                onChange={(e) => onChange('bg', e.target.value)}
+                value={currentColorBg === 'transparent' ? '#ffffff' : currentColorBg}
+                onChange={(e) => onChange(bgKey, e.target.value)}
                 className="w-8 h-8 rounded cursor-pointer border-0 p-0 bg-transparent"
               />
               <button 
-                onClick={() => {
-                    const color = currentColors?.bg || '#ffffff';
-                    if(!savedColors.includes(color)) {
-                        handleSaveColor(); // Saves customColor state, wait we need to pass the color
-                        // Let's fix handleSaveColor to accept an arg or update state before calling
-                        const newColors = [...savedColors, color];
-                        setSavedColors(newColors);
-                        base44.auth.updateMe({ saved_colors: newColors });
-                    }
-                }}
+                onClick={() => handleSaveColor(currentColorBg)}
                 className="text-gray-400 hover:text-black dark:hover:text-white"
                 title="Save this color"
               >
@@ -212,6 +122,7 @@ export default function ColorMenu({ isOpen, position, onClose, currentColors, on
             </div>
           </div>
 
+          {/* Text Color Section */}
           <div className="flex items-center justify-between">
             <label className="text-xs text-gray-600 dark:text-gray-400">Text</label>
             <div className="flex items-center gap-2">
@@ -219,21 +130,30 @@ export default function ColorMenu({ isOpen, position, onClose, currentColors, on
                {savedColors.slice(0, 3).map((c, i) => (
                   <button 
                     key={i}
-                    onClick={() => onChange('text', c)}
+                    onClick={() => onChange(textKey, c)}
                     className="w-4 h-4 rounded-full border border-gray-300"
                     style={{ backgroundColor: c }}
+                    title={c}
                   />
               ))}
               <div className="w-px h-4 bg-gray-200 dark:bg-gray-700 mx-1"></div>
               <input
                 type="color"
-                value={currentColors?.text || '#000000'}
-                onChange={(e) => onChange('text', e.target.value)}
+                value={currentColorText}
+                onChange={(e) => onChange(textKey, e.target.value)}
                 className="w-8 h-8 rounded cursor-pointer border-0 p-0 bg-transparent"
               />
+               <button 
+                onClick={() => handleSaveColor(currentColorText)}
+                className="text-gray-400 hover:text-black dark:hover:text-white"
+                title="Save this color"
+              >
+                <Plus className="w-4 h-4" />
+              </button>
             </div>
           </div>
           
+          {/* Saved Colors Management */}
           {savedColors.length > 0 && (
             <div className="pt-2 border-t border-gray-100 dark:border-gray-800">
                 <p className="text-[10px] text-gray-500 mb-2">Saved Colors</p>
@@ -242,20 +162,19 @@ export default function ColorMenu({ isOpen, position, onClose, currentColors, on
                         <div key={i} className="group relative">
                             <button
                                 onClick={() => {
-                                    // If user clicks saved color, what do we apply it to?
-                                    // Probably background by default or let them pick above
-                                    // But for "Saved Colors" section, maybe copy to clipboard or something?
-                                    // Let's just let them pick in the inputs above. 
-                                    // This section is mainly for management (delete)
+                                    // Allow clicking to set as highlight (primary action usually)
+                                    // Or maybe split actions? Let's just set bg as it's most common
+                                    onChange(bgKey, c);
                                 }}
-                                className="w-6 h-6 rounded-md border border-gray-200 dark:border-gray-700"
+                                className="w-6 h-6 rounded-md border border-gray-200 dark:border-gray-700 transition-transform hover:scale-110"
                                 style={{ backgroundColor: c }}
+                                title={c}
                             />
                             <button
                                 onClick={(e) => { e.stopPropagation(); handleRemoveColor(c); }}
-                                className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
+                                className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity shadow-sm z-10"
                             >
-                                <X className="w-2 h-2" />
+                                <X className="w-3 h-3" />
                             </button>
                         </div>
                     ))}
@@ -276,8 +195,7 @@ export default function ColorMenu({ isOpen, position, onClose, currentColors, on
                   Reset to Default
               </Button>
           </div>
-        </div>
-      )}
+      </div>
     </div>
   );
 }

@@ -811,14 +811,17 @@ Be constructive, insightful, and encouraging.`,
   };
 
   const handleEditorContextMenu = (e) => {
-    const selection = quillRef.current?.getEditor()?.getSelection();
+    const editor = quillRef.current?.getEditor();
+    const selection = editor?.getSelection();
     if (selection && selection.length > 0) {
         e.preventDefault();
+        const formats = editor.getFormat(selection);
         setContextMenu({
             isOpen: true,
             type: 'text',
             x: e.clientX,
-            y: e.clientY
+            y: e.clientY,
+            data: formats
         });
     }
   };
@@ -828,6 +831,11 @@ Be constructive, insightful, and encouraging.`,
         const editor = quillRef.current?.getEditor();
         if (editor) {
             editor.format(property, value);
+            // Update local context menu data to reflect change immediately in UI
+            setContextMenu(prev => ({
+                ...prev,
+                data: { ...prev.data, [property]: value }
+            }));
         }
     } else {
         setStyling(prev => ({
@@ -841,11 +849,23 @@ Be constructive, insightful, and encouraging.`,
   };
 
   const handleColorReset = () => {
-    setStyling(prev => {
-        const newStyling = { ...prev };
-        delete newStyling[contextMenu.type];
-        return newStyling;
-    });
+    if (contextMenu.type === 'text') {
+        const editor = quillRef.current?.getEditor();
+        if (editor) {
+            editor.format('color', false);
+            editor.format('background', false);
+            setContextMenu(prev => ({
+                ...prev,
+                data: {}
+            }));
+        }
+    } else {
+        setStyling(prev => {
+            const newStyling = { ...prev };
+            delete newStyling[contextMenu.type];
+            return newStyling;
+        });
+    }
   };
 
   const handleAIOrganize = async () => {
@@ -1495,7 +1515,7 @@ Be constructive, insightful, and encouraging.`,
             isOpen={contextMenu.isOpen}
             position={{ x: contextMenu.x, y: contextMenu.y }}
             onClose={() => setContextMenu(prev => ({ ...prev, isOpen: false }))}
-            currentColors={contextMenu.type === 'text' ? {} : styling[contextMenu.type]}
+            currentColors={contextMenu.type === 'text' ? (contextMenu.data || {}) : styling[contextMenu.type]}
             type={contextMenu.type}
             onChange={handleColorChange}
             onReset={handleColorReset}
