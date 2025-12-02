@@ -595,12 +595,19 @@ Be constructive, insightful, and encouraging.`,
       
       // Use user's title or generate one if missing
       let finalTitle = title.trim();
-      if (!finalTitle && finalContent.length > 20) {
-          // Only generate title if we have enough content and no title
-          // Skipping LLM title gen for every auto-save to save tokens/time
-          // finalTitle = 'Untitled Note'; 
+      if (!finalTitle && finalContent.length > 15) {
+         try {
+             // Generate a simple title if blank
+             const genTitle = await base44.integrations.Core.InvokeLLM({
+                 prompt: `Generate a super simple, short title (max 5 words) for this content: "${finalContent.substring(0, 300)}". Return ONLY the title text, no quotes.`,
+             });
+             finalTitle = genTitle.trim().replace(/^["']|["']$/g, '');
+             if (finalTitle) setTitle(finalTitle); // Update UI so we don't regenerate constantly
+         } catch (err) {
+             console.error("Title gen error", err);
+         }
       }
-      if (!finalTitle) finalTitle = 'Untitled Note';
+      if (!finalTitle) finalTitle = 'New Note';
 
       const targetId = internalNoteId || noteId;
 
