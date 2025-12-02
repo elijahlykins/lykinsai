@@ -16,6 +16,7 @@ import TagInput from './TagInput';
 import ConnectionSuggestions from './ConnectionSuggestions';
 import ReminderPicker from './ReminderPicker';
 import SlashCommandMenu from './SlashCommandMenu';
+import ColorMenu from './ColorMenu';
 
 const modules = {
   toolbar: [
@@ -74,6 +75,11 @@ const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, activeAITools 
   const [previewAttachment, setPreviewAttachment] = useState(null);
   const [isDragging, setIsDragging] = useState(false);
   const [internalNoteId, setInternalNoteId] = useState(noteId);
+  
+  // Styling state
+  const [styling, setStyling] = useState({});
+  const [contextMenu, setContextMenu] = useState({ isOpen: false, type: null, x: 0, y: 0 });
+
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const timerRef = useRef(null);
@@ -251,6 +257,7 @@ const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, activeAITools 
             setTags(note.tags || []);
             setFolder(note.folder || 'Uncategorized');
             setReminder(note.reminder || null);
+            setStyling(note.styling || {});
             setSuggestedConnections(note.connected_notes || []);
             setSuggestedQuestions(note.ai_analysis?.questions || []);
             setAiThoughts(note.ai_analysis?.thoughts || []);
@@ -276,6 +283,7 @@ const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, activeAITools 
         setTags(draft.tags || []);
         setFolder(draft.folder || 'Uncategorized');
         setReminder(draft.reminder || null);
+        setStyling(draft.styling || {});
         setSuggestedConnections(draft.suggestedConnections || []);
       }
     }
@@ -337,7 +345,7 @@ const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, activeAITools 
       }, 2000); // 2s debounce
 
       return () => clearTimeout(timer);
-  }, [title, content, attachments, tags, folder, reminder, suggestedConnections, internalNoteId, chatMessages, suggestedQuestions, aiThoughts, aiAnalysis]);
+  }, [title, content, attachments, tags, folder, reminder, suggestedConnections, internalNoteId, chatMessages, suggestedQuestions, aiThoughts, aiAnalysis, styling]);
 
   const handleAddConnection = (noteId) => {
     setSuggestedConnections(prev => {
@@ -631,6 +639,7 @@ Be constructive, insightful, and encouraging.`,
           reminder: reminder,
           attachments: attachments,
           chat_history: chatMessages,
+          styling: styling,
           ai_analysis: {
             validation: aiAnalysis?.validation,
             prediction: aiAnalysis?.prediction,
@@ -656,6 +665,7 @@ Be constructive, insightful, and encouraging.`,
           reminder: reminder,
           attachments: attachments,
           chat_history: chatMessages,
+          styling: styling,
           ai_analysis: {
             validation: aiAnalysis?.validation,
             prediction: aiAnalysis?.prediction,
@@ -757,6 +767,34 @@ Be constructive, insightful, and encouraging.`,
 
   const updateAttachment = (id, updates) => {
     setAttachments(attachments.map(a => a.id === id ? { ...a, ...updates } : a));
+  };
+
+  const handleContextMenu = (e, type) => {
+    e.preventDefault();
+    setContextMenu({
+        isOpen: true,
+        type: type,
+        x: e.clientX,
+        y: e.clientY
+    });
+  };
+
+  const handleColorChange = (property, value) => {
+    setStyling(prev => ({
+        ...prev,
+        [contextMenu.type]: {
+            ...prev[contextMenu.type],
+            [property]: value
+        }
+    }));
+  };
+
+  const handleColorReset = () => {
+    setStyling(prev => {
+        const newStyling = { ...prev };
+        delete newStyling[contextMenu.type];
+        return newStyling;
+    });
   };
 
   const handleAIOrganize = async () => {
@@ -1080,12 +1118,20 @@ Be constructive, insightful, and encouraging.`,
               initial={{ x: 0, y: 0 }}
               className="absolute right-8 top-32 w-72 pointer-events-auto z-30 cursor-move"
             >
-              <div className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-2xl overflow-hidden transition-all duration-500 group hover:bg-blue-500/5 dark:hover:bg-blue-500/10 hover:border-blue-500/20 dark:hover:border-blue-400/20">
+              <div 
+                onContextMenu={(e) => handleContextMenu(e, 'questions')}
+                style={{
+                    backgroundColor: styling.questions?.bg ? styling.questions.bg : undefined,
+                    color: styling.questions?.text ? styling.questions.text : undefined,
+                    borderColor: styling.questions?.bg ? 'transparent' : undefined
+                }}
+                className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-2xl overflow-hidden transition-all duration-500 group hover:bg-blue-500/5 dark:hover:bg-blue-500/10 hover:border-blue-500/20 dark:hover:border-blue-400/20"
+              >
                 {/* Header */}
                 <div className="h-10 bg-white/10 dark:bg-white/5 border-b border-white/10 dark:border-white/5 flex items-center justify-between px-3 cursor-move select-none">
                    <div className="flex items-center gap-2">
-                     <Lightbulb className="w-3.5 h-3.5 text-black dark:text-white" />
-                     <h3 className="text-xs font-semibold text-black dark:text-white">AI Questions</h3>
+                     <Lightbulb className="w-3.5 h-3.5 text-black dark:text-white" style={{ color: styling.questions?.text }} />
+                     <h3 className="text-xs font-semibold text-black dark:text-white" style={{ color: styling.questions?.text }}>AI Questions</h3>
                    </div>
                    <div className="flex items-center gap-1">
                       <GripHorizontal className="w-3 h-3 text-black/30 dark:text-white/30 opacity-0 group-hover:opacity-100 transition-opacity mr-1" />
@@ -1105,6 +1151,7 @@ Be constructive, insightful, and encouraging.`,
                           onDragStart={(e) => e.dataTransfer.setData('text/plain', question)}
                           onClick={() => onQuestionClick?.(question)}
                           className="w-full p-3 bg-white/20 dark:bg-black/20 rounded-xl hover:bg-white/40 dark:hover:bg-black/40 transition-all text-left text-xs leading-relaxed text-black dark:text-white border border-white/10 cursor-grab active:cursor-grabbing"
+                          style={{ color: styling.questions?.text }}
                         >
                           {question}
                         </div>
@@ -1130,12 +1177,20 @@ Be constructive, insightful, and encouraging.`,
               animate={{ x: 0, y: 150 }} 
               className="absolute right-8 top-32 w-72 pointer-events-auto z-30 cursor-move"
             >
-              <div className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-2xl overflow-hidden transition-all duration-500 group hover:bg-blue-500/5 dark:hover:bg-blue-500/10 hover:border-blue-500/20 dark:hover:border-blue-400/20">
+              <div 
+                onContextMenu={(e) => handleContextMenu(e, 'thoughts')}
+                style={{
+                    backgroundColor: styling.thoughts?.bg ? styling.thoughts.bg : undefined,
+                    color: styling.thoughts?.text ? styling.thoughts.text : undefined,
+                    borderColor: styling.thoughts?.bg ? 'transparent' : undefined
+                }}
+                className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-2xl overflow-hidden transition-all duration-500 group hover:bg-blue-500/5 dark:hover:bg-blue-500/10 hover:border-blue-500/20 dark:hover:border-blue-400/20"
+              >
                 {/* Header */}
                 <div className="h-10 bg-white/10 dark:bg-white/5 border-b border-white/10 dark:border-white/5 flex items-center justify-between px-3 cursor-move select-none">
                    <div className="flex items-center gap-2">
-                     <Brain className="w-3.5 h-3.5 text-black dark:text-white" />
-                     <h3 className="text-xs font-semibold text-black dark:text-white">AI Thoughts</h3>
+                     <Brain className="w-3.5 h-3.5 text-black dark:text-white" style={{ color: styling.thoughts?.text }} />
+                     <h3 className="text-xs font-semibold text-black dark:text-white" style={{ color: styling.thoughts?.text }}>AI Thoughts</h3>
                    </div>
                    <div className="flex items-center gap-1">
                       <GripHorizontal className="w-3 h-3 text-black/30 dark:text-white/30 opacity-0 group-hover:opacity-100 transition-opacity mr-1" />
@@ -1154,6 +1209,7 @@ Be constructive, insightful, and encouraging.`,
                           draggable="true"
                           onDragStart={(e) => e.dataTransfer.setData('text/plain', thought)}
                           className="p-3 bg-gray-100 dark:bg-white/10 rounded-xl text-xs leading-relaxed text-black dark:text-white border border-black/10 dark:border-white/10 cursor-grab active:cursor-grabbing"
+                          style={{ color: styling.thoughts?.text }}
                         >
                           "{thought}"
                         </div>
@@ -1179,12 +1235,20 @@ Be constructive, insightful, and encouraging.`,
               animate={{ x: 0, y: 300 }}
               className="absolute right-8 top-32 w-72 pointer-events-auto z-30 cursor-move"
             >
-              <div className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-2xl overflow-hidden transition-all duration-500 group hover:bg-blue-500/5 dark:hover:bg-blue-500/10 hover:border-blue-500/20 dark:hover:border-blue-400/20">
+              <div 
+                onContextMenu={(e) => handleContextMenu(e, 'analysis')}
+                style={{
+                    backgroundColor: styling.analysis?.bg ? styling.analysis.bg : undefined,
+                    color: styling.analysis?.text ? styling.analysis.text : undefined,
+                    borderColor: styling.analysis?.bg ? 'transparent' : undefined
+                }}
+                className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-2xl overflow-hidden transition-all duration-500 group hover:bg-blue-500/5 dark:hover:bg-blue-500/10 hover:border-blue-500/20 dark:hover:border-blue-400/20"
+              >
                 {/* Header */}
                 <div className="h-10 bg-white/10 dark:bg-white/5 border-b border-white/10 dark:border-white/5 flex items-center justify-between px-3 cursor-move select-none">
                    <div className="flex items-center gap-2">
-                     <SearchCheck className="w-3.5 h-3.5 text-black dark:text-white" />
-                     <h3 className="text-xs font-semibold text-black dark:text-white">Analysis</h3>
+                     <SearchCheck className="w-3.5 h-3.5 text-black dark:text-white" style={{ color: styling.analysis?.text }} />
+                     <h3 className="text-xs font-semibold text-black dark:text-white" style={{ color: styling.analysis?.text }}>Analysis</h3>
                    </div>
                    <div className="flex items-center gap-1">
                       <GripHorizontal className="w-3 h-3 text-black/30 dark:text-white/30 opacity-0 group-hover:opacity-100 transition-opacity mr-1" />
@@ -1203,18 +1267,18 @@ Be constructive, insightful, and encouraging.`,
                            onDragStart={(e) => e.dataTransfer.setData('text/plain', aiAnalysis.prediction)}
                            className="p-3 bg-gray-100 dark:bg-white/10 rounded-xl border border-black/10 dark:border-white/10 cursor-grab active:cursor-grabbing"
                          >
-                           <p className="text-[10px] uppercase tracking-wider text-black dark:text-white mb-1 font-semibold opacity-70">Prediction</p>
-                           <p className="text-xs text-black dark:text-white">{aiAnalysis.prediction}</p>
+                           <p className="text-[10px] uppercase tracking-wider text-black dark:text-white mb-1 font-semibold opacity-70" style={{ color: styling.analysis?.text }}>Prediction</p>
+                           <p className="text-xs text-black dark:text-white" style={{ color: styling.analysis?.text }}>{aiAnalysis.prediction}</p>
                          </div>
-                      )}
-                      {aiAnalysis.validation && (
+                         )}
+                         {aiAnalysis.validation && (
                          <div 
                            draggable="true"
                            onDragStart={(e) => e.dataTransfer.setData('text/plain', aiAnalysis.validation)}
                            className="p-3 bg-gray-100 dark:bg-white/10 rounded-xl border border-black/10 dark:border-white/10 cursor-grab active:cursor-grabbing"
                          >
-                           <p className="text-[10px] uppercase tracking-wider text-black dark:text-white mb-1 font-semibold opacity-70">Validation</p>
-                           <p className="text-xs text-black dark:text-white">{aiAnalysis.validation}</p>
+                           <p className="text-[10px] uppercase tracking-wider text-black dark:text-white mb-1 font-semibold opacity-70" style={{ color: styling.analysis?.text }}>Validation</p>
+                           <p className="text-xs text-black dark:text-white" style={{ color: styling.analysis?.text }}>{aiAnalysis.validation}</p>
                          </div>
                       )}
                     </div>
@@ -1237,12 +1301,20 @@ Be constructive, insightful, and encouraging.`,
                initial={{ x: 0, y: 500 }}
                className="absolute right-8 top-32 w-72 pointer-events-auto z-30 cursor-move"
              >
-               <div className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-2xl overflow-hidden transition-all duration-500 group hover:bg-blue-500/5 dark:hover:bg-blue-500/10 hover:border-blue-500/20 dark:hover:border-blue-400/20">
+               <div 
+                 onContextMenu={(e) => handleContextMenu(e, 'connections')}
+                 style={{
+                    backgroundColor: styling.connections?.bg ? styling.connections.bg : undefined,
+                    color: styling.connections?.text ? styling.connections.text : undefined,
+                    borderColor: styling.connections?.bg ? 'transparent' : undefined
+                 }}
+                 className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-2xl overflow-hidden transition-all duration-500 group hover:bg-blue-500/5 dark:hover:bg-blue-500/10 hover:border-blue-500/20 dark:hover:border-blue-400/20"
+               >
                  {/* Header */}
                  <div className="h-10 bg-white/10 dark:bg-white/5 border-b border-white/10 dark:border-white/5 flex items-center justify-between px-3 cursor-move select-none">
                     <div className="flex items-center gap-2">
-                      <Network className="w-3.5 h-3.5 text-black dark:text-white" />
-                      <h3 className="text-xs font-semibold text-black dark:text-white">Suggestions</h3>
+                      <Network className="w-3.5 h-3.5 text-black dark:text-white" style={{ color: styling.connections?.text }} />
+                      <h3 className="text-xs font-semibold text-black dark:text-white" style={{ color: styling.connections?.text }}>Suggestions</h3>
                     </div>
                     <div className="flex items-center gap-1">
                        <GripHorizontal className="w-3 h-3 text-black/30 dark:text-white/30 opacity-0 group-hover:opacity-100 transition-opacity mr-1" />
@@ -1362,6 +1434,15 @@ Be constructive, insightful, and encouraging.`,
           </div>
           </DialogContent>
         </Dialog>
+
+        <ColorMenu 
+            isOpen={contextMenu.isOpen}
+            position={{ x: contextMenu.x, y: contextMenu.y }}
+            onClose={() => setContextMenu(prev => ({ ...prev, isOpen: false }))}
+            currentColors={styling[contextMenu.type]}
+            onChange={handleColorChange}
+            onReset={handleColorReset}
+        />
         </div>
         );
         });
