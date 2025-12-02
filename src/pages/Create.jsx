@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 
 export default function CreatePage() {
+  const { aiName } = useCustomization();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [inputMode, setInputMode] = useState('text'); // 'text' or 'audio'
@@ -112,7 +113,7 @@ export default function CreatePage() {
         `ID: ${n.id}\nTitle: ${n.title}\nContent: ${n.content.substring(0, 200)}\nDate: ${n.created_date}`
       ).join('\n\n---\n\n');
 
-      const history = chatMessages.map(m => `${m.role === 'user' ? 'User' : 'AI'}: ${m.content}`).join('\n');
+      const history = chatMessages.map(m => `${m.role === 'user' ? 'User' : (aiName || 'AI')}: ${m.content}`).join('\n');
 
       const response = await base44.integrations.Core.InvokeLLM({
         prompt: `${personalityStyles[personality]} ${detailStyles[detailLevel]}
