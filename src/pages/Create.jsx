@@ -13,7 +13,6 @@ import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { base44 } from '@/api/base44Client';
-import { useCustomization } from '../components/customization/CustomizationContext';
 import { Save, ChevronDown, ChevronUp, Plus, Send, Loader2, MessageSquare, Search, Zap, Brain, Network, FileSearch, Lightbulb, Share2, Download } from 'lucide-react';
 import {
   DropdownMenu,
@@ -25,7 +24,6 @@ import {
 } from "@/components/ui/dropdown-menu";
 
 export default function CreatePage() {
-  const { aiName } = useCustomization();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [inputMode, setInputMode] = useState('text'); // 'text' or 'audio'
@@ -114,7 +112,7 @@ export default function CreatePage() {
         `ID: ${n.id}\nTitle: ${n.title}\nContent: ${n.content.substring(0, 200)}\nDate: ${n.created_date}`
       ).join('\n\n---\n\n');
 
-      const history = chatMessages.map(m => `${m.role === 'user' ? 'User' : (aiName || 'AI')}: ${m.content}`).join('\n');
+      const history = chatMessages.map(m => `${m.role === 'user' ? 'User' : 'AI'}: ${m.content}`).join('\n');
 
       const response = await base44.integrations.Core.InvokeLLM({
         prompt: `${personalityStyles[personality]} ${detailStyles[detailLevel]}
@@ -321,7 +319,6 @@ If the user asks about old memories or references past ideas, refer to the memor
               isLoading={isChatLoading}
               onClose={() => setShowChat(false)}
               onNoteClick={(note) => setViewingNote(note)}
-              aiName={aiName}
             />
           )}
 

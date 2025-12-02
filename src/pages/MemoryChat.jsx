@@ -11,10 +11,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { useNavigate } from 'react-router-dom';
 import { createPageUrl } from '../utils';
-import { useCustomization } from '../components/customization/CustomizationContext';
 
 export default function MemoryChatPage() {
-  const { aiName } = useCustomization();
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -205,7 +203,7 @@ export default function MemoryChatPage() {
       // Save or update the memory card after streaming completes
       const updatedMessages = [...messages, userMessage, { role: 'assistant', content: response }];
       const chatContent = updatedMessages.map(m => 
-        `${m.role === 'user' ? 'Me' : (aiName || 'AI')}: ${m.content}`
+        `${m.role === 'user' ? 'Me' : 'AI'}: ${m.content}`
       ).join('\n\n');
       
       const allAttachments = updatedMessages
