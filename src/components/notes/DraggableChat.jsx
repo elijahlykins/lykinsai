@@ -91,7 +91,13 @@ export default function DraggableChat({
             <div className="space-y-4">
               {messages.map((msg, idx) => (
                 <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-[85%] p-3 rounded-2xl text-sm leading-relaxed shadow-sm backdrop-blur-md ${
+                  <div 
+                    draggable="true"
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData('text/plain', msg.content);
+                      e.dataTransfer.setData('text/html', msg.content);
+                    }}
+                    className={`max-w-[85%] p-3 rounded-2xl text-sm leading-relaxed shadow-sm backdrop-blur-md cursor-grab active:cursor-grabbing ${
                     msg.role === 'user' 
                       ? 'bg-black/70 dark:bg-white/80 text-white dark:text-black rounded-tr-none' 
                       : 'bg-white/40 dark:bg-black/40 text-black dark:text-white border border-white/20 rounded-tl-none'

@@ -105,8 +105,13 @@ Return up to 5 note IDs that are most relevant, along with a brief reason for ea
               return (
                 <div key={note.id} className="group relative">
                   <button
+                    draggable="true"
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData('text/plain', `Note: ${note.title}\n${note.content}`);
+                      e.dataTransfer.setData('text/html', `<h3>${note.title}</h3><p>${note.content}</p>`);
+                    }}
                     onClick={() => onViewNote?.(note)}
-                    className="w-full p-3 bg-white/50 dark:bg-black/20 rounded-xl hover:bg-white dark:hover:bg-black/40 transition-all text-left"
+                    className="w-full p-3 bg-white/50 dark:bg-black/20 rounded-xl hover:bg-white dark:hover:bg-black/40 transition-all text-left cursor-grab active:cursor-grabbing"
                   >
                     <h4 className="font-medium text-black dark:text-white text-xs mb-1">{note.title}</h4>
                     <p className="text-[10px] text-gray-500 dark:text-gray-400 leading-tight line-clamp-2">{reason}</p>

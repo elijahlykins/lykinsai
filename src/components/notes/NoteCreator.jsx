@@ -705,13 +705,19 @@ Be constructive, insightful, and encouraging.`,
   };
 
   const handleDrop = (e) => {
-    e.preventDefault();
-    setIsDragging(false);
-    
-    const files = Array.from(e.dataTransfer.files);
-    if (files.length > 0) {
-      files.forEach(file => handleFileUpload(file));
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      e.preventDefault();
+      setIsDragging(false);
+      
+      const files = Array.from(e.dataTransfer.files);
+      if (files.length > 0) {
+        files.forEach(file => handleFileUpload(file));
+      }
+      return;
     }
+    
+    // For text drops, allow default behavior (insertion into editor)
+    setIsDragging(false);
   };
 
   const handlePaste = (e) => {
@@ -1075,8 +1081,12 @@ Be constructive, insightful, and encouraging.`,
                       {suggestedQuestions.slice(0, 2).map((question, idx) => (
                         <button
                           key={idx}
+                          draggable="true"
+                          onDragStart={(e) => {
+                            e.dataTransfer.setData('text/plain', question);
+                          }}
                           onClick={() => onQuestionClick?.(question)}
-                          className="w-full p-3 bg-white/20 dark:bg-black/20 rounded-xl hover:bg-white/40 dark:hover:bg-black/40 transition-all text-left text-xs leading-relaxed text-black dark:text-white border border-white/10"
+                          className="w-full p-3 bg-white/20 dark:bg-black/20 rounded-xl hover:bg-white/40 dark:hover:bg-black/40 transition-all text-left text-xs leading-relaxed text-black dark:text-white border border-white/10 cursor-grab active:cursor-grabbing"
                         >
                           {question}
                         </button>
@@ -1121,7 +1131,14 @@ Be constructive, insightful, and encouraging.`,
                   {aiThoughts.length > 0 ? (
                     <div className="space-y-2 cursor-default" onPointerDown={(e) => e.stopPropagation()}>
                       {aiThoughts.slice(0, 2).map((thought, idx) => (
-                        <div key={idx} className="p-3 bg-gray-100 dark:bg-white/10 rounded-xl text-xs leading-relaxed text-black dark:text-white border border-black/10 dark:border-white/10">
+                        <div 
+                          key={idx} 
+                          draggable="true"
+                          onDragStart={(e) => {
+                            e.dataTransfer.setData('text/plain', thought);
+                          }}
+                          className="p-3 bg-gray-100 dark:bg-white/10 rounded-xl text-xs leading-relaxed text-black dark:text-white border border-black/10 dark:border-white/10 cursor-grab active:cursor-grabbing"
+                        >
                           "{thought}"
                         </div>
                       ))}
@@ -1165,13 +1182,25 @@ Be constructive, insightful, and encouraging.`,
                   {aiAnalysis ? (
                     <div className="space-y-3 cursor-default" onPointerDown={(e) => e.stopPropagation()}>
                       {aiAnalysis.prediction && (
-                         <div className="p-3 bg-gray-100 dark:bg-white/10 rounded-xl border border-black/10 dark:border-white/10">
+                         <div 
+                           draggable="true"
+                           onDragStart={(e) => {
+                             e.dataTransfer.setData('text/plain', `Prediction: ${aiAnalysis.prediction}`);
+                           }}
+                           className="p-3 bg-gray-100 dark:bg-white/10 rounded-xl border border-black/10 dark:border-white/10 cursor-grab active:cursor-grabbing"
+                         >
                            <p className="text-[10px] uppercase tracking-wider text-black dark:text-white mb-1 font-semibold opacity-70">Prediction</p>
                            <p className="text-xs text-black dark:text-white">{aiAnalysis.prediction}</p>
                          </div>
                       )}
                       {aiAnalysis.validation && (
-                         <div className="p-3 bg-gray-100 dark:bg-white/10 rounded-xl border border-black/10 dark:border-white/10">
+                         <div 
+                           draggable="true"
+                           onDragStart={(e) => {
+                             e.dataTransfer.setData('text/plain', `Validation: ${aiAnalysis.validation}`);
+                           }}
+                           className="p-3 bg-gray-100 dark:bg-white/10 rounded-xl border border-black/10 dark:border-white/10 cursor-grab active:cursor-grabbing"
+                         >
                            <p className="text-[10px] uppercase tracking-wider text-black dark:text-white mb-1 font-semibold opacity-70">Validation</p>
                            <p className="text-xs text-black dark:text-white">{aiAnalysis.validation}</p>
                          </div>
