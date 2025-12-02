@@ -6,6 +6,7 @@ import NotionSidebar from '../components/notes/NotionSidebar';
 import SettingsModal from '../components/notes/SettingsModal';
 import AIAnalysisPanel from '../components/notes/AIAnalysisPanel';
 import NoteViewer from '../components/notes/NoteViewer';
+import DraggableChat from '../components/notes/DraggableChat';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Clock, Trash2, Edit2, Save, XCircle, Tag, Folder as FolderIcon, Link2, Filter, Bell, MessageCircle, Tags } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -45,6 +46,10 @@ export default function MemoryPage() {
   const [bulkMode, setBulkMode] = useState(false);
   const [viewingNote, setViewingNote] = useState(null);
   const [interactionNote, setInteractionNote] = useState(null);
+  const [showChat, setShowChat] = useState(false);
+  const [chatMessages, setChatMessages] = useState([]);
+  const [chatInput, setChatInput] = useState('');
+  const [isChatLoading, setIsChatLoading] = useState(false);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
@@ -112,6 +117,78 @@ export default function MemoryPage() {
     if (!selectedNote) return;
     await base44.entities.Note.update(selectedNote.id, { reminder: null });
     queryClient.invalidateQueries(['notes']);
+  };
+
+  const handleChatSend = async () => {
+    if (!chatInput.trim() || isChatLoading) return;
+
+    const currentContent = selectedNote ? `Title: ${selectedNote.title}\nContent: ${selectedNote.content}` : '';
+    const userMessage = { role: 'user', content: chatInput };
+    setChatMessages(prev => [...prev, userMessage]);
+    setChatInput('');
+    setIsChatLoading(true);
+
+    const assistantMessageIndex = chatMessages.length + 1;
+    setChatMessages(prev => [...prev, { role: 'assistant', content: '' }]);
+
+    try {
+      const settings = JSON.parse(localStorage.getItem('lykinsai_settings') || '{}');
+      const personality = settings.aiPersonality || 'balanced';
+      const detailLevel = settings.aiDetailLevel || 'medium';
+
+      const personalityStyles = {
+        professional: 'You are a professional writing assistant. Be formal, precise, and objective.',
+        balanced: 'You are a helpful AI assistant. Be friendly yet professional.',
+        casual: 'You are a friendly companion. Be warm, conversational, and supportive.',
+        enthusiastic: 'You are an enthusiastic creative coach. Be energetic, motivating, and positive!'
+      };
+
+      const detailStyles = {
+        brief: 'Keep responses concise and under 3 sentences.',
+        medium: 'Provide clear responses with moderate detail.',
+        detailed: 'Give comprehensive, detailed responses with examples and explanations.'
+      };
+
+      const notesContext = notes.slice(0, 20).map(n => 
+        `ID: ${n.id}\nTitle: ${n.title}\nContent: ${n.content.substring(0, 200)}\nDate: ${n.created_date}`
+      ).join('\n\n---\n\n');
+
+      const response = await base44.integrations.Core.InvokeLLM({
+        prompt: `${personalityStyles[personality]} ${detailStyles[detailLevel]}
+
+You are helping the user explore their memories.
+${selectedNote ? `User is currently looking at this memory:\n${currentContent}` : ''}
+
+User's recent memories:
+${notesContext}
+
+User's question: ${chatInput}
+
+If the user asks about old memories or references past ideas, refer to the memories above. When referencing a specific memory, you MUST wrap the exact note title in double brackets like this: [[Note Title]].`
+      });
+
+      const words = response.split(' ');
+      let currentText = '';
+
+      for (let i = 0; i < words.length; i++) {
+        currentText += (i === 0 ? '' : ' ') + words[i];
+        setChatMessages(prev => {
+          const newMessages = [...prev];
+          newMessages[assistantMessageIndex] = { role: 'assistant', content: currentText, notes: notes };
+          return newMessages;
+        });
+        await new Promise(resolve => setTimeout(resolve, 30));
+      }
+    } catch (error) {
+      console.error('Chat error:', error);
+      setChatMessages(prev => {
+        const newMessages = [...prev];
+        newMessages[assistantMessageIndex] = { role: 'assistant', content: 'Sorry, I encountered an error.' };
+        return newMessages;
+      });
+    } finally {
+      setIsChatLoading(false);
+    }
   };
 
   const handleOpenInChat = async (note) => {
@@ -503,7 +580,21 @@ export default function MemoryPage() {
                     queryClient.invalidateQueries(['notes']);
                   }}
                 />
-                <FollowUpQuestions note={selectedNote} allNotes={notes} />
+                <FollowUpQuestions 
+                  note={selectedNote} 
+                  allNotes={notes} 
+                  onChatStart={(questions) => {
+                    setShowChat(true);
+                    // Optionally pre-fill chat with a context-setting message if desired
+                    if (questions && questions.length > 0) {
+                        setChatMessages(prev => [...prev, { 
+                            role: 'assistant', 
+                            content: `I've generated some follow-up questions for "${selectedNote.title}". What would you like to discuss?`,
+                            notes: notes 
+                        }]);
+                    }
+                  }}
+                />
                 <MindMapGenerator 
                   note={selectedNote} 
                   allNotes={notes}
@@ -527,6 +618,18 @@ export default function MemoryPage() {
       <SettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <NoteViewer note={viewingNote} isOpen={!!viewingNote} onClose={() => setViewingNote(null)} />
       
+      {showChat && (
+        <DraggableChat 
+          messages={chatMessages}
+          input={chatInput}
+          setInput={setChatInput}
+          onSend={handleChatSend}
+          isLoading={isChatLoading}
+          onClose={() => setShowChat(false)}
+          onNoteClick={(note) => setSelectedNote(note)}
+        />
+      )}
+
       <Dialog open={!!interactionNote} onOpenChange={() => setInteractionNote(null)}>
         <DialogContent className="bg-white dark:bg-[#171515] border-gray-200 dark:border-gray-700 text-black dark:text-white">
           <DialogHeader>

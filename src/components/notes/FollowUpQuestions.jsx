@@ -5,7 +5,7 @@ import { base44 } from '@/api/base44Client';
 import { useNavigate } from 'react-router-dom';
 import { createPageUrl } from '../../utils';
 
-export default function FollowUpQuestions({ note, allNotes }) {
+export default function FollowUpQuestions({ note, allNotes, onChatStart }) {
   const [questions, setQuestions] = useState([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const navigate = useNavigate();
@@ -78,14 +78,18 @@ ${personalityPrompts[personality]} ${detailPrompts[detailLevel]}`,
   }, []);
 
   const handleChatWithQuestions = () => {
-    // Store questions and note context in localStorage
-    localStorage.setItem('chat_followup_questions', JSON.stringify({
-      questions,
-      noteTitle: note.title,
-      noteContent: note.content,
-      noteId: note.id
-    }));
-    navigate(createPageUrl('MemoryChat'));
+    if (onChatStart) {
+      onChatStart(questions);
+    } else {
+      // Store questions and note context in localStorage
+      localStorage.setItem('chat_followup_questions', JSON.stringify({
+        questions,
+        noteTitle: note.title,
+        noteContent: note.content,
+        noteId: note.id
+      }));
+      navigate(createPageUrl('MemoryChat'));
+    }
   };
 
   if (allNotes.length <= 1) {
