@@ -790,7 +790,7 @@ Be constructive, insightful, and encouraging.`,
       )}
         {/* Left Sidebar - Grid/Pinterest Style Resources */}
         {(attachments.length > 0 || suggestedConnections.length > 0) && (
-          <div className="absolute left-0 top-0 bottom-0 w-64 h-full overflow-y-auto p-4 border-r border-white/10 dark:border-white/5 hidden xl:block scrollbar-hide z-20">
+          <div className="w-64 h-full overflow-y-auto p-4 border-r border-white/10 dark:border-white/5 hidden xl:block scrollbar-hide z-20 flex-shrink-0">
              <h3 className="text-xs font-semibold text-gray-500/80 dark:text-gray-400 uppercase tracking-wider mb-4">Resources</h3>
 
              <div className="columns-2 gap-3 space-y-3">
@@ -863,20 +863,7 @@ Be constructive, insightful, and encouraging.`,
               }
             }}
           >
-            {/* Organize Button - Floating inside text area */}
-            {content && content.length > 20 && (
-              <div className="absolute top-4 right-0 opacity-0 group-hover:opacity-100 transition-opacity duration-300 z-10">
-                 <Button 
-                   onClick={handleAIOrganize}
-                   disabled={isProcessing}
-                   size="icon"
-                   className="bg-white/80 dark:bg-white/10 backdrop-blur-md border border-gray-200 dark:border-gray-700 text-gray-500 hover:text-black dark:text-gray-400 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-white/20 shadow-sm transition-all rounded-full h-8 w-8"
-                   title="Auto-Organize"
-                 >
-                   <AlignLeft className="w-4 h-4" />
-                 </Button>
-              </div>
-            )}
+
 
             <Input
               value={title}
@@ -974,6 +961,17 @@ Be constructive, insightful, and encouraging.`,
                 <Bell className="w-3 h-3 text-black dark:text-gray-300" />
                 {reminder ? 'Reminder Set' : 'Set Reminder'}
               </button>
+              {content && content.length > 10 && (
+                <button
+                  onClick={handleAIOrganize}
+                  disabled={isProcessing}
+                  className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white dark:bg-[#171515] hover:bg-gray-200 dark:hover:bg-[#171515]/80 text-xs text-black dark:text-white transition-all border border-gray-200 dark:border-gray-600"
+                  title="Auto-Organize"
+                >
+                  <AlignLeft className="w-3 h-3" />
+                  {isProcessing ? 'Organizing...' : 'Organize'}
+                </button>
+              )}
             </div>
 
             {showMetadata && (
