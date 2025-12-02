@@ -725,7 +725,10 @@ Be constructive, insightful, and encouraging.`,
 
     if ((text || html) && quillRef.current) {
         const editor = quillRef.current.getEditor();
-        let index = editor.getSelection()?.index || editor.getLength(); // Default to current selection or end
+        // Use editor.constructor to access Quill static methods reliably
+        const Quill = editor.constructor;
+        
+        let index = editor.getSelection()?.index ?? editor.getLength(); 
 
         // Try to find exact drop position
         try {
@@ -739,31 +742,28 @@ Be constructive, insightful, and encouraging.`,
                 range.collapse(true);
             }
 
-            if (range && ReactQuill.Quill) {
+            if (range && Quill) {
                 const textNode = range.startContainer;
-                const offset = range.startOffset;
-                const blot = ReactQuill.Quill.find(textNode);
+                // Ensure we are finding the blot from a text node or element managed by Quill
+                const blot = Quill.find(textNode);
                 if (blot) {
-                    index = editor.getIndex(blot) + offset;
+                    index = editor.getIndex(blot) + range.startOffset;
                 }
             }
         } catch (err) {
-            // Fallback to default index if calculation fails
             console.warn('Could not calculate drop index', err);
         }
 
-        if (html) {
-             // Remove some wrapper tags if needed, but dangerousPasteHTML usually handles it
-             // If dragging from our own chat, it might be wrapped in divs, let's rely on Quill's sanitizer
-             editor.clipboard.dangerouslyPasteHTML(index, html, 'user');
-        } else {
+        // Prefer plain text insertion to preserve formatting (newlines) from chat messages
+        if (text) {
              editor.insertText(index, text, 'user');
+             setTimeout(() => editor.setSelection(index + text.length), 0);
+        } else if (html) {
+             editor.clipboard.dangerouslyPasteHTML(index, html, 'user');
+             // Selection update for HTML paste is harder to predict, so we skip it or set to end?
+             // Let's just set focus
+             setTimeout(() => editor.focus(), 0);
         }
-        
-        // Move cursor to end of inserted text
-        setTimeout(() => {
-            editor.setSelection(index + (text ? text.length : 0));
-        }, 0);
     }
   };
 
