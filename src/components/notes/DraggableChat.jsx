@@ -98,12 +98,23 @@ export default function DraggableChat({
           ) : (
             <div className="space-y-4">
               {messages.map((msg, idx) => (
-                <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-[85%] p-3 rounded-2xl text-sm leading-relaxed shadow-sm backdrop-blur-md ${
-                    msg.role === 'user' 
-                      ? 'bg-black/70 dark:bg-white/80 text-white dark:text-black rounded-tr-none' 
-                      : 'bg-white/40 dark:bg-black/40 text-black dark:text-white border border-white/20 rounded-tl-none'
-                  }`}>
+                <div key={idx} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
+                  <span className="text-[10px] text-gray-500 dark:text-gray-400 mb-1 px-1">
+                      {msg.role === 'user' ? (settings.chatUserName || 'You') : (settings.chatAIName || 'Lykins AI')}
+                  </span>
+                  <div 
+                    className={`max-w-[85%] p-3 rounded-2xl text-sm leading-relaxed shadow-sm backdrop-blur-md ${
+                      msg.role === 'user' 
+                        ? 'rounded-tr-none text-white' 
+                        : 'rounded-tl-none text-black dark:text-white border border-white/20'
+                    }`}
+                    style={{
+                        backgroundColor: msg.role === 'user' 
+                            ? (settings.chatUserBubbleColor || '#000000') 
+                            : (settings.chatAIBubbleColor || 'rgba(255,255,255,0.4)'),
+                        color: msg.role === 'user' ? '#ffffff' : 'inherit'
+                    }}
+                  >
                     {renderContent(msg.content, msg)}
                   </div>
                 </div>
