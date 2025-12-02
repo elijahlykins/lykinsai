@@ -321,6 +321,7 @@ If the user asks about old memories or references past ideas, refer to the memor
               isLoading={isChatLoading}
               onClose={() => setShowChat(false)}
               onNoteClick={(note) => setViewingNote(note)}
+              aiName={aiName}
             />
           )}
 
