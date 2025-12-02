@@ -922,7 +922,12 @@ Be constructive, insightful, and encouraging.`,
         <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-hide relative">
         {inputMode === 'text' ? (
           <div 
-            className="min-h-full flex flex-col max-w-3xl mx-auto py-12 px-8 md:px-12 transition-all duration-500 relative group cursor-text"
+            onContextMenu={(e) => handleContextMenu(e, 'editor')}
+            style={{ 
+                backgroundColor: styling.editor?.bg,
+                minHeight: '100%' 
+            }}
+            className={`min-h-full flex flex-col max-w-3xl mx-auto py-12 px-8 md:px-12 transition-all duration-500 relative group cursor-text ${styling.editor?.bg ? 'rounded-2xl shadow-sm' : ''}`}
             onClick={(e) => {
               if (e.target === e.currentTarget) {
                 quillRef.current?.focus();
@@ -935,13 +940,19 @@ Be constructive, insightful, and encouraging.`,
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               placeholder="Untitled"
-              className="text-4xl md:text-5xl font-medium bg-transparent border-0 text-black dark:text-white placeholder:text-gray-300/50 focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0 h-auto px-0 mb-6"
+              style={{ color: styling.editor?.text }}
+              className={`text-4xl md:text-5xl font-medium bg-transparent border-0 placeholder:text-gray-300/50 focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0 h-auto px-0 mb-6 ${!styling.editor?.text ? 'text-black dark:text-white' : ''}`}
               disabled={isProcessing}
             />
 
-            <div className="flex-1 w-full min-h-[50vh] text-xl md:text-2xl leading-relaxed text-black dark:text-white">
+            <div 
+                style={{ color: styling.editor?.text }}
+                className={`flex-1 w-full min-h-[50vh] text-xl md:text-2xl leading-relaxed ${!styling.editor?.text ? 'text-black dark:text-white' : ''}`}
+            >
               <style>
                 {`
+                  ${styling.editor?.text ? `.ql-editor { color: ${styling.editor.text} !important; }` : ''}
+                  ${styling.editor?.text ? `.ql-editor.ql-blank::before { color: ${styling.editor.text} !important; opacity: 0.5; }` : ''}
                   .ql-container { font-size: 1.125rem; font-family: inherit; }
                   .ql-editor { padding: 0; min-height: 60vh; overflow-y: visible; }
                   .ql-editor p { margin-bottom: 0.75em; line-height: 1.6; }
