@@ -64,7 +64,7 @@ export default function NoteViewer({ note, isOpen, onClose, onMerge }) {
                         onMerge(note);
                         onClose();
                     }}
-                    className="bg-indigo-600 hover:bg-indigo-700 text-white flex items-center gap-2"
+                    className="bg-blue-600 hover:bg-blue-700 text-white flex items-center gap-2"
                 >
                     <Merge className="w-4 h-4" />
                     Merge into Current
