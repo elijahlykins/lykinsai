@@ -694,10 +694,8 @@ Be constructive, insightful, and encouraging.`,
   };
 
   const handleDragOver = (e) => {
-    e.preventDefault(); // Always allow drop
-    if (e.dataTransfer.types.includes('Files')) {
-      setIsDragging(true);
-    }
+    e.preventDefault();
+    setIsDragging(true);
   };
 
   const handleDragLeave = (e) => {
@@ -709,61 +707,10 @@ Be constructive, insightful, and encouraging.`,
   const handleDrop = (e) => {
     e.preventDefault();
     setIsDragging(false);
-
-    // 1. Handle Files
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      const files = Array.from(e.dataTransfer.files);
-      if (files.length > 0) {
-        files.forEach(file => handleFileUpload(file));
-      }
-      return;
-    }
     
-    // 2. Handle Text/HTML Drop manually to ensure it works
-    const text = e.dataTransfer.getData('text/plain');
-    const html = e.dataTransfer.getData('text/html');
-
-    if ((text || html) && quillRef.current) {
-        const editor = quillRef.current.getEditor();
-        // Use editor.constructor to access Quill static methods reliably
-        const Quill = editor.constructor;
-        
-        let index = editor.getSelection()?.index ?? editor.getLength(); 
-
-        // Try to find exact drop position
-        try {
-            let range;
-            if (document.caretRangeFromPoint) {
-                range = document.caretRangeFromPoint(e.clientX, e.clientY);
-            } else if (document.caretPositionFromPoint) {
-                const pos = document.caretPositionFromPoint(e.clientX, e.clientY);
-                range = document.createRange();
-                range.setStart(pos.offsetNode, pos.offset);
-                range.collapse(true);
-            }
-
-            if (range && Quill) {
-                const textNode = range.startContainer;
-                // Ensure we are finding the blot from a text node or element managed by Quill
-                const blot = Quill.find(textNode);
-                if (blot) {
-                    index = editor.getIndex(blot) + range.startOffset;
-                }
-            }
-        } catch (err) {
-            console.warn('Could not calculate drop index', err);
-        }
-
-        // Prefer plain text insertion to preserve formatting (newlines) from chat messages
-        if (text) {
-             editor.insertText(index, text, 'user');
-             setTimeout(() => editor.setSelection(index + text.length), 0);
-        } else if (html) {
-             editor.clipboard.dangerouslyPasteHTML(index, html, 'user');
-             // Selection update for HTML paste is harder to predict, so we skip it or set to end?
-             // Let's just set focus
-             setTimeout(() => editor.focus(), 0);
-        }
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) {
+      files.forEach(file => handleFileUpload(file));
     }
   };
 
@@ -1128,12 +1075,8 @@ Be constructive, insightful, and encouraging.`,
                       {suggestedQuestions.slice(0, 2).map((question, idx) => (
                         <button
                           key={idx}
-                          draggable="true"
-                          onDragStart={(e) => {
-                            e.dataTransfer.setData('text/plain', question);
-                          }}
                           onClick={() => onQuestionClick?.(question)}
-                          className="w-full p-3 bg-white/20 dark:bg-black/20 rounded-xl hover:bg-white/40 dark:hover:bg-black/40 transition-all text-left text-xs leading-relaxed text-black dark:text-white border border-white/10 cursor-grab active:cursor-grabbing"
+                          className="w-full p-3 bg-white/20 dark:bg-black/20 rounded-xl hover:bg-white/40 dark:hover:bg-black/40 transition-all text-left text-xs leading-relaxed text-black dark:text-white border border-white/10"
                         >
                           {question}
                         </button>
@@ -1178,14 +1121,7 @@ Be constructive, insightful, and encouraging.`,
                   {aiThoughts.length > 0 ? (
                     <div className="space-y-2 cursor-default" onPointerDown={(e) => e.stopPropagation()}>
                       {aiThoughts.slice(0, 2).map((thought, idx) => (
-                        <div 
-                          key={idx} 
-                          draggable="true"
-                          onDragStart={(e) => {
-                            e.dataTransfer.setData('text/plain', thought);
-                          }}
-                          className="p-3 bg-gray-100 dark:bg-white/10 rounded-xl text-xs leading-relaxed text-black dark:text-white border border-black/10 dark:border-white/10 cursor-grab active:cursor-grabbing"
-                        >
+                        <div key={idx} className="p-3 bg-gray-100 dark:bg-white/10 rounded-xl text-xs leading-relaxed text-black dark:text-white border border-black/10 dark:border-white/10">
                           "{thought}"
                         </div>
                       ))}
@@ -1229,25 +1165,13 @@ Be constructive, insightful, and encouraging.`,
                   {aiAnalysis ? (
                     <div className="space-y-3 cursor-default" onPointerDown={(e) => e.stopPropagation()}>
                       {aiAnalysis.prediction && (
-                         <div 
-                           draggable="true"
-                           onDragStart={(e) => {
-                             e.dataTransfer.setData('text/plain', `Prediction: ${aiAnalysis.prediction}`);
-                           }}
-                           className="p-3 bg-gray-100 dark:bg-white/10 rounded-xl border border-black/10 dark:border-white/10 cursor-grab active:cursor-grabbing"
-                         >
+                         <div className="p-3 bg-gray-100 dark:bg-white/10 rounded-xl border border-black/10 dark:border-white/10">
                            <p className="text-[10px] uppercase tracking-wider text-black dark:text-white mb-1 font-semibold opacity-70">Prediction</p>
                            <p className="text-xs text-black dark:text-white">{aiAnalysis.prediction}</p>
                          </div>
                       )}
                       {aiAnalysis.validation && (
-                         <div 
-                           draggable="true"
-                           onDragStart={(e) => {
-                             e.dataTransfer.setData('text/plain', `Validation: ${aiAnalysis.validation}`);
-                           }}
-                           className="p-3 bg-gray-100 dark:bg-white/10 rounded-xl border border-black/10 dark:border-white/10 cursor-grab active:cursor-grabbing"
-                         >
+                         <div className="p-3 bg-gray-100 dark:bg-white/10 rounded-xl border border-black/10 dark:border-white/10">
                            <p className="text-[10px] uppercase tracking-wider text-black dark:text-white mb-1 font-semibold opacity-70">Validation</p>
                            <p className="text-xs text-black dark:text-white">{aiAnalysis.validation}</p>
                          </div>
