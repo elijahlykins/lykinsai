@@ -24,6 +24,26 @@ const modules = {
     ['link', 'image'],
     ['clean']
   ],
+  keyboard: {
+    bindings: {
+      backspace: {
+        key: 'Backspace',
+        handler: function(range, context) {
+           if (range.index === 0 || this.quill.getText(range.index - 1, 1) === '\n') {
+             const formats = this.quill.getFormat(range);
+             if (formats.header || formats['code-block'] || formats.list || formats.blockquote) {
+               this.quill.format('header', false);
+               this.quill.format('code-block', false);
+               this.quill.format('list', false);
+               this.quill.format('blockquote', false);
+               return false;
+             }
+           }
+           return true;
+        }
+      }
+    }
+  }
 };
 
 const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, activeAITools = { questions: true, connections: true }, onToggleAITool, onQuestionClick, onConnectionClick, noteId }, ref) => {
@@ -1093,7 +1113,7 @@ Return only the title, nothing else.`,
               initial={{ x: 0, y: 0 }}
               className="absolute right-8 top-32 w-72 pointer-events-auto z-30 cursor-move"
             >
-              <div className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-2xl overflow-hidden transition-all duration-500 group hover:bg-white/20 dark:hover:bg-black/40">
+              <div className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-[0_0_30px_-5px_rgba(59,130,246,0.2)] dark:shadow-[0_0_30px_-5px_rgba(59,130,246,0.15)] overflow-hidden transition-all duration-500 group hover:bg-white/20 dark:hover:bg-black/40 hover:shadow-[0_0_40px_-5px_rgba(59,130,246,0.3)]">
                 {/* Header */}
                 <div className="h-10 bg-white/10 dark:bg-white/5 border-b border-white/10 dark:border-white/5 flex items-center justify-between px-3 cursor-move select-none">
                    <div className="flex items-center gap-2">
@@ -1141,7 +1161,7 @@ Return only the title, nothing else.`,
               animate={{ x: 0, y: 150 }} 
               className="absolute right-8 top-32 w-72 pointer-events-auto z-30 cursor-move"
             >
-              <div className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-2xl overflow-hidden transition-all duration-500 group hover:bg-white/20 dark:hover:bg-black/40">
+              <div className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-[0_0_30px_-5px_rgba(59,130,246,0.2)] dark:shadow-[0_0_30px_-5px_rgba(59,130,246,0.15)] overflow-hidden transition-all duration-500 group hover:bg-white/20 dark:hover:bg-black/40 hover:shadow-[0_0_40px_-5px_rgba(59,130,246,0.3)]">
                 {/* Header */}
                 <div className="h-10 bg-white/10 dark:bg-white/5 border-b border-white/10 dark:border-white/5 flex items-center justify-between px-3 cursor-move select-none">
                    <div className="flex items-center gap-2">
@@ -1185,7 +1205,7 @@ Return only the title, nothing else.`,
               animate={{ x: 0, y: 300 }}
               className="absolute right-8 top-32 w-72 pointer-events-auto z-30 cursor-move"
             >
-              <div className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-2xl overflow-hidden transition-all duration-500 group hover:bg-white/20 dark:hover:bg-black/40">
+              <div className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-[0_0_30px_-5px_rgba(59,130,246,0.2)] dark:shadow-[0_0_30px_-5px_rgba(59,130,246,0.15)] overflow-hidden transition-all duration-500 group hover:bg-white/20 dark:hover:bg-black/40 hover:shadow-[0_0_40px_-5px_rgba(59,130,246,0.3)]">
                 {/* Header */}
                 <div className="h-10 bg-white/10 dark:bg-white/5 border-b border-white/10 dark:border-white/5 flex items-center justify-between px-3 cursor-move select-none">
                    <div className="flex items-center gap-2">
@@ -1235,7 +1255,7 @@ Return only the title, nothing else.`,
                initial={{ x: 0, y: 500 }}
                className="absolute right-8 top-32 w-72 pointer-events-auto z-30 cursor-move"
              >
-               <div className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-2xl overflow-hidden transition-all duration-500 group hover:bg-white/20 dark:hover:bg-black/40">
+               <div className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-[0_0_30px_-5px_rgba(59,130,246,0.2)] dark:shadow-[0_0_30px_-5px_rgba(59,130,246,0.15)] overflow-hidden transition-all duration-500 group hover:bg-white/20 dark:hover:bg-black/40 hover:shadow-[0_0_40px_-5px_rgba(59,130,246,0.3)]">
                  {/* Header */}
                  <div className="h-10 bg-white/10 dark:bg-white/5 border-b border-white/10 dark:border-white/5 flex items-center justify-between px-3 cursor-move select-none">
                     <div className="flex items-center gap-2">
