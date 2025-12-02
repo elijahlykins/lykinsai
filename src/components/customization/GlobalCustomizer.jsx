@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useCustomization } from './CustomizationContext';
-import { SketchPicker } from 'react-color'; // Note: might not be installed, using standard input color if not
 import { Type, Palette, Box, MousePointer2, UserCog, Trash2, X, Check } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
