@@ -16,6 +16,14 @@ export default function DraggableChat({
 }) {
   const scrollRef = useRef(null);
   const constraintsRef = useRef(null);
+  const [settings, setSettings] = React.useState({});
+
+  useEffect(() => {
+      const savedSettings = localStorage.getItem('lykinsai_settings');
+      if (savedSettings) {
+          setSettings(JSON.parse(savedSettings));
+      }
+  }, []);
 
   useEffect(() => {
     if (scrollRef.current) {
