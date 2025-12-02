@@ -218,6 +218,61 @@ export default function SettingsModal({ isOpen, onClose }) {
               </SelectContent>
             </Select>
           </div>
+
+          {/* Chat Customization */}
+          <div className="space-y-4 pt-4 border-t border-white/10 dark:border-gray-700/30">
+              <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Chat Appearance</h3>
+              
+              <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                      <Label className="text-xs text-gray-600 dark:text-gray-400">User Name</Label>
+                      <Input 
+                          value={settings.chatUserName || 'You'}
+                          onChange={(e) => setSettings({...settings, chatUserName: e.target.value})}
+                          className="bg-white/60 dark:bg-gray-800/60"
+                      />
+                  </div>
+                  <div className="space-y-2">
+                      <Label className="text-xs text-gray-600 dark:text-gray-400">AI Name</Label>
+                      <Input 
+                          value={settings.chatAIName || 'Lykins AI'}
+                          onChange={(e) => setSettings({...settings, chatAIName: e.target.value})}
+                          className="bg-white/60 dark:bg-gray-800/60"
+                      />
+                  </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                      <Label className="text-xs text-gray-600 dark:text-gray-400">User Bubble Color</Label>
+                      <div className="flex items-center gap-2">
+                          <input 
+                              type="color" 
+                              value={settings.chatUserBubbleColor || '#2563eb'}
+                              onChange={(e) => setSettings({...settings, chatUserBubbleColor: e.target.value})}
+                              className="w-8 h-8 rounded cursor-pointer border-0 p-0 bg-transparent"
+                          />
+                          <span className="text-xs text-gray-500">
+                              {settings.chatUserBubbleColor || '#2563eb'}
+                          </span>
+                      </div>
+                  </div>
+                  <div className="space-y-2">
+                      <Label className="text-xs text-gray-600 dark:text-gray-400">AI Bubble Color</Label>
+                       <div className="flex items-center gap-2">
+                          <input 
+                              type="color" 
+                              value={settings.chatAIBubbleColor || '#f3f4f6'}
+                              onChange={(e) => setSettings({...settings, chatAIBubbleColor: e.target.value})}
+                              className="w-8 h-8 rounded cursor-pointer border-0 p-0 bg-transparent"
+                          />
+                          <span className="text-xs text-gray-500">
+                              {settings.chatAIBubbleColor || '#f3f4f6'}
+                          </span>
+                      </div>
+                  </div>
+              </div>
+          </div>
           </div>
 
         <div className="flex justify-end gap-2 pt-4 border-t border-white/10 dark:border-gray-700/30">
