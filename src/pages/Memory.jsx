@@ -26,7 +26,6 @@ import EnhancedKnowledgeGraph from '../components/notes/EnhancedKnowledgeGraph';
 import ConnectionSuggestions from '../components/notes/ConnectionSuggestions';
 import ReminderPicker from '../components/notes/ReminderPicker';
 import ReminderNotifications from '../components/notes/ReminderNotifications';
-import AutoArchive from '../components/notes/AutoArchive';
 import TrashCleanup from '../components/notes/TrashCleanup';
 
 export default function MemoryPage() {
@@ -524,7 +523,6 @@ export default function MemoryPage() {
       </div>
 
       <ReminderNotifications />
-      <AutoArchive notes={notes} />
       <TrashCleanup notes={notes} />
       <SettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <NoteViewer note={viewingNote} isOpen={!!viewingNote} onClose={() => setViewingNote(null)} />

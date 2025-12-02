@@ -9,7 +9,6 @@ import { base44 } from '@/api/base44Client';
 
 export default function SettingsModal({ isOpen, onClose }) {
   const [settings, setSettings] = useState({
-    autoArchiveDays: '30',
     aiAnalysisAuto: false,
     theme: 'light',
     fontSize: 'medium',
@@ -108,22 +107,7 @@ export default function SettingsModal({ isOpen, onClose }) {
             </div>
           )}
 
-          {/* Auto Archive Days */}
-          <div className="space-y-2">
-            <Label className="text-gray-900 dark:text-white">Auto-Archive After (Days)</Label>
-            <Select value={settings.autoArchiveDays} onValueChange={(value) => setSettings({...settings, autoArchiveDays: value})}>
-              <SelectTrigger className="bg-white/60 dark:bg-gray-800/60 border-white/40 dark:border-gray-700/40 text-gray-900 dark:text-white backdrop-blur-md rounded-xl">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent className="bg-glass-card border-white/30 dark:border-gray-700/30 backdrop-blur-2xl">
-                <SelectItem value="7">7 Days</SelectItem>
-                <SelectItem value="14">14 Days</SelectItem>
-                <SelectItem value="30">30 Days</SelectItem>
-                <SelectItem value="60">60 Days</SelectItem>
-                <SelectItem value="never">Never</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
+
 
           {/* Auto AI Analysis */}
           <div className="flex items-center justify-between">

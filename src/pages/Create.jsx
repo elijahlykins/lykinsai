@@ -11,6 +11,7 @@ import { createPageUrl } from '../utils';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { base44 } from '@/api/base44Client';
 import { Save, ChevronDown, ChevronUp, Plus, Send, Loader2, MessageSquare, Search, Zap, Brain, Network, FileSearch, Lightbulb, Share2, Download } from 'lucide-react';
 import {
@@ -32,6 +33,7 @@ export default function CreatePage() {
     analysis: false,
     thoughts: false
   });
+  const [selectedModel, setSelectedModel] = useState('core');
   const [showChat, setShowChat] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [chatMessages, setChatMessages] = useState([]);
@@ -175,6 +177,33 @@ If the user asks about old memories or references past ideas, refer to the memor
             >
               <Search className="w-5 h-5" />
             </Button>
+            <div className="w-px h-4 bg-gray-300 dark:bg-gray-700 mx-1" />
+
+            <Select
+              value={selectedModel}
+              onValueChange={(value) => {
+                setSelectedModel(value);
+                if (value === 'unified-auto') {
+                   setActiveAITools({
+                     questions: true,
+                     connections: true,
+                     analysis: true,
+                     thoughts: true
+                   });
+                }
+              }}
+            >
+              <SelectTrigger className="w-[150px] h-10 rounded-full bg-white/50 dark:bg-black/50 border-white/20 dark:border-gray-700/30 backdrop-blur-md shadow-sm text-xs font-medium">
+                <SelectValue placeholder="Select Model" />
+              </SelectTrigger>
+              <SelectContent align="end">
+                <SelectItem value="core">Core (Default)</SelectItem>
+                <SelectItem value="gpt-4o">GPT-4o</SelectItem>
+                <SelectItem value="claude-3-sonnet">Claude 3.5 Sonnet</SelectItem>
+                <SelectItem value="unified-auto">Unified AI (Auto)</SelectItem>
+              </SelectContent>
+            </Select>
+
             <div className="w-px h-4 bg-gray-300 dark:bg-gray-700 mx-1" />
 
             <DropdownMenu>
