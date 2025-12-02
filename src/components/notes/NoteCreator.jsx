@@ -775,21 +775,26 @@ Return only the title, nothing else.`,
     setIsProcessing(true);
     try {
       const result = await base44.integrations.Core.InvokeLLM({
-        prompt: `Reorganize the following note content into a cohesive structure and generate a fitting title.
-        1. Create a short, descriptive title for the note.
-        2. Combine related ideas.
-        3. Use Headers (h1, h2) for main topics.
-        4. Use Bullet points (ul, li) for lists.
-        5. Return clean HTML for the content.
+        prompt: `Act as a professional editor. Reorganize the following note content into a cohesive, well-structured document and generate a perfect title.
 
-        Content:
-        ${content}`,
+        Tasks:
+        1. GENERATE A TITLE: Create a short, punchy, and descriptive title (max 6 words) that captures the essence of the note.
+        2. STRUCTURE CONTENT:
+           - Combine related ideas and fragments into coherent paragraphs.
+           - Use Headers (h1, h2) to organize sections.
+           - Use Bullet points (ul, li) for lists, action items, or key features.
+           - Fix grammar and clarity.
+        3. FORMAT: Return clean HTML.
+
+        Input Content:
+        "${content}"`,
         response_json_schema: {
           type: "object",
           properties: {
-            title: { type: "string" },
-            html_content: { type: "string" }
-          }
+            title: { type: "string", description: "The generated title for the note" },
+            html_content: { type: "string", description: "The reorganized content in HTML format" }
+          },
+          required: ["title", "html_content"]
         }
       });
 
