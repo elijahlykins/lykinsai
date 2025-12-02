@@ -6,6 +6,7 @@ import Reminders from './pages/Reminders';
 import Trash from './pages/Trash';
 import Billing from './pages/Billing';
 import Memory from './pages/Memory';
+import __Layout from './Layout.jsx';
 
 
 export const PAGES = {
@@ -22,4 +23,5 @@ export const PAGES = {
 export const pagesConfig = {
     mainPage: "Create",
     Pages: PAGES,
+    Layout: __Layout,
 };
