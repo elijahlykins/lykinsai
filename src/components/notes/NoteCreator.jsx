@@ -794,7 +794,7 @@ Return only the title, nothing else.`,
 
   return (
     <div 
-      className={`h-full flex relative overflow-hidden transition-colors ${isDragging ? 'bg-blue-50/50 dark:bg-blue-900/20 ring-4 ring-blue-400/30 ring-inset' : ''}`}
+      className={`h-full flex relative overflow-hidden transition-colors ${isDragging ? 'bg-gray-50/50 dark:bg-white/5 ring-4 ring-black/10 dark:ring-white/10 ring-inset' : ''}`}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
@@ -803,7 +803,7 @@ Return only the title, nothing else.`,
       {isDragging && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/10 dark:bg-white/10 backdrop-blur-sm pointer-events-none">
           <div className="bg-white dark:bg-[#1f1d1d] p-6 rounded-2xl shadow-2xl flex flex-col items-center animate-in zoom-in duration-200 border border-white/20">
-             <Plus className="w-12 h-12 text-blue-500 mb-2" />
+             <Plus className="w-12 h-12 text-black dark:text-white mb-2" />
              <h3 className="text-lg font-semibold text-black dark:text-white">Drop to add resource</h3>
           </div>
         </div>
@@ -830,9 +830,9 @@ Return only the title, nothing else.`,
                          ) : att.type === 'video' ? (
                             <video src={att.url} className="w-full h-auto object-cover" />
                          ) : att.type === 'link' ? (
-                            <div className="p-3 text-center bg-blue-50 dark:bg-blue-900/20">
-                               <LinkIcon className="w-6 h-6 mx-auto text-blue-500 mb-1" />
-                               <p className="text-[10px] truncate text-blue-700 dark:text-blue-300">{att.name}</p>
+                            <div className="p-3 text-center bg-gray-50 dark:bg-white/5">
+                               <LinkIcon className="w-6 h-6 mx-auto text-black dark:text-white mb-1" />
+                               <p className="text-[10px] truncate text-black dark:text-white">{att.name}</p>
                             </div>
                          ) : (
                             <div className="p-3 text-center bg-gray-50 dark:bg-gray-800">
@@ -852,19 +852,19 @@ Return only the title, nothing else.`,
                       <div 
                         key={connId} 
                         onClick={() => onConnectionClick?.(note)}
-                        className="break-inside-avoid mb-3 p-3 bg-indigo-50 dark:bg-indigo-900/20 rounded-lg border border-indigo-100 dark:border-indigo-800/30 relative group cursor-pointer hover:bg-indigo-100 dark:hover:bg-indigo-900/30 transition-colors"
+                        className="break-inside-avoid mb-3 p-3 bg-gray-50 dark:bg-white/5 rounded-lg border border-gray-200 dark:border-gray-700 relative group cursor-pointer hover:bg-gray-100 dark:hover:bg-white/10 transition-colors"
                       >
                           <button
                             onClick={(e) => { 
                                 e.stopPropagation(); 
                                 setSuggestedConnections(prev => prev.filter(id => id !== connId));
                             }}
-                            className="absolute top-1 right-1 p-1 bg-red-500 rounded-full opacity-0 group-hover:opacity-100 transition-opacity z-20"
+                            className="absolute top-1 right-1 p-1 bg-black dark:bg-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity z-20"
                           >
-                            <X className="w-3 h-3 text-white" />
+                            <X className="w-3 h-3 text-white dark:text-black" />
                           </button>
-                          <h4 className="text-xs font-medium text-indigo-900 dark:text-indigo-100 mb-1 line-clamp-2">{note.title || 'Untitled'}</h4>
-                          <p className="text-[10px] text-indigo-700 dark:text-indigo-300 line-clamp-3 opacity-80" dangerouslySetInnerHTML={{ __html: note.content?.substring(0, 100) }} />
+                          <h4 className="text-xs font-medium text-black dark:text-white mb-1 line-clamp-2">{note.title || 'Untitled'}</h4>
+                          <p className="text-[10px] text-gray-600 dark:text-gray-400 line-clamp-3 opacity-80" dangerouslySetInnerHTML={{ __html: note.content?.substring(0, 100) }} />
                       </div>
                    )
                 })}
@@ -1072,7 +1072,7 @@ Return only the title, nothing else.`,
               <div className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-2xl p-4 transition-all duration-500 group hover:bg-white/20 dark:hover:bg-black/40">
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-2">
-                    <Lightbulb className="w-4 h-4 text-yellow-400" />
+                    <Lightbulb className="w-4 h-4 text-black dark:text-white" />
                     <h3 className="text-sm font-semibold text-black dark:text-white">AI Questions</h3>
                   </div>
                   <GripHorizontal className="w-4 h-4 text-black/30 dark:text-white/30 opacity-0 group-hover:opacity-100 transition-opacity" />
@@ -1112,7 +1112,7 @@ Return only the title, nothing else.`,
               <div className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-2xl p-4 transition-all duration-500 group hover:bg-white/20 dark:hover:bg-black/40">
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-2">
-                    <Brain className="w-4 h-4 text-purple-400" />
+                    <Brain className="w-4 h-4 text-black dark:text-white" />
                     <h3 className="text-sm font-semibold text-black dark:text-white">AI Thoughts</h3>
                   </div>
                   <GripHorizontal className="w-4 h-4 text-black/30 dark:text-white/30 opacity-0 group-hover:opacity-100 transition-opacity" />
@@ -1121,7 +1121,7 @@ Return only the title, nothing else.`,
                 {aiThoughts.length > 0 ? (
                   <div className="space-y-2 cursor-default" onPointerDown={(e) => e.stopPropagation()}>
                     {aiThoughts.slice(0, 2).map((thought, idx) => (
-                      <div key={idx} className="p-3 bg-purple-500/10 rounded-xl text-xs leading-relaxed text-black dark:text-white border border-purple-500/20">
+                      <div key={idx} className="p-3 bg-gray-100 dark:bg-white/10 rounded-xl text-xs leading-relaxed text-black dark:text-white border border-black/10 dark:border-white/10">
                         "{thought}"
                       </div>
                     ))}
@@ -1148,7 +1148,7 @@ Return only the title, nothing else.`,
               <div className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-2xl p-4 transition-all duration-500 group hover:bg-white/20 dark:hover:bg-black/40">
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-2">
-                    <SearchCheck className="w-4 h-4 text-amber-400" />
+                    <SearchCheck className="w-4 h-4 text-black dark:text-white" />
                     <h3 className="text-sm font-semibold text-black dark:text-white">Analysis & Predictions</h3>
                   </div>
                   <GripHorizontal className="w-4 h-4 text-black/30 dark:text-white/30 opacity-0 group-hover:opacity-100 transition-opacity" />
@@ -1157,17 +1157,17 @@ Return only the title, nothing else.`,
                 {aiAnalysis ? (
                   <div className="space-y-3 cursor-default" onPointerDown={(e) => e.stopPropagation()}>
                     {aiAnalysis.prediction && (
-                       <div className="p-3 bg-amber-500/10 rounded-xl border border-amber-500/20">
-                         <p className="text-[10px] uppercase tracking-wider text-amber-600 dark:text-amber-400 mb-1 font-semibold">Prediction</p>
+                       <div className="p-3 bg-gray-100 dark:bg-white/10 rounded-xl border border-black/10 dark:border-white/10">
+                         <p className="text-[10px] uppercase tracking-wider text-black dark:text-white mb-1 font-semibold opacity-70">Prediction</p>
                          <p className="text-xs text-black dark:text-white">{aiAnalysis.prediction}</p>
                        </div>
-                    )}
-                    {aiAnalysis.validation && (
-                       <div className="p-3 bg-green-500/10 rounded-xl border border-green-500/20">
-                         <p className="text-[10px] uppercase tracking-wider text-green-600 dark:text-green-400 mb-1 font-semibold">Validation</p>
+                       )}
+                       {aiAnalysis.validation && (
+                       <div className="p-3 bg-gray-100 dark:bg-white/10 rounded-xl border border-black/10 dark:border-white/10">
+                         <p className="text-[10px] uppercase tracking-wider text-black dark:text-white mb-1 font-semibold opacity-70">Validation</p>
                          <p className="text-xs text-black dark:text-white">{aiAnalysis.validation}</p>
                        </div>
-                    )}
+                       )}
                   </div>
                 ) : (
                   <div className="flex items-center gap-2 text-xs text-gray-400">
@@ -1190,7 +1190,7 @@ Return only the title, nothing else.`,
                <div className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-2xl p-4 transition-all duration-500 group hover:bg-white/20 dark:hover:bg-black/40">
                  <div className="flex items-center justify-between mb-3">
                     <div className="flex items-center gap-2">
-                      <Network className="w-4 h-4 text-green-400" />
+                      <Network className="w-4 h-4 text-black dark:text-white" />
                       <h3 className="text-sm font-semibold text-black dark:text-white">AI Suggestions</h3>
                     </div>
                     <GripHorizontal className="w-4 h-4 text-black/30 dark:text-white/30 opacity-0 group-hover:opacity-100 transition-opacity" />

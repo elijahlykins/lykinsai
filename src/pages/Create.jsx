@@ -183,7 +183,7 @@ If the user asks about old memories or references past ideas, refer to the memor
                   variant="ghost"
                   className={`rounded-full px-4 h-10 gap-2 ${Object.values(activeAITools).some(v => v) ? 'bg-white dark:bg-white/10 shadow-sm' : ''}`}
                 >
-                  <Sparkles className="w-4 h-4 text-indigo-500" />
+                  <Sparkles className="w-4 h-4 text-black dark:text-white" />
                   Live AI
                   <ChevronDown className="w-3 h-3 opacity-50" />
                 </Button>
@@ -209,28 +209,28 @@ If the user asks about old memories or references past ideas, refer to the memor
                   checked={activeAITools.questions}
                   onCheckedChange={(checked) => setActiveAITools(prev => ({ ...prev, questions: checked }))}
                 >
-                  <MessageSquare className="w-4 h-4 mr-2 text-blue-500" />
+                  <MessageSquare className="w-4 h-4 mr-2 text-black dark:text-white" />
                   AI Questions
                 </DropdownMenuCheckboxItem>
                 <DropdownMenuCheckboxItem
                   checked={activeAITools.thoughts}
                   onCheckedChange={(checked) => setActiveAITools(prev => ({ ...prev, thoughts: checked }))}
                 >
-                  <Brain className="w-4 h-4 mr-2 text-purple-500" />
+                  <Brain className="w-4 h-4 mr-2 text-black dark:text-white" />
                   AI Thoughts
                 </DropdownMenuCheckboxItem>
                 <DropdownMenuCheckboxItem
                   checked={activeAITools.connections}
                   onCheckedChange={(checked) => setActiveAITools(prev => ({ ...prev, connections: checked }))}
                 >
-                  <Network className="w-4 h-4 mr-2 text-green-500" />
+                  <Network className="w-4 h-4 mr-2 text-black dark:text-white" />
                   AI Suggestions
                 </DropdownMenuCheckboxItem>
                 <DropdownMenuCheckboxItem
                   checked={activeAITools.analysis}
                   onCheckedChange={(checked) => setActiveAITools(prev => ({ ...prev, analysis: checked }))}
                 >
-                  <FileSearch className="w-4 h-4 mr-2 text-amber-500" />
+                  <FileSearch className="w-4 h-4 mr-2 text-black dark:text-white" />
                   Analysis & Predictions
                 </DropdownMenuCheckboxItem>
               </DropdownMenuContent>
