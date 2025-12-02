@@ -153,16 +153,21 @@ export default function MemoryPage() {
         `ID: ${n.id}\nTitle: ${n.title}\nContent: ${n.content.substring(0, 200)}\nDate: ${n.created_date}`
       ).join('\n\n---\n\n');
 
+      const history = chatMessages.map(m => `${m.role === 'user' ? 'User' : 'AI'}: ${m.content}`).join('\n');
+
       const response = await base44.integrations.Core.InvokeLLM({
         prompt: `${personalityStyles[personality]} ${detailStyles[detailLevel]}
 
 You are helping the user explore their memories.
 ${selectedNote ? `User is currently looking at this memory:\n${currentContent}` : ''}
 
+Conversation History:
+${history}
+
 User's recent memories:
 ${notesContext}
 
-User's question: ${chatInput}
+User's Current Question: ${chatInput}
 
 If the user asks about old memories or references past ideas, refer to the memories above. When referencing a specific memory, you MUST wrap the exact note title in double brackets like this: [[Note Title]].`
       });
