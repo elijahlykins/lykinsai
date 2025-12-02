@@ -89,7 +89,8 @@ export function CustomizationProvider({ children }) {
     }
   }, [customizationData]);
 
-  // Text Observer to re-apply text changes if React re-renders
+  // Text Observer disabled to prevent conflicts with React rendering
+  /*
   useEffect(() => {
     if (!customizationData?.elementOverrides) return;
     
@@ -110,6 +111,7 @@ export function CustomizationProvider({ children }) {
     observer.observe(document.body, { childList: true, subtree: true, characterData: true });
     return () => observer.disconnect();
   }, [customizationData]);
+  */
 
   const updateOverride = (selector, styles, text) => {
     const current = customizationData?.elementOverrides || [];
