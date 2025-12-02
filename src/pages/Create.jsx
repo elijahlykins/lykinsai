@@ -275,6 +275,7 @@ If the user asks about old memories or references past ideas, refer to the memor
               onNoteCreated={handleNoteCreated} 
               inputMode={inputMode} 
               activeAITools={activeAITools}
+              onToggleAITool={(tool) => setActiveAITools(prev => ({ ...prev, [tool]: !prev[tool] }))}
               onQuestionClick={(question) => {
                 setShowChat(true);
                 setChatInput(question);

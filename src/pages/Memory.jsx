@@ -543,7 +543,7 @@ export default function MemoryPage() {
                 setSelectedNote(interactionNote);
                 setInteractionNote(null);
               }}
-              className="bg-indigo-600 hover:bg-indigo-700 text-white w-full h-12 text-lg justify-start px-6"
+              className="bg-white hover:bg-gray-100 text-black border border-gray-200 dark:bg-white dark:text-black dark:hover:bg-gray-200 w-full h-12 text-lg justify-start px-6"
             >
               <Clock className="w-5 h-5 mr-3" />
               View as Memory Card

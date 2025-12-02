@@ -26,7 +26,7 @@ const modules = {
   ],
 };
 
-const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, activeAITools = { questions: true, connections: true }, onQuestionClick, onConnectionClick, noteId }, ref) => {
+const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, activeAITools = { questions: true, connections: true }, onToggleAITool, onQuestionClick, onConnectionClick, noteId }, ref) => {
   const [title, setTitle] = useState('');
   // Slash Menu State
   const [showSlashMenu, setShowSlashMenu] = useState(false);
@@ -1069,33 +1069,41 @@ Return only the title, nothing else.`,
               initial={{ x: 0, y: 0 }}
               className="absolute right-8 top-32 w-72 pointer-events-auto z-30 cursor-move"
             >
-              <div className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-2xl p-4 transition-all duration-500 group hover:bg-white/20 dark:hover:bg-black/40">
-                <div className="flex items-center justify-between mb-3">
-                  <div className="flex items-center gap-2">
-                    <Lightbulb className="w-4 h-4 text-black dark:text-white" />
-                    <h3 className="text-sm font-semibold text-black dark:text-white">AI Questions</h3>
-                  </div>
-                  <GripHorizontal className="w-4 h-4 text-black/30 dark:text-white/30 opacity-0 group-hover:opacity-100 transition-opacity" />
+              <div className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-2xl overflow-hidden transition-all duration-500 group hover:bg-white/20 dark:hover:bg-black/40">
+                {/* Header */}
+                <div className="h-10 bg-white/10 dark:bg-white/5 border-b border-white/10 dark:border-white/5 flex items-center justify-between px-3 cursor-move select-none">
+                   <div className="flex items-center gap-2">
+                     <Lightbulb className="w-3.5 h-3.5 text-black dark:text-white" />
+                     <h3 className="text-xs font-semibold text-black dark:text-white">AI Questions</h3>
+                   </div>
+                   <div className="flex items-center gap-1">
+                      <GripHorizontal className="w-3 h-3 text-black/30 dark:text-white/30 opacity-0 group-hover:opacity-100 transition-opacity mr-1" />
+                      <button onClick={() => onToggleAITool?.('questions')} className="hover:bg-black/10 dark:hover:bg-white/10 rounded p-0.5">
+                         <X className="w-3 h-3 text-black dark:text-white opacity-50 hover:opacity-100" />
+                      </button>
+                   </div>
                 </div>
 
-                {suggestedQuestions.length > 0 ? (
-                  <div className="space-y-2 cursor-default" onPointerDown={(e) => e.stopPropagation()}>
-                    {suggestedQuestions.slice(0, 2).map((question, idx) => (
-                      <button
-                        key={idx}
-                        onClick={() => onQuestionClick?.(question)}
-                        className="w-full p-3 bg-white/20 dark:bg-black/20 rounded-xl hover:bg-white/40 dark:hover:bg-black/40 transition-all text-left text-xs leading-relaxed text-black dark:text-white border border-white/10"
-                      >
-                        {question}
-                      </button>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-2 text-xs text-gray-400">
-                    <Loader2 className="w-3 h-3 animate-spin" />
-                    <span>Thinking...</span>
-                  </div>
-                )}
+                <div className="p-4">
+                  {suggestedQuestions.length > 0 ? (
+                    <div className="space-y-2 cursor-default" onPointerDown={(e) => e.stopPropagation()}>
+                      {suggestedQuestions.slice(0, 2).map((question, idx) => (
+                        <button
+                          key={idx}
+                          onClick={() => onQuestionClick?.(question)}
+                          className="w-full p-3 bg-white/20 dark:bg-black/20 rounded-xl hover:bg-white/40 dark:hover:bg-black/40 transition-all text-left text-xs leading-relaxed text-black dark:text-white border border-white/10"
+                        >
+                          {question}
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2 text-xs text-gray-400">
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      <span>Thinking...</span>
+                    </div>
+                  )}
+                </div>
               </div>
             </motion.div>
           )}
@@ -1109,29 +1117,37 @@ Return only the title, nothing else.`,
               animate={{ x: 0, y: 150 }} 
               className="absolute right-8 top-32 w-72 pointer-events-auto z-30 cursor-move"
             >
-              <div className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-2xl p-4 transition-all duration-500 group hover:bg-white/20 dark:hover:bg-black/40">
-                <div className="flex items-center justify-between mb-3">
-                  <div className="flex items-center gap-2">
-                    <Brain className="w-4 h-4 text-black dark:text-white" />
-                    <h3 className="text-sm font-semibold text-black dark:text-white">AI Thoughts</h3>
-                  </div>
-                  <GripHorizontal className="w-4 h-4 text-black/30 dark:text-white/30 opacity-0 group-hover:opacity-100 transition-opacity" />
+              <div className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-2xl overflow-hidden transition-all duration-500 group hover:bg-white/20 dark:hover:bg-black/40">
+                {/* Header */}
+                <div className="h-10 bg-white/10 dark:bg-white/5 border-b border-white/10 dark:border-white/5 flex items-center justify-between px-3 cursor-move select-none">
+                   <div className="flex items-center gap-2">
+                     <Brain className="w-3.5 h-3.5 text-black dark:text-white" />
+                     <h3 className="text-xs font-semibold text-black dark:text-white">AI Thoughts</h3>
+                   </div>
+                   <div className="flex items-center gap-1">
+                      <GripHorizontal className="w-3 h-3 text-black/30 dark:text-white/30 opacity-0 group-hover:opacity-100 transition-opacity mr-1" />
+                      <button onClick={() => onToggleAITool?.('thoughts')} className="hover:bg-black/10 dark:hover:bg-white/10 rounded p-0.5">
+                         <X className="w-3 h-3 text-black dark:text-white opacity-50 hover:opacity-100" />
+                      </button>
+                   </div>
                 </div>
 
-                {aiThoughts.length > 0 ? (
-                  <div className="space-y-2 cursor-default" onPointerDown={(e) => e.stopPropagation()}>
-                    {aiThoughts.slice(0, 2).map((thought, idx) => (
-                      <div key={idx} className="p-3 bg-gray-100 dark:bg-white/10 rounded-xl text-xs leading-relaxed text-black dark:text-white border border-black/10 dark:border-white/10">
-                        "{thought}"
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-2 text-xs text-gray-400">
-                    <Loader2 className="w-3 h-3 animate-spin" />
-                    <span>Musing...</span>
-                  </div>
-                )}
+                <div className="p-4">
+                  {aiThoughts.length > 0 ? (
+                    <div className="space-y-2 cursor-default" onPointerDown={(e) => e.stopPropagation()}>
+                      {aiThoughts.slice(0, 2).map((thought, idx) => (
+                        <div key={idx} className="p-3 bg-gray-100 dark:bg-white/10 rounded-xl text-xs leading-relaxed text-black dark:text-white border border-black/10 dark:border-white/10">
+                          "{thought}"
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2 text-xs text-gray-400">
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      <span>Musing...</span>
+                    </div>
+                  )}
+                </div>
               </div>
             </motion.div>
           )}
@@ -1145,36 +1161,44 @@ Return only the title, nothing else.`,
               animate={{ x: 0, y: 300 }}
               className="absolute right-8 top-32 w-72 pointer-events-auto z-30 cursor-move"
             >
-              <div className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-2xl p-4 transition-all duration-500 group hover:bg-white/20 dark:hover:bg-black/40">
-                <div className="flex items-center justify-between mb-3">
-                  <div className="flex items-center gap-2">
-                    <SearchCheck className="w-4 h-4 text-black dark:text-white" />
-                    <h3 className="text-sm font-semibold text-black dark:text-white">Analysis & Predictions</h3>
-                  </div>
-                  <GripHorizontal className="w-4 h-4 text-black/30 dark:text-white/30 opacity-0 group-hover:opacity-100 transition-opacity" />
+              <div className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-2xl overflow-hidden transition-all duration-500 group hover:bg-white/20 dark:hover:bg-black/40">
+                {/* Header */}
+                <div className="h-10 bg-white/10 dark:bg-white/5 border-b border-white/10 dark:border-white/5 flex items-center justify-between px-3 cursor-move select-none">
+                   <div className="flex items-center gap-2">
+                     <SearchCheck className="w-3.5 h-3.5 text-black dark:text-white" />
+                     <h3 className="text-xs font-semibold text-black dark:text-white">Analysis</h3>
+                   </div>
+                   <div className="flex items-center gap-1">
+                      <GripHorizontal className="w-3 h-3 text-black/30 dark:text-white/30 opacity-0 group-hover:opacity-100 transition-opacity mr-1" />
+                      <button onClick={() => onToggleAITool?.('analysis')} className="hover:bg-black/10 dark:hover:bg-white/10 rounded p-0.5">
+                         <X className="w-3 h-3 text-black dark:text-white opacity-50 hover:opacity-100" />
+                      </button>
+                   </div>
                 </div>
 
-                {aiAnalysis ? (
-                  <div className="space-y-3 cursor-default" onPointerDown={(e) => e.stopPropagation()}>
-                    {aiAnalysis.prediction && (
-                       <div className="p-3 bg-gray-100 dark:bg-white/10 rounded-xl border border-black/10 dark:border-white/10">
-                         <p className="text-[10px] uppercase tracking-wider text-black dark:text-white mb-1 font-semibold opacity-70">Prediction</p>
-                         <p className="text-xs text-black dark:text-white">{aiAnalysis.prediction}</p>
-                       </div>
-                       )}
-                       {aiAnalysis.validation && (
-                       <div className="p-3 bg-gray-100 dark:bg-white/10 rounded-xl border border-black/10 dark:border-white/10">
-                         <p className="text-[10px] uppercase tracking-wider text-black dark:text-white mb-1 font-semibold opacity-70">Validation</p>
-                         <p className="text-xs text-black dark:text-white">{aiAnalysis.validation}</p>
-                       </div>
-                       )}
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-2 text-xs text-gray-400">
-                    <Loader2 className="w-3 h-3 animate-spin" />
-                    <span>Analyzing...</span>
-                  </div>
-                )}
+                <div className="p-4">
+                  {aiAnalysis ? (
+                    <div className="space-y-3 cursor-default" onPointerDown={(e) => e.stopPropagation()}>
+                      {aiAnalysis.prediction && (
+                         <div className="p-3 bg-gray-100 dark:bg-white/10 rounded-xl border border-black/10 dark:border-white/10">
+                           <p className="text-[10px] uppercase tracking-wider text-black dark:text-white mb-1 font-semibold opacity-70">Prediction</p>
+                           <p className="text-xs text-black dark:text-white">{aiAnalysis.prediction}</p>
+                         </div>
+                      )}
+                      {aiAnalysis.validation && (
+                         <div className="p-3 bg-gray-100 dark:bg-white/10 rounded-xl border border-black/10 dark:border-white/10">
+                           <p className="text-[10px] uppercase tracking-wider text-black dark:text-white mb-1 font-semibold opacity-70">Validation</p>
+                           <p className="text-xs text-black dark:text-white">{aiAnalysis.validation}</p>
+                         </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2 text-xs text-gray-400">
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      <span>Analyzing...</span>
+                    </div>
+                  )}
+                </div>
               </div>
             </motion.div>
           )}
@@ -1187,15 +1211,22 @@ Return only the title, nothing else.`,
                initial={{ x: 0, y: 500 }}
                className="absolute right-8 top-32 w-72 pointer-events-auto z-30 cursor-move"
              >
-               <div className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-2xl p-4 transition-all duration-500 group hover:bg-white/20 dark:hover:bg-black/40">
-                 <div className="flex items-center justify-between mb-3">
+               <div className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-2xl overflow-hidden transition-all duration-500 group hover:bg-white/20 dark:hover:bg-black/40">
+                 {/* Header */}
+                 <div className="h-10 bg-white/10 dark:bg-white/5 border-b border-white/10 dark:border-white/5 flex items-center justify-between px-3 cursor-move select-none">
                     <div className="flex items-center gap-2">
-                      <Network className="w-4 h-4 text-black dark:text-white" />
-                      <h3 className="text-sm font-semibold text-black dark:text-white">AI Suggestions</h3>
+                      <Network className="w-3.5 h-3.5 text-black dark:text-white" />
+                      <h3 className="text-xs font-semibold text-black dark:text-white">Suggestions</h3>
                     </div>
-                    <GripHorizontal className="w-4 h-4 text-black/30 dark:text-white/30 opacity-0 group-hover:opacity-100 transition-opacity" />
+                    <div className="flex items-center gap-1">
+                       <GripHorizontal className="w-3 h-3 text-black/30 dark:text-white/30 opacity-0 group-hover:opacity-100 transition-opacity mr-1" />
+                       <button onClick={() => onToggleAITool?.('connections')} className="hover:bg-black/10 dark:hover:bg-white/10 rounded p-0.5">
+                          <X className="w-3 h-3 text-black dark:text-white opacity-50 hover:opacity-100" />
+                       </button>
+                    </div>
                  </div>
-                 <div className="cursor-default" onPointerDown={(e) => e.stopPropagation()}>
+
+                 <div className="p-4 cursor-default" onPointerDown={(e) => e.stopPropagation()}>
                    <ConnectionSuggestions
                      content={content}
                      currentNoteId={null}
