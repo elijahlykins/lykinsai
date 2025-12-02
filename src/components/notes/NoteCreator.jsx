@@ -1087,13 +1087,13 @@ Return only the title, nothing else.`,
           <div className="space-y-3 py-4">
             <Button
               onClick={() => {
-                const url = prompt('Enter link to video, article, or post:');
+                const url = prompt('Enter link:');
                 if (url) handleLinkAdd(url);
               }}
               className="w-full flex items-center gap-3 bg-white dark:bg-[#171515] hover:bg-gray-100 dark:hover:bg-[#171515]/80 text-black dark:text-white justify-start border border-gray-200 dark:border-gray-600"
             >
               <LinkIcon className="w-5 h-5 text-gray-600 dark:text-gray-300" />
-              Add Link (Video, Article, Post)
+              Add Link
             </Button>
 
             <Button
@@ -1101,23 +1101,7 @@ Return only the title, nothing else.`,
               className="w-full flex items-center gap-3 bg-white dark:bg-[#171515] hover:bg-gray-100 dark:hover:bg-[#171515]/80 text-black dark:text-white justify-start border border-gray-200 dark:border-gray-600"
             >
               <Image className="w-5 h-5 text-gray-600 dark:text-gray-300" />
-              Upload Image
-            </Button>
-
-            <Button
-              onClick={() => fileInputRef.current?.click()}
-              className="w-full flex items-center gap-3 bg-white dark:bg-[#171515] hover:bg-gray-100 dark:hover:bg-[#171515]/80 text-black dark:text-white justify-start border border-gray-200 dark:border-gray-600"
-            >
-              <Video className="w-5 h-5 text-gray-600 dark:text-gray-300" />
-              Upload Video
-            </Button>
-
-            <Button
-              onClick={() => fileInputRef.current?.click()}
-              className="w-full flex items-center gap-3 bg-white dark:bg-[#171515] hover:bg-gray-100 dark:hover:bg-[#171515]/80 text-black dark:text-white justify-start border border-gray-200 dark:border-gray-600"
-            >
-              <FileText className="w-5 h-5 text-gray-600 dark:text-gray-300" />
-              Upload File
+              Add Media
             </Button>
           </div>
 
