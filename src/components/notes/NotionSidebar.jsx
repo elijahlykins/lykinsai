@@ -1,5 +1,7 @@
 import React from 'react';
-import { Settings, ChevronLeft, ChevronRight, Plus, Clock, Archive, Search, MessageCircle, Tags, Bell, Trash2, Crown } from 'lucide-react';
+import { Settings, ChevronLeft, ChevronRight, Plus, Clock, Archive, Search, MessageCircle, Tags, Bell, Trash2, Crown, Folder } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
+import { base44 } from '@/api/base44Client';
 import {
   Tooltip,
   TooltipContent,
@@ -8,6 +10,11 @@ import {
 } from "@/components/ui/tooltip";
 
 export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, onOpenChat, onOpenSettings, isCollapsed, onToggleCollapse }) {
+  const { data: folders = [] } = useQuery({
+    queryKey: ['folders'],
+    queryFn: () => base44.entities.Folder.list(),
+  });
+
   const navItems = [
     { id: 'create', icon: Plus, label: 'Create', tooltip: 'Create new memories', onClick: () => window.location.href = '/Create' },
     { id: 'memory', icon: Clock, label: 'Memory', tooltip: 'View all your memories', onClick: () => window.location.href = '/Memory' },
