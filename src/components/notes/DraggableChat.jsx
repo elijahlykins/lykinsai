@@ -57,7 +57,7 @@ export default function DraggableChat({
         initial={{ x: 400, y: 0, opacity: 0, scale: 0.9 }}
         animate={{ x: 0, y: 0, opacity: 1, scale: 1 }}
         exit={{ opacity: 0, scale: 0.9 }}
-        className="pointer-events-auto w-[400px] h-[600px] flex flex-col bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-[0_0_30px_-5px_rgba(59,130,246,0.2)] dark:shadow-[0_0_30px_-5px_rgba(59,130,246,0.15)] overflow-hidden"
+        className="pointer-events-auto w-[400px] h-[600px] flex flex-col bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-2xl overflow-hidden"
       >
         {/* Header - Draggable Area */}
         <div className="h-12 bg-white/10 dark:bg-white/5 border-b border-white/10 dark:border-white/5 flex items-center justify-between px-4 cursor-move select-none">

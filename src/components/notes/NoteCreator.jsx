@@ -1113,7 +1113,7 @@ Return only the title, nothing else.`,
               initial={{ x: 0, y: 0 }}
               className="absolute right-8 top-32 w-72 pointer-events-auto z-30 cursor-move"
             >
-              <div className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-[0_0_30px_-5px_rgba(59,130,246,0.2)] dark:shadow-[0_0_30px_-5px_rgba(59,130,246,0.15)] overflow-hidden transition-all duration-500 group hover:bg-white/20 dark:hover:bg-black/40 hover:shadow-[0_0_40px_-5px_rgba(59,130,246,0.3)]">
+              <div className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-2xl overflow-hidden transition-all duration-500 group hover:bg-blue-500/5 dark:hover:bg-blue-500/10 hover:border-blue-500/20 dark:hover:border-blue-400/20">
                 {/* Header */}
                 <div className="h-10 bg-white/10 dark:bg-white/5 border-b border-white/10 dark:border-white/5 flex items-center justify-between px-3 cursor-move select-none">
                    <div className="flex items-center gap-2">
@@ -1161,7 +1161,7 @@ Return only the title, nothing else.`,
               animate={{ x: 0, y: 150 }} 
               className="absolute right-8 top-32 w-72 pointer-events-auto z-30 cursor-move"
             >
-              <div className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-[0_0_30px_-5px_rgba(59,130,246,0.2)] dark:shadow-[0_0_30px_-5px_rgba(59,130,246,0.15)] overflow-hidden transition-all duration-500 group hover:bg-white/20 dark:hover:bg-black/40 hover:shadow-[0_0_40px_-5px_rgba(59,130,246,0.3)]">
+              <div className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-2xl overflow-hidden transition-all duration-500 group hover:bg-blue-500/5 dark:hover:bg-blue-500/10 hover:border-blue-500/20 dark:hover:border-blue-400/20">
                 {/* Header */}
                 <div className="h-10 bg-white/10 dark:bg-white/5 border-b border-white/10 dark:border-white/5 flex items-center justify-between px-3 cursor-move select-none">
                    <div className="flex items-center gap-2">
@@ -1205,7 +1205,7 @@ Return only the title, nothing else.`,
               animate={{ x: 0, y: 300 }}
               className="absolute right-8 top-32 w-72 pointer-events-auto z-30 cursor-move"
             >
-              <div className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-[0_0_30px_-5px_rgba(59,130,246,0.2)] dark:shadow-[0_0_30px_-5px_rgba(59,130,246,0.15)] overflow-hidden transition-all duration-500 group hover:bg-white/20 dark:hover:bg-black/40 hover:shadow-[0_0_40px_-5px_rgba(59,130,246,0.3)]">
+              <div className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-2xl overflow-hidden transition-all duration-500 group hover:bg-blue-500/5 dark:hover:bg-blue-500/10 hover:border-blue-500/20 dark:hover:border-blue-400/20">
                 {/* Header */}
                 <div className="h-10 bg-white/10 dark:bg-white/5 border-b border-white/10 dark:border-white/5 flex items-center justify-between px-3 cursor-move select-none">
                    <div className="flex items-center gap-2">
@@ -1255,7 +1255,7 @@ Return only the title, nothing else.`,
                initial={{ x: 0, y: 500 }}
                className="absolute right-8 top-32 w-72 pointer-events-auto z-30 cursor-move"
              >
-               <div className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-[0_0_30px_-5px_rgba(59,130,246,0.2)] dark:shadow-[0_0_30px_-5px_rgba(59,130,246,0.15)] overflow-hidden transition-all duration-500 group hover:bg-white/20 dark:hover:bg-black/40 hover:shadow-[0_0_40px_-5px_rgba(59,130,246,0.3)]">
+               <div className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-2xl overflow-hidden transition-all duration-500 group hover:bg-blue-500/5 dark:hover:bg-blue-500/10 hover:border-blue-500/20 dark:hover:border-blue-400/20">
                  {/* Header */}
                  <div className="h-10 bg-white/10 dark:bg-white/5 border-b border-white/10 dark:border-white/5 flex items-center justify-between px-3 cursor-move select-none">
                     <div className="flex items-center gap-2">
