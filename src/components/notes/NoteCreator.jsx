@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
-import { Mic, Square, Plus, Link as LinkIcon, Image, Video, FileText, Tag, Folder, Bell, Loader2, Lightbulb, Wand2, X, GripHorizontal } from 'lucide-react';
+import { Mic, Square, Plus, Link as LinkIcon, Image, Video, FileText, Tag, Folder, Bell, Loader2, Lightbulb, Wand2, X, GripHorizontal, Brain, Sparkles, Network, SearchCheck } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { base44 } from '@/api/base44Client';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -26,7 +26,7 @@ const modules = {
   ],
 };
 
-const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, showSuggestions = true, onQuestionClick, onConnectionClick, noteId }, ref) => {
+const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, activeAITools = { questions: true, connections: true }, onQuestionClick, onConnectionClick, noteId }, ref) => {
   const [title, setTitle] = useState('');
   // Slash Menu State
   const [showSlashMenu, setShowSlashMenu] = useState(false);
@@ -48,6 +48,8 @@ const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, showSuggestion
   const [reminder, setReminder] = useState(null);
   const [showReminderPicker, setShowReminderPicker] = useState(false);
   const [suggestedQuestions, setSuggestedQuestions] = useState([]);
+  const [aiAnalysis, setAiAnalysis] = useState(null);
+  const [aiThoughts, setAiThoughts] = useState([]);
   const [previewAttachment, setPreviewAttachment] = useState(null);
   const [isDragging, setIsDragging] = useState(false);
   const mediaRecorderRef = useRef(null);
@@ -363,7 +365,48 @@ const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, showSuggestion
 
     const timeout = setTimeout(generateQuestions, 1500);
     return () => clearTimeout(timeout);
-  }, [content, allNotes]);
+    }, [content, allNotes]);
+
+    // Generate AI Analysis & Thoughts
+    useEffect(() => {
+     const generateAnalysis = async () => {
+        if (!activeAITools.analysis && !activeAITools.thoughts) return;
+
+        // Wait for some content or just run on interval if we want live feel? 
+        // Let's stick to content-based debounce
+
+        try {
+            const promptContext = content.length > 30 ? `Content: "${content}"` : `User is starting a new note. Recent projects: ${allNotes.slice(0,3).map(n=>n.title).join(', ')}`;
+
+            const result = await base44.integrations.Core.InvokeLLM({
+                prompt: `Analyze the user's current workspace content and provide:
+                1. "thoughts": 2-3 brief, creative musings or insights about where this could go.
+                2. "prediction": A short prediction on the potential impact or viability of this idea.
+                3. "validation": A brief validation check (strengths/weaknesses).
+
+                ${promptContext}
+                `,
+                response_json_schema: {
+                    type: 'object',
+                    properties: {
+                        thoughts: { type: 'array', items: { type: 'string' } },
+                        prediction: { type: 'string' },
+                        validation: { type: 'string' }
+                    }
+                }
+            });
+
+            if (result.thoughts) setAiThoughts(result.thoughts);
+            if (result.prediction || result.validation) setAiAnalysis({ prediction: result.prediction, validation: result.validation });
+
+        } catch (e) {
+            console.error("Error generating AI analysis", e);
+        }
+     };
+
+     const timeout = setTimeout(generateAnalysis, 2000);
+     return () => clearTimeout(timeout);
+    }, [content, activeAITools.analysis, activeAITools.thoughts, allNotes]);
 
   React.useImperativeHandle(ref, () => ({
     handleSave: autoSave,
@@ -1016,55 +1059,140 @@ Return only the title, nothing else.`,
       </div>
 
       {/* Live AI Feedback - Draggable Panels */}
-      {showSuggestions && inputMode === 'text' && (
+      {inputMode === 'text' && (
         <>
-          {/* AI Thoughts / Questions */}
-          <motion.div 
-            drag
-            dragMomentum={false}
-            initial={{ x: 0, y: 0 }}
-            className="absolute right-8 top-32 w-80 pointer-events-auto z-30 cursor-move"
-          >
-            <div className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-2xl p-5 transition-all duration-500 group">
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-2">
-                  <Lightbulb className="w-4 h-4 text-yellow-500" />
-                  <h3 className="text-sm font-semibold text-black dark:text-white">AI Thoughts</h3>
+          {/* AI Questions Panel */}
+          {activeAITools.questions && (
+            <motion.div 
+              drag
+              dragMomentum={false}
+              initial={{ x: 0, y: 0 }}
+              className="absolute right-8 top-32 w-72 pointer-events-auto z-30 cursor-move"
+            >
+              <div className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-2xl p-4 transition-all duration-500 group hover:bg-white/20 dark:hover:bg-black/40">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2">
+                    <Lightbulb className="w-4 h-4 text-yellow-400" />
+                    <h3 className="text-sm font-semibold text-black dark:text-white">AI Questions</h3>
+                  </div>
+                  <GripHorizontal className="w-4 h-4 text-black/30 dark:text-white/30 opacity-0 group-hover:opacity-100 transition-opacity" />
                 </div>
-                <GripHorizontal className="w-4 h-4 text-black/30 dark:text-white/30 opacity-0 group-hover:opacity-100 transition-opacity" />
+
+                {suggestedQuestions.length > 0 ? (
+                  <div className="space-y-2 cursor-default" onPointerDown={(e) => e.stopPropagation()}>
+                    {suggestedQuestions.slice(0, 2).map((question, idx) => (
+                      <button
+                        key={idx}
+                        onClick={() => onQuestionClick?.(question)}
+                        className="w-full p-3 bg-white/20 dark:bg-black/20 rounded-xl hover:bg-white/40 dark:hover:bg-black/40 transition-all text-left text-xs leading-relaxed text-black dark:text-white border border-white/10"
+                      >
+                        {question}
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 text-xs text-gray-400">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    <span>Thinking...</span>
+                  </div>
+                )}
               </div>
+            </motion.div>
+          )}
 
-              {suggestedQuestions.length > 0 ? (
-                <div className="space-y-2 cursor-default" onPointerDown={(e) => e.stopPropagation()}>
-                  {suggestedQuestions.slice(0, 2).map((question, idx) => (
-                    <button
-                      key={idx}
-                      onClick={() => onQuestionClick?.(question)}
-                      className="w-full p-3 bg-white/20 dark:bg-black/20 rounded-xl hover:bg-white/40 dark:hover:bg-black/40 transition-all text-left text-xs leading-relaxed text-black dark:text-white border border-white/10"
-                    >
-                      {question}
-                    </button>
-                  ))}
+          {/* AI Thoughts Panel */}
+          {activeAITools.thoughts && (
+            <motion.div 
+              drag
+              dragMomentum={false}
+              initial={{ x: -300, y: 150 }}
+              animate={{ x: 0, y: 150 }} 
+              className="absolute right-8 top-32 w-72 pointer-events-auto z-30 cursor-move"
+            >
+              <div className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-2xl p-4 transition-all duration-500 group hover:bg-white/20 dark:hover:bg-black/40">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2">
+                    <Brain className="w-4 h-4 text-purple-400" />
+                    <h3 className="text-sm font-semibold text-black dark:text-white">AI Thoughts</h3>
+                  </div>
+                  <GripHorizontal className="w-4 h-4 text-black/30 dark:text-white/30 opacity-0 group-hover:opacity-100 transition-opacity" />
                 </div>
-              ) : (
-                <div className="flex items-center gap-2 text-xs text-gray-400">
-                  <Loader2 className="w-3 h-3 animate-spin" />
-                  <span>Thinking...</span>
-                </div>
-              )}
-            </div>
-          </motion.div>
 
-          {/* Connection Suggestions */}
-          {allNotes.length > 0 && content.length > 30 && (
+                {aiThoughts.length > 0 ? (
+                  <div className="space-y-2 cursor-default" onPointerDown={(e) => e.stopPropagation()}>
+                    {aiThoughts.slice(0, 2).map((thought, idx) => (
+                      <div key={idx} className="p-3 bg-purple-500/10 rounded-xl text-xs leading-relaxed text-black dark:text-white border border-purple-500/20">
+                        "{thought}"
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 text-xs text-gray-400">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    <span>Musing...</span>
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          )}
+
+          {/* AI Analysis Panel */}
+          {activeAITools.analysis && (
+            <motion.div 
+              drag
+              dragMomentum={false}
+              initial={{ x: -300, y: 300 }}
+              animate={{ x: 0, y: 300 }}
+              className="absolute right-8 top-32 w-72 pointer-events-auto z-30 cursor-move"
+            >
+              <div className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-2xl p-4 transition-all duration-500 group hover:bg-white/20 dark:hover:bg-black/40">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2">
+                    <SearchCheck className="w-4 h-4 text-amber-400" />
+                    <h3 className="text-sm font-semibold text-black dark:text-white">Analysis & Predictions</h3>
+                  </div>
+                  <GripHorizontal className="w-4 h-4 text-black/30 dark:text-white/30 opacity-0 group-hover:opacity-100 transition-opacity" />
+                </div>
+
+                {aiAnalysis ? (
+                  <div className="space-y-3 cursor-default" onPointerDown={(e) => e.stopPropagation()}>
+                    {aiAnalysis.prediction && (
+                       <div className="p-3 bg-amber-500/10 rounded-xl border border-amber-500/20">
+                         <p className="text-[10px] uppercase tracking-wider text-amber-600 dark:text-amber-400 mb-1 font-semibold">Prediction</p>
+                         <p className="text-xs text-black dark:text-white">{aiAnalysis.prediction}</p>
+                       </div>
+                    )}
+                    {aiAnalysis.validation && (
+                       <div className="p-3 bg-green-500/10 rounded-xl border border-green-500/20">
+                         <p className="text-[10px] uppercase tracking-wider text-green-600 dark:text-green-400 mb-1 font-semibold">Validation</p>
+                         <p className="text-xs text-black dark:text-white">{aiAnalysis.validation}</p>
+                       </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 text-xs text-gray-400">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    <span>Analyzing...</span>
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          )}
+
+          {/* AI Suggestions (Connections) */}
+          {activeAITools.connections && allNotes.length > 0 && (
              <motion.div 
                drag
                dragMomentum={false}
-               initial={{ x: 0, y: 0 }}
-               className="absolute right-8 top-96 w-80 pointer-events-auto z-30 cursor-move"
+               initial={{ x: 0, y: 500 }}
+               className="absolute right-8 top-32 w-72 pointer-events-auto z-30 cursor-move"
              >
-               <div className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-2xl p-5 transition-all duration-500 group">
-                 <div className="flex justify-end mb-2">
+               <div className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-2xl p-4 transition-all duration-500 group hover:bg-white/20 dark:hover:bg-black/40">
+                 <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                      <Network className="w-4 h-4 text-green-400" />
+                      <h3 className="text-sm font-semibold text-black dark:text-white">AI Suggestions</h3>
+                    </div>
                     <GripHorizontal className="w-4 h-4 text-black/30 dark:text-white/30 opacity-0 group-hover:opacity-100 transition-opacity" />
                  </div>
                  <div className="cursor-default" onPointerDown={(e) => e.stopPropagation()}>

@@ -12,13 +12,26 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { base44 } from '@/api/base44Client';
-import { Save, ChevronDown, ChevronUp, Plus, Send, Loader2, MessageSquare, Search } from 'lucide-react';
+import { Save, ChevronDown, ChevronUp, Plus, Send, Loader2, MessageSquare, Search, Sparkles, Brain, Network, FileSearch, Lightbulb } from 'lucide-react';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuCheckboxItem,
+  DropdownMenuTrigger,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
 
 export default function CreatePage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [inputMode, setInputMode] = useState('text'); // 'text' or 'audio'
-  const [showSuggestions, setShowSuggestions] = useState(true);
+  const [activeAITools, setActiveAITools] = useState({
+    questions: true,
+    connections: true,
+    analysis: false,
+    thoughts: false
+  });
   const [showChat, setShowChat] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [chatMessages, setChatMessages] = useState([]);
@@ -163,13 +176,66 @@ If the user asks about old memories or references past ideas, refer to the memor
               <Search className="w-5 h-5" />
             </Button>
             <div className="w-px h-4 bg-gray-300 dark:bg-gray-700 mx-1" />
-            <Button
-              onClick={() => setShowSuggestions(!showSuggestions)}
-              variant="ghost"
-              className={`rounded-full px-4 h-10 ${showSuggestions ? 'bg-white dark:bg-white/10 shadow-sm' : ''}`}
-            >
-              Live AI
-            </Button>
+
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  className={`rounded-full px-4 h-10 gap-2 ${Object.values(activeAITools).some(v => v) ? 'bg-white dark:bg-white/10 shadow-sm' : ''}`}
+                >
+                  <Sparkles className="w-4 h-4 text-indigo-500" />
+                  Live AI
+                  <ChevronDown className="w-3 h-3 opacity-50" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-56">
+                <DropdownMenuLabel>AI Tools</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuCheckboxItem
+                  checked={Object.values(activeAITools).every(v => v)}
+                  onCheckedChange={(checked) => {
+                     setActiveAITools({
+                       questions: checked,
+                       connections: checked,
+                       analysis: checked,
+                       thoughts: checked
+                     });
+                  }}
+                >
+                  Enable All
+                </DropdownMenuCheckboxItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuCheckboxItem
+                  checked={activeAITools.questions}
+                  onCheckedChange={(checked) => setActiveAITools(prev => ({ ...prev, questions: checked }))}
+                >
+                  <MessageSquare className="w-4 h-4 mr-2 text-blue-500" />
+                  AI Questions
+                </DropdownMenuCheckboxItem>
+                <DropdownMenuCheckboxItem
+                  checked={activeAITools.thoughts}
+                  onCheckedChange={(checked) => setActiveAITools(prev => ({ ...prev, thoughts: checked }))}
+                >
+                  <Brain className="w-4 h-4 mr-2 text-purple-500" />
+                  AI Thoughts
+                </DropdownMenuCheckboxItem>
+                <DropdownMenuCheckboxItem
+                  checked={activeAITools.connections}
+                  onCheckedChange={(checked) => setActiveAITools(prev => ({ ...prev, connections: checked }))}
+                >
+                  <Network className="w-4 h-4 mr-2 text-green-500" />
+                  AI Suggestions
+                </DropdownMenuCheckboxItem>
+                <DropdownMenuCheckboxItem
+                  checked={activeAITools.analysis}
+                  onCheckedChange={(checked) => setActiveAITools(prev => ({ ...prev, analysis: checked }))}
+                >
+                  <FileSearch className="w-4 h-4 mr-2 text-amber-500" />
+                  Analysis & Predictions
+                </DropdownMenuCheckboxItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+
             <Button
               onClick={() => setShowChat(!showChat)}
               variant="ghost"
@@ -208,7 +274,7 @@ If the user asks about old memories or references past ideas, refer to the memor
               noteId={noteId}
               onNoteCreated={handleNoteCreated} 
               inputMode={inputMode} 
-              showSuggestions={showSuggestions}
+              activeAITools={activeAITools}
               onQuestionClick={(question) => {
                 setShowChat(true);
                 setChatInput(question);
