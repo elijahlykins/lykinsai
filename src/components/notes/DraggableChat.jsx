@@ -71,7 +71,7 @@ export default function DraggableChat({
         <div className="h-12 bg-white/10 dark:bg-white/5 border-b border-white/10 dark:border-white/5 flex items-center justify-between px-4 cursor-move select-none">
           <div className="flex items-center gap-2 text-sm font-semibold text-black dark:text-white">
             <MessageSquare className="w-4 h-4" />
-            AI Companion
+            {settings.chatAIName || 'AI Companion'}
           </div>
           <div className="flex items-center gap-1">
             <Button 
