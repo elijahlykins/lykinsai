@@ -118,51 +118,12 @@ export default function MemoryChatPage() {
       return;
     }
 
-    // Load persisted chat
-    const savedChat = localStorage.getItem('lykinsai_chat');
-    if (savedChat) {
-      try {
-        const { messages: savedMessages, timestamp, chatNoteId } = JSON.parse(savedChat);
-        const oneHourAgo = Date.now() - (60 * 60 * 1000);
-
-        if (timestamp > oneHourAgo) {
-          // Verify the chat note still exists if there's a chatNoteId
-          if (chatNoteId && !notes.some(n => n.id === chatNoteId)) {
-            localStorage.removeItem('lykinsai_chat');
-            return;
-          }
-
-          setMessages(savedMessages);
-          setLastMessageTime(timestamp);
-          if (chatNoteId) {
-            setCurrentChatNoteId(chatNoteId);
-          }
-        } else {
-          localStorage.removeItem('lykinsai_chat');
-        }
-      } catch (error) {
-        console.error('Error loading saved chat:', error);
-        localStorage.removeItem('lykinsai_chat');
-      }
-    }
   }, []);
 
   // Update ref whenever messages change
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
-
-  // Persist chat to localStorage
-  useEffect(() => {
-    if (messages.length > 0) {
-      const chatData = {
-        messages,
-        timestamp: lastMessageTime,
-        chatNoteId: currentChatNoteId
-      };
-      localStorage.setItem('lykinsai_chat', JSON.stringify(chatData));
-    }
-  }, [messages, lastMessageTime, currentChatNoteId]);
 
 
 
