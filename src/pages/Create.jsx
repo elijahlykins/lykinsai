@@ -13,6 +13,7 @@ import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { base44 } from '@/api/base44Client';
+import { useCustomization } from '../components/customization/CustomizationContext';
 import { Save, ChevronDown, ChevronUp, Plus, Send, Loader2, MessageSquare, Search, Zap, Brain, Network, FileSearch, Lightbulb, Share2, Download } from 'lucide-react';
 import {
   DropdownMenu,
