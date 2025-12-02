@@ -790,7 +790,7 @@ Be constructive, insightful, and encouraging.`,
       )}
         {/* Left Sidebar - Grid/Pinterest Style Resources */}
         {(attachments.length > 0 || suggestedConnections.length > 0) && (
-          <div className="absolute left-0 top-0 bottom-0 w-64 h-full overflow-y-auto p-4 border-r border-white/10 dark:border-white/5 hidden xl:block scrollbar-hide bg-white/10 dark:bg-black/30 backdrop-blur-md z-20">
+          <div className="absolute left-0 top-0 bottom-0 w-64 h-full overflow-y-auto p-4 border-r border-white/10 dark:border-white/5 hidden xl:block scrollbar-hide z-20">
              <h3 className="text-xs font-semibold text-gray-500/80 dark:text-gray-400 uppercase tracking-wider mb-4">Resources</h3>
 
              <div className="columns-2 gap-3 space-y-3">
