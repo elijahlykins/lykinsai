@@ -191,6 +191,15 @@ export default function DraggableChat({
             </Button>
           </div>
         </div>
+        <ColorMenu 
+            isOpen={contextMenu.isOpen}
+            position={{ x: contextMenu.x, y: contextMenu.y }}
+            onClose={() => setContextMenu(prev => ({ ...prev, isOpen: false }))}
+            currentColors={chatStyling[contextMenu.type]}
+            type={contextMenu.type}
+            onChange={handleColorChange}
+            onReset={handleReset}
+        />
       </motion.div>
     </div>
   );
