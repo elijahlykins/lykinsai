@@ -12,7 +12,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { base44 } from '@/api/base44Client';
-import { Save, ChevronDown, ChevronUp, Plus, Send, Loader2, MessageSquare, Search, Zap, Brain, Network, FileSearch, Lightbulb } from 'lucide-react';
+import { Save, ChevronDown, ChevronUp, Plus, Send, Loader2, MessageSquare, Search, Zap, Brain, Network, FileSearch, Lightbulb, Share2, Download } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -245,12 +245,22 @@ If the user asks about old memories or references past ideas, refer to the memor
             </Button>
             <div className="w-px h-4 bg-gray-300 dark:bg-gray-700 mx-1" />
              <Button
-              onClick={() => noteCreatorRef.current?.handleSave()}
+              onClick={() => noteCreatorRef.current?.handleExport()}
               variant="ghost"
-              className="rounded-full w-10 h-10 p-0 hover:bg-green-100 hover:text-green-600 dark:hover:bg-green-900/30 dark:hover:text-green-400"
-            >
-              <Save className="w-5 h-5" />
-            </Button>
+              className="rounded-full w-10 h-10 p-0 hover:bg-blue-100 hover:text-blue-600 dark:hover:bg-blue-900/30 dark:hover:text-blue-400"
+              title="Export"
+             >
+              <Download className="w-5 h-5" />
+             </Button>
+             <div className="w-px h-4 bg-gray-300 dark:bg-gray-700 mx-1" />
+             <Button
+              onClick={() => noteCreatorRef.current?.handleShare()}
+              variant="ghost"
+              className="rounded-full w-10 h-10 p-0 hover:bg-purple-100 hover:text-purple-600 dark:hover:bg-purple-900/30 dark:hover:text-purple-400"
+              title="Share"
+             >
+              <Share2 className="w-5 h-5" />
+             </Button>
           </div>
         </div>
 
