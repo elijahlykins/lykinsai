@@ -700,11 +700,11 @@ Return only the title, nothing else.`,
   };
 
   return (
-    <div className="h-full flex flex-row relative overflow-hidden">
+    <div className="h-full flex relative overflow-hidden">
         {/* Left Sidebar - Grid/Pinterest Style Resources */}
         {(attachments.length > 0 || suggestedConnections.length > 0) && (
-          <div className="w-64 h-full overflow-y-auto p-4 border-r border-gray-100 dark:border-gray-800 hidden xl:block scrollbar-hide bg-gray-50/50 dark:bg-[#1f1d1d]/30 backdrop-blur-sm flex-shrink-0">
-             <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-4">Resources</h3>
+          <div className="absolute left-0 top-0 bottom-0 w-64 h-full overflow-y-auto p-4 border-r border-white/10 dark:border-white/5 hidden xl:block scrollbar-hide bg-white/10 dark:bg-black/30 backdrop-blur-md z-20">
+             <h3 className="text-xs font-semibold text-gray-500/80 dark:text-gray-400 uppercase tracking-wider mb-4">Resources</h3>
 
              <div className="columns-2 gap-3 space-y-3">
                 {/* Attachments */}
@@ -961,13 +961,13 @@ Return only the title, nothing else.`,
             initial={{ x: 0, y: 0 }}
             className="absolute right-8 top-32 w-80 pointer-events-auto z-30 cursor-move"
           >
-            <div className="bg-white/80 dark:bg-[#1f1d1d]/80 backdrop-blur-xl rounded-2xl p-5 shadow-xl border border-white/20 dark:border-white/10 transition-all duration-500 group">
+            <div className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-2xl p-5 transition-all duration-500 group">
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2">
                   <Lightbulb className="w-4 h-4 text-yellow-500" />
                   <h3 className="text-sm font-semibold text-black dark:text-white">AI Thoughts</h3>
                 </div>
-                <GripHorizontal className="w-4 h-4 text-gray-300 dark:text-gray-600 opacity-0 group-hover:opacity-100 transition-opacity" />
+                <GripHorizontal className="w-4 h-4 text-black/30 dark:text-white/30 opacity-0 group-hover:opacity-100 transition-opacity" />
               </div>
 
               {suggestedQuestions.length > 0 ? (
@@ -976,7 +976,7 @@ Return only the title, nothing else.`,
                     <button
                       key={idx}
                       onClick={() => onQuestionClick?.(question)}
-                      className="w-full p-3 bg-white/50 dark:bg-black/20 rounded-xl hover:bg-white dark:hover:bg-black/40 transition-all text-left text-xs leading-relaxed text-gray-800 dark:text-gray-200"
+                      className="w-full p-3 bg-white/20 dark:bg-black/20 rounded-xl hover:bg-white/40 dark:hover:bg-black/40 transition-all text-left text-xs leading-relaxed text-black dark:text-white border border-white/10"
                     >
                       {question}
                     </button>
@@ -999,9 +999,9 @@ Return only the title, nothing else.`,
                initial={{ x: 0, y: 0 }}
                className="absolute right-8 top-96 w-80 pointer-events-auto z-30 cursor-move"
              >
-               <div className="bg-white/80 dark:bg-[#1f1d1d]/80 backdrop-blur-xl rounded-2xl p-5 shadow-xl border border-white/20 dark:border-white/10 transition-all duration-500 group">
+               <div className="bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-2xl p-5 transition-all duration-500 group">
                  <div className="flex justify-end mb-2">
-                    <GripHorizontal className="w-4 h-4 text-gray-300 dark:text-gray-600 opacity-0 group-hover:opacity-100 transition-opacity" />
+                    <GripHorizontal className="w-4 h-4 text-black/30 dark:text-white/30 opacity-0 group-hover:opacity-100 transition-opacity" />
                  </div>
                  <div className="cursor-default" onPointerDown={(e) => e.stopPropagation()}>
                    <ConnectionSuggestions
