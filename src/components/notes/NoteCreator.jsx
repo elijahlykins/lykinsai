@@ -495,6 +495,22 @@ const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, activeAITools 
     },
     getCurrentContent: () => content,
     addConnection: handleAddConnection,
+    reset: () => {
+        setTitle('');
+        setContent('');
+        setAttachments([]);
+        setTags([]);
+        setFolder('Uncategorized');
+        setReminder(null);
+        setStyling({});
+        setSuggestedConnections([]);
+        setSuggestedQuestions([]);
+        setAiThoughts([]);
+        setAiAnalysis(null);
+        setInternalNoteId(null);
+        setAudioFile(null);
+        localStorage.removeItem('lykinsai_draft');
+    },
     mergeNote: (noteToMerge) => {
       if (!noteToMerge) return;
       

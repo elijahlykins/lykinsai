@@ -71,13 +71,22 @@ export default function CreatePage() {
   useEffect(() => {
     if (noteId && allNotes.length > 0) {
       const note = allNotes.find(n => n.id === noteId);
-      if (note && note.chat_history) {
-        setChatMessages(note.chat_history);
-      }
-    }
-  }, [noteId, allNotes]);
+          if (note && note.chat_history) {
+            setChatMessages(note.chat_history);
+          }
+        }
+      }, [noteId, allNotes]);
 
-  const handleChatSend = async () => {
+      const handleNewNote = async () => {
+        if (noteCreatorRef.current) {
+           await noteCreatorRef.current.handleSave();
+           noteCreatorRef.current.reset();
+        }
+        setChatMessages([]);
+        navigate(createPageUrl('Create'));
+      };
+
+      const handleChatSend = async () => {
     if (!chatInput.trim() || isChatLoading) return;
 
     const currentContent = noteCreatorRef.current?.getCurrentContent() || '';
@@ -184,6 +193,15 @@ If the user asks about old memories or references past ideas, refer to the memor
             {/* Left side empty or breadcrumbs if needed */}
           </div>
           <div className="flex items-center gap-2 pointer-events-auto bg-white/50 dark:bg-black/50 p-1.5 rounded-full backdrop-blur-md shadow-sm border border-white/20 dark:border-gray-700/30">
+            <Button
+              onClick={handleNewNote}
+              variant="ghost"
+              className="rounded-full w-10 h-10 p-0 hover:bg-white/60 dark:hover:bg-white/10"
+              title="New Note"
+            >
+              <Plus className="w-5 h-5" />
+            </Button>
+            <div className="w-px h-4 bg-gray-300 dark:bg-gray-700 mx-1" />
             <Button
               onClick={() => setShowSearch(true)}
               variant="ghost"
