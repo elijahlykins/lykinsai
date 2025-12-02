@@ -775,12 +775,16 @@ Return only the title, nothing else.`,
     setIsProcessing(true);
     try {
       const organized = await base44.integrations.Core.InvokeLLM({
-        prompt: `Organize and format the following note content into clean HTML. Use headings (h1, h2), bullet points (ul, li), and paragraphs (p) to structure the information logically. Do not change the meaning, just improve the structure and readability.
-        
+        prompt: `Reorganize and structure the following note content. 
+        1. Combine related ideas and titles into a cohesive structure.
+        2. Use Headers (h1, h2) for main topics.
+        3. Use Bullet points (ul, li) for lists and key details.
+        4. Ensure the format is clean HTML.
+
         Content:
         ${content}
-        
-        Return only the HTML.`,
+
+        Return ONLY the HTML.`,
       });
       // Clean up potential markdown code blocks if LLM wraps it
       const cleanHtml = organized.replace(/```html/g, '').replace(/```/g, '').trim();
@@ -883,22 +887,18 @@ Return only the title, nothing else.`,
               }
             }}
           >
-            {/* Organize Button - Floating next to text area */}
+            {/* Organize Button - Floating inside text area */}
             {content && content.length > 20 && (
-              <div className="absolute top-16 -right-32 hidden 2xl:block opacity-0 group-hover:opacity-100 transition-opacity duration-300">
-                 <div className="sticky top-20">
-                   <Button 
-                     onClick={handleAIOrganize}
-                     disabled={isProcessing}
-                     variant="ghost" 
-                     className="bg-white/80 dark:bg-black/50 backdrop-blur-md border border-gray-200 dark:border-gray-800 text-gray-500 hover:text-black dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-800 shadow-sm transition-all rounded-full p-3 h-12 w-12 flex items-center justify-center group/btn"
-                   >
-                     <AlignLeft className="w-5 h-5" />
-                     <span className="absolute right-full mr-2 bg-black text-white text-xs px-2 py-1 rounded opacity-0 group-hover/btn:opacity-100 transition-opacity whitespace-nowrap pointer-events-none">
-                        Organize Note
-                     </span>
-                   </Button>
-                 </div>
+              <div className="absolute top-4 right-0 opacity-0 group-hover:opacity-100 transition-opacity duration-300 z-10">
+                 <Button 
+                   onClick={handleAIOrganize}
+                   disabled={isProcessing}
+                   size="icon"
+                   className="bg-white/80 dark:bg-white/10 backdrop-blur-md border border-gray-200 dark:border-gray-700 text-gray-500 hover:text-black dark:text-gray-400 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-white/20 shadow-sm transition-all rounded-full h-8 w-8"
+                   title="Auto-Organize"
+                 >
+                   <AlignLeft className="w-4 h-4" />
+                 </Button>
               </div>
             )}
 
