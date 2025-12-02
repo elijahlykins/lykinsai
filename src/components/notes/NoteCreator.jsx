@@ -317,14 +317,14 @@ const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, showSuggestion
   // Generate suggested questions when content changes
   useEffect(() => {
     const generateQuestions = async () => {
-      if (content.length > 50) {
+      if (content.length > 30) {
         try {
           const result = await base44.integrations.Core.InvokeLLM({
             prompt: `Based on this note content, generate 3-5 thought-provoking questions that would help the user explore this idea further.
 
-Content: "${content}"
+  Content: "${content}"
 
-Make questions specific, insightful, and encouraging deeper thinking.`,
+  Make questions specific, insightful, and encouraging deeper thinking.`,
             response_json_schema: {
               type: 'object',
               properties: {
@@ -338,13 +338,32 @@ Make questions specific, insightful, and encouraging deeper thinking.`,
           setSuggestedQuestions([]);
         }
       } else {
-        setSuggestedQuestions([]);
+        // Generate suggestions based on recent projects if content is empty
+        try {
+          const recentContext = allNotes.slice(0, 5).map(n => n.title).join(', ');
+          const prompt = recentContext 
+            ? `The user is starting a new note. Based on their recent projects (${recentContext}), suggest 3 questions to help them start a new idea or continue their work.` 
+            : `The user is starting a new note. Suggest 3 creative questions to help them start brainstorming.`;
+
+          const result = await base44.integrations.Core.InvokeLLM({
+            prompt: prompt,
+            response_json_schema: {
+              type: 'object',
+              properties: {
+                questions: { type: 'array', items: { type: 'string' } }
+              }
+            }
+          });
+          setSuggestedQuestions(result.questions || ["What's on your mind?", "Ready to start a new idea?", "Reflect on your recent work?"]);
+        } catch (error) {
+           setSuggestedQuestions(["What's on your mind?", "Start writing to get AI suggestions...", "Have a new idea?"]);
+        }
       }
     };
 
     const timeout = setTimeout(generateQuestions, 1500);
     return () => clearTimeout(timeout);
-  }, [content]);
+  }, [content, allNotes]);
 
   React.useImperativeHandle(ref, () => ({
     handleSave: autoSave,
@@ -997,7 +1016,7 @@ Return only the title, nothing else.`,
       </div>
 
       {/* Live AI Feedback - Draggable Panels */}
-      {showSuggestions && content.length > 30 && inputMode === 'text' && (
+      {showSuggestions && inputMode === 'text' && (
         <>
           {/* AI Thoughts / Questions */}
           <motion.div 
@@ -1037,7 +1056,7 @@ Return only the title, nothing else.`,
           </motion.div>
 
           {/* Connection Suggestions */}
-          {allNotes.length > 0 && (
+          {allNotes.length > 0 && content.length > 30 && (
              <motion.div 
                drag
                dragMomentum={false}
