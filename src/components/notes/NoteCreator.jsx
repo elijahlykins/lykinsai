@@ -694,28 +694,24 @@ Be constructive, insightful, and encouraging.`,
   };
 
   const handleDragOver = (e) => {
-    // Only prevent default if dragging files to allow dropping
-    // For text, we want the browser's default behavior (cursor movement) to work
+    e.preventDefault(); // Always allow drop
     if (e.dataTransfer.types.includes('Files')) {
-      e.preventDefault();
       setIsDragging(true);
     }
   };
 
   const handleDragLeave = (e) => {
-    if (e.dataTransfer.types.includes('Files')) {
-      e.preventDefault();
-      if (e.currentTarget.contains(e.relatedTarget)) return;
-      setIsDragging(false);
-    }
+    e.preventDefault();
+    if (e.currentTarget.contains(e.relatedTarget)) return;
+    setIsDragging(false);
   };
 
   const handleDrop = (e) => {
-    // Handle file drops specifically
+    e.preventDefault();
+    setIsDragging(false);
+
+    // 1. Handle Files
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      e.preventDefault();
-      setIsDragging(false);
-      
       const files = Array.from(e.dataTransfer.files);
       if (files.length > 0) {
         files.forEach(file => handleFileUpload(file));
@@ -723,8 +719,52 @@ Be constructive, insightful, and encouraging.`,
       return;
     }
     
-    // For text drops, we don't prevent default so the editor handles insertion
-    if (isDragging) setIsDragging(false);
+    // 2. Handle Text/HTML Drop manually to ensure it works
+    const text = e.dataTransfer.getData('text/plain');
+    const html = e.dataTransfer.getData('text/html');
+
+    if ((text || html) && quillRef.current) {
+        const editor = quillRef.current.getEditor();
+        let index = editor.getSelection()?.index || editor.getLength(); // Default to current selection or end
+
+        // Try to find exact drop position
+        try {
+            let range;
+            if (document.caretRangeFromPoint) {
+                range = document.caretRangeFromPoint(e.clientX, e.clientY);
+            } else if (document.caretPositionFromPoint) {
+                const pos = document.caretPositionFromPoint(e.clientX, e.clientY);
+                range = document.createRange();
+                range.setStart(pos.offsetNode, pos.offset);
+                range.collapse(true);
+            }
+
+            if (range && ReactQuill.Quill) {
+                const textNode = range.startContainer;
+                const offset = range.startOffset;
+                const blot = ReactQuill.Quill.find(textNode);
+                if (blot) {
+                    index = editor.getIndex(blot) + offset;
+                }
+            }
+        } catch (err) {
+            // Fallback to default index if calculation fails
+            console.warn('Could not calculate drop index', err);
+        }
+
+        if (html) {
+             // Remove some wrapper tags if needed, but dangerousPasteHTML usually handles it
+             // If dragging from our own chat, it might be wrapped in divs, let's rely on Quill's sanitizer
+             editor.clipboard.dangerouslyPasteHTML(index, html, 'user');
+        } else {
+             editor.insertText(index, text, 'user');
+        }
+        
+        // Move cursor to end of inserted text
+        setTimeout(() => {
+            editor.setSelection(index + (text ? text.length : 0));
+        }, 0);
+    }
   };
 
   const handlePaste = (e) => {
