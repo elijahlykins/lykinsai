@@ -1,10 +1,9 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Loader2, Send, X, Maximize2, Minimize2, MessageSquare } from 'lucide-react';
-import ColorMenu from './ColorMenu';
 
 export default function DraggableChat({ 
   messages, 
@@ -17,58 +16,12 @@ export default function DraggableChat({
 }) {
   const scrollRef = useRef(null);
   const constraintsRef = useRef(null);
-  const [chatStyling, setChatStyling] = useState({
-      user: { bg: '#000000', text: '#ffffff', name: 'You' },
-      ai: { bg: 'rgba(255,255,255,0.4)', text: 'inherit', name: 'AI Companion' }
-  });
-  const [contextMenu, setContextMenu] = useState({ isOpen: false, type: null, x: 0, y: 0 });
-
-  useEffect(() => {
-      const savedStyling = localStorage.getItem('lykinsai_chat_style');
-      if (savedStyling) {
-          setChatStyling(JSON.parse(savedStyling));
-      }
-  }, []);
-
-  const saveStyling = (newStyling) => {
-      setChatStyling(newStyling);
-      localStorage.setItem('lykinsai_chat_style', JSON.stringify(newStyling));
-  };
 
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages]);
-
-  const handleContextMenu = (e, type) => {
-      e.preventDefault();
-      setContextMenu({
-          isOpen: true,
-          type: type,
-          x: e.clientX,
-          y: e.clientY
-      });
-  };
-
-  const handleColorChange = (property, value) => {
-      saveStyling({
-          ...chatStyling,
-          [contextMenu.type]: {
-              ...chatStyling[contextMenu.type],
-              [property]: value
-          }
-      });
-  };
-
-  const handleReset = () => {
-       saveStyling({
-          ...chatStyling,
-          [contextMenu.type]: contextMenu.type === 'user' 
-              ? { bg: '#000000', text: '#ffffff', name: 'You' }
-              : { bg: 'rgba(255,255,255,0.4)', text: 'inherit', name: 'AI Companion' }
-      });
-  };
 
   const renderContent = (text, msg) => {
     if (!text) return null;
@@ -108,11 +61,11 @@ export default function DraggableChat({
       >
         {/* Header - Draggable Area */}
         <div className="h-12 bg-white/10 dark:bg-white/5 border-b border-white/10 dark:border-white/5 flex items-center justify-between px-4 cursor-move select-none">
-        <div className="flex items-center gap-2 text-sm font-semibold text-black dark:text-white">
-          <MessageSquare className="w-4 h-4" />
-          {chatStyling.ai.name}
-        </div>
-        <div className="flex items-center gap-1">
+          <div className="flex items-center gap-2 text-sm font-semibold text-black dark:text-white">
+            <MessageSquare className="w-4 h-4" />
+            AI Companion
+          </div>
+          <div className="flex items-center gap-1">
             <Button 
               variant="ghost" 
               size="icon" 
@@ -137,22 +90,12 @@ export default function DraggableChat({
           ) : (
             <div className="space-y-4">
               {messages.map((msg, idx) => (
-                <div key={idx} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
-                  <span className="text-[10px] text-gray-500 dark:text-gray-400 mb-1 px-1">
-                      {msg.role === 'user' ? chatStyling.user.name : chatStyling.ai.name}
-                  </span>
-                  <div 
-                    onContextMenu={(e) => handleContextMenu(e, msg.role === 'user' ? 'user' : 'ai')}
-                    className={`max-w-[85%] p-3 rounded-2xl text-sm leading-relaxed shadow-sm backdrop-blur-md cursor-context-menu ${
-                      msg.role === 'user' 
-                        ? 'rounded-tr-none' 
-                        : 'rounded-tl-none border border-white/20'
-                    }`}
-                    style={{
-                        backgroundColor: msg.role === 'user' ? chatStyling.user.bg : chatStyling.ai.bg,
-                        color: msg.role === 'user' ? chatStyling.user.text : chatStyling.ai.text
-                    }}
-                  >
+                <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`max-w-[85%] p-3 rounded-2xl text-sm leading-relaxed shadow-sm backdrop-blur-md ${
+                    msg.role === 'user' 
+                      ? 'bg-black/70 dark:bg-white/80 text-white dark:text-black rounded-tr-none' 
+                      : 'bg-white/40 dark:bg-black/40 text-black dark:text-white border border-white/20 rounded-tl-none'
+                  }`}>
                     {renderContent(msg.content, msg)}
                   </div>
                 </div>
@@ -191,15 +134,6 @@ export default function DraggableChat({
             </Button>
           </div>
         </div>
-        <ColorMenu 
-            isOpen={contextMenu.isOpen}
-            position={{ x: contextMenu.x, y: contextMenu.y }}
-            onClose={() => setContextMenu(prev => ({ ...prev, isOpen: false }))}
-            currentColors={chatStyling[contextMenu.type]}
-            type={contextMenu.type}
-            onChange={handleColorChange}
-            onReset={handleReset}
-        />
       </motion.div>
     </div>
   );

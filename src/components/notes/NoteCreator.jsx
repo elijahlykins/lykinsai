@@ -1192,7 +1192,7 @@ Be constructive, insightful, and encouraging.`,
               drag
               dragMomentum={false}
               initial={{ x: 0, y: 0 }}
-              className="fixed right-8 top-32 w-72 pointer-events-auto z-30 cursor-move"
+              className="absolute right-8 top-32 w-72 pointer-events-auto z-30 cursor-move"
             >
               <div 
                 onContextMenu={(e) => handleContextMenu(e, 'questions')}
@@ -1251,7 +1251,7 @@ Be constructive, insightful, and encouraging.`,
               dragMomentum={false}
               initial={{ x: -300, y: 150 }}
               animate={{ x: 0, y: 150 }} 
-              className="fixed right-8 top-32 w-72 pointer-events-auto z-30 cursor-move"
+              className="absolute right-8 top-32 w-72 pointer-events-auto z-30 cursor-move"
             >
               <div 
                 onContextMenu={(e) => handleContextMenu(e, 'thoughts')}
@@ -1309,7 +1309,7 @@ Be constructive, insightful, and encouraging.`,
               dragMomentum={false}
               initial={{ x: -300, y: 300 }}
               animate={{ x: 0, y: 300 }}
-              className="fixed right-8 top-32 w-72 pointer-events-auto z-30 cursor-move"
+              className="absolute right-8 top-32 w-72 pointer-events-auto z-30 cursor-move"
             >
               <div 
                 onContextMenu={(e) => handleContextMenu(e, 'analysis')}
@@ -1375,7 +1375,7 @@ Be constructive, insightful, and encouraging.`,
                drag
                dragMomentum={false}
                initial={{ x: 0, y: 500 }}
-               className="fixed right-8 top-32 w-72 pointer-events-auto z-30 cursor-move"
+               className="absolute right-8 top-32 w-72 pointer-events-auto z-30 cursor-move"
              >
                <div 
                  onContextMenu={(e) => handleContextMenu(e, 'connections')}
