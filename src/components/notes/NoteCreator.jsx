@@ -49,6 +49,7 @@ const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, showSuggestion
   const [showReminderPicker, setShowReminderPicker] = useState(false);
   const [suggestedQuestions, setSuggestedQuestions] = useState([]);
   const [previewAttachment, setPreviewAttachment] = useState(null);
+  const [isDragging, setIsDragging] = useState(false);
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const timerRef = useRef(null);
@@ -641,14 +642,14 @@ Return only the title, nothing else.`,
     try {
       const { file_url } = await base44.integrations.Core.UploadFile({ file });
       const attachment = {
-        id: Date.now(),
+        id: Date.now() + Math.random(),
         type: file.type.startsWith('image/') ? 'image' : file.type.startsWith('video/') ? 'video' : 'file',
         url: file_url,
         name: file.name,
         caption: '',
         group: 'Ungrouped'
       };
-      setAttachments([...attachments, attachment]);
+      setAttachments(prev => [...prev, attachment]);
       setShowAttachMenu(false);
     } catch (error) {
       console.error('Error uploading file:', error);
@@ -658,15 +659,45 @@ Return only the title, nothing else.`,
   const handleLinkAdd = (url) => {
     if (!url.trim()) return;
     const attachment = {
-      id: Date.now(),
+      id: Date.now() + Math.random(),
       type: 'link',
       url: url.trim(),
       name: url.trim(),
       caption: '',
       group: 'Ungrouped'
     };
-    setAttachments([...attachments, attachment]);
+    setAttachments(prev => [...prev, attachment]);
     setShowAttachMenu(false);
+  };
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    if (e.currentTarget.contains(e.relatedTarget)) return;
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    setIsDragging(false);
+    
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) {
+      files.forEach(file => handleFileUpload(file));
+    }
+  };
+
+  const handlePaste = (e) => {
+    const text = e.clipboardData.getData('text');
+    // Regex to check if the pasted text is a valid URL
+    const urlRegex = /^(http|https):\/\/[^ "]+$/;
+    if (urlRegex.test(text)) {
+      handleLinkAdd(text);
+    }
   };
 
   const removeAttachment = (id) => {
@@ -700,7 +731,21 @@ Return only the title, nothing else.`,
   };
 
   return (
-    <div className="h-full flex relative overflow-hidden">
+    <div 
+      className={`h-full flex relative overflow-hidden transition-colors ${isDragging ? 'bg-blue-50/50 dark:bg-blue-900/20 ring-4 ring-blue-400/30 ring-inset' : ''}`}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      onPaste={handlePaste}
+    >
+      {isDragging && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/10 dark:bg-white/10 backdrop-blur-sm pointer-events-none">
+          <div className="bg-white dark:bg-[#1f1d1d] p-6 rounded-2xl shadow-2xl flex flex-col items-center animate-in zoom-in duration-200 border border-white/20">
+             <Plus className="w-12 h-12 text-blue-500 mb-2" />
+             <h3 className="text-lg font-semibold text-black dark:text-white">Drop to add resource</h3>
+          </div>
+        </div>
+      )}
         {/* Left Sidebar - Grid/Pinterest Style Resources */}
         {(attachments.length > 0 || suggestedConnections.length > 0) && (
           <div className="absolute left-0 top-0 bottom-0 w-64 h-full overflow-y-auto p-4 border-r border-white/10 dark:border-white/5 hidden xl:block scrollbar-hide bg-white/10 dark:bg-black/30 backdrop-blur-md z-20">
