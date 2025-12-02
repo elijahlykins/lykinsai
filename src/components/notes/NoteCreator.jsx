@@ -694,17 +694,24 @@ Be constructive, insightful, and encouraging.`,
   };
 
   const handleDragOver = (e) => {
-    e.preventDefault();
-    setIsDragging(true);
+    // Only prevent default if dragging files to allow dropping
+    // For text, we want the browser's default behavior (cursor movement) to work
+    if (e.dataTransfer.types.includes('Files')) {
+      e.preventDefault();
+      setIsDragging(true);
+    }
   };
 
   const handleDragLeave = (e) => {
-    e.preventDefault();
-    if (e.currentTarget.contains(e.relatedTarget)) return;
-    setIsDragging(false);
+    if (e.dataTransfer.types.includes('Files')) {
+      e.preventDefault();
+      if (e.currentTarget.contains(e.relatedTarget)) return;
+      setIsDragging(false);
+    }
   };
 
   const handleDrop = (e) => {
+    // Handle file drops specifically
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       e.preventDefault();
       setIsDragging(false);
@@ -716,8 +723,8 @@ Be constructive, insightful, and encouraging.`,
       return;
     }
     
-    // For text drops, allow default behavior (insertion into editor)
-    setIsDragging(false);
+    // For text drops, we don't prevent default so the editor handles insertion
+    if (isDragging) setIsDragging(false);
   };
 
   const handlePaste = (e) => {
