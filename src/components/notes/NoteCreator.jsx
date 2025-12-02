@@ -3,7 +3,8 @@ import { useQuery } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
-import { Mic, Square, Plus, Link as LinkIcon, Image, Video, FileText, Tag, Folder, Bell, Loader2, Lightbulb, Wand2, X } from 'lucide-react';
+import { Mic, Square, Plus, Link as LinkIcon, Image, Video, FileText, Tag, Folder, Bell, Loader2, Lightbulb, Wand2, X, GripHorizontal } from 'lucide-react';
+import { motion } from 'framer-motion';
 import { base44 } from '@/api/base44Client';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -699,23 +700,23 @@ Return only the title, nothing else.`,
   };
 
   return (
-    <div className="h-full flex flex-row relative">
+    <div className="h-full flex flex-row relative overflow-hidden">
         {/* Left Sidebar - Grid/Pinterest Style Resources */}
         {(attachments.length > 0 || suggestedConnections.length > 0) && (
-          <div className="absolute left-0 top-0 bottom-0 w-64 h-full overflow-y-auto p-4 border-r border-gray-100 dark:border-gray-800 hidden xl:block scrollbar-hide bg-gray-50/50 dark:bg-[#1f1d1d]/30 z-10 backdrop-blur-sm">
+          <div className="w-64 h-full overflow-y-auto p-4 border-r border-gray-100 dark:border-gray-800 hidden xl:block scrollbar-hide bg-gray-50/50 dark:bg-[#1f1d1d]/30 backdrop-blur-sm flex-shrink-0">
              <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-4">Resources</h3>
-             
+
              <div className="columns-2 gap-3 space-y-3">
                 {/* Attachments */}
                 {attachments.map(att => (
                    <div key={att.id} className="break-inside-avoid mb-3 bg-white dark:bg-[#1f1d1d] rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden shadow-sm hover:shadow-md transition-all group relative">
                       <button
                         onClick={(e) => { e.stopPropagation(); removeAttachment(att.id); }}
-                        className="absolute top-1 right-1 p-1 bg-red-500 rounded-full opacity-0 group-hover:opacity-100 transition-opacity z-10"
+                        className="absolute top-1 right-1 p-1 bg-red-500 rounded-full opacity-0 group-hover:opacity-100 transition-opacity z-20"
                       >
                         <X className="w-3 h-3 text-white" />
                       </button>
-                      
+
                       <div className="cursor-pointer" onClick={() => setPreviewAttachment(att)}>
                          {att.type === 'image' ? (
                             <img src={att.url} alt={att.name} className="w-full h-auto object-cover" />
@@ -741,13 +742,17 @@ Return only the title, nothing else.`,
                    const note = allNotes.find(n => n.id === connId);
                    if(!note) return null;
                    return (
-                      <div key={connId} className="break-inside-avoid mb-3 p-3 bg-indigo-50 dark:bg-indigo-900/20 rounded-lg border border-indigo-100 dark:border-indigo-800/30 relative group">
+                      <div 
+                        key={connId} 
+                        onClick={() => onConnectionClick?.(note)}
+                        className="break-inside-avoid mb-3 p-3 bg-indigo-50 dark:bg-indigo-900/20 rounded-lg border border-indigo-100 dark:border-indigo-800/30 relative group cursor-pointer hover:bg-indigo-100 dark:hover:bg-indigo-900/30 transition-colors"
+                      >
                           <button
                             onClick={(e) => { 
                                 e.stopPropagation(); 
                                 setSuggestedConnections(prev => prev.filter(id => id !== connId));
                             }}
-                            className="absolute top-1 right-1 p-1 bg-red-500 rounded-full opacity-0 group-hover:opacity-100 transition-opacity z-10"
+                            className="absolute top-1 right-1 p-1 bg-red-500 rounded-full opacity-0 group-hover:opacity-100 transition-opacity z-20"
                           >
                             <X className="w-3 h-3 text-white" />
                           </button>
@@ -946,48 +951,72 @@ Return only the title, nothing else.`,
         )}
       </div>
 
-      {/* Live AI Feedback - Floating Panel */}
+      {/* Live AI Feedback - Draggable Panels */}
       {showSuggestions && content.length > 30 && inputMode === 'text' && (
-        <div className="absolute right-8 top-1/2 -translate-y-1/2 w-80 space-y-4 pointer-events-none">
-          <div className="pointer-events-auto bg-white/80 dark:bg-[#1f1d1d]/80 backdrop-blur-xl rounded-2xl p-5 shadow-xl border border-white/20 dark:border-white/10 transition-all duration-500 animate-in fade-in slide-in-from-right-4">
-            <div className="flex items-center gap-2 mb-3">
-              <Lightbulb className="w-4 h-4 text-yellow-500" />
-              <h3 className="text-sm font-semibold text-black dark:text-white">AI Thoughts</h3>
+        <>
+          {/* AI Thoughts / Questions */}
+          <motion.div 
+            drag
+            dragMomentum={false}
+            initial={{ x: 0, y: 0 }}
+            className="absolute right-8 top-32 w-80 pointer-events-auto z-30 cursor-move"
+          >
+            <div className="bg-white/80 dark:bg-[#1f1d1d]/80 backdrop-blur-xl rounded-2xl p-5 shadow-xl border border-white/20 dark:border-white/10 transition-all duration-500 group">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <Lightbulb className="w-4 h-4 text-yellow-500" />
+                  <h3 className="text-sm font-semibold text-black dark:text-white">AI Thoughts</h3>
+                </div>
+                <GripHorizontal className="w-4 h-4 text-gray-300 dark:text-gray-600 opacity-0 group-hover:opacity-100 transition-opacity" />
+              </div>
+
+              {suggestedQuestions.length > 0 ? (
+                <div className="space-y-2 cursor-default" onPointerDown={(e) => e.stopPropagation()}>
+                  {suggestedQuestions.slice(0, 2).map((question, idx) => (
+                    <button
+                      key={idx}
+                      onClick={() => onQuestionClick?.(question)}
+                      className="w-full p-3 bg-white/50 dark:bg-black/20 rounded-xl hover:bg-white dark:hover:bg-black/40 transition-all text-left text-xs leading-relaxed text-gray-800 dark:text-gray-200"
+                    >
+                      {question}
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 text-xs text-gray-400">
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  <span>Thinking...</span>
+                </div>
+              )}
             </div>
-            
-            {suggestedQuestions.length > 0 ? (
-              <div className="space-y-2">
-                {suggestedQuestions.slice(0, 2).map((question, idx) => (
-                  <button
-                    key={idx}
-                    onClick={() => onQuestionClick?.(question)}
-                    className="w-full p-3 bg-white/50 dark:bg-black/20 rounded-xl hover:bg-white dark:hover:bg-black/40 transition-all text-left text-xs leading-relaxed text-gray-800 dark:text-gray-200"
-                  >
-                    {question}
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <div className="flex items-center gap-2 text-xs text-gray-400">
-                <Loader2 className="w-3 h-3 animate-spin" />
-                <span>Thinking...</span>
-              </div>
-            )}
-          </div>
-          
+          </motion.div>
+
+          {/* Connection Suggestions */}
           {allNotes.length > 0 && (
-             <div className="pointer-events-auto bg-white/80 dark:bg-[#1f1d1d]/80 backdrop-blur-xl rounded-2xl p-5 shadow-xl border border-white/20 dark:border-white/10 transition-all duration-500 delay-100 animate-in fade-in slide-in-from-right-4">
-               <ConnectionSuggestions
-                 content={content}
-                 currentNoteId={null}
-                 allNotes={allNotes}
-                 onConnect={handleAddConnection}
-                 onViewNote={onConnectionClick}
-                 compact={true}
-               />
-             </div>
+             <motion.div 
+               drag
+               dragMomentum={false}
+               initial={{ x: 0, y: 0 }}
+               className="absolute right-8 top-96 w-80 pointer-events-auto z-30 cursor-move"
+             >
+               <div className="bg-white/80 dark:bg-[#1f1d1d]/80 backdrop-blur-xl rounded-2xl p-5 shadow-xl border border-white/20 dark:border-white/10 transition-all duration-500 group">
+                 <div className="flex justify-end mb-2">
+                    <GripHorizontal className="w-4 h-4 text-gray-300 dark:text-gray-600 opacity-0 group-hover:opacity-100 transition-opacity" />
+                 </div>
+                 <div className="cursor-default" onPointerDown={(e) => e.stopPropagation()}>
+                   <ConnectionSuggestions
+                     content={content}
+                     currentNoteId={null}
+                     allNotes={allNotes}
+                     onConnect={handleAddConnection}
+                     onViewNote={onConnectionClick}
+                     compact={true}
+                   />
+                 </div>
+               </div>
+             </motion.div>
           )}
-        </div>
+        </>
       )}
 
       {/* Attachments Panel - Removed from bottom as requested */}
