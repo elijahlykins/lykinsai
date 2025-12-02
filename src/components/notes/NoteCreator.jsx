@@ -47,7 +47,7 @@ const modules = {
   }
 };
 
-const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, activeAITools = { questions: true, connections: true }, onToggleAITool, onQuestionClick, onConnectionClick, noteId }, ref) => {
+const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, activeAITools = { questions: true, connections: true }, chatMessages = [], onToggleAITool, onQuestionClick, onConnectionClick, noteId }, ref) => {
   const [title, setTitle] = useState('');
   // Slash Menu State
   const [showSlashMenu, setShowSlashMenu] = useState(false);
@@ -252,6 +252,14 @@ const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, activeAITools 
             setFolder(note.folder || 'Uncategorized');
             setReminder(note.reminder || null);
             setSuggestedConnections(note.connected_notes || []);
+            setSuggestedQuestions(note.ai_analysis?.questions || []);
+            setAiThoughts(note.ai_analysis?.thoughts || []);
+            if (note.ai_analysis?.prediction || note.ai_analysis?.validation) {
+                setAiAnalysis({
+                    prediction: note.ai_analysis.prediction,
+                    validation: note.ai_analysis.validation
+                });
+            }
           }
         } catch (error) {
           console.error("Error loading note", error);
@@ -322,14 +330,14 @@ const NoteCreator = React.forwardRef(({ onNoteCreated, inputMode, activeAITools 
   // Auto-save to backend
   useEffect(() => {
       // Don't save if empty
-      if (!title && !content && attachments.length === 0) return;
+      if (!title && !content && attachments.length === 0 && chatMessages.length === 0) return;
       
       const timer = setTimeout(() => {
           autoSave();
       }, 2000); // 2s debounce
 
       return () => clearTimeout(timer);
-  }, [title, content, attachments, tags, folder, reminder, suggestedConnections, internalNoteId]);
+  }, [title, content, attachments, tags, folder, reminder, suggestedConnections, internalNoteId, chatMessages, suggestedQuestions, aiThoughts, aiAnalysis]);
 
   const handleAddConnection = (noteId) => {
     setSuggestedConnections(prev => {
@@ -622,6 +630,13 @@ Be constructive, insightful, and encouraging.`,
           folder: folder,
           reminder: reminder,
           attachments: attachments,
+          chat_history: chatMessages,
+          ai_analysis: {
+            validation: aiAnalysis?.validation,
+            prediction: aiAnalysis?.prediction,
+            questions: suggestedQuestions,
+            thoughts: aiThoughts
+          },
           updated_date: new Date().toISOString()
         });
         // Don't clear state, we are auto-saving
@@ -640,6 +655,13 @@ Be constructive, insightful, and encouraging.`,
           folder: folder,
           reminder: reminder,
           attachments: attachments,
+          chat_history: chatMessages,
+          ai_analysis: {
+            validation: aiAnalysis?.validation,
+            prediction: aiAnalysis?.prediction,
+            questions: suggestedQuestions,
+            thoughts: aiThoughts
+          },
           source: 'user'
         });
         

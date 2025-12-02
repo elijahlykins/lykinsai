@@ -67,6 +67,16 @@ export default function CreatePage() {
     }
   }, [chatMessages]);
 
+  // Load chat history from note
+  useEffect(() => {
+    if (noteId && allNotes.length > 0) {
+      const note = allNotes.find(n => n.id === noteId);
+      if (note && note.chat_history) {
+        setChatMessages(note.chat_history);
+      }
+    }
+  }, [noteId, allNotes]);
+
   const handleChatSend = async () => {
     if (!chatInput.trim() || isChatLoading) return;
 
@@ -319,6 +329,7 @@ If the user asks about old memories or references past ideas, refer to the memor
               onNoteCreated={handleNoteCreated} 
               inputMode={inputMode} 
               activeAITools={activeAITools}
+              chatMessages={chatMessages}
               onToggleAITool={(tool) => setActiveAITools(prev => ({ ...prev, [tool]: !prev[tool] }))}
               onQuestionClick={(question) => {
                 setShowChat(true);
