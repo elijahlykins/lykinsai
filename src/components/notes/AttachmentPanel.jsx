@@ -1,11 +1,46 @@
 import React, { useState } from 'react';
-import { X, Link as LinkIcon, Image, Video, FileText, Edit2, FolderOpen } from 'lucide-react';
+import { X, Link as LinkIcon, FileText, Edit2, FolderOpen } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import YouTubeEmbed from './YouTubeEmbed';
 
-export default function AttachmentPanel({ attachments, onRemove, onUpdate }) {
+// Helper to resolve attachment type with fallback to file extension
+const resolveAttachmentType = (attachment) => {
+  let type = attachment.type;
+
+  // If type is already set (like 'youtube'), use it
+  if (type && type !== 'file') {
+    return type;
+  }
+
+  // If type is 'file' or missing, try to guess from URL or name
+  const url = attachment.url || '';
+  const name = attachment.name || '';
+  
+  // Check for YouTube URLs first
+  if (url.includes('youtube.com') || url.includes('youtu.be')) {
+    return 'youtube';
+  }
+  
+  // Extract extension from URL or filename (case-insensitive)
+  const extMatch = (url.split('/').pop() || name).match(/\.([^.]+)$/);
+  const ext = extMatch ? extMatch[1].toLowerCase() : '';
+
+  const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'heic', 'tiff', 'ico'];
+  const videoExts = ['mp4', 'mov', 'avi', 'mkv', 'webm', 'ogg', 'm4v', 'wmv', 'flv'];
+
+  if (imageExts.includes(ext)) {
+    return 'image';
+  } else if (videoExts.includes(ext)) {
+    return 'video';
+  }
+
+  return type || 'file';
+};
+
+export default function AttachmentPanel({ attachments = [], onRemove, onUpdate, readOnly = false }) {
   const [previewAttachment, setPreviewAttachment] = useState(null);
   const [editingCaption, setEditingCaption] = useState(null);
   const [captionText, setCaptionText] = useState('');
@@ -31,13 +66,26 @@ export default function AttachmentPanel({ attachments, onRemove, onUpdate }) {
   };
 
   const renderPreview = (attachment) => {
-    if (attachment.type === 'image') {
+    const type = resolveAttachmentType(attachment);
+
+    if (type === 'image') {
       return <img src={attachment.url} alt="" className="max-w-full max-h-[70vh] object-contain rounded" />;
     }
-    if (attachment.type === 'video') {
+    if (type === 'video') {
       return <video src={attachment.url} className="max-w-full max-h-[70vh] rounded" controls />;
     }
-    if (attachment.type === 'link') {
+    if (type === 'youtube') {
+      return (
+        <div className="w-full">
+          <YouTubeEmbed 
+            url={attachment.url}
+            videoId={attachment.videoId}
+            className="w-full"
+          />
+        </div>
+      );
+    }
+    if (type === 'link') {
       return (
         <div className="p-8 text-center">
           <LinkIcon className="w-16 h-16 text-white mx-auto mb-4" />
@@ -78,67 +126,97 @@ export default function AttachmentPanel({ attachments, onRemove, onUpdate }) {
           <div className="space-y-3">
             {attachments
               .filter(a => (a.group || 'Ungrouped') === group)
-              .map((attachment) => (
-                <div key={attachment.id} className="clay-card p-3 relative group">
-                  <button
-                    onClick={() => onRemove(attachment.id)}
-                    className="absolute -top-2 -right-2 w-6 h-6 bg-red-500 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10"
-                  >
-                    <X className="w-4 h-4 text-white" />
-                  </button>
-                  
-                  <div
-                    onClick={() => setPreviewAttachment(attachment)}
-                    className="cursor-pointer"
-                  >
-                    {attachment.type === 'image' && (
-                      <img src={attachment.url} alt="" className="w-full h-32 object-cover rounded" />
+              .map((attachment) => {
+                const resolvedType = resolveAttachmentType(attachment);
+                return (
+                  <div key={attachment.id} className="clay-card p-3 relative group">
+                    {!readOnly && (
+                      <button
+                        onClick={() => onRemove(attachment.id)}
+                        className="absolute -top-2 -right-2 w-6 h-6 bg-red-500 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10"
+                      >
+                        <X className="w-4 h-4 text-white" />
+                      </button>
                     )}
-                    {attachment.type === 'video' && (
-                      <video src={attachment.url} className="w-full h-32 object-cover rounded" />
+                    
+                    <div
+                      onClick={() => setPreviewAttachment(attachment)}
+                      className="cursor-pointer"
+                    >
+                      {resolvedType === 'image' && (
+                        <img 
+                          src={attachment.url} 
+                          alt={attachment.name || ''} 
+                          className="w-full h-32 object-cover rounded" 
+                        />
+                      )}
+                      {resolvedType === 'video' && (
+                        <video 
+                          src={attachment.url} 
+                          className="w-full h-32 object-cover rounded" 
+                          controls 
+                        />
+                      )}
+                      {resolvedType === 'youtube' && (
+                        <div className="w-full">
+                          {attachment.thumbnail ? (
+                            <img 
+                              src={attachment.thumbnail} 
+                              alt={attachment.name || 'YouTube Video'} 
+                              className="w-full h-32 object-cover rounded" 
+                            />
+                          ) : (
+                            <div className="w-full h-32 bg-gray-200 dark:bg-gray-700 rounded flex items-center justify-center">
+                              <span className="text-xs text-gray-500">YouTube Video</span>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      {resolvedType === 'link' && (
+                        <div className="flex items-center gap-2 p-2">
+                          <LinkIcon className="w-4 h-4 text-black dark:text-gray-300 flex-shrink-0" />
+                          <span className="text-xs text-black dark:text-white truncate">{attachment.name}</span>
+                        </div>
+                      )}
+                      {resolvedType === 'file' && (
+                        <div className="flex items-center gap-2 p-2">
+                          <FileText className="w-4 h-4 text-black dark:text-gray-300 flex-shrink-0" />
+                          <span className="text-xs text-black dark:text-white truncate">{attachment.name}</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {attachment.caption && (
+                      <p className="text-xs text-gray-400 dark:text-gray-300 mt-2 px-2">{attachment.caption}</p>
                     )}
-                    {attachment.type === 'link' && (
-                      <div className="flex items-center gap-2 p-2">
-                        <LinkIcon className="w-4 h-4 text-black dark:text-gray-300 flex-shrink-0" />
-                        <span className="text-xs text-black dark:text-white truncate">{attachment.name}</span>
-                      </div>
-                    )}
-                    {attachment.type === 'file' && (
-                      <div className="flex items-center gap-2 p-2">
-                        <FileText className="w-4 h-4 text-black dark:text-gray-300 flex-shrink-0" />
-                        <span className="text-xs text-black dark:text-white truncate">{attachment.name}</span>
+
+                    {!readOnly && (
+                      <div className="flex gap-2 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button
+                          onClick={() => {
+                            setEditingCaption(attachment.id);
+                            setCaptionText(attachment.caption || '');
+                          }}
+                          className="text-xs text-gray-400 dark:text-gray-300 hover:text-black dark:hover:text-white flex items-center gap-1"
+                        >
+                          <Edit2 className="w-3 h-3" />
+                          Caption
+                        </button>
+                        <button
+                          onClick={() => {
+                            setEditingGroup(attachment.id);
+                            setGroupName(attachment.group || '');
+                          }}
+                          className="text-xs text-gray-400 dark:text-gray-300 hover:text-black dark:hover:text-white flex items-center gap-1"
+                        >
+                          <FolderOpen className="w-3 h-3" />
+                          Group
+                        </button>
                       </div>
                     )}
                   </div>
-
-                  {attachment.caption && (
-                    <p className="text-xs text-gray-400 dark:text-gray-300 mt-2 px-2">{attachment.caption}</p>
-                  )}
-
-                  <div className="flex gap-2 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button
-                      onClick={() => {
-                        setEditingCaption(attachment.id);
-                        setCaptionText(attachment.caption || '');
-                      }}
-                      className="text-xs text-gray-400 dark:text-gray-300 hover:text-black dark:hover:text-white flex items-center gap-1"
-                    >
-                      <Edit2 className="w-3 h-3" />
-                      Caption
-                    </button>
-                    <button
-                      onClick={() => {
-                        setEditingGroup(attachment.id);
-                        setGroupName(attachment.group || '');
-                      }}
-                      className="text-xs text-gray-400 dark:text-gray-300 hover:text-black dark:hover:text-white flex items-center gap-1"
-                    >
-                      <FolderOpen className="w-3 h-3" />
-                      Group
-                    </button>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
           </div>
         </div>
       ))}

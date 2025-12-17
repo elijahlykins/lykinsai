@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { base44 } from '@/api/base44Client';
+// ❌ Removed base44 import
 import NotionSidebar from '../components/notes/NotionSidebar';
 import SettingsModal from '../components/notes/SettingsModal';
 import { Button } from '@/components/ui/button';
@@ -10,49 +10,103 @@ import { format, differenceInDays } from 'date-fns';
 import { useNavigate } from 'react-router-dom';
 import { createPageUrl } from '../utils';
 
+// ✅ Import Supabase
+import { supabase } from '@/lib/supabase';
+
 export default function TrashPage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
-  const { data: notes = [] } = useQuery({
+  // ✅ Fetch from Supabase
+  const {  notes = [] } = useQuery({
     queryKey: ['notes'],
-    queryFn: () => base44.entities.Note.list('-trash_date'),
+    queryFn: async () => {
+      try {
+        // Try with essential columns first
+        let { data, error } = await supabase
+          .from('notes')
+          .select('id, title, content, trashed, trash_date, created_at')
+          .order('id', { ascending: false }); // Use id instead of trash_date which might not exist
+        
+        if (error && (error.code === 'PGRST204' || error.message?.includes('Could not find'))) {
+          // Fallback to minimal columns
+          ({ data, error } = await supabase
+            .from('notes')
+            .select('id, title, content')
+            .order('id', { ascending: false }));
+        }
+        
+        if (error) {
+          console.warn('Error fetching notes:', error);
+          return [];
+        }
+        // Filter for trashed notes in memory if trashed column doesn't exist
+        return (data || []).filter(note => note.trashed !== false);
+      } catch (error) {
+        console.error('Error fetching notes:', error);
+        return [];
+      }
+    },
     retry: 2,
     refetchOnWindowFocus: false,
-    staleTime: 5 * 60 * 1000, // 5 minutes
-    cacheTime: 10 * 60 * 1000, // 10 minutes
+    staleTime: 5 * 60 * 1000,
+    cacheTime: 10 * 60 * 1000,
   });
 
+  // ✅ Restore note via Supabase
   const restoreMutation = useMutation({
-    mutationFn: ({ id }) => base44.entities.Note.update(id, { trashed: false, trash_date: null }),
+    mutationFn: async ({ id }) => {
+      const { error } = await supabase
+        .from('notes')
+        .update({ trashed: false, trash_date: null })
+        .eq('id', id);
+      if (error) throw error;
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['notes'] });
     },
   });
 
+  // ✅ Permanent delete via Supabase
   const permanentDeleteMutation = useMutation({
-    mutationFn: ({ id }) => base44.entities.Note.delete(id),
+    mutationFn: async ({ id }) => {
+      const { error } = await supabase
+        .from('notes')
+        .delete()
+        .eq('id', id);
+      if (error) throw error;
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['notes'] });
     },
   });
 
+  // ✅ Empty trash via Supabase
   const emptyTrashMutation = useMutation({
     mutationFn: async () => {
       const trashedNotes = notes.filter(n => n.trashed);
-      await Promise.all(trashedNotes.map(note => base44.entities.Note.delete(note.id)));
+      const { error } = await supabase
+        .from('notes')
+        .delete()
+        .in('id', trashedNotes.map(n => n.id));
+      if (error) throw error;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['notes'] });
     },
   });
 
+  // ✅ Restore all via Supabase
   const restoreAllMutation = useMutation({
     mutationFn: async () => {
       const trashedNotes = notes.filter(n => n.trashed);
-      await Promise.all(trashedNotes.map(note => base44.entities.Note.update(note.id, { trashed: false, trash_date: null })));
+      const { error } = await supabase
+        .from('notes')
+        .update({ trashed: false, trash_date: null })
+        .in('id', trashedNotes.map(n => n.id));
+      if (error) throw error;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['notes'] });

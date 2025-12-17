@@ -3,7 +3,7 @@ import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Loader2, Send, X, Maximize2, Minimize2, MessageSquare } from 'lucide-react';
+import { Loader2, Send, X, MessageSquare } from 'lucide-react';
 
 export default function DraggableChat({ 
   messages, 
@@ -59,7 +59,7 @@ export default function DraggableChat({
         exit={{ opacity: 0, scale: 0.9 }}
         className="pointer-events-auto w-[400px] h-[600px] flex flex-col bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-2xl overflow-hidden"
       >
-        {/* Header - Draggable Area */}
+        {/* Header */}
         <div className="h-12 bg-white/10 dark:bg-white/5 border-b border-white/10 dark:border-white/5 flex items-center justify-between px-4 cursor-move select-none">
           <div className="flex items-center gap-2 text-sm font-semibold text-black dark:text-white">
             <MessageSquare className="w-4 h-4" />
@@ -91,11 +91,19 @@ export default function DraggableChat({
             <div className="space-y-4">
               {messages.map((msg, idx) => (
                 <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-[85%] p-3 rounded-2xl text-sm leading-relaxed shadow-sm backdrop-blur-md ${
-                    msg.role === 'user' 
-                      ? 'bg-black/70 dark:bg-white/80 text-white dark:text-black rounded-tr-none' 
-                      : 'bg-white/40 dark:bg-black/40 text-black dark:text-white border border-white/20 rounded-tl-none'
-                  }`}>
+                  <div 
+                    draggable={msg.role === 'assistant'}
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData('text/plain', msg.content);
+                      e.dataTransfer.effectAllowed = 'copy';
+                    }}
+                    className={`max-w-[85%] p-3 rounded-2xl text-sm leading-relaxed shadow-sm backdrop-blur-md ${
+                      msg.role === 'user' 
+                        ? 'bg-black/70 dark:bg-white/80 text-white dark:text-black rounded-tr-none' 
+                        : 'bg-white/40 dark:bg-black/40 text-black dark:text-white border border-white/20 rounded-tl-none cursor-grab active:cursor-grabbing'
+                    } ${msg.role === 'assistant' ? 'hover:bg-white/60 dark:hover:bg-black/60 transition-colors' : ''}`}
+                    title={msg.role === 'assistant' ? 'Drag to insert into editor' : ''}
+                  >
                     {renderContent(msg.content, msg)}
                   </div>
                 </div>
@@ -118,7 +126,15 @@ export default function DraggableChat({
             <Input
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && onSend()}
+
+              // ✅ FIXED VERSION
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  onSend();
+                }
+              }}
+
               placeholder="Type a message..."
               className="flex-1 bg-white/20 dark:bg-black/40 border-white/10 dark:border-white/10 rounded-xl focus:ring-1 focus:ring-white/30 text-black dark:text-white placeholder:text-black/50 dark:placeholder:text-white/50"
               disabled={isLoading}

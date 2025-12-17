@@ -1,9 +1,16 @@
 import React, { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Link2, Loader2, Plus, Check } from 'lucide-react';
-import { base44 } from '@/api/base44Client';
+// ❌ Removed base44 import
 
-export default function ConnectionSuggestions({ content, currentNoteId, allNotes, onConnect, onViewNote, compact = false }) {
+export default function ConnectionSuggestions({ 
+  content, 
+  currentNoteId, 
+  allNotes, 
+  onConnect, 
+  onViewNote, 
+  compact = false 
+}) {
   const [suggestions, setSuggestions] = useState([]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [connectedIds, setConnectedIds] = useState([]);
@@ -15,7 +22,7 @@ export default function ConnectionSuggestions({ content, currentNoteId, allNotes
       } else {
         setSuggestions([]);
       }
-    }, 3000); // Debounce for 3 seconds
+    }, 3000);
 
     return () => clearTimeout(timer);
   }, [content]);
@@ -30,41 +37,49 @@ export default function ConnectionSuggestions({ content, currentNoteId, allNotes
         return;
       }
 
-      // Limit context to top 20 recent notes to prevent rate limits
       const notesContext = availableNotes.slice(0, 20).map((n, idx) => 
-        `[${idx}] ID: ${n.id}\nTitle: ${n.title}\nContent: ${n.content.substring(0, 200)}`
+        `[${idx}] ID: ${n.id}\nTitle: ${n.title}\nContent: ${n.content?.substring(0, 200) || ''}`
       ).join('\n\n');
 
-      const result = await base44.integrations.Core.InvokeLLM({
-        prompt: `Analyze this note content and suggest which existing notes (by ID) have conceptual similarities or could form meaningful connections.
+      const prompt = `Analyze this note content and suggest which existing notes (by ID) have conceptual similarities or could form meaningful connections.
 
 Current note content: "${content}"
 
 Existing notes:
 ${notesContext}
 
-Return up to 5 note IDs that are most relevant, along with a brief reason for each connection. Only suggest notes with strong conceptual links.`,
-        response_json_schema: {
-          type: 'object',
-          properties: {
-            suggestions: {
-              type: 'array',
-              items: {
-                type: 'object',
-                properties: {
-                  note_id: { type: 'string' },
-                  reason: { type: 'string' }
-                }
-              }
-            }
-          }
-        }
+Return up to 5 note IDs that are most relevant, along with a brief reason for each connection. Only suggest notes with strong conceptual links.
+
+Return ONLY a JSON object: {"suggestions": [{"note_id": "id1", "reason": "reason1"}, ...]}`;
+
+      const response = await fetch('http://localhost:3001/api/ai/invoke', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'gpt-3.5-turbo', prompt })
       });
 
-      const suggestedNotes = (result.suggestions || [])
+      if (!response.ok) throw new Error('AI request failed');
+      const { response: aiText } = await response.json();
+
+      let suggestionsData = [];
+      try {
+        const result = JSON.parse(aiText);
+        suggestionsData = result.suggestions || [];
+      } catch (e) {
+        // Fallback: try to extract JSON from raw text
+        const jsonMatch = aiText.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          try {
+            const fallback = JSON.parse(jsonMatch[0]);
+            suggestionsData = fallback.suggestions || [];
+          } catch {}
+        }
+      }
+
+      const suggestedNotes = suggestionsData
         .map(s => ({
           note: availableNotes.find(n => n.id === s.note_id),
-          reason: s.reason
+          reason: s.reason || ''
         }))
         .filter(s => s.note);
 

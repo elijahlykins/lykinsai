@@ -8,9 +8,19 @@ import { Bell, X } from 'lucide-react';
 import { format } from 'date-fns';
 
 export default function ReminderPicker({ isOpen, onClose, currentReminder, onSet, onRemove }) {
-  const [date, setDate] = useState(currentReminder ? new Date(currentReminder) : new Date());
+  // Safely parse currentReminder date
+  const getValidDate = (dateString) => {
+    if (!dateString) return new Date();
+    const parsed = new Date(dateString);
+    return isNaN(parsed.getTime()) ? new Date() : parsed;
+  };
+
+  const [date, setDate] = useState(getValidDate(currentReminder));
   const [time, setTime] = useState(
-    currentReminder ? format(new Date(currentReminder), 'HH:mm') : '09:00'
+    currentReminder ? (() => {
+      const parsed = new Date(currentReminder);
+      return isNaN(parsed.getTime()) ? '09:00' : format(parsed, 'HH:mm');
+    })() : '09:00'
   );
 
   const handleSet = () => {

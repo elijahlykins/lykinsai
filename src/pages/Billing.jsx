@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { base44 } from '@/api/base44Client';
+// ❌ Removed base44 import
 import { Button } from '@/components/ui/button';
 import { Check, Crown, Zap, Brain, Sparkles } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
@@ -15,13 +15,19 @@ export default function BillingPage() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    const loadUser = async () => {
+    // ✅ Load user from localStorage (since you're not using base44 auth)
+    const loadUser = () => {
       try {
-        const currentUser = await base44.auth.me();
-        setUser(currentUser);
-        // Check if user has a plan stored
-        const plan = currentUser.plan || 'free';
-        setCurrentPlan(plan);
+        // If you have user info stored elsewhere, adjust this
+        const userJson = localStorage.getItem('lykinsai_user');
+        if (userJson) {
+          const userData = JSON.parse(userJson);
+          setUser(userData);
+          // Check if user has a plan stored
+          const plan = userData.plan || 'free';
+          setCurrentPlan(plan);
+        }
+        // If no user, they're anonymous (free plan)
       } catch (error) {
         console.error('Error loading user:', error);
       }
@@ -92,6 +98,14 @@ export default function BillingPage() {
 
   const handleUpgrade = (planId) => {
     if (planId === currentPlan) return;
+    
+    // ✅ Save plan to localStorage (temporary until real billing)
+    if (user) {
+      const updatedUser = { ...user, plan: planId };
+      localStorage.setItem('lykinsai_user', JSON.stringify(updatedUser));
+      setCurrentPlan(planId);
+    }
+    
     alert(`Upgrade to ${planId} - Payment integration coming soon!`);
   };
 

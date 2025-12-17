@@ -14,7 +14,6 @@ const COMMANDS = [
   { id: 'divider', label: 'Divider', icon: Minus, description: 'Visually divide blocks' },
   { id: 'image', label: 'Image', icon: Image, description: 'Upload an image' },
 ];
-
 export default function SlashCommandMenu({ position, filter, onSelect, onClose, selectedIndex }) {
   const menuRef = useRef(null);
   

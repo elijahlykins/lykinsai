@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { base44 } from '@/api/base44Client';
+// ❌ Removed base44 import
 import NotionSidebar from '../components/notes/NotionSidebar';
 import SettingsModal from '../components/notes/SettingsModal';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -10,27 +10,64 @@ import { format, isPast, isFuture } from 'date-fns';
 import { useNavigate } from 'react-router-dom';
 import { createPageUrl } from '../utils';
 
+// ✅ Import Supabase
+import { supabase } from '@/lib/supabase';
+
 export default function RemindersPage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
-  const { data: notes = [] } = useQuery({
+  // ✅ Fetch from Supabase
+  const {  notes = [] } = useQuery({
     queryKey: ['notes'],
-    queryFn: () => base44.entities.Note.list('-created_date'),
+    queryFn: async () => {
+      try {
+        // Try with essential columns first
+        let { data, error } = await supabase
+          .from('notes')
+          .select('id, title, content, reminder, created_at')
+          .order('created_at', { ascending: false });
+        
+        if (error && (error.code === 'PGRST204' || error.message?.includes('Could not find'))) {
+          // Fallback to minimal columns
+          ({ data, error } = await supabase
+            .from('notes')
+            .select('id, title, content')
+            .order('id', { ascending: false }));
+        }
+        
+        if (error) {
+          console.warn('Error fetching notes:', error);
+          return [];
+        }
+        return data || [];
+      } catch (error) {
+        console.error('Error fetching notes:', error);
+        return [];
+      }
+    },
     retry: 2,
     refetchOnWindowFocus: false,
-    staleTime: 5 * 60 * 1000, // 5 minutes
-    cacheTime: 10 * 60 * 1000, // 10 minutes
+    staleTime: 5 * 60 * 1000,
+    cacheTime: 10 * 60 * 1000,
   });
 
   const notesWithReminders = notes.filter(note => note.reminder);
   const overdueReminders = notesWithReminders.filter(note => isPast(new Date(note.reminder)));
   const upcomingReminders = notesWithReminders.filter(note => isFuture(new Date(note.reminder)));
 
+  // ✅ Remove reminder via Supabase
   const handleRemoveReminder = async (noteId) => {
-    await base44.entities.Note.update(noteId, { reminder: null });
+    const { error } = await supabase
+      .from('notes')
+      .update({ reminder: null })
+      .eq('id', noteId);
+    if (error) {
+      console.error('Error removing reminder:', error);
+      return;
+    }
     queryClient.invalidateQueries(['notes']);
   };
 

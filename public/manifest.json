@@ -1,0 +1,11 @@
+{
+  "name": "lykinsai",
+  "short_name": "lykinsai",
+  "description": "Second brain application",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#000000",
+  "icons": []
+}
+

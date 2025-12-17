@@ -4,10 +4,12 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
-import { Save, LogOut, User } from 'lucide-react';
-import { base44 } from '@/api/base44Client';
+import { Save, LogOut, User, Mail, Key, Globe, Link2, RefreshCw, X, Check } from 'lucide-react';
+import { useAuth } from '@/lib/SupabaseAuth';
+import { supabase } from '@/lib/supabase';
 
 export default function SettingsModal({ isOpen, onClose }) {
+  const { user, loading, signInWithOAuth, signOut } = useAuth();
   const [settings, setSettings] = useState({
     aiAnalysisAuto: false,
     theme: 'light',
@@ -15,66 +17,318 @@ export default function SettingsModal({ isOpen, onClose }) {
     layoutDensity: 'comfortable',
     aiPersonality: 'balanced',
     aiDetailLevel: 'medium',
-    aiModel: 'core'
+    aiModel: 'gpt-3.5-turbo'
   });
-  const [user, setUser] = useState(null);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [authMode, setAuthMode] = useState('login'); // 'login' or 'signup'
+  const [authError, setAuthError] = useState('');
+  const [socialConnections, setSocialConnections] = useState([]);
+  const [syncingPlatform, setSyncingPlatform] = useState(null);
 
   useEffect(() => {
-    const saved = localStorage.getItem('lykinsai_settings');
-    if (saved) {
-      setSettings(JSON.parse(saved));
-    }
-    
-    // Apply current theme on mount
-    const currentTheme = saved ? JSON.parse(saved).theme : 'light';
-    document.documentElement.classList.toggle('dark', currentTheme === 'dark');
-
-    // Load user profile
-    const loadUser = async () => {
-      try {
-        const currentUser = await base44.auth.me();
-        setUser(currentUser);
-      } catch (error) {
-        console.error('Error loading user:', error);
+    const loadSettings = () => {
+      const saved = localStorage.getItem('lykinsai_settings');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.aiModel === 'core') {
+          parsed.aiModel = 'gpt-3.5-turbo';
+        }
+        setSettings(parsed);
+        document.documentElement.classList.toggle('dark', parsed.theme === 'dark');
       }
     };
     
+    loadSettings();
+    
+    // Reload settings when modal opens (in case they changed elsewhere)
     if (isOpen) {
-      loadUser();
+      loadSettings();
     }
+    
+    // Listen for settings changes from other components
+    const handleSettingsChange = () => {
+      loadSettings();
+    };
+    window.addEventListener('lykinsai_settings_changed', handleSettingsChange);
+    
+    // Load social connections
+    loadSocialConnections();
+    
+    // Check for OAuth callback
+    const urlParams = new URLSearchParams(window.location.search);
+    const connected = urlParams.get('connected');
+    const error = urlParams.get('error');
+    const data = urlParams.get('data');
+    
+    if (connected && data) {
+      try {
+        const connectionData = JSON.parse(Buffer.from(data, 'base64').toString());
+        handleOAuthCallback(connectionData);
+        // Clean URL
+        window.history.replaceState({}, document.title, window.location.pathname);
+      } catch (e) {
+        console.error('Error parsing OAuth callback:', e);
+      }
+    } else if (error) {
+      setAuthError(`Connection failed: ${error}`);
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+    
+    return () => {
+      window.removeEventListener('lykinsai_settings_changed', handleSettingsChange);
+    };
   }, [isOpen]);
+
+  const loadSocialConnections = async () => {
+    try {
+      // Load from localStorage (in production, this would be from Supabase)
+      const saved = localStorage.getItem('lykinsai_social_connections');
+      if (saved) {
+        setSocialConnections(JSON.parse(saved));
+      } else {
+        // Try to load from Supabase if user is authenticated
+        if (user) {
+          const { data, error } = await supabase
+            .from('social_connections')
+            .select('*')
+            .eq('user_id', user.id)
+            .eq('is_active', true);
+          
+          if (!error && data) {
+            setSocialConnections(data);
+            localStorage.setItem('lykinsai_social_connections', JSON.stringify(data));
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error loading social connections:', error);
+    }
+  };
+
+  const handleOAuthCallback = async (connectionData) => {
+    try {
+      // Store connection locally
+      const newConnection = {
+        id: Date.now().toString(),
+        platform: connectionData.platform,
+        platformUserId: connectionData.platformUserId,
+        platformUsername: connectionData.platformUsername,
+        connectedAt: new Date().toISOString(),
+        lastSyncedAt: null,
+        accessToken: connectionData.accessToken, // In production, encrypt this
+        refreshToken: connectionData.refreshToken
+      };
+      
+      const updated = [...socialConnections, newConnection];
+      setSocialConnections(updated);
+      localStorage.setItem('lykinsai_social_connections', JSON.stringify(updated));
+      
+      // Also save to Supabase if user is authenticated
+      if (user) {
+        await supabase.from('social_connections').insert({
+          user_id: user.id,
+          platform: connectionData.platform,
+          access_token: connectionData.accessToken,
+          refresh_token: connectionData.refreshToken,
+          platform_user_id: connectionData.platformUserId,
+          platform_username: connectionData.platformUsername,
+          token_expires_at: connectionData.expiresIn 
+            ? new Date(Date.now() + connectionData.expiresIn * 1000).toISOString()
+            : null
+        });
+      }
+      
+      // Auto-sync data
+      await syncPlatformData(connectionData.platform, connectionData.accessToken);
+    } catch (error) {
+      console.error('Error handling OAuth callback:', error);
+      setAuthError(`Failed to save connection: ${error.message}`);
+    }
+  };
+
+  const handleConnectPlatform = async (platform) => {
+    try {
+      const userId = user?.id || 'anonymous';
+      
+      // First, test if the endpoint exists
+      try {
+        const testResponse = await fetch('http://localhost:3001/api/social/test');
+        if (!testResponse.ok && testResponse.status === 404) {
+          setAuthError('⚠️ Server needs restart! The social media routes are not loaded. Please:\n1. Stop your server (Ctrl+C in terminal)\n2. Restart it: npm run server\n3. Try again');
+          alert('⚠️ Server Restart Required\n\nThe server is running an old version without social media routes.\n\nPlease:\n1. Go to your terminal where the server is running\n2. Press Ctrl+C to stop it\n3. Run: npm run server\n4. Try connecting again');
+          return;
+        }
+      } catch (testError) {
+        // If test endpoint fails, try the actual endpoint anyway
+        console.warn('Test endpoint check failed, proceeding anyway:', testError);
+      }
+      
+      const response = await fetch(`http://localhost:3001/api/social/connect/${platform}?userId=${userId}`);
+      
+      if (!response.ok) {
+        if (response.status === 404) {
+          const errorMsg = '⚠️ Server Restart Required!\n\nThe social media routes are not loaded. Please restart your server:\n1. Stop server (Ctrl+C)\n2. Run: npm run server\n3. Try again';
+          setAuthError(errorMsg);
+          alert(errorMsg);
+          return;
+        }
+        
+        // Try to get error message from response
+        let errorData;
+        try {
+          errorData = await response.json();
+        } catch (e) {
+          errorData = { error: response.statusText || 'Unknown server error' };
+        }
+        
+        const errorMsg = errorData.error || `Server error: ${response.status}`;
+        setAuthError(errorMsg);
+        
+        // Show helpful message for missing API keys
+        if (errorMsg.includes('not configured') || errorMsg.includes('CLIENT_ID')) {
+          alert(`⚠️ API Credentials Required\n\n${errorMsg}\n\nTo connect ${platform}:\n1. Get API credentials from the platform's developer portal\n2. Add them to your .env file\n3. Restart the server\n\nSee SUPABASE_SCHEMA.md for setup instructions.`);
+        } else {
+          alert(`Error: ${errorMsg}`);
+        }
+        return;
+      }
+      
+      const data = await response.json();
+      
+      if (data.authUrl) {
+        // Open OAuth flow in new window
+        window.location.href = data.authUrl;
+      } else if (data.error) {
+        setAuthError(data.error);
+      } else {
+        setAuthError(`Failed to initiate ${platform} connection`);
+      }
+    } catch (error) {
+      console.error(`Error connecting to ${platform}:`, error);
+      if (error.message.includes('Failed to fetch') || error.message.includes('404') || error.message.includes('Unexpected token')) {
+        const errorMsg = '⚠️ Server Restart Required!\n\nCannot connect to social media routes. Please:\n1. Stop your server (Ctrl+C)\n2. Restart: npm run server\n3. Try again';
+        setAuthError(errorMsg);
+        alert(errorMsg);
+      } else {
+        setAuthError(`Failed to connect to ${platform}: ${error.message}`);
+      }
+    }
+  };
+
+  const handleDisconnectPlatform = async (platform) => {
+    try {
+      const updated = socialConnections.filter(conn => conn.platform !== platform);
+      setSocialConnections(updated);
+      localStorage.setItem('lykinsai_social_connections', JSON.stringify(updated));
+      
+      // Also remove from Supabase
+      if (user) {
+        await supabase
+          .from('social_connections')
+          .update({ is_active: false })
+          .eq('user_id', user.id)
+          .eq('platform', platform);
+      }
+    } catch (error) {
+      console.error('Error disconnecting platform:', error);
+    }
+  };
+
+  const syncPlatformData = async (platform, accessToken) => {
+    if (!accessToken) {
+      const connection = socialConnections.find(c => c.platform === platform);
+      if (!connection) return;
+      accessToken = connection.accessToken;
+    }
+    
+    setSyncingPlatform(platform);
+    try {
+      const userId = user?.id || 'anonymous';
+      const response = await fetch(`http://localhost:3001/api/social/sync/${platform}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, accessToken })
+      });
+      
+      const data = await response.json();
+      
+      if (data.syncedCount > 0) {
+        // Update last synced time
+        const updated = socialConnections.map(conn => 
+          conn.platform === platform
+            ? { ...conn, lastSyncedAt: new Date().toISOString() }
+            : conn
+        );
+        setSocialConnections(updated);
+        localStorage.setItem('lykinsai_social_connections', JSON.stringify(updated));
+        
+        // Save synced data to Supabase
+        if (user && data.data) {
+          for (const item of data.data) {
+            await supabase.from('social_data').upsert({
+              user_id: user.id,
+              ...item,
+              synced_at: new Date().toISOString()
+            }, {
+              onConflict: 'user_id,platform,platform_item_id'
+            });
+          }
+        }
+      }
+    } catch (error) {
+      console.error(`Error syncing ${platform}:`, error);
+    } finally {
+      setSyncingPlatform(null);
+    }
+  };
 
   const handleSave = () => {
     localStorage.setItem('lykinsai_settings', JSON.stringify(settings));
-    
-    // Apply theme globally
     document.documentElement.classList.toggle('dark', settings.theme === 'dark');
-    
-    // Apply font size
-    const fontSizes = {
-      small: '14px',
-      medium: '16px',
-      large: '18px'
-    };
+    const fontSizes = { small: '14px', medium: '16px', large: '18px' };
     document.documentElement.style.fontSize = fontSizes[settings.fontSize];
-    
-    // Apply layout density
-    const densities = {
-      compact: '0.75',
-      comfortable: '1',
-      spacious: '1.25'
-    };
+    const densities = { compact: '0.75', comfortable: '1', spacious: '1.25' };
     document.documentElement.style.setProperty('--layout-density', densities[settings.layoutDensity]);
     
-    onClose();
+    // Trigger custom event so other components can sync (same-tab)
+    window.dispatchEvent(new CustomEvent('lykinsai_settings_changed'));
+    // Also trigger storage event for cross-tab sync
+    window.dispatchEvent(new Event('storage'));
     
-    // Reload to apply all changes
+    onClose();
     window.location.reload();
   };
 
-  const handleLogout = () => {
-    base44.auth.logout();
+  const handleAuth = async (e) => {
+    e.preventDefault();
+    setAuthError('');
+    try {
+      if (authMode === 'login') {
+        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        if (error) throw error;
+      } else {
+        const { error } = await supabase.auth.signUp({ email, password });
+        if (error) throw error;
+      }
+      setEmail('');
+      setPassword('');
+    } catch (error) {
+      setAuthError(error.message);
+    }
   };
+
+  if (loading) {
+    return (
+      <Dialog open={isOpen} onOpenChange={onClose}>
+        <DialogContent className="bg-white dark:bg-[#171515] border-white/30 dark:border-gray-700 text-black dark:text-white max-w-md backdrop-blur-2xl">
+          <div className="flex items-center justify-center p-8">
+            <div className="w-6 h-6 border-4 border-slate-200 border-t-slate-800 rounded-full animate-spin"></div>
+          </div>
+        </DialogContent>
+      </Dialog>
+    );
+  }
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
@@ -84,136 +338,292 @@ export default function SettingsModal({ isOpen, onClose }) {
         </DialogHeader>
 
         <div className="space-y-6 py-4">
-          {/* Profile Section */}
-          {user && (
-            <div className="p-4 bg-gray-50 dark:bg-[#1f1d1d]/80 rounded-xl border border-gray-200 dark:border-gray-700">
-              <div className="flex items-center gap-3 mb-3">
-                <div className="w-12 h-12 rounded-full bg-gray-200 dark:bg-gray-700 flex items-center justify-center">
-                  <User className="w-6 h-6 text-gray-600 dark:text-gray-300" />
-                </div>
-                <div className="flex-1">
-                  <p className="font-semibold text-black dark:text-white">{user.full_name}</p>
-                  <p className="text-sm text-gray-600 dark:text-gray-400">{user.email}</p>
-                </div>
+          {/* Authentication Section */}
+          <div className="p-4 bg-gray-50 dark:bg-[#1f1d1d]/80 rounded-xl border border-gray-200 dark:border-gray-700">
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-10 h-10 rounded-full bg-gray-200 dark:bg-gray-700 flex items-center justify-center">
+                <User className="w-5 h-5 text-gray-600 dark:text-gray-300" />
               </div>
+              <div className="flex-1">
+                {user ? (
+                  <>
+                    <p className="font-semibold text-black dark:text-white">{user.email}</p>
+                    <p className="text-sm text-gray-600 dark:text-gray-400">Signed in</p>
+                  </>
+                ) : (
+                  <>
+                    <p className="font-semibold text-black dark:text-white">Guest User</p>
+                    <p className="text-sm text-gray-600 dark:text-gray-400">Anonymous access</p>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {user ? (
               <Button
-                onClick={handleLogout}
+                onClick={signOut}
                 variant="outline"
                 className="w-full border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#171515] flex items-center justify-center gap-2"
               >
                 <LogOut className="w-4 h-4" />
                 Sign Out
               </Button>
+            ) : (
+              <div className="space-y-3">
+                <Button
+                  onClick={() => signInWithOAuth('google')}
+                  variant="outline"
+                  className="w-full border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#171515] flex items-center justify-center gap-2"
+                >
+                  <Globe className="w-4 h-4" />
+                  Google
+                </Button>
+
+                <div className="relative">
+                  <div className="absolute inset-0 flex items-center">
+                    <div className="w-full border-t border-gray-200 dark:border-gray-700"></div>
+                  </div>
+                  <div className="relative flex justify-center text-xs uppercase">
+                    <span className="bg-white dark:bg-[#171515] px-2 text-gray-500 dark:text-gray-400">Or continue with email</span>
+                  </div>
+                </div>
+
+                <form onSubmit={handleAuth} className="space-y-3">
+                  {authError && (
+                    <p className="text-sm text-red-500">{authError}</p>
+                  )}
+                  <input
+                    type="email"
+                    placeholder="Email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    className="w-full px-3 py-2 bg-white dark:bg-[#1f1d1d] border border-gray-300 dark:border-gray-600 text-black dark:text-white rounded"
+                    required
+                  />
+                  <input
+                    type="password"
+                    placeholder="Password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="w-full px-3 py-2 bg-white dark:bg-[#1f1d1d] border border-gray-300 dark:border-gray-600 text-black dark:text-white rounded"
+                    required
+                  />
+                  <div className="flex gap-2">
+                    <Button
+                      type="button"
+                      onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')}
+                      variant="outline"
+                      className="flex-1 border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#171515]"
+                    >
+                      {authMode === 'login' ? 'Sign Up' : 'Sign In'}
+                    </Button>
+                    <Button
+                      type="submit"
+                      className="flex-1 bg-black text-white hover:bg-black/90 dark:bg-white dark:text-black dark:hover:bg-white/90"
+                    >
+                      {authMode === 'login' ? 'Sign In' : 'Create Account'}
+                    </Button>
+                  </div>
+                </form>
+              </div>
+            )}
+          </div>
+
+          {/* Social Media Integrations Section */}
+          <div className="p-4 bg-gray-50 dark:bg-[#1f1d1d]/80 rounded-xl border border-gray-200 dark:border-gray-700">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-full bg-gray-200 dark:bg-gray-700 flex items-center justify-center">
+                <Link2 className="w-5 h-5 text-gray-600 dark:text-gray-300" />
+              </div>
+              <div className="flex-1">
+                <p className="font-semibold text-black dark:text-white">Social Integrations</p>
+                <p className="text-sm text-gray-600 dark:text-gray-400">
+                  Connect your accounts to help AI understand your interests
+                </p>
+              </div>
             </div>
-          )}
 
+            <div className="space-y-3">
+              {/* Pinterest */}
+              <div className="flex items-center justify-between p-3 bg-white dark:bg-[#171515] rounded-lg border border-gray-200 dark:border-gray-700">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded bg-red-100 dark:bg-red-900/30 flex items-center justify-center">
+                    <span className="text-red-600 dark:text-red-400 font-bold text-xs">P</span>
+                  </div>
+                  <div>
+                    <p className="font-medium text-black dark:text-white">Pinterest</p>
+                    {socialConnections.find(c => c.platform === 'pinterest') ? (
+                      <p className="text-xs text-gray-500 dark:text-gray-400">
+                        Connected as {socialConnections.find(c => c.platform === 'pinterest')?.platformUsername || 'user'}
+                      </p>
+                    ) : (
+                      <p className="text-xs text-gray-500 dark:text-gray-400">Not connected</p>
+                    )}
+                  </div>
+                </div>
+                {socialConnections.find(c => c.platform === 'pinterest') ? (
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => syncPlatformData('pinterest')}
+                      disabled={syncingPlatform === 'pinterest'}
+                      className="h-8"
+                    >
+                      {syncingPlatform === 'pinterest' ? (
+                        <RefreshCw className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <RefreshCw className="w-3 h-3" />
+                      )}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handleDisconnectPlatform('pinterest')}
+                      className="h-8 text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300"
+                    >
+                      <X className="w-3 h-3" />
+                    </Button>
+                  </div>
+                ) : (
+                  <Button
+                    size="sm"
+                    onClick={() => handleConnectPlatform('pinterest')}
+                    className="h-8"
+                  >
+                    Connect
+                  </Button>
+                )}
+              </div>
 
+              {/* Instagram */}
+              <div className="flex items-center justify-between p-3 bg-white dark:bg-[#171515] rounded-lg border border-gray-200 dark:border-gray-700">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center">
+                    <span className="text-white font-bold text-xs">IG</span>
+                  </div>
+                  <div>
+                    <p className="font-medium text-black dark:text-white">Instagram</p>
+                    {socialConnections.find(c => c.platform === 'instagram') ? (
+                      <p className="text-xs text-gray-500 dark:text-gray-400">
+                        Connected as {socialConnections.find(c => c.platform === 'instagram')?.platformUsername || 'user'}
+                      </p>
+                    ) : (
+                      <p className="text-xs text-gray-500 dark:text-gray-400">Not connected</p>
+                    )}
+                  </div>
+                </div>
+                {socialConnections.find(c => c.platform === 'instagram') ? (
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => syncPlatformData('instagram')}
+                      disabled={syncingPlatform === 'instagram'}
+                      className="h-8"
+                    >
+                      {syncingPlatform === 'instagram' ? (
+                        <RefreshCw className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <RefreshCw className="w-3 h-3" />
+                      )}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handleDisconnectPlatform('instagram')}
+                      className="h-8 text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300"
+                    >
+                      <X className="w-3 h-3" />
+                    </Button>
+                  </div>
+                ) : (
+                  <Button
+                    size="sm"
+                    onClick={() => handleConnectPlatform('instagram')}
+                    className="h-8"
+                  >
+                    Connect
+                  </Button>
+                )}
+              </div>
+            </div>
 
-          {/* Auto AI Analysis */}
-          <div className="flex items-center justify-between">
-            <Label className="text-gray-900 dark:text-white">Auto AI Analysis</Label>
-            <Switch
-              checked={settings.aiAnalysisAuto}
-              onCheckedChange={(checked) => setSettings({...settings, aiAnalysisAuto: checked})}
-            />
+            {socialConnections.length > 0 && (
+              <p className="mt-3 text-xs text-gray-500 dark:text-gray-400">
+                💡 Connected accounts help AI provide personalized recommendations based on your interests
+              </p>
+            )}
           </div>
 
-          {/* Theme */}
-          <div className="space-y-2">
-            <Label className="text-gray-900 dark:text-white">Theme</Label>
-            <Select value={settings.theme} onValueChange={(value) => setSettings({...settings, theme: value})}>
-              <SelectTrigger className="bg-white/60 dark:bg-gray-800/60 border-white/40 dark:border-gray-700/40 text-gray-900 dark:text-white backdrop-blur-md rounded-xl">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent className="bg-glass-card border-white/30 dark:border-gray-700/30 backdrop-blur-2xl">
-                <SelectItem value="light">Light</SelectItem>
-                <SelectItem value="dark">Dark</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
+          {/* All your other settings... */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <Label className="text-gray-900 dark:text-white">Auto AI Analysis</Label>
+              <Switch
+                checked={settings.aiAnalysisAuto}
+                onCheckedChange={(checked) => setSettings({...settings, aiAnalysisAuto: checked})}
+              />
+            </div>
 
-          {/* Font Size */}
-          <div className="space-y-2">
-            <Label className="text-gray-900 dark:text-white">Font Size</Label>
-            <Select value={settings.fontSize} onValueChange={(value) => setSettings({...settings, fontSize: value})}>
-              <SelectTrigger className="bg-white/60 dark:bg-gray-800/60 border-white/40 dark:border-gray-700/40 text-gray-900 dark:text-white backdrop-blur-md rounded-xl">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent className="bg-glass-card border-white/30 dark:border-gray-700/30 backdrop-blur-2xl">
-                <SelectItem value="small">Small</SelectItem>
-                <SelectItem value="medium">Medium</SelectItem>
-                <SelectItem value="large">Large</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
+            <div className="space-y-2">
+              <Label className="text-gray-900 dark:text-white">Theme</Label>
+              <Select value={settings.theme} onValueChange={(value) => setSettings({...settings, theme: value})}>
+                <SelectTrigger className="bg-white/60 dark:bg-gray-800/60 border-white/40 dark:border-gray-700/40 text-gray-900 dark:text-white backdrop-blur-md rounded-xl">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="bg-glass-card border-white/30 dark:border-gray-700/30 backdrop-blur-2xl">
+                  <SelectItem value="light">Light</SelectItem>
+                  <SelectItem value="dark">Dark</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
 
-          {/* Layout Density */}
-          <div className="space-y-2">
-            <Label className="text-gray-900 dark:text-white">Layout Density</Label>
-            <Select value={settings.layoutDensity} onValueChange={(value) => setSettings({...settings, layoutDensity: value})}>
-              <SelectTrigger className="bg-white/60 dark:bg-gray-800/60 border-white/40 dark:border-gray-700/40 text-gray-900 dark:text-white backdrop-blur-md rounded-xl">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent className="bg-glass-card border-white/30 dark:border-gray-700/30 backdrop-blur-2xl">
-                <SelectItem value="compact">Compact</SelectItem>
-                <SelectItem value="comfortable">Comfortable</SelectItem>
-                <SelectItem value="spacious">Spacious</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
+            <div className="space-y-2">
+              <Label className="text-gray-900 dark:text-white">Font Size</Label>
+              <Select value={settings.fontSize} onValueChange={(value) => setSettings({...settings, fontSize: value})}>
+                <SelectTrigger className="bg-white/60 dark:bg-gray-800/60 border-white/40 dark:border-gray-700/40 text-gray-900 dark:text-white backdrop-blur-md rounded-xl">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="bg-glass-card border-white/30 dark:border-gray-700/30 backdrop-blur-2xl">
+                  <SelectItem value="small">Small</SelectItem>
+                  <SelectItem value="medium">Medium</SelectItem>
+                  <SelectItem value="large">Large</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
 
-          {/* AI Model */}
-          <div className="space-y-2">
-            <Label className="text-gray-900 dark:text-white">AI Model</Label>
-            <Select value={settings.aiModel} onValueChange={(value) => setSettings({...settings, aiModel: value})}>
-              <SelectTrigger className="bg-white/60 dark:bg-gray-800/60 border-white/40 dark:border-gray-700/40 text-gray-900 dark:text-white backdrop-blur-md rounded-xl">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent className="bg-glass-card border-white/30 dark:border-gray-700/30 backdrop-blur-2xl">
-                <SelectItem value="core">Core (Default)</SelectItem>
-                <SelectItem value="gpt-3.5">GPT-3.5</SelectItem>
-                <SelectItem value="gpt-4">GPT-4</SelectItem>
-                <SelectItem value="gpt-4o">GPT-4o</SelectItem>
-                <SelectItem value="gemini-pro">Gemini Pro</SelectItem>
-                <SelectItem value="gemini-flash">Gemini Flash</SelectItem>
-                <SelectItem value="claude-3-opus">Claude 3 Opus</SelectItem>
-                <SelectItem value="claude-3-sonnet">Claude 3 Sonnet</SelectItem>
-                <SelectItem value="claude-3-haiku">Claude 3 Haiku</SelectItem>
-              </SelectContent>
-            </Select>
+            <div className="space-y-2">
+              <Label className="text-gray-900 dark:text-white">AI Model</Label>
+              <Select value={settings.aiModel} onValueChange={(value) => {
+                setSettings({...settings, aiModel: value});
+                // Save immediately so Create page can sync
+                const updatedSettings = {...settings, aiModel: value};
+                localStorage.setItem('lykinsai_settings', JSON.stringify(updatedSettings));
+                // Trigger custom event for immediate sync (same-tab)
+                window.dispatchEvent(new CustomEvent('lykinsai_settings_changed'));
+              }}>
+                <SelectTrigger className="bg-white/60 dark:bg-gray-800/60 border-white/40 dark:border-gray-700/40 text-gray-900 dark:text-white backdrop-blur-md rounded-xl">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="bg-glass-card border-white/30 dark:border-gray-700/30 backdrop-blur-2xl">
+                  <SelectItem value="gpt-3.5-turbo">GPT-3.5 Turbo</SelectItem>
+                  <SelectItem value="gpt-4o">GPT-4o</SelectItem>
+                  <SelectItem value="gpt-4o-mini">GPT-4o Mini</SelectItem>
+                  <SelectItem value="gpt-4-turbo">GPT-4 Turbo</SelectItem>
+                  <SelectItem value="gpt-4">GPT-4</SelectItem>
+                  <SelectItem value="claude-3-5-sonnet-20240620">Claude 3.5 Sonnet</SelectItem>
+                  <SelectItem value="claude-3-opus-20240229">Claude 3 Opus</SelectItem>
+                  <SelectItem value="claude-3-sonnet-20240229">Claude 3 Sonnet</SelectItem>
+                  <SelectItem value="gemini-1.5-flash">Gemini 1.5 Flash (Free Tier)</SelectItem>
+                  <SelectItem value="gemini-1.5-pro">Gemini 1.5 Pro</SelectItem>
+                  <SelectItem value="gemini-pro">Gemini Pro (Legacy)</SelectItem>
+                  <SelectItem value="grok-beta">Grok Beta</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
           </div>
-
-          {/* AI Personality */}
-          <div className="space-y-2">
-            <Label className="text-gray-900 dark:text-white">AI Personality</Label>
-            <Select value={settings.aiPersonality} onValueChange={(value) => setSettings({...settings, aiPersonality: value})}>
-              <SelectTrigger className="bg-white/60 dark:bg-gray-800/60 border-white/40 dark:border-gray-700/40 text-gray-900 dark:text-white backdrop-blur-md rounded-xl">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent className="bg-glass-card border-white/30 dark:border-gray-700/30 backdrop-blur-2xl">
-                <SelectItem value="professional">Professional</SelectItem>
-                <SelectItem value="balanced">Balanced</SelectItem>
-                <SelectItem value="casual">Casual & Friendly</SelectItem>
-                <SelectItem value="enthusiastic">Enthusiastic</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          {/* AI Detail Level */}
-          <div className="space-y-2">
-            <Label className="text-gray-900 dark:text-white">AI Detail Level</Label>
-            <Select value={settings.aiDetailLevel} onValueChange={(value) => setSettings({...settings, aiDetailLevel: value})}>
-              <SelectTrigger className="bg-white/60 dark:bg-gray-800/60 border-white/40 dark:border-gray-700/40 text-gray-900 dark:text-white backdrop-blur-md rounded-xl">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent className="bg-glass-card border-white/30 dark:border-gray-700/30 backdrop-blur-2xl">
-                <SelectItem value="brief">Brief & Concise</SelectItem>
-                <SelectItem value="medium">Medium Detail</SelectItem>
-                <SelectItem value="detailed">Comprehensive</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          </div>
+        </div>
 
         <div className="flex justify-end gap-2 pt-4 border-t border-white/10 dark:border-gray-700/30">
           <Button

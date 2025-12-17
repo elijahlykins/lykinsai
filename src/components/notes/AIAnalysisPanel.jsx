@@ -1,9 +1,8 @@
 import React, { useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { Sparkles, Link2, Loader2, CheckCircle, XCircle, HelpCircle } from 'lucide-react';
-import { base44 } from '@/api/base44Client';
+import { Sparkles, Link2, Loader2, CheckCircle } from 'lucide-react';
 
-export default function AIAnalysisPanel({ note, allNotes, onUpdate, onViewNote }) {
+export default function AIAnalysisPanel({ note, allNotes, onUpdateNote, onViewNote }) {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isFindingConnections, setIsFindingConnections] = useState(false);
 
@@ -27,28 +26,13 @@ export default function AIAnalysisPanel({ note, allNotes, onUpdate, onViewNote }
         detailed: 'Provide comprehensive, in-depth analysis with examples.'
       };
 
-      // Fetch content from attached links/videos
-      let attachmentContext = '';
-      if (note.attachments && note.attachments.length > 0) {
-        const linkAttachments = note.attachments.filter(a => a.type === 'link');
-        for (const attachment of linkAttachments.slice(0, 3)) {
-          try {
-            const fetchedContent = await base44.integrations.Core.InvokeLLM({
-              prompt: `Fetch and summarize the key content from this URL: ${attachment.url}. Focus on main ideas, key points, and important information.`,
-              add_context_from_internet: true
-            });
-            attachmentContext += `\n\nContent from ${attachment.name || attachment.url}:\n${fetchedContent}`;
-          } catch (error) {
-            console.error('Error fetching attachment content:', error);
-          }
-        }
-      }
+      // ⚠️ Removed link fetching (your proxy doesn't support internet context)
+      // If you need this later, add a separate route like /api/fetch-url
 
-      const analysis = await base44.integrations.Core.InvokeLLM({
-        prompt: `Analyze this memory card and provide a validation opinion:
+      const prompt = `Analyze this memory card and provide a validation opinion:
 
 Memory Card Title: "${note.title}"
-Memory Card Content: "${note.content}"${attachmentContext}
+Memory Card Content: "${note.content}"
 
 Provide a thoughtful validation that evaluates the value, clarity, and potential of this memory. Consider:
 - Is this idea clear and well-articulated?
@@ -56,23 +40,33 @@ Provide a thoughtful validation that evaluates the value, clarity, and potential
 - Are there any concerns or limitations?
 - How could it be developed further?
 
-${personalityPrompts[personality]} ${detailPrompts[detailLevel]}`,
-        response_json_schema: {
-          type: 'object',
-          properties: {
-            validation: { type: 'string' }
-          }
-        }
+${personalityPrompts[personality]} ${detailPrompts[detailLevel]}
+
+Return ONLY a JSON object: {"validation": "Your analysis here"}`;
+
+      const response = await fetch('http://localhost:3001/api/ai/invoke', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'gpt-3.5-turbo', prompt })
       });
 
+      if (!response.ok) throw new Error(`AI error: ${response.statusText}`);
+      const { response: aiText } = await response.json();
+
+      let validation = 'Failed to parse AI response.';
       try {
-        await base44.entities.Note.update(note.id, { ai_analysis: analysis });
-        onUpdate();
-      } catch (updateError) {
-        console.warn('Note may have been deleted, skipping update', updateError);
+        const result = JSON.parse(aiText);
+        validation = result.validation || aiText; // fallback to raw if needed
+      } catch (e) {
+        validation = aiText; // use raw text if JSON fails
       }
+
+      // ✅ Notify parent to update the note (e.g., via Supabase)
+      onUpdateNote({ ...note, ai_analysis: { validation } });
+
     } catch (error) {
       console.error('Error analyzing note:', error);
+      // Optionally show user error
     } finally {
       setIsAnalyzing(false);
     }
@@ -87,11 +81,11 @@ ${personalityPrompts[personality]} ${detailPrompts[detailLevel]}`,
         return;
       }
 
-      // Limit to top 30 for connections
-      const notesContext = otherNotes.slice(0, 30).map(n => `ID: ${n.id}\nTitle: ${n.title}\nContent: ${n.content.substring(0, 200)}`).join('\n\n');
+      const notesContext = otherNotes.slice(0, 30).map(n => 
+        `ID: ${n.id}\nTitle: ${n.title}\nContent: ${n.content?.substring(0, 200) || ''}`
+      ).join('\n\n');
 
-      const connections = await base44.integrations.Core.InvokeLLM({
-        prompt: `Analyze this memory card and find meaningful connections to other memory cards:
+      const prompt = `Analyze this memory card and find meaningful connections to other memory cards:
 
 Current Memory Card:
 Title: "${note.title}"
@@ -106,23 +100,35 @@ Find memory cards that correlate with the current one based on:
 - Similar contexts or applications
 - Common goals or problems being addressed
 
-Return the IDs of memory cards that have strong correlations.`,
-        response_json_schema: {
-          type: 'object',
-          properties: {
-            connected_note_ids: { type: 'array', items: { type: 'string' } }
-          }
-        }
+Return ONLY a JSON array of note IDs: ["id1", "id2", ...]`;
+
+      const response = await fetch('http://localhost:3001/api/ai/invoke', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'gpt-3.5-turbo', prompt })
       });
 
+      if (!response.ok) throw new Error(`AI error: ${response.statusText}`);
+      const { response: aiText } = await response.json();
+
+      let connectedNoteIds = [];
       try {
-        await base44.entities.Note.update(note.id, {
-          connected_notes: connections.connected_note_ids || []
-        });
-        onUpdate();
-      } catch (updateError) {
-         console.warn('Note may have been deleted, skipping update', updateError);
+        // AI might return array or object — handle both
+        const parsed = JSON.parse(aiText);
+        connectedNoteIds = Array.isArray(parsed) ? parsed : (parsed.connected_note_ids || []);
+      } catch (e) {
+        // Fallback: extract IDs from raw text (e.g., ["id1","id2"])
+        const match = aiText.match(/\[([^\]]+)\]/);
+        if (match) {
+          try {
+            connectedNoteIds = JSON.parse(`[${match[1]}]`);
+          } catch {}
+        }
       }
+
+      // ✅ Notify parent to update connected notes
+      onUpdateNote({ ...note, connected_notes: connectedNoteIds });
+
     } catch (error) {
       console.error('Error finding connections:', error);
     } finally {

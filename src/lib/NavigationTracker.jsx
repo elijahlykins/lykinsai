@@ -1,14 +1,15 @@
 import { useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
-import { useAuth } from './AuthContext';
+import { useAuth } from './SupabaseAuth';
 import { base44 } from '@/api/base44Client';
 import { pagesConfig } from '@/pages.config';
 
 export default function NavigationTracker() {
     const location = useLocation();
-    const { isAuthenticated } = useAuth();
+    const { user } = useAuth(); // Use SupabaseAuth instead
     const { Pages, mainPage } = pagesConfig;
     const mainPageKey = mainPage ?? Object.keys(Pages)[0];
+    const isAuthenticated = !!user; // Convert user to boolean
 
     // Post navigation changes to parent window
     useEffect(() => {
@@ -40,9 +41,16 @@ export default function NavigationTracker() {
         }
 
         if (isAuthenticated && pageName) {
-            base44.appLogs.logUserInApp(pageName).catch(() => {
+            // Only try to log if base44 is available and has appLogs
+            try {
+                if (base44?.appLogs?.logUserInApp) {
+                    base44.appLogs.logUserInApp(pageName).catch(() => {
+                        // Silently fail - logging shouldn't break the app
+                    });
+                }
+            } catch (error) {
                 // Silently fail - logging shouldn't break the app
-            });
+            }
         }
     }, [location, isAuthenticated, Pages, mainPageKey]);
 

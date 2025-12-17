@@ -3,9 +3,9 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Sparkles, Clock, Archive, RotateCcw } from 'lucide-react';
 import { format } from 'date-fns';
 import { Button } from '@/components/ui/button';
-import { base44 } from '@/api/base44Client';
+// ❌ Removed base44 import
 
-export default function NoteSidebar({ notes, selectedNote, onSelectNote, onUpdate }) {
+export default function NoteSidebar({ notes, selectedNote, onSelectNote, onUpdateNote }) {
   const colorClasses = {
     lavender: 'bg-lavender/10 border-lavender/20',
     mint: 'bg-mint/10 border-mint/20',
@@ -15,14 +15,18 @@ export default function NoteSidebar({ notes, selectedNote, onSelectNote, onUpdat
 
   const moveToLongTerm = async (note, e) => {
     e.stopPropagation();
-    await base44.entities.Note.update(note.id, { storage_type: 'long_term' });
-    onUpdate();
+    // Notify parent to update via Supabase
+    if (onUpdateNote) {
+      onUpdateNote(note.id, { ...note, storage_type: 'long_term' });
+    }
   };
 
   const moveToShortTerm = async (note, e) => {
     e.stopPropagation();
-    await base44.entities.Note.update(note.id, { storage_type: 'short_term' });
-    onUpdate();
+    // Notify parent to update via Supabase
+    if (onUpdateNote) {
+      onUpdateNote(note.id, { ...note, storage_type: 'short_term' });
+    }
   };
 
   const shortTermNotes = notes.filter(note => note.storage_type === 'short_term');
@@ -67,7 +71,7 @@ export default function NoteSidebar({ notes, selectedNote, onSelectNote, onUpdat
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-1 text-xs text-gray-500">
                           <Clock className="w-3 h-3" />
-                          <span>{format(new Date(note.created_date), 'MMM d, h:mm a')}</span>
+                          <span>{format(new Date(note.created_at || note.created_date || Date.now()), 'MMM d, h:mm a')}</span>
                         </div>
                         <Button
                           onClick={(e) => moveToLongTerm(note, e)}
@@ -114,7 +118,7 @@ export default function NoteSidebar({ notes, selectedNote, onSelectNote, onUpdat
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-1 text-xs text-gray-500">
                           <Clock className="w-3 h-3" />
-                          <span>{format(new Date(note.created_date), 'MMM d, h:mm a')}</span>
+                          <span>{format(new Date(note.created_at || note.created_date || Date.now()), 'MMM d, h:mm a')}</span>
                         </div>
                         <Button
                           onClick={(e) => moveToShortTerm(note, e)}

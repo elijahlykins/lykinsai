@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { base44 } from '@/api/base44Client';
+// ❌ Removed base44 import
 import NotionSidebar from '../components/notes/NotionSidebar';
 import SettingsModal from '../components/notes/SettingsModal';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -10,6 +10,9 @@ import { Input } from '@/components/ui/input';
 import { useNavigate } from 'react-router-dom';
 import { createPageUrl } from '../utils';
 
+// ✅ Import Supabase
+import { supabase } from '@/lib/supabase';
+
 export default function TagManagementPage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -18,13 +21,39 @@ export default function TagManagementPage() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
+  // ✅ Fetch from Supabase
   const { data: notes = [] } = useQuery({
     queryKey: ['notes'],
-    queryFn: () => base44.entities.Note.list('-created_date'),
+    queryFn: async () => {
+      try {
+        // Try with essential columns first
+        let { data, error } = await supabase
+          .from('notes')
+          .select('id, title, content, tags, created_at')
+          .order('created_at', { ascending: false });
+        
+        if (error && (error.code === 'PGRST204' || error.message?.includes('Could not find'))) {
+          // Fallback to minimal columns
+          ({ data, error } = await supabase
+            .from('notes')
+            .select('id, title, content')
+            .order('id', { ascending: false }));
+        }
+        
+        if (error) {
+          console.warn('Error fetching notes:', error);
+          return [];
+        }
+        return data || [];
+      } catch (error) {
+        console.error('Error fetching notes:', error);
+        return [];
+      }
+    },
     retry: 2,
     refetchOnWindowFocus: false,
-    staleTime: 5 * 60 * 1000, // 5 minutes
-    cacheTime: 10 * 60 * 1000, // 10 minutes
+    staleTime: 5 * 60 * 1000,
+    cacheTime: 10 * 60 * 1000,
   });
 
   // Get all unique tags with their usage counts
@@ -42,6 +71,15 @@ export default function TagManagementPage() {
     return Object.values(tagMap).sort((a, b) => b.count - a.count);
   }, [notes]);
 
+  // ✅ Update note tags via Supabase
+  const updateNoteTags = async (noteId, newTags) => {
+    const { error } = await supabase
+      .from('notes')
+      .update({ tags: newTags })
+      .eq('id', noteId);
+    if (error) throw error;
+  };
+
   const handleRenameTag = async (oldTag, newTag) => {
     if (!newTag.trim() || oldTag === newTag) {
       setEditingTag(null);
@@ -52,7 +90,7 @@ export default function TagManagementPage() {
     
     for (const note of affectedNotes) {
       const updatedTags = note.tags.map(t => t === oldTag ? newTag.trim() : t);
-      await base44.entities.Note.update(note.id, { tags: updatedTags });
+      await updateNoteTags(note.id, updatedTags);
     }
 
     queryClient.invalidateQueries(['notes']);
@@ -68,7 +106,7 @@ export default function TagManagementPage() {
     
     for (const note of affectedNotes) {
       const updatedTags = note.tags.filter(t => t !== tagToDelete);
-      await base44.entities.Note.update(note.id, { tags: updatedTags });
+      await updateNoteTags(note.id, updatedTags);
     }
 
     queryClient.invalidateQueries(['notes']);
@@ -82,7 +120,7 @@ export default function TagManagementPage() {
       if (!updatedTags.includes(targetTag)) {
         updatedTags.push(targetTag);
       }
-      await base44.entities.Note.update(note.id, { tags: updatedTags });
+      await updateNoteTags(note.id, updatedTags);
     }
 
     queryClient.invalidateQueries(['notes']);

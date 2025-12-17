@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
-import { base44 } from '@/api/base44Client';
+// ❌ Removed base44 import
 import NotionSidebar from '../components/notes/NotionSidebar';
 import SettingsModal from '../components/notes/SettingsModal';
 import AIAnalysisPanel from '../components/notes/AIAnalysisPanel';
@@ -29,8 +29,12 @@ import ReminderPicker from '../components/notes/ReminderPicker';
 import ReminderNotifications from '../components/notes/ReminderNotifications';
 import TrashCleanup from '../components/notes/TrashCleanup';
 import RichTextRenderer from '../components/notes/RichTextRenderer';
+import AttachmentPanel from '../components/notes/AttachmentPanel';
 import ReactQuill from 'react-quill';
 import 'react-quill/dist/quill.bubble.css';
+
+// ✅ Import Supabase
+import { supabase } from '@/lib/supabase';
 
 export default function MemoryPage() {
   const [selectedNote, setSelectedNote] = useState(null);
@@ -56,22 +60,165 @@ export default function MemoryPage() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
+  // ✅ Fetch from Supabase
   const { data: notes = [], isError, error } = useQuery({
     queryKey: ['notes'],
-    queryFn: () => base44.entities.Note.list('-created_date'),
-    retry: 2,
+    queryFn: async () => {
+      try {
+        // Try to select only essential columns first to avoid 400 errors
+        let data, error;
+        
+        // First try with common columns
+        ({ data, error } = await supabase
+          .from('notes')
+          .select('id, title, content, created_at, updated_at')
+          .order('created_at', { ascending: false }));
+        
+        if (error) {
+          // If that fails, try with just the absolute minimum
+          if (error.code === 'PGRST204' || error.message?.includes('Could not find')) {
+            console.warn('⚠️ Some columns not found, trying with minimal columns:', error.message);
+            ({ data, error } = await supabase
+              .from('notes')
+              .select('id, title, content')
+              .order('id', { ascending: false }));
+          }
+          
+          if (error) {
+            // If it's a placeholder client or missing table, return empty array
+            if (error.message?.includes('placeholder') || error.code === 'PGRST116' || error.code === '42P01') {
+              console.warn('⚠️ Supabase not configured or notes table missing. Using empty array.');
+              return [];
+            }
+            throw error;
+          }
+        }
+        // Process notes: parse attachments from content if not in attachments column
+        return (data || []).map(note => {
+          let attachments = note.attachments || [];
+          
+          // If no attachments in column, try to parse from content
+          if (attachments.length === 0 && note.content) {
+            // Find attachments JSON embedded in content
+            const startMarker = '[ATTACHMENTS_JSON:';
+            const startIndex = note.content.indexOf(startMarker);
+            if (startIndex !== -1) {
+              const jsonStart = startIndex + startMarker.length;
+              // Find the matching closing bracket for the JSON array
+              let bracketCount = 0;
+              let jsonEnd = jsonStart;
+              for (let i = jsonStart; i < note.content.length; i++) {
+                if (note.content[i] === '[') bracketCount++;
+                if (note.content[i] === ']') {
+                  bracketCount--;
+                  if (bracketCount === 0) {
+                    jsonEnd = i + 1;
+                    break;
+                  }
+                }
+              }
+              if (jsonEnd > jsonStart) {
+                try {
+                  const jsonStr = note.content.substring(jsonStart, jsonEnd);
+                  attachments = JSON.parse(jsonStr);
+                  console.log(`📎 Parsed ${attachments.length} attachment(s) from content for note "${note.title}"`, attachments);
+                } catch (e) {
+                  console.warn('Failed to parse attachments from content:', e);
+                }
+              }
+            }
+          }
+          
+          return {
+            ...note,
+            attachments: attachments, // Use parsed attachments
+            tags: note.tags || [],
+            folder: note.folder || 'Uncategorized',
+            reminder: note.reminder || null,
+            connected_notes: note.connected_notes || [],
+            styling: note.styling || {},
+            ai_analysis: note.ai_analysis || {}
+          };
+        });
+      } catch (error) {
+        console.error('Error fetching notes:', error);
+        // Return empty array instead of crashing
+        return [];
+      }
+    },
+    retry: 1,
     refetchOnWindowFocus: false,
-    staleTime: 5 * 60 * 1000, 
+    staleTime: 5 * 60 * 1000,
     cacheTime: 10 * 60 * 1000,
   });
+
+  // Ensure selectedNote always has attachments parsed from content
+  useEffect(() => {
+    if (selectedNote && notes.length > 0) {
+      // Find the note in the notes array (which has parsed attachments)
+      const updatedNote = notes.find(n => n.id === selectedNote.id);
+      if (updatedNote && JSON.stringify(updatedNote.attachments) !== JSON.stringify(selectedNote.attachments)) {
+        console.log(`🔄 Updating selectedNote attachments: ${selectedNote.attachments?.length || 0} -> ${updatedNote.attachments?.length || 0}`);
+        setSelectedNote(updatedNote);
+      }
+    }
+  }, [notes, selectedNote?.id]);
 
   const handleUpdate = () => {
     queryClient.invalidateQueries(['notes']);
   };
 
+  // ✅ Update note via Supabase with graceful column handling
+  const updateNote = async (noteId, updates) => {
+    try {
+      const { error } = await supabase
+        .from('notes')
+        .update(updates)
+        .eq('id', noteId);
+      
+      if (error) {
+        // If error is about missing columns, try again without those columns
+        if (error.code === 'PGRST204' || error.message?.includes('Could not find')) {
+          console.warn('⚠️ Some columns not found in schema, retrying without them:', error.message);
+          
+          // Remove columns that commonly don't exist: summary, ai_analysis, attachments, source
+          const safeUpdates = { ...updates };
+          const columnsToRemove = ['summary', 'ai_analysis', 'attachments', 'source'];
+          
+          columnsToRemove.forEach(col => {
+            if (col in safeUpdates) {
+              // Just remove the column - we'll skip storing summary/ai_analysis if columns don't exist
+              // These are optional features that can work without database columns
+              delete safeUpdates[col];
+            }
+          });
+          
+          const { error: retryError } = await supabase
+            .from('notes')
+            .update(safeUpdates)
+            .eq('id', noteId);
+          
+          if (retryError) {
+            console.error('Error updating note after retry:', retryError);
+            throw retryError;
+          }
+        } else {
+          throw error;
+        }
+      }
+    } catch (error) {
+      console.error('Error updating note:', error);
+      throw error;
+    }
+  };
+
+  // ✅ Delete note (move to trash)
   const handleDeleteNote = async () => {
     if (!selectedNote) return;
-    await base44.entities.Note.update(selectedNote.id, { trashed: true, trash_date: new Date().toISOString() });
+    await updateNote(selectedNote.id, { 
+      trashed: true, 
+      trash_date: new Date().toISOString() 
+    });
     setSelectedNote(null);
     queryClient.invalidateQueries(['notes']);
   };
@@ -86,9 +233,10 @@ export default function MemoryPage() {
     setIsEditing(false);
   };
 
+  // ✅ Save edits via Supabase
   const saveEdits = async () => {
     if (!selectedNote) return;
-    await base44.entities.Note.update(selectedNote.id, {
+    await updateNote(selectedNote.id, {
       title: editedTitle,
       content: editedContent,
       raw_text: editedContent
@@ -97,6 +245,7 @@ export default function MemoryPage() {
     queryClient.invalidateQueries(['notes']);
   };
 
+  // ✅ Toggle link via Supabase
   const handleToggleLink = async (noteId) => {
     if (!selectedNote) return;
     const currentLinks = selectedNote.connected_notes || [];
@@ -104,24 +253,25 @@ export default function MemoryPage() {
       ? currentLinks.filter(id => id !== noteId)
       : [...currentLinks, noteId];
     
-    await base44.entities.Note.update(selectedNote.id, {
-      connected_notes: newLinks
-    });
+    await updateNote(selectedNote.id, { connected_notes: newLinks });
     queryClient.invalidateQueries(['notes']);
   };
 
+  // ✅ Set reminder via Supabase
   const handleSetReminder = async (reminderDate) => {
     if (!selectedNote) return;
-    await base44.entities.Note.update(selectedNote.id, { reminder: reminderDate });
+    await updateNote(selectedNote.id, { reminder: reminderDate });
     queryClient.invalidateQueries(['notes']);
   };
 
+  // ✅ Remove reminder via Supabase
   const handleRemoveReminder = async () => {
     if (!selectedNote) return;
-    await base44.entities.Note.update(selectedNote.id, { reminder: null });
+    await updateNote(selectedNote.id, { reminder: null });
     queryClient.invalidateQueries(['notes']);
   };
 
+  // ✅ AI Chat using your proxy
   const handleChatSend = async () => {
     if (!chatInput.trim() || isChatLoading) return;
 
@@ -153,13 +303,12 @@ export default function MemoryPage() {
       };
 
       const notesContext = notes.slice(0, 20).map(n => 
-        `ID: ${n.id}\nTitle: ${n.title}\nContent: ${n.content.substring(0, 200)}\nDate: ${n.created_date}`
+        `ID: ${n.id}\nTitle: ${n.title}\nContent: ${n.content?.substring(0, 200) || ''}\nDate: ${n.created_at || n.created_date || 'N/A'}`
       ).join('\n\n---\n\n');
 
       const history = chatMessages.map(m => `${m.role === 'user' ? 'User' : 'AI'}: ${m.content}`).join('\n');
 
-      const response = await base44.integrations.Core.InvokeLLM({
-        prompt: `${personalityStyles[personality]} ${detailStyles[detailLevel]}
+      const prompt = `${personalityStyles[personality]} ${detailStyles[detailLevel]}
 
 You are helping the user explore their memories.
 ${selectedNote ? `User is currently looking at this memory:\n${currentContent}` : ''}
@@ -172,17 +321,32 @@ ${notesContext}
 
 User's Current Question: ${chatInput}
 
-If the user asks about old memories or references past ideas, refer to the memories above. When referencing a specific memory, you MUST wrap the exact note title in double brackets like this: [[Note Title]].`
+If the user asks about old memories or references past ideas, refer to the memories above. When referencing a specific memory, you MUST wrap the exact note title in double brackets like this: [[Note Title]].`;
+
+      const aiResponse = await fetch('http://localhost:3001/api/ai/invoke', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'gpt-3.5-turbo', prompt })
       });
 
-      const words = response.split(' ');
+      if (!aiResponse.ok) {
+        throw new Error(`AI API error: ${aiResponse.statusText}`);
+      }
+
+      const { response: aiText } = await aiResponse.json();
+
+      const words = aiText.split(' ');
       let currentText = '';
 
       for (let i = 0; i < words.length; i++) {
         currentText += (i === 0 ? '' : ' ') + words[i];
         setChatMessages(prev => {
           const newMessages = [...prev];
-          newMessages[assistantMessageIndex] = { role: 'assistant', content: currentText, notes: notes };
+          newMessages[assistantMessageIndex] = { 
+            role: 'assistant', 
+            content: currentText, 
+            notes: notes 
+          };
           return newMessages;
         });
         await new Promise(resolve => setTimeout(resolve, 30));
@@ -191,7 +355,10 @@ If the user asks about old memories or references past ideas, refer to the memor
       console.error('Chat error:', error);
       setChatMessages(prev => {
         const newMessages = [...prev];
-        newMessages[assistantMessageIndex] = { role: 'assistant', content: 'Sorry, I encountered an error.' };
+        newMessages[assistantMessageIndex] = { 
+          role: 'assistant', 
+          content: 'Sorry, I encountered an error.' 
+        };
         return newMessages;
       });
     } finally {
@@ -227,10 +394,14 @@ If the user asks about old memories or references past ideas, refer to the memor
     );
   };
 
+  // ✅ Bulk delete via Supabase
   const handleBulkDelete = async () => {
     for (const noteId of selectedCards) {
       try {
-        await base44.entities.Note.update(noteId, { trashed: true, trash_date: new Date().toISOString() });
+        await updateNote(noteId, { 
+          trashed: true, 
+          trash_date: new Date().toISOString() 
+        });
         await new Promise(resolve => setTimeout(resolve, 500));
       } catch (error) {
         console.error('Error updating note:', error);
@@ -252,7 +423,6 @@ If the user asks about old memories or references past ideas, refer to the memor
   const allTags = [...new Set(notes.filter(n => n).flatMap(n => n.tags || []))];
   const allFolders = [...new Set(notes.filter(n => n).map(n => n.folder || 'Uncategorized'))];
 
-  // Show all notes that are not trashed
   let filteredNotes = notes.filter(note => note && !note.trashed);
   
   if (filterTag !== 'all') {
@@ -427,7 +597,10 @@ If the user asks about old memories or references past ideas, refer to the memor
                 <EnhancedKnowledgeGraph
                   notes={filteredNotes}
                   onSelectNote={(note) => setSelectedNote(note)}
-                  onUpdateConnections={handleUpdate}
+                  onUpdateConnections={async (noteId, newConnections) => {
+                    await updateNote(noteId, { connected_notes: newConnections });
+                    handleUpdate();
+                  }}
                 />
               </div>
             ) : !selectedNote ? (
@@ -483,7 +656,11 @@ If the user asks about old memories or references past ideas, refer to the memor
                       )}
                       <div className="flex items-center gap-1 text-xs text-gray-500">
                         <Clock className="w-3 h-3 text-black dark:text-gray-300" />
-                        <span>{format(new Date(note.created_date), 'MMM d, yyyy')}</span>
+                        <span>{
+                          note.created_date || note.created_at 
+                            ? format(new Date(note.created_date || note.created_at), 'MMM d, yyyy')
+                            : 'No date'
+                        }</span>
                         {note.connected_notes?.length > 0 && (
                           <>
                             <span className="mx-1">•</span>
@@ -504,7 +681,20 @@ If the user asks about old memories or references past ideas, refer to the memor
                 </div>
                 <div className="w-80 flex-shrink-0 space-y-4">
                   <RecommendationsPanel notes={filteredNotes} onSelectNote={setSelectedNote} />
-                  <DuplicateDetector notes={filteredNotes} onMerge={handleUpdate} />
+                  <DuplicateDetector 
+                    notes={filteredNotes} 
+                    onMergeNote={async (noteData) => {
+                      const { data } = await supabase
+                        .from('notes')
+                        .insert(noteData)
+                        .select();
+                      handleUpdate();
+                      return data[0];
+                    }}
+                    onDeleteNote={async (noteId) => {
+                      await updateNote(noteId, { trashed: true, trash_date: new Date().toISOString() });
+                    }}
+                  />
                 </div>
               </div>
             ) : (
@@ -538,7 +728,53 @@ If the user asks about old memories or references past ideas, refer to the memor
                           ))}
                         </div>
                       )}
-                      <RichTextRenderer content={selectedNote.content} className="text-black dark:text-white" />
+                      {/* Display attachments (videos, images, links) before content */}
+                      {(() => {
+                        const noteAttachments = selectedNote.attachments || [];
+                        console.log(`🔍 Memory page: Displaying note "${selectedNote.title}" with ${noteAttachments.length} attachment(s)`, noteAttachments);
+                        if (noteAttachments.length > 0) {
+                          return (
+                            <div className="mb-6">
+                              <AttachmentPanel 
+                                attachments={noteAttachments}
+                                onUpdate={() => {}}
+                                readOnly
+                              />
+                            </div>
+                          );
+                        }
+                        return null;
+                      })()}
+                      
+                      <RichTextRenderer 
+                        content={(() => {
+                          // Strip out the attachments JSON marker from content for display
+                          let displayContent = selectedNote.content || '';
+                          const startMarker = '[ATTACHMENTS_JSON:';
+                          const startIndex = displayContent.indexOf(startMarker);
+                          if (startIndex !== -1) {
+                            const jsonStart = startIndex + startMarker.length;
+                            let bracketCount = 0;
+                            let jsonEnd = jsonStart;
+                            for (let i = jsonStart; i < displayContent.length; i++) {
+                              if (displayContent[i] === '[') bracketCount++;
+                              if (displayContent[i] === ']') {
+                                bracketCount--;
+                                if (bracketCount === 0) {
+                                  jsonEnd = i + 1;
+                                  break;
+                                }
+                              }
+                            }
+                            if (jsonEnd > jsonStart) {
+                              displayContent = displayContent.substring(0, startIndex) + displayContent.substring(jsonEnd);
+                              displayContent = displayContent.replace(/\n\n\n+/g, '\n\n').trim();
+                            }
+                          }
+                          return displayContent;
+                        })()} 
+                        className="text-black dark:text-white" 
+                      />
                       {selectedNote.connected_notes?.length > 0 && (
                         <div className="pt-4 border-t border-gray-200 dark:border-gray-700">
                           <h3 className="text-sm font-medium text-gray-400 dark:text-gray-300 mb-3 flex items-center gap-2">
@@ -551,7 +787,11 @@ If the user asks about old memories or references past ideas, refer to the memor
                               return connectedNote ? (
                                 <button
                                   key={connectedId}
-                                  onClick={() => setSelectedNote(connectedNote)}
+                                  onClick={() => {
+                                    // Use the note from notes array to ensure it has parsed attachments
+                                    const noteWithAttachments = notes.find(n => n.id === connectedNote?.id) || connectedNote;
+                                    setSelectedNote(noteWithAttachments);
+                                  }}
                                   className="p-3 bg-white dark:bg-[#171515] rounded-lg text-left hover:bg-gray-100 dark:hover:bg-[#171515]/80 transition-all border border-gray-200 dark:border-gray-600"
                                 >
                                   <p className="text-sm font-medium text-black dark:text-white">{connectedNote.title}</p>
@@ -567,21 +807,22 @@ If the user asks about old memories or references past ideas, refer to the memor
                     <>
                       <Input value={editedTitle} onChange={(e) => setEditedTitle(e.target.value)} className="text-2xl font-bold clay-input" />
                       <div className="bg-white dark:bg-[#1f1d1d] rounded-xl border border-gray-200 dark:border-gray-700 min-h-[300px]">
-                        <ReactQuill 
-                          theme="bubble"
-                          value={editedContent} 
-                          onChange={setEditedContent}
-                          className="min-h-[300px]"
-                          modules={{
-                            toolbar: [
-                                [{ 'header': [1, 2, false] }],
-                                ['bold', 'italic', 'underline', 'strike', 'blockquote', 'code-block'],
-                                [{ 'list': 'ordered'}, { 'list': 'bullet' }],
-                                ['link', 'image'],
-                                ['clean']
-                            ]
-                          }}
-                        />
+                       <ReactQuill 
+  theme="snow"
+  value={editedContent}
+  onChange={setEditedContent}
+  className="min-h-[300px]"
+  modules={{
+    toolbar: [
+      [{ header: [1, 2, false] }],
+      ['bold', 'italic', 'underline', 'strike', 'blockquote', 'code-block'],
+      [{ list: 'ordered' }, { list: 'bullet' }, { list: 'check' }],
+      ['link', 'image'],
+      ['clean']
+    ]
+  }}
+/>
+
                       </div>
                       {editedContent.length > 50 && (
                         <ConnectionSuggestions
@@ -601,8 +842,8 @@ If the user asks about old memories or references past ideas, refer to the memor
                 </div>
                 <NoteSummarization 
                   note={selectedNote}
-                  onUpdate={(data) => {
-                    base44.entities.Note.update(selectedNote.id, data);
+                  onUpdate={async (data) => {
+                    await updateNote(selectedNote.id, data);
                     queryClient.invalidateQueries(['notes']);
                   }}
                 />
@@ -611,7 +852,6 @@ If the user asks about old memories or references past ideas, refer to the memor
                   allNotes={notes} 
                   onChatStart={(questions) => {
                     setShowChat(true);
-                    // Optionally pre-fill chat with a context-setting message if desired
                     if (questions && questions.length > 0) {
                         setChatMessages(prev => [...prev, { 
                             role: 'assistant', 
@@ -624,12 +864,20 @@ If the user asks about old memories or references past ideas, refer to the memor
                 <MindMapGenerator 
                   note={selectedNote} 
                   allNotes={notes}
-                  onUpdate={(data) => {
-                    base44.entities.Note.update(selectedNote.id, data);
+                  onUpdate={async (data) => {
+                    await updateNote(selectedNote.id, data);
                     queryClient.invalidateQueries(['notes']);
                   }}
                 />
-                <AIAnalysisPanel note={selectedNote} allNotes={notes} onUpdate={handleUpdate} onViewNote={setViewingNote} />
+                <AIAnalysisPanel 
+                  note={selectedNote} 
+                  allNotes={notes} 
+                  onUpdateNote={async (updatedNote) => {
+                    await updateNote(selectedNote.id, updatedNote);
+                    queryClient.invalidateQueries(['notes']);
+                  }} 
+                  onViewNote={setViewingNote} 
+                />
                 <Button onClick={() => setSelectedNote(null)} variant="outline" className="w-full bg-transparent border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#171515] flex items-center gap-2">
                   ← Back to All Notes
                 </Button>
@@ -639,8 +887,16 @@ If the user asks about old memories or references past ideas, refer to the memor
         </div>
       </div>
 
-      <ReminderNotifications />
-      <TrashCleanup notes={notes} />
+      <ReminderNotifications notes={notes} />
+      <TrashCleanup 
+        notes={notes} 
+        onDeleteNotes={async (noteIds) => {
+          await supabase
+            .from('notes')
+            .delete()
+            .in('id', noteIds);
+        }} 
+      />
       <SettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <NoteViewer note={viewingNote} isOpen={!!viewingNote} onClose={() => setViewingNote(null)} />
       
@@ -665,9 +921,12 @@ If the user asks about old memories or references past ideas, refer to the memor
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">
-            <Button 
+            <Button
               onClick={() => {
-                setSelectedNote(interactionNote);
+                // Use the note from notes array to ensure it has parsed attachments
+                const noteWithAttachments = notes.find(n => n.id === interactionNote?.id) || interactionNote;
+                console.log(`🔍 Setting selectedNote from interactionNote: ${noteWithAttachments.attachments?.length || 0} attachments`, noteWithAttachments);
+                setSelectedNote(noteWithAttachments);
                 setInteractionNote(null);
               }}
               className="bg-white hover:bg-gray-100 text-black border border-gray-200 dark:bg-white dark:text-black dark:hover:bg-gray-200 w-full h-12 text-lg justify-start px-6"

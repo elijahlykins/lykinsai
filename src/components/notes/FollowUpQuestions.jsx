@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { HelpCircle, Loader2, MessageCircle } from 'lucide-react';
-import { base44 } from '@/api/base44Client';
+// ❌ Removed base44 import
 import { useNavigate } from 'react-router-dom';
 import { createPageUrl } from '../../utils';
 
@@ -30,15 +30,13 @@ export default function FollowUpQuestions({ note, allNotes, onChatStart }) {
         detailed: 'Ask comprehensive, thought-provoking questions.'
       };
 
-      // Get context from related memory cards
       const recentNotes = allNotes
         .filter(n => n.id !== note.id)
         .slice(0, 10)
-        .map(n => `Title: ${n.title}\nContent: ${n.content.substring(0, 150)}`)
+        .map(n => `Title: ${n.title}\nContent: ${n.content?.substring(0, 150) || ''}`)
         .join('\n\n');
 
-      const response = await base44.integrations.Core.InvokeLLM({
-        prompt: `Based on the current memory card and the user's past memory cards, generate 3-5 personalized follow-up questions.
+      const prompt = `Based on the current memory card and the user's past memory cards, generate 3-5 personalized follow-up questions.
 
 Current Memory Card:
 Title: "${note.title}"
@@ -54,16 +52,34 @@ Generate questions that:
 - Feel personally relevant, not generic
 - Encourage deeper reflection and action
 
-${personalityPrompts[personality]} ${detailPrompts[detailLevel]}`,
-        response_json_schema: {
-          type: 'object',
-          properties: {
-            questions: { type: 'array', items: { type: 'string' } }
-          }
-        }
+${personalityPrompts[personality]} ${detailPrompts[detailLevel]}
+
+Return ONLY a JSON object: {"questions": ["Question 1?", "Question 2?", ...]}`;
+
+      const response = await fetch('http://localhost:3001/api/ai/invoke', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'gpt-3.5-turbo', prompt })
       });
 
-      setQuestions(response.questions || []);
+      if (!response.ok) throw new Error('AI request failed');
+      const { response: aiText } = await response.json();
+
+      let parsedQuestions = [];
+      try {
+        const result = JSON.parse(aiText);
+        parsedQuestions = result.questions || [];
+      } catch (e) {
+        // Fallback: extract array from raw text
+        const match = aiText.match(/\[([^\]]+)\]/);
+        if (match) {
+          try {
+            parsedQuestions = JSON.parse(`[${match[1]}]`);
+          } catch {}
+        }
+      }
+
+      setQuestions(parsedQuestions);
     } catch (error) {
       console.error('Error generating questions:', error);
     } finally {
@@ -71,7 +87,7 @@ ${personalityPrompts[personality]} ${detailPrompts[detailLevel]}`,
     }
   };
 
-  React.useEffect(() => {
+  useEffect(() => {
     if (allNotes.length > 1) {
       generateQuestions();
     }
@@ -81,7 +97,6 @@ ${personalityPrompts[personality]} ${detailPrompts[detailLevel]}`,
     if (onChatStart) {
       onChatStart(questions);
     } else {
-      // Store questions and note context in localStorage
       localStorage.setItem('chat_followup_questions', JSON.stringify({
         questions,
         noteTitle: note.title,

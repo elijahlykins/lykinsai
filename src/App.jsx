@@ -1,85 +1,46 @@
-import './App.css'
-import { Toaster } from "@/components/ui/toaster"
-import { QueryClientProvider } from '@tanstack/react-query'
-import { queryClientInstance } from '@/lib/query-client'
-import VisualEditAgent from '@/lib/VisualEditAgent'
-import NavigationTracker from '@/lib/NavigationTracker'
-import { pagesConfig } from './pages.config'
+import './App.css';
+import { Toaster } from "@/components/ui/toaster";
+import { QueryClientProvider } from '@tanstack/react-query';
+import { queryClientInstance } from '@/lib/query-client';
+import VisualEditAgent from '@/lib/VisualEditAgent';
+import NavigationTracker from '@/lib/NavigationTracker';
 import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
 import PageNotFound from './lib/PageNotFound';
-import { AuthProvider, useAuth } from '@/lib/AuthContext';
-import UserNotRegisteredError from '@/components/UserNotRegisteredError';
+import { SupabaseAuthProvider } from '@/lib/SupabaseAuth';
 
-const { Pages, Layout, mainPage } = pagesConfig;
-const mainPageKey = mainPage ?? Object.keys(Pages)[0];
-const MainPage = mainPageKey ? Pages[mainPageKey] : <></>;
-
-const LayoutWrapper = ({ children, currentPageName }) => Layout ?
-  <Layout currentPageName={currentPageName}>{children}</Layout>
-  : <>{children}</>;
-
-const AuthenticatedApp = () => {
-  const { isLoadingAuth, isLoadingPublicSettings, authError, isAuthenticated, navigateToLogin } = useAuth();
-
-  // Show loading spinner while checking app public settings or auth
-  if (isLoadingPublicSettings || isLoadingAuth) {
-    return (
-      <div className="fixed inset-0 flex items-center justify-center">
-        <div className="w-8 h-8 border-4 border-slate-200 border-t-slate-800 rounded-full animate-spin"></div>
-      </div>
-    );
-  }
-
-  // Handle authentication errors
-  if (authError) {
-    if (authError.type === 'user_not_registered') {
-      return <UserNotRegisteredError />;
-    } else if (authError.type === 'auth_required') {
-      // Redirect to login automatically
-      navigateToLogin();
-      return null;
-    }
-  }
-
-  // Render the main app
-  return (
-    <Routes>
-      <Route path="/" element={
-        <LayoutWrapper currentPageName={mainPageKey}>
-          <MainPage />
-        </LayoutWrapper>
-      } />
-      {Object.entries(Pages).map(([path, Page]) => (
-        <Route
-          key={path}
-          path={`/${path}`}
-          element={
-            <LayoutWrapper currentPageName={path}>
-              <Page />
-            </LayoutWrapper>
-          }
-        />
-      ))}
-      <Route path="*" element={<PageNotFound />} />
-    </Routes>
-  );
-};
-
+// ✅ CORRECT IMPORTS (no spaces, match your filenames)
+import Create from "./pages/Create";
+import Memory from "./pages/Memory";
+import TagManagement from "./pages/TagManagement";
+import Trash from "./pages/Trash";
+import MemoryChat from "./pages/MemoryChat";
+import Reminders from "./pages/Reminders";
+import Billing from "./pages/Billing"; // ← FIXED: removed space after "./"
 
 function App() {
-
   return (
-    <AuthProvider>
-      <QueryClientProvider client={queryClientInstance}>
+    <QueryClientProvider client={queryClientInstance}>
+      <SupabaseAuthProvider>
         <Router>
           <NavigationTracker />
-          <AuthenticatedApp />
+          <Routes>
+            <Route path="/" element={<Create />} />
+            <Route path="/create" element={<Create />} />
+            <Route path="/memory" element={<Memory />} />
+            <Route path="/tag-management" element={<TagManagement />} />
+            <Route path="/trash" element={<Trash />} />
+            <Route path="/memorychat" element={<MemoryChat />} />
+            <Route path="/memory-chat" element={<MemoryChat />} />
+            <Route path="/reminders" element={<Reminders />} />
+            <Route path="/billing" element={<Billing />} />
+            <Route path="*" element={<PageNotFound />} />
+          </Routes>
         </Router>
         <Toaster />
         <VisualEditAgent />
-      </QueryClientProvider>
-    </AuthProvider>
-  )
+      </SupabaseAuthProvider>
+    </QueryClientProvider>
+  );
 }
 
-export default App
+export default App;

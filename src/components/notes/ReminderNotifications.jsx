@@ -1,19 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { base44 } from '@/api/base44Client';
 import { Bell, X } from 'lucide-react';
 import { format } from 'date-fns';
 import { motion, AnimatePresence } from 'framer-motion';
 
-export default function ReminderNotifications() {
+export default function ReminderNotifications({ notes = [] }) {
   const [dismissedReminders, setDismissedReminders] = useState([]);
 
-  const { data: notes = [] } = useQuery({
-    queryKey: ['notes'],
-    queryFn: () => base44.entities.Note.list('-created_date'),
-    refetchInterval: 60000, // Check every minute
-  });
-
+  // Filter due reminders (not dismissed + reminder date <= now)
   const dueReminders = notes.filter(note => {
     if (!note.reminder || dismissedReminders.includes(note.id)) return false;
     const reminderDate = new Date(note.reminder);
@@ -22,7 +15,7 @@ export default function ReminderNotifications() {
   });
 
   const handleDismiss = (noteId) => {
-    setDismissedReminders([...dismissedReminders, noteId]);
+    setDismissedReminders(prev => [...prev, noteId]);
   };
 
   if (dueReminders.length === 0) return null;

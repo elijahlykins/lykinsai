@@ -1,24 +1,26 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { base44 } from '@/api/base44Client';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import NotionSidebar from '../components/notes/NotionSidebar';
 import SettingsModal from '../components/notes/SettingsModal';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Send, Loader2, Bot, User, Plus, Mic, MessageSquare, X, File, Image as ImageIcon, Link as LinkIcon, Video, FileText, HelpCircle, PlusCircle } from 'lucide-react';
+import { Send, Loader2, Bot, User, Plus, Mic, MessageSquare, X, File, ImageIcon, LinkIcon, Video, FileText, HelpCircle } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { useNavigate } from 'react-router-dom';
 import { createPageUrl } from '../utils';
+import { supabase } from '@/lib/supabase';
+import { useAuth } from '@/lib/SupabaseAuth';
 
 export default function MemoryChatPage() {
+  const { user } = useAuth();
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [currentModel, setCurrentModel] = useState('core');
+  const [currentModel, setCurrentModel] = useState('gpt-3.5-turbo');
   const [inputMode, setInputMode] = useState('text');
   const [attachments, setAttachments] = useState([]);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
@@ -33,15 +35,62 @@ export default function MemoryChatPage() {
   const audioChunksRef = useRef([]);
   const messagesRef = useRef([]);
   const [currentChatNoteId, setCurrentChatNoteId] = useState(null);
+  const queryClient = useQueryClient();
 
-  const { data: notes = [], isError } = useQuery({
+  const {  notes = [], isError } = useQuery({
     queryKey: ['notes'],
-    queryFn: () => base44.entities.Note.list('-created_date'),
-    retry: 2,
+    queryFn: async () => {
+      try {
+        // Try to select only essential columns first to avoid 400 errors
+        // If that fails, try with just title and content
+        let data, error;
+        
+        // First try with common columns (include attachments for YouTube transcripts)
+        ({ data, error } = await supabase
+          .from('notes')
+          .select('id, title, content, created_at, updated_at, attachments')
+          .order('created_at', { ascending: false }));
+        
+        if (error) {
+          // If that fails, try without attachments column
+          if (error.code === 'PGRST204' || error.message?.includes('Could not find') || error.message?.includes('attachments')) {
+            console.warn('⚠️ Some columns not found, trying without attachments:', error.message);
+            ({ data, error } = await supabase
+              .from('notes')
+              .select('id, title, content, created_at, updated_at')
+              .order('created_at', { ascending: false }));
+          }
+          
+          if (error && (error.code === 'PGRST204' || error.message?.includes('Could not find'))) {
+            // Final fallback to minimal columns
+            console.warn('⚠️ Trying with minimal columns:', error.message);
+            ({ data, error } = await supabase
+              .from('notes')
+              .select('id, title, content')
+              .order('id', { ascending: false }));
+          }
+          
+          if (error) {
+            // If it's a placeholder client or missing table, return empty array
+            if (error.message?.includes('placeholder') || error.code === 'PGRST116' || error.code === '42P01') {
+              console.warn('⚠️ Supabase not configured or notes table missing. Using empty array.');
+              return [];
+            }
+            throw error;
+          }
+        }
+        return data || [];
+      } catch (error) {
+        console.error('Error fetching notes:', error);
+        // Return empty array instead of crashing
+        return [];
+      }
+    },
+    retry: 1,
     retryDelay: (attemptIndex) => Math.min(2000 * 2 ** attemptIndex, 30000),
     refetchOnWindowFocus: false,
-    staleTime: 5 * 60 * 1000, // 5 minutes
-    cacheTime: 10 * 60 * 1000, // 10 minutes
+    staleTime: 5 * 60 * 1000,
+    cacheTime: 10 * 60 * 1000,
   });
 
   useEffect(() => {
@@ -52,22 +101,19 @@ export default function MemoryChatPage() {
 
   useEffect(() => {
     const settings = JSON.parse(localStorage.getItem('lykinsai_settings') || '{}');
-    setCurrentModel(settings.aiModel || 'core');
+    const savedModel = settings.aiModel || 'gpt-3.5-turbo';
+    setCurrentModel(savedModel === 'core' ? 'gpt-3.5-turbo' : savedModel);
     
-    // Check for follow-up questions
     const storedQuestions = localStorage.getItem('chat_followup_questions');
     if (storedQuestions) {
       setFollowUpQuestions(JSON.parse(storedQuestions));
       localStorage.removeItem('chat_followup_questions');
     }
 
-    // Check if continuing a chat from a note
     const continueChat = localStorage.getItem('chat_continue_note');
     if (continueChat) {
       try {
         const { noteId, content, title, attachments } = JSON.parse(continueChat);
-
-        // Verify the note still exists
         const noteExists = notes.some(n => n.id === noteId);
         if (!noteExists) {
           localStorage.removeItem('chat_continue_note');
@@ -75,22 +121,13 @@ export default function MemoryChatPage() {
           return;
         }
 
-        // Parse the chat content back to messages
         const lines = content.split('\n\n');
         const parsedMessages = [];
-
         for (const line of lines) {
           if (line.startsWith('Me: ')) {
-            parsedMessages.push({
-              role: 'user',
-              content: line.substring(4),
-              attachments: []
-            });
+            parsedMessages.push({ role: 'user', content: line.substring(4), attachments: [] });
           } else if (line.startsWith('AI: ')) {
-            parsedMessages.push({
-              role: 'assistant',
-              content: line.substring(4)
-            });
+            parsedMessages.push({ role: 'assistant', content: line.substring(4) });
           }
         }
 
@@ -106,7 +143,6 @@ export default function MemoryChatPage() {
       }
     }
 
-    // Check if starting chat with an idea
     const ideaContext = localStorage.getItem('chat_idea_context');
     if (ideaContext) {
       const { title, content, attachments } = JSON.parse(ideaContext);
@@ -117,15 +153,134 @@ export default function MemoryChatPage() {
       localStorage.removeItem('chat_idea_context');
       return;
     }
-
   }, []);
 
-  // Update ref whenever messages change
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
 
+  const saveChatToNote = async (title, content, allAttachments) => {
+    // Start with absolute minimum: only title and content
+    // These should always exist in any notes table
+    const minimalData = {
+      title,
+      content
+    };
 
+    // Add optional fields that might not exist in schema
+    const optionalFields = {
+      tags: ['chat', 'conversation'],
+      storage_type: 'short_term',
+      source: 'ai'
+    };
+
+    // Add attachments if provided
+    if (allAttachments && allAttachments.length > 0) {
+      optionalFields.attachments = allAttachments;
+    }
+
+    // Try with optional fields first, then fall back to minimal only
+    const noteDataWithOptional = { ...minimalData, ...optionalFields };
+    
+    // Helper to create safe data with only minimal columns (title, content)
+    const createMinimalData = () => {
+      const safe = { ...minimalData }; // Only title and content
+      // Add all metadata to content if optional columns don't exist
+      let metadataParts = [];
+      if (optionalFields.tags?.length > 0) {
+        metadataParts.push(`Tags: ${optionalFields.tags.join(', ')}`);
+      }
+      if (optionalFields.source) {
+        metadataParts.push(`Source: ${optionalFields.source}`);
+      }
+      if (allAttachments?.length > 0) {
+        metadataParts.push(`Attachments: ${allAttachments.map(a => a.name || a.url || 'file').join(', ')}`);
+      }
+      if (metadataParts.length > 0) {
+        safe.content = `${content}\n\n[${metadataParts.join(' | ')}]`;
+      }
+      return safe;
+    };
+
+    if (currentChatNoteId) {
+      try {
+        // Try with optional fields first
+        let { error } = await supabase
+          .from('notes')
+          .update(noteDataWithOptional)
+          .eq('id', currentChatNoteId);
+        
+        if (error) {
+          // If error is about missing columns, retry with only minimal columns (title, content)
+          if (error.code === 'PGRST204' || error.code === '42703' || error.message?.includes('Could not find') || error.message?.includes('does not exist')) {
+            console.warn('⚠️ Some columns not found, retrying with minimal columns only (title, content):', error.message);
+            const safeData = createMinimalData();
+            
+            ({ error } = await supabase
+              .from('notes')
+              .update(safeData)
+              .eq('id', currentChatNoteId));
+            
+            if (error) {
+              // If even minimal columns fail, log but don't crash - the note might still be saved
+              if (error.code !== 'PGRST204' && error.code !== '42703') {
+                console.error('Error updating note even with minimal columns (title, content):', error);
+              }
+              // Don't throw - allow the chat to continue even if note saving fails
+              return;
+            }
+          } else {
+            // Only log non-column errors
+            if (error.code !== 'PGRST204' && error.code !== '42703') {
+              console.warn('Error updating note:', error);
+            }
+          }
+        }
+      } catch (error) {
+        // Silently handle update errors - don't break chat
+        if (error.code !== 'PGRST204' && error.code !== '42703') {
+          console.warn('Note update error (non-critical):', error.message);
+        }
+      }
+    } else {
+      try {
+        // Try with optional fields first
+        const { data, error } = await supabase
+          .from('notes')
+          .insert(noteDataWithOptional)
+          .select();
+        
+        if (error) {
+          // If error is about missing columns, retry with only minimal columns (title, content)
+          if (error.code === 'PGRST204' || error.message?.includes('Could not find')) {
+            console.warn('⚠️ Some columns not found, retrying with minimal columns only (title, content):', error.message);
+            const safeData = createMinimalData();
+            
+            const { data: retryData, error: retryError } = await supabase
+              .from('notes')
+              .insert(safeData)
+              .select();
+            
+            if (retryError) {
+              // If even minimal columns fail, log but don't crash
+              console.error('Error creating note even with minimal columns (title, content):', retryError);
+              // Don't throw - allow the chat to continue even if note saving fails
+              return;
+            }
+            setCurrentChatNoteId(retryData[0].id);
+          } else {
+            throw error;
+          }
+        } else {
+          setCurrentChatNoteId(data[0].id);
+        }
+      } catch (error) {
+        console.error('Error creating note:', error);
+        // Don't throw - allow chat to continue even if saving fails
+        console.warn('⚠️ Note saving failed, but chat will continue');
+      }
+    }
+  };
 
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
@@ -137,7 +292,6 @@ export default function MemoryChatPage() {
     setIsLoading(true);
     setLastMessageTime(Date.now());
 
-    // Add empty assistant message for streaming
     const assistantMessageIndex = messages.length + 1;
     setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
 
@@ -145,7 +299,6 @@ export default function MemoryChatPage() {
       const settings = JSON.parse(localStorage.getItem('lykinsai_settings') || '{}');
       const personality = settings.aiPersonality || 'balanced';
       const detailLevel = settings.aiDetailLevel || 'medium';
-      const aiModel = currentModel || settings.aiModel || 'core';
 
       const personalityStyles = {
         professional: 'You are a professional memory assistant. Be formal, precise, and objective.',
@@ -160,30 +313,186 @@ export default function MemoryChatPage() {
         detailed: 'Give comprehensive, detailed responses with examples and explanations.'
       };
 
-      // Use top 20 most recent notes for context to prevent rate limits
-      const notesContext = notes.slice(0, 20).map(n => 
-        `Title: ${n.title}\nContent: ${n.content.substring(0, 500)}\nDate: ${n.created_date}\nType: ${n.storage_type}`
-      ).join('\n\n---\n\n');
+      // Fetch user's social data for AI context
+      let socialDataContext = '';
+      try {
+        // First try to get from Supabase if user is authenticated
+        let socialData = [];
+        if (user?.id) {
+          try {
+            const { data, error } = await supabase
+              .from('social_data')
+              .select('*')
+              .eq('user_id', user.id)
+              .order('synced_at', { ascending: false })
+              .limit(50); // Get recent 50 items
+            
+            if (!error && data) {
+              socialData = data;
+            }
+          } catch (supabaseError) {
+            console.warn('Could not fetch social data from Supabase:', supabaseError);
+          }
+        }
+        
+        // Fallback to localStorage if Supabase didn't work
+        if (socialData.length === 0) {
+          try {
+            const saved = localStorage.getItem('lykinsai_social_data');
+            if (saved) {
+              socialData = JSON.parse(saved);
+            }
+          } catch (e) {
+            console.warn('Could not load social data from localStorage:', e);
+          }
+        }
+        
+        if (socialData.length > 0) {
+          // Group by platform and summarize
+          const platformGroups = {};
+          socialData.forEach(item => {
+            if (!platformGroups[item.platform]) {
+              platformGroups[item.platform] = [];
+            }
+            platformGroups[item.platform].push(item);
+          });
+          
+          const platformSummaries = Object.entries(platformGroups).map(([platform, items]) => {
+            const recentItems = items.slice(0, 10); // Limit to recent items
+            const summaries = recentItems.map(item => {
+              const desc = item.description || item.title || '';
+              return `- ${desc.substring(0, 100)}${desc.length > 100 ? '...' : ''}`;
+            }).join('\n');
+            return `\n${platform.charAt(0).toUpperCase() + platform.slice(1)} Interests:\n${summaries}`;
+          });
+          
+          if (platformSummaries.length > 0) {
+            socialDataContext = '\n\n---\n\n**User Social Media Interests:**' + platformSummaries.join('\n') + '\n\n---\n\n';
+            console.log(`📱 Including social data from ${Object.keys(platformGroups).length} platform(s) in AI context`);
+          }
+        }
+      } catch (error) {
+        console.warn('Could not fetch social data for AI context:', error);
+      }
+
+      const notesContext = notes.slice(0, 20).map(n => {
+        // Parse attachments if it's a string (JSON)
+        let attachments = n.attachments;
+        if (attachments && typeof attachments === 'string') {
+          try {
+            attachments = JSON.parse(attachments);
+          } catch (e) {
+            attachments = null;
+          }
+        }
+        
+        // Check if content has YouTube transcripts embedded (they're saved in content)
+        const hasTranscriptsInContent = n.content && (
+          n.content.includes('YouTube Video Transcript') || 
+          n.content.includes('**YouTube Video:') ||
+          n.content.includes('Transcript:')
+        );
+        
+        // If transcripts are in content, use ALL content (transcripts can be long)
+        // Otherwise use limited content
+        let contentText = '';
+        if (hasTranscriptsInContent) {
+          // Use full content to include complete transcripts
+          contentText = n.content || '';
+        } else {
+          contentText = n.content?.substring(0, 500) || '';
+        }
+        
+        let noteText = `Title: ${n.title}\nContent: ${contentText}\nDate: ${n.created_at || n.created_date || 'N/A'}\nType: ${n.storage_type || 'N/A'}`;
+        
+        // Extract YouTube video transcripts from attachments if not already in content
+        if (!hasTranscriptsInContent && attachments && Array.isArray(attachments)) {
+          const youtubeVideos = attachments.filter(att => att && att.type === 'youtube' && att.transcript);
+          if (youtubeVideos.length > 0) {
+            const transcripts = youtubeVideos.map(video => {
+              const videoTitle = video.name || video.videoData?.title || 'YouTube Video';
+              return `YouTube Video: ${videoTitle}\nTranscript: ${video.transcript}`;
+            }).join('\n\n---\n\n');
+            noteText += `\n\nYouTube Videos with Transcripts:\n${transcripts}`;
+          }
+        }
+        
+        // Debug: Log if we found transcripts
+        if (hasTranscriptsInContent) {
+          const transcriptLength = contentText.length;
+          console.log(`📹 Found YouTube transcript in note "${n.title}": ${transcriptLength} characters of content (includes transcript)`);
+        } else if (attachments && Array.isArray(attachments) && attachments.some(att => att && att.type === 'youtube' && att.transcript)) {
+          const transcriptCount = attachments.filter(att => att && att.type === 'youtube' && att.transcript).length;
+          console.log(`📹 Found ${transcriptCount} YouTube transcript(s) in attachments for note "${n.title}"`);
+        }
+        
+        return noteText;
+      }).join('\n\n---\n\n');
 
       const conversationHistory = messages.map(m => `${m.role}: ${m.content}`).join('\n');
 
-      // For now, all models use Core.InvokeLLM until backend integrations are set up
-      const response = await base44.integrations.Core.InvokeLLM({
-        prompt: `${personalityStyles[personality]} ${detailStyles[detailLevel]}
+      // Debug: Check if transcripts are in the context
+      const hasTranscripts = notesContext.includes('YouTube Video') || notesContext.includes('Transcript:') || notesContext.includes('**YouTube Video:');
+      if (hasTranscripts) {
+        const transcriptMatches = (notesContext.match(/Transcript:/g) || []).length;
+        console.log(`📹 YouTube transcripts found in chat context (${transcriptMatches} transcript(s) detected)`);
+        console.log(`📝 Context length: ${notesContext.length} characters`);
+      } else {
+        console.warn(`⚠️ No YouTube transcripts found in chat context. Context length: ${notesContext.length} characters`);
+      }
 
-    User's memories:
-    ${notesContext}
+      const prompt = `${personalityStyles[personality]} ${detailStyles[detailLevel]}
 
-    Conversation history:
-    ${conversationHistory}
+User's memories (including YouTube video transcripts if available):
+${notesContext}
+${socialDataContext}
 
-    User: ${input}
+Conversation history:
+${conversationHistory}
 
-    Provide thoughtful, insightful responses based on their memories. Reference specific memories when relevant. Do not use emojis in your responses unless the user explicitly asks for them.`,
+User: ${input}
+
+IMPORTANT: 
+- If the user's memories include YouTube video transcripts, you MUST read and understand the actual content of those videos. Base your responses on what is actually discussed in the video transcripts, not on assumptions.
+- If social media interests are provided, use them to understand the user's preferences and provide personalized recommendations. Reference their interests from Pinterest, Instagram, etc. when making suggestions.
+- Reference specific video content or social interests when relevant. If the user asks about a video, use the transcript to provide accurate information about what was discussed.
+
+Provide thoughtful, insightful responses based on their memories and interests. Reference specific memories, video content, or social interests when relevant. Do not use emojis in your responses unless the user explicitly asks for them.`;
+
+      const aiResponse = await fetch('http://localhost:3001/api/ai/invoke', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: currentModel, prompt })
       });
 
-      // Stream the response word by word
-      const words = response.split(' ');
+      if (!aiResponse.ok) {
+        throw new Error(`AI API error: ${aiResponse.statusText}`);
+      }
+
+      // ✅ ROBUST PARSING: Handle both JSON and plain text
+      let aiText = '';
+      const contentType = aiResponse.headers.get('content-type');
+      
+      if (contentType && contentType.includes('application/json')) {
+        try {
+          const data = await aiResponse.json();
+          aiText = data.response || data.content || data.text || '';
+        } catch (jsonError) {
+          // Fallback to text if JSON is malformed
+          aiText = await aiResponse.text();
+        }
+      } else {
+        aiText = await aiResponse.text();
+      }
+
+      // Clean common issues (quotes, whitespace)
+      aiText = aiText.trim();
+      if (aiText.startsWith('"') && aiText.endsWith('"')) {
+        aiText = aiText.slice(1, -1).replace(/\\"/g, '"');
+      }
+
+      // Stream the response
+      const words = aiText.split(' ');
       let currentText = '';
 
       for (let i = 0; i < words.length; i++) {
@@ -193,15 +502,13 @@ export default function MemoryChatPage() {
           newMessages[assistantMessageIndex] = { role: 'assistant', content: currentText };
           return newMessages;
         });
-
-        // Delay between words (adjust for faster/slower typing)
         await new Promise(resolve => setTimeout(resolve, 30));
       }
 
       setLastMessageTime(Date.now());
 
-      // Save or update the memory card after streaming completes
-      const updatedMessages = [...messages, userMessage, { role: 'assistant', content: response }];
+      // Save chat to Supabase
+      const updatedMessages = [...messages, userMessage, { role: 'assistant', content: aiText }];
       const chatContent = updatedMessages.map(m => 
         `${m.role === 'user' ? 'Me' : 'AI'}: ${m.content}`
       ).join('\n\n');
@@ -215,42 +522,15 @@ export default function MemoryChatPage() {
         ? firstUserMessage.substring(0, 50) + '...' 
         : firstUserMessage;
 
-      if (currentChatNoteId) {
-        try {
-          await base44.entities.Note.update(currentChatNoteId, {
-            title: title,
-            content: chatContent,
-            attachments: allAttachments,
-          });
-        } catch (error) {
-          console.error('Error updating note:', error);
-          // Note was deleted, create a new one instead
-          const newNote = await base44.entities.Note.create({
-            title: title,
-            content: chatContent,
-            attachments: allAttachments,
-            storage_type: 'short_term',
-            source: 'ai',
-            tags: ['chat', 'conversation']
-          });
-          setCurrentChatNoteId(newNote.id);
-        }
-      } else {
-        const newNote = await base44.entities.Note.create({
-          title: title,
-          content: chatContent,
-          attachments: allAttachments,
-          storage_type: 'short_term',
-          source: 'ai',
-          tags: ['chat', 'conversation']
-        });
-        setCurrentChatNoteId(newNote.id);
-      }
+      await saveChatToNote(title, chatContent, allAttachments);
     } catch (error) {
       console.error('Chat error:', error);
       setMessages(prev => {
         const newMessages = [...prev];
-        newMessages[assistantMessageIndex] = { role: 'assistant', content: 'Sorry, I encountered an error.' };
+        newMessages[assistantMessageIndex] = { 
+          role: 'assistant', 
+          content: 'Sorry, I encountered an error. Please try again or check your AI proxy server.' 
+        };
         return newMessages;
       });
     } finally {
@@ -275,20 +555,20 @@ export default function MemoryChatPage() {
     setCurrentChatNoteId(null);
   };
 
-  const handleFileUpload = async (file) => {
-    try {
-      const { file_url } = await base44.integrations.Core.UploadFile({ file });
+  const handleFileUpload = (file) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
       const attachment = {
         id: Date.now(),
         type: file.type.startsWith('image/') ? 'image' : file.type.startsWith('video/') ? 'video' : 'file',
-        url: file_url,
+        url: e.target.result,
         name: file.name
       };
       setAttachments(prev => [...prev, attachment]);
       setShowAttachMenu(false);
-    } catch (error) {
-      console.error('Error uploading file:', error);
-    }
+    };
+    reader.readAsDataURL(file);
   };
 
   const handleLinkAdd = (url) => {
@@ -320,9 +600,16 @@ export default function MemoryChatPage() {
         }
       };
 
-      mediaRecorder.onstop = async () => {
+      mediaRecorder.onstop = () => {
         const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-        await transcribeAudio(audioBlob);
+        const audioUrl = URL.createObjectURL(audioBlob);
+        const attachment = {
+          id: Date.now(),
+          type: 'audio',
+          url: audioUrl,
+          name: 'Recording.webm'
+        };
+        setAttachments(prev => [...prev, attachment]);
         stream.getTracks().forEach(track => track.stop());
       };
 
@@ -338,26 +625,6 @@ export default function MemoryChatPage() {
     if (mediaRecorderRef.current && isRecording) {
       mediaRecorderRef.current.stop();
       setIsRecording(false);
-    }
-  };
-
-  const transcribeAudio = async (audioBlob) => {
-    setIsTranscribing(true);
-    try {
-      const audioFile = new File([audioBlob], 'recording.webm', { type: 'audio/webm' });
-      const { file_url } = await base44.integrations.Core.UploadFile({ file: audioFile });
-
-      const transcription = await base44.integrations.Core.InvokeLLM({
-        prompt: 'Transcribe this audio recording accurately. Return only the transcribed text without any additional commentary.',
-        file_urls: [file_url]
-      });
-
-      setInput(transcription);
-    } catch (error) {
-      console.error('Error transcribing audio:', error);
-      alert('Failed to transcribe audio. Please try again.');
-    } finally {
-      setIsTranscribing(false);
     }
   };
 
@@ -416,15 +683,10 @@ export default function MemoryChatPage() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent className="bg-white dark:bg-[#171515] border-gray-200 dark:border-gray-700">
-                  <SelectItem value="core">Core (Default)</SelectItem>
-                  <SelectItem value="gpt-3.5">GPT-3.5</SelectItem>
-                  <SelectItem value="gpt-4">GPT-4</SelectItem>
+                  <SelectItem value="gpt-3.5-turbo">GPT-3.5 Turbo</SelectItem>
                   <SelectItem value="gpt-4o">GPT-4o</SelectItem>
-                  <SelectItem value="gemini-pro">Gemini Pro</SelectItem>
-                  <SelectItem value="gemini-flash">Gemini Flash</SelectItem>
-                  <SelectItem value="claude-3-opus">Claude 3 Opus</SelectItem>
-                  <SelectItem value="claude-3-sonnet">Claude 3 Sonnet</SelectItem>
-                  <SelectItem value="claude-3-haiku">Claude 3 Haiku</SelectItem>
+                  <SelectItem value="gpt-4o-mini">GPT-4o Mini</SelectItem>
+                  <SelectItem value="claude-3-5-sonnet-20240620">Claude 3.5 Sonnet</SelectItem>
                 </SelectContent>
                 </Select>
                 </div>
@@ -481,7 +743,6 @@ export default function MemoryChatPage() {
                 </Button>
               </div>
 
-              {/* Follow-up questions as bubbles */}
               {followUpQuestions && (
                 <div className="mt-4">
                   <div className="flex items-center justify-between mb-2">
@@ -585,7 +846,6 @@ export default function MemoryChatPage() {
                     </Button>
                     </div>
 
-                    {/* Follow-up questions as bubbles */}
                     {followUpQuestions && (
                     <div className="mt-3">
                     <div className="flex items-center justify-between mb-2">
@@ -621,7 +881,6 @@ export default function MemoryChatPage() {
 
       <SettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
 
-      {/* Attachment Menu Dialog */}
       <Dialog open={showAttachMenu} onOpenChange={setShowAttachMenu}>
         <DialogContent className="bg-white dark:bg-[#171515] border-gray-200 dark:border-gray-700 text-black dark:text-white">
           <DialogHeader>

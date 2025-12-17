@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Sparkles, TrendingUp, Clock, X } from 'lucide-react';
-import { base44 } from '@/api/base44Client';
+// ❌ Removed base44 import
 import { format } from 'date-fns';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 
@@ -13,22 +13,21 @@ export default function RecommendationsPanel({ notes, onSelectNote }) {
   const [showPanel, setShowPanel] = useState(false);
 
   useEffect(() => {
-    generateRecommendations();
+    if (notes.length > 0) {
+      generateRecommendations();
+    }
   }, [notes]);
 
   const generateRecommendations = async () => {
     setIsLoading(true);
     try {
-      // Track user behavior
       const behavior = JSON.parse(localStorage.getItem('lykinsai_behavior') || '{}');
       const recentlyViewed = behavior.recentlyViewed || [];
       const frequentTags = behavior.frequentTags || [];
       const frequentFolders = behavior.frequentFolders || [];
 
-      // Get recently active notes
       const recentNotes = notes.slice(0, 10);
       
-      // Build context for AI
       const behaviorContext = `
 Recent Notes: ${recentlyViewed.slice(0, 5).map(id => {
   const note = notes.find(n => n.id === id);
@@ -42,8 +41,7 @@ Frequent Folders: ${frequentFolders.slice(0, 3).join(', ')}
         `ID: ${n.id}\nTitle: ${n.title}\nTags: ${n.tags?.join(', ') || 'None'}\nFolder: ${n.folder || 'Uncategorized'}`
       ).join('\n\n');
 
-      const aiRecommendations = await base44.integrations.Core.InvokeLLM({
-        prompt: `Based on user behavior and their notes, suggest 3-5 relevant actions or notes they should review.
+      const prompt = `Based on user behavior and their notes, suggest 3-5 relevant actions or notes they should review.
 
 User Behavior:
 ${behaviorContext}
@@ -57,25 +55,29 @@ Provide recommendations like:
 - "Revisit this note from last week: [title]"
 - "Explore notes tagged with [tag]"
 
-Return specific, actionable recommendations.`,
-        response_json_schema: {
-          type: 'object',
-          properties: {
-            recommendations: {
-              type: 'array',
-              items: {
-                type: 'object',
-                properties: {
-                  type: { type: 'string' },
-                  title: { type: 'string' },
-                  description: { type: 'string' },
-                  noteId: { type: 'string' }
-                }
-              }
-            }
-          }
-        }
+Return ONLY a JSON object: {"recommendations": [{"type": "type", "title": "title", "description": "description", "noteId": "id"}, ...]}`;
+
+      const response = await fetch('http://localhost:3001/api/ai/invoke', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'gpt-3.5-turbo', prompt })
       });
+
+      if (!response.ok) throw new Error('AI request failed');
+      const { response: aiText } = await response.json();
+
+      let aiRecommendations = { recommendations: [] };
+      try {
+        aiRecommendations = JSON.parse(aiText);
+      } catch (e) {
+        // Fallback parsing
+        const jsonMatch = aiText.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          try {
+            aiRecommendations = JSON.parse(jsonMatch[0]);
+          } catch {}
+        }
+      }
 
       setRecommendations(aiRecommendations.recommendations || []);
     } catch (error) {
@@ -128,7 +130,6 @@ Return specific, actionable recommendations.`,
         </Button>
       </div>
 
-      {/* Recommendations Panel */}
       <Dialog open={showPanel} onOpenChange={setShowPanel}>
         <DialogContent className="bg-white dark:bg-[#171515] border-gray-200 dark:border-gray-700 max-w-2xl">
           <DialogHeader>

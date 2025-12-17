@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Sparkles, Loader2, Copy, Check } from 'lucide-react';
-import { base44 } from '@/api/base44Client';
+// ❌ Removed base44 import
 
 export default function NoteSummarization({ note, onUpdate }) {
   const [summary, setSummary] = useState(note.summary || null);
@@ -10,8 +10,7 @@ export default function NoteSummarization({ note, onUpdate }) {
   const [summaryType, setSummaryType] = useState('paragraph');
   const [copied, setCopied] = useState(false);
 
-  React.useEffect(() => {
-    // Only generate if not already saved
+  useEffect(() => {
     if (!note.summary && note.content) {
       generateSummary();
     }
@@ -37,37 +36,30 @@ export default function NoteSummarization({ note, onUpdate }) {
         detailed: 'Create a detailed summary with: 1) Overview, 2) Key Details, 3) Important Insights, 4) Conclusions. Be comprehensive and thorough.'
       };
 
-      // Fetch content from attached links/videos
-      let attachmentContext = '';
-      if (note.attachments && note.attachments.length > 0) {
-        const linkAttachments = note.attachments.filter(a => a.type === 'link');
-        for (const attachment of linkAttachments.slice(0, 3)) {
-          try {
-            const fetchedContent = await base44.integrations.Core.InvokeLLM({
-              prompt: `Fetch and summarize the key content from this URL: ${attachment.url}. Focus on main ideas, key points, and important information.`,
-              add_context_from_internet: true
-            });
-            attachmentContext += `\n\nContent from ${attachment.name || attachment.url}:\n${fetchedContent}`;
-          } catch (error) {
-            console.error('Error fetching attachment content:', error);
-          }
-        }
-      }
+      // ⚠️ Removed attachment fetching (your proxy doesn't support internet context)
+      // If needed later, add a separate route like /api/fetch-url
 
-      const summaryText = await base44.integrations.Core.InvokeLLM({
-        prompt: `Summarize the following note. ${typeInstructions[summaryType]} ${personalityTones[personality]}
+      const prompt = `Summarize the following note. ${typeInstructions[summaryType]} ${personalityTones[personality]}
 
 Title: ${note.title}
-Content: ${note.content}${attachmentContext}
+Content: ${note.content}
 
-Provide a clear, well-structured summary.`
+Provide a clear, well-structured summary.`;
+
+      const response = await fetch('http://localhost:3001/api/ai/invoke', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'gpt-3.5-turbo', prompt })
       });
+
+      if (!response.ok) throw new Error('AI request failed');
+      const { response: summaryText } = await response.json();
 
       setSummary(summaryText);
       
-      // Save to note
+      // Save to note via callback
       if (onUpdate) {
-        await onUpdate({ summary: summaryText });
+        onUpdate({ summary: summaryText });
       }
     } catch (error) {
       console.error('Error generating summary:', error);

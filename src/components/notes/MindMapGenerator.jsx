@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Brain, Loader2, Download, Sparkles } from 'lucide-react';
-import { base44 } from '@/api/base44Client';
+// ❌ Removed base44 import
 
 export default function MindMapGenerator({ note, allNotes, onUpdate }) {
   const [mindMap, setMindMap] = useState(note.mind_map || null);
@@ -10,37 +10,21 @@ export default function MindMapGenerator({ note, allNotes, onUpdate }) {
   const generateMindMap = async () => {
     setIsGenerating(true);
     try {
-      // Get connected notes content
       const connectedNotesContent = note.connected_notes 
         ? allNotes
             .filter(n => n && note.connected_notes.includes(n.id))
-            .map(n => `- ${n.title}: ${n.content.substring(0, 100)}`)
+            .map(n => `- ${n.title}: ${n.content?.substring(0, 100) || ''}`)
             .join('\n')
         : 'No connected notes';
 
-      // Fetch content from attached links/videos
-      let attachmentContext = '';
-      if (note.attachments && note.attachments.length > 0) {
-        const linkAttachments = note.attachments.filter(a => a.type === 'link');
-        for (const attachment of linkAttachments.slice(0, 3)) {
-          try {
-            const fetchedContent = await base44.integrations.Core.InvokeLLM({
-              prompt: `Fetch and summarize the key content from this URL: ${attachment.url}. Focus on main ideas, key points, and important information.`,
-              add_context_from_internet: true
-            });
-            attachmentContext += `\n\nContent from ${attachment.name || attachment.url}:\n${fetchedContent}`;
-          } catch (error) {
-            console.error('Error fetching attachment content:', error);
-          }
-        }
-      }
+      // ⚠️ Removed attachment fetching (your proxy can't fetch URLs)
+      // If needed later, add a separate route like /api/fetch-url
 
-      const mindMapData = await base44.integrations.Core.InvokeLLM({
-        prompt: `Create a mind map structure for this note and its connections.
+      const prompt = `Create a mind map structure for this note and its connections.
 
 Main Note:
 Title: ${note.title}
-Content: ${note.content}${attachmentContext}
+Content: ${note.content}
 Tags: ${note.tags?.join(', ') || 'None'}
 
 Connected Notes:
@@ -52,62 +36,50 @@ Create a hierarchical mind map with:
 3. Secondary branches (sub-topics, connected ideas)
 4. Connections (relationships between nodes)
 
-Return as a structured tree with nodes and their relationships.`,
-        response_json_schema: {
-          type: 'object',
-          properties: {
-            central: { 
-              type: 'object',
-              properties: {
-                id: { type: 'string' },
-                label: { type: 'string' },
-                color: { type: 'string' }
-              }
-            },
-            branches: {
-              type: 'array',
-              items: {
-                type: 'object',
-                properties: {
-                  id: { type: 'string' },
-                  label: { type: 'string' },
-                  color: { type: 'string' },
-                  subnodes: {
-                    type: 'array',
-                    items: {
-                      type: 'object',
-                      properties: {
-                        id: { type: 'string' },
-                        label: { type: 'string' }
-                      }
-                    }
-                  }
-                }
-              }
-            },
-            connections: {
-              type: 'array',
-              items: {
-                type: 'object',
-                properties: {
-                  from: { type: 'string' },
-                  to: { type: 'string' },
-                  label: { type: 'string' }
-                }
-              }
-            }
-          }
-        }
+Return ONLY a JSON object with this structure:
+{
+  "central": { "id": "string", "label": "string", "color": "string" },
+  "branches": [
+    {
+      "id": "string",
+      "label": "string",
+      "color": "string",
+      "subnodes": [
+        { "id": "string", "label": "string" }
+      ]
+    }
+  ],
+  "connections": [
+    { "from": "string", "to": "string", "label": "string" }
+  ]
+}`;
+
+      const response = await fetch('http://localhost:3001/api/ai/invoke', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'gpt-3.5-turbo', prompt })
       });
 
-      setMindMap(mindMapData);
-      
-      // Save to note
-      if (onUpdate) {
-        try {
-          await onUpdate({ mind_map: mindMapData });
-        } catch (updateError) {
-          console.warn('Note may have been deleted, skipping update', updateError);
+      if (!response.ok) throw new Error('AI request failed');
+      const { response: aiText } = await response.json();
+
+      let mindMapData = null;
+      try {
+        mindMapData = JSON.parse(aiText);
+      } catch (e) {
+        // Fallback parsing
+        const jsonMatch = aiText.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          try {
+            mindMapData = JSON.parse(jsonMatch[0]);
+          } catch {}
+        }
+      }
+
+      if (mindMapData) {
+        setMindMap(mindMapData);
+        if (onUpdate) {
+          onUpdate({ mind_map: mindMapData });
         }
       }
     } catch (error) {
@@ -125,14 +97,11 @@ Return as a structured tree with nodes and their relationships.`,
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `mindmap-${note.title}.svg`;
+      link.download = `mindmap-${note.title || 'untitled'}.svg`;
       link.click();
       URL.revokeObjectURL(url);
     }
   };
-
-  // Removed auto-generation to prevent rate limits
-  // Mind map must be triggered manually via button
 
   return (
     <div className="clay-card p-6 space-y-4">
@@ -199,8 +168,7 @@ Return as a structured tree with nodes and their relationships.`,
               const branchY = 300 + Math.sin(radians) * 200;
 
               return (
-                <g key={branch.id}>
-                  {/* Line from center to branch */}
+                <g key={branch.id || idx}>
                   <line
                     x1="400"
                     y1="300"
@@ -211,7 +179,6 @@ Return as a structured tree with nodes and their relationships.`,
                     opacity="0.5"
                   />
                   
-                  {/* Branch node */}
                   <circle
                     cx={branchX}
                     cy={branchY}
@@ -237,7 +204,7 @@ Return as a structured tree with nodes and their relationships.`,
                     const subY = branchY + Math.sin(subRadians) * 100;
 
                     return (
-                      <g key={subnode.id}>
+                      <g key={subnode.id || subIdx}>
                         <line
                           x1={branchX}
                           y1={branchY}

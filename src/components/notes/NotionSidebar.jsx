@@ -1,7 +1,6 @@
 import React from 'react';
 import { Settings, ChevronLeft, ChevronRight, Plus, Clock, Archive, Search, MessageCircle, Tags, Bell, Trash2, Crown, Folder } from 'lucide-react';
-import { useQuery } from '@tanstack/react-query';
-import { base44 } from '@/api/base44Client';
+// ❌ Removed base44 import and useQuery
 import {
   Tooltip,
   TooltipContent,
@@ -9,12 +8,16 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 
-export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, onOpenChat, onOpenSettings, isCollapsed, onToggleCollapse }) {
-  const { data: folders = [] } = useQuery({
-    queryKey: ['folders'],
-    queryFn: () => base44.entities.Folder.list(),
-  });
-
+export default function NotionSidebar({ 
+  activeView, 
+  onViewChange, 
+  onOpenSearch, 
+  onOpenChat, 
+  onOpenSettings, 
+  isCollapsed, 
+  onToggleCollapse,
+  folders = [] // ✅ Receive folders as a prop
+}) {
   const navItems = [
     { id: 'create', icon: Plus, label: 'Create', tooltip: 'Create new memories', onClick: () => window.location.href = '/Create' },
     { id: 'memory', icon: Clock, label: 'Memory', tooltip: 'View all your memories', onClick: () => window.location.href = '/Memory' },
@@ -165,7 +168,6 @@ export default function NotionSidebar({ activeView, onViewChange, onOpenSearch, 
           )}
         </nav>
 
-        {/* Settings and Billing at bottom */}
         <div className="mt-auto pt-3 space-y-2">
           <Tooltip>
             <TooltipTrigger asChild>

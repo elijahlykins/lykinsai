@@ -1,14 +1,16 @@
 import { useEffect } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { base44 } from '@/api/base44Client';
 import { differenceInDays } from 'date-fns';
 
-export default function TrashCleanup({ notes }) {
+export default function TrashCleanup({ notes, onDeleteNotes }) {
   const queryClient = useQueryClient();
 
   const cleanupMutation = useMutation({
     mutationFn: async (noteIds) => {
-      await Promise.all(noteIds.map(id => base44.entities.Note.delete(id)));
+      // Notify parent to delete via Supabase
+      if (onDeleteNotes) {
+        await onDeleteNotes(noteIds);
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['notes'] });
@@ -28,9 +30,9 @@ export default function TrashCleanup({ notes }) {
     };
 
     cleanupOldTrash();
-    const interval = setInterval(cleanupOldTrash, 24 * 60 * 60 * 1000);
+    const interval = setInterval(cleanupOldTrash, 24 * 60 * 60 * 1000); // Every 24 hours
     return () => clearInterval(interval);
-  }, [notes]);
+  }, [notes, onDeleteNotes]);
 
   return null;
 }
