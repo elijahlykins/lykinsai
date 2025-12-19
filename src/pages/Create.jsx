@@ -12,7 +12,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Save, Plus, Send, Loader2, MessageSquare, Search, Zap, Share2, Download } from 'lucide-react';
+import { Save, Plus, Send, Loader2, MessageSquare, Search, Zap, Share2, Download, Link2 } from 'lucide-react';
 
 import { supabase } from '@/lib/supabase';
 
@@ -69,6 +69,7 @@ export default function CreatePage() {
 
   const [showChat, setShowChat] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
+  const [showSuggestions, setShowSuggestions] = useState(false);
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState('');
   const [isChatLoading, setIsChatLoading] = useState(false);
@@ -148,12 +149,28 @@ export default function CreatePage() {
   }, [noteId, allNotes]);
 
   const handleNewNote = async () => {
-    if (noteCreatorRef.current) {
-      await noteCreatorRef.current.handleSave();
-      noteCreatorRef.current.reset();
+    try {
+      if (noteCreatorRef.current) {
+        // Try to save current note, but don't block if it fails
+        try {
+          await noteCreatorRef.current.handleSave();
+        } catch (error) {
+          console.warn('Error saving note before creating new one:', error);
+          // Continue anyway - don't block new note creation
+        }
+        // Always reset, even if save failed
+        noteCreatorRef.current.reset();
+      }
+      setChatMessages([]);
+      navigate(createPageUrl('Create'));
+    } catch (error) {
+      console.error('Error creating new note:', error);
+      // Still try to navigate and reset
+      if (noteCreatorRef.current) {
+        noteCreatorRef.current.reset();
+      }
+      navigate(createPageUrl('Create'));
     }
-    setChatMessages([]);
-    navigate(createPageUrl('Create'));
   };
 
   const handleChatSend = async () => {
@@ -379,6 +396,14 @@ If the user asks about old memories or references past ideas, refer to the memor
             </Button>
 
             <Button
+              onClick={() => setShowSuggestions(!showSuggestions)}
+              variant="ghost"
+              className="rounded-full px-4 h-10 hover:bg-gray-100 dark:hover:bg-gray-700"
+            >
+              Suggestions
+            </Button>
+
+            <Button
               onClick={() => noteCreatorRef.current?.handleSave()}
               variant="ghost"
               className="rounded-full w-10 h-10 p-0 hover:bg-gray-100 dark:hover:bg-gray-700"
@@ -437,6 +462,7 @@ If the user asks about old memories or references past ideas, refer to the memor
               onInsertImageRequested={() => fileInputRef.current?.click()}
               sidebarCollapsed={sidebarCollapsed}
               liveAIMode={liveAIMode}
+              showSuggestions={showSuggestions}
             />
           </div>
         </div>

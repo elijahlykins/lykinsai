@@ -3,10 +3,10 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
-import { Mic, Square, Plus, LinkIcon, Link2, Image, Video, FileText, Tag, Folder, Bell, Loader2, Lightbulb, AlignLeft, X, GripHorizontal, Brain, Sparkles, Network, SearchCheck, Save } from 'lucide-react';
+import { Mic, Square, Plus, LinkIcon, Link2, Image, Video, FileText, Tag, Folder, Bell, Loader2, Lightbulb, AlignLeft, X, GripHorizontal, Brain, Sparkles, Network, SearchCheck, Save, Music } from 'lucide-react';
 import { createPageUrl } from '../../utils';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import ReactQuill from 'react-quill';
 import 'react-quill/dist/quill.bubble.css';
@@ -81,19 +81,19 @@ const callAI = async (prompt, model = null) => {
       }
     }
 
-    const response = await fetch('http://localhost:3001/api/ai/invoke', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+  const response = await fetch('http://localhost:3001/api/ai/invoke', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: aiModel, prompt })
-    });
+  });
 
-    if (!response.ok) {
+  if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
       throw new Error(errorData.error || `AI API error: ${response.statusText}`);
-    }
+  }
 
-    const data = await response.json();
-    return data.response;
+  const data = await response.json();
+  return data.response;
   } catch (error) {
     // If server is not running, return a helpful message
     if (error.message.includes('Failed to fetch') || error.message.includes('ERR_CONNECTION_REFUSED')) {
@@ -115,7 +115,8 @@ const NoteCreator = React.forwardRef(({
   noteId,
   onInsertImageRequested, // ✅ For image insertion
   sidebarCollapsed = false, // ✅ For spacing when sidebar is collapsed
-  liveAIMode = false // ✅ Live AI toggle from parent
+  liveAIMode = false, // ✅ Live AI toggle from parent
+  showSuggestions = false // ✅ Suggestions panel toggle from parent
 }, ref) => {
   const [title, setTitle] = useState('');
   const [showSlashMenu, setShowSlashMenu] = useState(false);
@@ -431,13 +432,38 @@ const NoteCreator = React.forwardRef(({
                   console.log(`📎 Raw attachments:`, JSON.stringify(loadedAttachments, null, 2));
                   
                   // Normalize attachments - ensure YouTube videos are properly identified
+                  // Also ensure audio files keep their type
+                  const audioExts = ['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac', 'wma'];
                   loadedAttachments = loadedAttachments.map(att => {
                     if (!att) {
                       console.warn('⚠️ Null attachment found');
                       return att;
                     }
                     
-                    console.log(`🔍 Checking attachment:`, { id: att.id, type: att.type, url: att.url, hasUrl: !!att.url });
+                    console.log(`🔍 Checking attachment:`, { 
+                      id: att.id, 
+                      name: att.name,
+                      type: att.type, 
+                      url: att.url?.substring(0, 50), 
+                      hasUrl: !!att.url,
+                      fileExtension: att.fileExtension
+                    });
+                    
+                    // Ensure audio files keep their type
+                    if (att.type === 'audio' || (att.url && att.url.startsWith('data:audio/'))) {
+                      console.log('✅ Preserving audio attachment type');
+                      return att;
+                    }
+                    
+                    // Check if it's an audio file by extension but type is missing/wrong
+                    const ext = (att.fileExtension || att.name?.split('.').pop() || '').toLowerCase();
+                    if (audioExts.includes(ext) && att.type !== 'audio') {
+                      console.log(`⚠️ Audio file detected but type is "${att.type}", fixing to "audio"`);
+                      return {
+                        ...att,
+                        type: 'audio'
+                      };
+                    }
                     
                     // If it's a link with a YouTube URL, convert it to a YouTube attachment
                     if ((att.type === 'link' || !att.type || att.type === 'file') && att.url) {
@@ -496,7 +522,18 @@ const NoteCreator = React.forwardRef(({
           
           console.log(`💾 About to set attachments: ${loadedAttachments.length} attachment(s)`, loadedAttachments);
           const youtubeCount = loadedAttachments.filter(a => a && (a.type === 'youtube' || (a.url && (a.url.includes('youtube.com') || a.url.includes('youtu.be'))))).length;
+          const audioCount = loadedAttachments.filter(a => a && a.type === 'audio').length;
           console.log(`💾 YouTube attachments in loadedAttachments: ${youtubeCount}`);
+          console.log(`💾 Audio attachments in loadedAttachments: ${audioCount}`);
+          loadedAttachments.forEach((att, idx) => {
+            if (att) {
+              console.log(`💾 Attachment ${idx}:`, {
+                name: att.name,
+                type: att.type,
+                fileExtension: att.fileExtension
+              });
+            }
+          });
           
           setContent(contentForEditor); // Set content WITHOUT the attachments JSON marker
           setAttachments(loadedAttachments);
@@ -515,7 +552,7 @@ const NoteCreator = React.forwardRef(({
           const shouldReload = lastNoteIdRef.current !== noteId || attachments.length === 0;
           if (shouldReload) {
             loadNote();
-          } else {
+    } else {
             console.log(`⏸️ Skipping note reload to preserve ${attachments.length} attachment(s)`);
           }
         } else {
@@ -614,15 +651,15 @@ const NoteCreator = React.forwardRef(({
           
           // Build note data with only fields that exist
           const noteData = {
-            title: draft.title || 'Unsaved Draft',
-            content: draft.content || '',
-            tags: draft.tags || [],
-            folder: draft.folder || 'Uncategorized',
-            reminder: draft.reminder || null,
-            color: randomColor,
-            trashed: true,
-            trash_date: new Date().toISOString(),
-            source: 'user'
+              title: draft.title || 'Unsaved Draft',
+              content: draft.content || '',
+              tags: draft.tags || [],
+              folder: draft.folder || 'Uncategorized',
+              reminder: draft.reminder || null,
+              color: randomColor,
+              trashed: true,
+              trash_date: new Date().toISOString(),
+              source: 'user'
           };
           
           // Add attachments if column exists
@@ -964,7 +1001,7 @@ const NoteCreator = React.forwardRef(({
         color: randomColor,
         source: 'user'
       };
-      
+
       if (internalNoteId) {
         // Update existing note - try with minimal columns first to avoid 400 errors
         try {
@@ -1009,7 +1046,7 @@ const NoteCreator = React.forwardRef(({
                 
                 if (fetchError) {
                   console.error('⚠️ Note does not exist or cannot be fetched:', fetchError);
-                } else {
+      } else {
                   console.log('✅ Note exists, but update failed:', existingNote);
                 }
               } catch (fetchErr) {
@@ -1404,57 +1441,289 @@ const NoteCreator = React.forwardRef(({
   };
 
   const handleFileUpload = async (file) => {
-    // Handle images
-    if (file.type.startsWith('image/')) {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const attachment = {
-          id: Date.now() + Math.random(),
-          type: 'image',
-          url: e.target.result,
-          name: file.name,
-          caption: '',
-          group: 'Ungrouped'
-        };
-        setAttachments(prev => [...prev, attachment]);
-      };
-      reader.readAsDataURL(file);
-    } 
-    // Handle videos
-    else if (file.type.startsWith('video/')) {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const attachment = {
-          id: Date.now() + Math.random(),
-          type: 'video',
-          url: e.target.result,
-          name: file.name,
-          caption: '',
-          group: 'Ungrouped'
-        };
-        setAttachments(prev => [...prev, attachment]);
-      };
-      reader.readAsDataURL(file);
+    if (!file) return;
+
+    // Determine file type based on MIME type and extension
+    const fileName = file.name.toLowerCase();
+    const fileExtension = fileName.split('.').pop() || '';
+    let fileType = 'file';
+    
+    // Check MIME type first, then fall back to extension
+    const audioExts = ['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac', 'wma'];
+    const videoExts = ['mp4', 'mov', 'avi', 'mkv', 'webm', 'm4v', 'wmv', 'flv'];
+    const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'heic', 'tiff', 'ico'];
+    
+    console.log('🔍 File upload detection:', {
+      fileName: file.name,
+      lowerCaseName: fileName,
+      fileExtension: fileExtension,
+      mimeType: file.type || 'MISSING',
+      hasAudioExtension: audioExts.includes(fileExtension),
+      hasAudioMime: file.type && file.type.startsWith('audio/')
+    });
+    
+    if (file.type.startsWith('image/') || imageExts.includes(fileExtension)) {
+      fileType = 'image';
+    } else if (file.type.startsWith('video/') || videoExts.includes(fileExtension)) {
+      fileType = 'video';
+    } else if (file.type.startsWith('audio/') || audioExts.includes(fileExtension)) {
+      fileType = 'audio';
+      console.log('✅ DETECTED AS AUDIO FILE');
+    } else if (file.type === 'application/pdf' || fileExtension === 'pdf') {
+      fileType = 'pdf';
+    } else if (
+      file.type === 'application/msword' || 
+      file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+      fileExtension === 'doc' || 
+      fileExtension === 'docx'
+    ) {
+      fileType = 'word';
+    } else if (
+      file.type === 'application/vnd.ms-excel' ||
+      file.type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+      fileExtension === 'xls' ||
+      fileExtension === 'xlsx'
+    ) {
+      fileType = 'excel';
+    } else if (
+      file.type === 'application/vnd.ms-powerpoint' ||
+      file.type === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
+      fileExtension === 'ppt' ||
+      fileExtension === 'pptx'
+    ) {
+      fileType = 'powerpoint';
+    } else if (file.type.startsWith('text/') || fileExtension === 'csv') {
+      fileType = 'text';
     }
-    // Handle other files (documents, etc.)
-    else {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const attachment = {
-          id: Date.now() + Math.random(),
-          type: 'file',
-          url: e.target.result,
-          name: file.name,
-          caption: '',
-          group: 'Ungrouped',
-          fileType: file.type,
-          fileSize: file.size
-        };
-        setAttachments(prev => [...prev, attachment]);
-      };
-      reader.readAsDataURL(file);
+    
+    // Final safety check - if still 'file' but has audio extension, force to audio
+    if (fileType === 'file' && audioExts.includes(fileExtension)) {
+      console.log('⚠️ File type was "file", but extension suggests audio. FORCING to audio.');
+      fileType = 'audio';
     }
+    
+    console.log('📋 Final file type detection:', {
+      fileName: file.name,
+      detectedType: fileType,
+      mimeType: file.type,
+      extension: fileExtension
+    });
+
+    // Create attachment with base64 data URL
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const attachment = {
+        id: Date.now() + Math.random(),
+        type: fileType, // CRITICAL: This must be 'audio' for audio files
+        url: e.target.result,
+        name: file.name,
+        caption: '',
+        group: 'Ungrouped',
+        fileType: file.type || (fileExtension === 'mp3' ? 'audio/mpeg' : file.type), // Fallback MIME type
+        fileSize: file.size,
+        fileExtension: fileExtension,
+        extractedText: null, // Will be populated for text-extractable files
+        isLoading: true
+      };
+
+      const result = e.target.result;
+      console.log('🎵 Creating attachment:', {
+        name: file.name,
+        detectedType: fileType,
+        attachmentType: attachment.type, // Verify this is 'audio'
+        mimeType: file.type || 'MISSING',
+        fileType: attachment.fileType,
+        extension: fileExtension,
+        urlLength: typeof result === 'string' ? result.length : 'ArrayBuffer',
+        urlPrefix: typeof result === 'string' ? result.substring(0, 50) : 'ArrayBuffer',
+        isAudio: attachment.type === 'audio'
+      });
+      
+      // CRITICAL CHECK: Verify the attachment type is correct
+      if (audioExts.includes(fileExtension) && attachment.type !== 'audio') {
+        console.error('❌ ERROR: Audio file detected but attachment.type is not "audio"!', {
+          fileName: file.name,
+          extension: fileExtension,
+          attachmentType: attachment.type,
+          fileType: fileType
+        });
+        // Force fix it
+        attachment.type = 'audio';
+        console.log('✅ Fixed attachment type to "audio"');
+      }
+
+      // Add attachment immediately (with loading state)
+        setAttachments(prev => [...prev, attachment]);
+
+      // Extract text/content for all extractable file types
+      try {
+        let extractedText = null;
+        
+        if (fileType === 'pdf') {
+          // Extract text from PDF using PDF.js
+          extractedText = await extractTextFromPDF(file);
+        } else if (fileType === 'word') {
+          // Extract text from Word document
+          extractedText = await extractTextFromWord(file);
+        } else if (fileType === 'excel') {
+          // Extract text/data from Excel file
+          extractedText = await extractTextFromExcel(file);
+        } else if (fileType === 'powerpoint') {
+          // Extract text from PowerPoint file
+          extractedText = await extractTextFromPowerPoint(file);
+        } else if (fileType === 'text' || fileExtension === 'csv') {
+          // Read text file directly (including CSV)
+          extractedText = await file.text();
+        }
+
+        // Update attachment with extracted text
+        if (extractedText) {
+          console.log(`✅ Extracted ${extractedText.length} characters from "${file.name}" (type: ${fileType})`);
+          setAttachments(prev => prev.map(att => 
+            att.id === attachment.id 
+              ? { ...att, extractedText, isLoading: false }
+              : att
+          ));
+    } else {
+          console.log(`⚠️ No text extracted from "${file.name}" (type: ${fileType})`);
+          setAttachments(prev => prev.map(att => 
+            att.id === attachment.id 
+              ? { ...att, isLoading: false }
+              : att
+          ));
+        }
+      } catch (error) {
+        console.error('Error extracting text from file:', error);
+        // Update attachment to remove loading state even if extraction failed
+        setAttachments(prev => prev.map(att => 
+          att.id === attachment.id 
+            ? { ...att, isLoading: false }
+            : att
+        ));
+      }
+    };
+    reader.readAsDataURL(file);
     setShowAttachMenu(false);
+  };
+
+  // Extract text from PDF using PDF.js
+  const extractTextFromPDF = async (file) => {
+    try {
+      // Dynamically import pdfjs-dist
+      const pdfjsLib = await import('pdfjs-dist');
+      // Set worker source - use CDN for compatibility
+      if (typeof window !== 'undefined') {
+        pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
+      }
+      
+      const arrayBuffer = await file.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      
+      let fullText = '';
+      const maxPages = Math.min(pdf.numPages, 50); // Limit to 50 pages for performance
+      for (let i = 1; i <= maxPages; i++) {
+        const page = await pdf.getPage(i);
+        const textContent = await page.getTextContent();
+        const pageText = textContent.items
+          .map(item => (item && typeof item === 'object' && 'str' in item ? item.str : ''))
+          .filter(str => str && str.trim())
+          .join(' ');
+        fullText += pageText + '\n\n';
+      }
+      
+      if (pdf.numPages > 50) {
+        fullText += `\n\n[Note: Document has ${pdf.numPages} pages. Only first 50 pages extracted.]`;
+      }
+      
+      return fullText.trim();
+    } catch (error) {
+      console.error('Error extracting PDF text:', error);
+      // Return null so the PDF can still be viewed in iframe
+      return null;
+    }
+  };
+
+  // Extract text from Word document
+  const extractTextFromWord = async (file) => {
+    try {
+      // For .docx files, use mammoth.js
+      if (file.name.toLowerCase().endsWith('.docx')) {
+        const mammoth = await import('mammoth');
+        const arrayBuffer = await file.arrayBuffer();
+        const result = await mammoth.extractRawText({ arrayBuffer });
+        return result.value || null;
+      }
+      // For .doc files (old format), we can't easily extract text client-side
+      return null;
+    } catch (error) {
+      console.error('Error extracting Word document text:', error);
+      return null;
+    }
+  };
+
+  // Extract text/data from Excel file
+  const extractTextFromExcel = async (file) => {
+    try {
+      const XLSX = await import('xlsx');
+      const arrayBuffer = await file.arrayBuffer();
+      const workbook = XLSX.read(arrayBuffer, { type: 'array' });
+      
+      let fullText = '';
+      
+      // Extract text from all sheets
+      workbook.SheetNames.forEach((sheetName, index) => {
+        const sheet = workbook.Sheets[sheetName];
+        const sheetData = XLSX.utils.sheet_to_csv(sheet);
+        
+        if (workbook.SheetNames.length > 1) {
+          fullText += `\n\n--- Sheet ${index + 1}: ${sheetName} ---\n\n`;
+        }
+        fullText += sheetData;
+      });
+      
+      return fullText.trim() || null;
+    } catch (error) {
+      console.error('Error extracting Excel file content:', error);
+      return null;
+    }
+  };
+
+  // Extract text from PowerPoint file
+  const extractTextFromPowerPoint = async (file) => {
+    try {
+      // For .pptx files, we can extract text from XML
+      if (file.name.toLowerCase().endsWith('.pptx')) {
+        const JSZip = await import('jszip');
+        const zip = await JSZip.loadAsync(file);
+        
+        let fullText = '';
+        const slideFiles = Object.keys(zip.files).filter(name => 
+          name.startsWith('ppt/slides/slide') && name.endsWith('.xml')
+        );
+        
+        for (const slideFile of slideFiles) {
+          const slideContent = await zip.files[slideFile].async('string');
+          // Extract text from XML (simple regex extraction)
+          const textMatches = slideContent.match(/<a:t[^>]*>([^<]*)<\/a:t>/g);
+          if (textMatches) {
+            textMatches.forEach(match => {
+              const text = match.replace(/<[^>]*>/g, '');
+              if (text.trim()) {
+                fullText += text.trim() + '\n';
+              }
+            });
+          }
+          fullText += '\n';
+        }
+        
+        return fullText.trim() || null;
+      }
+      // For .ppt files (old format), we can't easily extract text client-side
+      return null;
+    } catch (error) {
+      console.error('Error extracting PowerPoint file content:', error);
+      return null;
+    }
   };
 
   const handleLinkAdd = async (url) => {
@@ -1701,10 +1970,10 @@ const NoteCreator = React.forwardRef(({
       const tempAttachmentId = Date.now() + Math.random();
       const tempAttachment = {
         id: tempAttachmentId,
-        type: 'link',
-        url: url.trim(),
+      type: 'link',
+      url: url.trim(),
         name: 'Scanning website...',
-        caption: '',
+      caption: '',
         group: 'Ungrouped',
         scanning: true,
         scrapedContent: null
@@ -1797,13 +2066,13 @@ const NoteCreator = React.forwardRef(({
       }
       // Only set dragging if not already dragging (avoid unnecessary state updates)
       if (!isDragging) {
-        setIsDragging(true);
+      setIsDragging(true);
       }
     }
   };
 
   const handleDragLeave = (e) => {
-    e.preventDefault();
+      e.preventDefault();
     e.stopPropagation();
     // Check if we're actually leaving the drop zone
     // relatedTarget might be null or a child element
@@ -1817,7 +2086,7 @@ const NoteCreator = React.forwardRef(({
         clearTimeout(dragTimeoutRef.current);
       }
       dragTimeoutRef.current = setTimeout(() => {
-        setIsDragging(false);
+      setIsDragging(false);
         dragTimeoutRef.current = null;
       }, 150);
     }
@@ -2014,10 +2283,10 @@ const NoteCreator = React.forwardRef(({
           setIsDragging(false);
         }
         return;
-      } else {
+    } else {
         console.log('⚠️ Dropped text is not a valid URL:', trimmedText);
-        setIsDragging(false);
-      }
+      setIsDragging(false);
+    }
     }
     
     // Handle files and folders
@@ -2066,7 +2335,7 @@ const NoteCreator = React.forwardRef(({
       if (isYouTubeUrl(text)) {
         handleLinkAdd(text);
       } else {
-        handleLinkAdd(text);
+      handleLinkAdd(text);
       }
     }
   };
@@ -2192,23 +2461,34 @@ const NoteCreator = React.forwardRef(({
         }
       }
       
-      const prompt = `Act as a professional editor. Reorganize the following note content into a cohesive, well-structured document and generate a perfect title.
+      const prompt = `Act as a professional editor. Reorganize the following note content by arranging thoughts in logical order and adding good spacing between ideas. Your goal is to ORGANIZE, not simplify or remove content.
+
+CRITICAL REQUIREMENTS:
+1. PRESERVE ALL CONTENT: Keep EVERYTHING the user wrote - all notes, all thoughts, all information. Do NOT remove, summarize, or simplify anything.
+2. KEEP ALL QUESTIONS: Preserve every question exactly as written. Do NOT remove or rephrase questions.
+3. KEEP ALL NOTES: Maintain all notes taken by the user on the subject. Every piece of information must be kept.
+4. ORGANIZE IN ORDER: Arrange thoughts in a logical flow/order, but keep all the original content.
+5. ADD SPACING: Add good spacing (blank lines) between different thoughts, ideas, and sections to improve readability.
 
 Tasks:
-1. GENERATE A TITLE: Create a short, punchy, and descriptive title (max 6 words).
-2. STRUCTURE CONTENT: 
-   - Combine related ideas logically
-   - Use appropriate headers (h1, h2, h3) for sections
-   - Use bullet points or numbered lists where appropriate
-   - Fix grammar and improve clarity
-   - Maintain important information from YouTube transcripts or website content if included
-   - Preserve any key concepts, ideas, or data points
-3. FORMAT: Return a JSON object with "title" (string) and "html_content" (string with proper HTML formatting using h1, h2, h3, p, ul, ol, li, strong, em tags).
+1. GENERATE A TITLE: Create a short, punchy, and descriptive title (max 6 words) based on the content.
+2. ORGANIZE CONTENT (DO NOT REMOVE ANYTHING): 
+   - Arrange thoughts in logical order
+   - Add spacing (blank lines) between different thoughts and ideas
+   - Use appropriate headers (h1, h2, h3) to group related thoughts
+   - Keep ALL original content - every note, every question, every thought
+   - Preserve ALL questions exactly as written
+   - Maintain ALL information from YouTube transcripts or website content if included
+   - Fix minor grammar/spelling errors but keep all content intact
+   - Use bullet points or numbered lists where it helps organization, but keep all original points
+3. FORMAT: Return a JSON object with "title" (string) and "html_content" (string with proper HTML formatting using h1, h2, h3, p, ul, ol, li, strong, em tags, with spacing between paragraphs).
+
+REMEMBER: The goal is ORGANIZATION with spacing, NOT simplification. Keep 100% of the user's content.
 
 Input Content:
 "${contentForAI}"
 
-Example: {"title": "My Idea", "html_content": "<h1>Main Section</h1><p>Organized content...</p><h2>Subsection</h2><ul><li>Point 1</li><li>Point 2</li></ul>"}`;
+Example: {"title": "My Idea", "html_content": "<h1>Main Section</h1><p>First thought...</p><p><br></p><p>Second thought with spacing...</p><h2>Questions</h2><p>Question 1?</p><p><br></p><p>Question 2?</p>"}`;
 
       const aiText = await callAI(prompt);
       const result = JSON.parse(aiText);
@@ -2878,8 +3158,177 @@ Example: {"title": "My Idea", "html_content": "<h1>Main Section</h1><p>Organized
     }
     
     try {
-      // Simple prompt - just answer the question directly
-      const prompt = `Answer the following question thoroughly and helpfully:
+      // Gather context from attachments, videos, and links on the page
+      let contextFromPage = '';
+      
+      // Get YouTube video transcripts - use FULL transcript, not truncated
+      const youtubeAttachments = attachments.filter(att => att.type === 'youtube' && att.transcript);
+      if (youtubeAttachments.length > 0) {
+        const transcriptsText = youtubeAttachments.map(att => {
+          const videoTitle = att.name || att.videoData?.title || 'YouTube Video';
+          const videoUrl = att.url || `https://www.youtube.com/watch?v=${att.videoId}`;
+          // Use the COMPLETE transcript - no truncation
+          const fullTranscript = att.transcript || '';
+          const transcriptLength = fullTranscript.length;
+          
+          console.log(`📹 Including FULL transcript for "${videoTitle}": ${transcriptLength} characters`);
+          
+          return `**YouTube Video: ${videoTitle}**\nURL: ${videoUrl}\nFull Transcript (${transcriptLength} characters):\n${fullTranscript}`;
+        }).join('\n\n---\n\n');
+        contextFromPage += '\n\n**VIDEO CONTENT ON PAGE (FULL TRANSCRIPTS):**\n\n' + transcriptsText + '\n\n---\n\n';
+      }
+      
+      // Get scraped website content from links
+      const linkAttachments = attachments.filter(att => att.type === 'link' && att.scrapedContent);
+      if (linkAttachments.length > 0) {
+        const websitesText = linkAttachments.map(att => {
+          const siteTitle = att.name || att.url;
+          return `**Website: ${siteTitle}**\nURL: ${att.url}\nContent:\n${att.scrapedContent}`;
+        }).join('\n\n---\n\n');
+        contextFromPage += '\n\n**WEBSITE CONTENT ON PAGE:**\n\n' + websitesText + '\n\n---\n\n';
+      }
+      
+      // Get file attachments (if they have content) - include all file types with extracted text
+      const fileAttachments = attachments.filter(att => {
+        // Include all document/file types that have extracted text
+        const hasContent = att.content || att.text || att.extractedText;
+        const isFileType = att.type === 'file' || 
+                          att.type === 'pdf' || 
+                          att.type === 'word' || 
+                          att.type === 'excel' || 
+                          att.type === 'powerpoint' || 
+                          att.type === 'text' ||
+                          att.type === 'image' ||
+                          att.type === 'video' ||
+                          att.type === 'audio';
+        const shouldInclude = isFileType && hasContent;
+        if (isFileType) {
+          console.log(`📎 Checking attachment "${att.name}" (type: ${att.type}):`, {
+            hasContent: !!hasContent,
+            hasExtractedText: !!att.extractedText,
+            hasText: !!att.text,
+            hasContentProp: !!att.content,
+            contentLength: att.extractedText?.length || att.text?.length || att.content?.length || 0
+          });
+        }
+        return shouldInclude;
+      });
+      
+      console.log(`📎 Found ${fileAttachments.length} file attachment(s) with content`);
+      
+      if (fileAttachments.length > 0) {
+        const filesText = fileAttachments.map(att => {
+          const fileName = att.name || 'File';
+          const fileType = att.type || 'file';
+          const fileContent = att.content || att.text || att.extractedText || '';
+          console.log(`📎 Including file "${fileName}" (${fileType}) with ${fileContent.length} characters of content`);
+          return `**File: ${fileName}** (Type: ${fileType})\nContent:\n${fileContent}`;
+        }).join('\n\n---\n\n');
+        contextFromPage += '\n\n**FILE CONTENT ON PAGE:**\n\n' + filesText + '\n\n---\n\n';
+        console.log(`📎 Added ${fileAttachments.length} file(s) to context (total context length: ${contextFromPage.length} chars)`);
+      } else {
+        console.log(`⚠️ No file attachments with content found. Total attachments: ${attachments.length}`);
+        attachments.forEach(att => {
+          console.log(`  - "${att.name}" (type: ${att.type}): extractedText=${!!att.extractedText}, text=${!!att.text}, content=${!!att.content}`);
+        });
+      }
+      
+      // Also check note content for embedded transcripts (from saved notes)
+      // This ensures we get full transcripts even if they're stored in the note content
+      if (content && (content.includes('**YouTube Video:') || content.includes('Transcript:'))) {
+        // Extract full YouTube video transcripts from note content
+        const transcriptMatches = content.match(/\*\*YouTube Video[:\s]+([^*]+)\*\*[\s\S]*?Transcript:[\s\S]*?([\s\S]*?)(?=\n\n---|\*\*|$)/gi);
+        
+        if (transcriptMatches && transcriptMatches.length > 0) {
+          let extractedTranscripts = '';
+          
+          transcriptMatches.forEach(match => {
+            // Extract video title and full transcript
+            const titleMatch = match.match(/\*\*YouTube Video[:\s]+([^*]+)\*\*/i);
+            const transcriptMatch = match.match(/Transcript:[\s\S]*?(?=\n\n---|\*\*|$)/i);
+            
+            if (titleMatch && transcriptMatch) {
+              const videoTitle = titleMatch[1].trim();
+              // Get the full transcript - everything after "Transcript:" until the next section
+              let fullTranscript = transcriptMatch[0].replace(/^Transcript:\s*/i, '').trim();
+              
+              // Remove any trailing separators
+              fullTranscript = fullTranscript.replace(/\n\n---\s*$/, '').trim();
+              
+              if (fullTranscript && fullTranscript.length > 50) { // Only add if substantial
+                extractedTranscripts += `**YouTube Video: ${videoTitle}**\nFull Transcript:\n${fullTranscript}\n\n---\n\n`;
+              }
+            }
+          });
+          
+          if (extractedTranscripts) {
+            // Add to context if we don't already have it from attachments, or supplement if needed
+            if (!contextFromPage.includes('VIDEO CONTENT')) {
+              contextFromPage += '\n\n**VIDEO CONTENT FROM NOTE (FULL TRANSCRIPTS):**\n\n' + extractedTranscripts;
+            } else {
+              // Supplement with any transcripts from note that might not be in attachments
+              contextFromPage += '\n\n**ADDITIONAL VIDEO CONTENT FROM NOTE:**\n\n' + extractedTranscripts;
+            }
+          }
+        }
+        
+        // Also extract website content from note if present
+        if (content.includes('**Website:')) {
+          const websiteMatches = content.match(/\*\*Website:\s+([^*]+)\*\*[\s\S]*?Content:[\s\S]*?([\s\S]*?)(?=\n\n---|\*\*|$)/gi);
+          
+          if (websiteMatches && websiteMatches.length > 0) {
+            let extractedWebsites = '';
+            
+            websiteMatches.forEach(match => {
+              const titleMatch = match.match(/\*\*Website:\s+([^*]+)\*\*/i);
+              const contentMatch = match.match(/Content:[\s\S]*?(?=\n\n---|\*\*|$)/i);
+              
+              if (titleMatch && contentMatch) {
+                const siteTitle = titleMatch[1].trim();
+                let siteContent = contentMatch[0].replace(/^Content:\s*/i, '').trim();
+                siteContent = siteContent.replace(/\n\n---\s*$/, '').trim();
+                
+                if (siteContent && siteContent.length > 50) {
+                  extractedWebsites += `**Website: ${siteTitle}**\nFull Content:\n${siteContent}\n\n---\n\n`;
+                }
+              }
+            });
+            
+            if (extractedWebsites && !contextFromPage.includes('WEBSITE CONTENT')) {
+              contextFromPage += '\n\n**WEBSITE CONTENT FROM NOTE (FULL CONTENT):**\n\n' + extractedWebsites;
+            }
+          }
+        }
+      }
+      
+      // Build the prompt with context prioritization
+      let prompt = '';
+      
+      if (contextFromPage) {
+        prompt = `Answer the following question using the COMPLETE context from videos, attachments, and links on this page FIRST. You have access to the FULL video transcripts and all content - use the entire transcript to provide accurate, comprehensive answers. Only use your general knowledge if the information is not available in the provided context.
+
+**QUESTION:**
+${question}
+
+**COMPLETE CONTEXT FROM PAGE (FULL video transcripts, attachments, links):**
+${contextFromPage}
+
+**INSTRUCTIONS:**
+1. FIRST, carefully search through the COMPLETE provided context (FULL video transcripts, websites, files) to find information relevant to the question. You have access to the ENTIRE video transcript - use all of it.
+2. If the answer can be found in the context (especially in the full video transcripts), provide a comprehensive answer based SOLELY on that context. Reference specific parts of the transcript when relevant.
+3. If the information is NOT in the context, then think through the question using your general knowledge and provide a thoughtful answer.
+4. Always cite which source (video title, website, file) you're using when referencing the context. For videos, you can reference specific parts of the transcript.
+5. If you're using general knowledge (not from context), mention that you're thinking through this based on general knowledge.
+6. IMPORTANT: You have the FULL transcript of each video - use the complete transcript, not just a summary. The entire video content is available to you.
+
+Provide a comprehensive, informative answer. Format your response with:
+- Clear spacing between different points or sections
+- Use line breaks to separate ideas
+- Make it easy to read and well-organized
+- Use bullet points or numbered lists when appropriate`;
+      } else {
+        // No context available, just think through the question
+        prompt = `Answer the following question thoroughly and helpfully. Since there is no video, attachment, or link content available on the page, think through this question using your general knowledge.
 
 ${question}
 
@@ -2890,6 +3339,7 @@ Format your response with:
 - Use line breaks to separate ideas
 - Make it easy to read and well-organized
 - Use bullet points or numbered lists when appropriate`;
+      }
       
       const answer = await callAI(prompt);
       
@@ -2954,8 +3404,8 @@ Format your response with:
 
   // Analyze suggestions from old notes
   const analyzeSuggestions = async () => {
-    // Only analyze if liveAIMode is on and we have content
-    if (!liveAIMode || !content || content.length < 50) {
+    // Only analyze if suggestions toggle is on, liveAIMode is on, and we have content
+    if (!showSuggestions || !liveAIMode || !content || content.length < 50) {
       setSuggestions([]);
       setSuggestionPanelVisible(false);
       return;
@@ -2997,14 +3447,16 @@ Format your response with:
         `[${idx}] ID: ${n.id}\nTitle: ${n.title}\nContent: ${n.content?.substring(0, 200) || ''}`
       ).join('\n\n');
 
-      const prompt = `Analyze this note content and suggest which existing notes (by ID) have conceptual similarities or could form meaningful connections.
+      const prompt = `Analyze this note content and suggest which existing notes (by ID) have SIMILAR CONTENT. Only suggest notes that have actual content similarities - similar topics, ideas, concepts, or information.
 
 Current note content: "${content}"
 
 Existing notes:
 ${notesContext}
 
-Return up to 5 note IDs that are most relevant, along with a brief reason for each connection. Only suggest notes with strong conceptual links. Do not suggest notes that are already connected.
+IMPORTANT: Only suggest notes where there is a clear similarity in the actual CONTENT - similar topics, ideas, concepts, or information. Do NOT suggest notes just because they might be related in some abstract way. The content must have real similarities.
+
+Return up to 5 note IDs that have content similarities, along with a brief reason explaining the specific content similarity. Do not suggest notes that are already connected.
 
 Return ONLY a JSON object: {"suggestions": [{"note_id": "id1", "reason": "reason1"}, ...]}`;
 
@@ -3052,7 +3504,10 @@ Return ONLY a JSON object: {"suggestions": [{"note_id": "id1", "reason": "reason
               top: editorRect.top + 20, // Near top of editor
               editorRight: editorRect.right
             });
-            setSuggestionPanelVisible(true);
+            // Only show panel if toggle is on
+            if (showSuggestions) {
+              setSuggestionPanelVisible(true);
+            }
           }
         }
       } else {
@@ -3417,9 +3872,18 @@ Return ONLY a JSON object: {"suggestions": [{"note_id": "id1", "reason": "reason
     }
   }, [questionAnswers]);
 
-  // Analyze suggestions when content changes (only if liveAIMode is on)
+  // Analyze suggestions ONLY when user clicks the Suggestions button
   useEffect(() => {
-    if (!liveAIMode) {
+    // Only analyze when showSuggestions becomes true (button clicked)
+    if (!showSuggestions) {
+      // When button is turned off, clear suggestions
+      setSuggestions([]);
+      setSuggestionPanelVisible(false);
+      return;
+    }
+
+    // Button is clicked - analyze suggestions if conditions are met
+    if (!liveAIMode || !content || content.length < 50) {
       setSuggestions([]);
       setSuggestionPanelVisible(false);
       return;
@@ -3430,22 +3894,25 @@ Return ONLY a JSON object: {"suggestions": [{"note_id": "id1", "reason": "reason
       clearTimeout(suggestionTimeoutRef.current);
     }
 
-    // Wait 3 seconds after content changes before analyzing (debounce)
-    suggestionTimeoutRef.current = setTimeout(() => {
-      if (content && content.length > 50) {
-        analyzeSuggestions();
-      } else {
-        setSuggestions([]);
-        setSuggestionPanelVisible(false);
-      }
-    }, 3000);
+    // Analyze suggestions when button is clicked
+    analyzeSuggestions();
 
     return () => {
       if (suggestionTimeoutRef.current) {
         clearTimeout(suggestionTimeoutRef.current);
       }
     };
-  }, [content, liveAIMode, allNotes, noteId]);
+  }, [showSuggestions]); // Only trigger when showSuggestions changes (button clicked)
+
+  // Show/hide panel based on showSuggestions toggle and whether suggestions exist
+  useEffect(() => {
+    if (!showSuggestions) {
+      setSuggestionPanelVisible(false);
+    } else if (showSuggestions && suggestions.length > 0 && suggestionPosition) {
+      // If toggle is turned on and we have suggestions, show the panel
+      setSuggestionPanelVisible(true);
+    }
+  }, [showSuggestions, suggestions.length, suggestionPosition]);
 
   // Handle click outside to close suggestion panel
   useEffect(() => {
@@ -3528,9 +3995,9 @@ Return ONLY a JSON object: {"suggestions": [{"note_id": "id1", "reason": "reason
     const sentenceCount = (contentText.match(/[.!?]+\s/g) || []).length;
     const paragraphCount = contentText.split(/\n\n/).filter(p => p.trim().length > 0).length;
 
-    // Require substantial content
-    if (wordCount < 30) return false; // Too short
-    if (sentenceCount < 2) return false; // Need at least 2 sentences
+    // Require substantial content - minimum threshold
+    if (wordCount < 20) return false; // Too short
+    if (sentenceCount < 2) return false; // Need at least 2 sentences (SMART SENTENCE DETECTION)
 
     // 2. Activity detection - don't trigger if user is actively typing
     if (timeSinceLastTyping < 2000) return false; // Still actively typing (within 2 seconds)
@@ -3538,14 +4005,15 @@ Return ONLY a JSON object: {"suggestions": [{"note_id": "id1", "reason": "reason
     // 3. Cooldown period - respect time since last suggestion
     if (timeSinceLastSuggestion > 0 && timeSinceLastSuggestion < 30000) return false; // 30 second cooldown
 
-    // 4. Intent signals detection
-    const recentText = contentText.substring(Math.max(0, contentText.length - 300)); // Last 300 chars
+    // 4. INTENT SIGNALS - Only trigger when there are clear signals
+    const recentText = contentText.substring(Math.max(0, contentText.length - 400)); // Last 400 chars
     const lowerRecentText = recentText.toLowerCase();
 
     // Help-seeking keywords
     const helpKeywords = [
-      "i'm stuck", "not sure", "how should", "what if", "how do i",
-      "i need help", "i'm confused", "can you help", "what should i"
+      "i'm stuck", "not sure", "how should i", "what if", "how do i",
+      "i need help", "i'm confused", "can you help", "what should i",
+      "i'm creating", "i'm designing", "i'm trying to", "i'm working on"
     ];
     const hasHelpKeyword = helpKeywords.some(keyword => lowerRecentText.includes(keyword));
 
@@ -3556,22 +4024,35 @@ Return ONLY a JSON object: {"suggestions": [{"note_id": "id1", "reason": "reason
     ];
     const hasUncertainty = uncertaintyMarkers.some(marker => lowerRecentText.includes(marker));
 
-    // Completion markers - check if user finished a thought
-    const hasMultipleSentences = sentenceCount >= 3;
-    const hasParagraphBreak = paragraphCount >= 2;
+    // Completion markers - after finishing a thought (multiple sentences, not just one)
+    const hasMultipleSentences = sentenceCount >= 3; // Require multiple sentences
+    const hasParagraphBreak = paragraphCount >= 2; // Wait for natural paragraph breaks
     const endsWithSentenceEnd = /[.!?]\s*$/.test(contentText.trim());
 
-    // 5. Smart sentence detection - avoid mid-thought
+    // 5. SMART SENTENCE DETECTION - Better sentence completion detection
     const textBeforeCursor = contentText.substring(0, cursorPosition || contentText.length);
     const lastSentence = textBeforeCursor.split(/[.!?]+\s*/).pop() || '';
     const isMidSentence = lastSentence.length > 0 && !/[.!?]\s*$/.test(textBeforeCursor.trim());
     
-    // Don't trigger if clearly mid-sentence (unless there's an intent signal)
+    // Avoid mid-thought: don't trigger if user is clearly in the middle of a sentence
+    // UNLESS there's a strong intent signal (help-seeking or uncertainty)
     if (isMidSentence && !hasHelpKeyword && !hasUncertainty) {
       return false;
     }
 
-    // 6. Value-based triggering - check for incomplete thoughts
+    // Require multiple sentences - don't trigger after just one sentence
+    if (sentenceCount < 2 && !hasHelpKeyword && !hasUncertainty) {
+      return false;
+    }
+
+    // Wait for paragraph boundaries - wait for natural paragraph breaks
+    // Only skip this check if there's a strong intent signal
+    if (!hasParagraphBreak && !hasHelpKeyword && !hasUncertainty && sentenceCount < 4) {
+      return false;
+    }
+
+    // 6. VALUE-BASED TRIGGERING - Only show when the AI can add value
+    // Check for incomplete thoughts: detect when user seems to be exploring ideas
     const incompleteThoughtPatterns = [
       /but\s+\w+$/i,           // "but something" - incomplete contrast
       /however\s+\w+$/i,        // "however something" - incomplete
@@ -3579,42 +4060,55 @@ Return ONLY a JSON object: {"suggestions": [{"note_id": "id1", "reason": "reason
       /because\s+\w+$/i,        // "because something" - might be incomplete
       /\w+\s+and\s*$/i,         // Ends with "and" - incomplete list
       /\w+\s+or\s*$/i,          // Ends with "or" - incomplete choice
+      /\w+\s+but\s*$/i,         // Ends with "but" - incomplete
     ];
     const hasIncompleteThought = incompleteThoughtPatterns.some(pattern => 
       pattern.test(textBeforeCursor.trim())
     );
 
-    // 7. Repetition detection - user rephrasing same idea
-    const sentences = contentText.split(/[.!?]+\s+/).filter(s => s.trim().length > 10);
-    const recentSentences = sentences.slice(-3);
+    // Identify expansion opportunities: content that could benefit from elaboration
+    const hasExpansionOpportunity = 
+      sentenceCount >= 2 && sentenceCount <= 6 && // Not too short, not too long
+      wordCount >= 30 && wordCount <= 250 && // Substantial but not overwhelming
+      (hasParagraphBreak || hasMultipleSentences) &&
+      endsWithSentenceEnd; // Only if thought is complete
+
+    // Avoid obvious content: don't suggest on well-formed, complete thoughts
+    // Check if content is too polished/complete (very long sentences, perfect grammar, etc.)
+    const sentences = contentText.split(/[.!?]+\s+/).filter(s => s.trim().length > 0);
+    const avgSentenceLength = sentences.length > 0 
+      ? sentences.reduce((sum, s) => sum + s.split(/\s+/).length, 0) / sentences.length 
+      : 0;
+    
+    // If sentences are very long and well-formed, might be too complete
+    const isTooComplete = avgSentenceLength > 25 && sentenceCount >= 5 && hasParagraphBreak;
+    
+    // 7. REPETITION DETECTION - User seems to be rephrasing the same idea
+    const recentSentences = sentences.slice(-4); // Check last 4 sentences
     const hasRepetition = recentSentences.length >= 2 && 
       recentSentences.some((s1, i) => 
         recentSentences.slice(i + 1).some(s2 => {
           const words1 = s1.toLowerCase().split(/\s+/).filter(w => w.length > 3);
           const words2 = s2.toLowerCase().split(/\s+/).filter(w => w.length > 3);
           const commonWords = words1.filter(w => words2.includes(w));
-          return commonWords.length >= 3; // At least 3 common words
+          // At least 4 common words (more strict) OR 30% word overlap
+          const overlap = commonWords.length / Math.max(words1.length, words2.length);
+          return commonWords.length >= 4 || overlap >= 0.3;
         })
       );
 
-    // 8. Expansion opportunities - content that could benefit from elaboration
-    const hasExpansionOpportunity = 
-      sentenceCount >= 2 && sentenceCount <= 5 && // Not too short, not too long
-      wordCount >= 30 && wordCount <= 200 && // Substantial but not overwhelming
-      (hasParagraphBreak || hasMultipleSentences);
-
-    // Decision logic: Trigger if any of these conditions are met
+    // Decision logic: STRICT triggering - only when AI can genuinely add value
     const shouldTrigger = 
-      // Strong intent signals
-      (hasHelpKeyword || hasUncertainty) && timeSinceLastTyping >= 3000 ||
-      // Completion markers with substantial content
-      (hasMultipleSentences && hasParagraphBreak && endsWithSentenceEnd && timeSinceLastTyping >= 5000) ||
+      // Strong intent signals (help-seeking or uncertainty) - trigger sooner
+      ((hasHelpKeyword || hasUncertainty) && timeSinceLastTyping >= 3000 && !isTooComplete) ||
+      // Completion markers with substantial content AND paragraph break
+      (hasMultipleSentences && hasParagraphBreak && endsWithSentenceEnd && timeSinceLastTyping >= 6000 && !isTooComplete) ||
       // Incomplete thoughts that need help
-      (hasIncompleteThought && timeSinceLastTyping >= 4000) ||
-      // Repetition detection - user might be stuck
-      (hasRepetition && timeSinceLastTyping >= 6000) ||
-      // Expansion opportunity after longer pause
-      (hasExpansionOpportunity && timeSinceLastTyping >= 8000);
+      (hasIncompleteThought && timeSinceLastTyping >= 4000 && !isTooComplete) ||
+      // Repetition detection - user might be stuck rephrasing
+      (hasRepetition && timeSinceLastTyping >= 7000 && !isTooComplete) ||
+      // Expansion opportunity after longer pause (only if content is not too complete)
+      (hasExpansionOpportunity && timeSinceLastTyping >= 8000 && !isTooComplete);
 
     return shouldTrigger;
   };
@@ -3714,18 +4208,20 @@ Format your response with:
           
           setAiInputPosition(position);
           
-          // Show subtle indicator first (progressive disclosure)
+          // PROGRESSIVE DISCLOSURE: Show subtle indicator first (small icon or gentle pulse)
           setShowAiInputIndicator(true);
           
-          // Auto-expand after 3 seconds if user doesn't interact
+          // Auto-expand after longer delay (5 seconds) if user doesn't interact
+          // This gives user time to see the subtle indicator and decide to hover/click
           aiInputIndicatorTimeoutRef.current = setTimeout(() => {
-            if (showAiInputIndicator) {
+            if (showAiInputIndicator && !aiInputPanelVisible) {
               setAiInputPanelVisible(true);
+              setShowAiInputIndicator(false);
               // Start typing animation
               setDisplayedAiInput('');
               typeAiInput(formattedInput);
             }
-          }, 3000);
+          }, 5000);
         }
       }
     } catch (error) {
@@ -3898,6 +4394,11 @@ Format your response with:
                             <img src={att.url} alt={att.name} className="w-full h-auto object-cover" />
                          ) : att.type === 'video' ? (
                             <video src={att.url} className="w-full h-auto object-cover" />
+                         ) : att.type === 'audio' ? (
+                            <div className="p-4 text-center bg-gray-50 dark:bg-white/5">
+                              <Music className="w-8 h-8 mx-auto text-purple-500 dark:text-purple-400 mb-2" />
+                              <p className="text-xs truncate text-black dark:text-white">{att.name}</p>
+                            </div>
                          ) : att.type === 'link' ? (
                             <div className="p-4 text-center bg-gray-50 dark:bg-white/5">
                                <LinkIcon className="w-8 h-8 mx-auto text-black dark:text-white mb-2" />
@@ -4202,7 +4703,7 @@ Format your response with:
           {/* Small glassmorphic answer panel - positioned just outside editor, next to question */}
           <AnimatePresence>
             {answerPanelVisible && questionPosition && (
-              <motion.div
+            <motion.div 
                 initial={{ opacity: 0, scale: 0.95 }}
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.95 }}
@@ -4232,10 +4733,10 @@ Format your response with:
                   cursor: answerPanelDragState.isDragging ? 'grabbing' : 'grab'
                 }}
                 onMouseDown={(e) => handlePanelDragStart(e, 'answer')}
-              >
-                <div
+            >
+              <div 
                   className="p-4 rounded-3xl relative overflow-hidden apple-glass-panel"
-                  style={{
+                style={{
                     position: 'relative',
                     isolation: 'isolate',
                     userSelect: 'none' // Prevent text selection while dragging
@@ -4249,7 +4750,7 @@ Format your response with:
                     style={{ backdropFilter: 'blur(10px)' }}
                   >
                     <X className="w-3 h-3 text-black dark:text-white" />
-                  </button>
+                      </button>
                   {/* Top highlight for depth - Apple style (light mode) */}
                   <div
                     className="absolute inset-x-0 top-0 h-1/3 rounded-t-3xl pointer-events-none dark:hidden"
@@ -4369,15 +4870,15 @@ Format your response with:
                       }
                     })()}
                   </div>
-                </div>
-              </motion.div>
-            )}
+              </div>
+            </motion.div>
+          )}
           </AnimatePresence>
 
           {/* Suggestion Panel - glassmorphic design matching answer panel */}
           <AnimatePresence>
-            {suggestionPanelVisible && suggestionPosition && suggestions.length > 0 && (
-              <motion.div
+            {showSuggestions && suggestionPanelVisible && suggestionPosition && suggestions.length > 0 && (
+            <motion.div 
                 initial={{ opacity: 0, scale: 0.95 }}
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.95 }}
@@ -4400,10 +4901,10 @@ Format your response with:
                   cursor: suggestionPanelDragState.isDragging ? 'grabbing' : 'grab'
                 }}
                 onMouseDown={(e) => handlePanelDragStart(e, 'suggestion')}
-              >
-                <div
+            >
+              <div 
                   className="p-4 rounded-3xl relative overflow-hidden apple-glass-panel"
-                  style={{
+                style={{
                     position: 'relative',
                     isolation: 'isolate',
                     userSelect: 'none' // Prevent text selection while dragging
@@ -4490,17 +4991,17 @@ Format your response with:
                   {/* Content wrapper */}
                   <div className="relative z-10 pointer-events-auto">
                     {isAnalyzingSuggestions ? (
-                      <div className="flex items-center gap-2">
+                   <div className="flex items-center gap-2">
                         <Loader2 className="w-3 h-3 animate-spin text-black dark:text-white" />
                         <span className="text-xs text-black dark:text-white">Finding connections...</span>
-                      </div>
+                   </div>
                     ) : (
                       <div className="space-y-3">
                         <div className="flex items-center gap-2 mb-2">
                           <Link2 className="w-4 h-4 text-black dark:text-white" />
                           <h3 className="text-sm font-semibold text-black dark:text-white">Related Notes</h3>
-                        </div>
-                        
+                </div>
+
                         <div className="space-y-2 max-h-[400px] overflow-y-auto">
                           {suggestions.map(({ note, reason }) => (
                             <div
@@ -4524,35 +5025,37 @@ Format your response with:
                                   <Plus className="w-3 h-3 text-black dark:text-white" />
                                 </button>
                               </div>
-                            </div>
-                          ))}
                         </div>
-                      </div>
-                    )}
-                  </div>
+                      ))}
+                    </div>
+                    </div>
+                  )}
                 </div>
-              </motion.div>
-            )}
+              </div>
+            </motion.div>
+          )}
           </AnimatePresence>
 
-          {/* Subtle AI Input Indicator - shows first, expands on hover */}
+          {/* Subtle AI Input Indicator - PROGRESSIVE DISCLOSURE: small icon first, expands on hover */}
           <AnimatePresence>
             {showAiInputIndicator && aiInputPosition && !aiInputPanelVisible && (
-              <motion.div
-                initial={{ opacity: 0, scale: 0.8 }}
+            <motion.div 
+                initial={{ opacity: 0, scale: 0.7 }}
                 animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.8 }}
-                transition={{ duration: 0.2 }}
-                className="fixed z-[9998] group"
+                exit={{ opacity: 0, scale: 0.7 }}
+                transition={{ duration: 0.3, ease: "easeOut" }}
+                className="fixed z-[9998] group pointer-events-auto"
                 data-ai-input-indicator="true"
                 style={{
                   left: aiInputPosition.editorRight 
                     ? `${aiInputPosition.editorRight + 16}px` 
                     : '50%',
                   top: aiInputPosition.top ? `${aiInputPosition.top}px` : '200px',
+                  // Non-blocking: positioned outside editor, never covers content
+                  pointerEvents: 'auto',
                 }}
                 onMouseEnter={() => {
-                  // Expand to full panel on hover
+                  // Expand to full panel on hover - show full suggestion only if user shows interest
                   if (aiInput && !aiInputPanelVisible) {
                     if (aiInputIndicatorTimeoutRef.current) {
                       clearTimeout(aiInputIndicatorTimeoutRef.current);
@@ -4579,29 +5082,56 @@ Format your response with:
                 }}
               >
                 <div className="relative">
-                  {/* Subtle pulsing icon */}
-                  <div className="w-10 h-10 rounded-full bg-black/10 dark:bg-white/10 backdrop-blur-md border border-black/20 dark:border-white/20 flex items-center justify-center cursor-pointer hover:bg-black/20 dark:hover:bg-white/20 transition-all group-hover:scale-110">
-                    <Sparkles className="w-4 h-4 text-black dark:text-white animate-pulse" />
-                  </div>
+                  {/* Subtle small icon or gentle pulse - START WITH SMALL INDICATOR */}
+                  <motion.div 
+                    className="w-8 h-8 rounded-full bg-black/5 dark:bg-white/5 backdrop-blur-sm border border-black/10 dark:border-white/10 flex items-center justify-center cursor-pointer hover:bg-black/15 dark:hover:bg-white/15 transition-all group-hover:scale-125"
+                    animate={{
+                      scale: [1, 1.05, 1],
+                      opacity: [0.6, 1, 0.6]
+                    }}
+                    transition={{
+                      duration: 2,
+                      repeat: Infinity,
+                      ease: "easeInOut"
+                    }}
+                  >
+                    <Sparkles className="w-3.5 h-3.5 text-black/70 dark:text-white/70" />
+                  </motion.div>
                   
-                  {/* Gentle glow effect */}
-                  <div className="absolute inset-0 rounded-full bg-blue-500/20 blur-md opacity-50 animate-pulse" />
+                  {/* Gentle glow effect - very subtle */}
+                  <motion.div 
+                    className="absolute inset-0 rounded-full bg-blue-500/10 dark:bg-blue-400/10 blur-lg"
+                    animate={{
+                      opacity: [0.3, 0.6, 0.3],
+                      scale: [1, 1.2, 1]
+                    }}
+                    transition={{
+                      duration: 2.5,
+                      repeat: Infinity,
+                      ease: "easeInOut"
+                    }}
+                  />
                   
-                  {/* Tooltip on hover */}
-                  <div className="absolute left-full ml-2 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap">
-                    <div className="px-2 py-1 text-xs bg-black/80 dark:bg-white/80 text-white dark:text-black rounded backdrop-blur-sm">
+                  {/* Tooltip on hover - EXPAND ON HOVER */}
+                  <motion.div 
+                    className="absolute left-full ml-3 top-1/2 -translate-y-1/2 pointer-events-none whitespace-nowrap"
+                    initial={{ opacity: 0, x: -5 }}
+                    whileHover={{ opacity: 1, x: 0 }}
+                    transition={{ duration: 0.2 }}
+                  >
+                    <div className="px-2.5 py-1.5 text-xs bg-black/70 dark:bg-white/70 text-white dark:text-black rounded-lg backdrop-blur-md shadow-lg border border-black/10 dark:border-white/10">
                       AI suggestions available
-                    </div>
-                  </div>
-                </div>
-              </motion.div>
-            )}
+                         </div>
+                  </motion.div>
+              </div>
+            </motion.div>
+          )}
           </AnimatePresence>
 
           {/* AI Input Panel - glassmorphic design matching answer panel */}
           <AnimatePresence>
             {aiInputPanelVisible && aiInputPosition && (
-              <motion.div
+             <motion.div 
                 initial={{ opacity: 0, scale: 0.95 }}
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.95 }}
@@ -4626,10 +5156,10 @@ Format your response with:
                   cursor: aiInputPanelDragState.isDragging ? 'grabbing' : 'grab'
                 }}
                 onMouseDown={(e) => handlePanelDragStart(e, 'aiInput')}
-              >
-                <div
+             >
+               <div 
                   className="p-4 rounded-3xl relative overflow-hidden apple-glass-panel"
-                  style={{
+                 style={{
                     position: 'relative',
                     isolation: 'isolate',
                     userSelect: 'none' // Prevent text selection while dragging
@@ -4716,10 +5246,10 @@ Format your response with:
                   {/* Content wrapper */}
                   <div className="relative z-10 pointer-events-auto">
                     {isGeneratingAiInput ? (
-                      <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2">
                         <Loader2 className="w-3 h-3 animate-spin text-black dark:text-white" />
                         <span className="text-xs text-black dark:text-white">Thinking...</span>
-                      </div>
+                    </div>
                     ) : (() => {
                       const inputToDisplay = displayedAiInput || aiInput;
                       if (!inputToDisplay) return null;
@@ -4741,10 +5271,10 @@ Format your response with:
                           <div className="flex gap-4 max-w-[640px]">
                             <div className="text-sm text-black dark:text-white leading-relaxed flex-1 max-w-[300px] whitespace-pre-wrap">
                               {firstPart}
-                            </div>
+                    </div>
                             <div className="text-sm text-black dark:text-white leading-relaxed flex-1 max-w-[300px] whitespace-pre-wrap">
                               {secondPart}
-                            </div>
+                 </div>
                           </div>
                         );
                       } else {
@@ -4755,10 +5285,10 @@ Format your response with:
                         );
                       }
                     })()}
-                  </div>
-                </div>
-              </motion.div>
-            )}
+                 </div>
+               </div>
+             </motion.div>
+          )}
           </AnimatePresence>
 
         </>
@@ -4777,6 +5307,9 @@ Format your response with:
         <DialogContent className="bg-white dark:bg-[#171515] border-gray-200 dark:border-gray-700 text-black dark:text-white">
           <DialogHeader>
             <DialogTitle className="text-black dark:text-white">Add Attachment</DialogTitle>
+            <DialogDescription className="text-gray-500 dark:text-gray-400">
+              Add links, files, images, videos, or other media to your note
+            </DialogDescription>
           </DialogHeader>
           
           <div className="space-y-3 py-4">
@@ -4803,10 +5336,11 @@ Format your response with:
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/*,video/*,*/*"
+            accept="*/*"
+            multiple
             onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) handleFileUpload(file);
+              const files = Array.from(e.target.files || []);
+              files.forEach(file => handleFileUpload(file));
               e.target.value = '';
             }}
             className="hidden"
@@ -4826,6 +5360,9 @@ Format your response with:
           <DialogContent className="bg-white dark:bg-[#1f1d1d]/95 border-gray-200 dark:border-gray-700 text-black dark:text-white max-w-4xl">
           <DialogHeader>
               <DialogTitle className="text-black dark:text-white">{previewAttachment?.name || 'Preview'}</DialogTitle>
+              <DialogDescription className="text-gray-500 dark:text-gray-400">
+                Preview attachment content
+              </DialogDescription>
           </DialogHeader>
           <div className="py-4 flex flex-col items-center">
               {previewAttachment?.type === 'image' && (
@@ -4834,6 +5371,126 @@ Format your response with:
               {previewAttachment?.type === 'video' && (
                   <video src={previewAttachment.url} className="max-w-full max-h-[70vh] rounded" controls />
               )}
+              {previewAttachment?.type === 'audio' && (() => {
+                // Determine MIME type
+                const getAudioMimeType = () => {
+                  if (previewAttachment.fileType && previewAttachment.fileType.startsWith('audio/')) {
+                    return previewAttachment.fileType;
+                  }
+                  const ext = (previewAttachment.fileExtension || previewAttachment.name?.split('.').pop() || '').toLowerCase();
+                  const mimeMap = {
+                    'mp3': 'audio/mpeg',
+                    'wav': 'audio/wav',
+                    'ogg': 'audio/ogg',
+                    'm4a': 'audio/mp4',
+                    'aac': 'audio/aac',
+                    'flac': 'audio/flac',
+                    'wma': 'audio/x-ms-wma'
+                  };
+                  return mimeMap[ext] || 'audio/mpeg';
+                };
+                const audioMimeType = getAudioMimeType();
+                
+                // Audio Player Component with blob URL conversion
+                const AudioPreviewPlayer = () => {
+                  const [audioUrl, setAudioUrl] = React.useState(previewAttachment.url);
+                  const [error, setError] = React.useState(null);
+                  
+                  React.useEffect(() => {
+                    // If it's a data URL, convert it to a blob URL for better compatibility
+                    if (previewAttachment.url?.startsWith('data:')) {
+                      const convertToBlob = async () => {
+                        try {
+                          console.log('🔄 Converting data URL to blob URL for audio preview...');
+                          const response = await fetch(previewAttachment.url);
+                          if (!response.ok) {
+                            throw new Error(`Failed to fetch data URL: ${response.status}`);
+                          }
+                          const blob = await response.blob();
+                          const blobUrl = URL.createObjectURL(blob);
+                          console.log('✅ Created blob URL from data URL for audio preview');
+                          setAudioUrl(blobUrl);
+                          
+                          // Cleanup on unmount
+                          return () => {
+                            URL.revokeObjectURL(blobUrl);
+                          };
+                        } catch (err) {
+                          console.error('❌ Failed to convert data URL to blob:', err);
+                          setError(err.message);
+                          // Keep using the original data URL as fallback
+                        }
+                      };
+                      convertToBlob();
+                    }
+                  }, [previewAttachment.url]);
+                  
+                  return (
+                    <div className="w-full space-y-4">
+                      {error && (
+                        <div className="text-center mb-2">
+                          <p className="text-red-500 dark:text-red-400 text-sm">{error}</p>
+                        </div>
+                      )}
+                      <audio 
+                        key={`audio-${previewAttachment.id}-${audioUrl?.substring(0, 50)}`}
+                        src={audioUrl}
+                        controls 
+                        className="w-full h-12" 
+                        preload="metadata"
+                        onError={(e) => {
+                          const audioEl = e.target;
+                          if (audioEl && audioEl.error) {
+                            const error = audioEl.error;
+                            console.error('❌ Audio playback error:', {
+                              error: error,
+                              code: error?.code,
+                              message: error?.message,
+                              urlLength: audioUrl?.length,
+                              urlPrefix: audioUrl?.substring(0, 100),
+                              mimeType: audioMimeType
+                            });
+                          }
+                        }}
+                        onLoadedMetadata={(e) => {
+                          const audioEl = e.target;
+                          if (audioEl) {
+                            console.log('✅ Audio metadata loaded:', {
+                              duration: audioEl.duration,
+                              readyState: audioEl.readyState
+                            });
+                          }
+                        }}
+                      >
+                        <source src={audioUrl} type={audioMimeType} />
+                        Your browser does not support the audio element.
+                      </audio>
+                    </div>
+                  );
+                };
+                
+                return (
+                  <div className="w-full max-w-2xl space-y-4">
+                    <div className="p-4 border-b border-gray-200 dark:border-gray-700">
+                      <p className="text-black dark:text-white font-semibold">{previewAttachment.name}</p>
+                      <p className="text-gray-500 dark:text-gray-400 text-sm">Audio File • {audioMimeType}</p>
+                    </div>
+                    <div className="flex-1 flex items-center justify-center p-8 min-h-[200px]">
+                      <div className="w-full">
+                        <AudioPreviewPlayer />
+                        <div className="text-center space-y-1 mt-4">
+                          <p className="text-xs text-gray-500 dark:text-gray-400">
+                            {previewAttachment.name}
+                          </p>
+                          <p className="text-xs text-gray-400 dark:text-gray-500">
+                            {audioMimeType} • {previewAttachment.fileSize ? `${(previewAttachment.fileSize / 1024 / 1024).toFixed(2)} MB` : 'Unknown size'}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
               {previewAttachment?.type === 'link' && (
                   <div className="text-center">
                       <LinkIcon className="w-16 h-16 text-blue-500 mx-auto mb-4" />
@@ -4893,6 +5550,9 @@ Format your response with:
             <DialogContent>
                 <DialogHeader>
                     <DialogTitle>Create New Folder</DialogTitle>
+                    <DialogDescription>
+                      Enter a name for the new folder
+                    </DialogDescription>
                 </DialogHeader>
                 <div className="py-4 flex gap-2">
                     <Input 
