@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import NotionSidebar from '../components/notes/NotionSidebar';
+import ResponsiveSidebar from '../components/notes/ResponsiveSidebar';
 import SettingsModal from '../components/notes/SettingsModal';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -681,27 +681,25 @@ Provide thoughtful, insightful responses based on their memories and interests. 
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 via-blue-50/30 to-gray-100 dark:from-[#171515] dark:via-[#171515] dark:to-[#171515] flex overflow-hidden">
-      <div className={`${sidebarCollapsed ? 'w-16' : 'w-64'} flex-shrink-0 transition-all duration-300`}>
-        <NotionSidebar
-          activeView="chat"
-          onViewChange={(view) => navigate(createPageUrl(
-            view === 'short_term' ? 'ShortTerm' : 
-            view === 'long_term' ? 'LongTerm' : 
-            view === 'tags' ? 'TagManagement' : 
-            view === 'reminders' ? 'Reminders' : 
-            view === 'trash' ? 'Trash' :
-            'Create'
-          ))}
-          onOpenSearch={() => navigate(createPageUrl('AISearch'))}
-          onOpenChat={() => navigate(createPageUrl('MemoryChat'))}
-          onOpenSettings={() => setSettingsOpen(true)}
-          isCollapsed={sidebarCollapsed}
-          onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
-        />
-      </div>
+      <ResponsiveSidebar
+        activeView="chat"
+        onViewChange={(view) => navigate(createPageUrl(
+          view === 'short_term' ? 'ShortTerm' : 
+          view === 'long_term' ? 'LongTerm' : 
+          view === 'tags' ? 'TagManagement' : 
+          view === 'reminders' ? 'Reminders' : 
+          view === 'trash' ? 'Trash' :
+          'Create'
+        ))}
+        onOpenSearch={() => navigate(createPageUrl('AISearch'))}
+        onOpenChat={() => navigate(createPageUrl('MemoryChat'))}
+        onOpenSettings={() => setSettingsOpen(true)}
+        isCollapsed={sidebarCollapsed}
+        onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+      />
 
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <div className="p-6 bg-glass border-b border-white/20 dark:border-gray-700/30">
+      <div className="flex-1 flex flex-col overflow-hidden w-full md:w-auto">
+        <div className="p-3 md:p-6 bg-glass border-b border-white/20 dark:border-gray-700/30">
           <div className="flex items-center justify-between">
             <div></div>
             <div className="flex items-center gap-4">

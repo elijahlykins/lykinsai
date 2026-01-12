@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 // ❌ Removed base44 import
-import NotionSidebar from '../components/notes/NotionSidebar';
+import ResponsiveSidebar from '../components/notes/ResponsiveSidebar';
 import SettingsModal from '../components/notes/SettingsModal';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -142,29 +142,27 @@ export default function TrashPage() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 via-blue-50/30 to-gray-100 dark:from-[#171515] dark:via-[#171515] dark:to-[#171515] flex overflow-hidden">
-      <div className={`${sidebarCollapsed ? 'w-16' : 'w-64'} flex-shrink-0 transition-all duration-300`}>
-        <NotionSidebar
-          activeView="trash"
-          onViewChange={(view) => navigate(createPageUrl(
-            view === 'create' ? 'Create' :
-            view === 'short_term' ? 'ShortTerm' : 
-            view === 'long_term' ? 'LongTerm' : 
-            view === 'tags' ? 'TagManagement' : 
-            view === 'reminders' ? 'Reminders' : 
-            'Create'
-          ))}
-          onOpenSearch={() => navigate(createPageUrl('AISearch'))}
-          onOpenChat={() => navigate(createPageUrl('MemoryChat'))}
-          onOpenSettings={() => setSettingsOpen(true)}
-          isCollapsed={sidebarCollapsed}
-          onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
-        />
-      </div>
+      <ResponsiveSidebar
+        activeView="trash"
+        onViewChange={(view) => navigate(createPageUrl(
+          view === 'create' ? 'Create' :
+          view === 'short_term' ? 'ShortTerm' : 
+          view === 'long_term' ? 'LongTerm' : 
+          view === 'tags' ? 'TagManagement' : 
+          view === 'reminders' ? 'Reminders' : 
+          'Create'
+        ))}
+        onOpenSearch={() => navigate(createPageUrl('AISearch'))}
+        onOpenChat={() => navigate(createPageUrl('MemoryChat'))}
+        onOpenSettings={() => setSettingsOpen(true)}
+        isCollapsed={sidebarCollapsed}
+        onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+      />
 
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <div className="p-6 bg-glass border-b border-white/20 dark:border-gray-700/30">
-          <div className="flex items-center justify-between">
-            <h1 className="text-2xl font-bold text-black dark:text-white flex items-center gap-2">
+      <div className="flex-1 flex flex-col overflow-hidden w-full md:w-auto">
+        <div className="p-3 md:p-6 bg-glass border-b border-white/20 dark:border-gray-700/30">
+          <div className="flex items-center justify-between flex-col sm:flex-row gap-3 sm:gap-0">
+            <h1 className="text-xl md:text-2xl font-bold text-black dark:text-white flex items-center gap-2">
               <Trash2 className="w-6 h-6" />
               Trash
             </h1>

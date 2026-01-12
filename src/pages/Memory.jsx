@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 // ❌ Removed base44 import
-import NotionSidebar from '../components/notes/NotionSidebar';
+import ResponsiveSidebar from '../components/notes/ResponsiveSidebar';
 import SettingsModal from '../components/notes/SettingsModal';
 import AIAnalysisPanel from '../components/notes/AIAnalysisPanel';
 import NoteViewer from '../components/notes/NoteViewer';
@@ -454,29 +454,27 @@ If the user asks about old memories or references past ideas, refer to the memor
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 via-blue-50/30 to-gray-100 dark:from-[#171515] dark:via-[#171515] dark:to-[#171515] flex overflow-hidden">
-      <div className={`${sidebarCollapsed ? 'w-16' : 'w-64'} flex-shrink-0 transition-all duration-300`}>
-        <NotionSidebar
-          activeView="memory"
-          onViewChange={(view) => navigate(createPageUrl(
-            view === 'memory' ? 'Memory' : 
-            view === 'tags' ? 'TagManagement' : 
-            view === 'reminders' ? 'Reminders' : 
-            view === 'trash' ? 'Trash' :
-            'Create'
-          ))}
-          onOpenSearch={() => navigate(createPageUrl('Create'))}
-          onOpenChat={() => navigate(createPageUrl('MemoryChat'))}
-          onOpenSettings={() => setSettingsOpen(true)}
-          isCollapsed={sidebarCollapsed}
-          onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
-        />
-      </div>
+      <ResponsiveSidebar
+        activeView="memory"
+        onViewChange={(view) => navigate(createPageUrl(
+          view === 'memory' ? 'Memory' : 
+          view === 'tags' ? 'TagManagement' : 
+          view === 'reminders' ? 'Reminders' : 
+          view === 'trash' ? 'Trash' :
+          'Create'
+        ))}
+        onOpenSearch={() => navigate(createPageUrl('Create'))}
+        onOpenChat={() => navigate(createPageUrl('MemoryChat'))}
+        onOpenSettings={() => setSettingsOpen(true)}
+        isCollapsed={sidebarCollapsed}
+        onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+      />
 
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <div className="p-6 bg-glass border-b border-white/20 dark:border-gray-700/30">
-          <div className="flex items-center justify-between mb-4">
-            <h1 className="text-2xl font-bold text-black dark:text-white flex items-center gap-2">
-              <Clock className="w-6 h-6" />
+      <div className="flex-1 flex flex-col overflow-hidden w-full md:w-auto">
+        <div className="p-3 md:p-6 bg-glass border-b border-white/20 dark:border-gray-700/30">
+          <div className="flex items-center justify-between mb-4 flex-col sm:flex-row gap-3 sm:gap-0">
+            <h1 className="text-xl md:text-2xl font-bold text-black dark:text-white flex items-center gap-2">
+              <Clock className="w-5 h-5 md:w-6 md:h-6" />
               Memory
             </h1>
             <div className="flex items-center gap-2">
@@ -607,7 +605,7 @@ If the user asks about old memories or references past ideas, refer to the memor
             ) : !selectedNote ? (
               <div className="flex gap-8 p-8">
                 <div className="flex-1">
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 md:gap-4">
                   {filteredNotes.map((note) => (
                     <div
                       key={note.id}

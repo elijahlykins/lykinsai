@@ -4477,7 +4477,7 @@ Format your response with:
         </div>
       )}
         {attachments.filter(att => att.type !== 'youtube').length > 0 && (
-          <div className={`w-64 h-full overflow-y-auto p-4 border-r border-white/10 dark:border-white/5 hidden xl:block scrollbar-hide z-20 flex-shrink-0 transition-all duration-300 ${sidebarCollapsed ? 'ml-4' : ''}`}>
+          <div className={`w-64 h-full overflow-y-auto p-4 border-r border-white/10 dark:border-white/5 hidden lg:block scrollbar-hide z-20 flex-shrink-0 transition-all duration-300 ${sidebarCollapsed ? 'ml-4' : ''}`}>
 
              <div className="columns-2 gap-4 space-y-4">
                 {attachments.filter(att => att.type !== 'youtube').map(att => (
@@ -4520,7 +4520,7 @@ Format your response with:
         <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-hide relative">
         {inputMode === 'text' ? (
           <div 
-            className="min-h-full flex flex-col max-w-3xl mx-auto py-12 pl-16 pr-8 md:pl-20 md:pr-12 transition-all duration-500 relative group cursor-text"
+            className="min-h-full flex flex-col max-w-3xl mx-auto py-6 px-4 md:py-12 md:pl-16 md:pr-8 lg:pl-20 lg:pr-12 transition-all duration-500 relative group cursor-text"
             onClick={(e) => {
               if (e.target === e.currentTarget) {
                 quillRef.current?.focus();
@@ -4531,7 +4531,7 @@ Format your response with:
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               placeholder="Untitled"
-              className="text-4xl md:text-5xl font-medium bg-transparent border-0 text-black dark:text-white placeholder:text-gray-300/50 focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0 h-auto px-0 mb-6"
+              className="text-2xl sm:text-3xl md:text-4xl lg:text-5xl font-medium bg-transparent border-0 text-black dark:text-white placeholder:text-gray-300/50 focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0 h-auto px-0 mb-4 md:mb-6"
               disabled={isProcessing}
             />
 
@@ -4596,7 +4596,7 @@ Format your response with:
             }, [attachments, removeAttachment])}
 
             <div 
-              className="flex-1 w-full min-h-[50vh] text-xl md:text-2xl leading-relaxed text-black dark:text-white relative" 
+              className="flex-1 w-full min-h-[50vh] text-base sm:text-lg md:text-xl lg:text-2xl leading-relaxed text-black dark:text-white relative" 
               onContextMenu={handleEditorContextMenu}
               onDragOver={handleEditorDragOver}
               onDrop={handleEditorDrop}
@@ -4728,7 +4728,7 @@ Format your response with:
 
             {showMetadata && (
               <div className="w-full mt-4 p-6 bg-white/50 dark:bg-white/5 backdrop-blur-xl rounded-2xl border border-white/20 dark:border-white/10 shadow-lg">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 md:gap-6">
                   <div>
                     <label className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2 block">Tags</label>
                     <TagInput tags={tags} onChange={setTags} />

@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Check, Crown, Zap, Brain, Sparkles } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { createPageUrl } from '../utils';
-import NotionSidebar from '../components/notes/NotionSidebar';
+import ResponsiveSidebar from '../components/notes/ResponsiveSidebar';
 import SettingsModal from '../components/notes/SettingsModal';
 
 export default function BillingPage() {
@@ -111,32 +111,30 @@ export default function BillingPage() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 via-blue-50/30 to-gray-100 dark:from-[#171515] dark:via-[#171515] dark:to-[#171515] flex overflow-hidden">
-      <div className={`${sidebarCollapsed ? 'w-16' : 'w-64'} flex-shrink-0 transition-all duration-300`}>
-        <NotionSidebar
-          activeView="billing"
-          onViewChange={(view) => navigate(createPageUrl(
-            view === 'short_term' ? 'ShortTerm' : 
-            view === 'long_term' ? 'LongTerm' : 
-            view === 'tags' ? 'TagManagement' : 
-            view === 'reminders' ? 'Reminders' : 
-            view === 'trash' ? 'Trash' :
-            'Create'
-          ))}
-          onOpenSearch={() => navigate(createPageUrl('AISearch'))}
-          onOpenChat={() => navigate(createPageUrl('MemoryChat'))}
-          onOpenSettings={() => setSettingsOpen(true)}
-          isCollapsed={sidebarCollapsed}
-          onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
-        />
-      </div>
+      <ResponsiveSidebar
+        activeView="billing"
+        onViewChange={(view) => navigate(createPageUrl(
+          view === 'short_term' ? 'ShortTerm' : 
+          view === 'long_term' ? 'LongTerm' : 
+          view === 'tags' ? 'TagManagement' : 
+          view === 'reminders' ? 'Reminders' : 
+          view === 'trash' ? 'Trash' :
+          'Create'
+        ))}
+        onOpenSearch={() => navigate(createPageUrl('AISearch'))}
+        onOpenChat={() => navigate(createPageUrl('MemoryChat'))}
+        onOpenSettings={() => setSettingsOpen(true)}
+        isCollapsed={sidebarCollapsed}
+        onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+      />
 
-      <div className="flex-1 overflow-auto">
-        <div className="max-w-7xl mx-auto p-8">
+      <div className="flex-1 overflow-auto w-full md:w-auto">
+        <div className="max-w-7xl mx-auto p-4 md:p-8">
           {/* Header */}
-          <div className="text-center mb-12">
+          <div className="text-center mb-8 md:mb-12">
             <div className="flex items-center justify-center gap-2 mb-4">
-              <Sparkles className="w-8 h-8 text-black dark:text-white" />
-              <h1 className="text-4xl font-bold text-black dark:text-white">Upgrade Your Memory</h1>
+              <Sparkles className="w-6 h-6 md:w-8 md:h-8 text-black dark:text-white" />
+              <h1 className="text-2xl md:text-4xl font-bold text-black dark:text-white">Upgrade Your Memory</h1>
             </div>
             <p className="text-gray-600 dark:text-gray-400 text-lg">
               Unlock the full potential of AI-powered memory management
@@ -159,7 +157,7 @@ export default function BillingPage() {
           )}
 
           {/* Pricing Cards */}
-          <div className="grid md:grid-cols-3 gap-8 mb-12">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-8 mb-8 md:mb-12">
             {plans.map((plan) => {
               const Icon = plan.icon;
               const isCurrentPlan = plan.id === currentPlan;

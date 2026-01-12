@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 // ❌ Removed base44 import
-import NotionSidebar from '../components/notes/NotionSidebar';
+import ResponsiveSidebar from '../components/notes/ResponsiveSidebar';
 import SettingsModal from '../components/notes/SettingsModal';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tag, Trash2, Edit2, Save, X } from 'lucide-react';
@@ -128,32 +128,30 @@ export default function TagManagementPage() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 via-blue-50/30 to-gray-100 dark:from-[#171515] dark:via-[#171515] dark:to-[#171515] flex overflow-hidden">
-      <div className={`${sidebarCollapsed ? 'w-16' : 'w-64'} flex-shrink-0 transition-all duration-300`}>
-        <NotionSidebar
-          activeView="tags"
-          onViewChange={(view) => navigate(createPageUrl(
-            view === 'short_term' ? 'ShortTerm' : 
-            view === 'long_term' ? 'LongTerm' : 
-            view === 'tags' ? 'TagManagement' : 
-            view === 'reminders' ? 'Reminders' : 
-            view === 'trash' ? 'Trash' :
-            'Create'
-          ))}
-          onOpenSearch={() => navigate(createPageUrl('AISearch'))}
-          onOpenChat={() => navigate(createPageUrl('MemoryChat'))}
-          onOpenSettings={() => setSettingsOpen(true)}
-          isCollapsed={sidebarCollapsed}
-          onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
-        />
-      </div>
+      <ResponsiveSidebar
+        activeView="tags"
+        onViewChange={(view) => navigate(createPageUrl(
+          view === 'short_term' ? 'ShortTerm' : 
+          view === 'long_term' ? 'LongTerm' : 
+          view === 'tags' ? 'TagManagement' : 
+          view === 'reminders' ? 'Reminders' : 
+          view === 'trash' ? 'Trash' :
+          'Create'
+        ))}
+        onOpenSearch={() => navigate(createPageUrl('AISearch'))}
+        onOpenChat={() => navigate(createPageUrl('MemoryChat'))}
+        onOpenSettings={() => setSettingsOpen(true)}
+        isCollapsed={sidebarCollapsed}
+        onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+      />
 
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <div className="p-6 bg-glass border-b border-white/20 dark:border-gray-700/30">
-          <h1 className="text-2xl font-bold text-black dark:text-white flex items-center gap-2">
-            <Tag className="w-6 h-6" />
+      <div className="flex-1 flex flex-col overflow-hidden w-full md:w-auto">
+        <div className="p-3 md:p-6 bg-glass border-b border-white/20 dark:border-gray-700/30">
+          <h1 className="text-xl md:text-2xl font-bold text-black dark:text-white flex items-center gap-2">
+            <Tag className="w-5 h-5 md:w-6 md:h-6" />
             Tag Management
           </h1>
-          <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">Manage and organize your tags</p>
+          <p className="text-xs md:text-sm text-gray-500 dark:text-gray-400 mt-2">Manage and organize your tags</p>
         </div>
 
         <div className="flex-1 overflow-hidden">

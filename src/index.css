@@ -422,3 +422,62 @@
     0 0 0 0.5px rgba(255, 255, 255, 0.05),
     inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
 }
+
+/* =========================================================
+   RESPONSIVE DESIGN - Mobile & Tablet Optimizations
+   ========================================================= */
+
+/* Touch-friendly buttons on mobile */
+@media (max-width: 768px) {
+  /* Minimum touch target size (44x44px recommended by Apple/Google) */
+  button, 
+  .clay-button-small,
+  [role="button"] {
+    min-height: 44px;
+    min-width: 44px;
+    padding: 0.75rem 1rem;
+  }
+
+  /* Better spacing for mobile */
+  .clay-card {
+    padding: 1rem !important;
+  }
+
+  /* Responsive text sizes */
+  h1 { font-size: 1.5rem; }
+  h2 { font-size: 1.25rem; }
+  h3 { font-size: 1.125rem; }
+
+  /* Prevent text selection on buttons (better UX) */
+  button {
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+  }
+
+  /* Better scrolling on mobile */
+  * {
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Full width inputs on mobile */
+  input[type="text"],
+  input[type="email"],
+  input[type="password"],
+  textarea,
+  select {
+    width: 100%;
+    font-size: 16px; /* Prevents zoom on iOS */
+  }
+}
+
+/* Tablet optimizations */
+@media (min-width: 769px) and (max-width: 1024px) {
+  .clay-card {
+    padding: 1.25rem;
+  }
+}
+
+/* Touch manipulation for better performance */
+.touch-manipulation {
+  touch-action: manipulation;
+}

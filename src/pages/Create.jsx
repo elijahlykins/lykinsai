@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import NoteCreator from '../components/notes/NoteCreator';
-import NotionSidebar from '../components/notes/NotionSidebar';
+import ResponsiveSidebar from '../components/notes/ResponsiveSidebar';
 import SettingsModal from '../components/notes/SettingsModal';
 import NoteViewer from '../components/notes/NoteViewer';
 import AISearchOverlay from '../components/notes/AISearchOverlay';
@@ -292,45 +292,43 @@ If the user asks about old memories or references past ideas, refer to the memor
         onChange={handleImageUpload}
       />
 
-      <div className={`${sidebarCollapsed ? 'w-16' : 'w-64'} flex-shrink-0 transition-all duration-300`}>
-        <NotionSidebar
-          activeView="create"
-          onViewChange={(view) => navigate(createPageUrl(
-            view === 'short_term' ? 'ShortTerm' : 
-            view === 'long_term' ? 'LongTerm' : 
-            view === 'tags' ? 'TagManagement' : 
-            view === 'reminders' ? 'Reminders' : 
-            view === 'trash' ? 'Trash' :
-            'Create'
-          ))}
-          onOpenSearch={() => setShowSearch(true)}
-          onOpenChat={() => navigate(createPageUrl('MemoryChat'))}
-          onOpenSettings={() => setSettingsOpen(true)}
-          isCollapsed={sidebarCollapsed}
-          onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
-        />
-      </div>
+      <ResponsiveSidebar
+        activeView="create"
+        onViewChange={(view) => navigate(createPageUrl(
+          view === 'short_term' ? 'ShortTerm' : 
+          view === 'long_term' ? 'LongTerm' : 
+          view === 'tags' ? 'TagManagement' : 
+          view === 'reminders' ? 'Reminders' : 
+          view === 'trash' ? 'Trash' :
+          'Create'
+        ))}
+        onOpenSearch={() => setShowSearch(true)}
+        onOpenChat={() => navigate(createPageUrl('MemoryChat'))}
+        onOpenSettings={() => setSettingsOpen(true)}
+        isCollapsed={sidebarCollapsed}
+        onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+      />
 
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <div className="absolute top-0 left-0 right-0 p-6 flex items-center justify-between z-20 pointer-events-none">
+      <div className="flex-1 flex flex-col overflow-hidden w-full md:w-auto">
+        <div className="absolute top-0 left-0 right-0 p-3 md:p-6 flex items-center justify-between z-20 pointer-events-none">
           <div className="pointer-events-auto" />
-          <div className="flex items-center gap-2 pointer-events-auto bg-white/50 dark:bg-black/50 p-1.5 rounded-full backdrop-blur-md shadow-sm border border-white/20 dark:border-gray-700/30">
+          <div className="flex items-center gap-1 md:gap-2 pointer-events-auto bg-white/50 dark:bg-black/50 p-1 md:p-1.5 rounded-full backdrop-blur-md shadow-sm border border-white/20 dark:border-gray-700/30">
             <Button
               onClick={handleNewNote}
               variant="ghost"
-              className="rounded-full w-10 h-10 p-0 hover:bg-gray-100 dark:hover:bg-gray-700"
+              className="rounded-full w-9 h-9 md:w-10 md:h-10 p-0 hover:bg-gray-100 dark:hover:bg-gray-700 touch-manipulation"
               title="New Note"
             >
-              <Plus className="w-5 h-5" />
+              <Plus className="w-4 h-4 md:w-5 md:h-5" />
             </Button>
-            <div className="w-px h-4 bg-gray-300 dark:bg-gray-700 mx-1" />
+            <div className="w-px h-4 bg-gray-300 dark:bg-gray-700 mx-0.5 md:mx-1" />
             <Button
               onClick={() => setShowSearch(true)}
               variant="ghost"
-              className="rounded-full w-10 h-10 p-0 hover:bg-gray-100 dark:hover:bg-gray-700"
+              className="rounded-full w-9 h-9 md:w-10 md:h-10 p-0 hover:bg-gray-100 dark:hover:bg-gray-700 touch-manipulation"
               title="Search Memories"
             >
-              <Search className="w-5 h-5" />
+              <Search className="w-4 h-4 md:w-5 md:h-5" />
             </Button>
             <div className="w-px h-4 bg-gray-300 dark:bg-gray-700 mx-1" />
 
