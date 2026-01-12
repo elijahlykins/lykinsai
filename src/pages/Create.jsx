@@ -36,7 +36,8 @@ export default function CreatePage() {
     } catch (e) {
       console.warn('Error loading model from settings:', e);
     }
-    return 'gpt-3.5-turbo';
+    // Default to Gemini Flash Latest (free tier)
+    return 'gemini-flash-latest';
   });
 
   // Sync with settings changes (when settings modal updates)
@@ -364,9 +365,11 @@ If the user asks about old memories or references past ideas, refer to the memor
                 <SelectItem value="claude-3-5-sonnet-20240620">Claude 3.5 Sonnet</SelectItem>
                 <SelectItem value="claude-3-opus-20240229">Claude 3 Opus</SelectItem>
                 <SelectItem value="claude-3-sonnet-20240229">Claude 3 Sonnet</SelectItem>
-                <SelectItem value="gemini-1.5-flash">Gemini 1.5 Flash (Free Tier)</SelectItem>
-                <SelectItem value="gemini-1.5-pro">Gemini 1.5 Pro</SelectItem>
-                <SelectItem value="gemini-pro">Gemini Pro (Legacy)</SelectItem>
+                <SelectItem value="gemini-flash-latest">Gemini Flash Latest (Free Tier)</SelectItem>
+                <SelectItem value="gemini-2.5-flash">Gemini 2.5 Flash (Free Tier)</SelectItem>
+                <SelectItem value="gemini-2.0-flash">Gemini 2.0 Flash (Free Tier)</SelectItem>
+                <SelectItem value="gemini-pro-latest">Gemini Pro Latest</SelectItem>
+                <SelectItem value="gemini-2.5-pro">Gemini 2.5 Pro</SelectItem>
                 <SelectItem value="grok-beta">Grok Beta</SelectItem>
                 <SelectItem value="unified-auto">Unified AI (Auto)</SelectItem>
               </SelectContent>

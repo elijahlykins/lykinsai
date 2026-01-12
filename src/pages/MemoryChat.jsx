@@ -20,7 +20,7 @@ export default function MemoryChatPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [currentModel, setCurrentModel] = useState('gpt-3.5-turbo');
+  const [currentModel, setCurrentModel] = useState('gemini-flash-latest');
   const [inputMode, setInputMode] = useState('text');
   const [attachments, setAttachments] = useState([]);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
@@ -101,8 +101,8 @@ export default function MemoryChatPage() {
 
   useEffect(() => {
     const settings = JSON.parse(localStorage.getItem('lykinsai_settings') || '{}');
-    const savedModel = settings.aiModel || 'gpt-3.5-turbo';
-    setCurrentModel(savedModel === 'core' ? 'gpt-3.5-turbo' : savedModel);
+    const savedModel = settings.aiModel || 'gemini-flash-latest';
+    setCurrentModel(savedModel === 'core' ? 'gemini-flash-latest' : savedModel);
     
     const storedQuestions = localStorage.getItem('chat_followup_questions');
     if (storedQuestions) {
@@ -417,6 +417,34 @@ export default function MemoryChatPage() {
           }
         }
         
+        // Extract PDF content from attachments if available
+        if (attachments && Array.isArray(attachments)) {
+          const pdfFiles = attachments.filter(att => att && att.type === 'pdf' && att.extractedText);
+          if (pdfFiles.length > 0) {
+            const pdfContent = pdfFiles.map(pdf => {
+              const pdfName = pdf.name || 'PDF Document';
+              const pdfText = pdf.extractedText?.substring(0, 5000) || ''; // Limit to first 5000 chars per PDF
+              return `PDF Document: ${pdfName}\nContent:\n${pdfText}${pdf.extractedText && pdf.extractedText.length > 5000 ? '\n[Content truncated...]' : ''}`;
+            }).join('\n\n---\n\n');
+            noteText += `\n\nPDF Documents:\n${pdfContent}`;
+          }
+          
+          // Also include other document types with extracted text
+          const otherDocs = attachments.filter(att => 
+            att && 
+            ['word', 'excel', 'powerpoint', 'text'].includes(att.type) && 
+            att.extractedText
+          );
+          if (otherDocs.length > 0) {
+            const docContent = otherDocs.map(doc => {
+              const docName = doc.name || 'Document';
+              const docText = doc.extractedText?.substring(0, 5000) || '';
+              return `Document: ${docName} (${doc.type})\nContent:\n${docText}${doc.extractedText && doc.extractedText.length > 5000 ? '\n[Content truncated...]' : ''}`;
+            }).join('\n\n---\n\n');
+            noteText += `\n\nDocuments:\n${docContent}`;
+          }
+        }
+        
         // Debug: Log if we found transcripts
         if (hasTranscriptsInContent) {
           const transcriptLength = contentText.length;
@@ -683,10 +711,15 @@ Provide thoughtful, insightful responses based on their memories and interests. 
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent className="bg-white dark:bg-[#171515] border-gray-200 dark:border-gray-700">
+                  <SelectItem value="gemini-flash-latest">Gemini Flash Latest (Free Tier)</SelectItem>
+                  <SelectItem value="gemini-2.5-flash">Gemini 2.5 Flash (Free Tier)</SelectItem>
+                  <SelectItem value="gemini-2.0-flash">Gemini 2.0 Flash (Free Tier)</SelectItem>
                   <SelectItem value="gpt-3.5-turbo">GPT-3.5 Turbo</SelectItem>
                   <SelectItem value="gpt-4o">GPT-4o</SelectItem>
                   <SelectItem value="gpt-4o-mini">GPT-4o Mini</SelectItem>
                   <SelectItem value="claude-3-5-sonnet-20240620">Claude 3.5 Sonnet</SelectItem>
+                  <SelectItem value="gemini-pro-latest">Gemini Pro Latest</SelectItem>
+                  <SelectItem value="gemini-2.5-pro">Gemini 2.5 Pro</SelectItem>
                 </SelectContent>
                 </Select>
                 </div>

@@ -58,11 +58,19 @@ app.post('/api/ai/invoke', async (req, res) => {
       return res.status(400).json({ error: 'Missing prompt parameter' });
     }
 
-    // Handle unified-auto mode - default to GPT-4o if available, else GPT-3.5
+    // Handle unified-auto mode - prefer free tier (Gemini Flash) if available, else GPT-4o, else GPT-3.5
     let actualModel = model;
     if (model === 'unified-auto') {
-      actualModel = process.env.OPENAI_API_KEY ? 'gpt-4o' : 'gpt-3.5-turbo';
-      console.log(`🔄 Unified mode: using ${actualModel}`);
+      if (process.env.GOOGLE_API_KEY) {
+        actualModel = 'gemini-flash-latest';
+        console.log(`🔄 Unified mode: using ${actualModel} (free tier)`);
+      } else if (process.env.OPENAI_API_KEY) {
+        actualModel = 'gpt-4o';
+        console.log(`🔄 Unified mode: using ${actualModel}`);
+      } else {
+        actualModel = 'gpt-3.5-turbo';
+        console.log(`🔄 Unified mode: using ${actualModel} (fallback)`);
+      }
     }
 
     let responseText = '';
@@ -136,47 +144,119 @@ app.post('/api/ai/invoke', async (req, res) => {
       }
 
       // Map model names to Gemini API model IDs
-      // Free tier supports: gemini-1.5-flash, gemini-1.5-pro (without -latest suffix)
+      // Available models: gemini-2.5-flash, gemini-2.0-flash, gemini-flash-latest, gemini-2.5-pro, etc.
       let geminiModel = actualModel;
-      if (actualModel === 'gemini-pro') {
-        // gemini-pro is deprecated, use flash instead
-        geminiModel = 'gemini-1.5-flash';
-        console.log('⚠️ gemini-pro is deprecated, using gemini-1.5-flash instead');
+      if (actualModel === 'gemini-pro' || actualModel === 'gemini-1.5-flash') {
+        // Legacy names - use latest flash (free tier compatible)
+        geminiModel = 'gemini-flash-latest';
+        console.log(`⚠️ ${actualModel} is deprecated, using gemini-flash-latest instead`);
       } else if (actualModel === 'gemini-1.5-pro') {
-        geminiModel = 'gemini-1.5-pro';
+        geminiModel = 'gemini-pro-latest';
+        console.log('⚠️ gemini-1.5-pro is deprecated, using gemini-pro-latest instead');
       } else if (actualModel === 'gemini-1.5-flash') {
-        geminiModel = 'gemini-1.5-flash';
+        geminiModel = 'gemini-flash-latest';
+      } else if (actualModel.startsWith('gemini-') || actualModel.includes('gemini')) {
+        // Keep the model name as-is if it's already a valid format
+        geminiModel = actualModel;
       } else {
-        // Default to flash for unknown gemini models
-        geminiModel = 'gemini-1.5-flash';
+        // Default to latest flash for unknown gemini models (free tier)
+        geminiModel = 'gemini-flash-latest';
       }
 
-      // Use v1beta API (free tier compatible)
-      let geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${process.env.GOOGLE_API_KEY}`, {
+      console.log(`🔮 Calling Gemini API with model: ${geminiModel}`);
+      console.log(`   API Key: ${process.env.GOOGLE_API_KEY ? 'SET (' + process.env.GOOGLE_API_KEY.substring(0, 10) + '...)' : 'NOT SET'}`);
+      
+      // Try v1beta first (free tier compatible), then fallback to v1 if needed
+      const requestBody = {
+        contents: [{
+          parts: [{ text: prompt }]
+        }],
+        generationConfig: {
+          maxOutputTokens: 1000,
+          temperature: 0.7
+        }
+      };
+      
+      let geminiRes;
+      let apiVersion = 'v1beta';
+      let apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${process.env.GOOGLE_API_KEY}`;
+      
+      console.log(`   Trying ${apiVersion} endpoint: ${apiUrl.replace(process.env.GOOGLE_API_KEY, 'KEY_HIDDEN')}`);
+      
+      geminiRes = await fetch(apiUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({
-          contents: [{
-            parts: [{ text: prompt }]
-          }],
-          generationConfig: {
-            maxOutputTokens: 1000,
-            temperature: 0.7
-          }
-        })
+        body: JSON.stringify(requestBody)
       });
 
+      console.log(`   Response status: ${geminiRes.status} ${geminiRes.statusText}`);
+
+      // If v1beta fails with 404, try v1 endpoint
+      if (!geminiRes.ok && geminiRes.status === 404) {
+        console.log('⚠️ v1beta returned 404, trying v1 endpoint...');
+        apiVersion = 'v1';
+        apiUrl = `https://generativelanguage.googleapis.com/v1/models/${geminiModel}:generateContent?key=${process.env.GOOGLE_API_KEY}`;
+        console.log(`   Trying ${apiVersion} endpoint: ${apiUrl.replace(process.env.GOOGLE_API_KEY, 'KEY_HIDDEN')}`);
+        
+        geminiRes = await fetch(apiUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(requestBody)
+        });
+        
+        console.log(`   v1 Response status: ${geminiRes.status} ${geminiRes.statusText}`);
+      }
+
+      // If still failing, try with versioned model name
+      if (!geminiRes.ok && geminiRes.status === 404 && geminiModel === 'gemini-1.5-flash') {
+        console.log('⚠️ Trying with versioned model name: gemini-1.5-flash-002');
+        geminiModel = 'gemini-1.5-flash-002';
+        apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${process.env.GOOGLE_API_KEY}`;
+        
+        geminiRes = await fetch(apiUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(requestBody)
+        });
+        
+        console.log(`   Versioned model response status: ${geminiRes.status} ${geminiRes.statusText}`);
+      }
 
       if (!geminiRes.ok) {
         const errorData = await geminiRes.json().catch(() => ({}));
-        console.error('❌ Gemini API Error:', errorData);
-        const errorMsg = errorData.error?.message || geminiRes.statusText;
-        throw new Error(`Gemini: ${errorMsg}. Free tier supports: gemini-1.5-flash, gemini-1.5-pro. Make sure you're using the correct model name.`);
+        console.error('❌ Gemini API Error Details:', JSON.stringify(errorData, null, 2));
+        console.error('   Status:', geminiRes.status);
+        console.error('   Status Text:', geminiRes.statusText);
+        console.error('   Model tried:', geminiModel);
+        console.error('   API version tried:', apiVersion);
+        
+        const errorMsg = errorData.error?.message || errorData.message || geminiRes.statusText;
+        const errorReason = errorData.error?.status || errorData.error?.code || '';
+        const errorDetails = errorData.error?.details || '';
+        
+        let fullErrorMsg = `Gemini API Error: ${errorMsg}`;
+        if (errorReason) fullErrorMsg += ` (${errorReason})`;
+        if (errorDetails) fullErrorMsg += ` - ${JSON.stringify(errorDetails)}`;
+        fullErrorMsg += `. Status: ${geminiRes.status}. Model: ${geminiModel}. API Version: ${apiVersion}.`;
+        fullErrorMsg += ` Please verify your API key is valid and has access to Gemini API.`;
+        
+        throw new Error(fullErrorMsg);
       }
+      
       const data = await geminiRes.json();
+      console.log('✅ Gemini API Response received');
       responseText = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+      
+      if (!responseText) {
+        console.warn('⚠️ Empty response from Gemini. Full response:', JSON.stringify(data, null, 2));
+        throw new Error('Gemini returned an empty response. Please check the API response format.');
+      }
 
     } else if (actualModel.includes('grok')) {
       // xAI Grok

@@ -68,7 +68,50 @@ export const POST: APIRoute = async ({ request }) => {
       const anthropicData = await anthropicRes.json();
       responseText = anthropicData.content?.[0]?.text || 'No response from Anthropic';
 
-    // 🤖 Add more providers here (Mistral, Google Gemini, etc.)
+    // 🤖 Google Gemini Models (gemini-1.5-flash, gemini-1.5-pro, etc.)
+    } else if (model.startsWith('gemini-') || model.includes('gemini')) {
+      if (!import.meta.env.VITE_GOOGLE_API_KEY) {
+        throw new Error('Google API key not configured. Please set VITE_GOOGLE_API_KEY in your .env file.');
+      }
+
+      // Map model names to Gemini API model IDs
+      // Available models: gemini-2.5-flash, gemini-2.0-flash, gemini-flash-latest, gemini-2.5-pro, etc.
+      let geminiModel = model;
+      if (model === 'gemini-pro' || model === 'gemini-1.5-flash') {
+        geminiModel = 'gemini-flash-latest'; // Legacy names - use latest flash
+      } else if (model === 'gemini-1.5-pro') {
+        geminiModel = 'gemini-pro-latest';
+      } else if (model.startsWith('gemini-') || model.includes('gemini')) {
+        geminiModel = model; // Keep as-is if already valid
+      } else {
+        geminiModel = 'gemini-flash-latest'; // Default to latest flash
+      }
+
+      const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${import.meta.env.VITE_GOOGLE_API_KEY}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          contents: [{
+            parts: [{ text: prompt }]
+          }],
+          generationConfig: {
+            maxOutputTokens: 1000,
+            temperature: 0.7
+          }
+        })
+      });
+
+      if (!geminiRes.ok) {
+        const errorData = await geminiRes.json().catch(() => ({}));
+        throw new Error(`Gemini error: ${errorData.error?.message || geminiRes.statusText}`);
+      }
+
+      const geminiData = await geminiRes.json();
+      responseText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || 'No response from Gemini';
+
+    // 🤖 Add more providers here (Mistral, etc.)
     } else {
       return new Response(
         JSON.stringify({ error: `Unsupported model: ${model}` }),

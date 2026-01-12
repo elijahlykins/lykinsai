@@ -70,14 +70,14 @@ const modules = {
 // ✅ NEW: Helper to call your AI proxy
 const callAI = async (prompt, model = null) => {
   try {
-    // Get model from settings if not provided, default to gpt-3.5-turbo
+    // Get model from settings if not provided, default to gemini-1.5-flash (free tier)
     let aiModel = model;
     if (!aiModel) {
       const settings = JSON.parse(localStorage.getItem('lykinsai_settings') || '{}');
-      aiModel = settings.aiModel || 'gpt-3.5-turbo';
+      aiModel = settings.aiModel || 'gemini-flash-latest';
       // Handle legacy 'core' model
       if (aiModel === 'core') {
-        aiModel = 'gpt-3.5-turbo';
+        aiModel = 'gemini-flash-latest';
       }
     }
 
@@ -1209,6 +1209,23 @@ const NoteCreator = React.forwardRef(({
               }
             }
             
+            // Add PDF and document extracted text to content for searchability and AI context
+            if (fullNoteData.attachments?.length > 0) {
+              const pdfsWithText = fullNoteData.attachments.filter(
+                att => att && att.type === 'pdf' && att.extractedText && att.extractedText.trim().length > 0
+              );
+              
+              if (pdfsWithText.length > 0 && !enhancedContent.includes('**PDF Content:**')) {
+                const pdfContentText = pdfsWithText.map(pdf => {
+                  const pdfName = pdf.name || 'PDF';
+                  const textPreview = pdf.extractedText.substring(0, 2000); // First 2000 chars for content
+                  return `**PDF: ${pdfName}**\n${textPreview}${pdf.extractedText.length > 2000 ? '...[Full text available in attachment]' : ''}`;
+                }).join('\n\n---\n\n');
+                enhancedContent = `${enhancedContent}\n\n**PDF Content:**\n\n${pdfContentText}`;
+                console.log(`📄 Added PDF content from ${pdfsWithText.length} PDF(s) to note content`);
+              }
+            }
+            
             // Add metadata to content if columns don't exist (for AI access)
             if (fullNoteData.tags?.length > 0 && !enhancedContent.includes('[Tags:')) {
               enhancedContent = `${enhancedContent}\n\n[Tags: ${fullNoteData.tags.join(', ')}]`;
@@ -1376,6 +1393,21 @@ const NoteCreator = React.forwardRef(({
             const attachmentsJson = JSON.stringify(fullNoteData.attachments);
             safeData.content = `${safeData.content}\n\n[ATTACHMENTS_JSON:${attachmentsJson}]`;
             console.log(`📎 Embedding ${fullNoteData.attachments.length} attachment(s) in content for new note`);
+            
+            // Also add PDF extracted text to content for searchability
+            const pdfsWithText = fullNoteData.attachments.filter(
+              att => att && att.type === 'pdf' && att.extractedText && att.extractedText.trim().length > 0
+            );
+            
+            if (pdfsWithText.length > 0 && !safeData.content.includes('**PDF Content:**')) {
+              const pdfContentText = pdfsWithText.map(pdf => {
+                const pdfName = pdf.name || 'PDF';
+                const textPreview = pdf.extractedText.substring(0, 2000); // First 2000 chars for content
+                return `**PDF: ${pdfName}**\n${textPreview}${pdf.extractedText.length > 2000 ? '...[Full text available in attachment]' : ''}`;
+              }).join('\n\n---\n\n');
+              safeData.content = `${safeData.content}\n\n**PDF Content:**\n\n${pdfContentText}`;
+              console.log(`📄 Added PDF content from ${pdfsWithText.length} PDF(s) to new note content`);
+            }
           } catch (e) {
             console.warn('Failed to embed attachments in content:', e);
           }
@@ -1577,15 +1609,23 @@ const NoteCreator = React.forwardRef(({
         }
 
         // Update attachment with extracted text
-        if (extractedText) {
+        if (extractedText && extractedText.trim().length > 0) {
           console.log(`✅ Extracted ${extractedText.length} characters from "${file.name}" (type: ${fileType})`);
           setAttachments(prev => prev.map(att => 
             att.id === attachment.id 
-              ? { ...att, extractedText, isLoading: false }
+              ? { ...att, extractedText: extractedText.trim(), isLoading: false }
               : att
           ));
-    } else {
+          
+          // For PDFs, also add a note in the content to reference the extracted text
+          if (fileType === 'pdf' && extractedText.length > 100) {
+            console.log(`📄 PDF text extracted successfully. Content will be available for AI search and context.`);
+          }
+        } else {
           console.log(`⚠️ No text extracted from "${file.name}" (type: ${fileType})`);
+          if (fileType === 'pdf') {
+            console.warn(`⚠️ PDF text extraction returned empty. This PDF might be image-only or scanned.`);
+          }
           setAttachments(prev => prev.map(att => 
             att.id === attachment.id 
               ? { ...att, isLoading: false }
@@ -1609,36 +1649,89 @@ const NoteCreator = React.forwardRef(({
   // Extract text from PDF using PDF.js
   const extractTextFromPDF = async (file) => {
     try {
+      console.log('📄 Starting PDF text extraction for:', file.name);
+      
       // Dynamically import pdfjs-dist
       const pdfjsLib = await import('pdfjs-dist');
+      
       // Set worker source - use CDN for compatibility
       if (typeof window !== 'undefined') {
-        pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
+        // Use a more reliable CDN URL
+        const version = pdfjsLib.version || '3.11.174';
+        pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${version}/pdf.worker.min.js`;
+        console.log(`📄 Using PDF.js version ${version}`);
       }
       
       const arrayBuffer = await file.arrayBuffer();
-      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      console.log(`📄 PDF file loaded: ${arrayBuffer.byteLength} bytes`);
+      
+      // Load PDF document
+      const loadingTask = pdfjsLib.getDocument({ 
+        data: arrayBuffer,
+        verbosity: 0 // Reduce console noise
+      });
+      const pdf = await loadingTask.promise;
+      
+      console.log(`📄 PDF loaded: ${pdf.numPages} pages`);
       
       let fullText = '';
-      const maxPages = Math.min(pdf.numPages, 50); // Limit to 50 pages for performance
+      const maxPages = Math.min(pdf.numPages, 100); // Increased to 100 pages
+      
+      // Extract text from each page
       for (let i = 1; i <= maxPages; i++) {
-        const page = await pdf.getPage(i);
-        const textContent = await page.getTextContent();
-        const pageText = textContent.items
-          .map(item => (item && typeof item === 'object' && 'str' in item ? item.str : ''))
-          .filter(str => str && str.trim())
-          .join(' ');
-        fullText += pageText + '\n\n';
+        try {
+          const page = await pdf.getPage(i);
+          const textContent = await page.getTextContent();
+          
+          // Extract text from text items
+          const pageText = textContent.items
+            .map(item => {
+              if (item && typeof item === 'object' && 'str' in item) {
+                return item.str || '';
+              }
+              return '';
+            })
+            .filter(str => str && str.trim().length > 0)
+            .join(' ');
+          
+          if (pageText.trim()) {
+            fullText += `\n\n--- Page ${i} ---\n\n${pageText.trim()}`;
+          }
+          
+          // Log progress for large PDFs
+          if (i % 10 === 0) {
+            console.log(`📄 Extracted text from ${i}/${maxPages} pages...`);
+          }
+        } catch (pageError) {
+          console.warn(`⚠️ Error extracting text from page ${i}:`, pageError);
+          // Continue with other pages even if one fails
+        }
       }
       
-      if (pdf.numPages > 50) {
-        fullText += `\n\n[Note: Document has ${pdf.numPages} pages. Only first 50 pages extracted.]`;
+      if (pdf.numPages > maxPages) {
+        fullText += `\n\n[Note: Document has ${pdf.numPages} total pages. Text from first ${maxPages} pages extracted.]`;
+        console.log(`📄 PDF has ${pdf.numPages} pages, extracted first ${maxPages}`);
+      }
+      
+      const extractedLength = fullText.trim().length;
+      console.log(`✅ PDF text extraction complete: ${extractedLength} characters extracted from ${maxPages} pages`);
+      
+      if (extractedLength === 0) {
+        console.warn('⚠️ No text content found in PDF. This might be a scanned/image-only PDF.');
+        return null;
       }
       
       return fullText.trim();
     } catch (error) {
-      console.error('Error extracting PDF text:', error);
-      // Return null so the PDF can still be viewed in iframe
+      console.error('❌ Error extracting PDF text:', error);
+      console.error('Error details:', {
+        message: error.message,
+        stack: error.stack,
+        fileName: file.name,
+        fileSize: file.size,
+        fileType: file.type
+      });
+      // Return null so the PDF can still be viewed even if text extraction fails
       return null;
     }
   };
@@ -3460,10 +3553,14 @@ Return up to 5 note IDs that have content similarities, along with a brief reaso
 
 Return ONLY a JSON object: {"suggestions": [{"note_id": "id1", "reason": "reason1"}, ...]}`;
 
+      // Get model from settings
+      const settings = JSON.parse(localStorage.getItem('lykinsai_settings') || '{}');
+      const aiModel = settings.aiModel || 'gemini-flash-latest';
+
       const response = await fetch('http://localhost:3001/api/ai/invoke', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'gpt-3.5-turbo', prompt })
+        body: JSON.stringify({ model: aiModel, prompt })
       });
 
       if (!response.ok) throw new Error('AI request failed');
@@ -5336,7 +5433,7 @@ Format your response with:
           <input
             ref={fileInputRef}
             type="file"
-            accept="*/*"
+            accept="*/*,.pdf,application/pdf"
             multiple
             onChange={(e) => {
               const files = Array.from(e.target.files || []);

@@ -17,7 +17,7 @@ export default function SettingsModal({ isOpen, onClose }) {
     layoutDensity: 'comfortable',
     aiPersonality: 'balanced',
     aiDetailLevel: 'medium',
-    aiModel: 'gpt-3.5-turbo'
+    aiModel: 'gemini-flash-latest'
   });
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -25,60 +25,6 @@ export default function SettingsModal({ isOpen, onClose }) {
   const [authError, setAuthError] = useState('');
   const [socialConnections, setSocialConnections] = useState([]);
   const [syncingPlatform, setSyncingPlatform] = useState(null);
-
-  useEffect(() => {
-    const loadSettings = () => {
-      const saved = localStorage.getItem('lykinsai_settings');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed.aiModel === 'core') {
-          parsed.aiModel = 'gpt-3.5-turbo';
-        }
-        setSettings(parsed);
-        document.documentElement.classList.toggle('dark', parsed.theme === 'dark');
-      }
-    };
-    
-    loadSettings();
-    
-    // Reload settings when modal opens (in case they changed elsewhere)
-    if (isOpen) {
-      loadSettings();
-    }
-    
-    // Listen for settings changes from other components
-    const handleSettingsChange = () => {
-      loadSettings();
-    };
-    window.addEventListener('lykinsai_settings_changed', handleSettingsChange);
-    
-    // Load social connections
-    loadSocialConnections();
-    
-    // Check for OAuth callback
-    const urlParams = new URLSearchParams(window.location.search);
-    const connected = urlParams.get('connected');
-    const error = urlParams.get('error');
-    const data = urlParams.get('data');
-    
-    if (connected && data) {
-      try {
-        const connectionData = JSON.parse(Buffer.from(data, 'base64').toString());
-        handleOAuthCallback(connectionData);
-        // Clean URL
-        window.history.replaceState({}, document.title, window.location.pathname);
-      } catch (e) {
-        console.error('Error parsing OAuth callback:', e);
-      }
-    } else if (error) {
-      setAuthError(`Connection failed: ${error}`);
-      window.history.replaceState({}, document.title, window.location.pathname);
-    }
-    
-    return () => {
-      window.removeEventListener('lykinsai_settings_changed', handleSettingsChange);
-    };
-  }, [isOpen]);
 
   const loadSocialConnections = async () => {
     try {
@@ -106,18 +52,71 @@ export default function SettingsModal({ isOpen, onClose }) {
     }
   };
 
+  const syncPlatformData = async (platform, accessToken) => {
+    if (!accessToken) {
+      const connection = socialConnections.find(c => c.platform === platform);
+      if (!connection) return;
+      accessToken = connection.accessToken;
+    }
+    
+    setSyncingPlatform(platform);
+    try {
+      const userId = user?.id || 'anonymous';
+      const response = await fetch(`http://localhost:3001/api/social/sync/${platform}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, accessToken })
+      });
+      
+      const data = await response.json();
+      
+      if (data.syncedCount > 0) {
+        // Update last synced time
+        const updated = socialConnections.map(conn => 
+          conn.platform === platform
+            ? { ...conn, lastSyncedAt: new Date().toISOString() }
+            : conn
+        );
+        setSocialConnections(updated);
+        localStorage.setItem('lykinsai_social_connections', JSON.stringify(updated));
+        
+        // Save synced data to Supabase
+        if (user && data.data) {
+          for (const item of data.data) {
+            await supabase.from('social_data').upsert({
+              user_id: user.id,
+              ...item,
+              synced_at: new Date().toISOString()
+            }, {
+              onConflict: 'user_id,platform,platform_item_id'
+            });
+          }
+        }
+      }
+    } catch (error) {
+      console.error(`Error syncing ${platform}:`, error);
+    } finally {
+      setSyncingPlatform(null);
+    }
+  };
+
   const handleOAuthCallback = async (connectionData) => {
     try {
+      if (!connectionData || !connectionData.platform) {
+        console.warn('Invalid OAuth callback data:', connectionData);
+        return;
+      }
+      
       // Store connection locally
       const newConnection = {
         id: Date.now().toString(),
         platform: connectionData.platform,
-        platformUserId: connectionData.platformUserId,
-        platformUsername: connectionData.platformUsername,
+        platformUserId: connectionData.platformUserId || '',
+        platformUsername: connectionData.platformUsername || '',
         connectedAt: new Date().toISOString(),
         lastSyncedAt: null,
         accessToken: connectionData.accessToken, // In production, encrypt this
-        refreshToken: connectionData.refreshToken
+        refreshToken: connectionData.refreshToken || null
       };
       
       const updated = [...socialConnections, newConnection];
@@ -126,24 +125,32 @@ export default function SettingsModal({ isOpen, onClose }) {
       
       // Also save to Supabase if user is authenticated
       if (user) {
-        await supabase.from('social_connections').insert({
-          user_id: user.id,
-          platform: connectionData.platform,
-          access_token: connectionData.accessToken,
-          refresh_token: connectionData.refreshToken,
-          platform_user_id: connectionData.platformUserId,
-          platform_username: connectionData.platformUsername,
-          token_expires_at: connectionData.expiresIn 
-            ? new Date(Date.now() + connectionData.expiresIn * 1000).toISOString()
-            : null
-        });
+        try {
+          await supabase.from('social_connections').insert({
+            user_id: user.id,
+            platform: connectionData.platform,
+            access_token: connectionData.accessToken,
+            refresh_token: connectionData.refreshToken,
+            platform_user_id: connectionData.platformUserId,
+            platform_username: connectionData.platformUsername,
+            token_expires_at: connectionData.expiresIn 
+              ? new Date(Date.now() + connectionData.expiresIn * 1000).toISOString()
+              : null
+          });
+        } catch (dbError) {
+          console.warn('Failed to save connection to Supabase (non-critical):', dbError);
+          // Don't fail the whole operation if DB save fails
+        }
       }
       
-      // Auto-sync data
-      await syncPlatformData(connectionData.platform, connectionData.accessToken);
+      // Auto-sync data (don't await, let it run in background)
+      syncPlatformData(connectionData.platform, connectionData.accessToken).catch(err => {
+        console.warn('Background sync failed (non-critical):', err);
+      });
     } catch (error) {
       console.error('Error handling OAuth callback:', error);
-      setAuthError(`Failed to save connection: ${error.message}`);
+      setAuthError(`Failed to save connection: ${error.message || 'Unknown error'}`);
+      // Don't throw - allow settings modal to continue working
     }
   };
 
@@ -235,53 +242,81 @@ export default function SettingsModal({ isOpen, onClose }) {
     }
   };
 
-  const syncPlatformData = async (platform, accessToken) => {
-    if (!accessToken) {
-      const connection = socialConnections.find(c => c.platform === platform);
-      if (!connection) return;
-      accessToken = connection.accessToken;
-    }
-    
-    setSyncingPlatform(platform);
-    try {
-      const userId = user?.id || 'anonymous';
-      const response = await fetch(`http://localhost:3001/api/social/sync/${platform}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId, accessToken })
-      });
-      
-      const data = await response.json();
-      
-      if (data.syncedCount > 0) {
-        // Update last synced time
-        const updated = socialConnections.map(conn => 
-          conn.platform === platform
-            ? { ...conn, lastSyncedAt: new Date().toISOString() }
-            : conn
-        );
-        setSocialConnections(updated);
-        localStorage.setItem('lykinsai_social_connections', JSON.stringify(updated));
-        
-        // Save synced data to Supabase
-        if (user && data.data) {
-          for (const item of data.data) {
-            await supabase.from('social_data').upsert({
-              user_id: user.id,
-              ...item,
-              synced_at: new Date().toISOString()
-            }, {
-              onConflict: 'user_id,platform,platform_item_id'
-            });
+  useEffect(() => {
+    const loadSettings = () => {
+      const saved = localStorage.getItem('lykinsai_settings');
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          if (parsed.aiModel === 'core') {
+            parsed.aiModel = 'gemini-flash-latest';
           }
+          setSettings(parsed);
+          document.documentElement.classList.toggle('dark', parsed.theme === 'dark');
+        } catch (e) {
+          console.error('Error parsing settings:', e);
         }
       }
-    } catch (error) {
-      console.error(`Error syncing ${platform}:`, error);
-    } finally {
-      setSyncingPlatform(null);
+    };
+    
+    loadSettings();
+    
+    // Reload settings when modal opens (in case they changed elsewhere)
+    if (isOpen) {
+      loadSettings();
     }
-  };
+    
+    // Listen for settings changes from other components
+    const handleSettingsChange = () => {
+      loadSettings();
+    };
+    window.addEventListener('lykinsai_settings_changed', handleSettingsChange);
+    
+    // Load social connections
+    loadSocialConnections();
+    
+    // Check for OAuth callback (only for social media integrations, not Supabase auth)
+    // Supabase handles its own OAuth callbacks via URL hash fragments (#access_token=...)
+    // Social media integrations use query parameters (?connected=...&data=...)
+    try {
+      const urlParams = new URLSearchParams(window.location.search);
+      const connected = urlParams.get('connected');
+      const error = urlParams.get('error');
+      const data = urlParams.get('data');
+      const hasSupabaseHash = window.location.hash && window.location.hash.includes('access_token');
+      
+      // Only handle social media OAuth callbacks (Pinterest, Instagram, etc.)
+      // Skip if this looks like a Supabase OAuth callback
+      if (connected && data && !hasSupabaseHash) {
+        try {
+          const connectionData = JSON.parse(Buffer.from(data, 'base64').toString());
+          // Only process if it's a social media platform, not Supabase auth
+          if (connectionData.platform && ['pinterest', 'instagram'].includes(connectionData.platform)) {
+            handleOAuthCallback(connectionData);
+            // Clean URL
+            window.history.replaceState({}, document.title, window.location.pathname);
+          }
+        } catch (e) {
+          console.error('Error parsing OAuth callback:', e);
+          // Don't break the settings modal if callback parsing fails
+        }
+      } else if (error && !hasSupabaseHash) {
+        // Only show error if it's not a Supabase OAuth callback
+        // Check if it's a social media error (has platform context)
+        if (error.includes('pinterest') || error.includes('instagram') || error.includes('social')) {
+          setAuthError(`Connection failed: ${error}`);
+          window.history.replaceState({}, document.title, window.location.pathname);
+        }
+      }
+    } catch (urlError) {
+      // If URL parsing fails, don't break the settings modal
+      console.warn('Error processing URL parameters:', urlError);
+    }
+    
+    return () => {
+      window.removeEventListener('lykinsai_settings_changed', handleSettingsChange);
+    };
+  }, [isOpen, user]);
 
   const handleSave = () => {
     localStorage.setItem('lykinsai_settings', JSON.stringify(settings));
@@ -371,7 +406,19 @@ export default function SettingsModal({ isOpen, onClose }) {
             ) : (
               <div className="space-y-3">
                 <Button
-                  onClick={() => signInWithOAuth('google')}
+                  onClick={async () => {
+                    try {
+                      setAuthError('');
+                      const { error } = await signInWithOAuth('google');
+                      if (error) {
+                        setAuthError(`Google sign-in failed: ${error.message}`);
+                        console.error('Google OAuth error:', error);
+                      }
+                    } catch (error) {
+                      setAuthError(`Google sign-in error: ${error.message || 'Unknown error'}`);
+                      console.error('Google OAuth exception:', error);
+                    }
+                  }}
                   variant="outline"
                   className="w-full border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#171515] flex items-center justify-center gap-2"
                 >
@@ -615,9 +662,11 @@ export default function SettingsModal({ isOpen, onClose }) {
                   <SelectItem value="claude-3-5-sonnet-20240620">Claude 3.5 Sonnet</SelectItem>
                   <SelectItem value="claude-3-opus-20240229">Claude 3 Opus</SelectItem>
                   <SelectItem value="claude-3-sonnet-20240229">Claude 3 Sonnet</SelectItem>
-                  <SelectItem value="gemini-1.5-flash">Gemini 1.5 Flash (Free Tier)</SelectItem>
-                  <SelectItem value="gemini-1.5-pro">Gemini 1.5 Pro</SelectItem>
-                  <SelectItem value="gemini-pro">Gemini Pro (Legacy)</SelectItem>
+                  <SelectItem value="gemini-flash-latest">Gemini Flash Latest (Free Tier)</SelectItem>
+                  <SelectItem value="gemini-2.5-flash">Gemini 2.5 Flash (Free Tier)</SelectItem>
+                  <SelectItem value="gemini-2.0-flash">Gemini 2.0 Flash (Free Tier)</SelectItem>
+                  <SelectItem value="gemini-pro-latest">Gemini Pro Latest</SelectItem>
+                  <SelectItem value="gemini-2.5-pro">Gemini 2.5 Pro</SelectItem>
                   <SelectItem value="grok-beta">Grok Beta</SelectItem>
                 </SelectContent>
               </Select>
