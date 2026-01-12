@@ -75,7 +75,8 @@ Find meaningful connections based on content, themes, and ideas - not just keywo
 
 Return ONLY a JSON object: {"relationships": [...], "clusters": [...]}`;
 
-      const response = await fetch('http://localhost:3001/api/ai/invoke', {
+      const { API_BASE_URL } = await import('@/lib/api-config');
+      const response = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: 'gpt-3.5-turbo', prompt })
@@ -417,7 +418,8 @@ Suggest up to 5 notes that would be most valuable to connect with the given note
 
 Return ONLY a JSON object: {"suggestions": [{"note_id": "id", "reason": "reason", "type": "type"}, ...]}`;
 
-      const response = await fetch('http://localhost:3001/api/ai/invoke', {
+      const { API_BASE_URL } = await import('@/lib/api-config');
+      const response = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: 'gpt-3.5-turbo', prompt })

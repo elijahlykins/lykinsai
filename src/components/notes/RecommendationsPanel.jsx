@@ -57,7 +57,8 @@ Provide recommendations like:
 
 Return ONLY a JSON object: {"recommendations": [{"type": "type", "title": "title", "description": "description", "noteId": "id"}, ...]}`;
 
-      const response = await fetch('http://localhost:3001/api/ai/invoke', {
+      const { API_BASE_URL } = await import('@/lib/api-config');
+      const response = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: 'gpt-3.5-turbo', prompt })

@@ -18,7 +18,8 @@ export default function YouTubeSearch({ isOpen, onClose, onSelectVideo }) {
     setError(null);
     
     try {
-      const response = await fetch(`http://localhost:3001/api/youtube/search?q=${encodeURIComponent(query)}&maxResults=10`);
+      const { API_BASE_URL } = await import('@/lib/api-config');
+      const response = await fetch(`${API_BASE_URL}/api/youtube/search?q=${encodeURIComponent(query)}&maxResults=10`);
       
       if (!response.ok) {
         throw new Error('Failed to search YouTube');

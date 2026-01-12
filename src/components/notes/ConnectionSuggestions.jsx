@@ -52,7 +52,8 @@ Return up to 5 note IDs that are most relevant, along with a brief reason for ea
 
 Return ONLY a JSON object: {"suggestions": [{"note_id": "id1", "reason": "reason1"}, ...]}`;
 
-      const response = await fetch('http://localhost:3001/api/ai/invoke', {
+      const { API_BASE_URL } = await import('@/lib/api-config');
+      const response = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: 'gpt-3.5-turbo', prompt })

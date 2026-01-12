@@ -57,7 +57,8 @@ Look for:
 
 Return ONLY a JSON object: {"duplicates": [{"note1_id": "id1", "note2_id": "id2", "reason": "reason", "similarity": 0.85}, ...]}`;
 
-      const response = await fetch('http://localhost:3001/api/ai/invoke', {
+      const { API_BASE_URL } = await import('@/lib/api-config');
+      const response = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: 'gpt-3.5-turbo', prompt })
@@ -113,7 +114,8 @@ Content: ${note2.content}
 
 Create a well-structured merged note that captures all important information from both.`;
 
-      const contentResponse = await fetch('http://localhost:3001/api/ai/invoke', {
+      const { API_BASE_URL } = await import('@/lib/api-config');
+      const contentResponse = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: 'gpt-3.5-turbo', prompt: contentPrompt })
@@ -123,7 +125,7 @@ Create a well-structured merged note that captures all important information fro
 
       // Generate title
       const titlePrompt = `Create a concise title (max 6 words) for this merged content: "${mergedContent.substring(0, 200)}"`;
-      const titleResponse = await fetch('http://localhost:3001/api/ai/invoke', {
+      const titleResponse = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: 'gpt-3.5-turbo', prompt: titlePrompt })

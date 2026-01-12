@@ -20,7 +20,8 @@ export default function AISearchOverlay({ isOpen, onClose, onNavigate, allNotes 
           const recentNotes = allNotes.slice(0, 10).map(n => n.title).join(', ');
           const prompt = `Based on these recent note titles: "${recentNotes}", suggest 3 short, relevant search queries the user might want to make to find related information. Return ONLY a JSON object: {"queries": ["query1", "query2", "query3"]}`;
 
-          const response = await fetch('http://localhost:3001/api/ai/invoke', {
+          const { API_BASE_URL } = await import('@/lib/api-config');
+          const response = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ model: 'gpt-3.5-turbo', prompt })
@@ -72,7 +73,8 @@ Find the most relevant notes that match the query conceptually or specifically.
 Return ONLY a JSON object with a "results" array containing objects with "id", "relevance_score" (0-100), and "reason" (short explanation).
 Return at most 5 results.`;
 
-      const response = await fetch('http://localhost:3001/api/ai/invoke', {
+      const { API_BASE_URL } = await import('@/lib/api-config');
+      const response = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: 'gpt-3.5-turbo', prompt })

@@ -62,7 +62,8 @@ export default function SettingsModal({ isOpen, onClose }) {
     setSyncingPlatform(platform);
     try {
       const userId = user?.id || 'anonymous';
-      const response = await fetch(`http://localhost:3001/api/social/sync/${platform}`, {
+      const { API_BASE_URL } = await import('@/lib/api-config');
+      const response = await fetch(`${API_BASE_URL}/api/social/sync/${platform}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ userId, accessToken })
@@ -160,7 +161,8 @@ export default function SettingsModal({ isOpen, onClose }) {
       
       // First, test if the endpoint exists
       try {
-        const testResponse = await fetch('http://localhost:3001/api/social/test');
+        const { API_BASE_URL } = await import('@/lib/api-config');
+        const testResponse = await fetch(`${API_BASE_URL}/api/social/test`);
         if (!testResponse.ok && testResponse.status === 404) {
           setAuthError('⚠️ Server needs restart! The social media routes are not loaded. Please:\n1. Stop your server (Ctrl+C in terminal)\n2. Restart it: npm run server\n3. Try again');
           alert('⚠️ Server Restart Required\n\nThe server is running an old version without social media routes.\n\nPlease:\n1. Go to your terminal where the server is running\n2. Press Ctrl+C to stop it\n3. Run: npm run server\n4. Try connecting again');
@@ -171,7 +173,8 @@ export default function SettingsModal({ isOpen, onClose }) {
         console.warn('Test endpoint check failed, proceeding anyway:', testError);
       }
       
-      const response = await fetch(`http://localhost:3001/api/social/connect/${platform}?userId=${userId}`);
+      const { API_BASE_URL } = await import('@/lib/api-config');
+      const response = await fetch(`${API_BASE_URL}/api/social/connect/${platform}?userId=${userId}`);
       
       if (!response.ok) {
         if (response.status === 404) {

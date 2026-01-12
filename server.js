@@ -18,15 +18,28 @@ const app = express();
 const PORT = 3001;
 
 // ✅ MANUAL CORS (bypasses any cors package issues)
-// Allow requests from any localhost port (5173, 5174, 5175, etc.)
+// Allow requests from localhost (development) and production domain
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  // Allow any localhost port for development
-  if (origin && origin.startsWith('http://localhost:')) {
+  const allowedOrigins = [
+    'http://localhost:5173',
+    'http://localhost:5174',
+    'http://localhost:5175',
+    'https://lykinsai-1.onrender.com',
+    'https://www.lykinsai-1.onrender.com'
+  ];
+  
+  // Allow requests from allowed origins
+  if (origin && allowedOrigins.includes(origin)) {
+    res.header('Access-Control-Allow-Origin', origin);
+  } else if (origin && origin.startsWith('http://localhost:')) {
+    // Allow any localhost port for development
     res.header('Access-Control-Allow-Origin', origin);
   } else {
-  res.header('Access-Control-Allow-Origin', 'http://localhost:5173');
+    // Default fallback
+    res.header('Access-Control-Allow-Origin', process.env.FRONTEND_URL || 'https://lykinsai-1.onrender.com');
   }
+  
   res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   if (req.method === 'OPTIONS') {
@@ -331,9 +344,10 @@ app.get('/api/youtube/search', async (req, res) => {
 
     const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(q)}&maxResults=${maxResults}&type=video&key=${process.env.YOUTUBE_API_KEY}`;
     
+    const refererUrl = process.env.FRONTEND_URL || 'https://lykinsai-1.onrender.com';
     const response = await fetch(url, {
       headers: {
-        'Referer': 'http://localhost:5173',
+        'Referer': refererUrl,
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
       }
     });
@@ -381,9 +395,10 @@ app.get('/api/youtube/video', async (req, res) => {
     
     console.log(`📹 Fetching from YouTube API: ${url.replace(process.env.YOUTUBE_API_KEY, 'KEY_HIDDEN')}`);
     
+    const refererUrl = process.env.FRONTEND_URL || 'https://lykinsai-1.onrender.com';
     const response = await fetch(url, {
       headers: {
-        'Referer': 'http://localhost:5173',
+        'Referer': refererUrl,
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
       }
     });
@@ -752,12 +767,15 @@ app.get('/api/social/callback/:platform', async (req, res) => {
     const { platform } = req.params;
     const { code, state, error } = req.query;
     
+    // Get frontend URL from environment or use production default
+    const frontendUrl = process.env.FRONTEND_URL || 'https://lykinsai-1.onrender.com';
+    
     if (error) {
-      return res.redirect(`http://localhost:5173/settings?error=${encodeURIComponent(error)}`);
+      return res.redirect(`${frontendUrl}/settings?error=${encodeURIComponent(error)}`);
     }
     
     if (!code || !state) {
-      return res.redirect(`http://localhost:5173/settings?error=missing_code_or_state`);
+      return res.redirect(`${frontendUrl}/settings?error=missing_code_or_state`);
     }
     
     // Decode state to get userId
@@ -765,7 +783,7 @@ app.get('/api/social/callback/:platform', async (req, res) => {
     try {
       stateData = JSON.parse(Buffer.from(state, 'base64').toString());
     } catch (e) {
-      return res.redirect(`http://localhost:5173/settings?error=invalid_state`);
+      return res.redirect(`${frontendUrl}/settings?error=invalid_state`);
     }
     
     const { userId } = stateData;
@@ -785,7 +803,7 @@ app.get('/api/social/callback/:platform', async (req, res) => {
         const pinterestRedirectUri = `${req.protocol}://${req.get('host')}/api/social/callback/pinterest`;
         
         if (!pinterestClientId || !pinterestClientSecret) {
-          return res.redirect(`http://localhost:5173/settings?error=pinterest_not_configured`);
+          return res.redirect(`${frontendUrl}/settings?error=pinterest_not_configured`);
         }
         
         const tokenResponse = await fetch('https://api.pinterest.com/v5/oauth/token', {
@@ -804,7 +822,7 @@ app.get('/api/social/callback/:platform', async (req, res) => {
         if (!tokenResponse.ok) {
           const errorData = await tokenResponse.json().catch(() => ({}));
           console.error('Pinterest token exchange failed:', errorData);
-          return res.redirect(`http://localhost:5173/settings?error=token_exchange_failed`);
+          return res.redirect(`${frontendUrl}/settings?error=token_exchange_failed`);
         }
         
         const tokenData = await tokenResponse.json();
@@ -833,7 +851,7 @@ app.get('/api/social/callback/:platform', async (req, res) => {
         const instagramRedirectUri = `${req.protocol}://${req.get('host')}/api/social/callback/instagram`;
         
         if (!instagramClientId || !instagramClientSecret) {
-          return res.redirect(`http://localhost:5173/settings?error=instagram_not_configured`);
+          return res.redirect(`${frontendUrl}/settings?error=instagram_not_configured`);
         }
         
         const instagramTokenResponse = await fetch('https://api.instagram.com/oauth/access_token', {
@@ -853,7 +871,7 @@ app.get('/api/social/callback/:platform', async (req, res) => {
         if (!instagramTokenResponse.ok) {
           const errorData = await instagramTokenResponse.json().catch(() => ({}));
           console.error('Instagram token exchange failed:', errorData);
-          return res.redirect(`http://localhost:5173/settings?error=token_exchange_failed`);
+          return res.redirect(`${frontendUrl}/settings?error=token_exchange_failed`);
         }
         
         const instagramTokenData = await instagramTokenResponse.json();
@@ -872,7 +890,7 @@ app.get('/api/social/callback/:platform', async (req, res) => {
         break;
         
       default:
-        return res.redirect(`http://localhost:5173/settings?error=unsupported_platform`);
+        return res.redirect(`${frontendUrl}/settings?error=unsupported_platform`);
     }
     
     // Store connection in Supabase (you'll need to implement this)
@@ -889,11 +907,11 @@ app.get('/api/social/callback/:platform', async (req, res) => {
     
     // Redirect back to settings with success
     const successData = Buffer.from(JSON.stringify(connectionData)).toString('base64');
-    res.redirect(`http://localhost:5173/settings?connected=${platform}&data=${successData}`);
+    res.redirect(`${frontendUrl}/settings?connected=${platform}&data=${successData}`);
     
   } catch (error) {
     console.error(`❌ Error handling ${req.params.platform} callback:`, error);
-    res.redirect(`http://localhost:5173/settings?error=${encodeURIComponent(error.message)}`);
+    res.redirect(`${frontendUrl}/settings?error=${encodeURIComponent(error.message)}`);
   }
 });
 
@@ -1002,9 +1020,13 @@ app.get('/api/social/data', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`✅ AI server running on http://localhost:${PORT}`);
-  console.log(`→ Accepting requests from http://localhost:5173`);
+const HOST = process.env.HOST || '0.0.0.0';
+const frontendUrl = process.env.FRONTEND_URL || 'https://lykinsai-1.onrender.com';
+
+app.listen(PORT, HOST, () => {
+  console.log(`✅ AI server running on ${HOST}:${PORT}`);
+  console.log(`→ Accepting requests from: ${frontendUrl}`);
+  console.log(`→ Also accepting from: http://localhost:5173 (development)`);
   console.log(`→ YouTube API: ${process.env.YOUTUBE_API_KEY ? '✅ Enabled' : '❌ Disabled'}`);
   console.log(`→ Pinterest: ${process.env.PINTEREST_CLIENT_ID ? '✅ Enabled' : '❌ Disabled'}`);
   console.log(`→ Instagram: ${process.env.INSTAGRAM_CLIENT_ID ? '✅ Enabled' : '❌ Disabled'}`);

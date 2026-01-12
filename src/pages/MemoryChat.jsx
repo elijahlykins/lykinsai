@@ -487,7 +487,8 @@ IMPORTANT:
 
 Provide thoughtful, insightful responses based on their memories and interests. Reference specific memories, video content, or social interests when relevant. Do not use emojis in your responses unless the user explicitly asks for them.`;
 
-      const aiResponse = await fetch('http://localhost:3001/api/ai/invoke', {
+      const { API_BASE_URL } = await import('@/lib/api-config');
+      const aiResponse = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: currentModel, prompt })

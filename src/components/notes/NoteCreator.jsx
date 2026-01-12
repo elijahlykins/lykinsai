@@ -81,7 +81,8 @@ const callAI = async (prompt, model = null) => {
       }
     }
 
-  const response = await fetch('http://localhost:3001/api/ai/invoke', {
+  const { API_BASE_URL } = await import('@/lib/api-config');
+  const response = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: aiModel, prompt })
@@ -1909,10 +1910,10 @@ const NoteCreator = React.forwardRef(({
         
         // Fetch video metadata and transcript
         try {
-          
+          const { API_BASE_URL } = await import('@/lib/api-config');
           const [videoResponse, transcriptResponse] = await Promise.allSettled([
-            fetch(`http://localhost:3001/api/youtube/video?id=${videoId}`),
-            fetch(`http://localhost:3001/api/youtube/transcript?id=${videoId}`)
+            fetch(`${API_BASE_URL}/api/youtube/video?id=${videoId}`),
+            fetch(`${API_BASE_URL}/api/youtube/transcript?id=${videoId}`)
           ]);
           
           let videoData = null;
@@ -2076,7 +2077,8 @@ const NoteCreator = React.forwardRef(({
       // Auto-scan the website
       try {
         console.log(`🌐 Scanning website: ${url.trim()}`);
-        const scrapeResponse = await fetch(`http://localhost:3001/api/scrape?url=${encodeURIComponent(url.trim())}`);
+        const { API_BASE_URL } = await import('@/lib/api-config');
+        const scrapeResponse = await fetch(`${API_BASE_URL}/api/scrape?url=${encodeURIComponent(url.trim())}`);
         
         let scrapedContent = null;
         let websiteTitle = url.trim();
@@ -3557,7 +3559,8 @@ Return ONLY a JSON object: {"suggestions": [{"note_id": "id1", "reason": "reason
       const settings = JSON.parse(localStorage.getItem('lykinsai_settings') || '{}');
       const aiModel = settings.aiModel || 'gemini-flash-latest';
 
-      const response = await fetch('http://localhost:3001/api/ai/invoke', {
+      const { API_BASE_URL } = await import('@/lib/api-config');
+      const response = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: aiModel, prompt })

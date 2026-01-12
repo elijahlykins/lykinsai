@@ -52,7 +52,8 @@ const YouTubeEmbed = React.memo(function YouTubeEmbed({ url, videoId, onRemove, 
         setLoading(true);
         hasFetchedRef.current = id;
         
-        const response = await fetch(`http://localhost:3001/api/youtube/video?id=${id}`);
+        const { API_BASE_URL } = await import('@/lib/api-config');
+        const response = await fetch(`${API_BASE_URL}/api/youtube/video?id=${id}`);
         
         if (!response.ok) {
           const errorData = await response.json().catch(() => ({}));
