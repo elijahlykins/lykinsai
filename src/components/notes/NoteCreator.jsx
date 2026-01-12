@@ -4520,7 +4520,7 @@ Format your response with:
         <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-hide relative">
         {inputMode === 'text' ? (
           <div 
-            className="min-h-full flex flex-col max-w-3xl mx-auto py-6 px-4 md:py-12 md:pl-16 md:pr-8 lg:pl-20 lg:pr-12 transition-all duration-500 relative group cursor-text"
+            className="min-h-full flex flex-col max-w-3xl mx-auto py-6 px-4 md:py-12 md:pl-16 md:pr-8 lg:pl-20 lg:pr-12 lg:pt-20 transition-all duration-500 relative group cursor-text"
             onClick={(e) => {
               if (e.target === e.currentTarget) {
                 quillRef.current?.focus();

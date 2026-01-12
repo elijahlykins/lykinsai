@@ -310,9 +310,10 @@ If the user asks about old memories or references past ideas, refer to the memor
       />
 
       <div className="flex-1 flex flex-col overflow-hidden w-full md:w-auto">
-        <div className="absolute top-0 left-0 right-0 p-3 md:p-6 flex items-center justify-between z-20 pointer-events-none">
+        {/* Top bar - relative on smaller screens, absolute on larger screens */}
+        <div className="relative lg:absolute lg:top-0 lg:left-0 lg:right-0 p-3 md:p-4 lg:p-6 flex items-center justify-between z-20 pointer-events-none mb-2 lg:mb-0">
           <div className="pointer-events-auto" />
-          <div className="flex items-center gap-1 md:gap-2 pointer-events-auto bg-white/50 dark:bg-black/50 p-1 md:p-1.5 rounded-full backdrop-blur-md shadow-sm border border-white/20 dark:border-gray-700/30">
+          <div className="flex items-center gap-1 md:gap-2 pointer-events-auto bg-white/50 dark:bg-black/50 p-1 md:p-1.5 rounded-full backdrop-blur-md shadow-sm border border-white/20 dark:border-gray-700/30 flex-wrap">
             <Button
               onClick={handleNewNote}
               variant="ghost"
@@ -351,8 +352,8 @@ If the user asks about old memories or references past ideas, refer to the memor
                 }
               }}
             >
-              <SelectTrigger className="w-[150px] h-10 rounded-full bg-white/50 dark:bg-black/50 border-white/20 dark:border-gray-700/30 backdrop-blur-md shadow-sm text-xs font-medium hover:bg-gray-100 dark:hover:bg-gray-700">
-                <SelectValue placeholder="Select Model" />
+              <SelectTrigger className="w-[120px] md:w-[150px] h-9 md:h-10 rounded-full bg-white/50 dark:bg-black/50 border-white/20 dark:border-gray-700/30 backdrop-blur-md shadow-sm text-xs font-medium hover:bg-gray-100 dark:hover:bg-gray-700">
+                <SelectValue placeholder="Model" />
               </SelectTrigger>
               <SelectContent align="end">
                 {/* ✅ Renamed "Core" to use a real model */}
@@ -379,28 +380,29 @@ If the user asks about old memories or references past ideas, refer to the memor
             <Button
               onClick={() => setLiveAIMode(!liveAIMode)}
               variant="ghost"
-              className={`rounded-full px-4 h-10 gap-2 hover:bg-gray-100 dark:hover:bg-gray-700 ${
+              className={`rounded-full px-2 md:px-4 h-9 md:h-10 gap-1 md:gap-2 hover:bg-gray-100 dark:hover:bg-gray-700 text-xs md:text-sm ${
                 liveAIMode 
                   ? 'bg-white dark:bg-white/10 shadow-sm' 
                   : 'bg-white/50 dark:bg-black/50 backdrop-blur-md'
               } border border-white/20 dark:border-gray-700/30`}
             >
-              <Zap className={`w-4 h-4 ${liveAIMode ? 'text-yellow-500' : 'text-black dark:text-white'}`} />
-              Live AI
+              <Zap className={`w-3 h-3 md:w-4 md:h-4 ${liveAIMode ? 'text-yellow-500' : 'text-black dark:text-white'}`} />
+              <span className="hidden sm:inline">Live AI</span>
             </Button>
 
             <Button
               onClick={() => setShowChat(!showChat)}
               variant="ghost"
-              className="rounded-full px-4 h-10 hover:bg-gray-100 dark:hover:bg-gray-700"
+              className="rounded-full px-2 md:px-4 h-9 md:h-10 hover:bg-gray-100 dark:hover:bg-gray-700 text-xs md:text-sm"
             >
-              Chat
+              <span className="hidden sm:inline">Chat</span>
+              <MessageSquare className="w-3 h-3 md:w-4 md:h-4 sm:hidden" />
             </Button>
 
             <Button
               onClick={() => setShowSuggestions(!showSuggestions)}
               variant="ghost"
-              className="rounded-full px-4 h-10 hover:bg-gray-100 dark:hover:bg-gray-700"
+              className="rounded-full px-2 md:px-4 h-9 md:h-10 hover:bg-gray-100 dark:hover:bg-gray-700 text-xs md:text-sm hidden md:inline-flex"
             >
               Suggestions
             </Button>
@@ -408,28 +410,28 @@ If the user asks about old memories or references past ideas, refer to the memor
             <Button
               onClick={() => noteCreatorRef.current?.handleSave()}
               variant="ghost"
-              className="rounded-full w-10 h-10 p-0 hover:bg-gray-100 dark:hover:bg-gray-700"
+              className="rounded-full w-9 h-9 md:w-10 md:h-10 p-0 hover:bg-gray-100 dark:hover:bg-gray-700 touch-manipulation"
               title="Save Note"
             >
-              <Save className="w-5 h-5" />
+              <Save className="w-4 h-4 md:w-5 md:h-5" />
             </Button>
 
             <Button
               onClick={() => noteCreatorRef.current?.handleExport()}
               variant="ghost"
-              className="rounded-full w-10 h-10 p-0 hover:bg-gray-100 dark:hover:bg-gray-700"
+              className="rounded-full w-9 h-9 md:w-10 md:h-10 p-0 hover:bg-gray-100 dark:hover:bg-gray-700 touch-manipulation"
               title="Export"
             >
-              <Download className="w-5 h-5" />
+              <Download className="w-4 h-4 md:w-5 md:h-5" />
             </Button>
             <div className="w-px h-4 bg-gray-300 dark:bg-gray-700 mx-1" />
             <Button
               onClick={() => noteCreatorRef.current?.handleShare()}
               variant="ghost"
-              className="rounded-full w-10 h-10 p-0 hover:bg-gray-100 dark:hover:bg-gray-700"
+              className="rounded-full w-9 h-9 md:w-10 md:h-10 p-0 hover:bg-gray-100 dark:hover:bg-gray-700 touch-manipulation"
               title="Share"
             >
-              <Share2 className="w-5 h-5" />
+              <Share2 className="w-4 h-4 md:w-5 md:h-5" />
             </Button>
           </div>
         </div>
