@@ -18,30 +18,49 @@ const app = express();
 const PORT = 3001;
 
 // ✅ MANUAL CORS (bypasses any cors package issues)
-// Allow requests from localhost (development) and production domain
+// Allow requests from localhost (development), Vercel (frontend), and Render
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  const allowedOrigins = [
-    'http://localhost:5173',
-    'http://localhost:5174',
-    'http://localhost:5175',
-    'https://lykinsai-1.onrender.com',
-    'https://www.lykinsai-1.onrender.com'
-  ];
+  
+  // Get allowed origins from environment or use defaults
+  const allowedOriginsEnv = process.env.ALLOWED_ORIGINS;
+  const allowedOrigins = allowedOriginsEnv 
+    ? allowedOriginsEnv.split(',').map(o => o.trim())
+    : [
+        'http://localhost:5173',
+        'http://localhost:5174',
+        'http://localhost:5175',
+        'https://lykinsai-1.onrender.com',
+        'https://www.lykinsai-1.onrender.com'
+      ];
   
   // Allow requests from allowed origins
-  if (origin && allowedOrigins.includes(origin)) {
-    res.header('Access-Control-Allow-Origin', origin);
-  } else if (origin && origin.startsWith('http://localhost:')) {
+  if (origin) {
+    // Check exact match
+    if (allowedOrigins.includes(origin)) {
+      res.header('Access-Control-Allow-Origin', origin);
+    }
     // Allow any localhost port for development
-    res.header('Access-Control-Allow-Origin', origin);
+    else if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
+      res.header('Access-Control-Allow-Origin', origin);
+    }
+    // Allow Vercel preview deployments (vercel.app domain)
+    else if (origin.includes('.vercel.app')) {
+      res.header('Access-Control-Allow-Origin', origin);
+    }
+    // Fallback: use FRONTEND_URL env var or allow the origin
+    else {
+      res.header('Access-Control-Allow-Origin', process.env.FRONTEND_URL || origin);
+    }
   } else {
-    // Default fallback
-    res.header('Access-Control-Allow-Origin', process.env.FRONTEND_URL || 'https://lykinsai-1.onrender.com');
+    // No origin header (e.g., same-origin request)
+    res.header('Access-Control-Allow-Origin', process.env.FRONTEND_URL || '*');
   }
   
   res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  
   if (req.method === 'OPTIONS') {
     return res.status(204).end(); // Handle preflight
   }
