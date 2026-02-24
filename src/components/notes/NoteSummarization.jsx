@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Sparkles, Loader2, Copy, Check } from 'lucide-react';
+import { getSelectedAiModel } from '@/lib/ai-model';
 // ❌ Removed base44 import
 
 export default function NoteSummarization({ note, onUpdate }) {
@@ -50,7 +51,7 @@ Provide a clear, well-structured summary.`;
       const response = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'gpt-3.5-turbo', prompt })
+        body: JSON.stringify({ model: getSelectedAiModel(), prompt })
       });
 
       if (!response.ok) throw new Error('AI request failed');

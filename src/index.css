@@ -11,13 +11,16 @@
     --background: 0 0% 100%;
     --foreground: 0 0% 3.9%;
 
+    /* App background (customizable) */
+    --app-background: hsl(var(--background));
+
     --border: 0 0% 89.8%;
     --input: 0 0% 89.8%;
     --ring: 0 0% 3.9%;
 
     --card-bg: 0 0% 100%;
     --card-fg: 0 0% 3.9%;
-    --card-glass-opacity: 0.70;
+    --card-glass-opacity: 0.55;
 
     --popover: 0 0% 100%;
     --popover-foreground: 0 0% 3.9%;
@@ -49,7 +52,14 @@
     /* Glass */
     --glass-bg: 0 0% 100%;
     --glass-dark-bg: 0 0% 100%;
-    --glass-opacity: 0.80;
+    --glass-opacity: 0.55;
+
+    /* Flow background accents (soft, glassy gradients like reference) */
+    /* Mostly white with subtle blue hints */
+    --bg-flow-1: rgba(147, 197, 253, 0.22); /* light blue */
+    --bg-flow-2: rgba(186, 230, 253, 0.18); /* sky */
+    --bg-flow-3: rgba(219, 234, 254, 0.20); /* very pale blue */
+    --bg-flow-4: rgba(255, 255, 255, 0.30); /* mist */
 
     /* Clay */
     --clay-bg: 0 0% 100%;
@@ -74,13 +84,16 @@
     --background: 0 0% 3.9%;
     --foreground: 0 0% 98%;
 
+    /* App background (customizable) */
+    --app-background: hsl(var(--background));
+
     --border: 0 0% 14.9%;
     --input: 0 0% 14.9%;
     --ring: 0 0% 83.1%;
 
     --card-bg: 0 0% 3.9%;
     --card-fg: 0 0% 98%;
-    --card-glass-opacity: 0.65;
+    --card-glass-opacity: 0.45;
 
     --popover: 0 0% 3.9%;
     --popover-foreground: 0 0% 98%;
@@ -110,7 +123,14 @@
     /* Glass */
     --glass-bg: 240 4% 15%;
     --glass-dark-bg: 240 4% 15%;
-    --glass-opacity: 0.80;
+    --glass-opacity: 0.50;
+
+    /* Flow background accents (soft, glassy gradients like reference) */
+    /* Mostly white with subtle blue hints (dark mode: much softer) */
+    --bg-flow-1: rgba(59, 130, 246, 0.14);
+    --bg-flow-2: rgba(147, 197, 253, 0.08);
+    --bg-flow-3: rgba(186, 230, 253, 0.06);
+    --bg-flow-4: rgba(255, 255, 255, 0.06);
 
     /* Clay */
     --clay-bg: 240 5% 12%;
@@ -130,7 +150,25 @@
     @apply border-border outline-ring/50;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply text-foreground;
+    background-color: var(--app-background);
+    /* Next.js-style soft bloom background: mostly white with a faint blue/purple haze. */
+    background-image:
+      radial-gradient(
+        980px 560px at 50% 40%,
+        rgba(255,255,255,0.95) 0%,
+        rgba(255,255,255,0.60) 20%,
+        transparent 62%
+      ),
+      radial-gradient(900px 640px at 60% 44%, var(--bg-flow-1), transparent 66%),
+      radial-gradient(860px 620px at 46% 50%, var(--bg-flow-3), transparent 70%),
+      linear-gradient(
+        180deg,
+        color-mix(in srgb, var(--app-background) 94%, white 6%) 0%,
+        var(--app-background) 58%,
+        color-mix(in srgb, var(--app-background) 88%, white 12%) 100%
+      );
+    background-attachment: fixed;
     min-height: 100vh;
   }
 }
@@ -146,6 +184,11 @@
     color: hsl(var(--foreground));
     backdrop-filter: blur(20px);
     -webkit-backdrop-filter: blur(20px);
+    border: 1px solid rgba(255,255,255,0.18);
+    border-radius: 18px;
+    box-shadow:
+      0 14px 44px rgba(0,0,0,0.12),
+      inset 0 1px 0 rgba(255,255,255,0.20);
   }
 
   .bg-glass-sidebar {
@@ -153,32 +196,90 @@
     color: hsl(var(--sidebar-fg));
     backdrop-filter: blur(24px);
     border-right: 1px solid hsl(var(--sidebar-border) / 0.3);
+    box-shadow: 0 14px 48px rgba(0,0,0,0.12);
   }
 
   .bg-glass-card {
-    background: hsl(var(--card-bg) / var(--card-glass-opacity));
+    background:
+      linear-gradient(135deg, rgba(255,255,255,0.22), rgba(255,255,255,0.08)),
+      hsl(var(--card-bg) / var(--card-glass-opacity));
     color: hsl(var(--card-fg));
-    backdrop-filter: blur(16px);
-    border: 1px solid hsl(var(--border) / 0.4);
-    box-shadow: 0 4px 16px rgba(0,0,0,0.08);
+    backdrop-filter: blur(22px);
+    -webkit-backdrop-filter: blur(22px);
+    border: 2px solid rgba(255,255,255,0.30);
+    border-radius: 26px;
+    box-shadow:
+      0 18px 60px rgba(0,0,0,0.14),
+      0 6px 18px rgba(0,0,0,0.10),
+      inset 0 1px 0 rgba(255,255,255,0.36),
+      inset 0 0 0 1px rgba(255,255,255,0.10);
+  }
+
+  /* Block surfaces: slightly greyer/less clear, with a reflective edge highlight (brick-shaped) */
+  :is(.glass-block, .glass-text-card) {
+    background:
+      linear-gradient(135deg, rgba(255,255,255,0.16), rgba(255,255,255,0.06)),
+      rgba(120, 120, 120, 0.10);
+    color: hsl(var(--foreground));
+    backdrop-filter: blur(22px);
+    -webkit-backdrop-filter: blur(22px);
+    border-style: solid;
+    border-width: 1px;
+    border-top-color: rgba(255,255,255,0.46);
+    border-left-color: rgba(255,255,255,0.34);
+    border-right-color: rgba(255,255,255,0.18);
+    border-bottom-color: rgba(255,255,255,0.18);
+    /* Match brick shape: less rounded */
+    border-radius: 6px;
+    box-shadow:
+      0 18px 60px rgba(0,0,0,0.14),
+      0 6px 18px rgba(0,0,0,0.10),
+      inset 0 1px 0 rgba(255,255,255,0.24),
+      inset 1px 1px 0 rgba(255,255,255,0.18);
+  }
+
+  .dark :is(.glass-block, .glass-text-card) {
+    background:
+      linear-gradient(135deg, rgba(255,255,255,0.10), rgba(255,255,255,0.04)),
+      rgba(255,255,255,0.04);
+    border-top-color: rgba(255,255,255,0.22);
+    border-left-color: rgba(255,255,255,0.16);
+    border-right-color: rgba(255,255,255,0.10);
+    border-bottom-color: rgba(255,255,255,0.10);
+    box-shadow:
+      0 18px 60px rgba(0,0,0,0.30),
+      0 6px 18px rgba(0,0,0,0.18),
+      inset 0 1px 0 rgba(255,255,255,0.10),
+      inset 1px 1px 0 rgba(255,255,255,0.08);
   }
 
   /* --- Clay Components --- */
   .clay-card {
-    background: hsl(var(--clay-bg) / 0.90);
-    color: hsl(var(--clay-fg));
-    border: 1px solid hsl(var(--clay-border) / 0.40);
-    backdrop-filter: blur(12px);
-    border-radius: 1rem;
-    box-shadow: 0 8px 32px rgba(0,0,0,0.08);
+    /* Re-skin clay cards into premium glass cards app-wide */
+    background:
+      linear-gradient(135deg, rgba(255,255,255,0.22), rgba(255,255,255,0.08)),
+      hsl(var(--card-bg) / var(--card-glass-opacity));
+    color: hsl(var(--foreground));
+    backdrop-filter: blur(22px);
+    -webkit-backdrop-filter: blur(22px);
+    border: 2px solid rgba(255,255,255,0.30);
+    border-radius: 26px;
+    box-shadow:
+      0 18px 60px rgba(0,0,0,0.14),
+      0 6px 18px rgba(0,0,0,0.10),
+      inset 0 1px 0 rgba(255,255,255,0.36),
+      inset 0 0 0 1px rgba(255,255,255,0.10);
     padding: calc(1rem * var(--layout-density));
   }
 
   .clay-input {
-    background: hsl(var(--input-bg) / 0.60);
-    border: 1px solid hsl(var(--input-border) / 0.60);
-    border-radius: 0.75rem;
-    backdrop-filter: blur(12px);
+    background:
+      linear-gradient(135deg, rgba(255,255,255,0.18), rgba(255,255,255,0.06)),
+      hsl(var(--input-bg) / 0.35);
+    border: 1px solid rgba(255,255,255,0.22);
+    border-radius: 18px;
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
     transition: all 0.2s ease;
   }
 
@@ -201,6 +302,187 @@
     background: hsl(var(--button-hover, var(--glass-bg)) / var(--glass-opacity));
   }
 
+  /* --- BrickEditor Todo (check) list --- */
+  .brick-todo-checkbox {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+    border: 1.5px solid rgba(0, 0, 0, 0.35);
+    background: transparent;
+    display: inline-block;
+    vertical-align: middle;
+    margin-right: 6px;
+    cursor: pointer;
+  }
+
+  .dark .brick-todo-checkbox {
+    border-color: rgba(255, 255, 255, 0.35);
+  }
+
+  .brick-todo-checkbox:checked {
+    background: rgba(75, 85, 99, 0.95); /* dark grey fill */
+    border-color: rgba(75, 85, 99, 0.95);
+  }
+
+  /* Optional: dim completed todo rows */
+  .brick-todo-done {
+    opacity: 0.65;
+  }
+
+  /* --- BrickEditor ListBlock layout --- */
+  .brick-list-row {
+    min-height: 24px;
+  }
+
+  .brick-list-marker {
+    width: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .brick-number-label,
+  .brick-bullet-label {
+    font-variant-numeric: tabular-nums;
+    opacity: 0.9;
+  }
+
+  .dark .brick-todo-checkbox:checked {
+    background: rgba(75, 85, 99, 0.95); /* keep dark grey in dark mode too */
+    border-color: rgba(75, 85, 99, 0.95);
+  }
+
+  .brick-todo-checkbox:focus-visible {
+    outline: 2px solid hsl(var(--ring) / 0.65);
+    outline-offset: 2px;
+  }
+
+  /* Invisible caret anchor right after checkbox */
+  .brick-todo-spacer {
+    display: inline-block;
+    width: 0;
+    overflow: hidden;
+  }
+
+}
+
+/* Sidebar layout shift */
+.app-content {
+  transition: padding-left 200ms ease;
+}
+
+body.sidebar-push .app-content {
+  padding-left: 190px;
+}
+
+/* =========================================================
+   UTILITIES — reflective glass controls (same style as text boxes)
+   ========================================================= */
+@layer utilities {
+  /* Same reflective/grey glass, but radius-agnostic for pills, buttons, etc. */
+  .glass-control {
+    background:
+      linear-gradient(135deg, rgba(255,255,255,0.28), rgba(255,255,255,0.12)),
+      rgba(140, 140, 140, 0.18);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    border-style: solid;
+    border-width: 1px;
+    border-top-color: rgba(255,255,255,0.55);
+    border-left-color: rgba(255,255,255,0.42);
+    border-right-color: rgba(255,255,255,0.25);
+    border-bottom-color: rgba(255,255,255,0.25);
+    box-shadow:
+      0 20px 64px rgba(0,0,0,0.16),
+      0 8px 20px rgba(0,0,0,0.12),
+      inset 0 2px 4px rgba(255,255,255,0.35),
+      inset 1px 1px 0 rgba(255,255,255,0.25),
+      inset -1px -1px 0 rgba(0,0,0,0.05);
+  }
+
+  .dark .glass-control {
+    background:
+      linear-gradient(135deg, rgba(255,255,255,0.14), rgba(255,255,255,0.06)),
+      rgba(60, 60, 60, 0.25);
+    border-top-color: rgba(255,255,255,0.28);
+    border-left-color: rgba(255,255,255,0.20);
+    border-right-color: rgba(255,255,255,0.14);
+    border-bottom-color: rgba(255,255,255,0.14);
+    box-shadow:
+      0 20px 64px rgba(0,0,0,0.35),
+      0 8px 20px rgba(0,0,0,0.22),
+      inset 0 2px 4px rgba(255,255,255,0.15),
+      inset 1px 1px 0 rgba(255,255,255,0.12),
+      inset -1px -1px 0 rgba(0,0,0,0.15);
+  }
+
+  /* Hide scrollbars but keep scrolling (Windows/Chrome friendly) */
+  .scrollbar-hide {
+    -ms-overflow-style: none; /* IE/Edge Legacy */
+    scrollbar-width: none; /* Firefox */
+  }
+  .scrollbar-hide::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+    display: none; /* Safari/Chrome */
+  }
+
+  /* =========================================================
+     Omnia Canvas — selected block treatment (sleek "lit glass")
+     ========================================================= */
+  .omnia-selected-glass {
+    /* Light blue "through-glass" glow (minimal border emphasis) */
+    box-shadow:
+      0 18px 60px rgba(0,0,0,0.14),
+      0 6px 18px rgba(0,0,0,0.10),
+      inset 0 1px 0 rgba(255,255,255,0.24),
+      inset 1px 1px 0 rgba(255,255,255,0.18),
+      /* "light inside glass" (blue wash) */
+      inset 0 0 0 1px rgba(255,255,255,0.10),
+      inset 0 0 28px rgba(110, 200, 255, 0.18),
+      inset 0 0 10px rgba(110, 200, 255, 0.10);
+    transition: box-shadow 140ms ease, border-color 140ms ease;
+  }
+
+  .dark .omnia-selected-glass {
+    box-shadow:
+      0 18px 60px rgba(0,0,0,0.30),
+      0 6px 18px rgba(0,0,0,0.18),
+      inset 0 1px 0 rgba(255,255,255,0.10),
+      inset 1px 1px 0 rgba(255,255,255,0.08),
+      inset 0 0 0 1px rgba(255,255,255,0.08),
+      inset 0 0 26px rgba(110, 200, 255, 0.12),
+      inset 0 0 10px rgba(110, 200, 255, 0.08);
+  }
+
+  /* Hover should match selection glow (Omnia canvas only) */
+  [data-omnia-canvas] .group:hover .glass-text-card,
+  [data-omnia-canvas] .group:hover .glass-block {
+    box-shadow:
+      0 18px 60px rgba(0,0,0,0.14),
+      0 6px 18px rgba(0,0,0,0.10),
+      inset 0 1px 0 rgba(255,255,255,0.24),
+      inset 1px 1px 0 rgba(255,255,255,0.18),
+      inset 0 0 0 1px rgba(255,255,255,0.10),
+      inset 0 0 28px rgba(110, 200, 255, 0.18),
+      inset 0 0 10px rgba(110, 200, 255, 0.10);
+    transition: box-shadow 140ms ease, border-color 140ms ease;
+  }
+
+  .dark [data-omnia-canvas] .group:hover .glass-text-card,
+  .dark [data-omnia-canvas] .group:hover .glass-block {
+    box-shadow:
+      0 18px 60px rgba(0,0,0,0.30),
+      0 6px 18px rgba(0,0,0,0.18),
+      inset 0 1px 0 rgba(255,255,255,0.10),
+      inset 1px 1px 0 rgba(255,255,255,0.08),
+      inset 0 0 0 1px rgba(255,255,255,0.08),
+      inset 0 0 26px rgba(110, 200, 255, 0.12),
+      inset 0 0 10px rgba(110, 200, 255, 0.08);
+    transition: box-shadow 140ms ease, border-color 140ms ease;
+  }
 }
 
 /* =========================================================
@@ -480,4 +762,30 @@
 /* Touch manipulation for better performance */
 .touch-manipulation {
   touch-action: manipulation;
+}
+
+/* Subtle canvas shimmer while AI is thinking */
+@keyframes canvasAiThinkingSweep {
+  0% {
+    transform: translateX(-20%);
+    opacity: 0.06;
+  }
+  50% {
+    opacity: 0.12;
+  }
+  100% {
+    transform: translateX(20%);
+    opacity: 0.06;
+  }
+}
+
+.canvas-ai-thinking-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 40;
+  background:
+    linear-gradient(110deg, rgba(255, 255, 255, 0.00) 0%, rgba(201, 226, 255, 0.16) 35%, rgba(255, 255, 255, 0.00) 70%);
+  mix-blend-mode: screen;
+  animation: canvasAiThinkingSweep 2.4s ease-in-out infinite;
 }

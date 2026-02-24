@@ -57,11 +57,11 @@ export default function DraggableChat({
         initial={{ x: 400, y: 0, opacity: 0, scale: 0.9 }}
         animate={{ x: 0, y: 0, opacity: 1, scale: 1 }}
         exit={{ opacity: 0, scale: 0.9 }}
-        className="pointer-events-auto w-[400px] h-[600px] flex flex-col bg-white/10 dark:bg-black/30 backdrop-blur-2xl border border-white/20 dark:border-white/10 rounded-3xl shadow-2xl overflow-hidden"
+        className="pointer-events-auto w-[400px] h-[600px] flex flex-col glass-control rounded-3xl shadow-2xl overflow-hidden"
       >
         {/* Header */}
-        <div className="h-12 bg-white/10 dark:bg-white/5 border-b border-white/10 dark:border-white/5 flex items-center justify-between px-4 cursor-move select-none">
-          <div className="flex items-center gap-2 text-sm font-semibold text-black dark:text-white">
+        <div className="h-12 border-b border-black/10 dark:border-white/10 flex items-center justify-between px-4 cursor-move select-none">
+          <div className="flex items-center gap-2 text-sm font-semibold text-black/90 dark:text-white/90">
             <MessageSquare className="w-4 h-4" />
             AI Companion
           </div>
@@ -69,7 +69,7 @@ export default function DraggableChat({
             <Button 
               variant="ghost" 
               size="icon" 
-              className="h-6 w-6 rounded-full hover:bg-red-100 dark:hover:bg-red-900/20 text-gray-500 hover:text-red-500"
+              className="h-7 w-7 rounded-full glass-control hover:opacity-90 text-black/70 dark:text-white/70 hover:text-red-500 hover:ring-2 hover:ring-red-400/35 hover:shadow-[0_0_16px_rgba(248,113,113,0.35)]"
               onClick={onClose}
             >
               <X className="w-3 h-3" />
@@ -100,7 +100,7 @@ export default function DraggableChat({
                     className={`max-w-[85%] p-3 rounded-2xl text-sm leading-relaxed shadow-sm backdrop-blur-md ${
                       msg.role === 'user' 
                         ? 'bg-black/70 dark:bg-white/80 text-white dark:text-black rounded-tr-none' 
-                        : 'bg-white/40 dark:bg-black/40 text-black dark:text-white border border-white/20 rounded-tl-none cursor-grab active:cursor-grabbing'
+                        : 'bg-white/40 dark:bg-black/30 text-black dark:text-white border border-white/20 dark:border-white/10 rounded-tl-none cursor-grab active:cursor-grabbing'
                     } ${msg.role === 'assistant' ? 'hover:bg-white/60 dark:hover:bg-black/60 transition-colors' : ''}`}
                     title={msg.role === 'assistant' ? 'Drag to insert into editor' : ''}
                   >
@@ -110,9 +110,9 @@ export default function DraggableChat({
               ))}
               {isLoading && (
                 <div className="flex justify-start">
-                  <div className="bg-white/20 dark:bg-white/10 backdrop-blur-md p-3 rounded-2xl rounded-tl-none border border-white/10 shadow-sm flex items-center gap-2">
-                    <Loader2 className="w-3 h-3 animate-spin text-white" />
-                    <span className="text-xs text-white/70">Thinking...</span>
+                  <div className="glass-control p-3 rounded-2xl rounded-tl-none border border-white/10 shadow-sm flex items-center gap-2">
+                    <Loader2 className="w-3 h-3 animate-spin text-black/70 dark:text-white/70" />
+                    <span className="text-xs text-black/60 dark:text-white/60">Thinking...</span>
                   </div>
                 </div>
               )}
@@ -121,7 +121,7 @@ export default function DraggableChat({
         </ScrollArea>
 
         {/* Input Area */}
-        <div className="p-4 bg-white/10 dark:bg-white/5 border-t border-white/10 dark:border-white/5 backdrop-blur-md">
+        <div className="p-4 border-t border-black/10 dark:border-white/10">
           <div className="relative flex items-center gap-2">
             <Input
               value={input}
@@ -136,7 +136,7 @@ export default function DraggableChat({
               }}
 
               placeholder="Type a message..."
-              className="flex-1 bg-white/20 dark:bg-black/40 border-white/10 dark:border-white/10 rounded-xl focus:ring-1 focus:ring-white/30 text-black dark:text-white placeholder:text-black/50 dark:placeholder:text-white/50"
+              className="flex-1 glass-text-card rounded-xl focus:ring-1 focus:ring-white/30 text-black dark:text-white placeholder:text-black/50 dark:placeholder:text-white/50"
               disabled={isLoading}
               autoFocus
             />
@@ -144,7 +144,7 @@ export default function DraggableChat({
               onClick={onSend}
               disabled={isLoading || !input.trim()}
               size="icon"
-              className="bg-black dark:bg-white text-white dark:text-black hover:bg-black/80 dark:hover:bg-white/90 rounded-xl shadow-sm"
+              className="glass-control hover:opacity-90 rounded-xl shadow-sm"
             >
               {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
             </Button>

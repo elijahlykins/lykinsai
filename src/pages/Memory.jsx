@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 // ❌ Removed base44 import
@@ -32,12 +32,19 @@ import RichTextRenderer from '../components/notes/RichTextRenderer';
 import AttachmentPanel from '../components/notes/AttachmentPanel';
 import ReactQuill from 'react-quill';
 import 'react-quill/dist/quill.bubble.css';
+import DragDropFileUpload from '../components/files/DragDropFileUpload';
+import { Paperclip } from 'lucide-react';
+import { getSelectedAiModel } from '@/lib/ai-model';
 
 // ✅ Import Supabase
 import { supabase } from '@/lib/supabase';
+import { useAuth } from '@/lib/SupabaseAuth';
 
 export default function MemoryPage() {
+  const { user, loading: authLoading } = useAuth();
   const [selectedNote, setSelectedNote] = useState(null);
+  const [showFileUpload, setShowFileUpload] = useState(false);
+  const [workspaceId, setWorkspaceId] = useState(null);
   const [isEditing, setIsEditing] = useState(false);
   const [editedContent, setEditedContent] = useState('');
   const [editedTitle, setEditedTitle] = useState('');
@@ -59,19 +66,46 @@ export default function MemoryPage() {
   const [isChatLoading, setIsChatLoading] = useState(false);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const fileInputRef = useRef(null);
 
-  // ✅ Fetch from Supabase
+  // ✅ Get or create workspace
+  useEffect(() => {
+    const getWorkspace = async () => {
+      if (!user?.id) return;
+      
+      try {
+        const { data, error } = await supabase
+          .rpc('get_user_workspace');
+        
+        if (error) throw error;
+        setWorkspaceId(data);
+      } catch (error) {
+        console.error('Error getting workspace:', error);
+      }
+    };
+    
+    getWorkspace();
+  }, [user]);
+
+  // ✅ Fetch from Supabase - only if user is signed in
   const { data: notes = [], isError, error } = useQuery({
-    queryKey: ['notes'],
+    queryKey: ['notes', user?.id],
     queryFn: async () => {
+      // Don't fetch if user is not signed in
+      if (!user?.id) {
+        return [];
+      }
+      
       try {
         // Try to select only essential columns first to avoid 400 errors
         let data, error;
         
-        // First try with common columns
+        // First try with common columns (include folder for organization)
+        // ✅ Filter by user_id to show only current user's notes
         ({ data, error } = await supabase
           .from('notes')
-          .select('id, title, content, created_at, updated_at')
+          .select('id, title, content, created_at, updated_at, folder')
+          .eq('user_id', user.id)
           .order('created_at', { ascending: false }));
         
         if (error) {
@@ -80,7 +114,8 @@ export default function MemoryPage() {
             console.warn('⚠️ Some columns not found, trying with minimal columns:', error.message);
             ({ data, error } = await supabase
               .from('notes')
-              .select('id, title, content')
+              .select('id, title, content, folder')
+              .eq('user_id', user.id)
               .order('id', { ascending: false }));
           }
           
@@ -170,11 +205,16 @@ export default function MemoryPage() {
 
   // ✅ Update note via Supabase with graceful column handling
   const updateNote = async (noteId, updates) => {
+    if (!user?.id) {
+      throw new Error('User must be signed in to update notes');
+    }
+    
     try {
       const { error } = await supabase
         .from('notes')
         .update(updates)
-        .eq('id', noteId);
+        .eq('id', noteId)
+        .eq('user_id', user.id); // ✅ Ensure user can only update their own notes
       
       if (error) {
         // If error is about missing columns, try again without those columns
@@ -327,7 +367,7 @@ If the user asks about old memories or references past ideas, refer to the memor
       const aiResponse = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'gpt-3.5-turbo', prompt })
+        body: JSON.stringify({ model: getSelectedAiModel(), prompt })
       });
 
       if (!aiResponse.ok) {
@@ -422,7 +462,7 @@ If the user asks about old memories or references past ideas, refer to the memor
   };
 
   const allTags = [...new Set(notes.filter(n => n).flatMap(n => n.tags || []))];
-  const allFolders = [...new Set(notes.filter(n => n).map(n => n.folder || 'Uncategorized'))];
+  const allFolders = [...new Set(notes.filter(n => n).map(n => n.folder || 'Uncategorized'))].sort();
 
   let filteredNotes = notes.filter(note => note && !note.trashed);
   
@@ -438,9 +478,50 @@ If the user asks about old memories or references past ideas, refer to the memor
     filteredNotes = filteredNotes.filter(note => note && note.source === sourceFilter);
   }
 
+  // ✅ Auto-organize notes by folders (group by folder)
+  const notesByFolder = filteredNotes.reduce((acc, note) => {
+    const folderName = note.folder || 'Uncategorized';
+    if (!acc[folderName]) {
+      acc[folderName] = [];
+    }
+    acc[folderName].push(note);
+    return acc;
+  }, {});
+
+  // Sort folders: Uncategorized last, others alphabetically
+  const sortedFolders = Object.keys(notesByFolder).sort((a, b) => {
+    if (a === 'Uncategorized') return 1;
+    if (b === 'Uncategorized') return -1;
+    return a.localeCompare(b);
+  });
+
+  // ✅ Show sign-in message if user is not authenticated
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-transparent flex items-center justify-center">
+        <div className="text-center p-8">
+          <p className="text-gray-600 dark:text-gray-400">Loading...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-transparent flex items-center justify-center">
+        <div className="text-center p-8 max-w-md">
+          <h2 className="text-xl font-bold text-black dark:text-white mb-4">Sign In Required</h2>
+          <p className="text-gray-600 dark:text-gray-400 mb-4">
+            Please sign in to view your memory cards. Your notes are private and only visible to you.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   if (isError) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-gray-50 via-blue-50/30 to-gray-100 dark:from-[#171515] dark:via-[#171515] dark:to-[#171515] flex items-center justify-center">
+      <div className="min-h-screen bg-transparent flex items-center justify-center">
         <div className="text-center p-8 max-w-md">
           <h2 className="text-xl font-bold text-black dark:text-white mb-4">Connection Error</h2>
           <p className="text-gray-600 dark:text-gray-400 mb-4">{error?.message || 'Unable to load notes.'}</p>
@@ -453,22 +534,38 @@ If the user asks about old memories or references past ideas, refer to the memor
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-50 via-blue-50/30 to-gray-100 dark:from-[#171515] dark:via-[#171515] dark:to-[#171515] flex overflow-hidden">
-      <ResponsiveSidebar
-        activeView="memory"
-        onViewChange={(view) => navigate(createPageUrl(
-          view === 'memory' ? 'Memory' : 
-          view === 'tags' ? 'TagManagement' : 
-          view === 'reminders' ? 'Reminders' : 
-          view === 'trash' ? 'Trash' :
-          'Create'
-        ))}
-        onOpenSearch={() => navigate(createPageUrl('Create'))}
-        onOpenChat={() => navigate(createPageUrl('MemoryChat'))}
-        onOpenSettings={() => setSettingsOpen(true)}
-        isCollapsed={sidebarCollapsed}
-        onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+    <div className="min-h-screen bg-transparent flex overflow-hidden relative">
+      {/* ✅ Always-active drag-and-drop overlay (invisible until dragging) */}
+      <DragDropFileUpload
+        workspaceId={workspaceId}
+        onUploadComplete={() => {
+          queryClient.invalidateQueries(['notes']);
+          // TODO: Invalidate files query when implemented
+        }}
       />
+      
+      <ResponsiveSidebar
+          activeView="memory"
+        onViewChange={(view) => {
+          if (view === 'create') {
+            navigate('/create');
+          } else if (view === 'memory') {
+            navigate('/memory');
+          } else {
+            navigate(createPageUrl(
+            view === 'tags' ? 'TagManagement' : 
+            view === 'reminders' ? 'Reminders' : 
+            view === 'trash' ? 'Trash' :
+            'Create'
+            ));
+          }
+        }}
+          onOpenSearch={() => navigate(createPageUrl('Create'))}
+          onOpenChat={() => navigate(createPageUrl('MemoryChat'))}
+          onOpenSettings={() => setSettingsOpen(true)}
+          isCollapsed={sidebarCollapsed}
+          onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+        />
 
       <div className="flex-1 flex flex-col overflow-hidden w-full md:w-auto">
         <div className="p-3 md:p-6 bg-glass border-b border-white/20 dark:border-gray-700/30">
@@ -603,10 +700,30 @@ If the user asks about old memories or references past ideas, refer to the memor
                 />
               </div>
             ) : !selectedNote ? (
-              <div className="flex gap-8 p-8">
+              <div className="flex gap-8 p-4 md:p-8">
                 <div className="flex-1">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 md:gap-4">
-                  {filteredNotes.map((note) => (
+                  {/* ✅ Auto-organized by folders */}
+                  {sortedFolders.length > 0 ? (
+                    sortedFolders.map((folderName) => {
+                      const folderNotes = notesByFolder[folderName];
+                      if (folderNotes.length === 0) return null;
+                      
+                      return (
+                        <div key={folderName} className="mb-8">
+                          {/* Folder Header */}
+                          <div className="flex items-center gap-3 mb-4 pb-2 border-b border-gray-200 dark:border-gray-700">
+                            <FolderIcon className="w-5 h-5 text-black dark:text-white" />
+                            <h2 className="text-lg font-semibold text-black dark:text-white">
+                              {folderName}
+                            </h2>
+                            <span className="text-sm text-gray-500 dark:text-gray-400">
+                              ({folderNotes.length} {folderNotes.length === 1 ? 'memory' : 'memories'})
+                            </span>
+                          </div>
+                          
+                          {/* Notes in this folder */}
+                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 md:gap-4 mb-6">
+                            {folderNotes.map((note) => (
                     <div
                       key={note.id}
                       className={`clay-card p-4 text-left hover:scale-[1.02] transition-all relative ${
@@ -632,14 +749,6 @@ If the user asks about old memories or references past ideas, refer to the memor
                         }}
                         className="w-full text-left"
                       >
-                      <div className="flex items-center gap-2 mb-2">
-                        {note.folder && (
-                          <span className="text-xs px-2 py-1 bg-white dark:bg-[#171515] rounded text-gray-400 flex items-center gap-1 border border-gray-200 dark:border-gray-600">
-                            <FolderIcon className="w-3 h-3 text-black dark:text-white" />
-                            {note.folder}
-                          </span>
-                        )}
-                      </div>
                       <h3 className="font-semibold text-black dark:text-white mb-2 line-clamp-1">{note.title}</h3>
                       <div className="text-sm text-black dark:text-white line-clamp-3 mb-3 h-[4.5em] overflow-hidden">
                         <RichTextRenderer content={note.content} />
@@ -671,12 +780,15 @@ If the user asks about old memories or references past ideas, refer to the memor
                       </button>
                     </div>
                   ))}
-                    {filteredNotes.length === 0 && (
-                      <div className="col-span-full text-center py-12 text-gray-500">
+                          </div>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <div className="text-center py-12 text-gray-500">
                         <p>No memories match the filters</p>
                       </div>
                     )}
-                  </div>
                 </div>
                 <div className="w-80 flex-shrink-0 space-y-4">
                   <RecommendationsPanel notes={filteredNotes} onSelectNote={setSelectedNote} />
@@ -899,6 +1011,36 @@ If the user asks about old memories or references past ideas, refer to the memor
       <SettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <NoteViewer note={viewingNote} isOpen={!!viewingNote} onClose={() => setViewingNote(null)} />
       
+      {/* ✅ Attachment Button (bottom right, same as Create page) */}
+      {!selectedNote && (
+        <Button
+          onClick={() => fileInputRef.current?.click()}
+          className="fixed bottom-8 right-8 w-14 h-14 rounded-full bg-white dark:bg-[#171515] text-black dark:text-white shadow-lg hover:shadow-xl transition-all flex items-center justify-center hover:scale-110 border border-gray-200 dark:border-gray-600 z-50"
+          title="Upload Files or Folders"
+        >
+          <Paperclip className="w-6 h-6" />
+        </Button>
+      )}
+      
+      {/* Hidden file input for folder selection via button */}
+      <input
+        type="file"
+        ref={fileInputRef}
+        onChange={async (e) => {
+          const files = Array.from(e.target.files || []);
+          if (files.length > 0 && user?.id) {
+            // Trigger file upload via custom event
+            window.dispatchEvent(new CustomEvent('fileUploadTrigger', {
+              detail: { files }
+            }));
+          }
+        }}
+        multiple
+        directory=""
+        webkitdirectory=""
+        style={{ display: 'none' }}
+      />
+      
       {showChat && (
         <DraggableChat 
           messages={chatMessages}
@@ -967,6 +1109,36 @@ If the user asks about old memories or references past ideas, refer to the memor
           />
         </>
       )}
+
+      {/* ✅ Attachment Button (bottom right, same as Create page) */}
+      {!selectedNote && (
+        <Button
+          onClick={() => fileInputRef.current?.click()}
+          className="fixed bottom-8 right-8 w-14 h-14 rounded-full bg-white dark:bg-[#171515] text-black dark:text-white shadow-lg hover:shadow-xl transition-all flex items-center justify-center hover:scale-110 border border-gray-200 dark:border-gray-600 z-50"
+          title="Upload Files or Folders"
+        >
+          <Paperclip className="w-6 h-6" />
+        </Button>
+      )}
+      
+      {/* Hidden file input for folder selection via button */}
+      <input
+        type="file"
+        ref={fileInputRef}
+        onChange={async (e) => {
+          const files = Array.from(e.target.files || []);
+          if (files.length > 0 && user?.id) {
+            // Trigger file upload via custom event
+            window.dispatchEvent(new CustomEvent('fileUploadTrigger', {
+              detail: { files }
+            }));
+          }
+        }}
+        multiple
+        directory=""
+        webkitdirectory=""
+        style={{ display: 'none' }}
+      />
     </div>
   );
 }

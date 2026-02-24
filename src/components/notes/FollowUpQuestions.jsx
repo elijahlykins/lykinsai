@@ -4,6 +4,7 @@ import { HelpCircle, Loader2, MessageCircle } from 'lucide-react';
 // ❌ Removed base44 import
 import { useNavigate } from 'react-router-dom';
 import { createPageUrl } from '../../utils';
+import { getSelectedAiModel } from '@/lib/ai-model';
 
 export default function FollowUpQuestions({ note, allNotes, onChatStart }) {
   const [questions, setQuestions] = useState([]);
@@ -60,7 +61,7 @@ Return ONLY a JSON object: {"questions": ["Question 1?", "Question 2?", ...]}`;
       const response = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'gpt-3.5-turbo', prompt })
+        body: JSON.stringify({ model: getSelectedAiModel(), prompt })
       });
 
       if (!response.ok) throw new Error('AI request failed');

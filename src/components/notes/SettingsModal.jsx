@@ -17,7 +17,8 @@ export default function SettingsModal({ isOpen, onClose }) {
     layoutDensity: 'comfortable',
     aiPersonality: 'balanced',
     aiDetailLevel: 'medium',
-    aiModel: 'gemini-flash-latest'
+    aiModel: 'gemini-flash-latest',
+    backgroundColor: '' // CSS color string (e.g. "#f5f5f7")
   });
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -25,6 +26,10 @@ export default function SettingsModal({ isOpen, onClose }) {
   const [authError, setAuthError] = useState('');
   const [socialConnections, setSocialConnections] = useState([]);
   const [syncingPlatform, setSyncingPlatform] = useState(null);
+
+  // Bright white base with a very subtle blue hint (glass feel)
+  const DEFAULT_BG_LIGHT = '#f3f8ff';
+  const DEFAULT_BG_DARK = '#0b0b0f';
 
   const loadSocialConnections = async () => {
     try {
@@ -127,17 +132,17 @@ export default function SettingsModal({ isOpen, onClose }) {
       // Also save to Supabase if user is authenticated
       if (user) {
         try {
-          await supabase.from('social_connections').insert({
-            user_id: user.id,
-            platform: connectionData.platform,
-            access_token: connectionData.accessToken,
-            refresh_token: connectionData.refreshToken,
-            platform_user_id: connectionData.platformUserId,
-            platform_username: connectionData.platformUsername,
-            token_expires_at: connectionData.expiresIn 
-              ? new Date(Date.now() + connectionData.expiresIn * 1000).toISOString()
-              : null
-          });
+        await supabase.from('social_connections').insert({
+          user_id: user.id,
+          platform: connectionData.platform,
+          access_token: connectionData.accessToken,
+          refresh_token: connectionData.refreshToken,
+          platform_user_id: connectionData.platformUserId,
+          platform_username: connectionData.platformUsername,
+          token_expires_at: connectionData.expiresIn 
+            ? new Date(Date.now() + connectionData.expiresIn * 1000).toISOString()
+            : null
+        });
         } catch (dbError) {
           console.warn('Failed to save connection to Supabase (non-critical):', dbError);
           // Don't fail the whole operation if DB save fails
@@ -251,14 +256,20 @@ export default function SettingsModal({ isOpen, onClose }) {
       if (saved) {
         try {
           const parsed = JSON.parse(saved);
-          if (parsed.aiModel === 'core') {
-            parsed.aiModel = 'gemini-flash-latest';
-          }
           setSettings(parsed);
           document.documentElement.classList.toggle('dark', parsed.theme === 'dark');
+          if (parsed.backgroundColor && typeof parsed.backgroundColor === 'string') {
+            document.documentElement.style.setProperty('--app-background', parsed.backgroundColor);
+          } else {
+            // Default Apple-like background per theme
+            document.documentElement.style.setProperty('--app-background', parsed.theme === 'dark' ? DEFAULT_BG_DARK : DEFAULT_BG_LIGHT);
+          }
         } catch (e) {
           console.error('Error parsing settings:', e);
         }
+      } else {
+        // Default Apple-like background per theme when no saved settings exist
+        document.documentElement.style.setProperty('--app-background', settings.theme === 'dark' ? DEFAULT_BG_DARK : DEFAULT_BG_LIGHT);
       }
     };
     
@@ -328,6 +339,11 @@ export default function SettingsModal({ isOpen, onClose }) {
     document.documentElement.style.fontSize = fontSizes[settings.fontSize];
     const densities = { compact: '0.75', comfortable: '1', spacious: '1.25' };
     document.documentElement.style.setProperty('--layout-density', densities[settings.layoutDensity]);
+    if (settings.backgroundColor) {
+      document.documentElement.style.setProperty('--app-background', settings.backgroundColor);
+    } else {
+      document.documentElement.style.setProperty('--app-background', settings.theme === 'dark' ? DEFAULT_BG_DARK : DEFAULT_BG_LIGHT);
+    }
     
     // Trigger custom event so other components can sync (same-tab)
     window.dispatchEvent(new CustomEvent('lykinsai_settings_changed'));
@@ -630,6 +646,38 @@ export default function SettingsModal({ isOpen, onClose }) {
             </div>
 
             <div className="space-y-2">
+              <Label className="text-gray-900 dark:text-white">App Background</Label>
+              <div className="flex items-center gap-3">
+                <input
+                  type="color"
+                  value={settings.backgroundColor || (settings.theme === 'dark' ? DEFAULT_BG_DARK : DEFAULT_BG_LIGHT)}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    setSettings({ ...settings, backgroundColor: value });
+                    document.documentElement.style.setProperty('--app-background', value);
+                  }}
+                  className="h-10 w-14 rounded-xl bg-white/40 dark:bg-gray-800/40 border border-white/40 dark:border-gray-700/40 backdrop-blur-md"
+                  title="Pick app background"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="bg-white/60 dark:bg-gray-800/60 border-white/40 dark:border-gray-700/40 text-gray-900 dark:text-white backdrop-blur-md rounded-xl"
+                  onClick={() => {
+                    const def = settings.theme === 'dark' ? DEFAULT_BG_DARK : DEFAULT_BG_LIGHT;
+                    setSettings({ ...settings, backgroundColor: '' });
+                    document.documentElement.style.setProperty('--app-background', def);
+                  }}
+                >
+                  Reset
+                </Button>
+              </div>
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Sets the global background behind all glass surfaces.
+              </p>
+            </div>
+
+            <div className="space-y-2">
               <Label className="text-gray-900 dark:text-white">Font Size</Label>
               <Select value={settings.fontSize} onValueChange={(value) => setSettings({...settings, fontSize: value})}>
                 <SelectTrigger className="bg-white/60 dark:bg-gray-800/60 border-white/40 dark:border-gray-700/40 text-gray-900 dark:text-white backdrop-blur-md rounded-xl">
@@ -657,20 +705,41 @@ export default function SettingsModal({ isOpen, onClose }) {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent className="bg-glass-card border-white/30 dark:border-gray-700/30 backdrop-blur-2xl">
-                  <SelectItem value="gpt-3.5-turbo">GPT-3.5 Turbo</SelectItem>
+                  <SelectItem value="gpt-5.2">GPT-5.2 (Latest)</SelectItem>
+                  <SelectItem value="gpt-5.1">GPT-5.1</SelectItem>
+                  <SelectItem value="gpt-5">GPT-5</SelectItem>
                   <SelectItem value="gpt-4o">GPT-4o</SelectItem>
                   <SelectItem value="gpt-4o-mini">GPT-4o Mini</SelectItem>
                   <SelectItem value="gpt-4-turbo">GPT-4 Turbo</SelectItem>
                   <SelectItem value="gpt-4">GPT-4</SelectItem>
-                  <SelectItem value="claude-3-5-sonnet-20240620">Claude 3.5 Sonnet</SelectItem>
-                  <SelectItem value="claude-3-opus-20240229">Claude 3 Opus</SelectItem>
-                  <SelectItem value="claude-3-sonnet-20240229">Claude 3 Sonnet</SelectItem>
-                  <SelectItem value="gemini-flash-latest">Gemini Flash Latest (Free Tier)</SelectItem>
-                  <SelectItem value="gemini-2.5-flash">Gemini 2.5 Flash (Free Tier)</SelectItem>
-                  <SelectItem value="gemini-2.0-flash">Gemini 2.0 Flash (Free Tier)</SelectItem>
-                  <SelectItem value="gemini-pro-latest">Gemini Pro Latest</SelectItem>
+                  <SelectItem value="gpt-3.5-turbo">GPT-3.5 Turbo</SelectItem>
+                  <SelectItem value="claude-opus-4-1-20250805">Claude Opus 4.1</SelectItem>
+                  <SelectItem value="claude-opus-4-20250514">Claude Opus 4</SelectItem>
+                  <SelectItem value="claude-sonnet-4-20250514">Claude Sonnet 4</SelectItem>
+                  <SelectItem value="claude-haiku-4-5-20251001">Claude Haiku 4.5</SelectItem>
+                  <SelectItem value="gemini-3.1-pro-preview">Gemini 3.1 Pro (Preview)</SelectItem>
+                  <SelectItem value="gemini-3-pro-preview">Gemini 3 Pro (Preview)</SelectItem>
+                  <SelectItem value="gemini-3-flash-preview">Gemini 3 Flash (Preview)</SelectItem>
                   <SelectItem value="gemini-2.5-pro">Gemini 2.5 Pro</SelectItem>
-                  <SelectItem value="grok-beta">Grok Beta</SelectItem>
+                  <SelectItem value="gemini-2.5-flash">Gemini 2.5 Flash</SelectItem>
+                  <SelectItem value="gemini-2.5-flash-lite">Gemini 2.5 Flash-Lite</SelectItem>
+                  <SelectItem value="gemini-2.5-flash-image-preview">Gemini 2.5 Flash Image</SelectItem>
+                  <SelectItem value="gemini-2.5-flash-live-preview">Gemini 2.5 Flash Live</SelectItem>
+                  <SelectItem value="gemini-2.0-flash">Gemini 2.0 Flash</SelectItem>
+                  <SelectItem value="gemini-2.0-flash-lite">Gemini 2.0 Flash-Lite</SelectItem>
+                  <SelectItem value="grok-4-1-fast-reasoning">Grok 4.1 Fast Reasoning</SelectItem>
+                  <SelectItem value="grok-4-1-fast-non-reasoning">Grok 4.1 Fast Non-Reasoning</SelectItem>
+                  <SelectItem value="grok-code-fast-1">Grok Code Fast 1</SelectItem>
+                  <SelectItem value="grok-4-fast-reasoning">Grok 4 Fast Reasoning</SelectItem>
+                  <SelectItem value="grok-4-fast-non-reasoning">Grok 4 Fast Non-Reasoning</SelectItem>
+                  <SelectItem value="grok-4-0709">Grok 4 0709</SelectItem>
+                  <SelectItem value="grok-3-mini">Grok 3 Mini</SelectItem>
+                  <SelectItem value="grok-3">Grok 3</SelectItem>
+                  <SelectItem value="grok-2-vision-1212">Grok 2 Vision 1212</SelectItem>
+                  <SelectItem value="grok-imagine-image-pro">Grok Imagine Image Pro</SelectItem>
+                  <SelectItem value="grok-imagine-image">Grok Imagine Image</SelectItem>
+                  <SelectItem value="grok-2-image-1212">Grok 2 Image 1212</SelectItem>
+                  <SelectItem value="grok-imagine-video">Grok Imagine Video</SelectItem>
                 </SelectContent>
               </Select>
             </div>

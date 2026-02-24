@@ -5,6 +5,7 @@ import { Sparkles, TrendingUp, Clock, X } from 'lucide-react';
 // ❌ Removed base44 import
 import { format } from 'date-fns';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { getSelectedAiModel } from '@/lib/ai-model';
 
 export default function RecommendationsPanel({ notes, onSelectNote }) {
   const [recommendations, setRecommendations] = useState([]);
@@ -61,7 +62,7 @@ Return ONLY a JSON object: {"recommendations": [{"type": "type", "title": "title
       const response = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'gpt-3.5-turbo', prompt })
+        body: JSON.stringify({ model: getSelectedAiModel(), prompt })
       });
 
       if (!response.ok) throw new Error('AI request failed');

@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
@@ -20,9 +21,97 @@ import YouTubeEmbed from './YouTubeEmbed';
 import TextHighlighter from './TextHighlighter';
 import AISearchPopup from './AISearchPopup';
 import MarginButton from './MarginButton';
+import BrickEditor from './BrickEditor';
 import 'react-quill/dist/quill.bubble.css';
 import { supabase } from '@/lib/supabase';
+import { useAuth } from '@/lib/SupabaseAuth';
 import { isYouTubeUrl, extractYouTubeVideoId } from '@/lib/youtubeUtils';
+import { normalizeValueToV2, getBlockPlainText } from './blockModel';
+
+const BRICK_GRID_ATTR = 'data-brick-grid="true"';
+
+function escapeHtml(text) {
+  return (text ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function decodeBrickTextFromContent(contentHtml) {
+  const html = contentHtml ?? "";
+  try {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, "text/html");
+    const pre = doc.querySelector(`pre[${BRICK_GRID_ATTR}]`);
+    if (pre) return pre.textContent ?? "";
+    // Fallback: best-effort plain text extraction from HTML.
+    return doc.body?.textContent ?? "";
+  } catch {
+    // Last resort: strip tags.
+    return String(html).replace(/<[^>]*>/g, "");
+  }
+}
+
+function encodeBrickContent(text) {
+  // Store as HTML so existing note pipeline continues to work.
+  return `<pre ${BRICK_GRID_ATTR}>${escapeHtml(text)}</pre>`;
+}
+
+function summarizeBrickV2ForAI(v2Payload) {
+  const blocks = Array.isArray(v2Payload?.blocks) ? v2Payload.blocks : [];
+  if (blocks.length === 0) return "(empty canvas)";
+
+  const lines = [];
+  for (let i = 0; i < blocks.length; i += 1) {
+    const b = blocks[i] || {};
+    const type = b.type || "Unknown";
+    const pos = `x:${Number.isFinite(b.x) ? b.x : 0}, y:${Number.isFinite(b.y) ? b.y : 0}, w:${b.width ?? "?"}, h:${b.height ?? "?"}`;
+
+    if (type === "SpreadsheetBlock") {
+      const sheet = b.content?.sheet || {};
+      const rows = sheet.rows ?? "?";
+      const cols = sheet.cols ?? "?";
+      const cells = sheet.cells && typeof sheet.cells === "object" ? Object.keys(sheet.cells).length : 0;
+      lines.push(`- [${type}] (${pos}) rows:${rows} cols:${cols} filledCells:${cells}`);
+      continue;
+    }
+    if (type === "DesignBlock") {
+      const board = b.content?.board || {};
+      const elements = Array.isArray(board.elements) ? board.elements.length : 0;
+      lines.push(`- [${type}] (${pos}) elements:${elements}`);
+      continue;
+    }
+    if (type === "MediaBlock") {
+      const mediaType = b.content?.mediaType || "file";
+      const name = b.content?.media?.name || b.content?.media?.url || b.content?.media?.src || "";
+      lines.push(`- [${type}:${mediaType}] (${pos}) ${name}`.trim());
+      continue;
+    }
+    if (type === "ListBlock") {
+      const listType = b.content?.listType || "bulleted";
+      const items = Array.isArray(b.content?.items) ? b.content.items : [];
+      const preview = items
+        .slice(0, 8)
+        .map((it, idx) => {
+          const t = String(it?.text ?? "");
+          if (listType === "todo") return `${idx + 1}. [${it?.checked ? "x" : " "}] ${t}`;
+          return `${idx + 1}. ${t}`;
+        })
+        .join(" | ");
+      lines.push(`- [${type}:${listType}] (${pos}) ${preview}`.trim());
+      continue;
+    }
+
+    // TextBlock / CodeBlock / SheetBlock / DividerBlock fallback
+    const plain = getBlockPlainText(b) || "";
+    const oneLine = plain.replace(/\s+/g, " ").trim();
+    const clipped = oneLine.length > 240 ? `${oneLine.slice(0, 240)}…` : oneLine;
+    lines.push(`- [${type}] (${pos}) ${clipped}`.trim());
+  }
+  return lines.join("\n");
+}
 
 // Register Divider Blot Safely
 const Quill = ReactQuill.Quill;
@@ -75,10 +164,6 @@ const callAI = async (prompt, model = null) => {
     if (!aiModel) {
       const settings = JSON.parse(localStorage.getItem('lykinsai_settings') || '{}');
       aiModel = settings.aiModel || 'gemini-flash-latest';
-      // Handle legacy 'core' model
-      if (aiModel === 'core') {
-        aiModel = 'gemini-flash-latest';
-      }
     }
 
   const { API_BASE_URL } = await import('@/lib/api-config');
@@ -116,9 +201,16 @@ const NoteCreator = React.forwardRef(({
   noteId,
   onInsertImageRequested, // ✅ For image insertion
   sidebarCollapsed = false, // ✅ For spacing when sidebar is collapsed
+  compactLayout = false, // ✅ Tighten paddings/sizing for Create page
+  notionBlocks = false, // ✅ Notion-like block styling (Create-only)
+  brickGrid = false, // ✅ Full-screen invisible brick grid typing system (Create-only)
+  brickHeight = 24,
+  hideMetadataControls = false, // ✅ Hide Tags/Folder/Reminder controls (Create-only)
+  hideTitleBar = false, // ✅ Hide the title input (Create-only)
   liveAIMode = false, // ✅ Live AI toggle from parent
   showSuggestions = false // ✅ Suggestions panel toggle from parent
 }, ref) => {
+  const navigate = useNavigate();
   const [title, setTitle] = useState('');
   const [showSlashMenu, setShowSlashMenu] = useState(false);
   const [slashMenuPos, setSlashMenuPos] = useState({ top: 0, left: 0 });
@@ -184,6 +276,7 @@ const NoteCreator = React.forwardRef(({
   const [aiInputPanelDragState, setAiInputPanelDragState] = useState({ isDragging: false, offset: { x: 0, y: 0 } });
   const [aiInputPanelDraggedPosition, setAiInputPanelDraggedPosition] = useState(null); // { x, y }
   const queryClient = useQueryClient();
+  const { user } = useAuth(); // ✅ Get current user for user_id filtering
   const [previewAttachment, setPreviewAttachment] = useState(null);
   const [isDragging, setIsDragging] = useState(false);
   const dragTimeoutRef = useRef(null);
@@ -209,16 +302,18 @@ const NoteCreator = React.forwardRef(({
   const timerRef = useRef(null);
   const fileInputRef = useRef(null);
   const quillRef = useRef(null);
+  const brickEditorRef = useRef(null);
 
   // ✅ Fetch folders (you'll need /api/folders route)
   const { data: fetchedFolders = [] } = useQuery({
-    queryKey: ['folders'],
+    queryKey: ['folders', user?.id],
     queryFn: async () => {
       const res = await fetch('/api/folders');
       if (!res.ok) throw new Error('Failed to fetch folders');
       return res.json();
     },
     staleTime: 60000,
+    enabled: !!user?.id, // Only fetch if user is signed in
   });
 
   useEffect(() => {
@@ -246,14 +341,21 @@ const NoteCreator = React.forwardRef(({
   };
 
   const { data: allNotes = [] } = useQuery({
-    queryKey: ['notes'],
+    queryKey: ['notes', user?.id],
     queryFn: async () => {
+      // Don't fetch if user is not signed in
+      if (!user?.id) {
+        return [];
+      }
+      
       try {
         // Try with essential columns first (don't include attachments - it doesn't exist)
         // Attachments will be parsed from content where they're embedded
+        // ✅ Filter by user_id to show only current user's notes
         let { data, error } = await supabase
           .from('notes')
           .select('id, title, content, created_at')
+          .eq('user_id', user.id)
           .order('created_at', { ascending: false });
         
         if (error && (error.code === 'PGRST204' || error.code === '42703' || error.message?.includes('Could not find') || error.message?.includes('does not exist'))) {
@@ -261,6 +363,7 @@ const NoteCreator = React.forwardRef(({
           ({ data, error } = await supabase
             .from('notes')
             .select('id, title, content')
+              .eq('user_id', user.id)
             .order('id', { ascending: false }));
         }
         
@@ -566,12 +669,12 @@ const NoteCreator = React.forwardRef(({
       }
     } else {
       // Default to "Untitled" for new notes
-      setTitle('Untitled');
+      setTitle(brickGrid ? '' : 'Untitled');
       
       const savedDraft = localStorage.getItem('lykinsai_draft');
       if (savedDraft) {
         const draft = JSON.parse(savedDraft);
-        setTitle(draft.title || 'Untitled');
+        setTitle(draft.title || (brickGrid ? '' : 'Untitled'));
         setContent(draft.content || '');
         setAttachments(draft.attachments || []);
         setTags(draft.tags || []);
@@ -813,7 +916,18 @@ const NoteCreator = React.forwardRef(({
       navigator.clipboard.writeText(url);
       alert('Link copied to clipboard!');
     },
-    getCurrentContent: () => content,
+    getCurrentContent: () => {
+      // When using BrickEditor, provide AI with a structured view of ALL block types.
+      if (brickGrid) {
+        const raw = decodeBrickTextFromContent(content);
+        const v2 = normalizeValueToV2(raw, { defaultBlockWidthBricks: 14 });
+        return [
+          "Brick canvas (structured blocks):",
+          summarizeBrickV2ForAI(v2),
+        ].join("\n");
+      }
+      return content;
+    },
     addConnection: () => {}, // Stub function - connections removed
     reset: () => {
       setTitle('');
@@ -940,8 +1054,16 @@ const NoteCreator = React.forwardRef(({
   };
 
   const autoSave = async () => {
-    const isContentEmpty = !content || content.trim() === '' || content === '<p><br></p>';
-    if (!title.trim() && isContentEmpty && !audioFile && attachments.length === 0) return;
+    // ✅ Only save if there's actual content (not just title)
+    const isContentEmpty = !content || content.trim() === '' || content === '<p><br></p>' || content.trim() === '<p></p>';
+    const hasAttachments = attachments.length > 0;
+    const hasAudio = !!audioFile;
+    
+    // Don't save if there's no content, no attachments, and no audio
+    if (isContentEmpty && !hasAttachments && !hasAudio) {
+      console.log('⏭️ Skipping save - note has no content');
+      return;
+    }
 
     try {
       let finalContent = content;
@@ -1016,11 +1138,18 @@ const NoteCreator = React.forwardRef(({
             content: safeContent
           };
           
+          // ✅ Add user_id if user is signed in
+          if (user?.id) {
+            safeData.user_id = user.id;
+          }
+          
           // Try update with absolute minimum first (title and content only)
+          // ✅ Ensure user can only update their own notes
           let { error, data } = await supabase
             .from('notes')
             .update(safeData)
             .eq('id', internalNoteId)
+            .eq('user_id', user?.id || '') // Only update if user_id matches
             .select();
           
           // Log the error details for debugging
@@ -1159,10 +1288,64 @@ const NoteCreator = React.forwardRef(({
                 }
               }
             }
+            // ✅ AI Folder Organization: Automatically assign folder if not set or is Uncategorized
+            let aiAssignedFolder = fullNoteData.folder;
+            if (!aiAssignedFolder || aiAssignedFolder === 'Uncategorized') {
+              try {
+                // Get existing folders for context (only current user's notes)
+                const { data: existingNotes } = await supabase
+                  .from('notes')
+                  .select('folder, title, content')
+                  .eq('user_id', user?.id || '')
+                  .limit(50);
+                
+                const existingFolders = [...new Set((existingNotes || [])
+                  .map(n => n.folder)
+                  .filter(f => f && f !== 'Uncategorized'))];
+                
+                // Extract text content for AI analysis
+                const textContent = (fullNoteData.content || '')
+                  .replace(/<[^>]*>/g, ' ')
+                  .replace(/\[ATTACHMENTS_JSON:.*?\]/g, '')
+                  .replace(/\[Tags:.*?\]/g, '')
+                  .substring(0, 1000);
+                
+                const folderPrompt = `Analyze this memory card and assign it to the most appropriate folder.
+
+Memory Card Title: "${fullNoteData.title || 'Untitled'}"
+Memory Card Content: "${textContent}"
+
+Existing Folders: ${existingFolders.length > 0 ? existingFolders.join(', ') : 'None (create a new one)'}
+
+Instructions:
+1. If an existing folder fits perfectly, use that folder name exactly as shown
+2. If no existing folder fits, create a new descriptive folder name (2-4 words, capitalize each word)
+3. Folders should be broad categories like: "Work & Projects", "Learning & Education", "Ideas & Thoughts", "Personal", "Research", "Goals", etc.
+4. Return ONLY the folder name, nothing else
+
+Folder name:`;
+                
+                const aiFolderResponse = await callAI(folderPrompt, 'gemini-flash-latest');
+                aiAssignedFolder = (aiFolderResponse || '').trim()
+                  .replace(/^["']|["']$/g, '')
+                  .replace(/\n.*/g, '')
+                  .substring(0, 50);
+                
+                if (aiAssignedFolder && aiAssignedFolder.length > 0) {
+                  console.log(`🤖 AI assigned folder: "${aiAssignedFolder}"`);
+                } else {
+                  aiAssignedFolder = 'Uncategorized';
+                }
+              } catch (folderError) {
+                console.warn('AI folder assignment failed, keeping current folder:', folderError);
+                aiAssignedFolder = fullNoteData.folder || 'Uncategorized';
+              }
+            }
+            
             // Try to add optional columns if they exist
             const optionalFields = {};
             if (fullNoteData.connected_notes !== undefined) optionalFields.connected_notes = fullNoteData.connected_notes;
-            if (fullNoteData.folder !== undefined) optionalFields.folder = fullNoteData.folder;
+            optionalFields.folder = aiAssignedFolder; // Use AI-assigned folder
             if (fullNoteData.reminder !== undefined) optionalFields.reminder = fullNoteData.reminder;
             
             // CRITICAL: Always embed attachments in content for persistence
@@ -1238,7 +1421,8 @@ const NoteCreator = React.forwardRef(({
                 const { error: contentError } = await supabase
                   .from('notes')
                   .update({ content: enhancedContent })
-                  .eq('id', internalNoteId);
+                  .eq('id', internalNoteId)
+                  .eq('user_id', user?.id || ''); // ✅ Ensure user can only update their own notes
                 if (contentError) {
                   console.warn('Could not update content with attachments:', contentError);
                 } else {
@@ -1261,7 +1445,8 @@ const NoteCreator = React.forwardRef(({
                   const { error: optionalError } = await supabase
                     .from('notes')
                     .update({ [key]: value })
-                    .eq('id', internalNoteId);
+                    .eq('id', internalNoteId)
+                    .eq('user_id', user?.id || ''); // ✅ Ensure user can only update their own notes
                   
                   if (optionalError) {
                     // Check if it's a column error (expected) or a real error
@@ -1383,6 +1568,11 @@ const NoteCreator = React.forwardRef(({
           content: fullNoteData.content
         };
         
+        // ✅ Add user_id if user is signed in
+        if (user?.id) {
+          safeData.user_id = user.id;
+        }
+        
         // Try to include raw_text if it exists
         if (fullNoteData.raw_text !== undefined) {
           safeData.raw_text = fullNoteData.raw_text;
@@ -1424,24 +1614,79 @@ const NoteCreator = React.forwardRef(({
           .insert(safeData)
           .select();
         
-        // If insert succeeded, try to add optional fields
+        // If insert succeeded, try to add optional fields and AI folder assignment
         if (!error && newNote && newNote[0]) {
           setInternalNoteId(newNote[0].id);
           
           // Attachments are already embedded in safeData.content, so they're saved!
           console.log(`✅ Note created with ${fullNoteData.attachments?.length || 0} attachment(s) embedded in content`);
           
+              // ✅ AI Folder Organization: Automatically assign folder based on content
+              let aiAssignedFolder = fullNoteData.folder; // Use existing folder if set
+              if (!aiAssignedFolder || aiAssignedFolder === 'Uncategorized') {
+                try {
+                  // Get existing folders from all notes for context (only current user's notes)
+                  const { data: existingNotes } = await supabase
+                    .from('notes')
+                    .select('folder, title, content')
+                    .eq('user_id', user?.id || '')
+                    .limit(50);
+              
+              const existingFolders = [...new Set((existingNotes || [])
+                .map(n => n.folder)
+                .filter(f => f && f !== 'Uncategorized'))];
+              
+              // Extract text content for AI analysis (remove HTML tags)
+              const textContent = (fullNoteData.content || '')
+                .replace(/<[^>]*>/g, ' ') // Remove HTML tags
+                .replace(/\[ATTACHMENTS_JSON:.*?\]/g, '') // Remove attachment JSON
+                .replace(/\[Tags:.*?\]/g, '') // Remove tags metadata
+                .substring(0, 1000); // Limit to first 1000 chars for AI
+              
+              const folderPrompt = `Analyze this memory card and assign it to the most appropriate folder.
+
+Memory Card Title: "${fullNoteData.title || 'Untitled'}"
+Memory Card Content: "${textContent}"
+
+Existing Folders: ${existingFolders.length > 0 ? existingFolders.join(', ') : 'None (create a new one)'}
+
+Instructions:
+1. If an existing folder fits perfectly, use that folder name exactly as shown
+2. If no existing folder fits, create a new descriptive folder name (2-4 words, capitalize each word)
+3. Folders should be broad categories like: "Work & Projects", "Learning & Education", "Ideas & Thoughts", "Personal", "Research", "Goals", etc.
+4. Return ONLY the folder name, nothing else
+
+Folder name:`;
+              
+              const aiFolderResponse = await callAI(folderPrompt, 'gemini-flash-latest');
+              aiAssignedFolder = (aiFolderResponse || '').trim()
+                .replace(/^["']|["']$/g, '') // Remove quotes
+                .replace(/\n.*/g, '') // Take only first line
+                .substring(0, 50); // Limit length
+              
+              if (aiAssignedFolder && aiAssignedFolder.length > 0) {
+                console.log(`🤖 AI assigned folder: "${aiAssignedFolder}"`);
+              } else {
+                aiAssignedFolder = 'Uncategorized';
+              }
+            } catch (folderError) {
+              console.warn('AI folder assignment failed, using Uncategorized:', folderError);
+              aiAssignedFolder = 'Uncategorized';
+            }
+          }
+          
           // Try to add other optional fields
           const optionalFields = {};
           if (fullNoteData.connected_notes !== undefined) optionalFields.connected_notes = fullNoteData.connected_notes;
-          if (fullNoteData.folder !== undefined) optionalFields.folder = fullNoteData.folder;
+          optionalFields.folder = aiAssignedFolder; // Use AI-assigned folder
           if (fullNoteData.reminder !== undefined) optionalFields.reminder = fullNoteData.reminder;
           
           if (Object.keys(optionalFields).length > 0) {
             await supabase
               .from('notes')
               .update(optionalFields)
-              .eq('id', newNote[0].id);
+              .eq('id', newNote[0].id)
+              .eq('user_id', user?.id || ''); // ✅ Ensure user can only update their own notes
             // Ignore errors - these are optional columns
           }
         } else if (error && (error.code === 'PGRST204' || error.message?.includes('Could not find'))) {
@@ -1450,6 +1695,11 @@ const NoteCreator = React.forwardRef(({
             title: fullNoteData.title,
             content: fullNoteData.content
           };
+          
+          // ✅ Add user_id if user is signed in
+          if (user?.id) {
+            minimalData.user_id = user.id;
+          }
           const result = await supabase
             .from('notes')
             .insert(minimalData)
@@ -1542,7 +1792,47 @@ const NoteCreator = React.forwardRef(({
       extension: fileExtension
     });
 
-    // Create attachment with base64 data URL
+    // For PDFs, handle them specially - convert to editable document instead of attachment
+    if (fileType === 'pdf') {
+      try {
+        // Extract text from PDF using PDF.js
+        const extractedText = await extractTextFromPDF(file);
+        
+        // Insert extracted text directly into editor as editable content
+        if (extractedText && extractedText.trim().length > 0) {
+          console.log(`📄 PDF text extracted: ${extractedText.length} characters. Inserting into editor as editable document.`);
+          
+          const editor = quillRef.current?.getEditor();
+          if (editor) {
+            // Get current cursor position or end of document
+            const range = editor.getSelection(true);
+            const insertIndex = range ? range.index : editor.getLength();
+            
+            // Add a header for the PDF document
+            const pdfHeader = `\n\n# ${file.name}\n\n`;
+            const fullText = pdfHeader + extractedText.trim() + '\n\n';
+            
+            // Insert the text into the editor
+            editor.insertText(insertIndex, fullText, 'user');
+            
+            // Move cursor to end of inserted text
+            editor.setSelection(insertIndex + fullText.length);
+            
+            console.log(`✅ PDF content inserted into editor as editable document`);
+          }
+          setShowAttachMenu(false);
+          return; // Exit early - PDF converted to editable text
+        } else {
+          console.warn(`⚠️ PDF text extraction returned empty. This PDF might be image-only or scanned. Adding as attachment.`);
+          // If extraction failed, fall through to add as attachment
+        }
+      } catch (error) {
+        console.error('Error extracting PDF text:', error);
+        // If extraction fails, fall through to add as attachment
+      }
+    }
+
+    // Create attachment with base64 data URL (for non-PDF files, or PDFs that couldn't be extracted)
     const reader = new FileReader();
     reader.onload = async (e) => {
       const attachment = {
@@ -1588,14 +1878,11 @@ const NoteCreator = React.forwardRef(({
       // Add attachment immediately (with loading state)
         setAttachments(prev => [...prev, attachment]);
 
-      // Extract text/content for all extractable file types
+      // Extract text/content for all extractable file types (non-PDF files)
       try {
         let extractedText = null;
         
-        if (fileType === 'pdf') {
-          // Extract text from PDF using PDF.js
-          extractedText = await extractTextFromPDF(file);
-        } else if (fileType === 'word') {
+        if (fileType === 'word') {
           // Extract text from Word document
           extractedText = await extractTextFromWord(file);
         } else if (fileType === 'excel') {
@@ -1609,7 +1896,7 @@ const NoteCreator = React.forwardRef(({
           extractedText = await file.text();
         }
 
-        // Update attachment with extracted text
+        // Update attachment with extracted text (for non-PDF files)
         if (extractedText && extractedText.trim().length > 0) {
           console.log(`✅ Extracted ${extractedText.length} characters from "${file.name}" (type: ${fileType})`);
           setAttachments(prev => prev.map(att => 
@@ -1617,16 +1904,8 @@ const NoteCreator = React.forwardRef(({
               ? { ...att, extractedText: extractedText.trim(), isLoading: false }
               : att
           ));
-          
-          // For PDFs, also add a note in the content to reference the extracted text
-          if (fileType === 'pdf' && extractedText.length > 100) {
-            console.log(`📄 PDF text extracted successfully. Content will be available for AI search and context.`);
-          }
-        } else {
+    } else {
           console.log(`⚠️ No text extracted from "${file.name}" (type: ${fileType})`);
-          if (fileType === 'pdf') {
-            console.warn(`⚠️ PDF text extraction returned empty. This PDF might be image-only or scanned.`);
-          }
           setAttachments(prev => prev.map(att => 
             att.id === attachment.id 
               ? { ...att, isLoading: false }
@@ -1681,11 +1960,11 @@ const NoteCreator = React.forwardRef(({
       // Extract text from each page
       for (let i = 1; i <= maxPages; i++) {
         try {
-          const page = await pdf.getPage(i);
-          const textContent = await page.getTextContent();
+        const page = await pdf.getPage(i);
+        const textContent = await page.getTextContent();
           
           // Extract text from text items
-          const pageText = textContent.items
+        const pageText = textContent.items
             .map(item => {
               if (item && typeof item === 'object' && 'str' in item) {
                 return item.str || '';
@@ -1693,7 +1972,7 @@ const NoteCreator = React.forwardRef(({
               return '';
             })
             .filter(str => str && str.trim().length > 0)
-            .join(' ');
+          .join(' ');
           
           if (pageText.trim()) {
             fullText += `\n\n--- Page ${i} ---\n\n${pageText.trim()}`;
@@ -2855,6 +3134,11 @@ Example: {"title": "My Idea", "html_content": "<h1>Main Section</h1><p>First tho
     } else {
       setShowSlashMenu(false);
     }
+  };
+
+  const handleBrickChange = (plainText) => {
+    // Persist brick-grid text as a <pre data-brick-grid="true"> wrapper in the existing content field.
+    setContent(encodeBrickContent(plainText));
   };
 
   const executeSlashCommand = (cmd) => {
@@ -4444,11 +4728,42 @@ Format your response with:
   return (
     <div 
       className={`h-full flex relative overflow-hidden transition-colors ${isDragging ? 'bg-gray-50/50 dark:bg-white/5 ring-4 ring-black/10 dark:ring-white/10 ring-inset' : ''}`}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
+      onDragOver={brickGrid ? undefined : handleDragOver}
+      onDragLeave={brickGrid ? undefined : handleDragLeave}
+      onDrop={brickGrid ? undefined : handleDrop}
       onPaste={handlePaste}
     >
+      {brickGrid && (
+        <div className="fixed top-3 left-1/2 -translate-x-1/2 z-[60] w-[min(520px,calc(100vw-8rem))]">
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="New Project"
+            disabled={isProcessing}
+            className="w-full text-center text-base sm:text-lg font-medium h-10 px-4 outline-none glass-text-card placeholder:text-gray-500/60 dark:placeholder:text-gray-300/50"
+          />
+        </div>
+      )}
+      {brickGrid && (
+        <div className="fixed top-3 right-3 z-[60]">
+          <button
+            type="button"
+            className="h-10 px-4 rounded-xl text-sm text-black/80 bg-white/65 hover:bg-white/80 dark:text-white/80 dark:bg-white/10 dark:hover:bg-white/16 backdrop-blur-xl border border-black/10 dark:border-white/10 shadow-sm shadow-black/5"
+            onClick={() => {
+              try {
+                const seed = decodeBrickTextFromContent(content);
+                localStorage.setItem("omnia_seed_v2", seed);
+              } catch {
+                // ignore
+              }
+              navigate("/omnia");
+            }}
+            title="Open this note in Omnia canvas (experimental)"
+          >
+            Open in Omnia
+          </button>
+        </div>
+      )}
       {isDragging && (
         <div 
           className="absolute inset-0 z-50 flex items-center justify-center bg-blue-500/20 dark:bg-blue-400/20 backdrop-blur-sm pointer-events-none"
@@ -4520,23 +4835,33 @@ Format your response with:
         <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-hide relative">
         {inputMode === 'text' ? (
           <div 
-            className="min-h-full flex flex-col max-w-3xl mx-auto py-6 px-4 md:py-12 md:pl-16 md:pr-8 lg:pl-20 lg:pr-12 lg:pt-20 transition-all duration-500 relative group cursor-text"
+            className={`min-h-full flex flex-col transition-all duration-500 relative group cursor-text ${
+              notionBlocks
+                ? 'w-full max-w-none'
+                : 'mx-auto'
+            } ${
+              compactLayout
+                ? (notionBlocks ? 'py-4 px-3 md:py-8 md:px-6 lg:px-8 lg:pt-14' : 'max-w-4xl py-4 px-3 md:py-8 md:px-6 lg:px-8 lg:pt-14')
+                : 'max-w-3xl mx-auto py-6 px-4 md:py-12 md:pl-16 md:pr-8 lg:pl-20 lg:pr-12 lg:pt-20'
+            }`}
             onClick={(e) => {
               if (e.target === e.currentTarget) {
                 quillRef.current?.focus();
               }
             }}
           >
-            <Input
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="Untitled"
-              className="text-2xl sm:text-3xl md:text-4xl lg:text-5xl font-medium bg-transparent border-0 text-black dark:text-white placeholder:text-gray-300/50 focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0 h-auto px-0 mb-4 md:mb-6"
-              disabled={isProcessing}
-            />
+            {!hideTitleBar && (
+              <Input
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder="Untitled"
+                className="text-2xl sm:text-3xl md:text-4xl lg:text-5xl font-medium bg-transparent border-0 text-black dark:text-white placeholder:text-gray-300/50 focus:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0 h-auto px-0 mb-4 md:mb-6"
+                disabled={isProcessing}
+              />
+            )}
 
             {/* YouTube Videos - Display consistently above editor */}
-            {useMemo(() => {
+            {!brickGrid && useMemo(() => {
               const youtubeAttachments = attachments.filter(att => {
                 if (!att) return false;
                 // Check if it's explicitly a YouTube type
@@ -4596,166 +4921,203 @@ Format your response with:
             }, [attachments, removeAttachment])}
 
             <div 
-              className="flex-1 w-full min-h-[50vh] text-base sm:text-lg md:text-xl lg:text-2xl leading-relaxed text-black dark:text-white relative" 
+              className={`flex-1 w-full min-h-[70vh] text-base sm:text-lg md:text-xl lg:text-2xl leading-relaxed text-black dark:text-white relative ${
+                notionBlocks ? 'cursor-text' : ''
+              }`}
               onContextMenu={handleEditorContextMenu}
-              onDragOver={handleEditorDragOver}
-              onDrop={handleEditorDrop}
+              onDragOver={brickGrid ? undefined : handleEditorDragOver}
+              onDrop={brickGrid ? undefined : handleEditorDrop}
+              onMouseDown={(e) => {
+                if (!notionBlocks) return;
+                // Clicking empty canvas should focus the editor so typing works immediately.
+                const inEditor = e.target.closest?.('.ql-editor') || e.target.closest?.('.ql-container');
+                if (inEditor) return;
+                const editor = quillRef.current?.getEditor?.();
+                if (!editor) return;
+                editor.focus();
+                // Default: append at end when click isn't on an existing block.
+                const len = editor.getLength?.() ?? 0;
+                editor.setSelection?.(Math.max(0, len - 1), 0, 'user');
+              }}
             >
-              {/* Margin Buttons Container */}
-              <div className="absolute left-0 top-0 bottom-0 w-12 pointer-events-none z-20">
-                {marginButtons.map((button) => (
-                  <MarginButton
-                    key={button.id}
-                    id={button.id}
-                    type={button.type}
-                    text={button.text}
-                    top={button.top}
-                    onClick={() => {
-                      const savedDef = savedDefinitions[button.id];
-                      if (savedDef) {
-                        if (savedDef.type === 'answer') {
-                          // Show answer panel with saved answer
-                          setCurrentQuestion(savedDef.text);
-                          setCurrentAnswer(savedDef.content);
-                          setAnswerPanelVisible(true);
-                          // Get position from the marked element
-                          const editor = quillRef.current?.getEditor();
-                          if (editor) {
-                            const editorElement = editor.root;
-                            const markedElement = editorElement.querySelector(`[data-margin-button-id="${button.id}"]`);
-                            if (markedElement) {
-                              const rect = markedElement.getBoundingClientRect();
-                              const editorRect = editorElement.getBoundingClientRect();
-                              setQuestionPosition({
-                                index: 0, // We don't need exact index for display
-                                length: 0,
-                                top: rect.top - editorRect.top,
-                                left: rect.left - editorRect.left + rect.width + 20
-                              });
+              {brickGrid ? (
+                <BrickEditor
+                  ref={brickEditorRef}
+                  value={decodeBrickTextFromContent(content)}
+                  onChange={handleBrickChange}
+                  brickHeight={brickHeight}
+                  className="w-full"
+                  minHeight="calc(100svh - 10rem)"
+                />
+              ) : (
+                <>
+                  {/* Margin Buttons Container */}
+                  <div className="absolute left-0 top-0 bottom-0 w-12 pointer-events-none z-20">
+                    {marginButtons.map((button) => (
+                      <MarginButton
+                        key={button.id}
+                        id={button.id}
+                        type={button.type}
+                        text={button.text}
+                        top={button.top}
+                        onClick={() => {
+                          const savedDef = savedDefinitions[button.id];
+                          if (savedDef) {
+                            if (savedDef.type === 'answer') {
+                              // Show answer panel with saved answer
+                              setCurrentQuestion(savedDef.text);
+                              setCurrentAnswer(savedDef.content);
+                              setAnswerPanelVisible(true);
+                              // Get position from the marked element
+                              const editor = quillRef.current?.getEditor();
+                              if (editor) {
+                                const editorElement = editor.root;
+                                const markedElement = editorElement.querySelector(`[data-margin-button-id="${button.id}"]`);
+                                if (markedElement) {
+                                  const rect = markedElement.getBoundingClientRect();
+                                  const editorRect = editorElement.getBoundingClientRect();
+                                  setQuestionPosition({
+                                    index: 0, // We don't need exact index for display
+                                    length: 0,
+                                    top: rect.top - editorRect.top,
+                                    left: rect.left - editorRect.left + rect.width + 20
+                                  });
+                                }
+                              }
+                            } else {
+                              setSelectedTextForSearch(button.text);
+                              setPreloadedDefinition(savedDef.content || savedDef.definition);
+                              setShowAISearchPopup(true);
                             }
                           }
-                        } else {
-                          setSelectedTextForSearch(button.text);
-                          setPreloadedDefinition(savedDef.content || savedDef.definition);
-                          setShowAISearchPopup(true);
+                        }}
+                      />
+                    ))}
+                  </div>
+                  
+                  <ReactQuill
+                    ref={quillRef}
+                    theme="bubble"
+                    defaultValue={content}
+                    onChange={handleEditorChange}
+                    onKeyDown={(e) => {
+                      if (showSlashMenu && e.key === 'Enter' && slashFilter.trim() !== '') {
+                        e.preventDefault();
+                        const commands = [
+                          { id: 'h1', name: 'Heading 1' },
+                          { id: 'h2', name: 'Heading 2' },
+                          { id: 'h3', name: 'Heading 3' },
+                          { id: 'bullet', name: 'Bulleted List' },
+                          { id: 'ordered', name: 'Numbered List' },
+                          { id: 'quote', name: 'Quote' },
+                          { id: 'code', name: 'Code Block' },
+                          { id: 'divider', name: 'Divider' },
+                          { id: 'image', name: 'Image' }
+                        ];
+                        const filtered = commands.filter(cmd =>
+                          cmd.name.toLowerCase().includes(slashFilter.toLowerCase()) ||
+                          cmd.id.toLowerCase().includes(slashFilter.toLowerCase())
+                        );
+                        const cmd = filtered[slashSelectedIndex] || filtered[0];
+                        if (cmd) {
+                          executeSlashCommand(cmd);
                         }
                       }
                     }}
+                    modules={modules}
+                    placeholder="Press '/' for commands..."
+                    className={`h-full ${
+                      notionBlocks
+                        ? "[&_.ql-container]:!border-0 [&_.ql-container]:min-h-[70vh] [&_.ql-editor]:!p-0 [&_.ql-editor]:min-h-[70vh] [&_.ql-editor]:w-full [&_.ql-editor>*]:px-3 [&_.ql-editor>*]:py-1.5 [&_.ql-editor>*]:rounded-md [&_.ql-editor>*]:transition-colors [&_.ql-editor>*:hover]:bg-black/5 dark:[&_.ql-editor>*:hover]:bg-white/5"
+                        : ""
+                    }`}
+                    readOnly={isProcessing}
                   />
-                ))}
-              </div>
-              
-              <ReactQuill
-                ref={quillRef}
-                theme="bubble"
-                defaultValue={content}
-                onChange={handleEditorChange}
-                onKeyDown={(e) => {
-                  if (showSlashMenu && e.key === 'Enter' && slashFilter.trim() !== '') {
-                    e.preventDefault();
-                    const commands = [
-                      { id: 'h1', name: 'Heading 1' },
-                      { id: 'h2', name: 'Heading 2' },
-                      { id: 'h3', name: 'Heading 3' },
-                      { id: 'bullet', name: 'Bulleted List' },
-                      { id: 'ordered', name: 'Numbered List' },
-                      { id: 'quote', name: 'Quote' },
-                      { id: 'code', name: 'Code Block' },
-                      { id: 'divider', name: 'Divider' },
-                      { id: 'image', name: 'Image' }
-                    ];
-                    const filtered = commands.filter(cmd =>
-                      cmd.name.toLowerCase().includes(slashFilter.toLowerCase()) ||
-                      cmd.id.toLowerCase().includes(slashFilter.toLowerCase())
-                    );
-                    const cmd = filtered[slashSelectedIndex] || filtered[0];
-                    if (cmd) {
-                      executeSlashCommand(cmd);
-                    }
-                  }
-                }}
-                modules={modules}
-                placeholder="Press '/' for commands..."
-                className="h-full"
-                readOnly={isProcessing}
-              />
-              {showSlashMenu && (
-                <SlashCommandMenu 
-                  position={slashMenuPos}
-                  filter={slashFilter}
-                  onSelect={executeSlashCommand}
-                  onClose={() => setShowSlashMenu(false)}
-                  selectedIndex={slashSelectedIndex}
-                />
+                  {showSlashMenu && (
+                    <SlashCommandMenu 
+                      position={slashMenuPos}
+                      filter={slashFilter}
+                      onSelect={executeSlashCommand}
+                      onClose={() => setShowSlashMenu(false)}
+                      selectedIndex={slashSelectedIndex}
+                    />
+                  )}
+                </>
               )}
             </div>
 
-            <div className="mt-8 flex flex-wrap gap-2 items-center opacity-50 hover:opacity-100 transition-opacity">
-             <button
-  onClick={() => setShowMetadata(!showMetadata)}
-  className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white dark:bg-[#171515] hover:bg-gray-200 dark:hover:bg-[#171515]/80 text-xs text-black dark:text-white transition-all border border-gray-200 dark:border-gray-600"
->
-  <Tag className="w-3 h-3" />
-  {tags.length > 0 ? tags.join(', ') : 'Add Tags'}
-</button>
+            {!hideMetadataControls && (
+              <>
+                <div className="mt-8 flex flex-wrap gap-2 items-center opacity-50 hover:opacity-100 transition-opacity">
+                  <button
+                    onClick={() => setShowMetadata(!showMetadata)}
+                    className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white dark:bg-[#171515] hover:bg-gray-200 dark:hover:bg-[#171515]/80 text-xs text-black dark:text-white transition-all border border-gray-200 dark:border-gray-600"
+                  >
+                    <Tag className="w-3 h-3" />
+                    {tags.length > 0 ? tags.join(', ') : 'Add Tags'}
+                  </button>
 
-              <button
-                onClick={() => setShowMetadata(!showMetadata)}
-                className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white dark:bg-[#171515] hover:bg-gray-200 dark:hover:bg-[#171515]/80 text-xs text-black dark:text-white transition-all border border-gray-200 dark:border-gray-600"
-              >
-                <Folder className="w-3 h-3 text-black dark:text-white" />
-                {folder}
-              </button>
-              <button
-                onClick={() => setShowReminderPicker(true)}
-                className={`flex items-center gap-2 px-3 py-1.5 rounded-full ${reminder ? 'bg-yellow-100 dark:bg-yellow-900/30' : 'bg-white dark:bg-[#171515]'} hover:bg-gray-200 dark:hover:bg-[#171515]/80 text-xs text-black dark:text-white transition-all border border-gray-200 dark:border-gray-600`}
-              >
-                <Bell className="w-3 h-3 text-black dark:text-gray-300" />
-                {reminder ? 'Reminder Set' : 'Set Reminder'}
-              </button>
-              {content && content.length > 10 && (
-                <button
-                  onClick={handleAIOrganize}
-                  disabled={isProcessing}
-                  className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white dark:bg-[#171515] hover:bg-gray-200 dark:hover:bg-[#171515]/80 text-xs text-black dark:text-white transition-all border border-gray-200 dark:border-gray-600"
-                  title="Auto-Organize"
-                >
-                  <AlignLeft className="w-3 h-3" />
-                  {isProcessing ? 'Organizing...' : 'Organize'}
-                </button>
-              )}
-            </div>
+                  <button
+                    onClick={() => setShowMetadata(!showMetadata)}
+                    className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white dark:bg-[#171515] hover:bg-gray-200 dark:hover:bg-[#171515]/80 text-xs text-black dark:text-white transition-all border border-gray-200 dark:border-gray-600"
+                  >
+                    <Folder className="w-3 h-3 text-black dark:text-white" />
+                    {folder}
+                  </button>
 
-            {showMetadata && (
-              <div className="w-full mt-4 p-6 bg-white/50 dark:bg-white/5 backdrop-blur-xl rounded-2xl border border-white/20 dark:border-white/10 shadow-lg">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 md:gap-6">
-                  <div>
-                    <label className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2 block">Tags</label>
-                    <TagInput tags={tags} onChange={setTags} />
-                  </div>
-                  <div>
-                    <label className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2 block">Folder</label>
-                    <Select value={folder} onValueChange={(val) => {
-                        if (val === 'new_folder_action') {
-                            setShowNewFolderDialog(true);
-                        } else {
-                            setFolder(val);
-                        }
-                    }}>
-                      <SelectTrigger className="bg-transparent border-gray-200 dark:border-gray-700">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="Uncategorized">Uncategorized</SelectItem>
-                        {folders.map(f => (
-                            <SelectItem key={f.id} value={f.name}>{f.name}</SelectItem>
-                        ))}
-                        <SelectItem value="new_folder_action" className="text-blue-500 font-medium">+ Create New Folder</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
+                  <button
+                    onClick={() => setShowReminderPicker(true)}
+                    className={`flex items-center gap-2 px-3 py-1.5 rounded-full ${reminder ? 'bg-yellow-100 dark:bg-yellow-900/30' : 'bg-white dark:bg-[#171515]'} hover:bg-gray-200 dark:hover:bg-[#171515]/80 text-xs text-black dark:text-white transition-all border border-gray-200 dark:border-gray-600`}
+                  >
+                    <Bell className="w-3 h-3 text-black dark:text-gray-300" />
+                    {reminder ? 'Reminder Set' : 'Set Reminder'}
+                  </button>
+
+                  {content && content.length > 10 && (
+                    <button
+                      onClick={handleAIOrganize}
+                      disabled={isProcessing}
+                      className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white dark:bg-[#171515] hover:bg-gray-200 dark:hover:bg-[#171515]/80 text-xs text-black dark:text-white transition-all border border-gray-200 dark:border-gray-600"
+                      title="Auto-Organize"
+                    >
+                      <AlignLeft className="w-3 h-3" />
+                      {isProcessing ? 'Organizing...' : 'Organize'}
+                    </button>
+                  )}
                 </div>
-              </div>
+
+                {showMetadata && (
+                  <div className="w-full mt-4 p-6 bg-white/50 dark:bg-white/5 backdrop-blur-xl rounded-2xl border border-white/20 dark:border-white/10 shadow-lg">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 md:gap-6">
+                      <div>
+                        <label className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2 block">Tags</label>
+                        <TagInput tags={tags} onChange={setTags} />
+                      </div>
+                      <div>
+                        <label className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2 block">Folder</label>
+                        <Select value={folder} onValueChange={(val) => {
+                            if (val === 'new_folder_action') {
+                                setShowNewFolderDialog(true);
+                            } else {
+                                setFolder(val);
+                            }
+                        }}>
+                          <SelectTrigger className="bg-transparent border-gray-200 dark:border-gray-700">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="Uncategorized">Uncategorized</SelectItem>
+                            {folders.map(f => (
+                                <SelectItem key={f.id} value={f.name}>{f.name}</SelectItem>
+                            ))}
+                            <SelectItem value="new_folder_action" className="text-blue-500 font-medium">+ Create New Folder</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </>
             )}
           </div>
         ) : (
@@ -5395,16 +5757,19 @@ Format your response with:
       )}
 
       {inputMode === 'text' && (
-        <button
+        <Button
+          type="button"
           onClick={() => setShowAttachMenu(true)}
-          className="fixed bottom-8 right-8 w-14 h-14 rounded-full bg-white dark:bg-[#171515] text-black dark:text-white shadow-lg hover:shadow-xl transition-all flex items-center justify-center hover:scale-110 border border-gray-200 dark:border-gray-600"
+          size="icon"
+          className="fixed bottom-8 right-8 w-14 h-14 rounded-full shadow-lg hover:shadow-xl transition-all flex items-center justify-center hover:scale-110"
+          title="Attachments"
         >
-          <Plus className="w-6 h-6 text-black dark:text-gray-300" />
-        </button>
+          <Plus className="w-6 h-6" />
+        </Button>
       )}
 
       <Dialog open={showAttachMenu} onOpenChange={setShowAttachMenu}>
-        <DialogContent className="bg-white dark:bg-[#171515] border-gray-200 dark:border-gray-700 text-black dark:text-white">
+        <DialogContent className="bg-glass-card text-black dark:text-white">
           <DialogHeader>
             <DialogTitle className="text-black dark:text-white">Add Attachment</DialogTitle>
             <DialogDescription className="text-gray-500 dark:text-gray-400">
@@ -5416,9 +5781,15 @@ Format your response with:
             <Button
               onClick={() => {
                 const url = prompt('Enter any URL (YouTube video or website):');
-                if (url) handleLinkAdd(url);
+                if (!url) return;
+                if (brickGrid) {
+                  brickEditorRef.current?.insertUrl?.(url);
+                  setShowAttachMenu(false);
+                  return;
+                }
+                handleLinkAdd(url);
               }}
-              className="w-full flex items-center gap-3 bg-white dark:bg-[#171515] hover:bg-gray-100 dark:hover:bg-[#171515]/80 text-black dark:text-white justify-start border border-gray-200 dark:border-gray-600"
+              className="w-full flex items-center gap-3 justify-start"
             >
               <LinkIcon className="w-5 h-5 text-gray-600 dark:text-gray-300" />
               Add Link
@@ -5426,7 +5797,7 @@ Format your response with:
 
             <Button
               onClick={() => fileInputRef.current?.click()}
-              className="w-full flex items-center gap-3 bg-white dark:bg-[#171515] hover:bg-gray-100 dark:hover:bg-[#171515]/80 text-black dark:text-white justify-start border border-gray-200 dark:border-gray-600"
+              className="w-full flex items-center gap-3 justify-start"
             >
               <Image className="w-5 h-5 text-gray-600 dark:text-gray-300" />
               Add Media
@@ -5440,7 +5811,12 @@ Format your response with:
             multiple
             onChange={(e) => {
               const files = Array.from(e.target.files || []);
-              files.forEach(file => handleFileUpload(file));
+              if (brickGrid) {
+                brickEditorRef.current?.insertFiles?.(files);
+                setShowAttachMenu(false);
+              } else {
+                files.forEach(file => handleFileUpload(file));
+              }
               e.target.value = '';
             }}
             className="hidden"
@@ -5448,13 +5824,15 @@ Format your response with:
         </DialogContent>
       </Dialog>
 
-      <ReminderPicker
-        isOpen={showReminderPicker}
-        onClose={() => setShowReminderPicker(false)}
-        currentReminder={reminder}
-        onSet={setReminder}
-        onRemove={() => setReminder(null)}
+      {!hideMetadataControls && (
+        <ReminderPicker
+          isOpen={showReminderPicker}
+          onClose={() => setShowReminderPicker(false)}
+          currentReminder={reminder}
+          onSet={setReminder}
+          onRemove={() => setReminder(null)}
         />
+      )}
 
         <Dialog open={!!previewAttachment} onOpenChange={() => setPreviewAttachment(null)}>
           <DialogContent className="bg-white dark:bg-[#1f1d1d]/95 border-gray-200 dark:border-gray-700 text-black dark:text-white max-w-4xl">

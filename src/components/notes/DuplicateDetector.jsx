@@ -6,6 +6,7 @@ import { AlertCircle, Merge, X, Loader2 } from 'lucide-react';
 import { format } from 'date-fns';
 import { Label } from '@/components/ui/label';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import { getSelectedAiModel } from '@/lib/ai-model';
 import {
   Dialog,
   DialogContent,
@@ -61,7 +62,7 @@ Return ONLY a JSON object: {"duplicates": [{"note1_id": "id1", "note2_id": "id2"
       const response = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'gpt-3.5-turbo', prompt })
+        body: JSON.stringify({ model: getSelectedAiModel(), prompt })
       });
 
       if (!response.ok) throw new Error('AI request failed');
@@ -118,7 +119,7 @@ Create a well-structured merged note that captures all important information fro
       const contentResponse = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'gpt-3.5-turbo', prompt: contentPrompt })
+        body: JSON.stringify({ model: getSelectedAiModel(), prompt: contentPrompt })
       });
       const contentResult = await contentResponse.json();
       const mergedContent = contentResult.response;
@@ -128,7 +129,7 @@ Create a well-structured merged note that captures all important information fro
       const titleResponse = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'gpt-3.5-turbo', prompt: titlePrompt })
+        body: JSON.stringify({ model: getSelectedAiModel(), prompt: titlePrompt })
       });
       const titleResult = await titleResponse.json();
       const mergedTitle = titleResult.response.trim();

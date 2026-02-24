@@ -12,8 +12,10 @@ import { createPageUrl } from '../utils';
 
 // ✅ Import Supabase
 import { supabase } from '@/lib/supabase';
+import { useAuth } from '@/lib/SupabaseAuth';
 
 export default function TagManagementPage() {
+  const { user } = useAuth(); // ✅ Get current user for user_id filtering
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [editingTag, setEditingTag] = useState(null);
@@ -21,15 +23,22 @@ export default function TagManagementPage() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
-  // ✅ Fetch from Supabase
+  // ✅ Fetch from Supabase - only if user is signed in
   const { data: notes = [] } = useQuery({
-    queryKey: ['notes'],
+    queryKey: ['notes', user?.id],
     queryFn: async () => {
+      // Don't fetch if user is not signed in
+      if (!user?.id) {
+        return [];
+      }
+      
       try {
         // Try with essential columns first
+        // ✅ Filter by user_id to show only current user's notes
         let { data, error } = await supabase
           .from('notes')
           .select('id, title, content, tags, created_at')
+          .eq('user_id', user.id)
           .order('created_at', { ascending: false });
         
         if (error && (error.code === 'PGRST204' || error.message?.includes('Could not find'))) {
@@ -37,6 +46,7 @@ export default function TagManagementPage() {
           ({ data, error } = await supabase
             .from('notes')
             .select('id, title, content')
+            .eq('user_id', user.id)
             .order('id', { ascending: false }));
         }
         
@@ -76,7 +86,8 @@ export default function TagManagementPage() {
     const { error } = await supabase
       .from('notes')
       .update({ tags: newTags })
-      .eq('id', noteId);
+      .eq('id', noteId)
+      .eq('user_id', user?.id || ''); // ✅ Ensure user can only update their own notes
     if (error) throw error;
   };
 
@@ -127,17 +138,25 @@ export default function TagManagementPage() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-50 via-blue-50/30 to-gray-100 dark:from-[#171515] dark:via-[#171515] dark:to-[#171515] flex overflow-hidden">
+    <div className="min-h-screen bg-transparent flex overflow-hidden">
       <ResponsiveSidebar
         activeView="tags"
-        onViewChange={(view) => navigate(createPageUrl(
-          view === 'short_term' ? 'ShortTerm' : 
-          view === 'long_term' ? 'LongTerm' : 
-          view === 'tags' ? 'TagManagement' : 
-          view === 'reminders' ? 'Reminders' : 
-          view === 'trash' ? 'Trash' :
-          'Create'
-        ))}
+        onViewChange={(view) => {
+          if (view === 'create') {
+            navigate('/create');
+          } else if (view === 'memory') {
+            navigate('/memory');
+          } else {
+            navigate(createPageUrl(
+              view === 'short_term' ? 'ShortTerm' : 
+              view === 'long_term' ? 'LongTerm' : 
+              view === 'tags' ? 'TagManagement' : 
+              view === 'reminders' ? 'Reminders' : 
+              view === 'trash' ? 'Trash' :
+              'Create'
+            ));
+          }
+        }}
         onOpenSearch={() => navigate(createPageUrl('AISearch'))}
         onOpenChat={() => navigate(createPageUrl('MemoryChat'))}
         onOpenSettings={() => setSettingsOpen(true)}

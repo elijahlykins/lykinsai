@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Link2, Loader2, Plus, Check } from 'lucide-react';
+import { getSelectedAiModel } from '@/lib/ai-model';
 // ❌ Removed base44 import
 
 export default function ConnectionSuggestions({ 
@@ -56,7 +57,7 @@ Return ONLY a JSON object: {"suggestions": [{"note_id": "id1", "reason": "reason
       const response = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'gpt-3.5-turbo', prompt })
+        body: JSON.stringify({ model: getSelectedAiModel(), prompt })
       });
 
       if (!response.ok) throw new Error('AI request failed');

@@ -38,17 +38,24 @@ export default function MemoryChatPage() {
   const queryClient = useQueryClient();
 
   const {  notes = [], isError } = useQuery({
-    queryKey: ['notes'],
+    queryKey: ['notes', user?.id],
     queryFn: async () => {
+      // Don't fetch if user is not signed in
+      if (!user?.id) {
+        return [];
+      }
+      
       try {
         // Try to select only essential columns first to avoid 400 errors
         // If that fails, try with just title and content
         let data, error;
         
         // First try with common columns (include attachments for YouTube transcripts)
+        // ✅ Filter by user_id to show only current user's notes
         ({ data, error } = await supabase
           .from('notes')
           .select('id, title, content, created_at, updated_at, attachments')
+          .eq('user_id', user.id)
           .order('created_at', { ascending: false }));
         
         if (error) {
@@ -58,6 +65,7 @@ export default function MemoryChatPage() {
             ({ data, error } = await supabase
               .from('notes')
               .select('id, title, content, created_at, updated_at')
+              .eq('user_id', user.id)
               .order('created_at', { ascending: false }));
           }
           
@@ -67,6 +75,7 @@ export default function MemoryChatPage() {
             ({ data, error } = await supabase
               .from('notes')
               .select('id, title, content')
+              .eq('user_id', user.id)
               .order('id', { ascending: false }));
           }
           
@@ -102,7 +111,7 @@ export default function MemoryChatPage() {
   useEffect(() => {
     const settings = JSON.parse(localStorage.getItem('lykinsai_settings') || '{}');
     const savedModel = settings.aiModel || 'gemini-flash-latest';
-    setCurrentModel(savedModel === 'core' ? 'gemini-flash-latest' : savedModel);
+    setCurrentModel(savedModel);
     
     const storedQuestions = localStorage.getItem('chat_followup_questions');
     if (storedQuestions) {
@@ -208,7 +217,8 @@ export default function MemoryChatPage() {
         let { error } = await supabase
           .from('notes')
           .update(noteDataWithOptional)
-          .eq('id', currentChatNoteId);
+          .eq('id', currentChatNoteId)
+          .eq('user_id', user?.id || ''); // ✅ Ensure user can only update their own notes
         
         if (error) {
           // If error is about missing columns, retry with only minimal columns (title, content)
@@ -219,7 +229,8 @@ export default function MemoryChatPage() {
             ({ error } = await supabase
               .from('notes')
               .update(safeData)
-              .eq('id', currentChatNoteId));
+              .eq('id', currentChatNoteId)
+              .eq('user_id', user?.id || '')); // ✅ Ensure user can only update their own notes
             
             if (error) {
               // If even minimal columns fail, log but don't crash - the note might still be saved
@@ -245,9 +256,14 @@ export default function MemoryChatPage() {
     } else {
       try {
         // Try with optional fields first
+        // ✅ Add user_id to new notes
+        const noteDataWithUserId = {
+          ...noteDataWithOptional,
+          user_id: user?.id
+        };
         const { data, error } = await supabase
           .from('notes')
-          .insert(noteDataWithOptional)
+          .insert(noteDataWithUserId)
           .select();
         
         if (error) {
@@ -256,9 +272,14 @@ export default function MemoryChatPage() {
             console.warn('⚠️ Some columns not found, retrying with minimal columns only (title, content):', error.message);
             const safeData = createMinimalData();
             
+            // ✅ Add user_id to new notes
+            const safeDataWithUserId = {
+              ...safeData,
+              user_id: user?.id
+            };
             const { data: retryData, error: retryError } = await supabase
               .from('notes')
-              .insert(safeData)
+              .insert(safeDataWithUserId)
               .select();
             
             if (retryError) {
@@ -667,7 +688,7 @@ Provide thoughtful, insightful responses based on their memories and interests. 
 
   if (isError) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-gray-50 via-blue-50/30 to-gray-100 dark:from-[#171515] dark:via-[#171515] dark:to-[#171515] flex items-center justify-center">
+      <div className="min-h-screen bg-transparent flex items-center justify-center">
         <div className="text-center p-8 max-w-md">
           <h2 className="text-xl font-bold text-black dark:text-white mb-4">Connection Error</h2>
           <p className="text-gray-600 dark:text-gray-400 mb-4">Unable to load chat. Please check your connection and try again.</p>
@@ -680,23 +701,31 @@ Provide thoughtful, insightful responses based on their memories and interests. 
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-50 via-blue-50/30 to-gray-100 dark:from-[#171515] dark:via-[#171515] dark:to-[#171515] flex overflow-hidden">
+    <div className="min-h-screen bg-transparent flex overflow-hidden">
       <ResponsiveSidebar
-        activeView="chat"
-        onViewChange={(view) => navigate(createPageUrl(
-          view === 'short_term' ? 'ShortTerm' : 
-          view === 'long_term' ? 'LongTerm' : 
-          view === 'tags' ? 'TagManagement' : 
-          view === 'reminders' ? 'Reminders' : 
-          view === 'trash' ? 'Trash' :
-          'Create'
-        ))}
-        onOpenSearch={() => navigate(createPageUrl('AISearch'))}
-        onOpenChat={() => navigate(createPageUrl('MemoryChat'))}
-        onOpenSettings={() => setSettingsOpen(true)}
-        isCollapsed={sidebarCollapsed}
-        onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
-      />
+          activeView="chat"
+        onViewChange={(view) => {
+          if (view === 'create') {
+            navigate('/create');
+          } else if (view === 'memory') {
+            navigate('/memory');
+          } else {
+            navigate(createPageUrl(
+            view === 'short_term' ? 'ShortTerm' : 
+            view === 'long_term' ? 'LongTerm' : 
+            view === 'tags' ? 'TagManagement' : 
+            view === 'reminders' ? 'Reminders' : 
+            view === 'trash' ? 'Trash' :
+            'Create'
+            ));
+          }
+        }}
+          onOpenSearch={() => navigate(createPageUrl('AISearch'))}
+          onOpenChat={() => navigate(createPageUrl('MemoryChat'))}
+          onOpenSettings={() => setSettingsOpen(true)}
+          isCollapsed={sidebarCollapsed}
+          onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+        />
 
       <div className="flex-1 flex flex-col overflow-hidden w-full md:w-auto">
         <div className="p-3 md:p-6 bg-glass border-b border-white/20 dark:border-gray-700/30">
@@ -710,15 +739,26 @@ Provide thoughtful, insightful responses based on their memories and interests. 
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent className="bg-white dark:bg-[#171515] border-gray-200 dark:border-gray-700">
-                  <SelectItem value="gemini-flash-latest">Gemini Flash Latest (Free Tier)</SelectItem>
-                  <SelectItem value="gemini-2.5-flash">Gemini 2.5 Flash (Free Tier)</SelectItem>
-                  <SelectItem value="gemini-2.0-flash">Gemini 2.0 Flash (Free Tier)</SelectItem>
-                  <SelectItem value="gpt-3.5-turbo">GPT-3.5 Turbo</SelectItem>
+                  <SelectItem value="gemini-3.1-pro-preview">Gemini 3.1 Pro (Preview)</SelectItem>
+                  <SelectItem value="gemini-3-pro-preview">Gemini 3 Pro (Preview)</SelectItem>
+                  <SelectItem value="gemini-3-flash-preview">Gemini 3 Flash (Preview)</SelectItem>
+                  <SelectItem value="gemini-2.5-pro">Gemini 2.5 Pro</SelectItem>
+                  <SelectItem value="gemini-2.5-flash">Gemini 2.5 Flash</SelectItem>
+                  <SelectItem value="gemini-2.5-flash-lite">Gemini 2.5 Flash-Lite</SelectItem>
+                  <SelectItem value="gemini-2.5-flash-image-preview">Gemini 2.5 Flash Image</SelectItem>
+                  <SelectItem value="gemini-2.5-flash-live-preview">Gemini 2.5 Flash Live</SelectItem>
+                  <SelectItem value="gemini-2.0-flash">Gemini 2.0 Flash</SelectItem>
+                  <SelectItem value="gemini-2.0-flash-lite">Gemini 2.0 Flash-Lite</SelectItem>
+                  <SelectItem value="gpt-5.2">GPT-5.2 (Latest)</SelectItem>
+                  <SelectItem value="gpt-5.1">GPT-5.1</SelectItem>
+                  <SelectItem value="gpt-5">GPT-5</SelectItem>
                   <SelectItem value="gpt-4o">GPT-4o</SelectItem>
                   <SelectItem value="gpt-4o-mini">GPT-4o Mini</SelectItem>
-                  <SelectItem value="claude-3-5-sonnet-20240620">Claude 3.5 Sonnet</SelectItem>
-                  <SelectItem value="gemini-pro-latest">Gemini Pro Latest</SelectItem>
-                  <SelectItem value="gemini-2.5-pro">Gemini 2.5 Pro</SelectItem>
+                  <SelectItem value="gpt-3.5-turbo">GPT-3.5 Turbo</SelectItem>
+                  <SelectItem value="claude-opus-4-1-20250805">Claude Opus 4.1</SelectItem>
+                  <SelectItem value="claude-opus-4-20250514">Claude Opus 4</SelectItem>
+                  <SelectItem value="claude-sonnet-4-20250514">Claude Sonnet 4</SelectItem>
+                  <SelectItem value="claude-haiku-4-5-20251001">Claude Haiku 4.5</SelectItem>
                 </SelectContent>
                 </Select>
                 </div>

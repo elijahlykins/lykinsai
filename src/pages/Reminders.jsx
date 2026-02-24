@@ -12,22 +12,31 @@ import { createPageUrl } from '../utils';
 
 // ✅ Import Supabase
 import { supabase } from '@/lib/supabase';
+import { useAuth } from '@/lib/SupabaseAuth';
 
 export default function RemindersPage() {
+  const { user } = useAuth(); // ✅ Get current user for user_id filtering
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
-  // ✅ Fetch from Supabase
+  // ✅ Fetch from Supabase - only if user is signed in
   const {  notes = [] } = useQuery({
-    queryKey: ['notes'],
+    queryKey: ['notes', user?.id],
     queryFn: async () => {
+      // Don't fetch if user is not signed in
+      if (!user?.id) {
+        return [];
+      }
+      
       try {
         // Try with essential columns first
+        // ✅ Filter by user_id to show only current user's notes
         let { data, error } = await supabase
           .from('notes')
           .select('id, title, content, reminder, created_at')
+          .eq('user_id', user.id)
           .order('created_at', { ascending: false });
         
         if (error && (error.code === 'PGRST204' || error.message?.includes('Could not find'))) {
@@ -35,6 +44,7 @@ export default function RemindersPage() {
           ({ data, error } = await supabase
             .from('notes')
             .select('id, title, content')
+            .eq('user_id', user.id)
             .order('id', { ascending: false }));
         }
         
@@ -63,7 +73,8 @@ export default function RemindersPage() {
     const { error } = await supabase
       .from('notes')
       .update({ reminder: null })
-      .eq('id', noteId);
+      .eq('id', noteId)
+      .eq('user_id', user?.id || ''); // ✅ Ensure user can only update their own notes
     if (error) {
       console.error('Error removing reminder:', error);
       return;
@@ -101,23 +112,31 @@ export default function RemindersPage() {
   );
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-50 via-blue-50/30 to-gray-100 dark:from-[#171515] dark:via-[#171515] dark:to-[#171515] flex overflow-hidden">
+    <div className="min-h-screen bg-transparent flex overflow-hidden">
       <ResponsiveSidebar
-        activeView="reminders"
-        onViewChange={(view) => navigate(createPageUrl(
-          view === 'short_term' ? 'ShortTerm' : 
-          view === 'long_term' ? 'LongTerm' : 
-          view === 'tags' ? 'TagManagement' : 
-          view === 'reminders' ? 'Reminders' : 
-          view === 'trash' ? 'Trash' :
-          'Create'
-        ))}
-        onOpenSearch={() => navigate(createPageUrl('AISearch'))}
-        onOpenChat={() => navigate(createPageUrl('MemoryChat'))}
-        onOpenSettings={() => setSettingsOpen(true)}
-        isCollapsed={sidebarCollapsed}
-        onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
-      />
+          activeView="reminders"
+        onViewChange={(view) => {
+          if (view === 'create') {
+            navigate('/create');
+          } else if (view === 'memory') {
+            navigate('/memory');
+          } else {
+            navigate(createPageUrl(
+            view === 'short_term' ? 'ShortTerm' : 
+            view === 'long_term' ? 'LongTerm' : 
+            view === 'tags' ? 'TagManagement' : 
+            view === 'reminders' ? 'Reminders' : 
+            view === 'trash' ? 'Trash' :
+            'Create'
+            ));
+          }
+        }}
+          onOpenSearch={() => navigate(createPageUrl('AISearch'))}
+          onOpenChat={() => navigate(createPageUrl('MemoryChat'))}
+          onOpenSettings={() => setSettingsOpen(true)}
+          isCollapsed={sidebarCollapsed}
+          onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+        />
 
       <div className="flex-1 flex flex-col overflow-hidden w-full md:w-auto">
         <div className="p-3 md:p-6 bg-glass border-b border-white/20 dark:border-gray-700/30">

@@ -1,29 +1,36 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { Heading1, Heading2, Heading3, List, ListOrdered, Image, Quote, Code, CheckSquare, Minus } from 'lucide-react';
+import { List, ListOrdered, Image, Code, CheckSquare, Table, PenTool, Type, Video, FileText } from 'lucide-react';
 import { createPortal } from 'react-dom';
 
 const COMMANDS = [
-  { id: 'h1', label: 'Heading 1', icon: Heading1, description: 'Big section heading' },
-  { id: 'h2', label: 'Heading 2', icon: Heading2, description: 'Medium section heading' },
-  { id: 'h3', label: 'Heading 3', icon: Heading3, description: 'Small section heading' },
-  { id: 'bullet', label: 'Bulleted List', icon: List, description: 'Create a simple bulleted list' },
-  { id: 'ordered', label: 'Numbered List', icon: ListOrdered, description: 'Create a list with numbering' },
-  { id: 'check', label: 'To-do List', icon: CheckSquare, description: 'Track tasks with a to-do list' },
-  { id: 'quote', label: 'Quote', icon: Quote, description: 'Capture a quote' },
-  { id: 'code', label: 'Code', icon: Code, description: 'Capture a code snippet' },
-  { id: 'divider', label: 'Divider', icon: Minus, description: 'Visually divide blocks' },
+  { id: 'text', label: 'Text', icon: Type, description: 'Continue writing' },
+  { id: 'todo', label: 'Todo', icon: CheckSquare, description: 'Convert current line to a todo item' },
+  { id: 'bulleted', label: 'Bulleted', icon: List, description: 'Start a bulleted list on this line' },
+  { id: 'numbered', label: 'Numbered', icon: ListOrdered, description: 'Start a numbered list on this line' },
+  { id: 'code', label: 'Code', icon: Code, description: 'Insert a code block' },
+  { id: 'sheet', label: 'Sheet', icon: FileText, description: 'Insert a doc-style sheet (like Google Docs)' },
+  { id: 'table', label: 'Table', icon: Table, description: 'Insert a spreadsheet block' },
   { id: 'image', label: 'Image', icon: Image, description: 'Upload an image' },
+  { id: 'video', label: 'Video', icon: Video, description: 'Upload a video' },
+  { id: 'design', label: 'Design', icon: PenTool, description: 'Insert a design board' },
 ];
 export default function SlashCommandMenu({ position, filter, onSelect, onClose, selectedIndex }) {
   const menuRef = useRef(null);
   
-  const filteredCommands = COMMANDS.filter(cmd => 
-    cmd.label.toLowerCase().includes(filter.toLowerCase()) || 
-    cmd.description.toLowerCase().includes(filter.toLowerCase())
-  );
+  const filteredCommands = COMMANDS.filter(cmd => {
+    const filterLower = filter.toLowerCase();
+    const labelLower = cmd.label.toLowerCase();
+    const descLower = cmd.description.toLowerCase();
+    // Support /logo alias for design
+    if (cmd.id === 'design' && (filterLower === 'logo' || filterLower === 'design')) return true;
+    return labelLower.includes(filterLower) || descLower.includes(filterLower);
+  });
 
   // If no commands match, don't render
   if (filteredCommands.length === 0) return null;
+  
+  // Parent can increment selectedIndex without clamping; keep it in-bounds here.
+  const safeSelectedIndex = Math.max(0, Math.min(selectedIndex, filteredCommands.length - 1));
 
   // Close if clicking outside
   useEffect(() => {
@@ -32,20 +39,21 @@ export default function SlashCommandMenu({ position, filter, onSelect, onClose, 
         onClose();
       }
     };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    // Use pointerdown in capture so we reliably detect outside presses across devices.
+    document.addEventListener('pointerdown', handleClickOutside, true);
+    return () => document.removeEventListener('pointerdown', handleClickOutside, true);
   }, [onClose]);
 
   // Handle Enter key from parent
   useEffect(() => {
     const handleEnter = () => {
-        if (filteredCommands[selectedIndex]) {
-            onSelect(filteredCommands[selectedIndex]);
+        if (filteredCommands[safeSelectedIndex]) {
+            onSelect(filteredCommands[safeSelectedIndex]);
         }
     };
     document.addEventListener('slash-enter', handleEnter);
     return () => document.removeEventListener('slash-enter', handleEnter);
-  }, [selectedIndex, filteredCommands, onSelect]);
+  }, [safeSelectedIndex, filteredCommands, onSelect]);
 
   return createPortal(
     <div 
@@ -64,9 +72,14 @@ export default function SlashCommandMenu({ position, filter, onSelect, onClose, 
         {filteredCommands.map((cmd, index) => (
           <button
             key={cmd.id}
-            onClick={() => onSelect(cmd)}
+            onPointerDown={(e) => {
+              // Fire on pointer down so editor blur/unmount doesn't swallow the click.
+              e.preventDefault();
+              e.stopPropagation();
+              onSelect(cmd);
+            }}
             className={`w-full flex items-center gap-3 p-2 rounded-md transition-colors text-left ${
-              index === selectedIndex 
+              index === safeSelectedIndex
                 ? 'bg-gray-100 dark:bg-gray-800' 
                 : 'hover:bg-gray-100 dark:hover:bg-gray-800'
             }`}
