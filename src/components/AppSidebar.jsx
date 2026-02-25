@@ -191,19 +191,19 @@ export default function AppSidebar() {
           </button>
           <button
             type="button"
-            onClick={() => nav("/memory")}
-            className="w-full text-left text-[11px] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
-          >
-            <ImageIcon className="w-3.5 h-3.5 text-black/60" />
-            Memory
-          </button>
-          <button
-            type="button"
             onClick={() => nav("/chat")}
             className="w-full text-left text-[11px] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
           >
             <MessageSquare className="w-3.5 h-3.5 text-black/60" />
             Chat
+          </button>
+          <button
+            type="button"
+            onClick={() => nav("/memory")}
+            className="w-full text-left text-[11px] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
+          >
+            <ImageIcon className="w-3.5 h-3.5 text-black/60" />
+            Memory
           </button>
         </div>
 

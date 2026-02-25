@@ -41,6 +41,31 @@ type OrchestratorResult = {
   groundingSummary?: string;
 };
 
+const CHAT_TO_BOARD_IMPORT_KEY = "omnia_chat_board_import_v1";
+
+type ImportedChatPrompt = {
+  id?: string;
+  role?: "user";
+  content?: string;
+  aiResponse?: string;
+  kind?: "prompt";
+};
+
+type ImportedTodoList = {
+  id?: string;
+  title?: string;
+  items?: Array<{ text?: string; checked?: boolean }>;
+};
+
+type ImportedChatBoardPayload = {
+  version?: number;
+  createdAt?: number;
+  boardId?: string;
+  source?: string;
+  prompts?: ImportedChatPrompt[];
+  todoLists?: ImportedTodoList[];
+};
+
 export default function OmniaCanvasPage() {
   const SNAPSHOT_VERSION = 2;
   const nav = useNavigate();
@@ -49,6 +74,8 @@ export default function OmniaCanvasPage() {
   const blocks = useCanvasStore((s) => s.blocks);
   const blockOrder = useCanvasStore((s) => s.blockOrder);
   const addTextBlockAt = useCanvasStore((s) => s.addTextBlockAt);
+  const addListBlockAt = useCanvasStore((s) => s.addListBlockAt);
+  const setListItems = useCanvasStore((s) => s.setListItems);
   const deleteBlock = useCanvasStore((s) => s.deleteBlock);
   const setCamera = useCanvasStore((s) => s.setCamera);
   const loadBlocks = useCanvasStore((s) => s.loadBlocks);
@@ -198,6 +225,7 @@ export default function OmniaCanvasPage() {
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
   const chatPanelInputRef = useRef<HTMLInputElement | null>(null);
   const aiTypingRunRef = useRef(0);
+  const chatImportAppliedRef = useRef<string | null>(null);
   const isSendingRef = useRef(false);
   const lastAiResponseBlockRef = useRef<string | null>(null);
   const aiThreadRef = useRef<Array<{ role: "user" | "assistant"; content: string }>>([]);
@@ -835,6 +863,144 @@ export default function OmniaCanvasPage() {
     },
     [addAiResponseBlock, blockOrder, blocks, deleteBlock, typeIntoAiResponseBlock]
   );
+
+  useEffect(() => {
+    if (!boardId || !user?.id) return;
+    if (chatImportAppliedRef.current === boardId) return;
+
+    let raw = "";
+    try {
+      raw = String(localStorage.getItem(CHAT_TO_BOARD_IMPORT_KEY) || "");
+    } catch {
+      return;
+    }
+    if (!raw) return;
+
+    let payload: ImportedChatBoardPayload | null = null;
+    try {
+      payload = JSON.parse(raw);
+    } catch {
+      try {
+        localStorage.removeItem(CHAT_TO_BOARD_IMPORT_KEY);
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    if (!payload || String(payload.boardId || "") !== String(boardId)) return;
+
+    const createdAt = Number(payload.createdAt || 0);
+    if (createdAt > 0 && Date.now() - createdAt > 30 * 60 * 1000) {
+      try {
+        localStorage.removeItem(CHAT_TO_BOARD_IMPORT_KEY);
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    const importedPrompts = (Array.isArray(payload.prompts) ? payload.prompts : [])
+      .map((p, idx) => {
+        const content = String(p?.content || "").trim();
+        if (!content) return null;
+        const aiResponse = String(p?.aiResponse || "").trim();
+        return {
+          id: String(p?.id || `import-prompt-${idx + 1}`),
+          role: "user" as const,
+          content,
+          kind: "prompt" as const,
+          aiResponse: aiResponse || undefined,
+        };
+      })
+      .filter(Boolean) as PromptMessage[];
+
+    const importedTodoLists = (Array.isArray(payload.todoLists) ? payload.todoLists : [])
+      .map((list, listIdx) => {
+        const items = (Array.isArray(list?.items) ? list.items : [])
+          .map((item, itemIdx) => {
+            const text = String(item?.text || "").trim();
+            if (!text) return null;
+            return {
+              id: `li-import-${listIdx + 1}-${itemIdx + 1}-${Date.now().toString(36)}`,
+              text,
+              checked: Boolean(item?.checked),
+            };
+          })
+          .filter(Boolean);
+        return {
+          id: String(list?.id || `import-todo-${listIdx + 1}`),
+          title: String(list?.title || `To-do ${listIdx + 1}`),
+          items,
+        };
+      })
+      .filter((list) => list.items.length > 0);
+
+    try {
+      localStorage.removeItem(CHAT_TO_BOARD_IMPORT_KEY);
+    } catch {
+      // ignore
+    }
+    chatImportAppliedRef.current = String(boardId);
+
+    if (importedPrompts.length) {
+      setShowChat(true);
+      setChatMessages(importedPrompts);
+      aiThreadRef.current = importedPrompts.flatMap((p) =>
+        p.aiResponse
+          ? [
+              { role: "user" as const, content: p.content },
+              { role: "assistant" as const, content: p.aiResponse },
+            ]
+          : [{ role: "user" as const, content: p.content }]
+      );
+
+      const latestAi = [...importedPrompts]
+        .reverse()
+        .map((p) => String(p.aiResponse || "").trim())
+        .find(Boolean);
+
+      if (latestAi) {
+        const st = useCanvasStore.getState() as any;
+        const existingAiIds = (Array.isArray(st.blockOrder) ? st.blockOrder : []).filter((id) =>
+          Boolean((st.blocks as any)?.[id]?.data?.aiResponseBubble)
+        );
+        for (const id of existingAiIds) {
+          try {
+            deleteBlock(id as any);
+          } catch {
+            // ignore
+          }
+        }
+        const responseBlockId = addAiResponseBlock("");
+        if (responseBlockId) {
+          lastAiResponseBlockRef.current = String(responseBlockId);
+          void typeIntoAiResponseBlock(String(responseBlockId), latestAi);
+        }
+      }
+    }
+
+    if (importedTodoLists.length) {
+      const st = useCanvasStore.getState() as any;
+      const g = Math.max(1, Math.floor(st.gridSize || 24));
+      const camera = st.camera || { x: 0, y: 0 };
+      const startX = Math.max(g, Math.floor(-camera.x + g * 2));
+      const startY = Math.max(g, Math.floor(-camera.y + g * 2));
+      let x = startX;
+      let y = startY;
+
+      importedTodoLists.forEach((todoList, idx) => {
+        const listId = addListBlockAt({ x, y }, { listType: "todo", width: g * 12 });
+        setListItems(listId as any, todoList.items as any, "todo");
+
+        y += Math.max(g * 3, (todoList.items.length + 2) * g);
+        if ((idx + 1) % 3 === 0) {
+          x += g * 14;
+          y = startY;
+        }
+      });
+    }
+  }, [addAiResponseBlock, addListBlockAt, boardId, deleteBlock, setListItems, typeIntoAiResponseBlock, user?.id]);
 
   const applyProjectActions = useCallback((actions: CreateAction[]) => {
     const list = Array.isArray(actions) ? actions : [];
@@ -1731,30 +1897,6 @@ ${text}`;
 
               <button
                 type="button"
-                disabled
-                className="rounded-full px-2 h-9 gap-2 text-xs glass-control flex items-center opacity-55 cursor-not-allowed"
-                title="AI is chat-only on this board"
-              >
-                <Zap className="w-3.5 h-3.5 text-black/70 dark:text-white/70" />
-                <span>Chat Only</span>
-              </button>
-
-              <div className="w-px h-4 bg-black/10 dark:bg-white/10 mx-1" />
-
-              <button
-                type="button"
-                onClick={() => setShowChat((v) => !v)}
-                className="rounded-full px-2 h-9 text-xs glass-control hover:opacity-90 touch-manipulation flex items-center gap-2"
-                title="Chat with AI"
-              >
-                <span className="hidden md:inline">Chat</span>
-                <MessageSquare className="w-3.5 h-3.5 md:hidden" />
-              </button>
-
-              <div className="w-px h-4 bg-black/10 dark:bg-white/10 mx-1" />
-
-              <button
-                type="button"
                 onPointerDown={(e) => {
                   // Keep focus in the active editor so native undo works.
                   e.preventDefault();
@@ -1799,12 +1941,22 @@ ${text}`;
 
               <button
                 type="button"
+                onClick={() => nav("/chat")}
+                className="rounded-full w-9 h-9 p-0 glass-control hover:opacity-90 touch-manipulation flex items-center justify-center"
+                title="Go to chat page"
+              >
+                <MessageSquare className="w-4 h-4" />
+              </button>
+
+              <div className="w-px h-4 bg-black/10 dark:bg-white/10 mx-1" />
+
+              <button
+                type="button"
                 onClick={() => setShowAttachMenu(true)}
-                className="rounded-full px-2 h-9 text-xs glass-control hover:opacity-90 touch-manipulation flex items-center gap-2"
+                className="rounded-full w-9 h-9 p-0 glass-control hover:opacity-90 touch-manipulation flex items-center justify-center"
                 title="Attachments"
               >
                 <Plus className="w-4 h-4" />
-                <span className="hidden md:inline">Attachments</span>
               </button>
             </div>
           )}

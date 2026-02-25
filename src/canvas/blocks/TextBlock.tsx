@@ -40,6 +40,8 @@ type ResizeState = {
   capturer: HTMLElement | null;
 };
 
+const TODO_LINE_RE = /^(\s*)(?:-\s*)?\[([ xX])\]\s+(.*)$/;
+
 export const TextBlock = memo(function TextBlock({ id }: { id: string }) {
   const block = useCanvasStore((s) => s.blocks[id]);
   const bringToFront = useCanvasStore((s) => s.bringToFront);
@@ -110,6 +112,22 @@ export const TextBlock = memo(function TextBlock({ id }: { id: string }) {
           : baseFontSize;
   const formatFontWeight = legacyFormat === "p" ? 450 : 650;
   const formatLineHeightPx = legacyFormat === "h1" || legacyFormat === "h2" ? brickPx * 2 - paddingY * 2 : baseLineHeightPx;
+  const aiTodoLines = useMemo(() => {
+    if (!isAiResponseBubble) return [];
+    const lines = String(block.content || "").split("\n");
+    return lines
+      .map((line, index) => {
+        const match = String(line).match(TODO_LINE_RE);
+        if (!match) return null;
+        return {
+          lineIndex: index,
+          checked: String(match[2] || "").toLowerCase() === "x",
+          text: String(match[3] || ""),
+        };
+      })
+      .filter(Boolean) as Array<{ lineIndex: number; checked: boolean; text: string }>;
+  }, [block.content, isAiResponseBubble]);
+  const hasAiTodoLines = aiTodoLines.length > 0;
 
   const panelContainer = useCanvasStore((s) =>
     (block as any)?.containerId ? s.blocks[(block as any).containerId] : null
@@ -659,69 +677,129 @@ export const TextBlock = memo(function TextBlock({ id }: { id: string }) {
             ×
           </button>
         ) : null}
-        <div
-          ref={editorRef}
-          data-canvas-text-editor-id={id}
-          tabIndex={0}
-          contentEditable
-          suppressContentEditableWarning
-          spellCheck={false}
-          className={`outline-none text-foreground ${isCanvasText || isAiResponseBubble ? "whitespace-pre-wrap" : "whitespace-pre"}`}
-          style={{
-            height: "100%",
-            fontFamily: isCanvasText && canvasFontFamily ? canvasFontFamily : defaultFontFamily,
-            fontSize: `${formatFontSize}px`,
-            fontWeight: (isCanvasText && canvasBold ? 700 : formatFontWeight) as any,
-            fontStyle: isCanvasText && canvasItalic ? "italic" : "normal",
-            textDecoration: isCanvasText
-              ? `${canvasUnderline ? "underline" : ""}${canvasStrike ? " line-through" : ""}`.trim() || "none"
-              : "none",
-            color: isCanvasText && canvasTextColor ? canvasTextColor : undefined,
-            lineHeight: `${formatLineHeightPx}px`,
-            letterSpacing: defaultLetterSpacing,
-            paddingLeft: "8px",
-            paddingRight: isAiResponseBubble ? "18px" : "8px",
-            paddingTop: `${paddingY}px`,
-            paddingBottom: `${paddingY}px`,
-            margin: "0px",
-            minHeight: `${brickPx}px`,
-            wordBreak: isCanvasText || isAiResponseBubble ? "break-word" : undefined,
-            overflowWrap: isCanvasText || isAiResponseBubble ? "anywhere" : undefined,
-          }}
-          onPointerDown={(e) => {
-            e.stopPropagation();
-            bringToFront(id);
-          }}
-          onInput={(e) => {
-            // Debounce store writes while typing to reduce re-render churn.
-            const next = e.currentTarget.textContent ?? "";
-            pendingContentRef.current = next;
-            if (contentTimerRef.current != null) window.clearTimeout(contentTimerRef.current);
-            contentTimerRef.current = window.setTimeout(() => {
+        {isAiResponseBubble && hasAiTodoLines ? (
+          <div
+            className="outline-none text-foreground whitespace-pre-wrap"
+            style={{
+              height: "100%",
+              fontFamily: defaultFontFamily,
+              fontSize: `${formatFontSize}px`,
+              fontWeight: formatFontWeight as any,
+              lineHeight: `${formatLineHeightPx}px`,
+              letterSpacing: defaultLetterSpacing,
+              paddingLeft: "8px",
+              paddingRight: "18px",
+              paddingTop: `${paddingY}px`,
+              paddingBottom: `${paddingY}px`,
+              margin: "0px",
+              minHeight: `${brickPx}px`,
+              wordBreak: "break-word",
+              overflowWrap: "anywhere",
+            }}
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              bringToFront(id);
+            }}
+          >
+            {String(block.content || "")
+              .split("\n")
+              .map((line, lineIndex) => {
+                const todo = aiTodoLines.find((t) => t.lineIndex === lineIndex);
+                if (!todo) {
+                  return (
+                    <div key={`line-${lineIndex}`} className="whitespace-pre-wrap">
+                      {line}
+                    </div>
+                  );
+                }
+                return (
+                  <label key={`todo-${lineIndex}`} className={`flex items-start gap-2 ${todo.checked ? "brick-todo-done" : ""}`}>
+                    <input
+                      type="checkbox"
+                      className="brick-todo-checkbox mt-[0.28rem] shrink-0"
+                      checked={todo.checked}
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onChange={(e) => {
+                        const lines = String(block.content || "").split("\n");
+                        const current = String(lines[lineIndex] || "");
+                        if (!TODO_LINE_RE.test(current)) return;
+                        lines[lineIndex] = current.replace(TODO_LINE_RE, (_, leading, __state, text) => {
+                          const nextState = e.currentTarget.checked ? "x" : " ";
+                          return `${leading}- [${nextState}] ${text}`;
+                        });
+                        updateBlock(id, { content: lines.join("\n") });
+                      }}
+                    />
+                    <span className={todo.checked ? "line-through" : ""}>{todo.text}</span>
+                  </label>
+                );
+              })}
+          </div>
+        ) : (
+          <div
+            ref={editorRef}
+            data-canvas-text-editor-id={id}
+            tabIndex={0}
+            contentEditable
+            suppressContentEditableWarning
+            spellCheck={false}
+            className={`outline-none text-foreground ${isCanvasText || isAiResponseBubble ? "whitespace-pre-wrap" : "whitespace-pre"}`}
+            style={{
+              height: "100%",
+              fontFamily: isCanvasText && canvasFontFamily ? canvasFontFamily : defaultFontFamily,
+              fontSize: `${formatFontSize}px`,
+              fontWeight: (isCanvasText && canvasBold ? 700 : formatFontWeight) as any,
+              fontStyle: isCanvasText && canvasItalic ? "italic" : "normal",
+              textDecoration: isCanvasText
+                ? `${canvasUnderline ? "underline" : ""}${canvasStrike ? " line-through" : ""}`.trim() || "none"
+                : "none",
+              color: isCanvasText && canvasTextColor ? canvasTextColor : undefined,
+              lineHeight: `${formatLineHeightPx}px`,
+              letterSpacing: defaultLetterSpacing,
+              paddingLeft: "8px",
+              paddingRight: isAiResponseBubble ? "18px" : "8px",
+              paddingTop: `${paddingY}px`,
+              paddingBottom: `${paddingY}px`,
+              margin: "0px",
+              minHeight: `${brickPx}px`,
+              wordBreak: isCanvasText || isAiResponseBubble ? "break-word" : undefined,
+              overflowWrap: isCanvasText || isAiResponseBubble ? "anywhere" : undefined,
+            }}
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              bringToFront(id);
+            }}
+            onInput={(e) => {
+              // Debounce store writes while typing to reduce re-render churn.
+              const next = e.currentTarget.textContent ?? "";
+              pendingContentRef.current = next;
+              if (contentTimerRef.current != null) window.clearTimeout(contentTimerRef.current);
+              contentTimerRef.current = window.setTimeout(() => {
+                contentTimerRef.current = null;
+                const v = pendingContentRef.current;
+                pendingContentRef.current = null;
+                if (v != null) updateBlock(id, { content: v });
+              }, 180);
+
+              scheduleAutoGrow();
+            }}
+            onBlur={(e) => {
+              // Ensure store stays in sync even if browser changed DOM.
+              if (contentTimerRef.current != null) window.clearTimeout(contentTimerRef.current);
               contentTimerRef.current = null;
-              const v = pendingContentRef.current;
               pendingContentRef.current = null;
-              if (v != null) updateBlock(id, { content: v });
-            }, 180);
+              const text = e.currentTarget.textContent ?? "";
+              updateBlock(id, { content: text });
+              scheduleAutoGrow();
 
-            scheduleAutoGrow();
-          }}
-          onBlur={(e) => {
-            // Ensure store stays in sync even if browser changed DOM.
-            if (contentTimerRef.current != null) window.clearTimeout(contentTimerRef.current);
-            contentTimerRef.current = null;
-            pendingContentRef.current = null;
-            const text = e.currentTarget.textContent ?? "";
-            updateBlock(id, { content: text });
-            scheduleAutoGrow();
-
-            // Match BrickEditor behavior: delete empty blocks after blur.
-            // CanvasText should never auto-delete on blur.
-            if (!isCanvasText && String(text).trim().length === 0) {
-              deleteBlock(id);
-            }
-          }}
-        />
+              // Match BrickEditor behavior: delete empty blocks after blur.
+              // CanvasText should never auto-delete on blur.
+              if (!isCanvasText && String(text).trim().length === 0) {
+                deleteBlock(id);
+              }
+            }}
+          />
+        )}
       </div>
 
       {isCanvasText && (
