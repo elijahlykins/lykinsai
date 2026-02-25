@@ -8,6 +8,9 @@ export const BRICK_BEHAVIOR = {
   showHoverLabel: true,
 } as const;
 
+const MARKDOWN_TODO_LINE_RE = /^(\s*)([-*]\s+)?\[([ xX])\]\s+(.*)$/;
+const GLYPH_TODO_LINE_RE = /^(\s*)((?:◻(?:\uFE0E|\uFE0F)?|◼(?:\uFE0E|\uFE0F)?|□|■|⬜|⬛|▢|▣|☐|☑))\s(.*)$/;
+
 export type BrickShellModel = {
   id: string;
   x: number;
@@ -66,11 +69,18 @@ function BrickTextSurface(props: {
 }) {
   const { shell, isTyping, onTypingChange, onTypingKeyDown, onTypingBlur } = props;
   const editorRef = useRef<HTMLDivElement | null>(null);
+  const todoInputRefs = useRef<Record<number, HTMLInputElement | null>>({});
+  const pendingTodoFocusIndexRef = useRef<number | null>(null);
+  const wasTypingRef = useRef(false);
+  const hadTodoLinesRef = useRef(false);
   const applyingSlashRef = useRef(false);
-  const TODO_EMPTY = "◻\uFE0E";
-  const TODO_FILLED = "◼\uFE0E";
+  const TODO_EMPTY = "[ ]";
+  const TODO_FILLED = "[x]";
+  const TODO_DISPLAY_EMPTY = "◻\uFE0E";
+  const TODO_DISPLAY_FILLED = "◼\uFE0E";
   const [slashQuery, setSlashQuery] = useState("");
   const [showSlashMenu, setShowSlashMenu] = useState(false);
+  const [activeSlashIndex, setActiveSlashIndex] = useState(0);
   const lineRows = shell.textVariant === "h1" ? 3 : shell.textVariant === "h2" ? 2 : 1;
   const lineHeightPx = BRICK_BEHAVIOR.gridSize * lineRows;
   const fontSizePx = shell.textVariant === "h1" ? 42 : shell.textVariant === "h2" ? 28 : 14;
@@ -87,7 +97,7 @@ function BrickTextSurface(props: {
       { id: "text", command: "/text", label: "Text", hint: "1 brick tall" },
       { id: "bulleted-list", command: "/bulleted list", label: "Bulleted List", hint: "auto • on Enter" },
       { id: "numbered-list", command: "/numbered list", label: "Numbered List", hint: "auto 1. 2. on Enter" },
-      { id: "todo-list", command: "/to do list", label: "To-do List", hint: "auto ◻ on Enter" },
+      { id: "checklist", command: "/checklist", label: "Checklist", hint: "auto [ ] on Enter" },
     ],
     []
   );
@@ -99,6 +109,13 @@ function BrickTextSurface(props: {
       }),
     [slashOptions, slashQuery]
   );
+  useEffect(() => {
+    setActiveSlashIndex(0);
+  }, [slashQuery, showSlashMenu]);
+  useEffect(() => {
+    if (activeSlashIndex < filteredSlashOptions.length) return;
+    setActiveSlashIndex(Math.max(0, filteredSlashOptions.length - 1));
+  }, [activeSlashIndex, filteredSlashOptions.length]);
 
   const getEditorText = (el: HTMLDivElement | null) => {
     if (!el) return "";
@@ -106,6 +123,90 @@ function BrickTextSurface(props: {
     const raw = String(el.innerText ?? el.textContent ?? "").replace(/\r\n/g, "\n");
     if (!/<(?:div|p|br)\b/i.test(el.innerHTML)) return raw;
     return raw.replace(/\n{2,}/g, (m) => "\n".repeat(Math.ceil(m.length / 2)));
+  };
+  const toDisplayTodoMarkers = (text: string) =>
+    String(text || "")
+      .split("\n")
+      .map((line) => {
+        if (/^\s*(?:[-*]\s+)?\[x\]\s+/i.test(line)) {
+          return line.replace(/^(\s*)(?:[-*]\s+)?\[x\]\s+/i, `$1${TODO_DISPLAY_FILLED} `);
+        }
+        if (/^\s*(?:[-*]\s+)?\[\s?\]\s+/i.test(line)) {
+          return line.replace(/^(\s*)(?:[-*]\s+)?\[\s?\]\s+/i, `$1${TODO_DISPLAY_EMPTY} `);
+        }
+        return line;
+      })
+      .join("\n");
+  const toStorageTodoMarkers = (text: string) =>
+    String(text || "")
+      .split("\n")
+      .map((line) => {
+        if (/^\s*(?:◼(?:\uFE0E|\uFE0F)?|■|⬛|▣|☑)\s/.test(line)) {
+          return line.replace(/^(\s*)(?:◼(?:\uFE0E|\uFE0F)?|■|⬛|▣|☑)\s/, `$1${TODO_FILLED} `);
+        }
+        if (/^\s*(?:◻(?:\uFE0E|\uFE0F)?|□|⬜|▢|☐)\s/.test(line)) {
+          return line.replace(/^(\s*)(?:◻(?:\uFE0E|\uFE0F)?|□|⬜|▢|☐)\s/, `$1${TODO_EMPTY} `);
+        }
+        return line;
+      })
+      .join("\n");
+  const parseTodoLine = (line: string) => {
+    const markdown = String(line || "").match(MARKDOWN_TODO_LINE_RE);
+    if (markdown) {
+      return {
+        kind: "markdown" as const,
+        checked: String(markdown[3] || "").toLowerCase() === "x",
+        leading: String(markdown[1] || ""),
+        bullet: String(markdown[2] || ""),
+        text: String(markdown[4] || ""),
+      };
+    }
+    const glyph = String(line || "").match(GLYPH_TODO_LINE_RE);
+    if (glyph) {
+      return {
+        kind: "glyph" as const,
+        checked: /^\s*(?:◼(?:\uFE0E|\uFE0F)?|■|⬛|▣|☑)\s/.test(String(line || "")),
+        leading: String(glyph[1] || ""),
+        marker: String(glyph[2] || ""),
+        text: String(glyph[3] || ""),
+      };
+    }
+    return null;
+  };
+  const applyTodoToggleAtLine = (sourceText: string, lineIndex: number, nextChecked: boolean) => {
+    const lines = String(sourceText || "").split("\n");
+    const target = String(lines[lineIndex] || "");
+    const parsed = parseTodoLine(target);
+    if (!parsed) return sourceText;
+    if (parsed.kind === "markdown") {
+      lines[lineIndex] = `${parsed.leading}${parsed.bullet}[${nextChecked ? "x" : " "}] ${parsed.text}`;
+    } else {
+      const nextMarker = nextChecked ? TODO_FILLED : TODO_EMPTY;
+      lines[lineIndex] = `${parsed.leading}${nextMarker} ${parsed.text}`;
+    }
+    return lines.join("\n");
+  };
+  const applyTodoTextAtLine = (sourceText: string, lineIndex: number, nextText: string) => {
+    const lines = String(sourceText || "").split("\n");
+    const target = String(lines[lineIndex] || "");
+    const parsed = parseTodoLine(target);
+    if (!parsed) return sourceText;
+    const safeText = String(nextText || "").replace(/\n/g, " ");
+    if (parsed.kind === "markdown") {
+      lines[lineIndex] = `${parsed.leading}${parsed.bullet}[${parsed.checked ? "x" : " "}] ${safeText}`;
+    } else {
+      lines[lineIndex] = `${parsed.leading}${parsed.checked ? TODO_FILLED : TODO_EMPTY} ${safeText}`;
+    }
+    return lines.join("\n");
+  };
+  const insertTodoLineAfter = (sourceText: string, lineIndex: number) => {
+    const lines = String(sourceText || "").split("\n");
+    const target = String(lines[lineIndex] || "");
+    const parsed = parseTodoLine(target);
+    if (!parsed) return sourceText;
+    const nextLine = parsed.kind === "markdown" ? `${parsed.leading}${parsed.bullet}[ ] ` : `${parsed.leading}${TODO_EMPTY} `;
+    lines.splice(lineIndex + 1, 0, nextLine);
+    return lines.join("\n");
   };
   const insertTextAtCursor = (text: string) => {
     const sel = window.getSelection();
@@ -164,7 +265,6 @@ function BrickTextSurface(props: {
     range.insertNode(node);
   };
   const tryToggleTodoAtPointer = (el: HTMLDivElement, e: React.PointerEvent<HTMLDivElement>) => {
-    if (shell.listType !== "todo") return false;
     const sel = window.getSelection();
     let restoreAbs: number | null = null;
     if (sel && sel.rangeCount > 0) {
@@ -197,20 +297,26 @@ function BrickTextSurface(props: {
     const lineEndIdx = text.indexOf("\n", absClick);
     const lineEnd = lineEndIdx === -1 ? text.length : lineEndIdx;
     const line = text.slice(lineStart, lineEnd);
-    const m = line.match(/^(\s*)((?:◻(?:\uFE0E|\uFE0F)?|◼(?:\uFE0E|\uFE0F)?|□|■|⬜|⬛|▢|▣|☐|☑))\s/);
-    if (!m) return false;
-    const markerStartAbs = lineStart + (m[1]?.length || 0);
-    const markerEndAbs = markerStartAbs + (m[2]?.length || 1);
-    // Toggle only when click resolves to the marker glyph (not rest of line text).
-    if (absClick < markerStartAbs || absClick > markerEndAbs) return false;
-    const isFilled = /^\s*(?:◼(?:\uFE0E|\uFE0F)?|■|⬛|▣|☑)\s/.test(line);
-    const nextMarker = isFilled ? TODO_EMPTY : TODO_FILLED;
+    const glyph = line.match(GLYPH_TODO_LINE_RE);
+    const markdown = line.match(MARKDOWN_TODO_LINE_RE);
+    if (!glyph && !markdown) return false;
     e.preventDefault();
-    replaceTextByAbsoluteRange(el, markerStartAbs, markerEndAbs, nextMarker);
-    const nextText = getEditorText(el);
-    onTypingChange?.(shell.id, nextText);
+    if (glyph) {
+      const markerStartAbs = lineStart + (glyph[1]?.length || 0);
+      const markerEndAbs = markerStartAbs + (glyph[2]?.length || 1);
+      if (absClick < markerStartAbs || absClick > markerEndAbs) return false;
+      const isFilled = /^\s*(?:◼(?:\uFE0E|\uFE0F)?|■|⬛|▣|☑)\s/.test(line);
+      const nextMarker = isFilled ? TODO_DISPLAY_EMPTY : TODO_DISPLAY_FILLED;
+      replaceTextByAbsoluteRange(el, markerStartAbs, markerEndAbs, nextMarker);
+      const nextText = toStorageTodoMarkers(getEditorText(el));
+      onTypingChange?.(shell.id, nextText);
+    } else if (markdown) {
+      const nextText = applyTodoToggleAtLine(getEditorText(el), String(getEditorText(el)).slice(0, lineStart).split("\n").length - 1, !/^\s*(?:[-*]\s+)?\[x\]\s+/i.test(line));
+      onTypingChange?.(shell.id, nextText);
+    }
     if (restoreAbs != null) {
-      setCaretAtAbsolute(el, Math.min(nextText.length, Math.max(0, restoreAbs)));
+      const textNow = getEditorText(el);
+      setCaretAtAbsolute(el, Math.min(textNow.length, Math.max(0, restoreAbs)));
     }
     return true;
   };
@@ -221,11 +327,149 @@ function BrickTextSurface(props: {
     if (!el) return;
     if (document.activeElement === el) return;
     const next = String(shell.content ?? "");
-    if ((el.textContent ?? "") !== next) el.textContent = next;
+    const display = shell.listType === "todo" ? toDisplayTodoMarkers(next) : next;
+    if ((el.textContent ?? "") !== display) el.textContent = display;
     const state = readSlashState(next);
     setShowSlashMenu(state.open);
     setSlashQuery(state.query);
   }, [shell.content, isTyping]);
+  const lines = String(shell.content || "").split("\n");
+  const parsedTodoLines = lines.map((line) => parseTodoLine(line));
+  const hasTodoLines = parsedTodoLines.some(Boolean);
+  const firstTodoIndex = parsedTodoLines.findIndex(Boolean);
+  const shouldAutoFocusFirstTodo =
+    hasTodoLines &&
+    (pendingTodoFocusIndexRef.current != null || !hadTodoLinesRef.current || (!wasTypingRef.current && isTyping));
+  useEffect(() => {
+    if (!hasTodoLines) return;
+    const enteringTyping = !wasTypingRef.current && isTyping;
+    const becameChecklist = !hadTodoLinesRef.current && hasTodoLines;
+    const shouldForceFocus = pendingTodoFocusIndexRef.current != null || enteringTyping || becameChecklist;
+    const targetIndex =
+      pendingTodoFocusIndexRef.current != null
+        ? pendingTodoFocusIndexRef.current
+        : shouldForceFocus
+          ? firstTodoIndex
+          : null;
+    if (targetIndex == null || targetIndex < 0) return;
+    const target = todoInputRefs.current[targetIndex];
+    if (!target) return;
+    const root = editorRef.current?.closest?.("[data-canvas-block]") as HTMLElement | null;
+    const active = document.activeElement as HTMLElement | null;
+    const alreadyFocusedInside = Boolean(active && root?.contains(active));
+    const alreadyFocusedTarget = active === target;
+    if (alreadyFocusedTarget) {
+      pendingTodoFocusIndexRef.current = null;
+      return;
+    }
+    if (alreadyFocusedInside && !shouldForceFocus) return;
+    const shouldMoveCaretToEnd = pendingTodoFocusIndexRef.current != null;
+    const t = window.requestAnimationFrame(() => {
+      target.focus({ preventScroll: true });
+      try {
+        if (shouldMoveCaretToEnd) {
+          const len = target.value.length;
+          target.setSelectionRange(len, len);
+        }
+      } catch {
+        // ignore selection failures
+      }
+      pendingTodoFocusIndexRef.current = null;
+    });
+    return () => window.cancelAnimationFrame(t);
+  }, [hasTodoLines, isTyping, parsedTodoLines, shell.id]);
+  useEffect(() => {
+    wasTypingRef.current = isTyping;
+  }, [isTyping]);
+  useEffect(() => {
+    hadTodoLinesRef.current = hasTodoLines;
+  }, [hasTodoLines]);
+  if (hasTodoLines) {
+    return React.createElement(
+      "div",
+      {
+        className: "px-2 py-0 tracking-[-0.01em] text-black/80 whitespace-pre-wrap break-words select-text",
+        style: {
+          overflowWrap: "anywhere",
+          fontSize: `${fontSizePx}px`,
+          lineHeight: `${lineHeightPx}px`,
+          fontWeight,
+          userSelect: "text",
+          WebkitUserSelect: "text",
+        },
+      },
+      lines.map((line, index) => {
+        const todo = parsedTodoLines[index];
+        if (!todo) {
+          return React.createElement(
+            "div",
+            { key: `line-${index}`, className: "whitespace-pre-wrap break-words" },
+            line
+          );
+        }
+        return React.createElement(
+          "div",
+          {
+            key: `todo-${index}`,
+            className: `flex items-start gap-2 ${todo.checked ? "brick-todo-done" : ""}`,
+            style: { position: "relative", zIndex: 0 },
+          },
+          React.createElement("input", {
+            type: "checkbox",
+            className: "brick-todo-checkbox mt-[0.28rem] shrink-0",
+            checked: Boolean(todo.checked),
+            onPointerDown: (e: any) => {
+              e.stopPropagation();
+            },
+            onClick: (e: any) => {
+              e.stopPropagation();
+            },
+            onChange: (e: any) => {
+              const next = applyTodoToggleAtLine(String(shell.content || ""), index, Boolean(e.currentTarget.checked));
+              onTypingChange?.(shell.id, next);
+            },
+          }),
+          React.createElement("input", {
+            type: "text",
+            value: todo.text,
+            autoFocus: shouldAutoFocusFirstTodo && index === firstTodoIndex,
+            ref: (el: HTMLInputElement | null) => {
+              todoInputRefs.current[index] = el;
+            },
+            className: `flex-1 min-w-0 bg-transparent border-0 rounded-none outline-none shadow-none p-0 m-0 focus:outline-none focus:ring-0 focus:border-0 ${todo.checked ? "line-through" : ""}`,
+            style: {
+              WebkitAppearance: "none",
+              MozAppearance: "none",
+              appearance: "none",
+              lineHeight: "inherit",
+              letterSpacing: "inherit",
+              font: "inherit",
+              position: "relative",
+              zIndex: 2,
+            },
+            onPointerDown: (e: any) => {
+              e.stopPropagation();
+            },
+            onClick: (e: any) => {
+              e.stopPropagation();
+            },
+            onChange: (e: any) => {
+              const next = applyTodoTextAtLine(String(shell.content || ""), index, String(e.currentTarget.value || ""));
+              onTypingChange?.(shell.id, next);
+            },
+            onKeyDown: (e: any) => {
+              if (e.key === "Enter" && !(e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                const next = insertTodoLineAfter(String(shell.content || ""), index);
+                pendingTodoFocusIndexRef.current = index + 1;
+                onTypingChange?.(shell.id, next);
+              }
+            },
+          })
+        );
+      })
+    );
+  }
   if (!isTyping) {
     return React.createElement(
       "div",
@@ -252,6 +496,7 @@ function BrickTextSurface(props: {
     onTypingChange?.(shell.id, `${command} ${rest}`);
     setShowSlashMenu(false);
     setSlashQuery("");
+    setActiveSlashIndex(0);
     requestAnimationFrame(() => {
       applyingSlashRef.current = false;
       editorRef.current?.focus();
@@ -293,7 +538,8 @@ function BrickTextSurface(props: {
         tryToggleTodoAtPointer(editorRef.current, e);
       },
       onInput: (e: React.FormEvent<HTMLDivElement>) => {
-        const next = getEditorText(e.currentTarget);
+        const nextRaw = getEditorText(e.currentTarget);
+        const next = shell.listType === "todo" ? toStorageTodoMarkers(nextRaw) : nextRaw;
         const nativeInput = e.nativeEvent as InputEvent | undefined;
         const isPaste = nativeInput?.inputType === "insertFromPaste";
         onTypingChange?.(shell.id, next, { isPaste });
@@ -306,13 +552,39 @@ function BrickTextSurface(props: {
         e.preventDefault();
         const txt = String(e.clipboardData.getData("text/plain") || "");
         insertTextAtCursor(txt);
-        const next = getEditorText(editorRef.current);
+        const nextRaw = getEditorText(editorRef.current);
+        const next = shell.listType === "todo" ? toStorageTodoMarkers(nextRaw) : nextRaw;
         onTypingChange?.(shell.id, next, { isPaste: true });
         const state = readSlashState(next);
         setShowSlashMenu(state.open);
         setSlashQuery(state.query);
       },
       onKeyDown: (e: React.KeyboardEvent<HTMLDivElement>) => {
+        if (showSlashMenu && filteredSlashOptions.length) {
+          if (e.key === "ArrowDown") {
+            e.preventDefault();
+            setActiveSlashIndex((prev) => (prev + 1) % filteredSlashOptions.length);
+            return;
+          }
+          if (e.key === "ArrowUp") {
+            e.preventDefault();
+            setActiveSlashIndex((prev) => (prev - 1 + filteredSlashOptions.length) % filteredSlashOptions.length);
+            return;
+          }
+          if (e.key === "Enter" || e.key === "Tab") {
+            e.preventDefault();
+            const option = filteredSlashOptions[Math.max(0, Math.min(activeSlashIndex, filteredSlashOptions.length - 1))];
+            if (option) applySlashCommand(option.command);
+            return;
+          }
+          if (e.key === "Escape") {
+            e.preventDefault();
+            setShowSlashMenu(false);
+            setSlashQuery("");
+            setActiveSlashIndex(0);
+            return;
+          }
+        }
         if (e.key === "Enter" && !(e.metaKey || e.ctrlKey) && shell.listType !== "none") {
           e.preventDefault();
           const current = getEditorText(editorRef.current);
@@ -321,7 +593,7 @@ function BrickTextSurface(props: {
             shell.listType === "bullet"
               ? "• "
               : shell.listType === "todo"
-                ? `${TODO_EMPTY} `
+                ? `${TODO_DISPLAY_EMPTY} `
                 : (() => {
                     const currentLine = String(lines[lines.length - 1] || "");
                     const m = currentLine.match(/^\s*(\d+)\.\s/);
@@ -329,7 +601,8 @@ function BrickTextSurface(props: {
                     return `${Math.max(1, nextNum)}. `;
                   })();
           insertTextAtCursor(`\n${nextMarker}`);
-          const next = getEditorText(editorRef.current);
+          const nextRaw = getEditorText(editorRef.current);
+          const next = shell.listType === "todo" ? toStorageTodoMarkers(nextRaw) : nextRaw;
           onTypingChange?.(shell.id, next);
           return;
         }
@@ -337,7 +610,8 @@ function BrickTextSurface(props: {
       },
       onBlur: (e: React.FocusEvent<HTMLDivElement>) => {
         if (applyingSlashRef.current) return;
-        const text = getEditorText(e.currentTarget);
+        const raw = getEditorText(e.currentTarget);
+        const text = shell.listType === "todo" ? toStorageTodoMarkers(raw) : raw;
         onTypingChange?.(shell.id, text);
         setShowSlashMenu(false);
         onTypingBlur?.(shell.id);
@@ -360,12 +634,17 @@ function BrickTextSurface(props: {
               {
                 key: opt.id,
                 type: "button",
-                className:
-                  "w-full text-left px-2 py-1 rounded text-[12px] text-black/85 hover:bg-black/10 transition-colors flex items-center justify-between",
+                className: `w-full text-left px-2 py-1 rounded text-[12px] text-black/85 transition-colors flex items-center justify-between ${
+                  filteredSlashOptions[activeSlashIndex]?.id === opt.id ? "bg-black/10" : "hover:bg-black/10"
+                }`,
                 onPointerDown: (e: any) => {
                   e.preventDefault();
                   e.stopPropagation();
                   applySlashCommand(opt.command);
+                },
+                onMouseEnter: () => {
+                  const idx = filteredSlashOptions.findIndex((x) => x.id === opt.id);
+                  if (idx >= 0) setActiveSlashIndex(idx);
                 },
                 onMouseDown: (e: any) => {
                   e.preventDefault();

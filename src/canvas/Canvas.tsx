@@ -1081,16 +1081,16 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
     currentVariant: "body" | "h2" | "h1",
     currentListType: "none" | "bullet" | "numbered" | "todo"
   ) => {
-    const TODO_EMPTY = "◻\uFE0E";
-    const TODO_FILLED = "◼\uFE0E";
+    const TODO_EMPTY = "[ ]";
+    const TODO_FILLED = "[x]";
     const normalizeTodoMarkers = (text: string) =>
       String(text || "")
         .split("\n")
         .map((line) => {
-          if (/^\s*(?:◼(?:\uFE0E|\uFE0F)?|■|⬛|▣|☑|✅|\[x\])\s*/i.test(line))
-            return line.replace(/^(\s*)(?:◼(?:\uFE0E|\uFE0F)?|■|⬛|▣|☑|✅|\[x\])\s*/i, `$1${TODO_FILLED} `);
-          if (/^\s*(?:◻(?:\uFE0E|\uFE0F)?|□|⬜|▢|☐|\[\s?\])\s*/i.test(line))
-            return line.replace(/^(\s*)(?:◻(?:\uFE0E|\uFE0F)?|□|⬜|▢|☐|\[\s?\])\s*/i, `$1${TODO_EMPTY} `);
+          if (/^\s*(?:[-*]\s+)?(?:◼(?:\uFE0E|\uFE0F)?|■|⬛|▣|☑|✅|\[x\])\s*/i.test(line))
+            return line.replace(/^(\s*)(?:[-*]\s+)?(?:◼(?:\uFE0E|\uFE0F)?|■|⬛|▣|☑|✅|\[x\])\s*/i, `$1${TODO_FILLED} `);
+          if (/^\s*(?:[-*]\s+)?(?:◻(?:\uFE0E|\uFE0F)?|□|⬜|▢|☐|\[\s?\])\s*/i.test(line))
+            return line.replace(/^(\s*)(?:[-*]\s+)?(?:◻(?:\uFE0E|\uFE0F)?|□|⬜|▢|☐|\[\s?\])\s*/i, `$1${TODO_EMPTY} `);
           return line;
         })
         .join("\n");
@@ -1100,7 +1100,10 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
       if (!s.trim()) return marker;
       const firstLine = s.split("\n")[0] || "";
       if (listType === "bullet" && /^\s*(?:•|-)\s/.test(firstLine)) return s;
-      if (listType === "todo" && /^\s*(?:◻(?:\uFE0E|\uFE0F)?|◼(?:\uFE0E|\uFE0F)?|□|■|⬜|⬛|▢|▣|☐|☑|✅|\[\s?\]|\[x\])\s*/i.test(firstLine))
+      if (
+        listType === "todo" &&
+        /^\s*(?:[-*]\s+)?(?:◻(?:\uFE0E|\uFE0F)?|◼(?:\uFE0E|\uFE0F)?|□|■|⬜|⬛|▢|▣|☐|☑|✅|\[\s?\]|\[x\])\s*/i.test(firstLine)
+      )
         return normalizeTodoMarkers(s);
       if (listType === "numbered" && /^\s*\d+\.\s/.test(firstLine)) return s;
       return `${marker}${s}`;
@@ -1137,8 +1140,8 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
         consumed: true,
       };
     }
-    if (/^\/(?:to\s*do\s*list|todo(?:\s*list)?|task(?:\s*list)?)(?:\s+|$)/i.test(trimmed)) {
-      const content = trimmed.replace(/^\/(?:to\s*do\s*list|todo(?:\s*list)?|task(?:\s*list)?)(?:\s+)?/i, "");
+    if (/^\/(?:checklist|to\s*do\s*list|todo(?:\s*list)?|task(?:\s*list)?)(?:\s+|$)/i.test(trimmed)) {
+      const content = trimmed.replace(/^\/(?:checklist|to\s*do\s*list|todo(?:\s*list)?|task(?:\s*list)?)(?:\s+)?/i, "");
       return {
         content: ensureListSeed(content, "todo"),
         variant: "body" as const,
@@ -3231,7 +3234,11 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
               // Bubble behavior: width follows longest typed line, even after Enter.
               const targetCells = getRequiredHorizontalCells(textValue, nextVariant);
               const neededCells = targetCells;
-              const newWidth = Math.max(gridSize, neededCells * gridSize);
+              // Keep checklist growth one step ahead so typing never "catches" the edge.
+              const leadCells = nextListType === "todo" ? 1 : 0;
+              const desiredCells = neededCells + leadCells;
+              const widthCells = Math.max(currentWidthCells, desiredCells);
+              const newWidth = Math.max(gridSize, widthCells * gridSize);
               const targetRows = Math.max(
                 minRowsForVariant(nextVariant),
                 getRequiredVerticalCells(textValue) * lineRowsForVariant(nextVariant)

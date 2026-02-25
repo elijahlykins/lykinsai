@@ -8,7 +8,6 @@ import ProjectGrid from "@/components/ProjectGrid";
 import DraggableChat from "@/components/notes/DraggableChat";
 import DraggableQuickNote from "@/components/notes/DraggableQuickNote";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import homeBackground from "@/assets/Maybe.jpg";
 import createButtonBackground from "@/assets/Colored.jpg";
 
 type Project = {
@@ -296,17 +295,8 @@ User: ${text}
 
   return (
       <div
-        className="min-h-screen text-black relative overflow-x-hidden"
+        className="min-h-screen bg-transparent text-black relative overflow-x-hidden"
       >
-        <img
-          src={homeBackground}
-          alt=""
-          aria-hidden="true"
-          className="fixed inset-0 z-0 h-full w-full object-cover"
-        />
-        <div className="fixed inset-0 bg-black/[0.07] pointer-events-none z-[5]" />
-        <div className="fixed inset-0 bg-white/[0.17] backdrop-blur-lg pointer-events-none z-10" />
-
         <div className="fixed top-3 left-0 right-0 z-[70] px-3 flex items-center justify-end pointer-events-none">
           <div className="pointer-events-auto flex items-center gap-2">
             <button

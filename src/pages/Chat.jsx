@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { ArrowLeft, ChevronDown, ChevronUp, MessageSquare, Mic, Plus, Trash2, Volume2, Zap } from "lucide-react";
+import { ArrowLeft, ChevronDown, ChevronUp, MessageSquare, Mic, Plus, Trash2, Volume2 } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { supabase } from "@/lib/supabase";
@@ -20,12 +20,96 @@ const BASE_ROTATING_PHRASES = [
   "I'm ready when you are.",
 ];
 
+const CHAT_TO_BOARD_IMPORT_KEY = "omnia_chat_board_import_v1";
+const TASK_LINE_RE = /^\s*(?:[-*]\s+)?\[([ xX])\]\s+(.+)$/;
+
 const flattenNodeText = (node) => {
   if (node == null || typeof node === "boolean") return "";
   if (typeof node === "string" || typeof node === "number") return String(node);
   if (Array.isArray(node)) return node.map((child) => flattenNodeText(child)).join("");
   if (React.isValidElement(node)) return flattenNodeText(node.props?.children);
   return "";
+};
+
+const normalizeChecklistSyntax = (value) =>
+  String(value || "")
+    .split(/\r?\n/)
+    .map((line) => {
+      const match = String(line || "").match(TASK_LINE_RE);
+      if (!match) return line;
+      const marker = String(match[1] || "").toLowerCase() === "x" ? "x" : " ";
+      return `- [${marker}] ${String(match[2] || "").trim()}`;
+    })
+    .join("\n");
+
+const buildPromptPairsForBoardImport = (messages) => {
+  const prompts = [];
+  let currentPrompt = null;
+
+  messages.forEach((msg, idx) => {
+    const role = String(msg?.role || "");
+    const content = String(msg?.content || "").trim();
+    if (!content) return;
+
+    if (role === "user") {
+      currentPrompt = {
+        id: `import-prompt-${idx}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+        role: "user",
+        content,
+        kind: "prompt",
+      };
+      prompts.push(currentPrompt);
+      return;
+    }
+
+    if (role === "assistant" && currentPrompt) {
+      currentPrompt.aiResponse = currentPrompt.aiResponse
+        ? `${currentPrompt.aiResponse}\n\n${content}`
+        : content;
+    }
+  });
+
+  return prompts;
+};
+
+const extractTodoListsForBoardImport = (messages) => {
+  const lists = [];
+  let listCounter = 0;
+
+  messages.forEach((msg) => {
+    const text = String(msg?.content || "");
+    if (!text.trim()) return;
+    const roleLabel = String(msg?.role || "") === "assistant" ? "AI" : "User";
+    const lines = text.split(/\r?\n/);
+    let currentItems = [];
+
+    const flush = () => {
+      if (!currentItems.length) return;
+      listCounter += 1;
+      lists.push({
+        id: `todo-list-${listCounter}`,
+        title: `${roleLabel} To-do List ${listCounter}`,
+        items: currentItems,
+      });
+      currentItems = [];
+    };
+
+    lines.forEach((line) => {
+      const match = String(line || "").match(TASK_LINE_RE);
+      if (!match) {
+        flush();
+        return;
+      }
+      currentItems.push({
+        text: String(match[2] || "").trim(),
+        checked: String(match[1] || "").toLowerCase() === "x",
+      });
+    });
+
+    flush();
+  });
+
+  return lists;
 };
 
 export default function ChatPage() {
@@ -302,23 +386,13 @@ export default function ChatPage() {
   };
 
   const handleSendChatToBoard = async () => {
-    const chatTranscript = messages
-      .map((m) => {
-        const content = String(m?.content || "").trim();
-        if (!content) return "";
-        return `${m.role === "user" ? "User" : "AI"}: ${content}`;
-      })
-      .filter(Boolean)
-      .join("\n\n");
-
-    if (!chatTranscript || !user?.id) return;
+    if (!user?.id) return;
+    const prompts = buildPromptPairsForBoardImport(messages);
+    const todoLists = extractTodoListsForBoardImport(messages);
 
     try {
       const titleDate = new Date().toLocaleDateString();
       const boardTitle = `Chat Board ${titleDate}`;
-      const now = new Date().toISOString();
-      const blockId = `text-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-      const boardText = `# Chat Export\n\n${chatTranscript}`;
 
       const { data: board, error: boardError } = await supabase
         .from("omnia_boards")
@@ -328,33 +402,15 @@ export default function ChatPage() {
 
       if (boardError || !board?.id) return;
 
-      const snapshot = {
-        version: 2,
-        title: boardTitle,
-        gridSize: 24,
-        camera: { x: 0, y: 0, zoom: 1 },
-        blocks: {
-          [blockId]: {
-            id: blockId,
-            type: "text",
-            x: 96,
-            y: 96,
-            width: 960,
-            height: 576,
-            content: boardText,
-            format: "markdown",
-            createdAt: now,
-            updatedAt: now,
-          },
-        },
-        blockOrder: [blockId],
+      const payload = {
+        version: 1,
+        createdAt: Date.now(),
+        boardId: board.id,
+        source: "chat-page",
+        prompts,
+        todoLists,
       };
-
-      await supabase.from("omnia_board_states").insert({
-        board_id: board.id,
-        state: snapshot,
-        version: 2,
-      });
+      localStorage.setItem(CHAT_TO_BOARD_IMPORT_KEY, JSON.stringify(payload));
 
       localStorage.setItem("omnia_board_id", board.id);
       nav(`/canvas/${board.id}`);
@@ -500,12 +556,11 @@ export default function ChatPage() {
 
               <button
                 type="button"
-                disabled
-                className="rounded-full px-2 h-9 gap-2 text-xs glass-control flex items-center opacity-55 cursor-not-allowed"
-                title="AI is chat-only on this page"
+                onClick={() => setMessages([])}
+                className="rounded-full w-9 h-9 p-0 glass-control hover:opacity-90 touch-manipulation flex items-center justify-center"
+                title="Clear chat"
               >
-                <Zap className="w-3.5 h-3.5 text-black/70 dark:text-white/70" />
-                <span>Chat Only</span>
+                <Trash2 className="w-4 h-4" />
               </button>
 
               <div className="w-px h-4 bg-black/10 dark:bg-white/10 mx-1" />
@@ -513,8 +568,7 @@ export default function ChatPage() {
               <button
                 type="button"
                 onClick={handleSendChatToBoard}
-                disabled={!hasMessages || !user?.id}
-                className="rounded-full w-9 h-9 p-0 glass-control hover:opacity-90 touch-manipulation flex items-center justify-center disabled:opacity-45 disabled:cursor-not-allowed"
+                className="rounded-full w-9 h-9 p-0 glass-control hover:opacity-90 touch-manipulation flex items-center justify-center"
                 title={user?.id ? "Send chat to new board" : "Sign in to send chat to board"}
               >
                 <MessageSquare className="w-4 h-4" />
@@ -524,11 +578,11 @@ export default function ChatPage() {
 
               <button
                 type="button"
-                onClick={() => setMessages([])}
+                onClick={handleOpenAttachments}
                 className="rounded-full w-9 h-9 p-0 glass-control hover:opacity-90 touch-manipulation flex items-center justify-center"
-                title="Clear chat"
+                title={attachmentCount > 0 ? `${attachmentCount} attachment(s) selected` : "Add attachments"}
               >
-                <Trash2 className="w-4 h-4" />
+                <Plus className="w-4 h-4" />
               </button>
             </div>
           )}
@@ -595,7 +649,7 @@ export default function ChatPage() {
                             ),
                           }}
                         >
-                          {String(msg.content || "")}
+                          {normalizeChecklistSyntax(msg.content)}
                         </ReactMarkdown>
                       ) : (
                         msg.content
