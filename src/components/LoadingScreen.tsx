@@ -9,16 +9,26 @@ export default function LoadingScreen({ isLoading, children }: LoadingScreenProp
   if (!isLoading) return <>{children}</>;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-gradient-to-b from-[#0f0f23] to-[#1a1a2e]">
-      <div className="rounded-xl border border-white/20 bg-white/10 backdrop-blur-md shadow-2xl px-8 py-6 text-center">
-        <div className="text-xl font-semibold text-white">Omnia</div>
-        <div className="mt-2 text-sm text-white/70">Loading your workspace...</div>
-        <div className="mt-4 flex items-center justify-center gap-2">
-          <span className="h-2 w-2 rounded-full bg-white/70 animate-bounce [animation-delay:-0.2s]" />
-          <span className="h-2 w-2 rounded-full bg-white/70 animate-bounce [animation-delay:-0.1s]" />
-          <span className="h-2 w-2 rounded-full bg-white/70 animate-bounce" />
-        </div>
-      </div>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-white">
+      <span className="loading-typewriter text-lg font-medium text-black">
+        Getting things ready...
+      </span>
+      <style>{`
+        .loading-typewriter {
+          display: inline-block;
+          overflow: hidden;
+          white-space: nowrap;
+          border-right: 2px solid black;
+          width: 0;
+          animation: typewriter 1.8s steps(23) forwards, blink 0.6s step-end infinite;
+        }
+        @keyframes typewriter {
+          to { width: 23ch; }
+        }
+        @keyframes blink {
+          50% { border-color: transparent; }
+        }
+      `}</style>
     </div>
   );
 }

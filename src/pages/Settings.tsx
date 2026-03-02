@@ -5,7 +5,7 @@ import SettingsModal from "@/components/notes/SettingsModal";
 export default function Settings() {
   const nav = useNavigate();
   return (
-    <div className="min-h-screen bg-[#f2f2f7]/80 text-black">
+    <div className="min-h-screen bg-transparent text-black">
       <SettingsModal
         isOpen
         onClose={() => nav("/")}

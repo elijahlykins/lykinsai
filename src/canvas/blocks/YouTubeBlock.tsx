@@ -1,7 +1,7 @@
-import React, { memo, useMemo, useRef } from "react";
-import { ExternalLink, X, Youtube } from "lucide-react";
+import React, { memo, useEffect, useMemo, useRef, useState } from "react";
+import { ExternalLink, X, Youtube, AlertCircle } from "lucide-react";
 import { useCanvasStore } from "@/store/canvasStore";
-import { getYouTubeEmbedUrl } from "@/canvas/utils/youtube";
+import { extractYouTubeVideoId, getYouTubeEmbedUrl } from "@/canvas/utils/youtube";
 import { snapToGrid } from "@/canvas/utils/snap";
 
 type DragState = {
@@ -48,6 +48,7 @@ export const YouTubeBlock = memo(function YouTubeBlock({ id }: { id: string }) {
   const dragRef = useRef<DragState | null>(null);
   const resizeRef = useRef<ResizeState | null>(null);
   const endResizeCleanupRef = useRef<(() => void) | null>(null);
+  const [videoFailed, setVideoFailed] = useState(false);
 
   const style = useMemo(() => {
     if (!block) return null;
@@ -76,9 +77,18 @@ export const YouTubeBlock = memo(function YouTubeBlock({ id }: { id: string }) {
   const isCreate = block.type === "create";
   const videoId = isCreate ? String((block as any).data?.videoId || "") : String((block as any).videoId || "");
   const url = isCreate ? String((block as any).data?.url || "") : String((block as any).url || "");
+  const mime = isCreate ? String((block as any).data?.mime || "") : "";
+  const fileName = isCreate ? String((block as any).data?.name || "") : "";
   if (!videoId && !url) return null;
+  const resolvedVideoId = String(videoId || extractYouTubeVideoId(url || "") || "").trim();
+  const isYouTubeVideo = Boolean(resolvedVideoId);
+  const embedUrl = isYouTubeVideo ? getYouTubeEmbedUrl(resolvedVideoId) : "";
+  const extension = String(fileName || url).split(".").pop()?.toLowerCase() || "";
+  const sourceMime = mime || (extension === "mov" ? "video/quicktime" : "");
 
-  const embedUrl = getYouTubeEmbedUrl(videoId || url);
+  useEffect(() => {
+    setVideoFailed(false);
+  }, [url, mime, fileName, isYouTubeVideo]);
 
   const snapSize = (n: number) => {
     const g = Math.max(1, Math.floor(gridSize || 24));
@@ -312,14 +322,55 @@ export const YouTubeBlock = memo(function YouTubeBlock({ id }: { id: string }) {
       />
 
       <div className={`glass-block overflow-hidden relative ${isSelected ? "omnia-selected-glass" : ""}`} style={{ width: "100%", height: "100%" }}>
-        <iframe
-          src={embedUrl}
-          title="YouTube video"
-          className="absolute inset-0 w-full h-full"
-          allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-          allowFullScreen
-          referrerPolicy="strict-origin-when-cross-origin"
-        />
+        {isYouTubeVideo ? (
+          <iframe
+            src={embedUrl}
+            title="YouTube video"
+            className="absolute inset-0 w-full h-full"
+            allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+            allowFullScreen
+            referrerPolicy="strict-origin-when-cross-origin"
+          />
+        ) : (
+          <>
+            <video
+              className="absolute inset-0 w-full h-full object-contain bg-black/35"
+              controls
+              preload="metadata"
+              playsInline
+              onError={() => setVideoFailed(true)}
+              onPointerDown={(e) => e.stopPropagation()}
+            >
+              <source src={url} type={sourceMime || undefined} />
+              <source src={url} />
+            </video>
+            {videoFailed && (
+              <div className="absolute inset-0 z-20 bg-black/55 backdrop-blur-sm flex items-center justify-center p-4">
+                <div className="rounded-xl border border-white/20 bg-black/40 text-white p-4 max-w-sm text-center space-y-2">
+                  <div className="flex items-center justify-center gap-2">
+                    <AlertCircle className="w-4 h-4" />
+                    <span className="text-sm font-medium">Video couldn't play inline</span>
+                  </div>
+                  <p className="text-xs text-white/85">
+                    This `.mov` may use a codec your browser cannot decode. Open it in a new tab or download to play externally.
+                  </p>
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg glass-control hover:opacity-90 text-xs"
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      open();
+                    }}
+                  >
+                    <ExternalLink className="w-3 h-3" />
+                    Open Video
+                  </button>
+                </div>
+              </div>
+            )}
+          </>
+        )}
 
         <button
           data-delete-button
@@ -347,14 +398,14 @@ export const YouTubeBlock = memo(function YouTubeBlock({ id }: { id: string }) {
             e.stopPropagation();
             open();
           }}
-          title="Open on YouTube"
+          title={isYouTubeVideo ? "Open on YouTube" : "Open video"}
         >
           <ExternalLink className="w-4 h-4" />
         </button>
 
         <div className="absolute bottom-2 left-2 z-20 px-2 h-7 rounded-lg bg-white/22 dark:bg-white/10 border border-white/18 flex items-center gap-2 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity">
           <Youtube className="w-4 h-4" />
-          <div className="text-xs text-gray-900 dark:text-gray-100">YouTube</div>
+          <div className="text-xs text-gray-900 dark:text-gray-100">{isYouTubeVideo ? "YouTube" : "Video"}</div>
         </div>
       </div>
 

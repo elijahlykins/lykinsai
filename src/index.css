@@ -40,13 +40,13 @@
     --destructive-foreground: 0 0% 98%;
 
     /* Sidebar */
-    --sidebar-bg: 0 0% 98%;
+    --sidebar-bg: 0 0% 100% / 0;
     --sidebar-fg: 240 5.3% 26.1%;
     --sidebar-primary: 240 5.9% 10%;
     --sidebar-primary-fg: 0 0% 98%;
     --sidebar-accent: 240 4.8% 95.9%;
     --sidebar-accent-fg: 240 5.9% 10%;
-    --sidebar-border: 220 13% 91%;
+    --sidebar-border: 0 0% 0% / 0;
     --sidebar-ring: 217.2 91.2% 59.8%;
 
     /* Glass */
@@ -111,13 +111,13 @@
     --destructive-foreground: 0 0% 98%;
 
     /* Sidebar dark */
-    --sidebar-bg: 240 5.9% 10%;
+    --sidebar-bg: 0 0% 0% / 0;
     --sidebar-fg: 240 4.8% 95.9%;
     --sidebar-primary: 224.3 76.3% 48%;
     --sidebar-primary-fg: 0 0% 100%;
     --sidebar-accent: 240 3.7% 15.9%;
     --sidebar-accent-fg: 240 4.8% 95.9%;
-    --sidebar-border: 240 3.7% 15.9%;
+    --sidebar-border: 0 0% 0% / 0;
     --sidebar-ring: 217.2 91.2% 59.8%;
 
     /* Glass */
@@ -173,6 +173,15 @@
   }
 }
 
+/* Embedded mode: force transparent background on everything */
+html.embedded-transparent,
+html.embedded-transparent body,
+html.embedded-transparent #root {
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+}
+
 /* =========================================================
    COMPONENTS — Fully Variable-Driven
    ========================================================= */
@@ -192,11 +201,10 @@
   }
 
   .bg-glass-sidebar {
-    background: hsl(var(--sidebar-bg) / 0.60);
+    background: transparent;
     color: hsl(var(--sidebar-fg));
-    backdrop-filter: blur(24px);
-    border-right: 1px solid hsl(var(--sidebar-border) / 0.3);
-    box-shadow: 0 14px 48px rgba(0,0,0,0.12);
+    border-right: none;
+    box-shadow: none;
   }
 
   .bg-glass-card {
@@ -375,6 +383,19 @@
 
 body.sidebar-push .app-content {
   padding-left: 190px;
+}
+
+/* Embedded memory pullout: make iframe document transparent */
+html.embedded-memory-mode,
+html.embedded-memory-mode body,
+body.embedded-memory-mode {
+  background: transparent !important;
+  background-image: none !important;
+}
+
+body.embedded-memory-mode .app-content {
+  background: transparent !important;
+  padding-left: 0 !important;
 }
 
 /* =========================================================
@@ -788,4 +809,43 @@ body.sidebar-push .app-content {
     linear-gradient(110deg, rgba(255, 255, 255, 0.00) 0%, rgba(201, 226, 255, 0.16) 35%, rgba(255, 255, 255, 0.00) 70%);
   mix-blend-mode: screen;
   animation: canvasAiThinkingSweep 2.4s ease-in-out infinite;
+}
+
+@keyframes slideInRight {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+.animate-slide-in-right {
+  animation: slideInRight 0.2s ease-out;
+}
+
+input[type="color"].color-circle {
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  border: none;
+  padding: 0;
+  border-radius: 9999px;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+input[type="color"].color-circle::-webkit-color-swatch-wrapper {
+  padding: 0;
+  border-radius: 9999px;
+}
+
+input[type="color"].color-circle::-webkit-color-swatch {
+  border: none;
+  border-radius: 9999px;
+}
+
+input[type="color"].color-circle::-moz-color-swatch {
+  border: none;
+  border-radius: 9999px;
 }

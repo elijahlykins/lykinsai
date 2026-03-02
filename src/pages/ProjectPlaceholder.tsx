@@ -1,13 +1,42 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { FolderPlus, Search as SearchIcon, MessageSquare, Folder, File } from "lucide-react";
+import {
+  Search as SearchIcon,
+  StickyNote,
+  Plus,
+  Activity,
+  Clock,
+  Eye,
+  Zap,
+  ChevronDown,
+  ChevronUp,
+  ArrowLeft,
+  BookOpen,
+  X,
+  PanelRightClose,
+  Image as ImageIcon,
+  Video,
+  FileText,
+  Link2,
+  FileIcon,
+  Music,
+  MoreHorizontal,
+  Trash2,
+  Download,
+  Pencil,
+  BrickWall,
+  LayoutGrid,
+} from "lucide-react";
 import DraggableChat from "@/components/notes/DraggableChat";
+import DraggableQuickNote from "@/components/notes/DraggableQuickNote";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { useQuery } from "@tanstack/react-query";
 import { normalizeValueToV2, getBlockPlainText } from "@/components/notes/blockModel";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useMindmapStore } from "@/store/mindmapStore";
+import { extractYouTubeVideoId, getYouTubeEmbedUrl } from "@/canvas/utils/youtube";
 
 type FolderEntry = {
   id: string;
@@ -26,8 +55,11 @@ type FileEntry = {
   name: string;
   path: string;
   folderId: string | null;
-  kind: "image" | "video" | "pdf" | "doc" | "link" | "file";
+  kind: "image" | "video" | "audio" | "pdf" | "doc" | "link" | "file";
   url: string;
+  storagePath?: string;
+  storageBucket?: string;
+  content?: string;
 };
 
 function decodeBrickTextFromContent(contentHtml) {
@@ -91,20 +123,33 @@ export default function ProjectPlaceholder() {
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [draftTitle, setDraftTitle] = useState("Project");
   const [search, setSearch] = useState("");
+  const [centerTab, setCenterTab] = useState<"boards" | "chats">("boards");
+  const [bottomTab, setBottomTab] = useState<"connections" | "graph">("graph");
   const [activeFolderId, setActiveFolderId] = useState<string | null>(null);
   const [folders, setFolders] = useState<FolderEntry[]>([]);
   const [boards, setBoards] = useState<BoardEntry[]>([]);
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [selectedFile, setSelectedFile] = useState<FileEntry | null>(null);
   const [draggedFileId, setDraggedFileId] = useState<string | null>(null);
-  const [hoveredFolderId, setHoveredFolderId] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const dragDepthRef = useRef(0);
+  const [openFileMenuId, setOpenFileMenuId] = useState<string | null>(null);
+  const fileMenuRef = useRef<HTMLDivElement | null>(null);
+  const [resolvedUrls, setResolvedUrls] = useState<Record<string, string>>({});
+  const signedUrlCacheRef = useRef<Map<string, string>>(new Map());
 
+  const [topPanelOpen, setTopPanelOpen] = useState(true);
+  const [showMemorySidebar, setShowMemorySidebar] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [showChat, setShowChat] = useState(false);
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState("");
   const [isChatLoading, setIsChatLoading] = useState(false);
+  const [showQuickNote, setShowQuickNote] = useState(false);
+  const [quickNoteTitle, setQuickNoteTitle] = useState("");
+  const [quickNoteContent, setQuickNoteContent] = useState("");
+  const [isQuickNoteSaving, setIsQuickNoteSaving] = useState(false);
+  const [linkedTeams, setLinkedTeams] = useState<{ id: string; name: string; color: string }[]>([]);
   const [openBoardMenuId, setOpenBoardMenuId] = useState<string | null>(null);
   const boardMenuRef = useRef<HTMLDivElement | null>(null);
   const [moveBoardId, setMoveBoardId] = useState<string | null>(null);
@@ -143,6 +188,97 @@ export default function ProjectPlaceholder() {
     return "gemini-flash-latest";
   });
 
+  // --- Project Health tracking ---
+  const healthStorageKey = `project_health_${projectId}`;
+
+  const [healthData, setHealthData] = useState(() => {
+    try {
+      const saved = localStorage.getItem(healthStorageKey);
+      if (saved) return JSON.parse(saved);
+    } catch { /* ignore */ }
+    return { visits: 0, totalSeconds: 0, lastVisit: null as string | null };
+  });
+
+  useEffect(() => {
+    setHealthData((prev: typeof healthData) => {
+      const now = new Date().toISOString();
+      const updated = { ...prev, visits: prev.visits + 1, lastVisit: now };
+      localStorage.setItem(healthStorageKey, JSON.stringify(updated));
+      return updated;
+    });
+
+    const interval = setInterval(() => {
+      setHealthData((prev: typeof healthData) => {
+        const updated = { ...prev, totalSeconds: prev.totalSeconds + 30 };
+        localStorage.setItem(healthStorageKey, JSON.stringify(updated));
+        return updated;
+      });
+    }, 30_000);
+    return () => clearInterval(interval);
+  }, [healthStorageKey]);
+
+  const projectHealth = useMemo(() => {
+    const { visits, totalSeconds, lastVisit } = healthData;
+    let score = 0;
+
+    // Frequency: more visits = healthier (max 40 pts)
+    if (visits >= 20) score += 40;
+    else if (visits >= 10) score += 30;
+    else if (visits >= 5) score += 20;
+    else if (visits >= 2) score += 10;
+    else score += 5;
+
+    // Recency: recent edits = healthier (max 35 pts)
+    if (lastVisit) {
+      const daysSince = (Date.now() - new Date(lastVisit).getTime()) / (1000 * 60 * 60 * 24);
+      if (daysSince < 1) score += 35;
+      else if (daysSince < 3) score += 25;
+      else if (daysSince < 7) score += 15;
+      else if (daysSince < 14) score += 8;
+      else score += 2;
+    }
+
+    // Time spent: more time = healthier (max 25 pts)
+    const minutes = totalSeconds / 60;
+    if (minutes >= 120) score += 25;
+    else if (minutes >= 60) score += 20;
+    else if (minutes >= 30) score += 15;
+    else if (minutes >= 10) score += 10;
+    else score += 3;
+
+    const clamped = Math.min(100, Math.max(0, score));
+    let label: string;
+    let color: string;
+    if (clamped >= 80) { label = "Excellent"; color = "#22c55e"; }
+    else if (clamped >= 60) { label = "Good"; color = "#84cc16"; }
+    else if (clamped >= 40) { label = "Fair"; color = "#eab308"; }
+    else if (clamped >= 20) { label = "Needs Attention"; color = "#f97316"; }
+    else { label = "Inactive"; color = "#ef4444"; }
+
+    return { score: clamped, label, color, visits, totalSeconds, lastVisit };
+  }, [healthData]);
+
+  const formatTimeSpent = (seconds: number) => {
+    if (seconds < 60) return "< 1 min";
+    const mins = Math.floor(seconds / 60);
+    if (mins < 60) return `${mins} min`;
+    const hrs = Math.floor(mins / 60);
+    const rem = mins % 60;
+    return rem > 0 ? `${hrs}h ${rem}m` : `${hrs}h`;
+  };
+
+  const formatLastVisit = (iso: string | null) => {
+    if (!iso) return "Never";
+    const diff = Date.now() - new Date(iso).getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return "Just now";
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs}h ago`;
+    const days = Math.floor(hrs / 24);
+    return `${days}d ago`;
+  };
+
   useEffect(() => {
     const handleSettingsChange = () => {
       try {
@@ -166,10 +302,30 @@ export default function ProjectPlaceholder() {
   }, []);
 
   useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      if (event.data?.type === "omnia-memory-drag-start") {
+        (window as any).__omnia_pending_memory = event.data.data;
+      }
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
+
+  useEffect(() => {
     const onClick = (event: MouseEvent) => {
       if (!boardMenuRef.current) return;
       if (boardMenuRef.current.contains(event.target as Node)) return;
       setOpenBoardMenuId(null);
+    };
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, []);
+
+  useEffect(() => {
+    const onClick = (event: MouseEvent) => {
+      if (!fileMenuRef.current) return;
+      if (fileMenuRef.current.contains(event.target as Node)) return;
+      setOpenFileMenuId(null);
     };
     document.addEventListener("mousedown", onClick);
     return () => document.removeEventListener("mousedown", onClick);
@@ -188,10 +344,91 @@ export default function ProjectPlaceholder() {
     setActiveFolderId(stored.activeFolderId);
   }, [projectId]);
 
+  const TEAM_ACCENT_COLORS = [
+    "#3b82f6", "#10b981", "#f59e0b", "#8b5cf6", "#ec4899", "#06b6d4",
+  ];
+
   useEffect(() => {
     if (!projectId) return;
-    storeValue(`project:${projectId}`, { folders, files, activeFolderId });
+    let active = true;
+
+    const resolveTeams = (teams: any[]) => {
+      return teams
+        .filter((t: any) => (t.projects || []).some((p: any) => p.id === projectId))
+        .map((t: any, i: number) => ({
+          id: t.id,
+          name: t.name,
+          color: TEAM_ACCENT_COLORS[(t.id?.charCodeAt?.(0) ?? i) % TEAM_ACCENT_COLORS.length],
+        }));
+    };
+
+    const loadFromLocal = () => {
+      try {
+        const raw = localStorage.getItem("lykinsai_teamspaces");
+        const teams = raw ? JSON.parse(raw) : [];
+        if (active) setLinkedTeams(resolveTeams(teams));
+      } catch {}
+    };
+
+    (async () => {
+      if (!user?.id) {
+        loadFromLocal();
+        return;
+      }
+      try {
+        const { data, error } = await supabase
+          .from("team_spaces")
+          .select("id, name, projects")
+          .eq("owner_id", user.id);
+        if (!active) return;
+        if (error || !data || data.length === 0) {
+          loadFromLocal();
+          return;
+        }
+        setLinkedTeams(resolveTeams(data));
+      } catch {
+        if (active) loadFromLocal();
+      }
+    })();
+    return () => { active = false; };
+  }, [projectId, user?.id]);
+
+  useEffect(() => {
+    if (!projectId) return;
+    const filesToStore = files.map((f) => {
+      if (f.storagePath) {
+        return { ...f, url: "" };
+      }
+      return f;
+    });
+    storeValue(`project:${projectId}`, { folders, files: filesToStore, activeFolderId });
   }, [activeFolderId, files, folders, projectId]);
+
+  useEffect(() => {
+    if (!user?.id || files.length === 0) return;
+    let active = true;
+    const resolveSignedUrls = async () => {
+      const next: Record<string, string> = {};
+      for (const file of files) {
+        if (!file.storagePath || !file.storageBucket) continue;
+        const cacheKey = `${file.storageBucket}:${file.storagePath}`;
+        if (signedUrlCacheRef.current.has(cacheKey)) {
+          next[file.id] = signedUrlCacheRef.current.get(cacheKey)!;
+          continue;
+        }
+        const { data, error } = await supabase.storage
+          .from(file.storageBucket)
+          .createSignedUrl(file.storagePath, 60 * 60 * 24);
+        if (error || !data?.signedUrl) continue;
+        signedUrlCacheRef.current.set(cacheKey, data.signedUrl);
+        next[file.id] = data.signedUrl;
+      }
+      if (!active || Object.keys(next).length === 0) return;
+      setResolvedUrls((prev) => ({ ...prev, ...next }));
+    };
+    void resolveSignedUrls();
+    return () => { active = false; };
+  }, [files, user?.id]);
 
   useEffect(() => {
     if (!projectId) return;
@@ -319,6 +556,8 @@ export default function ProjectPlaceholder() {
     return files.filter((f) => f.folderId === activeFolderId);
   }, [activeFolderId, files]);
 
+  const allFilesForCollage = useMemo(() => files, [files]);
+
   const connectionsNodes = useMemo(() => Object.values(mindmapNodes), [mindmapNodes]);
 
   const connectionsLinks = useMemo(() => Object.values(mindmapLinks), [mindmapLinks]);
@@ -347,22 +586,6 @@ export default function ProjectPlaceholder() {
       suggestions: suggestions.slice(0, 4),
     };
   }, [boards, files, folders]);
-
-  const handleCreateFolder = () => {
-    const name = prompt("Folder name");
-    if (!name) return;
-    setFolders((prev) => [
-      ...prev,
-      { id: `folder-${Date.now()}`, name: name.trim(), parentId: activeFolderId },
-    ]);
-  };
-
-  const handleRenameFolder = (folder: FolderEntry) => {
-    const next = window.prompt("Rename folder", folder.name);
-    if (!next || !next.trim()) return;
-    const name = next.trim();
-    setFolders((prev) => prev.map((f) => (f.id === folder.id ? { ...f, name } : f)));
-  };
 
   const handleCreateBoard = async () => {
     if (!user?.id || !projectId) return;
@@ -529,62 +752,90 @@ export default function ProjectPlaceholder() {
     setFiles((prev) => [...fileEntries, ...prev]);
   };
 
+  const handleDeleteFile = (fileId: string) => {
+    const ok = window.confirm("Delete this file?");
+    if (!ok) return;
+    setFiles((prev) => prev.filter((f) => f.id !== fileId));
+    setOpenFileMenuId(null);
+  };
+
+  const handleRenameFile = (file: FileEntry) => {
+    const next = window.prompt("Rename file", file.name);
+    if (!next || !next.trim()) return;
+    setFiles((prev) => prev.map((f) => (f.id === file.id ? { ...f, name: next.trim() } : f)));
+    setOpenFileMenuId(null);
+  };
+
   const classifyFile = (file: File) => {
     const name = file.name.toLowerCase();
-    if (name.match(/\.(png|jpe?g|webp|gif)$/)) return "image";
-    if (name.match(/\.(mp4|mov|webm|m4v)$/)) return "video";
+    if (name.match(/\.(png|jpe?g|webp|gif|svg|bmp|ico|tiff?|avif|heic|heif)$/)) return "image";
+    if (name.match(/\.(mp4|mov|webm|m4v|avi|mkv|flv|3gp|ogv)$/)) return "video";
+    if (name.match(/\.(mp3|wav|ogg|flac|aac|m4a|wma)$/)) return "audio";
     if (name.endsWith(".pdf") || file.type === "application/pdf") return "pdf";
     if (file.type.startsWith("image/")) return "image";
     if (file.type.startsWith("video/")) return "video";
-    if (
-      name.endsWith(".doc") ||
-      name.endsWith(".docx") ||
-      name.endsWith(".ppt") ||
-      name.endsWith(".pptx") ||
-      name.endsWith(".xls") ||
-      name.endsWith(".xlsx")
-    ) {
-      return "doc";
-    }
+    if (file.type.startsWith("audio/")) return "audio";
+    if (name.match(/\.docx?$/)) return "doc";
+    if (name.match(/\.pptx?$/)) return "doc";
+    if (name.match(/\.xlsx?$/)) return "doc";
+    if (name.match(/\.(csv|tsv)$/)) return "doc";
+    if (name.match(/\.(txt|rtf|md|json|xml|html|css|js|ts|py|rb|java|c|cpp|h|rs|go|sh)$/)) return "doc";
     return "file";
   };
 
-  const traverseEntry = (entry: any, currentPath: string, out: FileEntry[], targetFolderId: string | null) =>
+  const uploadFileToStorage = async (file: File, targetFolderId: string | null): Promise<FileEntry | null> => {
+    if (!user?.id) return null;
+    const kind = classifyFile(file);
+    const fileId = crypto.randomUUID();
+    const fileExt = file.name.split(".").pop() || "bin";
+    const storagePath = `${user.id}/${fileId}/original.${fileExt}`;
+    const storageBucket = "user-files";
+
+    const { error: uploadError } = await supabase.storage
+      .from(storageBucket)
+      .upload(storagePath, file, { cacheControl: "3600", upsert: false });
+
+    if (uploadError) {
+      console.error("Upload error:", uploadError);
+      return null;
+    }
+
+    let fileUrl = "";
+    const { data: signedData } = await supabase.storage
+      .from(storageBucket)
+      .createSignedUrl(storagePath, 60 * 60 * 24);
+    if (signedData?.signedUrl) {
+      fileUrl = signedData.signedUrl;
+      signedUrlCacheRef.current.set(`${storageBucket}:${storagePath}`, fileUrl);
+    } else {
+      const { data: urlData } = supabase.storage.from(storageBucket).getPublicUrl(storagePath);
+      fileUrl = urlData?.publicUrl || "";
+    }
+
+    return {
+      id: `file-${Date.now()}-${Math.random()}`,
+      name: file.name,
+      path: file.name,
+      folderId: targetFolderId,
+      kind,
+      url: fileUrl,
+      storagePath,
+      storageBucket,
+    };
+  };
+
+  const traverseEntryFiles = (entry: any, currentPath: string, out: File[]) =>
     new Promise<void>((resolve) => {
       if (entry.isFile) {
         entry.file((file: File) => {
-          const kind = classifyFile(file);
-          const reader = new FileReader();
-          reader.onload = () => {
-            out.push({
-              id: `file-${Date.now()}-${Math.random()}`,
-              name: file.name,
-              path: `${currentPath}${file.name}`,
-              folderId: targetFolderId,
-              kind,
-              url: String(reader.result || ""),
-            });
-            resolve();
-          };
-          reader.onerror = () => {
-            out.push({
-              id: `file-${Date.now()}-${Math.random()}`,
-              name: file.name,
-              path: `${currentPath}${file.name}`,
-              folderId: targetFolderId,
-              kind,
-              url: "",
-            });
-            resolve();
-          };
-          reader.readAsDataURL(file);
+          out.push(file);
+          resolve();
         });
       } else if (entry.isDirectory) {
         const reader = entry.createReader();
         reader.readEntries(async (entries: any[]) => {
           for (const child of entries) {
-            // eslint-disable-next-line no-await-in-loop
-            await traverseEntry(child, `${currentPath}${entry.name}/`, out, targetFolderId);
+            await traverseEntryFiles(child, `${currentPath}${entry.name}/`, out);
           }
           resolve();
         });
@@ -600,7 +851,6 @@ export default function ProjectPlaceholder() {
 
     const items = Array.from(event.dataTransfer.items || []);
     const fileEntries: FileEntry[] = [];
-    const tasks: Promise<void>[] = [];
 
     const urlText =
       event.dataTransfer.getData("text/uri-list") ||
@@ -617,92 +867,246 @@ export default function ProjectPlaceholder() {
       });
     }
 
+    const rawFiles: File[] = [];
+    const tasks: Promise<void>[] = [];
     for (const item of items) {
       const entry = (item as any).webkitGetAsEntry?.();
       if (entry) {
-        tasks.push(traverseEntry(entry, "", fileEntries, targetFolderId));
+        tasks.push(traverseEntryFiles(entry, "", rawFiles));
       } else {
         const file = item.getAsFile?.();
-        if (file) {
-          const kind = classifyFile(file);
-          fileEntries.push({
-            id: `file-${Date.now()}-${Math.random()}`,
-            name: file.name,
-            path: file.name,
-            folderId: targetFolderId,
-            kind,
-            url: URL.createObjectURL(file),
-          });
-        }
+        if (file) rawFiles.push(file);
       }
     }
     await Promise.all(tasks);
+
+    for (const file of rawFiles) {
+      const uploaded = await uploadFileToStorage(file, targetFolderId);
+      if (uploaded) {
+        fileEntries.push(uploaded);
+        setResolvedUrls((prev) => ({ ...prev, [uploaded.id]: uploaded.url }));
+      }
+    }
+
     if (fileEntries.length) handleDropFiles(fileEntries);
   };
 
+  const memoryToFileEntry = (payload: any): FileEntry[] => {
+    const entries: FileEntry[] = [];
+    const title = String(payload.title || "Memory").trim();
+    const attachments = Array.isArray(payload.attachments) ? payload.attachments : [];
+
+    if (attachments.length > 0) {
+      for (const att of attachments) {
+        const url = String(att?.url || "").trim();
+        const attType = String(att?.type || "").toLowerCase();
+        const name = String(att?.name || att?.title || title || url).trim();
+        let kind: FileEntry["kind"] = "file";
+        if (attType === "youtube" || attType === "link") kind = "link";
+        else if (["image", "png", "jpg", "jpeg", "webp", "gif"].includes(attType)) kind = "image";
+        else if (["video", "mp4", "mov", "webm"].includes(attType)) kind = "video";
+        else if (["audio", "mp3", "wav"].includes(attType)) kind = "audio";
+        else if (attType === "pdf") kind = "pdf";
+        else if (["doc", "document"].includes(attType)) kind = "doc";
+        else if (url && /youtube\.com|youtu\.be/i.test(url)) kind = "link";
+        else if (url && /\.(png|jpe?g|webp|gif|svg)$/i.test(url)) kind = "image";
+        else if (url && /\.(mp4|mov|webm)$/i.test(url)) kind = "video";
+        else if (url && /\.pdf$/i.test(url)) kind = "pdf";
+
+        entries.push({
+          id: `mem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          name,
+          path: url || name,
+          folderId: activeFolderId,
+          kind,
+          url,
+          ...(att?.storagePath ? { storagePath: att.storagePath, storageBucket: att.storageBucket || "user-files" } : {}),
+        });
+      }
+    } else if (payload.content) {
+      entries.push({
+        id: `mem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        name: title,
+        path: title,
+        folderId: activeFolderId,
+        kind: "doc",
+        url: "",
+        content: String(payload.content).trim(),
+      });
+    }
+    return entries;
+  };
+
   const handleDrop = async (event: React.DragEvent<HTMLDivElement>) => {
+    const win = window as any;
+
+    // Check for cross-iframe pending memory (from embedded memory sidebar)
+    if (win.__omnia_pending_memory) {
+      const entries = memoryToFileEntry(win.__omnia_pending_memory);
+      win.__omnia_pending_memory = null;
+      if (entries.length > 0) {
+        event.preventDefault();
+        dragDepthRef.current = 0;
+        setIsDragging(false);
+        handleDropFiles(entries);
+        return;
+      }
+    }
+
+    // Check for MIME-based memory drag
+    const omniaRaw = event.dataTransfer.getData("application/x-omnia-memory") || "";
+    if (omniaRaw) {
+      try {
+        const entries = memoryToFileEntry(JSON.parse(omniaRaw));
+        if (entries.length > 0) {
+          event.preventDefault();
+          dragDepthRef.current = 0;
+          setIsDragging(false);
+          handleDropFiles(entries);
+          return;
+        }
+      } catch { /* fall through */ }
+    }
+
+    // Legacy memory MIME
+    const legacyRaw = event.dataTransfer.getData("application/x-lykins-memory-card") || "";
+    if (legacyRaw) {
+      try {
+        const entries = memoryToFileEntry(JSON.parse(legacyRaw));
+        if (entries.length > 0) {
+          event.preventDefault();
+          dragDepthRef.current = 0;
+          setIsDragging(false);
+          handleDropFiles(entries);
+          return;
+        }
+      } catch { /* fall through */ }
+    }
+
     await collectDropEntries(event, activeFolderId);
   };
 
-  const handleFolderDrop = async (event: React.DragEvent, folderId: string | null) => {
-    event.stopPropagation();
-    if (draggedFileId) {
-      setFiles((prev) => prev.map((f) => (f.id === draggedFileId ? { ...f, folderId } : f)));
-      setDraggedFileId(null);
-      return;
+  const handleFileInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const inputFiles = e.target.files;
+    if (!inputFiles || inputFiles.length === 0) return;
+    const newEntries: FileEntry[] = [];
+    for (const file of Array.from(inputFiles)) {
+      const uploaded = await uploadFileToStorage(file, activeFolderId);
+      if (uploaded) newEntries.push(uploaded);
     }
-    await collectDropEntries(event, folderId);
+    if (newEntries.length > 0) handleDropFiles(newEntries);
+    e.target.value = "";
   };
 
   const renderFilePreview = (file: FileEntry) => {
     const lower = file.name.toLowerCase();
-    const isImage = file.kind === "image" || /\.(png|jpe?g|webp|gif)$/i.test(lower);
-    const isVideo = file.kind === "video" || /\.(mp4|mov|webm|m4v)$/i.test(lower);
+    const isImage = file.kind === "image" || /\.(png|jpe?g|webp|gif|svg|bmp|ico|tiff?|avif|heic|heif)$/i.test(lower);
+    const isVideo = file.kind === "video" || /\.(mp4|mov|webm|m4v|avi|mkv|flv|3gp|ogv)$/i.test(lower);
+    const isAudio = file.kind === "audio" || /\.(mp3|wav|ogg|flac|aac|m4a|wma)$/i.test(lower);
     const isPdf = file.kind === "pdf" || /\.pdf$/i.test(lower);
+    const displayUrl = resolvedUrls[file.id] || file.url;
+
+    const noPreview = (
+      <div className="flex flex-col items-center gap-3 py-10 text-center">
+        <FileIcon className="w-10 h-10 text-black/30" />
+        <p className="text-sm text-black/60">{file.name}</p>
+        <p className="text-xs text-black/40">Preview not available.{displayUrl ? " Click download to view." : ""}</p>
+        {displayUrl && (
+          <a href={displayUrl} download={file.name} className="text-xs text-blue-600 underline mt-1">
+            Download file
+          </a>
+        )}
+      </div>
+    );
+
+    if (!displayUrl && file.kind !== "link") return noPreview;
 
     if (isImage) {
-      return <img src={file.url} alt={file.name} className="max-h-[60vh] w-full object-contain rounded-lg" />;
+      return <img src={displayUrl} alt={file.name} className="max-h-[60vh] w-full object-contain rounded-lg" />;
     }
     if (isVideo) {
-      return <video src={file.url} controls className="w-full max-h-[60vh] rounded-lg" />;
+      return <video src={displayUrl} controls className="w-full max-h-[60vh] rounded-lg bg-black/5" />;
+    }
+    if (isAudio) {
+      return (
+        <div className="flex flex-col items-center gap-4 py-8">
+          <Music className="w-12 h-12 text-violet-400/70" />
+          <audio src={displayUrl} controls className="w-full max-w-md" />
+        </div>
+      );
     }
     if (isPdf) {
       return (
         <iframe
           title={file.name}
-          src={file.url}
+          src={displayUrl}
           className="w-full h-[60vh] rounded-lg border border-white/40 bg-white/60"
         />
       );
     }
     if (file.kind === "link" && /youtube\.com|youtu\.be/i.test(file.url)) {
-      const url = new URL(file.url);
-      const videoId = url.searchParams.get("v") || url.pathname.split("/").pop();
-      const embedUrl = videoId ? `https://www.youtube.com/embed/${videoId}` : file.url;
+      const videoId = extractYouTubeVideoId(file.url);
+      const embedUrl = videoId ? getYouTubeEmbedUrl(videoId) : "";
+      if (embedUrl) {
+        return (
+          <iframe
+            title="YouTube"
+            src={embedUrl}
+            className="w-full h-[60vh] rounded-lg border border-white/40 bg-white/60"
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+            allowFullScreen
+          />
+        );
+      }
       return (
-        <iframe
-          title="YouTube"
-          src={embedUrl}
-          className="w-full h-[60vh] rounded-lg border border-white/40 bg-white/60"
-          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-          allowFullScreen
-        />
+        <div className="text-sm text-black/70">
+          <a href={file.url} target="_blank" rel="noreferrer" className="underline">Open YouTube link</a>
+        </div>
       );
     }
     if (file.kind === "link") {
       return (
-        <div className="text-sm text-black/70">
-          <a href={file.url} target="_blank" rel="noreferrer" className="underline">
-            Open link
+        <div className="flex flex-col items-center gap-3 py-6">
+          <Link2 className="w-10 h-10 text-blue-400/70" />
+          <a href={file.url} target="_blank" rel="noreferrer" className="text-sm text-blue-600 underline break-all">
+            {file.url}
           </a>
         </div>
       );
     }
-    return (
-      <div className="text-sm text-black/60">
-        Preview not available. Download or open the file to view it.
-      </div>
-    );
+    return noPreview;
+  };
+
+  const updateSelectedModel = (value: string) => {
+    setSelectedModel(value);
+    try {
+      const saved = localStorage.getItem("lykinsai_settings");
+      const settings = saved ? JSON.parse(saved) : {};
+      settings.aiModel = value;
+      localStorage.setItem("lykinsai_settings", JSON.stringify(settings));
+      window.dispatchEvent(new CustomEvent("lykinsai_settings_changed"));
+    } catch { /* ignore */ }
+  };
+
+  const handleSaveQuickNote = async () => {
+    if (!user?.id || isQuickNoteSaving) return;
+    const content = quickNoteContent.trim();
+    if (!content) return;
+    setIsQuickNoteSaving(true);
+    try {
+      await supabase.from("notes").insert({
+        user_id: user.id,
+        title: quickNoteTitle.trim() || "Quick Note",
+        content,
+      });
+      setQuickNoteTitle("");
+      setQuickNoteContent("");
+      setShowQuickNote(false);
+    } catch {
+      // Keep open on failure
+    } finally {
+      setIsQuickNoteSaving(false);
+    }
   };
 
   const handleChatSend = async () => {
@@ -809,7 +1213,7 @@ If the user asks about old memories or references past ideas, refer to the memor
 
   return (
     <div
-      className="min-h-screen bg-[#f2f2f7]/80 text-black relative"
+      className="min-h-screen bg-transparent text-black relative"
       onDragEnter={(e) => {
         e.preventDefault();
         if (draggedFileId) return;
@@ -825,9 +1229,9 @@ If the user asks about old memories or references past ideas, refer to the memor
       }}
       onDrop={handleDrop}
     >
-      <header className="fixed top-0 left-0 right-0 z-30 bg-[#f2f2f7]/80 backdrop-blur-md">
-        <div className="mx-auto w-full max-w-6xl px-6 py-4">
-          <div className="text-lg font-semibold">
+      <header className="fixed top-0 left-0 right-0 z-30 bg-white/60 backdrop-blur-md">
+        <div className="mx-auto w-full max-w-[1600px] pl-[170px] xl:pl-6 pr-4 sm:pr-6 py-3 sm:py-4">
+          <div className="text-base sm:text-lg font-semibold">
             {isEditingTitle ? (
               <input
                 value={draftTitle}
@@ -843,7 +1247,7 @@ If the user asks about old memories or references past ideas, refer to the memor
                   }
                 }}
                 autoFocus
-                className="w-full max-w-[420px] bg-white/70 border border-white/60 rounded-lg px-3 py-1 text-lg font-semibold outline-none"
+                className="w-full max-w-[280px] sm:max-w-[420px] bg-white/70 border border-white/60 rounded-lg px-3 py-1 text-base sm:text-lg font-semibold outline-none"
               />
             ) : (
               <button
@@ -859,288 +1263,885 @@ If the user asks about old memories or references past ideas, refer to the memor
               </button>
             )}
           </div>
-          <div className="mt-3 w-full flex items-center gap-2 rounded-xl border border-white/60 bg-white/70 backdrop-blur-md px-4 py-2 text-[12px] text-black/70">
-            <SearchIcon className="w-4 h-4" />
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search boards"
-              className="w-full bg-transparent outline-none placeholder:text-black/40"
-            />
-          </div>
         </div>
       </header>
 
-      <main className="mx-auto max-w-6xl px-6 pt-28 pb-16 grid gap-6 lg:grid-cols-[240px_1fr]">
-        <section className="rounded-2xl border border-white/60 bg-[#e9e9ef]/75 backdrop-blur-lg shadow-xl shadow-white/20 p-4">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold">Folders</h2>
-            <button
-              type="button"
-              onClick={handleCreateFolder}
-              className="rounded-full w-8 h-8 glass-control hover:opacity-90 flex items-center justify-center"
-              title="Create folder"
-            >
-              <FolderPlus className="w-4 h-4" />
-            </button>
-          </div>
-          <div className="space-y-1">
-            <button
-              type="button"
-              onClick={() => setActiveFolderId(null)}
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={(e) => handleFolderDrop(e, null)}
-              onDragEnter={() => setHoveredFolderId("root")}
-              onDragLeave={() => setHoveredFolderId(null)}
-              className={`w-full text-left px-3 py-2 rounded-xl ${
-                activeFolderId === null ? "bg-white/40" : "hover:bg-white/30"
-              } ${hoveredFolderId === "root" ? "ring-2 ring-white/60 bg-white/40" : ""}`}
-            >
-              All folders
-            </button>
-            {folders.map((folder) => (
+      {/* Top Panel */}
+      <div
+        className="fixed top-3 left-0 z-[70] px-3 flex items-center justify-end pointer-events-none transition-all duration-300"
+        style={{ right: showMemorySidebar ? "min(392px, 92vw)" : "0px" }}
+      >
+        <div className="pointer-events-auto flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setTopPanelOpen((v) => !v)}
+            className="rounded-full w-9 h-9 hover:bg-black/10 transition-colors touch-manipulation flex items-center justify-center"
+            title={topPanelOpen ? "Hide panel" : "Show panel"}
+          >
+            {topPanelOpen ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+            <span className="sr-only">{topPanelOpen ? "Hide panel" : "Show panel"}</span>
+          </button>
+
+          {topPanelOpen && (
+            <div className="flex items-center gap-1 p-1 rounded-full glass-control flex-wrap">
               <button
-                key={folder.id}
                 type="button"
-                onClick={() => setActiveFolderId(folder.id)}
-                onDoubleClick={() => handleRenameFolder(folder)}
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={(e) => handleFolderDrop(e, folder.id)}
-                onDragEnter={() => setHoveredFolderId(folder.id)}
-                onDragLeave={() => setHoveredFolderId(null)}
-                className={`w-full text-left px-3 py-2 rounded-xl flex items-center gap-2 ${
-                  activeFolderId === folder.id ? "bg-white/40" : "hover:bg-white/30"
-                } ${hoveredFolderId === folder.id ? "ring-2 ring-white/60 bg-white/40" : ""}`}
+                onClick={() => nav(-1)}
+                className="rounded-full w-9 h-9 p-0 hover:bg-black/10 transition-colors touch-manipulation flex items-center justify-center"
+                title="Back"
               >
-                <Folder className="w-4 h-4 text-black/50" />
-                {folder.name}
+                <ArrowLeft className="w-4 h-4" />
               </button>
-            ))}
+
+              <div className="w-px h-4 bg-black/10 mx-1" />
+
+              <Select value={selectedModel} onValueChange={updateSelectedModel}>
+                <SelectTrigger className="w-[100px] sm:w-[130px] h-9 rounded-full glass-control hover:opacity-90 text-xs font-medium">
+                  <SelectValue placeholder="Model" />
+                </SelectTrigger>
+                <SelectContent
+                  align="end"
+                  className="glass-control border border-white/25 bg-white/35 backdrop-blur-xl shadow-lg overflow-hidden"
+                >
+                  <SelectItem value="gpt-5.2">GPT-5.2 (Latest)</SelectItem>
+                  <SelectItem value="gpt-5.1">GPT-5.1</SelectItem>
+                  <SelectItem value="gpt-5">GPT-5</SelectItem>
+                  <SelectItem value="gpt-4o">GPT-4o</SelectItem>
+                  <SelectItem value="gpt-4o-mini">GPT-4o Mini</SelectItem>
+                  <SelectItem value="gpt-4-turbo">GPT-4 Turbo</SelectItem>
+                  <SelectItem value="gpt-4">GPT-4</SelectItem>
+                  <SelectItem value="gpt-3.5-turbo">GPT-3.5 Turbo</SelectItem>
+                  <SelectItem value="claude-opus-4-1-20250805">Claude Opus 4.1</SelectItem>
+                  <SelectItem value="claude-opus-4-20250514">Claude Opus 4</SelectItem>
+                  <SelectItem value="claude-sonnet-4-20250514">Claude Sonnet 4</SelectItem>
+                  <SelectItem value="claude-haiku-4-5-20251001">Claude Haiku 4.5</SelectItem>
+                  <SelectItem value="gemini-3.1-pro-preview">Gemini 3.1 Pro (Preview)</SelectItem>
+                  <SelectItem value="gemini-3-pro-preview">Gemini 3 Pro (Preview)</SelectItem>
+                  <SelectItem value="gemini-3-flash-preview">Gemini 3 Flash (Preview)</SelectItem>
+                  <SelectItem value="gemini-2.5-pro">Gemini 2.5 Pro</SelectItem>
+                  <SelectItem value="gemini-2.5-flash">Gemini 2.5 Flash</SelectItem>
+                  <SelectItem value="gemini-2.5-flash-lite">Gemini 2.5 Flash-Lite</SelectItem>
+                  <SelectItem value="gemini-2.5-flash-image-preview">Gemini 2.5 Flash Image</SelectItem>
+                  <SelectItem value="gemini-2.5-flash-live-preview">Gemini 2.5 Flash Live</SelectItem>
+                  <SelectItem value="gemini-2.0-flash">Gemini 2.0 Flash</SelectItem>
+                  <SelectItem value="gemini-2.0-flash-lite">Gemini 2.0 Flash-Lite</SelectItem>
+                  <SelectItem value="grok-4-1-fast-reasoning">Grok 4.1 Fast Reasoning</SelectItem>
+                  <SelectItem value="grok-4-1-fast-non-reasoning">Grok 4.1 Fast Non-Reasoning</SelectItem>
+                  <SelectItem value="grok-code-fast-1">Grok Code Fast 1</SelectItem>
+                  <SelectItem value="grok-4-fast-reasoning">Grok 4 Fast Reasoning</SelectItem>
+                  <SelectItem value="grok-4-fast-non-reasoning">Grok 4 Fast Non-Reasoning</SelectItem>
+                  <SelectItem value="grok-4-0709">Grok 4 0709</SelectItem>
+                  <SelectItem value="grok-3-mini">Grok 3 Mini</SelectItem>
+                  <SelectItem value="grok-3">Grok 3</SelectItem>
+                  <SelectItem value="grok-2-vision-1212">Grok 2 Vision 1212</SelectItem>
+                  <SelectItem value="grok-imagine-image-pro">Grok Imagine Image Pro</SelectItem>
+                  <SelectItem value="grok-imagine-image">Grok Imagine Image</SelectItem>
+                  <SelectItem value="grok-2-image-1212">Grok 2 Image 1212</SelectItem>
+                  <SelectItem value="grok-imagine-video">Grok Imagine Video</SelectItem>
+                  <SelectItem value="unified-auto">Unified AI (Auto)</SelectItem>
+                </SelectContent>
+              </Select>
+
+              <div className="w-px h-4 bg-black/10 mx-1" />
+
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="rounded-full w-9 h-9 p-0 hover:bg-black/10 transition-colors touch-manipulation flex items-center justify-center"
+                title="Add attachments"
+              >
+                <Plus className="w-4 h-4" />
+              </button>
+
+              <div className="w-px h-4 bg-black/10 mx-1" />
+
+              <button
+                type="button"
+                onClick={() => setShowMemorySidebar((v) => !v)}
+                className="rounded-full w-9 h-9 p-0 hover:bg-black/10 transition-colors touch-manipulation flex items-center justify-center"
+                title={showMemorySidebar ? "Hide memory sidebar" : "Open memory sidebar"}
+              >
+                {showMemorySidebar ? <PanelRightClose className="w-4 h-4" /> : <BookOpen className="w-4 h-4" />}
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <main className="mx-auto max-w-[1600px] px-4 sm:px-6 pt-28 pb-16 grid grid-cols-1 md:grid-cols-[280px_1fr] xl:grid-cols-[340px_1fr_280px] gap-5">
+        {/* Left: File Collage */}
+        <div className="space-y-5">
+        <section className="rounded-2xl border border-white/60 bg-[#e9e9ef]/75 backdrop-blur-lg shadow-xl shadow-white/20 p-4">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-sm font-semibold">All Files</h2>
+            <span className="text-[11px] text-black/50">{allFilesForCollage.length} file{allFilesForCollage.length !== 1 ? "s" : ""}</span>
           </div>
-          <div className="mt-4">
-            <h3 className="text-xs font-semibold text-black/60 mb-2">Files in folder</h3>
-            {folderFiles.length === 0 ? (
-              <div className="text-xs text-black/50">Drop files here</div>
-            ) : (
-              <div className="space-y-1">
-                {folderFiles.map((file) => (
-                  <button
+          {allFilesForCollage.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-16 text-center">
+              <div className="w-16 h-16 rounded-2xl bg-white/40 border border-white/50 flex items-center justify-center mb-3">
+                <ImageIcon className="w-7 h-7 text-black/30" />
+              </div>
+              <p className="text-sm text-black/50">No files yet</p>
+              <p className="text-xs text-black/40 mt-1">Drop files anywhere to add them</p>
+            </div>
+          ) : (
+            <div className="columns-1 sm:columns-2 gap-4">
+              {allFilesForCollage.map((file) => {
+                const lower = file.name.toLowerCase();
+                const isImage = file.kind === "image" || /\.(png|jpe?g|webp|gif|svg|bmp|ico|tiff?|avif|heic|heif)$/i.test(lower);
+                const isVideo = file.kind === "video" || /\.(mp4|mov|webm|m4v|avi|mkv|flv|3gp|ogv)$/i.test(lower);
+                const isAudio = file.kind === "audio" || /\.(mp3|wav|ogg|flac|aac|m4a|wma)$/i.test(lower);
+                const isPdf = file.kind === "pdf" || /\.pdf$/i.test(lower);
+                const isLink = file.kind === "link";
+                const isYouTube = isLink && /youtube\.com|youtu\.be/i.test(file.url);
+                const displayUrl = resolvedUrls[file.id] || file.url;
+
+                const fallbackCard = (icon: React.ReactNode, label: string, subtitle?: string) => (
+                  <div className="glass-control rounded-2xl p-4" draggable={false}>
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-xl bg-white/50 border border-white/60 flex items-center justify-center shrink-0">
+                        {icon}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs font-medium text-black/85 truncate">{label}</p>
+                        {subtitle && <p className="text-[11px] text-black/55 mt-0.5 truncate">{subtitle}</p>}
+                      </div>
+                    </div>
+                  </div>
+                );
+
+                const renderMediaContent = () => {
+                  if (isImage) {
+                    if (!displayUrl) return fallbackCard(<ImageIcon className="w-5 h-5 text-black/40" />, file.name, "Image");
+                    return (
+                      <div className="relative">
+                        <img
+                          src={displayUrl}
+                          alt={file.name}
+                          className="w-full h-auto max-h-[42rem] rounded-2xl bg-white/30"
+                          loading="lazy"
+                          draggable={false}
+                          onError={(e) => {
+                            const target = e.currentTarget;
+                            target.style.display = "none";
+                            const fb = target.parentElement?.querySelector("[data-fallback]") as HTMLElement;
+                            if (fb) fb.style.display = "";
+                          }}
+                        />
+                        <div data-fallback="" style={{ display: "none" }}>
+                          {fallbackCard(<ImageIcon className="w-5 h-5 text-black/40" />, file.name, "Image")}
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  if (isYouTube) {
+                    const videoId = extractYouTubeVideoId(file.url);
+                    const embedUrl = videoId ? getYouTubeEmbedUrl(videoId) : "";
+                    if (embedUrl) {
+                      return (
+                        <div className="w-full rounded-2xl overflow-hidden bg-black" draggable={false}>
+                          <iframe
+                            src={embedUrl}
+                            title={file.name}
+                            className="w-full h-44 border-0"
+                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                            allowFullScreen
+                          />
+                        </div>
+                      );
+                    }
+                    return fallbackCard(<Video className="w-5 h-5 text-red-500/70" />, file.name, "YouTube Video");
+                  }
+
+                  if (isVideo) {
+                    if (!displayUrl) return fallbackCard(<Video className="w-5 h-5 text-black/40" />, file.name, "Video");
+                    return (
+                      <video
+                        src={displayUrl}
+                        className="w-full h-auto max-h-[42rem] rounded-2xl bg-black/5"
+                        controls
+                        preload="metadata"
+                        draggable={false}
+                      />
+                    );
+                  }
+
+                  if (isAudio) {
+                    return (
+                      <div className="glass-control rounded-2xl p-3 space-y-3">
+                        <div className="flex items-center gap-2 text-black/80">
+                          <Music className="w-4 h-4" />
+                          <span className="text-xs font-medium truncate">{file.name}</span>
+                        </div>
+                        {displayUrl ? (
+                          <audio src={displayUrl} controls className="w-full h-10" preload="metadata" />
+                        ) : (
+                          <p className="text-[11px] text-black/50">Audio file</p>
+                        )}
+                      </div>
+                    );
+                  }
+
+                  if (isPdf) {
+                    if (displayUrl) {
+                      return (
+                        <div className="w-full h-80 rounded-2xl overflow-hidden bg-white/40 border border-white/50">
+                          <iframe
+                            src={displayUrl}
+                            title={file.name}
+                            className="w-full h-full border-0"
+                            draggable={false}
+                          />
+                        </div>
+                      );
+                    }
+                    return fallbackCard(<FileText className="w-5 h-5 text-red-400/70" />, file.name, "PDF");
+                  }
+
+                  if (isLink) {
+                    let domain = "";
+                    try { domain = new URL(file.url).hostname.replace("www.", ""); } catch { /* ignore */ }
+                    return fallbackCard(
+                      <Link2 className="w-5 h-5 text-blue-400/70" />,
+                      file.name,
+                      domain || file.url || "Link"
+                    );
+                  }
+
+                  if (file.kind === "doc") {
+                    if (file.content) {
+                      return (
+                        <div className="glass-control rounded-2xl p-4" draggable={false}>
+                          <div className="flex items-center gap-2 text-black/70 mb-2">
+                            <StickyNote className="w-4 h-4" />
+                            <span className="text-xs font-medium">Quick Note</span>
+                          </div>
+                          <div className="max-h-56 overflow-y-auto scrollbar-hide">
+                            <p className="text-sm text-black/70 whitespace-pre-wrap break-words">{file.content}</p>
+                          </div>
+                          <div className="mt-3 text-[11px] text-black/55 flex items-center gap-1">
+                            <Clock className="w-3 h-3" />
+                            <span>{file.name}</span>
+                          </div>
+                        </div>
+                      );
+                    }
+                    return fallbackCard(
+                      <FileText className="w-5 h-5 text-blue-400/70" />,
+                      file.name,
+                      `${lower.split(".").pop()?.toUpperCase()} file`
+                    );
+                  }
+
+                  return fallbackCard(
+                    <FileIcon className="w-5 h-5 text-black/40" />,
+                    file.name,
+                    "File"
+                  );
+                };
+
+                return (
+                  <article
                     key={file.id}
-                    type="button"
-                    onClick={() => setSelectedFile(file)}
+                    className={`break-inside-avoid mb-5 rounded-2xl relative overflow-visible cursor-grab ${
+                      openFileMenuId === file.id ? "z-[120]" : "z-0"
+                    }`}
                     draggable
                     onDragStart={(e) => {
                       setDraggedFileId(file.id);
                       e.dataTransfer.setData("text/plain", file.id);
                     }}
                     onDragEnd={() => setDraggedFileId(null)}
-                    className="w-full text-left text-xs text-black/70 flex items-center gap-2 hover:opacity-80"
                   >
-                    <File className="w-3.5 h-3.5" />
-                    <span className="truncate">{file.name}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        </section>
-
-        <section className="rounded-2xl border border-white/60 bg-[#e9e9ef]/75 backdrop-blur-lg shadow-xl shadow-white/20 p-6">
-          <div className="flex items-center justify-between mb-4">
-            <div>
-              <h2 className="text-lg font-semibold">Boards</h2>
-              <p className="text-xs text-black/60">Create and organize boards inside this project.</p>
-            </div>
-            <button
-              type="button"
-              onClick={handleCreateBoard}
-              className="rounded-full px-4 py-2 text-xs glass-control hover:opacity-90"
-            >
-              New board
-            </button>
-          </div>
-          {filteredBoards.length === 0 ? (
-            <div className="rounded-xl border border-white/50 bg-white/40 p-6 text-center text-sm text-black/60">
-              No boards yet. Create one or drop files into a folder.
-            </div>
-          ) : (
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {filteredBoards.map((board) => (
-                <div
-                  key={board.id}
-                  className="group relative rounded-xl border border-white/60 bg-white/50 backdrop-blur-md p-4 shadow-lg text-left hover:opacity-90"
-                >
-                  <button
-                    type="button"
-                    onClick={() => {
-                      localStorage.setItem("omnia_board_id", board.id);
-                      nav(`/canvas/${board.id}`);
-                    }}
-                    className="absolute inset-0 z-10 rounded-xl"
-                    aria-label={`Open ${board.title}`}
-                  />
-                  <div className="relative z-10">
-                    <div className="text-sm font-semibold">{board.title}</div>
-                    <div className="mt-2 text-xs text-black/50">Board</div>
-                  </div>
-                  <div className="absolute top-2 right-2 z-20 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <div className="relative" ref={openBoardMenuId === board.id ? boardMenuRef : null}>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setOpenBoardMenuId((prev) => (prev === board.id ? null : board.id));
-                        }}
-                        className="w-7 h-7 rounded-full glass-control hover:opacity-90 flex items-center justify-center"
-                        aria-label="Board actions"
-                      >
-                        <span className="text-lg leading-none">⋯</span>
-                      </button>
-                      {openBoardMenuId === board.id && (
-                        <div className="absolute right-0 mt-2 w-48 rounded-xl border border-white/60 bg-white/80 backdrop-blur-md shadow-xl p-2">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              handleRenameBoard(board);
-                              setOpenBoardMenuId(null);
-                            }}
-                            className="w-full text-left text-xs px-2 py-2 rounded-lg hover:bg-black/5"
-                          >
-                            Rename
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setMoveBoardId(board.id);
-                              setOpenBoardMenuId(null);
-                            }}
-                            className="w-full text-left text-xs px-2 py-2 rounded-lg hover:bg-black/5"
-                          >
-                            Move board
-                          </button>
-                          <button
-                            type="button"
-                            className="w-full text-left text-xs px-2 py-2 rounded-lg hover:bg-black/5"
-                          >
-                            Share with team
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              handleDeleteBoard(board);
-                              setOpenBoardMenuId(null);
-                            }}
-                            className="w-full text-left text-xs px-2 py-2 rounded-lg hover:bg-black/5 text-red-600"
-                          >
-                            Delete board
-                          </button>
-                        </div>
-                      )}
+                    <div
+                      className="cursor-pointer"
+                      onClick={() => setSelectedFile(file)}
+                      role="button"
+                      tabIndex={0}
+                      onKeyDown={(e) => { if (e.key === "Enter") setSelectedFile(file); }}
+                    >
+                      {renderMediaContent()}
                     </div>
-                  </div>
-                </div>
-              ))}
+
+                    {/* 3-dot menu — same as Memory page */}
+                    <div className="mt-2 flex justify-end px-1">
+                      <div className="relative" ref={openFileMenuId === file.id ? fileMenuRef : null}>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setOpenFileMenuId((prev) => (prev === file.id ? null : file.id));
+                          }}
+                          onMouseDown={(e) => e.stopPropagation()}
+                          className="px-1 py-0.5 text-black/75 hover:text-black leading-none text-base font-semibold"
+                          title="File actions"
+                        >
+                          <MoreHorizontal className="w-4 h-4" />
+                        </button>
+                        {openFileMenuId === file.id && (
+                          <div
+                            className="absolute right-0 bottom-full mb-2 w-48 rounded-2xl border border-white/60 bg-white/85 backdrop-blur-xl shadow-2xl p-2 z-[130]"
+                            onMouseDown={(e) => e.stopPropagation()}
+                          >
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleRenameFile(file);
+                              }}
+                              className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 flex items-center gap-2"
+                            >
+                              <Pencil className="w-3.5 h-3.5" />
+                              Rename
+                            </button>
+                            {file.url && (
+                              <a
+                                href={file.url}
+                                download={file.name}
+                                onClick={() => setOpenFileMenuId(null)}
+                                className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 flex items-center gap-2"
+                              >
+                                <Download className="w-3.5 h-3.5" />
+                                Download
+                              </a>
+                            )}
+                            <div className="my-1 h-px bg-black/10" />
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteFile(file.id);
+                              }}
+                              className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 flex items-center gap-2 text-red-600"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              Delete
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </article>
+                );
+              })}
             </div>
           )}
         </section>
 
-        <section className="lg:col-span-2 rounded-2xl border border-white/60 bg-[#e9e9ef]/75 backdrop-blur-lg shadow-xl shadow-white/20 p-6">
-          <div className="flex items-center justify-between mb-4">
-            <div>
-              <h2 className="text-lg font-semibold">Connections</h2>
-              <p className="text-xs text-black/60">Drag nodes, click two to link, and pan the space.</p>
-              {mindmapError && (
-                <div className="mt-2 text-[11px] text-red-600/70">
-                  Mindmap sync issue: {mindmapError}
-                </div>
-              )}
-            </div>
-            <div className="rounded-full border border-white/60 bg-white/60 px-3 py-1 text-[11px] text-black/60">
-              {mindmapLoading ? "Loading..." : mindmapSaving ? "Saving..." : `${connectionsNodes.length} nodes`}
-            </div>
+        </div>
+
+        {/* Center: Boards, Connections */}
+        <div className="min-w-0 space-y-6">
+          <div className="w-full flex items-center gap-2 rounded-xl border border-white/60 bg-white/70 backdrop-blur-md px-4 py-2 text-[12px] text-black/70">
+            <SearchIcon className="w-4 h-4" />
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder={centerTab === "boards" ? "Search boards" : "Search chats"}
+              className="w-full bg-transparent outline-none placeholder:text-black/40"
+            />
           </div>
-          <div
-            ref={mapRef}
-            className="relative overflow-hidden rounded-2xl border border-white/50 bg-[#f2f2f7]/70 backdrop-blur-md min-h-[320px]"
-            onPointerDown={handleMapPointerDown}
-            onPointerMove={handleMapPointerMove}
-            onPointerUp={handleMapPointerUp}
-            onPointerLeave={handleMapPointerUp}
-          >
-            <div className="absolute inset-0 bg-gradient-to-br from-cyan-400/20 via-blue-500/10 to-fuchsia-500/15" />
-            <div className="absolute -top-12 -right-10 h-36 w-36 rounded-full bg-sky-400/25 blur-2xl" />
-            <div className="absolute -bottom-10 left-6 h-32 w-32 rounded-full bg-fuchsia-400/20 blur-2xl" />
-            <div className="absolute inset-0 border border-white/40 pointer-events-none" />
-            <div className="absolute inset-0 rounded-2xl ring-1 ring-white/40 pointer-events-none" />
 
-            <div
-              className="absolute inset-0"
-              style={{
-                transform: `translate(${panOffset.x}px, ${panOffset.y}px) perspective(800px) rotateX(${tilt.x}deg) rotateY(${tilt.y}deg)`,
-                transition: dragNodeId ? "none" : "transform 120ms ease-out",
-              }}
-            >
-              <svg className="absolute inset-0 w-full h-full pointer-events-none">
-                {connectionsLinks.map((link) => {
-                  const from = connectionsNodes.find((n) => n.id === link.fromId);
-                  const to = connectionsNodes.find((n) => n.id === link.toId);
-                  if (!from || !to) return null;
-                  return (
-                    <line
-                      key={link.id}
-                      x1={`${from.positionX}%`}
-                      y1={`${from.positionY}%`}
-                      x2={`${to.positionX}%`}
-                      y2={`${to.positionY}%`}
-                      stroke="rgba(255,255,255,0.55)"
-                      strokeWidth="2"
-                    />
-                  );
-                })}
-              </svg>
-
-              {connectionsNodes.map((node) => (
+          {/* Boards / Chats */}
+          <section className="rounded-2xl border border-white/60 bg-[#e9e9ef]/75 backdrop-blur-lg shadow-xl shadow-white/20 p-4 sm:p-6 overflow-visible relative z-10">
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+              <div className="min-w-0">
+                <h2 className="text-base sm:text-lg font-semibold">{centerTab === "boards" ? "Boards" : "Chats"}</h2>
+                <p className="text-[11px] sm:text-xs text-black/60">
+                  {centerTab === "boards"
+                    ? "Create and organize boards inside this project."
+                    : "Conversations and AI chats in this project."}
+                </p>
+              </div>
+              <div className="inline-flex items-center gap-1 p-1 rounded-full glass-control">
                 <button
-                  key={node.id}
                   type="button"
-                  onPointerDown={(event) => handleNodePointerDown(event, node.id)}
-                  onPointerMove={handleNodePointerMove}
-                  onPointerUp={(event) => handleNodePointerUp(event, node.id)}
-                  className={`absolute -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/70 px-4 py-1 text-[11px] text-black/80 backdrop-blur-md shadow-lg ${
-                    node.sourceType === "file" ? "bg-white/70" : "bg-[#f2f2f7]/80"
-                  } ${linkFromId === node.id ? "ring-2 ring-white/80" : ""}`}
-                  style={{ left: `${node.positionX}%`, top: `${node.positionY}%` }}
+                  onClick={() => setCenterTab("boards")}
+                  className={`rounded-full px-3 py-1.5 text-xs font-medium transition ${
+                    centerTab === "boards" ? "bg-white/50 text-black" : "text-black/55 hover:text-black"
+                  }`}
                 >
-                  {node.title}
+                  Boards
                 </button>
-              ))}
+                <button
+                  type="button"
+                  onClick={() => setCenterTab("chats")}
+                  className={`rounded-full px-3 py-1.5 text-xs font-medium transition ${
+                    centerTab === "chats" ? "bg-white/50 text-black" : "text-black/55 hover:text-black"
+                  }`}
+                >
+                  Chats
+                </button>
+              </div>
             </div>
 
-            <div className="absolute bottom-3 left-3 text-[11px] text-black/50">
-              {linkFromId ? "Select another node to connect." : "Click a node to start linking."}
+            {centerTab === "boards" ? (
+              <div className="grid gap-4 sm:grid-cols-2 overflow-visible relative z-10">
+                <button
+                  type="button"
+                  onClick={handleCreateBoard}
+                  className="rounded-xl border-2 border-dashed border-black/15 bg-white/30 hover:bg-white/50 hover:border-black/25 backdrop-blur-md p-4 flex flex-col items-center justify-center gap-2 transition-all h-[88px]"
+                >
+                  <div className="w-9 h-9 rounded-lg bg-white/60 border border-white/70 flex items-center justify-center">
+                    <Plus className="w-5 h-5 text-black/50" />
+                  </div>
+                  <span className="text-xs font-medium text-black/60">Create new board</span>
+                </button>
+
+                {filteredBoards.map((board) => (
+                  <div key={board.id} className={`relative group ${openBoardMenuId === board.id ? "z-50" : ""}`}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        localStorage.setItem("omnia_board_id", board.id);
+                        nav(`/canvas/${board.id}`);
+                      }}
+                      className="w-full h-[88px] rounded-xl border border-white/60 bg-white/50 hover:bg-white/70 backdrop-blur-md p-4 shadow-lg text-left transition-all flex flex-col justify-center"
+                    >
+                      <div className="text-sm font-semibold truncate">{board.title}</div>
+                      <div className="mt-1 text-xs text-black/50">Board</div>
+                    </button>
+                    <div className="absolute top-2 right-2 z-20 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <div className="relative" ref={openBoardMenuId === board.id ? boardMenuRef : null}>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setOpenBoardMenuId((prev) => (prev === board.id ? null : board.id));
+                          }}
+                          className="px-1 py-0.5 text-black/60 hover:text-black transition-colors"
+                          aria-label="Board actions"
+                        >
+                          <MoreHorizontal className="w-4 h-4" />
+                        </button>
+                        {openBoardMenuId === board.id && (
+                          <div className="absolute right-0 mt-2 w-48 rounded-xl border border-white/60 bg-white/80 backdrop-blur-md shadow-xl p-2 z-50">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                handleRenameBoard(board);
+                                setOpenBoardMenuId(null);
+                              }}
+                              className="w-full text-left text-xs px-2 py-2 rounded-lg hover:bg-black/5"
+                            >
+                              Rename
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setMoveBoardId(board.id);
+                                setOpenBoardMenuId(null);
+                              }}
+                              className="w-full text-left text-xs px-2 py-2 rounded-lg hover:bg-black/5"
+                            >
+                              Move to project
+                            </button>
+                            <button
+                              type="button"
+                              className="w-full text-left text-xs px-2 py-2 rounded-lg hover:bg-black/5"
+                            >
+                              Add team members
+                            </button>
+                            <div className="my-1 h-px bg-black/10" />
+                            <button
+                              type="button"
+                              onClick={() => {
+                                handleDeleteBoard(board);
+                                setOpenBoardMenuId(null);
+                              }}
+                              className="w-full text-left text-xs px-2 py-2 rounded-lg hover:bg-black/5 text-red-600"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="grid gap-4 sm:grid-cols-2">
+                <button
+                  type="button"
+                  onClick={() => nav("/chat")}
+                  className="rounded-xl border-2 border-dashed border-black/15 bg-white/30 hover:bg-white/50 hover:border-black/25 backdrop-blur-md p-4 flex flex-col items-center justify-center gap-2 transition-all h-[88px]"
+                >
+                  <div className="w-9 h-9 rounded-lg bg-white/60 border border-white/70 flex items-center justify-center">
+                    <Plus className="w-5 h-5 text-black/50" />
+                  </div>
+                  <span className="text-xs font-medium text-black/60">Start new chat</span>
+                </button>
+
+                {chatMessages
+                  .filter((m) => m.role === "user")
+                  .map((m, i) => (
+                    <button
+                      key={i}
+                      type="button"
+                      onClick={() => setShowChat(true)}
+                      className="w-full h-[88px] rounded-xl border border-white/60 bg-white/50 hover:bg-white/70 backdrop-blur-md p-4 shadow-lg text-left transition-all flex flex-col justify-center"
+                    >
+                      <div className="text-sm font-semibold truncate">{m.content}</div>
+                      <div className="mt-1 text-xs text-black/50">Chat message</div>
+                    </button>
+                  ))}
+              </div>
+            )}
+          </section>
+
+          {/* Connections / Graph */}
+          <section className="rounded-2xl border border-white/60 bg-[#e9e9ef]/75 backdrop-blur-lg shadow-xl shadow-white/20 p-4 sm:p-6">
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+              <div className="min-w-0">
+                <h2 className="text-base sm:text-lg font-semibold">{bottomTab === "connections" ? "Connections" : "Graph"}</h2>
+                <p className="text-[11px] sm:text-xs text-black/60">
+                  {bottomTab === "connections"
+                    ? "Boards and their files in this project."
+                    : "Visual graph of boards and files in this project."}
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                {bottomTab === "connections" && (
+                  <div className="hidden sm:block rounded-full border border-white/60 bg-white/60 px-3 py-1 text-[11px] text-black/60">
+                    {boards.length} board{boards.length !== 1 ? "s" : ""} · {files.length} file{files.length !== 1 ? "s" : ""}
+                  </div>
+                )}
+                <div className="inline-flex items-center gap-1 p-1 rounded-full glass-control">
+                  <button
+                    type="button"
+                    onClick={() => setBottomTab("connections")}
+                    className={`rounded-full px-3 py-1.5 text-xs font-medium transition ${
+                      bottomTab === "connections" ? "bg-white/50 text-black" : "text-black/55 hover:text-black"
+                    }`}
+                  >
+                    Connections
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setBottomTab("graph")}
+                    className={`rounded-full px-3 py-1.5 text-xs font-medium transition ${
+                      bottomTab === "graph" ? "bg-white/50 text-black" : "text-black/55 hover:text-black"
+                    }`}
+                  >
+                    Graph
+                  </button>
+                </div>
+              </div>
             </div>
-          </div>
-        </section>
+
+            {bottomTab === "connections" ? (
+              <div className="space-y-3">
+                {/* Project Root */}
+                <div className="rounded-2xl border border-white/50 bg-white/30 backdrop-blur-md p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="w-8 h-8 rounded-lg bg-blue-500/15 flex items-center justify-center">
+                      <LayoutGrid className="w-4 h-4 text-blue-600" />
+                    </div>
+                    <div>
+                      <div className="text-sm font-semibold">Project Root</div>
+                      <div className="text-[11px] text-black/50">{files.length} file{files.length !== 1 ? "s" : ""} total</div>
+                    </div>
+                  </div>
+                  {files.length > 0 ? (
+                    <div className="flex flex-wrap gap-1.5">
+                      {files.map((f) => (
+                        <div key={f.id} className="inline-flex items-center gap-1.5 rounded-lg bg-white/50 border border-white/60 px-2.5 py-1 text-[11px] text-black/70">
+                          {f.kind === "image" ? <ImageIcon className="w-3 h-3 text-black/40" /> :
+                           f.kind === "video" ? <Video className="w-3 h-3 text-black/40" /> :
+                           f.kind === "audio" ? <Music className="w-3 h-3 text-black/40" /> :
+                           f.kind === "pdf" ? <FileText className="w-3 h-3 text-black/40" /> :
+                           f.kind === "doc" ? <StickyNote className="w-3 h-3 text-black/40" /> :
+                           f.kind === "link" ? <Link2 className="w-3 h-3 text-black/40" /> :
+                           <FileIcon className="w-3 h-3 text-black/40" />}
+                          <span className="truncate max-w-[120px]">{f.name}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-black/40">No files yet.</p>
+                  )}
+                </div>
+
+                {/* Boards */}
+                {boards.length > 0 ? boards.map((board) => {
+                  const boardFiles = files.filter((f) => f.folderId === board.folderId && board.folderId != null);
+                  return (
+                    <div key={board.id} className="rounded-2xl border border-white/50 bg-white/30 backdrop-blur-md p-4">
+                      <div className="flex items-center gap-2 mb-3">
+                        <div className="w-8 h-8 rounded-lg bg-blue-500/15 flex items-center justify-center">
+                          <BrickWall className="w-4 h-4 text-blue-500" />
+                        </div>
+                        <div>
+                          <div className="text-sm font-semibold">{board.title}</div>
+                          <div className="text-[11px] text-black/50">{boardFiles.length} file{boardFiles.length !== 1 ? "s" : ""}</div>
+                        </div>
+                      </div>
+                      {boardFiles.length > 0 ? (
+                        <div className="flex flex-wrap gap-1.5">
+                          {boardFiles.map((f) => (
+                            <div key={f.id} className="inline-flex items-center gap-1.5 rounded-lg bg-white/50 border border-white/60 px-2.5 py-1 text-[11px] text-black/70">
+                              {f.kind === "image" ? <ImageIcon className="w-3 h-3 text-black/40" /> :
+                               f.kind === "video" ? <Video className="w-3 h-3 text-black/40" /> :
+                               f.kind === "audio" ? <Music className="w-3 h-3 text-black/40" /> :
+                               f.kind === "pdf" ? <FileText className="w-3 h-3 text-black/40" /> :
+                               f.kind === "doc" ? <StickyNote className="w-3 h-3 text-black/40" /> :
+                               f.kind === "link" ? <Link2 className="w-3 h-3 text-black/40" /> :
+                               <FileIcon className="w-3 h-3 text-black/40" />}
+                              <span className="truncate max-w-[120px]">{f.name}</span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-[11px] text-black/40">No files in this board.</p>
+                      )}
+                    </div>
+                  );
+                }) : (
+                  <div className="rounded-2xl border border-white/50 bg-white/30 backdrop-blur-md p-4 text-center">
+                    <p className="text-[11px] text-black/40">No boards yet. Create one above.</p>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-5">
+                {/* Stat cards row */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  {[
+                    { label: "Boards", value: boards.length, color: "#1d4ed8" },
+                    { label: "Files", value: files.length, color: "#3b82f6" },
+                    { label: "Chats", value: chatMessages.filter((m) => m.role === "user").length, color: "#60a5fa" },
+                    { label: "Connections", value: connectionsLinks.length, color: "#93c5fd" },
+                  ].map((stat) => (
+                    <div key={stat.label} className="rounded-xl border border-white/50 bg-white/40 backdrop-blur-md p-3 text-center">
+                      <div className="text-xl font-bold" style={{ color: stat.color }}>{stat.value}</div>
+                      <div className="text-[11px] text-black/50 mt-0.5">{stat.label}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Bar chart: content breakdown */}
+                <div className="rounded-xl border border-white/50 bg-white/30 backdrop-blur-md p-4">
+                  <div className="text-xs font-semibold mb-3">Content Breakdown</div>
+                  <div className="space-y-2.5">
+                    {[
+                      { label: "Images", value: files.filter((f) => f.kind === "image").length, max: Math.max(files.length, 1), color: "#1d4ed8" },
+                      { label: "Videos", value: files.filter((f) => f.kind === "video").length, max: Math.max(files.length, 1), color: "#2563eb" },
+                      { label: "Documents", value: files.filter((f) => f.kind === "pdf" || f.kind === "doc").length, max: Math.max(files.length, 1), color: "#3b82f6" },
+                      { label: "Audio", value: files.filter((f) => f.kind === "audio").length, max: Math.max(files.length, 1), color: "#60a5fa" },
+                      { label: "Links", value: files.filter((f) => f.kind === "link").length, max: Math.max(files.length, 1), color: "#93c5fd" },
+                      { label: "Other", value: files.filter((f) => f.kind === "file").length, max: Math.max(files.length, 1), color: "#bfdbfe" },
+                    ].map((bar) => (
+                      <div key={bar.label} className="flex items-center gap-2">
+                        <span className="text-[11px] text-black/60 w-16 shrink-0">{bar.label}</span>
+                        <div className="flex-1 h-4 rounded-full bg-black/5 overflow-hidden">
+                          <div
+                            className="h-full rounded-full transition-all duration-500"
+                            style={{ width: `${Math.max((bar.value / bar.max) * 100, bar.value > 0 ? 8 : 0)}%`, backgroundColor: bar.color }}
+                          />
+                        </div>
+                        <span className="text-[11px] font-medium w-5 text-right">{bar.value}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Activity sparkline (filler) */}
+                <div className="rounded-xl border border-white/50 bg-white/30 backdrop-blur-md p-4">
+                  <div className="text-xs font-semibold mb-3">Weekly Activity</div>
+                  <div className="flex items-end gap-1.5 h-20">
+                    {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((day, i) => {
+                      const heights = [35, 55, 42, 68, 80, 25, 48];
+                      return (
+                        <div key={day} className="flex-1 flex flex-col items-center gap-1">
+                          <div
+                            className="w-full rounded-md transition-all duration-500"
+                            style={{
+                              height: `${heights[i]}%`,
+                              backgroundColor: i === new Date().getDay() - 1 ? "#3b82f6" : "rgba(0,0,0,0.08)",
+                            }}
+                          />
+                          <span className="text-[9px] text-black/40">{day}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Collaboration & storage (filler) */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="rounded-xl border border-white/50 bg-white/30 backdrop-blur-md p-4">
+                    <div className="text-xs font-semibold mb-2">Team Members</div>
+                    <div className="flex -space-x-2">
+                      {user?.user_metadata?.avatar_url ? (
+                        <img
+                          src={user.user_metadata.avatar_url}
+                          alt={user.user_metadata?.full_name || "You"}
+                          className="w-8 h-8 rounded-full border-2 border-white object-cover"
+                          referrerPolicy="no-referrer"
+                        />
+                      ) : (
+                        <div className="w-8 h-8 rounded-full border-2 border-white bg-blue-500 flex items-center justify-center text-[11px] font-bold text-white">
+                          {(user?.email?.[0] || "?").toUpperCase()}
+                        </div>
+                      )}
+                      {linkedTeams.map((team) => (
+                        <div
+                          key={team.id}
+                          className="w-8 h-8 rounded-full border-2 border-white flex items-center justify-center text-[10px] font-bold text-white cursor-default"
+                          style={{ background: team.color }}
+                          title={team.name}
+                        >
+                          {team.name.split(/\s+/).slice(0, 2).map((w) => w.charAt(0).toUpperCase()).join("")}
+                        </div>
+                      ))}
+                      <button
+                        type="button"
+                        className="w-8 h-8 rounded-full border-2 border-dashed border-blue-300 bg-blue-50 flex items-center justify-center text-blue-400 hover:bg-blue-100 transition-colors"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    <div className="text-[11px] text-black/50 mt-2">
+                      {linkedTeams.length > 0
+                        ? `${user?.user_metadata?.full_name || user?.email || "You"} · ${linkedTeams.map((t) => t.name).join(", ")}`
+                        : (user?.user_metadata?.full_name || user?.email || "1 member")}
+                    </div>
+                  </div>
+                  <div className="rounded-xl border border-white/50 bg-white/30 backdrop-blur-md p-4">
+                    <div className="text-xs font-semibold mb-2">Storage Used</div>
+                    <div className="relative h-2 rounded-full bg-black/5 overflow-hidden mt-3">
+                      <div className="h-full rounded-full bg-blue-500" style={{ width: "32%" }} />
+                    </div>
+                    <div className="flex items-center justify-between mt-2">
+                      <span className="text-[11px] text-black/50">3.2 GB</span>
+                      <span className="text-[11px] text-black/40">of 10 GB</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </section>
+        </div>
+
+        {/* Right: AI Summary + AI Suggestions */}
+        <div className="space-y-5 md:col-span-2 xl:col-span-1">
+          <section className="rounded-2xl border border-white/60 bg-[#e9e9ef]/75 backdrop-blur-lg shadow-xl shadow-white/20 p-5">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-sm font-semibold">AI Summary</h2>
+            </div>
+            <p className="text-xs text-black/70 leading-relaxed">
+              {projectSummary.summary}
+            </p>
+          </section>
+
+          <section className="rounded-2xl border border-white/60 bg-[#e9e9ef]/75 backdrop-blur-lg shadow-xl shadow-white/20 p-5">
+            <div className="mb-3">
+              <h2 className="text-sm font-semibold">AI Suggestions</h2>
+            </div>
+            <div className="space-y-2.5">
+              {[
+                ...(boards.length === 0
+                  ? [{ text: "Create your first board to start organizing ideas", action: "create-board", icon: "plus" }]
+                  : []),
+                ...(files.length === 0
+                  ? [{ text: "Drop files into the project to build your knowledge base", action: "add-files", icon: "file" }]
+                  : []),
+                ...(files.length > 0 && boards.length > 0
+                  ? [{ text: "Connect your files to boards in the Connections view", action: "connect", icon: "link" }]
+                  : []),
+                ...(boards.length >= 2
+                  ? [{ text: "Compare ideas across boards using the Graph view", action: "graph", icon: "graph" }]
+                  : []),
+                ...(chatMessages.filter((m) => m.role === "user").length === 0
+                  ? [{ text: "Start a chat to brainstorm with AI about this project", action: "chat", icon: "chat" }]
+                  : []),
+                ...(files.filter((f) => f.kind === "image").length >= 3
+                  ? [{ text: "You have several images — try creating a mood board", action: "mood", icon: "image" }]
+                  : []),
+                ...(boards.length > 5
+                  ? [{ text: "Consider archiving inactive boards to stay focused", action: "archive", icon: "archive" }]
+                  : []),
+                { text: "Review your project health score for improvement tips", action: "health", icon: "heart" },
+                { text: "Use quick notes to capture fleeting ideas instantly", action: "notes", icon: "note" },
+              ]
+                .slice(0, 5)
+                .map((suggestion) => (
+                  <button
+                    key={suggestion.action}
+                    type="button"
+                    onClick={() => {
+                      if (suggestion.action === "create-board") handleCreateBoard();
+                      else if (suggestion.action === "chat") setCenterTab("chats");
+                      else if (suggestion.action === "graph") setBottomTab("graph");
+                      else if (suggestion.action === "notes") setShowQuickNote(true);
+                    }}
+                    className="w-full text-left rounded-xl border border-white/50 bg-white/40 hover:bg-white/60 backdrop-blur-md p-3 transition-all group"
+                  >
+                    <div className="text-xs text-black/80 leading-relaxed group-hover:text-black">
+                      {suggestion.text}
+                    </div>
+                    <div className="text-[10px] text-black/40 mt-1 group-hover:text-black/55">
+                      Click to take action
+                    </div>
+                  </button>
+                ))}
+            </div>
+          </section>
+
+          {/* Project Health */}
+          <section className="rounded-2xl border border-white/60 bg-[#e9e9ef]/75 backdrop-blur-lg shadow-xl shadow-white/20 p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <Activity className="w-4 h-4 text-black/60" />
+              <h2 className="text-sm font-semibold">Project Health</h2>
+            </div>
+
+            <div className="flex items-center gap-3 mb-3">
+              <div
+                className="relative w-12 h-12 rounded-full flex items-center justify-center"
+                style={{
+                  background: `conic-gradient(${projectHealth.color} ${projectHealth.score * 3.6}deg, rgba(0,0,0,0.06) 0deg)`,
+                }}
+              >
+                <div className="w-9 h-9 rounded-full bg-[#e9e9ef] flex items-center justify-center text-xs font-bold">
+                  {projectHealth.score}
+                </div>
+              </div>
+              <div>
+                <div className="text-sm font-semibold" style={{ color: projectHealth.color }}>
+                  {projectHealth.label}
+                </div>
+                <div className="text-[11px] text-black/50">Health score</div>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="flex items-center gap-1.5 text-black/60">
+                  <Eye className="w-3.5 h-3.5" />
+                  Visits
+                </span>
+                <span className="font-medium">{projectHealth.visits}</span>
+              </div>
+              <div className="flex items-center justify-between text-xs">
+                <span className="flex items-center gap-1.5 text-black/60">
+                  <Clock className="w-3.5 h-3.5" />
+                  Time spent
+                </span>
+                <span className="font-medium">{formatTimeSpent(projectHealth.totalSeconds)}</span>
+              </div>
+              <div className="flex items-center justify-between text-xs">
+                <span className="flex items-center gap-1.5 text-black/60">
+                  <Activity className="w-3.5 h-3.5" />
+                  Last active
+                </span>
+                <span className="font-medium">{formatLastVisit(projectHealth.lastVisit)}</span>
+              </div>
+            </div>
+          </section>
+        </div>
       </main>
-
-      <aside className="hidden xl:block fixed top-28 w-[280px] z-20 left-[calc(50%+36rem+1.5rem)]">
-        <section className="rounded-2xl border border-white/60 bg-[#e9e9ef]/75 backdrop-blur-lg shadow-xl shadow-white/20 p-5">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold">AI Summary</h2>
-          </div>
-          <p className="text-xs text-black/70 leading-relaxed">
-            {projectSummary.summary}
-          </p>
-          <div className="mt-3">
-            <div className="text-[10px] font-semibold text-black/60 mb-2">Suggestions</div>
-            <ul className="space-y-1 text-[11px] text-black/70 list-disc pl-4">
-              {projectSummary.suggestions.map((item) => (
-                <li key={item}>{item}</li>
-              ))}
-            </ul>
-          </div>
-        </section>
-      </aside>
 
       {isDragging && (
         <div className="fixed inset-0 z-[90] bg-black/30 backdrop-blur-sm flex items-center justify-center">
@@ -1205,13 +2206,66 @@ If the user asks about old memories or references past ideas, refer to the memor
         />
       )}
 
+      {showQuickNote && (
+        <DraggableQuickNote
+          title={quickNoteTitle}
+          content={quickNoteContent}
+          setTitle={setQuickNoteTitle}
+          setContent={setQuickNoteContent}
+          isSaving={isQuickNoteSaving}
+          onSave={handleSaveQuickNote}
+          onClose={() => setShowQuickNote(false)}
+        />
+      )}
+
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={handleFileInputChange}
+      />
+
+      {/* Memory Sidebar */}
+      {showMemorySidebar && (
+        <aside
+          className="fixed top-0 right-0 z-[95] h-[100svh] w-[380px] max-w-[92vw] border-l border-white/20 bg-transparent"
+        >
+          <div className="h-full flex flex-col bg-transparent">
+            <div className="px-4 py-3 border-b border-black/10 flex items-center justify-between gap-3 bg-transparent">
+              <div>
+                <h2 className="text-sm font-semibold text-black">Memory</h2>
+                <p className="text-xs opacity-70">Full memory view</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowMemorySidebar(false)}
+                className="h-8 w-8 rounded-full hover:bg-black/10 transition-colors flex items-center justify-center"
+                title="Close memory sidebar"
+              >
+                <PanelRightClose className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="flex-1 min-h-0 bg-transparent">
+              <iframe
+                src="/memory?embedded=1"
+                title="Memory"
+                className="w-full h-full border-0"
+                allowTransparency={true as any}
+                style={{ backgroundColor: "transparent" }}
+              />
+            </div>
+          </div>
+        </aside>
+      )}
+
       <button
         type="button"
-        onClick={() => setShowChat((v) => !v)}
+        onClick={() => setShowQuickNote((v) => !v)}
         className="fixed bottom-6 right-6 w-12 h-12 rounded-full glass-control hover:opacity-90 shadow-lg hover:shadow-xl transition-all flex items-center justify-center z-[80]"
-        title="Chat with AI"
+        title="Quick Notes"
       >
-        <MessageSquare className="w-5 h-5" />
+        <StickyNote className="w-5 h-5" />
       </button>
     </div>
   );

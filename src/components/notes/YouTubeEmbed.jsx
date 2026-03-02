@@ -3,6 +3,44 @@ import { Play, ExternalLink, Loader2, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { extractYouTubeVideoId, getYouTubeEmbedUrl, getYouTubeWatchUrl } from '@/lib/youtubeUtils';
 
+const handleYouTubeDragStart = (e, youtubeUrl) => {
+  console.log("[IFRAME-YT-DRAG] handleYouTubeDragStart fired with URL:", youtubeUrl);
+  const resolvedUrl = String(youtubeUrl || '').trim();
+  if (!resolvedUrl) { console.log("[IFRAME-YT-DRAG] empty URL, aborting"); return; }
+
+  e.dataTransfer.setData("text/uri-list", resolvedUrl);
+  e.dataTransfer.setData("text/plain", resolvedUrl);
+
+  const pendingData = {
+    id: `yt-drag-${Date.now()}`,
+    title: '',
+    content: '',
+    attachments: [{ type: 'youtube', url: resolvedUrl }],
+    timestamp: Date.now()
+  };
+
+  try {
+    e.dataTransfer.setData("application/x-omnia-memory", JSON.stringify(pendingData));
+  } catch (_) { /* custom MIME type not supported */ }
+
+  try {
+    const target = window.parent !== window ? window.parent : window;
+    /** @type {any} */ (target).__omnia_pending_memory = pendingData;
+  } catch (_) { /* cross-origin guard */ }
+
+  try {
+    window.parent.postMessage({ type: "omnia-memory-drag-start", data: pendingData }, "*");
+  } catch (_) { /* cross-origin guard */ }
+
+  e.dataTransfer.effectAllowed = "copyMove";
+};
+
+const handleYouTubeDragEnd = () => {
+  try {
+    window.parent.postMessage({ type: "omnia-memory-drag-end" }, "*");
+  } catch (_) { /* cross-origin guard */ }
+};
+
 const YouTubeEmbed = React.memo(function YouTubeEmbed({ url, videoId, onRemove, onVideoDataLoaded, className = '', autoShowEmbed = false }) {
   const [videoData, setVideoData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -107,7 +145,12 @@ const YouTubeEmbed = React.memo(function YouTubeEmbed({ url, videoId, onRemove, 
   const watchUrl = getYouTubeWatchUrl(id);
   
   return (
-    <div className={`border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden bg-white dark:bg-[#171515] shadow-lg w-full ${className}`}>
+    <div
+      draggable={!showEmbed}
+      onDragStart={(e) => handleYouTubeDragStart(e, url || watchUrl)}
+      onDragEnd={handleYouTubeDragEnd}
+      className={`border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden bg-white dark:bg-[#171515] shadow-lg w-full ${!showEmbed ? 'cursor-grab active:cursor-grabbing' : ''} ${className}`}
+    >
       {!showEmbed ? (
         // Thumbnail preview - consistent styling for all videos
         <div className="relative group cursor-pointer" onClick={handlePlayClick}>
@@ -117,6 +160,7 @@ const YouTubeEmbed = React.memo(function YouTubeEmbed({ url, videoId, onRemove, 
                 src={videoData.thumbnail} 
                 alt={videoData.title || 'YouTube Video'}
                 className="w-full h-full object-cover"
+                draggable="false"
               />
             ) : (
               <div className="w-full h-full flex items-center justify-center">

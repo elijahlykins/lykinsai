@@ -31,6 +31,11 @@ export type BrickShellRenderOptions = {
   onTypingChange?: (id: string, value: string, meta?: { isPaste?: boolean }) => void;
   onTypingKeyDown?: (id: string, e: React.KeyboardEvent<HTMLDivElement>) => void;
   onTypingBlur?: (id: string) => void;
+  enableWidthResize?: boolean;
+  resizeGridSize?: number;
+  resizeMinWidth?: number;
+  resizeMaxWidth?: number;
+  onResizeWidth?: (id: string, width: number) => void;
 };
 
 export function toBrickShellModel(block: Block | any): BrickShellModel {
@@ -673,6 +678,37 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
   const isTyping = Boolean(opts?.isTyping);
   const handlePointerDown = (e: any) => opts?.onPress?.(shell.id, Boolean(e?.shiftKey), "pointerdown");
   const handleClick = (e: any) => opts?.onPress?.(shell.id, Boolean(e?.shiftKey), "click");
+  const canResizeWidth = Boolean(opts?.enableWidthResize && typeof opts?.onResizeWidth === "function");
+  const startWidthResize = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!canResizeWidth) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const pointerId = e.pointerId;
+    const startX = Number(e.clientX || 0);
+    const startWidth = Math.max(1, Number(shell.width || BRICK_BEHAVIOR.gridSize));
+    const grid = Math.max(1, Math.floor(Number(opts?.resizeGridSize || BRICK_BEHAVIOR.gridSize)));
+    const minWidth = Math.max(grid, Math.floor(Number(opts?.resizeMinWidth || grid * 8)));
+    const maxWidth = Math.max(minWidth, Math.floor(Number(opts?.resizeMaxWidth || grid * 60)));
+
+    const onMove = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
+      const deltaX = Number(ev.clientX || 0) - startX;
+      const rawWidth = startWidth + deltaX;
+      const snapped = Math.round(rawWidth / grid) * grid;
+      const nextWidth = Math.max(minWidth, Math.min(maxWidth, snapped));
+      opts?.onResizeWidth?.(shell.id, nextWidth);
+    };
+    const onEnd = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onEnd);
+      window.removeEventListener("pointercancel", onEnd);
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onEnd);
+    window.addEventListener("pointercancel", onEnd);
+  };
   const labelEl = BRICK_BEHAVIOR.showHoverLabel
     ? React.createElement(
         "div",
@@ -722,6 +758,16 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
         onTypingKeyDown: opts?.onTypingKeyDown,
         onTypingBlur: opts?.onTypingBlur,
       }),
+      canResizeWidth
+        ? React.createElement("div", {
+            "data-resize-handle": true,
+            className:
+              "absolute top-0 right-0 h-full w-3 cursor-ew-resize rounded-r hover:bg-black/10 transition-colors",
+            title: "Drag to resize width",
+            onPointerDown: startWidthResize,
+            onClick: (e: any) => e.stopPropagation(),
+          })
+        : null,
       labelEl
     )
   );

@@ -1,11 +1,14 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { ArrowLeft, ChevronDown, ChevronUp, MessageSquare, Mic, Plus, Trash2, Volume2 } from "lucide-react";
+import { ArrowLeft, BookOpen, ChevronDown, ChevronUp, Clock, Edit2, FileText, Folder as FolderIcon, Image as ImageIcon, Link2, MessageSquare, Mic, MoreHorizontal, Music, Play, Plus, StickyNote, Trash2, Video, Volume2, X } from "lucide-react";
+import { extractYouTubeVideoId, getYouTubeEmbedUrl } from "@/canvas/utils/youtube";
+import DraggableQuickNote from "@/components/notes/DraggableQuickNote";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { supabase } from "@/lib/supabase";
+import RichTextRenderer from "@/components/notes/RichTextRenderer";
 
 const DEFAULT_MODEL = "gemini-flash-latest";
 const TYPING_DELAY_MS = 14;
@@ -15,13 +18,117 @@ const BASE_ROTATING_PHRASES = [
   "How can I help today?",
   "What's on your mind?",
   "Where should we begin.",
-  "Start a conversation.",
-  "Type a question to begin.",
-  "I'm ready when you are.",
 ];
 
 const CHAT_TO_BOARD_IMPORT_KEY = "omnia_chat_board_import_v1";
+const CANVAS_TO_CHAT_HANDOFF_KEY = "omnia_canvas_to_chat_handoff_v1";
+const CHAT_ATTACHMENTS_PERSIST_KEY = "omnia_chat_attachments_v1";
+const CHAT_MESSAGES_PERSIST_KEY = "omnia_chat_messages_v1";
+const MEMORY_DRAG_MIME = "application/x-lykins-memory-card";
+const OMNIA_MEMORY_MIME = "application/x-omnia-memory";
 const TASK_LINE_RE = /^\s*(?:[-*]\s+)?\[([ xX])\]\s+(.+)$/;
+const FILE_ATTACHMENT_EXTS = new Set([
+  "png",
+  "jpg",
+  "jpeg",
+  "gif",
+  "webp",
+  "svg",
+  "bmp",
+  "avif",
+  "heic",
+  "mp4",
+  "mov",
+  "webm",
+  "mkv",
+  "avi",
+  "mp3",
+  "wav",
+  "m4a",
+  "ogg",
+  "aac",
+  "flac",
+  "pdf",
+  "doc",
+  "docx",
+  "ppt",
+  "pptx",
+  "xls",
+  "xlsx",
+  "csv",
+  "txt",
+  "md",
+  "json",
+]);
+
+const isYouTubeUrl = (url = "") =>
+  /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\//i.test(String(url).trim());
+
+const getUrlExtension = (url = "") => {
+  const raw = String(url || "").trim();
+  if (!raw) return "";
+  try {
+    const parsed = new URL(raw);
+    const fileName = decodeURIComponent(parsed.pathname.split("/").pop() || "");
+    return String(fileName.split(".").pop() || "").toLowerCase();
+  } catch {
+    const noQuery = raw.split("?")[0].split("#")[0];
+    const fileName = decodeURIComponent(noQuery.split("/").pop() || "");
+    return String(fileName.split(".").pop() || "").toLowerCase();
+  }
+};
+
+const inferAttachmentType = (mime = "", fileName = "") => {
+  const m = String(mime || "").toLowerCase();
+  const ext = String(fileName || "").split(".").pop()?.toLowerCase() || "";
+  if (m.startsWith("image/")) return "image";
+  if (m.startsWith("video/")) return "video";
+  if (m.startsWith("audio/")) return "audio";
+  if (m === "application/pdf" || ext === "pdf") return "pdf";
+  if (["doc", "docx"].includes(ext)) return "doc";
+  if (["xls", "xlsx", "csv"].includes(ext)) return "sheet";
+  if (["ppt", "pptx"].includes(ext)) return "slide";
+  return "file";
+};
+
+const inferUrlAttachmentType = (url = "") => {
+  const trimmed = String(url || "").trim();
+  if (!trimmed) return "link";
+  if (isYouTubeUrl(trimmed)) return "youtube";
+  const ext = getUrlExtension(trimmed);
+  if (["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif", "heic"].includes(ext)) return "image";
+  if (["mp4", "mov", "webm", "mkv", "avi"].includes(ext)) return "video";
+  if (["mp3", "wav", "m4a", "ogg", "aac", "flac"].includes(ext)) return "audio";
+  if (ext === "pdf") return "pdf";
+  if (FILE_ATTACHMENT_EXTS.has(ext)) return "file";
+  return "link";
+};
+
+const extractDroppedUrls = (dataTransfer) => {
+  if (!dataTransfer) return [];
+  const uri = String(dataTransfer.getData("text/uri-list") || "");
+  const plain = String(dataTransfer.getData("text/plain") || "");
+  const html = String(dataTransfer.getData("text/html") || "");
+  const out = [];
+  for (const line of uri.split("\n")) {
+    const value = String(line || "").trim();
+    if (value && !value.startsWith("#")) out.push(value);
+  }
+  for (const match of plain.match(/https?:\/\/[^\s<>"')]+/gi) || []) out.push(String(match || "").trim());
+  for (const match of html.match(/href=["']([^"']+)["']/gi) || []) {
+    const value = String(match || "").replace(/^href=["']|["']$/gi, "").trim();
+    if (value) out.push(value);
+  }
+  return Array.from(new Set(out.filter(Boolean)));
+};
+
+const isValidCanvasHandoff = (payload) => {
+  if (!payload || typeof payload !== "object") return false;
+  if (String(payload.source || "") !== "canvas-page") return false;
+  const createdAt = Number(payload.createdAt || 0);
+  if (!Number.isFinite(createdAt) || createdAt <= 0) return false;
+  return Date.now() - createdAt <= 30 * 60 * 1000;
+};
 
 const flattenNodeText = (node) => {
   if (node == null || typeof node === "boolean") return "";
@@ -112,31 +219,114 @@ const extractTodoListsForBoardImport = (messages) => {
   return lists;
 };
 
+const stripAttachmentMetadata = (content = "") => {
+  let text = String(content || "");
+  const marker = "\n\n---ATTACHMENTS---\n";
+  const idx = text.indexOf(marker);
+  if (idx !== -1) text = text.slice(0, idx).trim();
+
+  const startMarker = "[ATTACHMENTS_JSON:";
+  const startIndex = text.indexOf(startMarker);
+  if (startIndex !== -1) {
+    const jsonStart = startIndex + startMarker.length;
+    let bracketCount = 0;
+    let jsonEnd = jsonStart;
+    for (let i = jsonStart; i < text.length; i += 1) {
+      if (text[i] === "[") bracketCount += 1;
+      if (text[i] === "]") {
+        bracketCount -= 1;
+        if (bracketCount === 0) {
+          jsonEnd = i + 1;
+          break;
+        }
+      }
+    }
+    if (jsonEnd > jsonStart) {
+      text = `${text.substring(0, startIndex)}${text.substring(jsonEnd)}`.replace(/\n\n\n+/g, "\n\n").trim();
+    }
+  }
+  return text;
+};
+
+const parseAttachmentsFromContent = (content = "") => {
+  const text = String(content || "");
+  const startMarker = "[ATTACHMENTS_JSON:";
+  const startIndex = text.indexOf(startMarker);
+  if (startIndex === -1) return [];
+  const jsonStart = startIndex + startMarker.length;
+  let bracketCount = 0;
+  let jsonEnd = jsonStart;
+  for (let i = jsonStart; i < text.length; i += 1) {
+    if (text[i] === "[") bracketCount += 1;
+    if (text[i] === "]") {
+      bracketCount -= 1;
+      if (bracketCount === 0) {
+        jsonEnd = i + 1;
+        break;
+      }
+    }
+  }
+  if (jsonEnd <= jsonStart) return [];
+  try {
+    const parsed = JSON.parse(text.substring(jsonStart, jsonEnd));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
+const formatMemoryCardDate = (note) => {
+  const raw = note?.created_at || note?.updated_at;
+  if (!raw) return "No date";
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return "No date";
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+};
+
 export default function ChatPage() {
   const nav = useNavigate();
+  const location = useLocation();
   const { user } = useAuth();
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [selectedModel, setSelectedModel] = useState(DEFAULT_MODEL);
   const [topPanelOpen, setTopPanelOpen] = useState(true);
-  const [phraseIndex, setPhraseIndex] = useState(0);
+  const [typedWelcome, setTypedWelcome] = useState("");
   const [isDictating, setIsDictating] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [attachmentCount, setAttachmentCount] = useState(0);
+  const [attachments, setAttachments] = useState([]);
+  const [isDragOver, setIsDragOver] = useState(false);
   const [assistantTaskChecks, setAssistantTaskChecks] = useState({});
+  const [showQuickNote, setShowQuickNote] = useState(false);
+  const [quickNoteContent, setQuickNoteContent] = useState("");
+  const [isQuickNoteSaving, setIsQuickNoteSaving] = useState(false);
+  const [showMemorySidebar, setShowMemorySidebar] = useState(false);
+  const [memoryNotes, setMemoryNotes] = useState([]);
+  const [memoryLoading, setMemoryLoading] = useState(false);
+  const [memoryError, setMemoryError] = useState("");
+  const [memorySearch, setMemorySearch] = useState("");
+  const [interactionNote, setInteractionNote] = useState(null);
+  const DialogAny = /** @type {any} */ (Dialog);
+  const DialogContentAny = /** @type {any} */ (DialogContent);
+  const DialogHeaderAny = /** @type {any} */ (DialogHeader);
+  const DialogTitleAny = /** @type {any} */ (DialogTitle);
+  const DialogDescriptionAny = /** @type {any} */ (DialogDescription);
   const scrollRef = useRef(null);
+  const composerInputRef = useRef(null);
   const fileInputRef = useRef(null);
   const mediaRecorderRef = useRef(null);
   const mediaStreamRef = useRef(null);
   const audioChunksRef = useRef([]);
+  const canvasHandoffAppliedRef = useRef(false);
 
   const rotatingPhrases = useMemo(() => {
     const emailName = String(user?.email || "").split("@")[0].trim();
     const fullName = String(user?.user_metadata?.full_name || user?.user_metadata?.name || "").trim();
     const firstName = fullName ? fullName.split(/\s+/)[0] : "";
     const preferredName = String(firstName || emailName || "there").trim();
-    return [...BASE_ROTATING_PHRASES, `Welcome back, ${preferredName}`];
+    return [`Welcome back, ${preferredName}`, ...BASE_ROTATING_PHRASES];
   }, [user?.email, user?.user_metadata?.full_name, user?.user_metadata?.name]);
 
   useEffect(() => {
@@ -159,6 +349,87 @@ export default function ChatPage() {
     };
   }, []);
 
+  useEffect(() => {
+    if (canvasHandoffAppliedRef.current) return;
+
+    let payload = null;
+    const statePayload = location.state?.canvasChatHandoff;
+    if (isValidCanvasHandoff(statePayload)) {
+      payload = statePayload;
+    } else {
+      try {
+        const raw = localStorage.getItem(CANVAS_TO_CHAT_HANDOFF_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (isValidCanvasHandoff(parsed)) payload = parsed;
+        }
+      } catch {
+        // ignore malformed local payloads
+      }
+    }
+
+    if (!payload) return;
+    canvasHandoffAppliedRef.current = true;
+
+    const importedMessages = Array.isArray(payload.messages)
+      ? payload.messages
+          .map((msg) => {
+            const role = msg?.role === "assistant" ? "assistant" : msg?.role === "user" ? "user" : null;
+            const content = String(msg?.content || "").trim();
+            if (!role || !content) return null;
+            return { role, content, ...(Array.isArray(msg?.attachments) && msg.attachments.length > 0 ? { attachments: msg.attachments } : {}) };
+          })
+          .filter(Boolean)
+      : [];
+
+    const draftInput = String(payload.draftInput || "").trim();
+    const handoffAttachments = Array.isArray(payload.attachments) ? payload.attachments : [];
+
+    if (importedMessages.length > 0) {
+      setMessages(importedMessages);
+    }
+    if (draftInput) {
+      setInput(draftInput);
+    }
+    if (handoffAttachments.length > 0) {
+      setAttachments(handoffAttachments);
+      setAttachmentCount(handoffAttachments.length);
+    }
+
+    try {
+      localStorage.removeItem(CANVAS_TO_CHAT_HANDOFF_KEY);
+      localStorage.removeItem(CHAT_MESSAGES_PERSIST_KEY);
+    } catch {
+      // ignore cleanup failures
+    }
+  }, [location.state]);
+
+  useEffect(() => {
+    if (attachments.length > 0 || canvasHandoffAppliedRef.current) return;
+    try {
+      const raw = localStorage.getItem(CHAT_ATTACHMENTS_PERSIST_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setAttachments(parsed);
+          setAttachmentCount(parsed.length);
+        }
+        localStorage.removeItem(CHAT_ATTACHMENTS_PERSIST_KEY);
+      }
+    } catch { /* ignore */ }
+
+    try {
+      const rawMsgs = localStorage.getItem(CHAT_MESSAGES_PERSIST_KEY);
+      if (rawMsgs) {
+        const parsedMsgs = JSON.parse(rawMsgs);
+        if (Array.isArray(parsedMsgs) && parsedMsgs.length > 0) {
+          setMessages(parsedMsgs);
+        }
+        localStorage.removeItem(CHAT_MESSAGES_PERSIST_KEY);
+      }
+    } catch { /* ignore */ }
+  }, []);
+
   const updateSelectedModel = (value) => {
     setSelectedModel(value);
     try {
@@ -174,12 +445,29 @@ export default function ChatPage() {
 
   useEffect(() => {
     if (!scrollRef.current) return;
-    scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    scrollRef.current.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages, isLoading]);
 
   useEffect(() => {
-    setPhraseIndex(Math.floor(Math.random() * rotatingPhrases.length));
-  }, [rotatingPhrases.length]);
+    const t = window.setTimeout(() => {
+      composerInputRef.current?.focus();
+    }, 0);
+    return () => window.clearTimeout(t);
+  }, [isLoading]);
+
+  useEffect(() => {
+    if (!rotatingPhrases.length) return;
+    const text = rotatingPhrases[Math.floor(Math.random() * rotatingPhrases.length)];
+    setTypedWelcome("");
+    if (!text) return;
+    let i = 0;
+    const timer = window.setInterval(() => {
+      i += 1;
+      setTypedWelcome(text.slice(0, i));
+      if (i >= text.length) window.clearInterval(timer);
+    }, 52);
+    return () => window.clearInterval(timer);
+  }, [rotatingPhrases]);
 
   useEffect(() => {
     return () => {
@@ -201,6 +489,64 @@ export default function ChatPage() {
     };
   }, []);
 
+  useEffect(() => {
+    const hasSupportedDropData = (event) => {
+      const types = event?.dataTransfer?.types;
+      if (!types) return false;
+      const allTypes = Array.from(types);
+      return (
+        allTypes.includes("Files") ||
+        allTypes.includes("text/uri-list") ||
+        allTypes.includes("text/plain") ||
+        allTypes.includes(MEMORY_DRAG_MIME) ||
+        allTypes.includes(OMNIA_MEMORY_MIME)
+      );
+    };
+    const win = /** @type {any} */ (window);
+    const onWindowDragEnter = (event) => {
+      if (!hasSupportedDropData(event) && !win.__omnia_pending_memory) return;
+      event.preventDefault();
+      setIsDragOver(true);
+    };
+    const onWindowDragOver = (event) => {
+      if (!hasSupportedDropData(event) && !win.__omnia_pending_memory) return;
+      event.preventDefault();
+      setIsDragOver(true);
+    };
+    const onWindowDragLeave = (event) => {
+      if (!hasSupportedDropData(event) && !win.__omnia_pending_memory) return;
+      event.preventDefault();
+      setIsDragOver(false);
+    };
+    const onWindowDrop = (event) => {
+      event.preventDefault();
+      setIsDragOver(false);
+      handleDropPayload(event);
+    };
+
+    win.addEventListener("dragenter", onWindowDragEnter);
+    win.addEventListener("dragover", onWindowDragOver);
+    win.addEventListener("dragleave", onWindowDragLeave);
+    win.addEventListener("drop", onWindowDrop);
+
+    const onMessage = (event) => {
+      if (event.data?.type === "omnia-memory-drag-start") {
+        win.__omnia_pending_memory = event.data.data;
+      } else if (event.data?.type === "omnia-memory-drag-end") {
+        // Cleaned up after drop in handleDropPayload
+      }
+    };
+    win.addEventListener("message", onMessage);
+
+    return () => {
+      win.removeEventListener("dragenter", onWindowDragEnter);
+      win.removeEventListener("dragover", onWindowDragOver);
+      win.removeEventListener("dragleave", onWindowDragLeave);
+      win.removeEventListener("drop", onWindowDrop);
+      win.removeEventListener("message", onMessage);
+    };
+  }, []);
+
   const conversation = useMemo(
     () =>
       messages.map((m) => ({
@@ -210,27 +556,149 @@ export default function ChatPage() {
     [messages]
   );
 
+  const filteredMemoryNotes = useMemo(() => {
+    const query = String(memorySearch || "").trim().toLowerCase();
+    const visibleNotes = memoryNotes.filter((note) => !note?.trashed);
+    if (!query) return visibleNotes;
+    return visibleNotes.filter((note) => {
+      const title = String(note?.title || "").toLowerCase();
+      const content = String(note?.content || "").toLowerCase();
+      const folder = String(note?.folder || "").toLowerCase();
+      return title.includes(query) || content.includes(query) || folder.includes(query);
+    });
+  }, [memoryNotes, memorySearch]);
+
+  const memoryNotesByFolder = useMemo(() => {
+    const grouped = filteredMemoryNotes.reduce((acc, note) => {
+      const folderName = String(note?.folder || "Uncategorized").trim() || "Uncategorized";
+      if (!acc[folderName]) acc[folderName] = [];
+      acc[folderName].push(note);
+      return acc;
+    }, {});
+    const sortedFolders = Object.keys(grouped).sort((a, b) => {
+      if (a === "Uncategorized") return 1;
+      if (b === "Uncategorized") return -1;
+      return a.localeCompare(b);
+    });
+    return { grouped, sortedFolders };
+  }, [filteredMemoryNotes]);
+
   const sendMessage = async () => {
     const text = String(input || "").trim();
     if (!text || isLoading) return;
 
-    const userMessage = { role: "user", content: text };
+    const userAttachments = attachments.slice();
+
+    // Fetch transcripts for any YouTube attachments that don't have one yet
+    const { API_BASE_URL } = await import("@/lib/api-config");
+    await Promise.all(
+      userAttachments.map(async (att) => {
+        if (att.type !== "youtube" || att.transcript) return;
+        const vid = att.videoId || extractYouTubeVideoId(att.url || "");
+        if (!vid) return;
+        try {
+          const resp = await fetch(`${API_BASE_URL}/api/youtube/transcript?id=${encodeURIComponent(vid)}`);
+          if (resp.ok) {
+            const data = await resp.json();
+            if (data?.transcript) att.transcript = data.transcript;
+          }
+        } catch { /* proceed without transcript */ }
+      })
+    );
+
+    // Extract text from PDF attachments that don't have pdfText yet
+    await Promise.all(
+      userAttachments.map(async (att) => {
+        if (att.pdfText || att.extractedText) return;
+        const isPdf = att.type === "pdf" || att.mime === "application/pdf" ||
+          /\.pdf(\?|$)/i.test(att.url || "") || /\.pdf$/i.test(att.name || "");
+        if (!isPdf || !att.url) return;
+        try {
+          const resp = await fetch(att.url);
+          if (!resp.ok) return;
+          const bytes = await resp.arrayBuffer();
+          const [pdfjsLegacy, workerUrlMod] = await Promise.all([
+            import("pdfjs-dist/legacy/build/pdf.mjs"),
+            import("pdfjs-dist/legacy/build/pdf.worker.min.mjs?url"),
+          ]);
+          if (pdfjsLegacy?.GlobalWorkerOptions) {
+            pdfjsLegacy.GlobalWorkerOptions.workerSrc = String(workerUrlMod?.default || "");
+          }
+          const loadingTask = pdfjsLegacy.getDocument({ data: bytes });
+          const pdf = await loadingTask.promise;
+          const pageCount = Number(pdf?.numPages || 0);
+          const maxPages = Math.min(pageCount, 20);
+          const pages = [];
+          for (let p = 1; p <= maxPages; p++) {
+            try {
+              const page = await pdf.getPage(p);
+              const tc = await page.getTextContent();
+              const text = (tc?.items || []).map((/** @type {any} */ i) => i?.str || "").join(" ").trim();
+              if (text) pages.push(`--- Page ${p} ---\n${text}`);
+            } catch { /* skip page */ }
+          }
+          if (pages.length > 0) {
+            att.pdfText = pages.join("\n\n");
+          }
+        } catch { /* proceed without PDF text */ }
+      })
+    );
+
+    const userMessage = { role: "user", content: text, attachments: userAttachments };
     const assistantMessageIndex = messages.length + 1;
     setMessages((prev) => [...prev, userMessage, { role: "assistant", content: "" }]);
     setInput("");
+    setAttachments([]);
     setIsLoading(true);
 
     try {
-      const { API_BASE_URL } = await import("@/lib/api-config");
+      const attachmentContext = userAttachments
+        .map((att) => {
+          const parts = [];
+          const label = att.memoryTitle || att.name || "";
+          if (att.type === "youtube" && att.transcript) {
+            parts.push(`[YouTube Video: ${label}]`);
+            parts.push(`Transcript:\n${att.transcript}`);
+          } else if (att.type === "youtube" && att.videoId) {
+            parts.push(`[YouTube Video: ${label}] (video ID: ${att.videoId}, no transcript available)`);
+          } else if (att.transcript) {
+            parts.push(`[Video/Audio: ${label}]`);
+            parts.push(`Transcript:\n${att.transcript}`);
+          } else if (att.pdfText) {
+            parts.push(`[Document: ${label}]`);
+            parts.push(`Content:\n${att.pdfText}`);
+          } else if (att.type === "memory" && att.memoryContent) {
+            parts.push(`[Memory: ${label}]`);
+            parts.push(att.memoryContent);
+          }
+          return parts.join("\n");
+        })
+        .filter(Boolean)
+        .join("\n\n---\n\n");
+
+      const prompt = attachmentContext
+        ? `${text}\n\n[Attached content from the user's memories — use this to answer their question]\n${attachmentContext}`
+        : text;
+
+      const imageUrls = userAttachments
+        .filter((a) => a.type === "image" && a.url)
+        .map((a) => a.url);
+
+      if (imageUrls.length > 0) {
+        console.log(`🖼️ Sending ${imageUrls.length} image(s) to AI:`, imageUrls.map((u) => u.slice(0, 60)));
+      }
+
       const res = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: selectedModel || DEFAULT_MODEL,
           intent: "ask",
-          text,
-          prompt: text,
-          conversation: [...conversation, userMessage],
+          text: prompt,
+          prompt,
+          attachments: userAttachments,
+          imageUrls,
+          conversation: [...conversation, { ...userMessage, content: prompt }],
           returnActions: false,
         }),
       });
@@ -275,6 +743,233 @@ export default function ChatPage() {
 
   const handleOpenAttachments = () => {
     fileInputRef.current?.click();
+  };
+
+  const loadMemoryNotes = async () => {
+    if (!user?.id) {
+      setMemoryNotes([]);
+      setMemoryError("Sign in to access memories.");
+      return;
+    }
+    setMemoryLoading(true);
+    setMemoryError("");
+    try {
+      let data = null;
+      let error = null;
+      const fetchWithColumns = async (columns) =>
+        supabase.from("notes").select(columns).eq("user_id", user.id).order("updated_at", { ascending: false }).limit(500);
+      ({ data, error } = await supabase
+        .from("notes")
+        .select("id, title, content, attachments, folder, updated_at, created_at, tags, connected_notes, trashed")
+        .eq("user_id", user.id)
+        .order("updated_at", { ascending: false })
+        .limit(500));
+      if (error && /column .*notes\.folder/i.test(String(error?.message || ""))) {
+        ({ data, error } = await fetchWithColumns("id, title, content, attachments, updated_at, created_at, tags, connected_notes, trashed"));
+      }
+      if (error && /column .*notes\.attachments/i.test(String(error?.message || ""))) {
+        ({ data, error } = await fetchWithColumns("id, title, content, updated_at, created_at, tags, connected_notes, trashed"));
+      }
+      if (error && /column .*notes\.(tags|connected_notes|trashed)/i.test(String(error?.message || ""))) {
+        ({ data, error } = await fetchWithColumns("id, title, content, updated_at, created_at"));
+      }
+      if (error) throw error;
+      setMemoryNotes(
+        Array.isArray(data)
+          ? data.map((note) => {
+              const directAttachments = Array.isArray(note?.attachments) ? note.attachments : [];
+              const parsedAttachments = parseAttachmentsFromContent(note?.content || "");
+              return { ...note, attachments: directAttachments.length ? directAttachments : parsedAttachments };
+            })
+          : []
+      );
+    } catch (err) {
+      setMemoryError(String(err?.message || "Unable to load memories."));
+      setMemoryNotes([]);
+    } finally {
+      setMemoryLoading(false);
+    }
+  };
+
+  const useMemoryInChat = (note) => {
+    const titleText = String(note?.title || "Untitled memory").trim() || "Untitled memory";
+    const noteBody = stripAttachmentMetadata(String(note?.content || "").trim());
+    const injected = noteBody ? `Use this memory as context:\n[${titleText}]\n${noteBody}` : `Use this memory as context:\n[${titleText}]`;
+    setInput((prev) => {
+      const base = String(prev || "").trim();
+      return base ? `${base}\n\n${injected}` : injected;
+    });
+    setShowMemorySidebar(false);
+    window.setTimeout(() => composerInputRef.current?.focus(), 0);
+  };
+
+  const removeAttachment = (id) => {
+    setAttachments((prev) => {
+      const next = prev.filter((a) => a.id !== id);
+      setAttachmentCount(next.length);
+      return next;
+    });
+  };
+
+  const attachFiles = (files = []) => {
+    if (!Array.isArray(files) || files.length === 0) return;
+    files.forEach((file) => {
+      const f = file;
+      if (!f) return;
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const id =
+          (typeof crypto !== "undefined" && crypto.randomUUID && crypto.randomUUID()) ||
+          `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const attachment = {
+          id,
+          type: inferAttachmentType(f.type || "", f.name || ""),
+          url: String(event?.target?.result || ""),
+          name: f.name || "file",
+          mime: f.type || "",
+          size: Number(f.size || 0),
+        };
+        setAttachments((prev) => {
+          const next = [...prev, attachment];
+          setAttachmentCount(next.length);
+          return next;
+        });
+      };
+      reader.readAsDataURL(f);
+    });
+  };
+
+  const attachUrl = (url) => {
+    const trimmed = String(url || "").trim();
+    if (!trimmed) return;
+    const id =
+      (typeof crypto !== "undefined" && crypto.randomUUID && crypto.randomUUID()) ||
+      `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const attachment = {
+      id,
+      type: inferUrlAttachmentType(trimmed),
+      url: trimmed,
+      name: trimmed,
+      mime: "",
+      size: 0,
+    };
+    setAttachments((prev) => {
+      const next = [...prev, attachment];
+      setAttachmentCount(next.length);
+      return next;
+    });
+  };
+
+  const resolveSupabaseUrl = async (rawUrl, storagePath, storageBucket) => {
+    if (rawUrl && (rawUrl.startsWith("http") || rawUrl.startsWith("data:"))) return rawUrl;
+    const path = storagePath || rawUrl;
+    const bucket = storageBucket || "user-files";
+    if (!path) return rawUrl;
+    try {
+      const { data } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 60 * 24);
+      if (data?.signedUrl) return data.signedUrl;
+    } catch { /* ignore */ }
+    return rawUrl;
+  };
+
+  const applyMemoryDrop = async (payload) => {
+    if (!payload) return false;
+    const title = String(payload.title || "Memory").trim();
+    const content = String(payload.content || "").trim();
+    const payloadAttachments = Array.isArray(payload.attachments) ? payload.attachments : [];
+
+    if (payloadAttachments.length > 0) {
+      for (const att of payloadAttachments) {
+        let url = String(att?.url || "").trim();
+        if (!url) continue;
+        const attType = String(att?.type || "").toLowerCase();
+        const videoId = att?.videoId || (attType === "youtube" ? extractYouTubeVideoId(url) : "") || "";
+
+        if (!url.startsWith("http") && !url.startsWith("data:") && attType !== "youtube") {
+          url = await resolveSupabaseUrl(url, att?.storagePath, att?.storageBucket);
+        }
+
+        const id =
+          (typeof crypto !== "undefined" && crypto.randomUUID && crypto.randomUUID()) ||
+          `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+        const transcript = String(att?.transcript || "").trim();
+        const pdfText = String(att?.pdfText || att?.extractedText || "").trim();
+        const newAtt = {
+          id,
+          type: attType || inferUrlAttachmentType(url),
+          url,
+          name: String(att?.name || att?.title || title || url).trim(),
+          mime: String(att?.mime || ""),
+          size: Number(att?.size || 0),
+          memoryTitle: title,
+          ...(videoId ? { videoId } : {}),
+          ...(transcript ? { transcript } : {}),
+          ...(pdfText ? { pdfText } : {}),
+        };
+        setAttachments((prev) => {
+          const next = [...prev, newAtt];
+          setAttachmentCount(next.length);
+          return next;
+        });
+      }
+    } else if (content) {
+      const id =
+        (typeof crypto !== "undefined" && crypto.randomUUID && crypto.randomUUID()) ||
+        `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      setAttachments((prev) => {
+        const next = [
+          ...prev,
+          { id, type: "memory", url: "", name: title || "Memory", mime: "", size: 0, memoryTitle: title, memoryContent: content },
+        ];
+        setAttachmentCount(next.length);
+        return next;
+      });
+    }
+    window.setTimeout(() => composerInputRef.current?.focus(), 0);
+    return true;
+  };
+
+  const handleDropPayload = async (event) => {
+    const win = /** @type {any} */ (window);
+    // 1. Cross-iframe memory drop via __omnia_pending_memory (set by postMessage or direct assignment)
+    const pendingMemory = win.__omnia_pending_memory;
+    if (pendingMemory && typeof pendingMemory === "object" && pendingMemory.timestamp) {
+      const age = Date.now() - Number(pendingMemory.timestamp || 0);
+      if (age < 30000) {
+        await applyMemoryDrop(pendingMemory);
+        win.__omnia_pending_memory = null;
+        return;
+      }
+      win.__omnia_pending_memory = null;
+    }
+
+    // 2. application/x-omnia-memory MIME (same-window drags)
+    let omniaRaw = "";
+    try { omniaRaw = String(event?.dataTransfer?.getData?.(OMNIA_MEMORY_MIME) || ""); } catch {}
+    if (omniaRaw) {
+      try {
+        if (await applyMemoryDrop(JSON.parse(omniaRaw))) return;
+      } catch { /* fall through */ }
+    }
+
+    // 3. Legacy application/x-lykins-memory-card MIME
+    const memoryPayloadRaw = String(event?.dataTransfer?.getData?.(MEMORY_DRAG_MIME) || "");
+    if (memoryPayloadRaw) {
+      try {
+        if (await applyMemoryDrop(JSON.parse(memoryPayloadRaw))) return;
+      } catch { /* fall through */ }
+    }
+
+    const files = Array.from(event?.dataTransfer?.files || []);
+    if (files.length > 0) {
+      attachFiles(files);
+      return;
+    }
+    const urls = extractDroppedUrls(event?.dataTransfer);
+    if (urls.length > 0) {
+      urls.forEach((url) => attachUrl(url));
+    }
   };
 
   const handleDictateToggle = () => {
@@ -372,8 +1067,42 @@ export default function ChatPage() {
     window.speechSynthesis.speak(utterance);
   };
 
+  const handleSaveQuickNote = useCallback(async () => {
+    if (!user?.id || isQuickNoteSaving) return;
+    const content = quickNoteContent.trim();
+    if (!content) return;
+    setIsQuickNoteSaving(true);
+    try {
+      const { error } = await supabase
+        .from("notes")
+        .insert({ user_id: user.id, title: "Quick Note", content, source: "quick_note" })
+        .select("id")
+        .single();
+      if (error) {
+        await supabase
+          .from("notes")
+          .insert({ user_id: user.id, title: "Quick Note", content })
+          .select("id")
+          .single();
+      }
+      setQuickNoteContent("");
+      setShowQuickNote(false);
+    } catch { /* ignore */ } finally {
+      setIsQuickNoteSaving(false);
+    }
+  }, [user?.id, isQuickNoteSaving, quickNoteContent]);
+
+  const handleCloseQuickNote = useCallback(async () => {
+    if (isQuickNoteSaving) return;
+    if (!quickNoteContent.trim()) {
+      setShowQuickNote(false);
+      setQuickNoteContent("");
+      return;
+    }
+    await handleSaveQuickNote();
+  }, [handleSaveQuickNote, isQuickNoteSaving, quickNoteContent]);
+
   const hasMessages = messages.length > 0;
-  const rotatingPhrase = rotatingPhrases[phraseIndex];
 
   const updateTaskCheck = (messageIndex, taskKey, checked) => {
     setAssistantTaskChecks((prev) => ({
@@ -402,6 +1131,17 @@ export default function ChatPage() {
 
       if (boardError || !board?.id) return;
 
+      const allAttachments = [
+        ...attachments,
+        ...messages.flatMap((m) => (Array.isArray(m.attachments) ? m.attachments : [])),
+      ];
+      const seenIds = new Set();
+      const dedupedAttachments = allAttachments.filter((a) => {
+        if (!a?.id || seenIds.has(a.id)) return false;
+        seenIds.add(a.id);
+        return true;
+      });
+
       const payload = {
         version: 1,
         createdAt: Date.now(),
@@ -409,8 +1149,19 @@ export default function ChatPage() {
         source: "chat-page",
         prompts,
         todoLists,
+        attachments: dedupedAttachments,
       };
       localStorage.setItem(CHAT_TO_BOARD_IMPORT_KEY, JSON.stringify(payload));
+
+      if (dedupedAttachments.length > 0) {
+        try {
+          localStorage.setItem(CHAT_ATTACHMENTS_PERSIST_KEY, JSON.stringify(dedupedAttachments));
+        } catch { /* ignore quota errors */ }
+      }
+
+      try {
+        localStorage.setItem(CHAT_MESSAGES_PERSIST_KEY, JSON.stringify(messages));
+      } catch { /* ignore quota errors */ }
 
       localStorage.setItem("omnia_board_id", board.id);
       nav(`/canvas/${board.id}`);
@@ -419,8 +1170,169 @@ export default function ChatPage() {
     }
   };
 
+  useEffect(() => {
+    if (!showMemorySidebar) return;
+    void loadMemoryNotes();
+  }, [showMemorySidebar]);
+
+  const renderAttachmentPreview = (att) => {
+    const t = String(att.type || "").toLowerCase();
+    const videoId = att.videoId || (t === "youtube" ? extractYouTubeVideoId(att.url || "") : null);
+
+    if (t === "youtube" && videoId) {
+      return (
+        <div className="relative w-40 h-24 rounded-xl overflow-hidden bg-black flex-shrink-0 group">
+          <img
+            src={`https://img.youtube.com/vi/${videoId}/mqdefault.jpg`}
+            alt={att.name || "YouTube"}
+            className="w-full h-full object-cover"
+            draggable={false}
+          />
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <div className="w-9 h-7 bg-red-600 rounded-lg flex items-center justify-center shadow-md">
+              <Play className="w-3.5 h-3.5 text-white ml-0.5" fill="white" />
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => removeAttachment(att.id)}
+            className="absolute top-1 right-1 h-5 w-5 rounded-full bg-black/60 hover:bg-black/80 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+          >
+            <X className="w-3 h-3" />
+          </button>
+          <span className="absolute bottom-1 left-1 right-6 text-[10px] text-white truncate bg-black/50 rounded px-1">
+            {att.memoryTitle || att.name || "YouTube Video"}
+          </span>
+        </div>
+      );
+    }
+
+    if (t === "image") {
+      return (
+        <div className="relative w-24 h-24 rounded-xl overflow-hidden bg-black/5 flex-shrink-0 group">
+          <img
+            src={att.url}
+            alt={att.name || "Image"}
+            className="w-full h-full object-cover"
+            draggable={false}
+          />
+          <button
+            type="button"
+            onClick={() => removeAttachment(att.id)}
+            className="absolute top-1 right-1 h-5 w-5 rounded-full bg-black/60 hover:bg-black/80 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+          >
+            <X className="w-3 h-3" />
+          </button>
+        </div>
+      );
+    }
+
+    if (t === "video") {
+      return (
+        <div className="relative w-40 h-24 rounded-xl overflow-hidden bg-black flex-shrink-0 group">
+          <video
+            src={att.url}
+            className="w-full h-full object-cover"
+            preload="metadata"
+            muted
+            draggable={false}
+          />
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <div className="w-9 h-7 bg-white/80 rounded-lg flex items-center justify-center shadow-md">
+              <Play className="w-3.5 h-3.5 text-black ml-0.5" fill="black" />
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => removeAttachment(att.id)}
+            className="absolute top-1 right-1 h-5 w-5 rounded-full bg-black/60 hover:bg-black/80 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+          >
+            <X className="w-3 h-3" />
+          </button>
+          <span className="absolute bottom-1 left-1 right-6 text-[10px] text-white truncate bg-black/50 rounded px-1">
+            {att.memoryTitle || att.name || "Video"}
+          </span>
+        </div>
+      );
+    }
+
+    if (t === "audio") {
+      return (
+        <div className="relative inline-flex items-center gap-2 rounded-xl border border-white/30 bg-white/30 dark:bg-white/10 px-3 py-2 group">
+          <Music className="w-4 h-4 flex-shrink-0 opacity-60" />
+          <span className="max-w-[180px] truncate text-xs">{att.memoryTitle || att.name || "Audio"}</span>
+          <button
+            type="button"
+            onClick={() => removeAttachment(att.id)}
+            className="h-4 w-4 rounded-full hover:bg-black/10 dark:hover:bg-white/10 flex items-center justify-center"
+          >
+            <X className="w-3 h-3" />
+          </button>
+        </div>
+      );
+    }
+
+    if (t === "memory") {
+      return (
+        <div className="relative inline-flex items-center gap-2 rounded-xl border border-violet-300/40 bg-violet-100/40 dark:bg-violet-900/20 px-3 py-2 max-w-[260px] group">
+          <BookOpen className="w-4 h-4 flex-shrink-0 text-violet-500" />
+          <div className="min-w-0">
+            <span className="block text-xs font-medium truncate">{att.memoryTitle || "Memory"}</span>
+            {att.memoryContent && (
+              <span className="block text-[10px] opacity-60 truncate">{att.memoryContent.slice(0, 80)}</span>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={() => removeAttachment(att.id)}
+            className="h-4 w-4 rounded-full hover:bg-black/10 dark:hover:bg-white/10 flex items-center justify-center flex-shrink-0"
+          >
+            <X className="w-3 h-3" />
+          </button>
+        </div>
+      );
+    }
+
+    if (t === "pdf") {
+      return (
+        <div className="relative inline-flex items-center gap-2 rounded-xl border border-white/30 bg-white/30 dark:bg-white/10 px-3 py-2 group">
+          <FileText className="w-4 h-4 flex-shrink-0 opacity-60" />
+          <span className="max-w-[180px] truncate text-xs">{att.memoryTitle || att.name || "PDF"}</span>
+          <button
+            type="button"
+            onClick={() => removeAttachment(att.id)}
+            className="h-4 w-4 rounded-full hover:bg-black/10 dark:hover:bg-white/10 flex items-center justify-center"
+          >
+            <X className="w-3 h-3" />
+          </button>
+        </div>
+      );
+    }
+
+    return (
+      <div className="relative inline-flex items-center gap-2 rounded-xl border border-white/30 bg-white/30 dark:bg-white/10 px-3 py-2 group">
+        <Link2 className="w-4 h-4 flex-shrink-0 opacity-60" />
+        <span className="max-w-[200px] truncate text-xs">{att.memoryTitle || att.name || att.url || "Attachment"}</span>
+        <button
+          type="button"
+          onClick={() => removeAttachment(att.id)}
+          className="h-4 w-4 rounded-full hover:bg-black/10 dark:hover:bg-white/10 flex items-center justify-center"
+        >
+          <X className="w-3 h-3" />
+        </button>
+      </div>
+    );
+  };
+
   const renderComposer = (autoFocus = false) => (
     <div className="glass-control rounded-2xl p-2 w-full transition-all duration-300">
+      {attachments.length > 0 && (
+        <div className="mb-2 flex flex-wrap gap-2 items-end">
+          {attachments.map((att) => (
+            <div key={att.id}>{renderAttachmentPreview(att)}</div>
+          ))}
+        </div>
+      )}
       <div className="flex items-center gap-2">
         <button
           type="button"
@@ -431,6 +1343,7 @@ export default function ChatPage() {
           <Plus className="w-4 h-4" />
         </button>
         <input
+          ref={composerInputRef}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
@@ -441,7 +1354,6 @@ export default function ChatPage() {
           }}
           placeholder="Ask me anything..."
           className="w-full h-11 rounded-xl bg-transparent border border-white/30 px-4 text-sm text-black placeholder:text-black/55 outline-none dark:text-white dark:placeholder:text-white/55"
-          disabled={isLoading}
           autoFocus={autoFocus}
         />
         <button
@@ -469,10 +1381,12 @@ export default function ChatPage() {
         ref={fileInputRef}
         type="file"
         multiple
+        accept="image/*,video/*,audio/*,.pdf,.svg,.png,.mp3,.mp4,.mov,*/*"
         className="hidden"
         onChange={(e) => {
           const files = Array.from(e.target.files || []);
-          setAttachmentCount(files.length);
+          if (files.length) attachFiles(files);
+          e.target.value = "";
         }}
       />
     </div>
@@ -480,12 +1394,20 @@ export default function ChatPage() {
 
   return (
     <div className="min-h-screen bg-transparent text-black dark:text-white">
+      {isDragOver && (
+        <div className="fixed inset-0 z-[120] pointer-events-none border-4 border-dashed border-blue-500 bg-blue-500/20 dark:bg-blue-900/30 flex items-center justify-center">
+          <div className="rounded-2xl border border-white/40 bg-white/70 dark:bg-black/40 px-6 py-4 text-center backdrop-blur-sm">
+            <p className="text-base font-semibold">Drop to attach</p>
+            <p className="text-xs opacity-80 mt-1">Memory cards, YouTube, images, videos, audio, PDF, and more</p>
+          </div>
+        </div>
+      )}
       <div className="fixed top-3 left-0 right-0 z-[70] px-3 flex items-center justify-end pointer-events-none">
         <div className="pointer-events-auto flex items-center gap-2">
           <button
             type="button"
             onClick={() => setTopPanelOpen((v) => !v)}
-            className="rounded-full w-9 h-9 glass-control hover:opacity-90 touch-manipulation flex items-center justify-center"
+            className="rounded-full w-9 h-9 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center"
             title={topPanelOpen ? "Hide panel" : "Show panel"}
           >
             {topPanelOpen ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
@@ -497,7 +1419,7 @@ export default function ChatPage() {
               <button
                 type="button"
                 onClick={() => nav(-1)}
-                className="rounded-full w-9 h-9 p-0 glass-control hover:opacity-90 touch-manipulation flex items-center justify-center"
+                className="rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center"
                 title="Back"
               >
                 <ArrowLeft className="w-4 h-4" />
@@ -556,8 +1478,12 @@ export default function ChatPage() {
 
               <button
                 type="button"
-                onClick={() => setMessages([])}
-                className="rounded-full w-9 h-9 p-0 glass-control hover:opacity-90 touch-manipulation flex items-center justify-center"
+                onClick={() => {
+                  setMessages([]);
+                  setAttachments([]);
+                  setAttachmentCount(0);
+                }}
+                className="rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center"
                 title="Clear chat"
               >
                 <Trash2 className="w-4 h-4" />
@@ -568,7 +1494,7 @@ export default function ChatPage() {
               <button
                 type="button"
                 onClick={handleSendChatToBoard}
-                className="rounded-full w-9 h-9 p-0 glass-control hover:opacity-90 touch-manipulation flex items-center justify-center"
+                className="rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center"
                 title={user?.id ? "Send chat to new board" : "Sign in to send chat to board"}
               >
                 <MessageSquare className="w-4 h-4" />
@@ -578,8 +1504,19 @@ export default function ChatPage() {
 
               <button
                 type="button"
+                onClick={() => setShowMemorySidebar((v) => !v)}
+                className="rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center"
+                title={showMemorySidebar ? "Hide memory sidebar" : "Open memory sidebar"}
+              >
+                {showMemorySidebar ? <X className="w-4 h-4" /> : <BookOpen className="w-4 h-4" />}
+              </button>
+
+              <div className="w-px h-4 bg-black/10 dark:bg-white/10 mx-1" />
+
+              <button
+                type="button"
                 onClick={handleOpenAttachments}
-                className="rounded-full w-9 h-9 p-0 glass-control hover:opacity-90 touch-manipulation flex items-center justify-center"
+                className="rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center"
                 title={attachmentCount > 0 ? `${attachmentCount} attachment(s) selected` : "Add attachments"}
               >
                 <Plus className="w-4 h-4" />
@@ -590,18 +1527,20 @@ export default function ChatPage() {
       </div>
 
       {!hasMessages ? (
-        <div className="min-h-screen flex items-center justify-center px-4">
-          <div className="w-full max-w-2xl -translate-y-10 space-y-10">
-            <p className="text-center text-3xl font-semibold tracking-tight min-h-[44px] transition-opacity duration-300">
-              {rotatingPhrase}
+        <div className="fixed inset-0 z-[85] pointer-events-none flex items-center justify-center px-4 transition-all duration-300">
+          <div className="w-full max-w-2xl space-y-6">
+            <p className="pointer-events-none text-center text-3xl font-semibold tracking-tight min-h-[44px] text-black">
+              {typedWelcome}
             </p>
-            {renderComposer(true)}
+            <div className="pointer-events-auto">
+              {renderComposer(true)}
+            </div>
           </div>
         </div>
       ) : (
         <div className="h-screen flex flex-col">
           <div className="flex-1 min-h-0 px-4 pt-8 pb-2">
-            <ScrollArea ref={scrollRef} className="h-full">
+            <div className="h-full overflow-y-auto">
               <div className="mx-auto w-full max-w-3xl space-y-4 pb-6">
                 {messages.map((msg, idx) => (
                   <div key={`${msg.role}-${idx}`} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
@@ -654,14 +1593,55 @@ export default function ChatPage() {
                       ) : (
                         msg.content
                       )}
+                      {Array.isArray(msg.attachments) && msg.attachments.length > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-2 items-end">
+                          {msg.attachments.map((att) => {
+                            const t = String(att.type || "").toLowerCase();
+                            const vid = att.videoId || (t === "youtube" ? extractYouTubeVideoId(att.url || "") : null);
+                            if (t === "youtube" && vid) {
+                              return (
+                                <a key={att.id} href={att.url || `https://youtube.com/watch?v=${vid}`} target="_blank" rel="noopener noreferrer" className="block w-44 rounded-xl overflow-hidden bg-black relative group">
+                                  <img src={`https://img.youtube.com/vi/${vid}/mqdefault.jpg`} alt={att.name || "YouTube"} className="w-full h-24 object-cover" />
+                                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                                    <div className="w-9 h-7 bg-red-600 rounded-lg flex items-center justify-center"><Play className="w-3.5 h-3.5 text-white ml-0.5" fill="white" /></div>
+                                  </div>
+                                  <span className="block px-2 py-1 text-[10px] text-white/80 truncate">{att.memoryTitle || att.name || "YouTube"}</span>
+                                </a>
+                              );
+                            }
+                            if (t === "image" && att.url) {
+                              return <img key={att.id} src={att.url} alt={att.name} className="w-24 h-24 rounded-xl object-cover" />;
+                            }
+                            if (t === "video" && att.url) {
+                              return (
+                                <video key={att.id} src={att.url} controls preload="metadata" className="w-44 h-24 rounded-xl object-cover bg-black" />
+                              );
+                            }
+                            if (t === "memory") {
+                              return (
+                                <div key={att.id} className="inline-flex items-center gap-1.5 rounded-xl border border-violet-300/40 bg-violet-100/30 dark:bg-violet-900/20 px-2 py-1 text-xs max-w-[220px]">
+                                  <BookOpen className="w-3 h-3 text-violet-500 flex-shrink-0" />
+                                  <span className="truncate">{att.memoryTitle || att.name || "Memory"}</span>
+                                </div>
+                              );
+                            }
+                            return (
+                              <a key={att.id} href={att.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center rounded-full border border-white/30 bg-white/30 dark:bg-white/10 px-2 py-0.5 text-xs hover:opacity-90">
+                                {att.name}
+                              </a>
+                            );
+                          })}
+                        </div>
+                      )}
                       {msg.role === "assistant" && isLoading && idx === messages.length - 1 ? (
                         <span className="inline-block ml-0.5 animate-pulse">|</span>
                       ) : null}
                     </div>
                   </div>
                 ))}
+                <div ref={scrollRef} />
               </div>
-            </ScrollArea>
+            </div>
           </div>
           <div className="px-4 pb-6">
             <div className="mx-auto w-full max-w-3xl">
@@ -670,6 +1650,91 @@ export default function ChatPage() {
           </div>
         </div>
       )}
+
+      <aside
+        className={`fixed top-0 right-0 z-[95] h-[100svh] w-[380px] max-w-[92vw] border-l border-white/35 dark:border-white/15 bg-[linear-gradient(145deg,rgba(255,255,255,0.48),rgba(255,255,255,0.2))] dark:bg-[linear-gradient(145deg,rgba(25,25,28,0.92),rgba(14,14,16,0.8))] shadow-[0_18px_50px_rgba(0,0,0,0.18)] backdrop-blur-2xl transition-transform duration-300 ${
+          showMemorySidebar ? "translate-x-0 pointer-events-auto" : "translate-x-full pointer-events-none"
+        }`}
+      >
+        <div className="h-full flex flex-col">
+          <div className="px-4 py-3 border-b border-black/10 dark:border-white/10 flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-semibold text-black dark:text-white">Memory</h2>
+              <p className="text-xs opacity-70">Full memory view</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowMemorySidebar(false)}
+              className="h-8 w-8 rounded-full hover:bg-black/10 dark:hover:bg-white/15 transition-colors flex items-center justify-center"
+              title="Close memory sidebar"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="flex-1 min-h-0">
+            <iframe
+              src="/memory?embedded=1"
+              title="Memory"
+              className="w-full h-full border-0 bg-transparent"
+            />
+          </div>
+        </div>
+      </aside>
+
+      <DialogAny open={!!interactionNote} onOpenChange={() => setInteractionNote(null)}>
+        <DialogContentAny className="bg-white dark:bg-[#171515] border-gray-200 dark:border-gray-700 text-black dark:text-white">
+          <DialogHeaderAny>
+            <DialogTitleAny>Open Memory</DialogTitleAny>
+            <DialogDescriptionAny className="text-gray-500 dark:text-gray-400">
+              How would you like to view this memory?
+            </DialogDescriptionAny>
+          </DialogHeaderAny>
+          <div className="grid gap-4 py-4">
+            <button
+              type="button"
+              onClick={() => {
+                nav("/memory");
+                setInteractionNote(null);
+              }}
+              className="bg-white hover:bg-gray-100 text-black border border-gray-200 dark:bg-white dark:text-black dark:hover:bg-gray-200 w-full h-12 text-lg text-left justify-start px-6 flex items-center"
+            >
+              <Clock className="w-5 h-5 mr-3" />
+              View as Memory Card
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (!interactionNote?.id) return;
+                nav(`/create?id=${interactionNote.id}`);
+                setInteractionNote(null);
+              }}
+              className="border border-gray-200 dark:border-gray-700 w-full h-12 text-lg text-left justify-start px-6 hover:bg-gray-50 dark:hover:bg-white/5 text-black dark:text-white flex items-center"
+            >
+              <Edit2 className="w-5 h-5 mr-3" />
+              Open in Create Studio
+            </button>
+          </div>
+        </DialogContentAny>
+      </DialogAny>
+
+      {showQuickNote && (
+        <DraggableQuickNote
+          content={quickNoteContent}
+          setContent={setQuickNoteContent}
+          isSaving={isQuickNoteSaving}
+          onSave={handleSaveQuickNote}
+          onClose={() => { void handleCloseQuickNote(); }}
+        />
+      )}
+
+      <button
+        type="button"
+        onClick={() => setShowQuickNote(true)}
+        className="fixed bottom-8 right-8 w-14 h-14 rounded-full glass-control hover:opacity-90 shadow-lg hover:shadow-xl transition-all flex items-center justify-center hover:scale-110 z-[80]"
+        title="Quick Notes"
+      >
+        <StickyNote className="w-6 h-6" />
+      </button>
     </div>
   );
 }

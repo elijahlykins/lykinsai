@@ -1,14 +1,16 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { Canvas } from "@/canvas/Canvas";
 import { useCanvasStore } from "@/store/canvasStore";
 import type { Block } from "@/canvas/types";
-import { ChevronDown, ChevronUp, ArrowLeft, Undo2, Redo2, Trash2, Plus, Link as LinkIcon, Image as ImageIcon, Zap, MessageSquare, Loader2 } from "lucide-react";
+import { ChevronDown, ChevronUp, ArrowLeft, Undo2, Redo2, Trash2, Plus, Link as LinkIcon, Image as ImageIcon, Zap, MessageSquare, Mic, Volume2, BookOpen, X, Clock, Edit2, Folder as FolderIcon, Link2, MoreHorizontal, PanelRightClose, StickyNote } from "lucide-react";
+import DraggableQuickNote from "@/components/notes/DraggableQuickNote";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { supabase } from "@/lib/supabase";
 import { useAiStore } from "@/store/aiStore";
 import { useAuth } from "@/lib/SupabaseAuth";
+import RichTextRenderer from "@/components/notes/RichTextRenderer";
 import { getProjectKnowledgeBase, projectKnowledgeBaseToText } from "@/lib/projectKnowledgeBase";
 import { getBlockDefinition } from "@/canvas/blockSystem/definitions";
 import type { UniversalBlockType } from "@/canvas/blockSystem/types";
@@ -42,6 +44,9 @@ type OrchestratorResult = {
 };
 
 const CHAT_TO_BOARD_IMPORT_KEY = "omnia_chat_board_import_v1";
+const CANVAS_TO_CHAT_HANDOFF_KEY = "omnia_canvas_to_chat_handoff_v1";
+const CHAT_ATTACHMENTS_PERSIST_KEY = "omnia_chat_attachments_v1";
+const CHAT_MESSAGES_PERSIST_KEY = "omnia_chat_messages_v1";
 
 type ImportedChatPrompt = {
   id?: string;
@@ -57,6 +62,20 @@ type ImportedTodoList = {
   items?: Array<{ text?: string; checked?: boolean }>;
 };
 
+type ImportedChatAttachment = {
+  id?: string;
+  type?: string;
+  url?: string;
+  name?: string;
+  videoId?: string;
+  memoryTitle?: string;
+  memoryContent?: string;
+  transcript?: string;
+  pdfText?: string;
+  extractedText?: string;
+  mime?: string;
+};
+
 type ImportedChatBoardPayload = {
   version?: number;
   createdAt?: number;
@@ -64,6 +83,95 @@ type ImportedChatBoardPayload = {
   source?: string;
   prompts?: ImportedChatPrompt[];
   todoLists?: ImportedTodoList[];
+  attachments?: ImportedChatAttachment[];
+};
+
+type CanvasToChatHandoffPayload = {
+  version: number;
+  createdAt: number;
+  source: "canvas-page";
+  boardId: string | null;
+  boardTitle: string;
+  draftInput: string;
+  messages: Array<{ role: "user" | "assistant"; content: string; attachments?: any[] }>;
+  attachments?: any[];
+};
+
+type MemorySidebarNote = {
+  id: string;
+  title: string | null;
+  content: string | null;
+  attachments?: any[] | null;
+  folder?: string | null;
+  updated_at?: string | null;
+  created_at?: string | null;
+  tags?: string[] | null;
+  connected_notes?: string[] | null;
+  trashed?: boolean | null;
+};
+
+const stripAttachmentMetadata = (content = "") => {
+  let text = String(content || "");
+  const marker = "\n\n---ATTACHMENTS---\n";
+  const idx = text.indexOf(marker);
+  if (idx !== -1) text = text.slice(0, idx).trim();
+
+  const startMarker = "[ATTACHMENTS_JSON:";
+  const startIndex = text.indexOf(startMarker);
+  if (startIndex !== -1) {
+    const jsonStart = startIndex + startMarker.length;
+    let bracketCount = 0;
+    let jsonEnd = jsonStart;
+    for (let i = jsonStart; i < text.length; i += 1) {
+      if (text[i] === "[") bracketCount += 1;
+      if (text[i] === "]") {
+        bracketCount -= 1;
+        if (bracketCount === 0) {
+          jsonEnd = i + 1;
+          break;
+        }
+      }
+    }
+    if (jsonEnd > jsonStart) {
+      text = `${text.substring(0, startIndex)}${text.substring(jsonEnd)}`.replace(/\n\n\n+/g, "\n\n").trim();
+    }
+  }
+  return text;
+};
+
+const parseAttachmentsFromContent = (content = "") => {
+  const text = String(content || "");
+  const startMarker = "[ATTACHMENTS_JSON:";
+  const startIndex = text.indexOf(startMarker);
+  if (startIndex === -1) return [];
+  const jsonStart = startIndex + startMarker.length;
+  let bracketCount = 0;
+  let jsonEnd = jsonStart;
+  for (let i = jsonStart; i < text.length; i += 1) {
+    if (text[i] === "[") bracketCount += 1;
+    if (text[i] === "]") {
+      bracketCount -= 1;
+      if (bracketCount === 0) {
+        jsonEnd = i + 1;
+        break;
+      }
+    }
+  }
+  if (jsonEnd <= jsonStart) return [];
+  try {
+    const parsed = JSON.parse(text.substring(jsonStart, jsonEnd));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
+const formatMemoryCardDate = (note: MemorySidebarNote) => {
+  const raw = note?.created_at || note?.updated_at;
+  if (!raw) return "No date";
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return "No date";
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 };
 
 export default function OmniaCanvasPage() {
@@ -85,10 +193,25 @@ export default function OmniaCanvasPage() {
   const redo = useCanvasStore((s) => s.redo);
   const canUndo = useCanvasStore((s) => s.history.length > 0);
   const canRedo = useCanvasStore((s) => s.future.length > 0);
-  const [topPanelOpen, setTopPanelOpen] = useState(false);
+  const [topPanelOpen, setTopPanelOpen] = useState(true);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
+  const [showMemorySidebar, setShowMemorySidebar] = useState(false);
+  const [memoryNotes, setMemoryNotes] = useState<MemorySidebarNote[]>([]);
+  const [memoryLoading, setMemoryLoading] = useState(false);
+  const [memoryError, setMemoryError] = useState("");
+  const [memorySearch, setMemorySearch] = useState("");
+  const [interactionNote, setInteractionNote] = useState<MemorySidebarNote | null>(null);
+  const [memoryDragActive, setMemoryDragActive] = useState(false);
+  const [showQuickNote, setShowQuickNote] = useState(false);
+  const [quickNoteContent, setQuickNoteContent] = useState("");
+  const [isQuickNoteSaving, setIsQuickNoteSaving] = useState(false);
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth || 1280);
   const [chatRailWidthManual, setChatRailWidthManual] = useState<number | null>(null);
+  const DialogAny = Dialog as any;
+  const DialogContentAny = DialogContent as any;
+  const DialogHeaderAny = DialogHeader as any;
+  const DialogTitleAny = DialogTitle as any;
+  const DialogDescriptionAny = DialogDescription as any;
   const [projectId, setProjectId] = useState<string | null>(null);
   const [projectFolders, setProjectFolders] = useState<Array<{ id: string; name: string; parentId: string | null }>>([]);
   const [projectFiles, setProjectFiles] = useState<
@@ -221,9 +344,15 @@ export default function OmniaCanvasPage() {
   const [chatMessages, setChatMessages] = useState<PromptMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
   const [isChatLoading, setIsChatLoading] = useState(false);
+  const [isDictating, setIsDictating] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
   const updateBlock = useCanvasStore((s) => s.updateBlock);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
-  const chatPanelInputRef = useRef<HTMLInputElement | null>(null);
+  const chatPanelInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const centerChatInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
   const aiTypingRunRef = useRef(0);
   const chatImportAppliedRef = useRef<string | null>(null);
   const isSendingRef = useRef(false);
@@ -248,6 +377,7 @@ export default function OmniaCanvasPage() {
   const kbCacheRef = useRef<{ projectId: string; text: string; fetchedAt: number } | null>(null);
   const [chatFlowMode, setChatFlowMode] = useState<"idle" | "clarifying" | "generating">("idle");
   const [chatStatusText, setChatStatusText] = useState("");
+  const [typedWelcome, setTypedWelcome] = useState("");
   const [showAiSuggestionToast, setShowAiSuggestionToast] = useState(false);
   const lastSuggestionKeyRef = useRef<string>("");
   const youtubeTranscriptCacheRef = useRef<
@@ -263,11 +393,61 @@ export default function OmniaCanvasPage() {
     >
   >({});
 
+  const filteredMemoryNotes = useMemo(() => {
+    const query = String(memorySearch || "").trim().toLowerCase();
+    const visibleNotes = memoryNotes.filter((note) => !note?.trashed);
+    if (!query) return visibleNotes;
+    return visibleNotes.filter((note) => {
+      const title = String(note.title || "").toLowerCase();
+      const content = String(note.content || "").toLowerCase();
+      const folder = String(note.folder || "").toLowerCase();
+      return title.includes(query) || content.includes(query) || folder.includes(query);
+    });
+  }, [memoryNotes, memorySearch]);
+
+  const memoryNotesByFolder = useMemo(() => {
+    const grouped = filteredMemoryNotes.reduce((acc, note) => {
+      const folderName = String(note.folder || "Uncategorized").trim() || "Uncategorized";
+      if (!acc[folderName]) acc[folderName] = [];
+      acc[folderName].push(note);
+      return acc;
+    }, {} as Record<string, MemorySidebarNote[]>);
+    const sortedFolders = Object.keys(grouped).sort((a, b) => {
+      if (a === "Uncategorized") return 1;
+      if (b === "Uncategorized") return -1;
+      return a.localeCompare(b);
+    });
+    return { grouped, sortedFolders };
+  }, [filteredMemoryNotes]);
+
   useEffect(() => {
     const onResize = () => setViewportWidth(window.innerWidth || 1280);
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
+
+  const createWelcomeText = useMemo(() => {
+    const emailName = String(user?.email || "").split("@")[0].trim();
+    const fullName = String(user?.user_metadata?.full_name || user?.user_metadata?.name || "").trim();
+    const firstName = fullName ? fullName.split(/\s+/)[0] : "";
+    const preferredName = String(firstName || emailName || "there").trim();
+    return `Welcome back, ${preferredName}`;
+  }, [user?.email, user?.user_metadata?.full_name, user?.user_metadata?.name]);
+
+  useEffect(() => {
+    const text = String(createWelcomeText || "").trim();
+    setTypedWelcome("");
+    if (!text) return;
+    let i = 0;
+    const timer = window.setInterval(() => {
+      i += 1;
+      setTypedWelcome(text.slice(0, i));
+      if (i >= text.length) {
+        window.clearInterval(timer);
+      }
+    }, 52);
+    return () => window.clearInterval(timer);
+  }, [createWelcomeText]);
 
   useEffect(() => {
     try {
@@ -777,34 +957,8 @@ export default function OmniaCanvasPage() {
     return id;
   }, [addTextBlockAt, getChatRailWidthPx, viewportWidth]);
 
-  const wrapAiTextForBlock = useCallback((text: string, maxChars = 64) => {
-    const src = String(text || "").replace(/\r\n?/g, "\n");
-    const out: string[] = [];
-    const paragraphs = src.split("\n");
-
-    for (const paragraph of paragraphs) {
-      const words = paragraph.split(/\s+/).filter(Boolean);
-      if (!words.length) {
-        out.push("");
-        continue;
-      }
-      let line = "";
-      for (const word of words) {
-        if (!line) {
-          line = word;
-          continue;
-        }
-        if (line.length + 1 + word.length <= maxChars) {
-          line += ` ${word}`;
-        } else {
-          out.push(line);
-          line = word;
-        }
-      }
-      if (line) out.push(line);
-    }
-
-    return out.join("\n");
+  const normalizeAiTextForBlock = useCallback((text: string) => {
+    return String(text || "").replace(/\r\n?/g, "\n");
   }, []);
 
   const calcAiBubbleSize = useCallback((text: string) => {
@@ -820,7 +974,7 @@ export default function OmniaCanvasPage() {
   const typeIntoAiResponseBlock = useCallback(
     async (blockId: string, fullText: string) => {
       const runId = ++aiTypingRunRef.current;
-      const text = wrapAiTextForBlock(fullText);
+      const text = normalizeAiTextForBlock(fullText);
       let shown = "";
 
       while (shown.length < text.length && aiTypingRunRef.current === runId) {
@@ -839,7 +993,7 @@ export default function OmniaCanvasPage() {
         updateBlock(blockId as any, { content: text, width: size.width, height: size.height } as any);
       }
     },
-    [calcAiBubbleSize, updateBlock, wrapAiTextForBlock]
+    [calcAiBubbleSize, normalizeAiTextForBlock, updateBlock]
   );
 
   const replaySavedPromptResponse = useCallback(
@@ -999,6 +1153,87 @@ export default function OmniaCanvasPage() {
           y = startY;
         }
       });
+    }
+
+    const importedAttachments = Array.isArray(payload.attachments) ? payload.attachments : [];
+    if (importedAttachments.length) {
+      const st = useCanvasStore.getState() as any;
+      const g = Math.max(1, Math.floor(st.gridSize || 24));
+      const camera = st.camera || { x: 0, y: 0 };
+      let ax = Math.max(g, Math.floor(-camera.x + g * 16));
+      let ay = Math.max(g, Math.floor(-camera.y + g * 2));
+
+      for (const att of importedAttachments) {
+        const url = String(att.url || "").trim();
+        const attType = String(att.type || "").toLowerCase();
+        const videoId = att.videoId || (attType === "youtube" ? (extractYouTubeVideoId(url) || "") : "");
+
+        if (attType === "youtube" && (videoId || url)) {
+          const ytUrl = url || `https://www.youtube.com/watch?v=${videoId}`;
+          st.addYouTubeBlockAt({ x: ax, y: ay }, { url: ytUrl, videoId });
+          ay += g * 10;
+        } else if (attType === "image" && url) {
+          if (url.startsWith("data:image/")) {
+            const parts = url.split(",");
+            const mm = parts[0]?.match(/:(.*?);/);
+            if (mm && parts[1]) {
+              try {
+                const bstr = atob(parts[1]);
+                const u8 = new Uint8Array(bstr.length);
+                for (let i = 0; i < bstr.length; i++) u8[i] = bstr.charCodeAt(i);
+                const file = new File([u8], att.name || "image.png", { type: mm[1] });
+                window.dispatchEvent(new CustomEvent("omnia_attach_files", { detail: { files: [file], clientX: ax, clientY: ay } }));
+              } catch { /* ignore */ }
+            }
+          } else {
+            window.dispatchEvent(new CustomEvent("omnia_attach_link", { detail: { url, clientX: ax, clientY: ay } }));
+          }
+          ay += g * 10;
+        } else if (attType === "video" && url) {
+          window.dispatchEvent(new CustomEvent("omnia_attach_link", { detail: { url, clientX: ax, clientY: ay } }));
+          ay += g * 10;
+        } else if (attType === "pdf") {
+          const pdfText = String(att.pdfText || att.extractedText || "").trim();
+          if (pdfText) {
+            const title = String(att.name || att.memoryTitle || "PDF").trim();
+            const combined = `# ${title}\n\n${pdfText}`;
+            const charsPerLine = Math.max(1, Math.floor((g * 16 * 0.85) / 8));
+            const wrappedLines = combined.split("\n").reduce((sum: number, line: string) => sum + Math.max(1, Math.ceil(line.length / charsPerLine)), 0);
+            const height = Math.max(g * 6, Math.min(g * 30, wrappedLines * 22 + 32));
+            st.addTextBlockAt({ x: ax, y: ay }, { width: g * 16, height, content: combined, format: "plain" });
+          } else if (url) {
+            const pdfName = String(att.name || att.memoryTitle || "document.pdf").trim();
+            const pdfUrl = url;
+            const px = ax;
+            const py = ay;
+            (async () => {
+              try {
+                const resp = await fetch(pdfUrl);
+                if (resp.ok) {
+                  const blob = await resp.blob();
+                  const file = new File([blob], pdfName.endsWith(".pdf") ? pdfName : `${pdfName}.pdf`, { type: "application/pdf" });
+                  window.dispatchEvent(new CustomEvent("omnia_attach_files", { detail: { files: [file], clientX: px, clientY: py } }));
+                  return;
+                }
+              } catch { /* fetch failed, fall through */ }
+              window.dispatchEvent(new CustomEvent("omnia_attach_link", { detail: { url: pdfUrl, clientX: px, clientY: py } }));
+            })();
+          }
+          ay += g * 10;
+        } else if (attType === "memory" && att.memoryContent) {
+          const content = att.memoryTitle ? `# ${att.memoryTitle}\n\n${att.memoryContent}` : att.memoryContent;
+          st.addTextBlockAt({ x: ax, y: ay }, { width: g * 12, height: g * 6, content, format: "rich" });
+          ay += g * 8;
+        } else if (url) {
+          window.dispatchEvent(new CustomEvent("omnia_attach_link", { detail: { url, clientX: ax, clientY: ay } }));
+          ay += g * 8;
+        }
+
+        if (ay > Math.floor(-camera.y + g * 40)) {
+          ax += g * 14;
+          ay = Math.max(g, Math.floor(-camera.y + g * 2));
+        }
+      }
     }
   }, [addAiResponseBlock, addListBlockAt, boardId, deleteBlock, setListItems, typeIntoAiResponseBlock, user?.id]);
 
@@ -1579,6 +1814,41 @@ export default function OmniaCanvasPage() {
     }
   };
 
+  const handleSaveQuickNote = useCallback(async () => {
+    if (!user?.id || isQuickNoteSaving) return;
+    const content = quickNoteContent.trim();
+    if (!content) return;
+    setIsQuickNoteSaving(true);
+    try {
+      const { error } = await supabase
+        .from("notes")
+        .insert({ user_id: user.id, title: "Quick Note", content, source: "quick_note" })
+        .select("id")
+        .single();
+      if (error) {
+        await supabase
+          .from("notes")
+          .insert({ user_id: user.id, title: "Quick Note", content })
+          .select("id")
+          .single();
+      }
+      setQuickNoteContent("");
+      setShowQuickNote(false);
+    } catch { /* ignore */ } finally {
+      setIsQuickNoteSaving(false);
+    }
+  }, [user?.id, isQuickNoteSaving, quickNoteContent]);
+
+  const handleCloseQuickNote = useCallback(async () => {
+    if (isQuickNoteSaving) return;
+    if (!quickNoteContent.trim()) {
+      setShowQuickNote(false);
+      setQuickNoteContent("");
+      return;
+    }
+    await handleSaveQuickNote();
+  }, [handleSaveQuickNote, isQuickNoteSaving, quickNoteContent]);
+
   const clearCanvasAndPrompts = useCallback(() => {
     reset();
     setChatMessages([]);
@@ -1601,9 +1871,227 @@ export default function OmniaCanvasPage() {
     isSendingRef.current = false;
   }, [reset]);
 
+  const loadMemoryNotes = useCallback(async () => {
+    if (!user?.id) {
+      setMemoryNotes([]);
+      setMemoryError("Sign in to access memories.");
+      return;
+    }
+    setMemoryLoading(true);
+    setMemoryError("");
+    try {
+      let data: MemorySidebarNote[] | null = null;
+      let error: any = null;
+      const fetchWithColumns = async (columns: string) =>
+        supabase.from("notes").select(columns).eq("user_id", user.id).order("updated_at", { ascending: false }).limit(500);
+      ({ data, error } = await supabase
+        .from("notes")
+        .select("id, title, content, attachments, folder, updated_at, created_at, tags, connected_notes, trashed")
+        .eq("user_id", user.id)
+        .order("updated_at", { ascending: false })
+        .limit(500));
+      if (error && /column .*notes\.folder/i.test(String(error?.message || ""))) {
+        ({ data, error } = (await fetchWithColumns("id, title, content, attachments, updated_at, created_at, tags, connected_notes, trashed")) as any);
+      }
+      if (error && /column .*notes\.attachments/i.test(String(error?.message || ""))) {
+        ({ data, error } = (await fetchWithColumns("id, title, content, updated_at, created_at, tags, connected_notes, trashed")) as any);
+      }
+      if (error && /column .*notes\.(tags|connected_notes|trashed)/i.test(String(error?.message || ""))) {
+        ({ data, error } = (await fetchWithColumns("id, title, content, updated_at, created_at")) as any);
+      }
+      if (error) throw error;
+      setMemoryNotes(
+        Array.isArray(data)
+          ? data.map((note: any) => {
+              const directAttachments = Array.isArray(note?.attachments) ? note.attachments : [];
+              const parsedAttachments = parseAttachmentsFromContent(note?.content || "");
+              return { ...note, attachments: directAttachments.length ? directAttachments : parsedAttachments } as MemorySidebarNote;
+            })
+          : []
+      );
+    } catch (err: any) {
+      setMemoryError(String(err?.message || "Unable to load memories."));
+      setMemoryNotes([]);
+    } finally {
+      setMemoryLoading(false);
+    }
+  }, [user?.id]);
+
+  const insertMemoryNoteToCanvas = useCallback(
+    (note: MemorySidebarNote) => {
+      const st = useCanvasStore.getState();
+      const g = Math.max(1, Math.floor(st.gridSize || 24));
+      const cameraY = Number(st.camera?.y || 0);
+      const worldX = g * 2;
+      const worldY = Math.max(g, cameraY + Math.floor((window.innerHeight || 900) * 0.3));
+      const titleText = String(note.title || "Untitled memory").trim();
+      const bodyText = String(note.content || "").trim();
+      const combined = bodyText ? `# ${titleText}\n\n${bodyText}` : `# ${titleText}`;
+      const width = g * 12;
+      const roughLines = combined.split("\n").length + Math.ceil(combined.length / 90);
+      const height = Math.max(g * 4, Math.min(g * 30, roughLines * g));
+      addTextBlockAt({ x: worldX, y: worldY }, { width, height, content: combined, format: "rich" });
+      setShowMemorySidebar(false);
+    },
+    [addTextBlockAt]
+  );
+
+  const handleGoToChatPage = useCallback(() => {
+    let persistedMessages: any[] = [];
+    try {
+      const rawMsgs = localStorage.getItem(CHAT_MESSAGES_PERSIST_KEY);
+      if (rawMsgs) {
+        const parsed = JSON.parse(rawMsgs);
+        if (Array.isArray(parsed)) persistedMessages = parsed;
+        localStorage.removeItem(CHAT_MESSAGES_PERSIST_KEY);
+      }
+    } catch { /* ignore */ }
+
+    const exportedMessages: Array<{ role: "user" | "assistant"; content: string; attachments?: any[] }> = [];
+
+    if (persistedMessages.length > 0) {
+      persistedMessages.forEach((msg: any) => {
+        const role = msg?.role === "assistant" ? "assistant" as const : msg?.role === "user" ? "user" as const : null;
+        const content = String(msg?.content || "").trim();
+        if (!role || !content) return;
+        const entry: { role: "user" | "assistant"; content: string; attachments?: any[] } = { role, content };
+        if (Array.isArray(msg?.attachments) && msg.attachments.length > 0) {
+          entry.attachments = msg.attachments;
+        }
+        exportedMessages.push(entry);
+      });
+    } else {
+      chatMessages.forEach((msg) => {
+        const userText = String(msg?.content || "").trim();
+        if (userText) exportedMessages.push({ role: "user", content: userText });
+        const assistantText = String(msg?.aiResponse || "").trim();
+        if (assistantText) exportedMessages.push({ role: "assistant", content: assistantText });
+      });
+    }
+
+    let persistedAttachments: any[] = [];
+    try {
+      const raw = localStorage.getItem(CHAT_ATTACHMENTS_PERSIST_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) persistedAttachments = parsed;
+        localStorage.removeItem(CHAT_ATTACHMENTS_PERSIST_KEY);
+      }
+    } catch { /* ignore */ }
+
+    const st = useCanvasStore.getState() as any;
+    const ids: string[] = Array.isArray(st.blockOrder) ? st.blockOrder : [];
+    const canvasAttachments: any[] = [];
+    for (const id of ids) {
+      const b: any = st.blocks?.[id];
+      if (!b) continue;
+      if (b?.data?.aiResponseBubble) continue;
+
+      const bType = String(b.type || "").toLowerCase();
+      const mode = String(b.mode || "").toLowerCase();
+
+      if (bType === "youtube" || (bType === "create" && mode === "video")) {
+        const videoId = String(b.videoId || b?.data?.videoId || "");
+        const url = String(b.url || b?.data?.url || "");
+        if (videoId || url) {
+          canvasAttachments.push({
+            id: b.id,
+            title: String(b?.data?.title || b?.data?.name || "").trim() || "YouTube Video",
+            type: "youtube",
+            url: url || `https://www.youtube.com/watch?v=${videoId}`,
+            videoId: videoId || (extractYouTubeVideoId(url) || ""),
+          });
+        }
+      } else if (bType === "image" || (bType === "create" && ["image", "generated"].includes(mode))) {
+        const src = String(b.src || b?.data?.src || "");
+        if (src) {
+          canvasAttachments.push({
+            id: b.id,
+            title: String(b?.data?.title || b?.data?.name || "").trim() || "Image",
+            type: "image",
+            url: src,
+          });
+        }
+      } else if (bType === "link") {
+        const url = String(b.url || b?.data?.url || "");
+        if (url) {
+          const isPdf = /\.pdf(\?|$)/i.test(url);
+          canvasAttachments.push({
+            id: b.id,
+            title: String(b?.data?.title || b?.data?.name || "").trim() || url,
+            type: isPdf ? "pdf" : "link",
+            url,
+          });
+        }
+      } else if (bType === "file" || (bType === "create" && mode === "embed")) {
+        const url = String(b.dataUrl || b?.data?.dataUrl || b.url || b?.data?.url || "");
+        const mime = String(b.mime || b?.data?.mime || "");
+        const name = String(b.name || b?.data?.name || "").trim();
+        if (url || name) {
+          const isImage = mime.startsWith("image/") || /\.(png|jpe?g|gif|webp|svg)$/i.test(name);
+          const isPdf = mime === "application/pdf" || /\.pdf$/i.test(name) || /\.pdf(\?|$)/i.test(url);
+          canvasAttachments.push({
+            id: b.id,
+            title: name || "File",
+            type: isPdf ? "pdf" : isImage ? "image" : "file",
+            url,
+          });
+        }
+      }
+    }
+
+    const seenIds = new Set(persistedAttachments.map((a: any) => a?.id).filter(Boolean));
+    const merged = [
+      ...persistedAttachments,
+      ...canvasAttachments.filter((a) => !seenIds.has(a.id)),
+    ];
+
+    const payload: CanvasToChatHandoffPayload = {
+      version: 1,
+      createdAt: Date.now(),
+      source: "canvas-page",
+      boardId: boardId || null,
+      boardTitle: String(title || "Untitled board").trim() || "Untitled board",
+      draftInput: String(chatInput || "").trim(),
+      messages: exportedMessages,
+      attachments: merged,
+    };
+
+    try {
+      localStorage.setItem(CANVAS_TO_CHAT_HANDOFF_KEY, JSON.stringify(payload));
+    } catch {
+      // ignore localStorage write failures and still navigate
+    }
+    nav("/chat", { state: { canvasChatHandoff: payload } });
+  }, [boardId, chatInput, chatMessages, nav, title]);
+
+  useEffect(() => {
+    if (!showMemorySidebar) return;
+    void loadMemoryNotes();
+  }, [showMemorySidebar, loadMemoryNotes]);
+
+  useEffect(() => {
+    const handler = (e: MessageEvent) => {
+      if (!e.data || typeof e.data !== "object") return;
+      if (e.data.type === "omnia-memory-drag-start" && e.data.data) {
+        console.log("[MEMORY-DRAG] postMessage received: drag-start", e.data.data?.attachments?.map((a: any) => ({ type: a.type, url: a.url?.substring(0, 60), videoId: a.videoId })));
+        (window as any).__omnia_pending_memory = { ...e.data.data, timestamp: Date.now() };
+        setMemoryDragActive(true);
+      }
+      if (e.data.type === "omnia-memory-drag-end") {
+        console.log("[MEMORY-DRAG] postMessage received: drag-end");
+        setMemoryDragActive(false);
+      }
+    };
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, []);
+
   const handleChatSend = async () => {
     const text = chatInput.trim();
     if (!text || isChatLoading || isSendingRef.current) return;
+    // Keep typing flow uninterrupted after send.
+    window.setTimeout(() => chatPanelInputRef.current?.focus(), 0);
 
     const now = Date.now();
     if (lastSendSigRef.current.text === text && now - lastSendSigRef.current.at < 900) return;
@@ -1774,6 +2262,7 @@ ${text}`;
       setIsChatLoading(false);
       isSendingRef.current = false;
       setChatFlowMode("idle");
+      window.setTimeout(() => chatPanelInputRef.current?.focus(), 0);
     }
   };
 
@@ -1796,22 +2285,150 @@ ${text}`;
     return () => window.clearTimeout(t);
   }, [showChat]);
 
+  const resizeChatInput = useCallback((el: HTMLTextAreaElement | null) => {
+    if (!el) return;
+    const maxHeight = 220;
+    el.style.height = "auto";
+    const nextHeight = Math.min(maxHeight, Math.max(44, el.scrollHeight));
+    el.style.height = `${nextHeight}px`;
+    el.style.overflowY = el.scrollHeight > maxHeight ? "auto" : "hidden";
+  }, []);
+
+  useEffect(() => {
+    // Keep whichever composer is visible synced with current text height.
+    resizeChatInput(chatPanelInputRef.current);
+    resizeChatInput(centerChatInputRef.current);
+  }, [chatInput, resizeChatInput, showChat]);
+
   useEffect(() => {
     return () => {
       aiTypingRunRef.current += 1;
+      try {
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+          mediaRecorderRef.current.stop();
+        }
+      } catch {
+        // ignore
+      }
+      try {
+        mediaStreamRef.current?.getTracks?.().forEach((track) => track.stop());
+      } catch {
+        // ignore
+      }
+      if (typeof window !== "undefined" && window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+      }
     };
   }, []);
+
+  const handleOpenAttachments = useCallback(() => {
+    setShowAttachMenu(true);
+  }, []);
+
+  const handleDictateToggle = useCallback(() => {
+    const stopRecorder = () => {
+      try {
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+          mediaRecorderRef.current.stop();
+        }
+      } catch {
+        // ignore
+      }
+      try {
+        mediaStreamRef.current?.getTracks?.().forEach((track) => track.stop());
+      } catch {
+        // ignore
+      }
+      mediaStreamRef.current = null;
+    };
+
+    const transcribeAudio = async (blob: Blob) => {
+      if (!blob || blob.size <= 0) return;
+      try {
+        const { API_BASE_URL } = await import("@/lib/api-config");
+        const formData = new FormData();
+        formData.append("audio", blob, "dictation.webm");
+        formData.append("model", "whisper-1");
+        const res = await fetch(`${API_BASE_URL}/api/ai/transcribe`, {
+          method: "POST",
+          body: formData,
+        });
+        const data = await res.json().catch(() => ({}));
+        const transcript = String(data?.text || "").trim();
+        if (res.ok && transcript) {
+          setChatInput((prev) => `${String(prev || "").trim()} ${transcript}`.trim());
+        }
+      } catch {
+        // ignore transient dictation failures
+      }
+    };
+
+    if (isDictating) {
+      stopRecorder();
+      setIsDictating(false);
+      return;
+    }
+
+    navigator.mediaDevices
+      .getUserMedia({ audio: true })
+      .then((stream) => {
+        mediaStreamRef.current = stream;
+        audioChunksRef.current = [];
+        const recorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+        mediaRecorderRef.current = recorder;
+        recorder.ondataavailable = (event) => {
+          if (event.data && event.data.size > 0) {
+            audioChunksRef.current.push(event.data);
+          }
+        };
+        recorder.onstop = async () => {
+          setIsDictating(false);
+          const blob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+          audioChunksRef.current = [];
+          await transcribeAudio(blob);
+        };
+        recorder.onerror = () => {
+          setIsDictating(false);
+        };
+        recorder.start();
+        setIsDictating(true);
+      })
+      .catch(() => {
+        setIsDictating(false);
+      });
+  }, [isDictating]);
+
+  const handleVoiceToggle = useCallback(() => {
+    if (typeof window === "undefined" || !window.speechSynthesis) return;
+    if (isSpeaking) {
+      window.speechSynthesis.cancel();
+      setIsSpeaking(false);
+      return;
+    }
+    const latestAssistant = [...chatMessages]
+      .reverse()
+      .find((m) => String(m?.aiResponse || "").trim());
+    const textToRead = String(latestAssistant?.aiResponse || "").trim();
+    if (!textToRead) return;
+
+    const utterance = new SpeechSynthesisUtterance(textToRead);
+    utterance.onend = () => setIsSpeaking(false);
+    utterance.onerror = () => setIsSpeaking(false);
+    window.speechSynthesis.cancel();
+    setIsSpeaking(true);
+    window.speechSynthesis.speak(utterance);
+  }, [chatMessages, isSpeaking]);
 
   return (
     <div className="w-full h-[100svh] relative overflow-hidden bg-transparent">
       {/* Match BrickEditor layout: minimal chrome + floating controls */}
       {/* Heading panel (matches Create view top pill) */}
-      <div className="fixed top-3 left-0 right-0 z-[70] px-3 flex items-center justify-end pointer-events-none">
+      <div className={`fixed top-3 left-0 z-[70] px-3 flex items-center justify-end pointer-events-none transition-[right] duration-300 ${showMemorySidebar ? "right-[380px]" : "right-0"}`}>
         <div className="pointer-events-auto flex items-center gap-2">
           <button
             type="button"
             onClick={() => setTopPanelOpen((v) => !v)}
-            className="rounded-full w-9 h-9 glass-control hover:opacity-90 touch-manipulation flex items-center justify-center"
+            className="rounded-full w-9 h-9 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center"
             title={topPanelOpen ? "Hide panel" : "Show panel"}
           >
             {topPanelOpen ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
@@ -1823,7 +2440,7 @@ ${text}`;
               <button
                 type="button"
                 onClick={() => nav(-1)}
-                className="rounded-full w-9 h-9 p-0 glass-control hover:opacity-90 touch-manipulation flex items-center justify-center"
+                className="rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center"
                 title="Back"
               >
                 <ArrowLeft className="w-4 h-4" />
@@ -1905,7 +2522,7 @@ ${text}`;
                   if (!runNativeUndoRedo("undo")) undo();
                 }}
                 disabled={!isEditingField && !canUndo}
-                className="rounded-full w-9 h-9 p-0 glass-control hover:opacity-90 touch-manipulation flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed"
+                className="rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed"
                 title="Undo (Ctrl/Cmd+Z)"
               >
                 <Undo2 className="w-4 h-4" />
@@ -1920,7 +2537,7 @@ ${text}`;
                   if (!runNativeUndoRedo("redo")) redo();
                 }}
                 disabled={!isEditingField && !canRedo}
-                className="rounded-full w-9 h-9 p-0 glass-control hover:opacity-90 touch-manipulation flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed"
+                className="rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed"
                 title="Redo (Ctrl/Cmd+Shift+Z / Ctrl+Y)"
               >
                 <Redo2 className="w-4 h-4" />
@@ -1931,7 +2548,7 @@ ${text}`;
               <button
                 type="button"
                 onClick={clearCanvasAndPrompts}
-                className="rounded-full w-9 h-9 p-0 glass-control hover:opacity-90 touch-manipulation flex items-center justify-center"
+                className="rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center"
                 title="Clear canvas"
               >
                 <Trash2 className="w-4 h-4" />
@@ -1941,8 +2558,8 @@ ${text}`;
 
               <button
                 type="button"
-                onClick={() => nav("/chat")}
-                className="rounded-full w-9 h-9 p-0 glass-control hover:opacity-90 touch-manipulation flex items-center justify-center"
+                onClick={handleGoToChatPage}
+                className="rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center"
                 title="Go to chat page"
               >
                 <MessageSquare className="w-4 h-4" />
@@ -1952,8 +2569,19 @@ ${text}`;
 
               <button
                 type="button"
+                onClick={() => setShowMemorySidebar((v) => !v)}
+                className="rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center"
+                title={showMemorySidebar ? "Hide memory sidebar" : "Open memory sidebar"}
+              >
+                {showMemorySidebar ? <PanelRightClose className="w-4 h-4" /> : <BookOpen className="w-4 h-4" />}
+              </button>
+
+              <div className="w-px h-4 bg-black/10 dark:bg-white/10 mx-1" />
+
+              <button
+                type="button"
                 onClick={() => setShowAttachMenu(true)}
-                className="rounded-full w-9 h-9 p-0 glass-control hover:opacity-90 touch-manipulation flex items-center justify-center"
+                className="rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center"
                 title="Attachments"
               >
                 <Plus className="w-4 h-4" />
@@ -1967,15 +2595,257 @@ ${text}`;
         <Canvas liveAIMode={false} isAiThinking={isChatLoading} />
       </div>
 
+      {memoryDragActive && (
+        <div
+          className="fixed inset-0 z-[90]"
+          style={{ background: "transparent" }}
+          onDragOver={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            e.dataTransfer.dropEffect = "copy";
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setMemoryDragActive(false);
+            const pending = (window as any).__omnia_pending_memory;
+            console.log("[MEMORY-DROP] overlay onDrop fired, pending:", !!pending, pending);
+            if (!pending || typeof pending !== "object") { console.log("[MEMORY-DROP] no pending data, aborting"); return; }
+            (window as any).__omnia_pending_memory = null;
+
+            const attachments = Array.isArray(pending.attachments) ? pending.attachments : [];
+            console.log("[MEMORY-DROP] attachments:", attachments.map((a: any) => ({ type: a.type, url: a.url?.substring(0, 80), videoId: a.videoId })));
+            const youtubeAttach = attachments.find((a: any) =>
+              a.type === "youtube" || a.videoId || (a.url && (a.url.includes("youtube.com") || a.url.includes("youtu.be")))
+            );
+            console.log("[MEMORY-DROP] youtubeAttach:", youtubeAttach ? { type: youtubeAttach.type, url: youtubeAttach.url?.substring(0, 80), videoId: youtubeAttach.videoId } : null);
+            const imageAttach = attachments.find((a: any) =>
+              a.type === "image" || (a.url && /\.(jpg|jpeg|png|gif|webp|svg)(\?|$)/i.test(a.url)) || (a.url && a.url.startsWith("data:image/"))
+            );
+            const videoAttach = attachments.find((a: any) =>
+              a.type === "video" || (a.url && /\.(mp4|mov|webm|avi)(\?|$)/i.test(a.url)) || (a.url && a.url.startsWith("data:video/"))
+            );
+            const linkAttach = attachments.find((a: any) => a.url && a.type !== "file");
+            const cx = e.clientX;
+            const cy = e.clientY;
+
+            const toFile = (dataUrl: string, name: string): File | null => {
+              try {
+                const parts = dataUrl.split(",");
+                const mm = parts[0].match(/:(.*?);/);
+                if (!mm || !parts[1]) return null;
+                const bstr = atob(parts[1]);
+                const u8 = new Uint8Array(bstr.length);
+                for (let i = 0; i < bstr.length; i++) u8[i] = bstr.charCodeAt(i);
+                return new File([u8], name, { type: mm[1] });
+              } catch { return null; }
+            };
+
+            // YouTube → direct store call (bypasses all event chains)
+            if (youtubeAttach) {
+              let ytUrl = String(youtubeAttach.url || "").trim();
+              const vid = String(youtubeAttach.videoId || "").trim();
+              if (!extractYouTubeVideoId(ytUrl) && vid) {
+                ytUrl = `https://www.youtube.com/watch?v=${vid}`;
+              }
+              if (!ytUrl && vid) {
+                ytUrl = `https://www.youtube.com/watch?v=${vid}`;
+              }
+              const extractedVid = extractYouTubeVideoId(ytUrl) || vid;
+              console.log("[MEMORY-DROP] YouTube processing:", { ytUrl, vid, extractedVid });
+              if (ytUrl && extractedVid) {
+                const st = useCanvasStore.getState();
+                const g = Math.max(1, Math.floor(st.gridSize || 24));
+                const canvasEl = document.querySelector<HTMLElement>(".overflow-auto.overscroll-contain");
+                const rect = canvasEl?.getBoundingClientRect();
+                const localX = rect ? cx - rect.left : cx;
+                const localY = rect ? cy - rect.top : cy;
+                const wx = Math.round(localX / g) * g;
+                const wy = Math.round((Number(st.camera?.y || 0) + localY) / g) * g;
+                console.log("[MEMORY-DROP] Creating YouTube block at", { wx, wy, ytUrl, extractedVid });
+                st.addYouTubeBlockAt({ x: wx, y: wy }, { url: ytUrl, videoId: extractedVid });
+              } else {
+                console.log("[MEMORY-DROP] YouTube: no valid URL or videoId, skipping");
+              }
+              return;
+            }
+
+            // Images → file pipeline (same as dragging from desktop)
+            if (imageAttach?.url) {
+              if (imageAttach.url.startsWith("data:image/")) {
+                const f = toFile(imageAttach.url, imageAttach.name || "image.png");
+                if (f) { window.dispatchEvent(new CustomEvent("omnia_attach_files", { detail: { files: [f], clientX: cx, clientY: cy } })); return; }
+              }
+              window.dispatchEvent(new CustomEvent("omnia_attach_link", { detail: { url: imageAttach.url, clientX: cx, clientY: cy } }));
+              return;
+            }
+
+            // Videos → file pipeline for data URLs
+            if (videoAttach?.url) {
+              if (videoAttach.url.startsWith("data:video/")) {
+                const f = toFile(videoAttach.url, videoAttach.name || "video.mp4");
+                if (f) { window.dispatchEvent(new CustomEvent("omnia_attach_files", { detail: { files: [f], clientX: cx, clientY: cy } })); return; }
+              }
+              window.dispatchEvent(new CustomEvent("omnia_attach_link", { detail: { url: videoAttach.url, clientX: cx, clientY: cy } }));
+              return;
+            }
+
+            // PDFs → text block with extracted content, or embed fallback
+            const pdfAttach = attachments.find((a: any) =>
+              a.type === "pdf" || (a.url && /\.pdf(\?|$)/i.test(a.url)) || (a.mime && a.mime === "application/pdf")
+            );
+            if (pdfAttach) {
+              const pdfText = String(pdfAttach.pdfText || pdfAttach.extractedText || "").trim();
+              if (pdfText) {
+                const st = useCanvasStore.getState();
+                const g = Math.max(1, Math.floor(st.gridSize || 24));
+                const canvasEl = document.querySelector<HTMLElement>(".overflow-auto.overscroll-contain");
+                const rect = canvasEl?.getBoundingClientRect();
+                const localX = rect ? cx - rect.left : cx;
+                const localY = rect ? cy - rect.top : cy;
+                const wx = Math.round(localX / g) * g;
+                const wy = Math.round((Number(st.camera?.y || 0) + localY) / g) * g;
+                const title = String(pdfAttach.name || pdfAttach.title || "PDF").trim();
+                const combined = `# ${title}\n\n${pdfText}`;
+                const charsPerLine = Math.max(1, Math.floor((g * 16 * 0.85) / 8));
+                const wrappedLines = combined.split("\n").reduce((sum: number, line: string) => sum + Math.max(1, Math.ceil(line.length / charsPerLine)), 0);
+                const height = Math.max(g * 6, Math.min(g * 30, wrappedLines * 22 + 32));
+                st.addTextBlockAt({ x: wx, y: wy }, { width: g * 16, height, content: combined, format: "plain" });
+                return;
+              }
+              if (pdfAttach.url) {
+                const pdfUrl = String(pdfAttach.url);
+                const pdfName = String(pdfAttach.name || pdfAttach.title || "document.pdf").trim();
+                (async () => {
+                  try {
+                    const resp = await fetch(pdfUrl);
+                    if (resp.ok) {
+                      const blob = await resp.blob();
+                      const file = new File([blob], pdfName.endsWith(".pdf") ? pdfName : `${pdfName}.pdf`, { type: "application/pdf" });
+                      window.dispatchEvent(new CustomEvent("omnia_attach_files", { detail: { files: [file], clientX: cx, clientY: cy } }));
+                      return;
+                    }
+                  } catch { /* fetch failed, fall through */ }
+                  window.dispatchEvent(new CustomEvent("omnia_attach_link", { detail: { url: pdfUrl, clientX: cx, clientY: cy } }));
+                })();
+                return;
+              }
+            }
+
+            // Other links
+            if (linkAttach?.url) {
+              window.dispatchEvent(new CustomEvent("omnia_attach_link", { detail: { url: linkAttach.url, clientX: cx, clientY: cy } }));
+              return;
+            }
+
+            // Check content for URLs
+            const content = String(pending.content || "");
+            const urlMatch = content.match(/https?:\/\/[^\s<>"')]+/i);
+            if (urlMatch) {
+              window.dispatchEvent(new CustomEvent("omnia_attach_link", { detail: { url: urlMatch[0], clientX: cx, clientY: cy } }));
+              return;
+            }
+
+            // Pure text → text block
+            window.dispatchEvent(
+              new CustomEvent("omnia_attach_memory_text", { detail: { title: pending.title, content: pending.content, clientX: cx, clientY: cy } })
+            );
+          }}
+          onDragLeave={(e) => {
+            if (!e.relatedTarget) setMemoryDragActive(false);
+          }}
+        />
+      )}
+
+      <aside
+        className={`fixed top-0 right-0 z-[95] h-[100svh] w-[380px] max-w-[92vw] border-l border-white/20 dark:border-white/10 bg-white/40 dark:bg-[rgba(20,20,24,0.55)] shadow-[0_18px_60px_rgba(0,0,0,0.22)] backdrop-blur-[40px] backdrop-saturate-[1.6] transition-transform duration-300 ${
+          showMemorySidebar ? "translate-x-0 pointer-events-auto" : "translate-x-full pointer-events-none"
+        }`}
+      >
+        <div className="h-full flex flex-col">
+          <div className="px-4 py-3 border-b border-black/10 dark:border-white/10 flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-semibold text-black dark:text-white">Memory</h2>
+              <p className="text-xs opacity-70">Full memory view</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowMemorySidebar(false)}
+              className="h-8 w-8 rounded-full hover:bg-black/10 dark:hover:bg-white/15 transition-colors flex items-center justify-center"
+              title="Close memory sidebar"
+            >
+              <PanelRightClose className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="flex-1 min-h-0">
+            <iframe
+              src="/memory?embedded=1"
+              title="Memory"
+              className="w-full h-full border-0 bg-transparent"
+            />
+          </div>
+        </div>
+      </aside>
+
+      <DialogAny open={!!interactionNote} onOpenChange={() => setInteractionNote(null)}>
+        <DialogContentAny className="bg-white dark:bg-[#171515] border-gray-200 dark:border-gray-700 text-black dark:text-white">
+          <DialogHeaderAny>
+            <DialogTitleAny>Open Memory</DialogTitleAny>
+            <DialogDescriptionAny className="text-gray-500 dark:text-gray-400">
+              How would you like to view this memory?
+            </DialogDescriptionAny>
+          </DialogHeaderAny>
+          <div className="grid gap-4 py-4">
+            <button
+              type="button"
+              onClick={() => {
+                nav("/memory");
+                setInteractionNote(null);
+              }}
+              className="bg-white hover:bg-gray-100 text-black border border-gray-200 dark:bg-white dark:text-black dark:hover:bg-gray-200 w-full h-12 text-lg text-left justify-start px-6 flex items-center"
+            >
+              <Clock className="w-5 h-5 mr-3" />
+              View as Memory Card
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (!interactionNote?.id) return;
+                nav(`/create?id=${interactionNote.id}`);
+                setInteractionNote(null);
+              }}
+              className="border border-gray-200 dark:border-gray-700 w-full h-12 text-lg text-left justify-start px-6 hover:bg-gray-50 dark:hover:bg-white/5 text-black dark:text-white flex items-center"
+            >
+              <Edit2 className="w-5 h-5 mr-3" />
+              Open in Create Studio
+            </button>
+          </div>
+        </DialogContentAny>
+      </DialogAny>
+
       {!showChat && (
         <div className="fixed inset-0 z-[85] pointer-events-none flex items-center justify-center px-4 transition-all duration-300">
-        <div
-          className="pointer-events-auto glass-control rounded-2xl p-2 w-full max-w-2xl transition-all duration-300"
-        >
+        <div className="w-full max-w-2xl space-y-6">
+          <p className="pointer-events-none text-center text-3xl font-semibold tracking-tight min-h-[44px] text-black">
+            {typedWelcome}
+          </p>
+          <div
+            className="pointer-events-auto glass-control rounded-2xl p-2 w-full transition-all duration-300"
+          >
           <div className="flex items-center gap-2">
-            <input
+            <button
+              type="button"
+              onClick={handleOpenAttachments}
+              className="h-10 w-10 rounded-full flex items-center justify-center transition-colors hover:bg-black/10"
+              title="Add attachments"
+            >
+              <Plus className="w-4 h-4" />
+            </button>
+            <textarea
+              ref={centerChatInputRef}
               value={chatInput}
               onChange={(e) => setChatInput(e.target.value)}
+              onInput={(e) => resizeChatInput(e.currentTarget)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
@@ -1983,18 +2853,30 @@ ${text}`;
                 }
               }}
               placeholder="Ask me anything..."
-              className="w-full h-11 rounded-xl bg-transparent border border-white/30 px-4 text-sm text-black placeholder:text-black/55 outline-none"
+              rows={1}
+              className="w-full min-h-[44px] max-h-[220px] rounded-xl bg-transparent border border-white/30 px-4 py-3 text-sm text-black placeholder:text-black/55 outline-none resize-none leading-5 scrollbar-hide"
             />
             <button
               type="button"
-              onClick={() => {
-                void handleCenterAskSend();
-              }}
-              disabled={isChatLoading || !chatInput.trim()}
-              className="h-11 px-4 rounded-xl glass-control text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+              onClick={handleDictateToggle}
+              className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors hover:bg-black/10 ${
+                isDictating ? "bg-black/10 ring-1 ring-black/30" : ""
+              }`}
+              title="Dictate"
             >
-              {isChatLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : "Send"}
+              <Mic className="w-4 h-4" />
             </button>
+            <button
+              type="button"
+              onClick={handleVoiceToggle}
+              className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors hover:bg-black/10 ${
+                isSpeaking ? "bg-black/10 ring-1 ring-black/30" : ""
+              }`}
+              title="Voice"
+            >
+              <Volume2 className="w-4 h-4" />
+            </button>
+          </div>
           </div>
         </div>
       </div>
@@ -2002,7 +2884,7 @@ ${text}`;
 
       {showChat && (
         <div
-          className="fixed top-[4.9rem] right-0 bottom-0 z-[64] flex flex-col bg-transparent border-l border-black/10"
+          className={`fixed top-[4.9rem] bottom-0 z-[64] flex flex-col bg-transparent border-l border-black/10 transition-[right] duration-300 ${showMemorySidebar ? "right-[380px]" : "right-0"}`}
           style={{ width: `${chatRailWidthPx}px` }}
         >
           <div
@@ -2052,11 +2934,21 @@ ${text}`;
             )}
           </div>
           <div className="p-2 pb-3">
+            <div className="glass-control rounded-2xl p-2 w-full">
             <div className="flex items-center gap-2">
-            <input
+            <button
+              type="button"
+              onClick={handleOpenAttachments}
+              className="h-10 w-10 rounded-full flex items-center justify-center transition-colors hover:bg-black/10"
+              title="Add attachments"
+            >
+              <Plus className="w-4 h-4" />
+            </button>
+            <textarea
               ref={chatPanelInputRef}
               value={chatInput}
               onChange={(e) => setChatInput(e.target.value)}
+              onInput={(e) => resizeChatInput(e.currentTarget)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
@@ -2064,31 +2956,43 @@ ${text}`;
                 }
               }}
               placeholder="Ask me anything..."
-              className="w-full h-11 rounded-xl bg-white/12 border border-white/30 px-3 text-sm text-black placeholder:text-black/55 outline-none"
+              rows={1}
+              className="w-full min-h-[44px] max-h-[220px] rounded-xl bg-white/12 border border-white/30 px-3 py-3 text-sm text-black placeholder:text-black/55 outline-none resize-none leading-5 scrollbar-hide"
             />
             <button
               type="button"
-              onClick={() => {
-                void handleChatSend();
-              }}
-              disabled={isChatLoading || !chatInput.trim()}
-              className="h-11 px-3 rounded-xl bg-white/12 border border-white/30 text-xs disabled:opacity-50 disabled:cursor-not-allowed"
+              onClick={handleDictateToggle}
+              className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors hover:bg-black/10 ${
+                isDictating ? "bg-black/10 ring-1 ring-black/30" : ""
+              }`}
+              title="Dictate"
             >
-              {isChatLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : "Send"}
+              <Mic className="w-4 h-4" />
             </button>
+            <button
+              type="button"
+              onClick={handleVoiceToggle}
+              className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors hover:bg-black/10 ${
+                isSpeaking ? "bg-black/10 ring-1 ring-black/30" : ""
+              }`}
+              title="Voice"
+            >
+              <Volume2 className="w-4 h-4" />
+            </button>
+            </div>
             </div>
           </div>
         </div>
       )}
 
-      <Dialog open={showAttachMenu} onOpenChange={setShowAttachMenu}>
-        <DialogContent className="rounded-2xl border border-white/60 bg-[#f2f2f7]/80 backdrop-blur-lg text-black shadow-2xl">
-          <DialogHeader>
-            <DialogTitle className="text-black">Add Attachment</DialogTitle>
-            <DialogDescription className="text-black/60">
+      <DialogAny open={showAttachMenu} onOpenChange={setShowAttachMenu}>
+        <DialogContentAny className="rounded-2xl border border-white/60 bg-[#f2f2f7]/80 backdrop-blur-lg text-black shadow-2xl">
+          <DialogHeaderAny>
+            <DialogTitleAny className="text-black">Add Attachment</DialogTitleAny>
+            <DialogDescriptionAny className="text-black/60">
               Add links or upload files onto your canvas
-            </DialogDescription>
-          </DialogHeader>
+            </DialogDescriptionAny>
+          </DialogHeaderAny>
 
           <div className="space-y-3 py-2">
             <button
@@ -2218,8 +3122,8 @@ ${text}`;
               setShowAttachMenu(false);
             }}
           />
-        </DialogContent>
-      </Dialog>
+        </DialogContentAny>
+      </DialogAny>
 
       {aiSuggestions.length > 0 && (
         <div
@@ -2237,6 +3141,25 @@ ${text}`;
           </ul>
         </div>
       )}
+
+      {showQuickNote && (
+        <DraggableQuickNote
+          content={quickNoteContent}
+          setContent={setQuickNoteContent}
+          isSaving={isQuickNoteSaving}
+          onSave={handleSaveQuickNote}
+          onClose={() => { void handleCloseQuickNote(); }}
+        />
+      )}
+
+      <button
+        type="button"
+        onClick={() => setShowQuickNote(true)}
+        className="fixed bottom-8 right-8 w-14 h-14 rounded-full glass-control hover:opacity-90 shadow-lg hover:shadow-xl transition-all flex items-center justify-center hover:scale-110 z-[80]"
+        title="Quick Notes"
+      >
+        <StickyNote className="w-6 h-6" />
+      </button>
     </div>
   );
 }

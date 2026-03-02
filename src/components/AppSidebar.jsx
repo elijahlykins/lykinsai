@@ -58,34 +58,6 @@ export default function AppSidebar() {
   }, [user?.id]);
 
   useEffect(() => {
-    const updatePushState = () => {
-      const appContent = document.querySelector(".app-content");
-      if (!appContent) {
-        document.body.classList.remove("sidebar-push");
-        return;
-      }
-
-      const sidebarWidth = 190;
-      const detectionEdge = sidebarWidth + 16;
-      const candidates = appContent.querySelectorAll(
-        "main, section, article, h1, h2, h3, p, .rounded-2xl, .rounded-xl"
-      );
-
-      let shouldPush = false;
-      candidates.forEach((el) => {
-        if (shouldPush) return;
-        if (!(el instanceof HTMLElement)) return;
-        if (el.offsetParent === null) return;
-        const rect = el.getBoundingClientRect();
-        if (rect.width <= 0 || rect.height <= 0) return;
-        if (rect.left < detectionEdge && rect.right > 0) {
-          shouldPush = true;
-        }
-      });
-
-      document.body.classList.toggle("sidebar-push", shouldPush);
-    };
-
     if (!open) {
       document.body.classList.remove("sidebar-open");
       document.body.classList.remove("sidebar-push");
@@ -96,15 +68,13 @@ export default function AppSidebar() {
     }
 
     document.body.classList.add("sidebar-open");
-    updatePushState();
-    window.addEventListener("resize", updatePushState);
+    document.body.classList.add("sidebar-push");
 
     return () => {
-      window.removeEventListener("resize", updatePushState);
       document.body.classList.remove("sidebar-open");
       document.body.classList.remove("sidebar-push");
     };
-  }, [location.pathname, open]);
+  }, [open]);
 
   return (
     <>
@@ -112,7 +82,7 @@ export default function AppSidebar() {
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
-          className="rounded-full w-8 h-8 glass-control hover:opacity-90 flex items-center justify-center"
+          className="rounded-full w-8 h-8 hover:bg-black/10 dark:hover:bg-white/15 transition-colors flex items-center justify-center"
           title={open ? "Hide panel" : "Show panel"}
         >
           {open ? <ChevronLeft className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
@@ -138,17 +108,17 @@ export default function AppSidebar() {
       </div>
 
       <div
-        className={`fixed top-0 left-0 z-[70] h-[100svh] w-[190px] bg-transparent backdrop-blur-md p-3 pt-12 transition-transform duration-200 flex flex-col ${
+        className={`fixed top-0 left-0 z-[70] h-[100svh] w-[190px] bg-transparent p-3 pt-12 transition-transform duration-200 flex flex-col ${
           open ? "translate-x-0" : "-translate-x-[120%]"
         }`}
       >
-        <div className="absolute right-0 top-0 bottom-0 w-px bg-white/60 pointer-events-none" />
+        <div className="absolute right-0 top-0 bottom-0 w-px bg-transparent pointer-events-none" />
         <div className="mt-5 flex items-center justify-between px-2 py-1">
           <div className="text-[11px] font-semibold text-black/70">Navigation</div>
         </div>
 
         <div className="px-2 pt-2">
-          <div className="flex items-center gap-2 rounded-xl border border-white/50 bg-white/60 backdrop-blur-md px-2 py-1.5 text-[11px] text-black/60">
+          <div className="flex items-center gap-2 rounded-xl border border-black/10 bg-transparent px-2 py-1.5 text-[11px] text-black/60">
             <SearchIcon className="w-3.5 h-3.5" />
             <input
               placeholder="Search"

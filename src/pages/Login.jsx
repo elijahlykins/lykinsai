@@ -36,7 +36,7 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen bg-[#f2f2f7]/80 text-black flex items-center justify-center px-6 relative overflow-hidden">
+    <div className="min-h-screen bg-transparent text-black flex items-center justify-center px-6 relative overflow-hidden">
       <div className="absolute inset-0 bg-gradient-to-br from-blue-100/50 via-white/40 to-orange-100/40" />
       <div className="absolute -top-24 -right-24 h-64 w-64 rounded-full bg-white/40 blur-2xl" />
       <div className="absolute bottom-0 left-0 h-40 w-40 rounded-full bg-blue-100/60 blur-xl" />

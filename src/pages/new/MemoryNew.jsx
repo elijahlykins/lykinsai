@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useLocation } from "react-router-dom";
 import {
   ChevronDown,
   ChevronUp,
@@ -21,7 +22,7 @@ import DraggableChat from "@/components/notes/DraggableChat";
 import DraggableQuickNote from "@/components/notes/DraggableQuickNote";
 import DragDropFileUpload from "@/components/files/DragDropFileUpload";
 import { extractYouTubeVideoId, getYouTubeEmbedUrl } from "@/canvas/utils/youtube";
-import homeBackground from "@/assets/Maybe.jpg";
+import LoadingScreen from "@/components/LoadingScreen";
 
 function stripAttachmentJsonMarker(content) {
   if (!content) return "";
@@ -108,7 +109,8 @@ function resolveAttachmentType(attachment = {}) {
   if (["jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "heic", "tiff"].includes(ext)) return "image";
   if (["mp4", "mov", "avi", "mkv", "webm", "m4v", "wmv"].includes(ext)) return "video";
   if (["mp3", "wav", "ogg", "m4a", "aac", "flac", "wma"].includes(ext)) return "audio";
-  if (["pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "txt", "md", "csv"].includes(ext)) return "file";
+  if (ext === "pdf") return "pdf";
+  if (["doc", "docx", "ppt", "pptx", "xls", "xlsx", "txt", "md", "csv"].includes(ext)) return "file";
 
   return "file";
 }
@@ -391,7 +393,20 @@ function extractYouTubeLinks(content = "") {
 }
 
 export default function MemoryNew() {
+  const location = useLocation();
   const { user, loading } = useAuth();
+  const isEmbeddedMode = useMemo(
+    () => new URLSearchParams(location.search).get("embedded") === "1",
+    [location.search]
+  );
+  useEffect(() => {
+    if (isEmbeddedMode) {
+      document.documentElement.classList.add("embedded-transparent");
+      return () => document.documentElement.classList.remove("embedded-transparent");
+    }
+  }, [isEmbeddedMode]);
+
+  const [embeddedSearch, setEmbeddedSearch] = useState("");
   const [notes, setNotes] = useState([]);
   const [isLoadingNotes, setIsLoadingNotes] = useState(true);
   const [notesError, setNotesError] = useState("");
@@ -767,6 +782,24 @@ export default function MemoryNew() {
     return memoryCards.filter((card) => card.kind !== "chat-preview");
   }, [activeMemoryPage, memoryCards]);
 
+  const filteredVisibleCards = useMemo(() => {
+    const query = String(embeddedSearch || "").trim().toLowerCase();
+    if (!query) return visibleCards;
+    return visibleCards.filter((card) => {
+      const fields = [
+        card?.title,
+        card?.parentTitle,
+        card?.excerpt,
+        card?.question,
+        card?.answer,
+        card?.attachment?.name,
+        card?.attachment?.url,
+        card?.dateLabel,
+      ];
+      return fields.some((value) => String(value || "").toLowerCase().includes(query));
+    });
+  }, [embeddedSearch, visibleCards]);
+
   const orderStorageKey = useMemo(
     () => (user?.id ? `memory_collage_order_v1_${user.id}` : "memory_collage_order_v1_guest"),
     [user?.id]
@@ -800,11 +833,11 @@ export default function MemoryNew() {
 
   const orderedVisibleCards = useMemo(() => {
     const currentOrder = orderByPage[activeMemoryPage] || [];
-    const visibleMap = new Map(visibleCards.map((card) => [card.id, card]));
+    const visibleMap = new Map(filteredVisibleCards.map((card) => [card.id, card]));
     const ordered = currentOrder.map((id) => visibleMap.get(id)).filter(Boolean);
-    const remaining = visibleCards.filter((card) => !currentOrder.includes(card.id));
+    const remaining = filteredVisibleCards.filter((card) => !currentOrder.includes(card.id));
     return [...ordered, ...remaining];
-  }, [activeMemoryPage, orderByPage, visibleCards]);
+  }, [activeMemoryPage, filteredVisibleCards, orderByPage]);
 
   const reorderActivePage = useCallback(
     (dragId, overId) => {
@@ -1033,6 +1066,26 @@ User: ${text}`;
     if (type === "youtube") {
       const videoId = extractYouTubeVideoId(String(attachment.url || ""));
       const embedUrl = videoId ? getYouTubeEmbedUrl(videoId) : "";
+
+      if (isEmbeddedMode && videoId) {
+        const thumbUrl = `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
+        return (
+          <div className={`w-full ${tileHeightClass} rounded-2xl overflow-hidden bg-black relative`} draggable={false}>
+            <img
+              src={thumbUrl}
+              alt={title || "YouTube Video"}
+              className="w-full h-full object-cover"
+              draggable={false}
+            />
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+              <div className="w-14 h-10 bg-red-600 rounded-xl flex items-center justify-center shadow-lg">
+                <svg viewBox="0 0 24 24" fill="white" className="w-6 h-6 ml-0.5"><polygon points="8,5 20,12 8,19" /></svg>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
       if (!embedUrl) {
         return (
           <a
@@ -1436,8 +1489,12 @@ User: ${text}`;
     setOpenCardMenuId(cardId);
   }, []);
 
+  if ((loading || isLoadingNotes) && user) {
+    return <LoadingScreen isLoading={true} />;
+  }
+
   return (
-    <div className="min-h-screen text-black relative overflow-x-hidden">
+    <div className={`min-h-screen bg-transparent text-black relative overflow-x-hidden`}>
       <DragDropFileUpload
         onUploadComplete={(payload) => {
           const createdNotes = Array.isArray(payload?.createdNotes) ? payload.createdNotes : [];
@@ -1449,15 +1506,7 @@ User: ${text}`;
         }}
       />
 
-      <img
-        src={homeBackground}
-        alt=""
-        aria-hidden="true"
-        className="fixed inset-0 z-0 h-full w-full object-cover"
-      />
-      <div className="fixed inset-0 bg-black/[0.07] pointer-events-none z-[5]" />
-      <div className="fixed inset-0 bg-white/[0.17] backdrop-blur-lg pointer-events-none z-10" />
-
+      {!isEmbeddedMode && (
       <div className="fixed top-3 left-0 right-0 z-[70] px-3 flex items-center justify-end pointer-events-none">
         <div className="pointer-events-auto flex items-center gap-2">
           <button
@@ -1574,13 +1623,26 @@ User: ${text}`;
           )}
         </div>
       </div>
+      )}
 
-      <main className="relative z-20 mx-auto w-full max-w-[1560px] px-4 sm:px-6 lg:px-8 pt-24 pb-16">
+      <main className={`relative z-20 mx-auto w-full max-w-[1560px] px-4 sm:px-6 lg:px-8 ${isEmbeddedMode ? "pt-6" : "pt-24"} pb-16`}>
         <section className="mb-6">
-          <h1 className="text-3xl font-semibold">Memory</h1>
-          <p className="text-black/60 mt-1">
-            Your digital collage of media files, videos, images, and quick notes. Drag and drop files or folders anywhere on this page.
-          </p>
+          {isEmbeddedMode ? (
+            <input
+              type="text"
+              value={embeddedSearch}
+              onChange={(e) => setEmbeddedSearch(e.target.value)}
+              placeholder="Search memories..."
+              className="w-full h-10 rounded-xl border border-black/10 bg-white/80 px-3 text-sm outline-none"
+            />
+          ) : (
+            <>
+              <h1 className="text-3xl font-semibold">Memory</h1>
+              <p className="text-black/60 mt-1">
+                Your digital collage of media files, videos, images, and quick notes. Drag and drop files or folders anywhere on this page.
+              </p>
+            </>
+          )}
           <div className="mt-4 inline-flex items-center gap-1 p-1 rounded-full glass-control">
             <button
               type="button"
@@ -1615,24 +1677,20 @@ User: ${text}`;
           </div>
         )}
 
-        {(loading || isLoadingNotes) && user && (
-          <div className="glass-control rounded-2xl px-5 py-4 inline-block">
-            <p className="text-sm text-black/70">Loading your memory board...</p>
-          </div>
-        )}
-
         {!loading && !isLoadingNotes && user && !notesError && (
           <>
-            {visibleCards.length === 0 ? (
+            {orderedVisibleCards.length === 0 ? (
               <div className="glass-control rounded-2xl px-5 py-4 inline-block">
                 <p className="text-sm text-black/70">
-                  {activeMemoryPage === "chats"
+                  {embeddedSearch.trim()
+                    ? "No memories match your search."
+                    : activeMemoryPage === "chats"
                     ? "No AI chats saved yet."
                     : "No media yet. Drop files to start your collage board."}
                 </p>
               </div>
             ) : (
-              <div className="columns-1 sm:columns-2 md:columns-3 xl:columns-4 2xl:columns-5 gap-4 md:gap-5">
+              <div className={isEmbeddedMode ? "columns-2 gap-3" : "columns-1 sm:columns-2 md:columns-3 xl:columns-4 2xl:columns-5 gap-4 md:gap-5"}>
                 {orderedVisibleCards.map((card) => (
                   <article
                     key={card.id}
@@ -1643,11 +1701,68 @@ User: ${text}`;
                         e.preventDefault();
                         return;
                       }
+                      const resolvedUrl =
+                        card.kind === "attachment"
+                          ? resolvedAttachmentUrls[card.id] || card?.attachment?.url || ""
+                          : "";
+                      if (resolvedUrl) {
+                        try {
+                          e.dataTransfer.setData("text/uri-list", resolvedUrl);
+                          e.dataTransfer.setData("text/plain", resolvedUrl);
+                        } catch {
+                          // ignore drag payload issues between contexts
+                        }
+                      }
+
+                      if (isEmbeddedMode && card.kind === "attachment" && card.attachment) {
+                        const att = card.attachment;
+                        const videoId = card.type === "youtube" ? (att.videoId || extractYouTubeVideoId(att.url || "") || "") : "";
+                        const resolvedForDrag = resolvedAttachmentUrls[card.id] || att.url || "";
+                        const pdfText = (card.type === "pdf" && att.extractedText) ? String(att.extractedText) : "";
+                        const pendingData = {
+                          id: card.id,
+                          title: card.title || "",
+                          content: "",
+                          attachments: [{ ...att, url: resolvedForDrag, type: card.type, videoId, ...(pdfText ? { pdfText, extractedText: pdfText } : {}) }],
+                          timestamp: Date.now(),
+                        };
+                        try { e.dataTransfer.setData("application/x-omnia-memory", JSON.stringify(pendingData)); } catch {}
+                        try {
+                          const target = window.parent !== window ? window.parent : window;
+                          /** @type {any} */ (target).__omnia_pending_memory = pendingData;
+                        } catch {}
+                        try {
+                          window.parent.postMessage({ type: "omnia-memory-drag-start", data: pendingData }, "*");
+                        } catch {}
+                        e.dataTransfer.effectAllowed = "copyMove";
+                      } else if (isEmbeddedMode && card.kind === "quick-note") {
+                        const pendingData = {
+                          id: card.id,
+                          title: card.title || "Quick Note",
+                          content: card.excerpt || "",
+                          attachments: [],
+                          timestamp: Date.now(),
+                        };
+                        try {
+                          e.dataTransfer.setData("text/plain", card.excerpt || card.title || "Quick Note");
+                          e.dataTransfer.setData("application/x-omnia-memory", JSON.stringify(pendingData));
+                        } catch {}
+                        try {
+                          const target = window.parent !== window ? window.parent : window;
+                          /** @type {any} */ (target).__omnia_pending_memory = pendingData;
+                        } catch {}
+                        try {
+                          window.parent.postMessage({ type: "omnia-memory-drag-start", data: pendingData }, "*");
+                        } catch {}
+                        e.dataTransfer.effectAllowed = "copyMove";
+                      } else {
+                        e.dataTransfer.effectAllowed = "move";
+                      }
+
                       setDraggedCardId(card.id);
                       lastHoverTargetRef.current = card.id;
                       window.dispatchEvent(new CustomEvent("memory_collage_reorder_drag_start"));
-                      e.dataTransfer.effectAllowed = "move";
-                      e.dataTransfer.setData("text/plain", card.id);
+                      try { e.dataTransfer.setData("application/x-lykins-memory-card-id", card.id); } catch {}
                     }}
                     onDragEnter={(e) => {
                       e.preventDefault();
@@ -1664,7 +1779,7 @@ User: ${text}`;
                     }}
                     onDrop={(e) => {
                       e.preventDefault();
-                      const droppedId = e.dataTransfer.getData("text/plain") || draggedCardId;
+                      const droppedId = e.dataTransfer.getData("application/x-lykins-memory-card-id") || draggedCardId;
                       if (droppedId && droppedId !== card.id) {
                         reorderActivePage(droppedId, card.id);
                       }
@@ -1678,8 +1793,11 @@ User: ${text}`;
                       setDropTargetCardId(null);
                       lastHoverTargetRef.current = null;
                       window.dispatchEvent(new CustomEvent("memory_collage_reorder_drag_end"));
+                      if (isEmbeddedMode) {
+                        try { window.parent.postMessage({ type: "omnia-memory-drag-end" }, "*"); } catch {}
+                      }
                     }}
-                    className={`break-inside-avoid mb-5 rounded-2xl relative ${
+                    className={`break-inside-avoid ${isEmbeddedMode ? "mb-0" : "mb-5"} rounded-2xl relative ${
                       card.kind === "chat-preview" ? "overflow-hidden" : "overflow-visible"
                     } ${
                       card.kind === "attachment" || card.kind === "quick-note"
@@ -2068,14 +2186,16 @@ User: ${text}`;
         </div>
       )}
 
-      <button
-        type="button"
-        onClick={() => setShowQuickNote(true)}
-        className="fixed bottom-8 right-8 w-14 h-14 rounded-full glass-control hover:opacity-90 shadow-lg hover:shadow-xl transition-all flex items-center justify-center hover:scale-110 z-[80]"
-        title="Quick Notes"
-      >
-        <Plus className="w-6 h-6" />
-      </button>
+      {!isEmbeddedMode && (
+        <button
+          type="button"
+          onClick={() => setShowQuickNote(true)}
+          className="fixed bottom-8 right-8 w-14 h-14 rounded-full glass-control hover:opacity-90 shadow-lg hover:shadow-xl transition-all flex items-center justify-center hover:scale-110 z-[80]"
+          title="Quick Notes"
+        >
+          <StickyNote className="w-6 h-6" />
+        </button>
+      )}
     </div>
   );
 }

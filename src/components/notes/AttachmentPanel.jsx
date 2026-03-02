@@ -342,6 +342,55 @@ const AudioPlayerComponent = ({ attachment, audioMimeType }) => {
   );
 };
 
+const handleAttachmentDragStart = (e, attachment) => {
+  console.log("[IFRAME-ATTACH-DRAG] handleAttachmentDragStart fired:", { type: attachment.type, url: attachment.url?.substring(0, 60), videoId: attachment.videoId, name: attachment.name });
+  const resolvedType = resolveAttachmentType(attachment);
+  const url = attachment.url || '';
+
+  const pendingData = {
+    id: attachment.id,
+    title: attachment.name || '',
+    content: '',
+    attachments: [{ ...attachment, type: resolvedType }],
+    timestamp: Date.now()
+  };
+
+  if (resolvedType === 'youtube' || url.includes('youtube.com') || url.includes('youtu.be')) {
+    e.dataTransfer.setData("text/uri-list", url);
+    e.dataTransfer.setData("text/plain", url);
+  } else if (resolvedType === 'image' && url) {
+    e.dataTransfer.setData("text/uri-list", url);
+    e.dataTransfer.setData("text/plain", url);
+  } else if (resolvedType === 'video' && url) {
+    e.dataTransfer.setData("text/uri-list", url);
+    e.dataTransfer.setData("text/plain", url);
+  } else if (url) {
+    e.dataTransfer.setData("text/uri-list", url);
+    e.dataTransfer.setData("text/plain", url);
+  }
+
+  try {
+    e.dataTransfer.setData("application/x-omnia-memory", JSON.stringify(pendingData));
+  } catch (_) { /* custom MIME type not supported */ }
+
+  try {
+    const target = window.parent !== window ? window.parent : window;
+    /** @type {any} */ (target).__omnia_pending_memory = pendingData;
+  } catch (_) { /* cross-origin guard */ }
+
+  try {
+    window.parent.postMessage({ type: "omnia-memory-drag-start", data: pendingData }, "*");
+  } catch (_) { /* cross-origin guard */ }
+
+  e.dataTransfer.effectAllowed = "copyMove";
+};
+
+const handleAttachmentDragEnd = () => {
+  try {
+    window.parent.postMessage({ type: "omnia-memory-drag-end" }, "*");
+  } catch (_) { /* cross-origin guard */ }
+};
+
 export default function AttachmentPanel({ attachments = [], onRemove, onUpdate, readOnly = false }) {
   const [previewAttachment, setPreviewAttachment] = useState(null);
   const [editingCaption, setEditingCaption] = useState(null);
@@ -760,7 +809,13 @@ export default function AttachmentPanel({ attachments = [], onRemove, onUpdate, 
                   willShowAudio: resolvedType === 'audio'
                 });
                 return (
-                  <div key={attachment.id} className="clay-card p-3 relative group">
+                  <div
+                    key={attachment.id}
+                    draggable
+                    onDragStart={(e) => handleAttachmentDragStart(e, attachment)}
+                    onDragEnd={handleAttachmentDragEnd}
+                    className="clay-card p-3 relative group cursor-grab active:cursor-grabbing"
+                  >
                     {!readOnly && (
                       <button
                         onClick={() => onRemove(attachment.id)}
@@ -790,7 +845,8 @@ export default function AttachmentPanel({ attachments = [], onRemove, onUpdate, 
                         <img 
                           src={attachment.url} 
                           alt={attachment.name || ''} 
-                          className="w-full h-32 object-cover rounded" 
+                          className="w-full h-32 object-cover rounded"
+                          draggable="false"
                         />
                       )}
                       {resolvedType === 'video' && (
@@ -806,7 +862,8 @@ export default function AttachmentPanel({ attachments = [], onRemove, onUpdate, 
                             <img 
                               src={attachment.thumbnail} 
                               alt={attachment.name || 'YouTube Video'} 
-                              className="w-full h-32 object-cover rounded" 
+                              className="w-full h-32 object-cover rounded"
+                              draggable="false"
                             />
                           ) : (
                             <div className="w-full h-32 bg-gray-200 dark:bg-gray-700 rounded flex items-center justify-center">

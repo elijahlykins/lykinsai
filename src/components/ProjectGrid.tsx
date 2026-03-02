@@ -13,6 +13,12 @@ type Project = {
   thumbnail?: string | null;
 };
 
+type LinkedTeam = {
+  id: string;
+  name: string;
+  color: string;
+};
+
 type ProjectGridProps = {
   projects: Project[];
   onSelect?: (project: Project) => void;
@@ -20,6 +26,7 @@ type ProjectGridProps = {
   onDelete?: (project: Project) => void | Promise<void>;
   fallbackInitials?: string;
   onSetProjectImage?: (projectId: string, dataUrl: string) => void | Promise<void>;
+  teamsByProject?: Record<string, LinkedTeam[]>;
 };
 
 const PROJECT_CARD_IMAGES_KEY = "omnia_project_card_images";
@@ -62,6 +69,7 @@ export default function ProjectGrid({
   onDelete,
   fallbackInitials = "?",
   onSetProjectImage,
+  teamsByProject = {},
 }: ProjectGridProps) {
   if (!projects.length) {
     return (
@@ -130,10 +138,11 @@ export default function ProjectGrid({
         {projects.map((project) => (
         <div
           key={project.id}
-          className="group relative min-h-[210px] rounded-2xl border border-white/60 bg-white/20 backdrop-blur-lg p-4 text-black shadow-xl shadow-white/20 transition-transform hover:scale-[1.02] hover:shadow-2xl flex items-center justify-center text-center overflow-hidden"
+          className="group relative min-h-[210px] rounded-2xl border border-white/30 bg-[rgba(160,160,170,0.25)] backdrop-blur-[30px] backdrop-saturate-[1.4] p-4 text-black shadow-[0_2px_8px_rgba(0,0,0,0.06)] transition-transform hover:scale-[1.02] hover:shadow-[0_4px_12px_rgba(0,0,0,0.1)] flex items-center justify-center text-center overflow-hidden"
         >
           {(() => {
-            const imageSrc = localImageMap[project.id] || getProjectImage(project);
+            const localImg = localImageMap[project.id];
+            const imageSrc = localImg === "__removed__" ? "" : (localImg || getProjectImage(project));
             return (
               <div className="relative z-20 w-full flex flex-col items-center px-1 pt-1 pb-2 pointer-events-none">
                 <button
@@ -161,6 +170,25 @@ export default function ProjectGrid({
                   <div className="mt-1 text-[11px] text-black/55 leading-tight">
                     Last modified: {formatDate(project.updated_at || project.created_at)}
                   </div>
+                  {(teamsByProject[project.id] ?? []).length > 0 && (
+                    <div className="mt-2 flex items-center gap-1.5">
+                      <div className="flex -space-x-1.5">
+                        {(teamsByProject[project.id] ?? []).map((team) => (
+                          <div
+                            key={team.id}
+                            className="w-6 h-6 rounded-full border-2 border-white flex items-center justify-center text-[8px] font-bold text-white shrink-0"
+                            style={{ background: team.color }}
+                            title={team.name}
+                          >
+                            {team.name.split(/\s+/).slice(0, 2).map((w: string) => w.charAt(0).toUpperCase()).join("")}
+                          </div>
+                        ))}
+                      </div>
+                      <span className="text-[9px] text-black/45 truncate">
+                        {(teamsByProject[project.id] ?? []).map((t) => t.name).join(", ")}
+                      </span>
+                    </div>
+                  )}
                 </div>
               </div>
             );
@@ -206,6 +234,25 @@ export default function ProjectGrid({
                   >
                     Add team members
                   </button>
+                  {localImageMap[project.id] !== "__removed__" && (localImageMap[project.id] || getProjectImage(project)) && (
+                    <button
+                      type="button"
+                      className="w-full text-left text-xs px-2 py-2 rounded-lg hover:bg-black/5"
+                      onClick={() => {
+                        setLocalImageMap((prev) => {
+                          const next = { ...prev, [project.id]: "__removed__" };
+                          try {
+                            localStorage.setItem(PROJECT_CARD_IMAGES_KEY, JSON.stringify(next));
+                          } catch { /* ignore */ }
+                          return next;
+                        });
+                        void onSetProjectImage?.(project.id, "");
+                        setOpenMenuId(null);
+                      }}
+                    >
+                      Remove cover image
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="w-full text-left text-xs px-2 py-2 rounded-lg text-red-600 hover:bg-red-50"

@@ -5,6 +5,8 @@ import { isInViewport } from "@/canvas/utils/isInViewport";
 import { snapToGrid } from "@/canvas/utils/snap";
 import { extractYouTubeVideoId } from "@/canvas/utils/youtube";
 import { YouTubeBlock } from "@/canvas/blocks/YouTubeBlock";
+import { ImageBlock } from "@/canvas/blocks/ImageBlock";
+import { LinkBlock } from "@/canvas/blocks/LinkBlock";
 import type { AiAnswerEntry } from "@/canvas/types";
 import { canUseActiveBrickLogic, renderBrickShell } from "./brick";
 
@@ -15,6 +17,163 @@ type CanvasProps = {
 
 const ENABLE_CANVAS_HOTKEYS = false;
 const ENABLE_BRICK_LOGIC = canUseActiveBrickLogic();
+
+function consumePendingMemoryDrop(): { id: string; title: string; content: string; attachments: any[]; timestamp: number } | null {
+  try {
+    const pending = (window as any).__omnia_pending_memory;
+    if (pending && typeof pending === "object" && Date.now() - (pending.timestamp || 0) < 30000) {
+      (window as any).__omnia_pending_memory = null;
+      return pending;
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
+function dataUrlToFile(dataUrl: string, name: string): File | null {
+  try {
+    const parts = dataUrl.split(",");
+    const mimeMatch = parts[0].match(/:(.*?);/);
+    if (!mimeMatch || !parts[1]) return null;
+    const mime = mimeMatch[1];
+    const bstr = atob(parts[1]);
+    const u8 = new Uint8Array(bstr.length);
+    for (let i = 0; i < bstr.length; i++) u8[i] = bstr.charCodeAt(i);
+    return new File([u8], name, { type: mime });
+  } catch {
+    return null;
+  }
+}
+
+function processMemoryDrop(pending: { title: string; content: string; attachments: any[] }, clientX: number, clientY: number) {
+  const attachments = Array.isArray(pending.attachments) ? pending.attachments : [];
+  console.log("[MEMORY-DROP-CANVAS] processMemoryDrop called, attachments:", attachments.map((a: any) => ({ type: a.type, url: a.url?.substring(0, 80), videoId: a.videoId })));
+
+  const youtubeAttach = attachments.find((a: any) =>
+    a.type === "youtube" || a.videoId || (a.url && (a.url.includes("youtube.com") || a.url.includes("youtu.be")))
+  );
+  console.log("[MEMORY-DROP-CANVAS] youtubeAttach:", youtubeAttach ? { type: youtubeAttach.type, url: youtubeAttach.url?.substring(0, 80), videoId: youtubeAttach.videoId } : null);
+  const imageAttach = attachments.find((a: any) =>
+    a.type === "image" || (a.url && /\.(jpg|jpeg|png|gif|webp|svg)(\?|$)/i.test(a.url)) || (a.url && a.url.startsWith("data:image/"))
+  );
+  const videoAttach = attachments.find((a: any) =>
+    a.type === "video" || (a.url && /\.(mp4|mov|webm|avi)(\?|$)/i.test(a.url)) || (a.url && a.url.startsWith("data:video/"))
+  );
+  const linkAttach = attachments.find((a: any) => a.url && a.type !== "file");
+
+  // YouTube → direct store call (bypasses event chain for reliability)
+  if (youtubeAttach) {
+    let ytUrl = String(youtubeAttach.url || "").trim();
+    const vid = String(youtubeAttach.videoId || "").trim();
+    if (!extractYouTubeVideoId(ytUrl) && vid) {
+      ytUrl = `https://www.youtube.com/watch?v=${vid}`;
+    }
+    if (!ytUrl && vid) {
+      ytUrl = `https://www.youtube.com/watch?v=${vid}`;
+    }
+    const extractedVid = extractYouTubeVideoId(ytUrl) || vid;
+    if (ytUrl && extractedVid) {
+      const st = useCanvasStore.getState();
+      const g = Math.max(1, Math.floor(st.gridSize || 24));
+      const canvasEl = document.querySelector<HTMLElement>(".overflow-auto.overscroll-contain");
+      const rect = canvasEl?.getBoundingClientRect();
+      const localX = rect ? clientX - rect.left : clientX;
+      const localY = rect ? clientY - rect.top : clientY;
+      const scrollTop = canvasEl?.scrollTop || 0;
+      const wx = Math.round(localX / g) * g;
+      const wy = Math.round((scrollTop + localY) / g) * g;
+      st.addYouTubeBlockAt({ x: wx, y: wy }, { url: ytUrl, videoId: extractedVid });
+    }
+    return;
+  }
+
+  // Images → file pipeline (creates image block, same as dragging from desktop)
+  if (imageAttach?.url) {
+    if (imageAttach.url.startsWith("data:image/")) {
+      const file = dataUrlToFile(imageAttach.url, imageAttach.name || "image.png");
+      if (file) {
+        window.dispatchEvent(new CustomEvent("omnia_attach_files", { detail: { files: [file], clientX, clientY } }));
+        return;
+      }
+    }
+    window.dispatchEvent(new CustomEvent("omnia_attach_link", { detail: { url: imageAttach.url, clientX, clientY } }));
+    return;
+  }
+
+  // Videos → file pipeline for data URLs, link pipeline for HTTP URLs
+  if (videoAttach?.url) {
+    if (videoAttach.url.startsWith("data:video/")) {
+      const file = dataUrlToFile(videoAttach.url, videoAttach.name || "video.mp4");
+      if (file) {
+        window.dispatchEvent(new CustomEvent("omnia_attach_files", { detail: { files: [file], clientX, clientY } }));
+        return;
+      }
+    }
+    window.dispatchEvent(new CustomEvent("omnia_attach_link", { detail: { url: videoAttach.url, clientX, clientY } }));
+    return;
+  }
+
+  // PDFs → text block with extracted content, or fetch bytes and use file pipeline
+  const pdfAttach = attachments.find((a: any) =>
+    a.type === "pdf" || (a.url && /\.pdf(\?|$)/i.test(a.url)) || (a.mime === "application/pdf")
+  );
+  if (pdfAttach) {
+    const pdfText = String(pdfAttach.pdfText || pdfAttach.extractedText || "").trim();
+    if (pdfText) {
+      const st = useCanvasStore.getState();
+      const g = Math.max(1, Math.floor(st.gridSize || 24));
+      const canvasEl = document.querySelector<HTMLElement>(".overflow-auto.overscroll-contain");
+      const rect = canvasEl?.getBoundingClientRect();
+      const localX = rect ? clientX - rect.left : clientX;
+      const localY = rect ? clientY - rect.top : clientY;
+      const scrollTop = canvasEl?.scrollTop || 0;
+      const wx = Math.round(localX / g) * g;
+      const wy = Math.round((scrollTop + localY) / g) * g;
+      const title = String(pdfAttach.name || pdfAttach.title || "PDF").trim();
+      const combined = `# ${title}\n\n${pdfText}`;
+      const charsPerLine = Math.max(1, Math.floor((g * 16 * 0.85) / 8));
+      const wrappedLines = combined.split("\n").reduce((sum: number, line: string) => sum + Math.max(1, Math.ceil(line.length / charsPerLine)), 0);
+      const height = Math.max(g * 6, Math.min(g * 30, wrappedLines * 22 + 32));
+      st.addTextBlockAt({ x: wx, y: wy }, { width: g * 16, height, content: combined, format: "plain" });
+      return;
+    }
+    if (pdfAttach.url) {
+      const pdfUrl = String(pdfAttach.url);
+      const pdfName = String(pdfAttach.name || pdfAttach.title || "document.pdf").trim();
+      (async () => {
+        try {
+          const resp = await fetch(pdfUrl);
+          if (resp.ok) {
+            const blob = await resp.blob();
+            const file = new File([blob], pdfName.endsWith(".pdf") ? pdfName : `${pdfName}.pdf`, { type: "application/pdf" });
+            window.dispatchEvent(new CustomEvent("omnia_attach_files", { detail: { files: [file], clientX, clientY } }));
+            return;
+          }
+        } catch { /* fetch failed, fall through */ }
+        window.dispatchEvent(new CustomEvent("omnia_attach_link", { detail: { url: pdfUrl, clientX, clientY } }));
+      })();
+      return;
+    }
+  }
+
+  // Other links
+  if (linkAttach?.url) {
+    window.dispatchEvent(new CustomEvent("omnia_attach_link", { detail: { url: linkAttach.url, clientX, clientY } }));
+    return;
+  }
+
+  // Check content for URLs
+  const content = String(pending.content || "");
+  const urlMatch = content.match(/https?:\/\/[^\s<>"')]+/i);
+  if (urlMatch) {
+    window.dispatchEvent(new CustomEvent("omnia_attach_link", { detail: { url: urlMatch[0], clientX, clientY } }));
+    return;
+  }
+
+  // Pure text → text block
+  window.dispatchEvent(
+    new CustomEvent("omnia_attach_memory_text", { detail: { title: pending.title, content: pending.content, clientX, clientY } })
+  );
+}
 
 function getCaretOffsetInElement(el: HTMLElement) {
   try {
@@ -408,8 +567,6 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
   const addListBlockAt = useCanvasStore((s) => s.addListBlockAt);
   const addSpreadsheetBlockAt = useCanvasStore((s) => s.addSpreadsheetBlockAt);
   const addSheetBlockAt = useCanvasStore((s) => s.addSheetBlockAt);
-  const addFileBlockAt = useCanvasStore((s: any) => s.addFileBlockAt);
-  const addLinkBlockAt = useCanvasStore((s: any) => s.addLinkBlockAt);
   const addYouTubeBlockAt = useCanvasStore((s: any) => s.addYouTubeBlockAt);
   const addCodeBlockAt = useCanvasStore((s) => s.addCodeBlockAt);
   const addDesignBlockAt = useCanvasStore((s: any) => s.addDesignBlockAt);
@@ -425,6 +582,31 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
   const moveBlocksFromSnapshot = useCanvasStore((s) => s.moveBlocksFromSnapshot);
   const pushHistory = useCanvasStore((s) => s.pushHistory);
   const deleteBlock = useCanvasStore((s) => s.deleteBlock);
+
+  const makeCreateBlockLocal = (x: number, y: number, mode: string, data: Record<string, any>, width: number, height: number) => ({
+    id: `create-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    type: "create",
+    mode,
+    x: snapToGrid(x, gridSize),
+    y: snapToGrid(y, gridSize),
+    width,
+    height,
+    data,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+
+  const createCreateBlockSafe = (x: number, y: number, mode: string, data: Record<string, any>, width: number, height: number) => {
+    if (typeof createCreateBlock === "function") {
+      const b = createCreateBlock(x, y, mode, data);
+      if (b) {
+        (b as any).width = width;
+        (b as any).height = height;
+        return b;
+      }
+    }
+    return makeCreateBlockLocal(x, y, mode, data, width, height) as any;
+  };
 
   // Match TextBlock typography so AI bubble feels like a normal text brick.
   const defaultFontFamily =
@@ -633,7 +815,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
         const x = snapToGrid(world.x, gridSize);
         const y = snapToGrid(world.y, gridSize);
         const mode = key === "d" ? "drawing" : key === "g" ? "generated" : key === "i" ? "image" : "empty";
-        const b = createCreateBlock(x, y, mode, {});
+        const b = createCreateBlockSafe(x, y, mode, {}, gridSize, gridSize);
         addBlock(b);
         selectBlocks([b.id]);
       }
@@ -1075,6 +1257,78 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
     const s = String(text || "");
     // Grow vertically only on explicit Enter/newline.
     return Math.max(1, s.split("\n").length);
+  };
+  const getWrappedLineCountForWidth = (text: string, variant: "body" | "h2" | "h1", widthPx: number) => {
+    const s = String(text || "");
+    const lines = s.split("\n");
+    const horizontalPaddingPx = 16; // 8px left + 8px right in BrickTextSurface
+    const availableWidthPx = Math.max(8, Math.floor(widthPx) - horizontalPaddingPx);
+
+    let ctx: CanvasRenderingContext2D | null = null;
+    if (typeof document !== "undefined") {
+      const measureCanvas = document.createElement("canvas");
+      ctx = measureCanvas.getContext("2d");
+      if (ctx) {
+        const fontWeight = fontWeightForVariant(variant);
+        const fontSize = fontSizeForVariant(variant);
+        ctx.font = `${fontWeight} ${fontSize}px ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"`;
+      }
+    }
+    const measureTextWidth = (value: string) => {
+      if (!value) return 0;
+      if (ctx) return ctx.measureText(value).width;
+      return value.length * 7.2;
+    };
+
+    let wrappedLines = 0;
+    const spaceWidth = measureTextWidth(" ");
+
+    lines.forEach((line) => {
+      const value = String(line || "");
+      if (!value.trim()) {
+        wrappedLines += 1;
+        return;
+      }
+      const words = value.trim().split(/\s+/).filter(Boolean);
+      if (!words.length) {
+        wrappedLines += 1;
+        return;
+      }
+
+      let currentWidth = 0;
+      let lineCount = 1;
+      words.forEach((word) => {
+        const wordWidth = measureTextWidth(word);
+        if (currentWidth === 0) {
+          if (wordWidth <= availableWidthPx) {
+            currentWidth = wordWidth;
+            return;
+          }
+          // Single token longer than available width wraps by width chunks.
+          const chunks = Math.max(1, Math.ceil(wordWidth / Math.max(1, availableWidthPx)));
+          lineCount += chunks - 1;
+          currentWidth = wordWidth % Math.max(1, availableWidthPx);
+          return;
+        }
+
+        if (currentWidth + spaceWidth + wordWidth <= availableWidthPx) {
+          currentWidth += spaceWidth + wordWidth;
+          return;
+        }
+        lineCount += 1;
+        if (wordWidth <= availableWidthPx) {
+          currentWidth = wordWidth;
+          return;
+        }
+        const chunks = Math.max(1, Math.ceil(wordWidth / Math.max(1, availableWidthPx)));
+        lineCount += chunks - 1;
+        currentWidth = wordWidth % Math.max(1, availableWidthPx);
+      });
+
+      wrappedLines += lineCount;
+    });
+
+    return Math.max(1, wrappedLines);
   };
   const parseTextSlashVariant = (
     raw: string,
@@ -1558,7 +1812,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
   };
 
   function createShapeBlockAt(worldX: number, worldY: number, shape: string) {
-    const b = createCreateBlock(worldX, worldY, "shape", { shape });
+    const b = createCreateBlockSafe(worldX, worldY, "shape", { shape }, gridSize * 8, gridSize * 6);
     b.width = gridSize * 8;
     b.height = gridSize * 6;
     addBlock(b);
@@ -1690,6 +1944,61 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
 
   // Attachments button (page UI) -> canvas insertion via custom events.
   useEffect(() => {
+    const extractNameFromUrl = (rawUrl: string) => {
+      const input = String(rawUrl || "").trim();
+      if (!input) return "file";
+      try {
+        const u = new URL(input);
+        const pathPart = String(u.pathname || "").split("/").filter(Boolean).pop() || "";
+        return decodeURIComponent(pathPart) || "file";
+      } catch {
+        const noQuery = input.split("?")[0].split("#")[0];
+        const pathPart = noQuery.split("/").filter(Boolean).pop() || "";
+        return decodeURIComponent(pathPart) || "file";
+      }
+    };
+    const extensionFromName = (name: string) => {
+      const ext = String(name || "").split(".").pop() || "";
+      return ext.toLowerCase();
+    };
+    const inferMimeFromName = (name: string) => {
+      const ext = extensionFromName(name);
+      const mimeByExt: Record<string, string> = {
+        png: "image/png",
+        jpg: "image/jpeg",
+        jpeg: "image/jpeg",
+        webp: "image/webp",
+        gif: "image/gif",
+        svg: "image/svg+xml",
+        bmp: "image/bmp",
+        avif: "image/avif",
+        heic: "image/heic",
+        mp4: "video/mp4",
+        mov: "video/quicktime",
+        webm: "video/webm",
+        mkv: "video/x-matroska",
+        avi: "video/x-msvideo",
+        mp3: "audio/mpeg",
+        wav: "audio/wav",
+        m4a: "audio/mp4",
+        ogg: "audio/ogg",
+        pdf: "application/pdf",
+      };
+      return mimeByExt[ext] || "";
+    };
+    const inferUrlKind = (rawUrl: string): "youtube" | "image" | "file" | "link" => {
+      const url = String(rawUrl || "").trim();
+      if (!url) return "link";
+      if (extractYouTubeVideoId(url)) return "youtube";
+      if (url.startsWith("data:image/")) return "image";
+      if (url.startsWith("data:video/") || url.startsWith("data:audio/") || url.startsWith("data:application/pdf")) return "file";
+      const name = extractNameFromUrl(url);
+      const mime = inferMimeFromName(name);
+      if (mime.startsWith("image/")) return "image";
+      if (mime) return "file";
+      return "link";
+    };
+
     const readFileAsDataUrl = (file: File) =>
       new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
@@ -1697,6 +2006,158 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
         reader.onerror = () => reject(new Error("Failed to read file"));
         reader.readAsDataURL(file);
       });
+    const extractPdfPagesFromBytes = async (bytes: ArrayBuffer) => {
+      // IMPORTANT:
+      // Use a single worker-free parser path for canvas imports.
+      // Avoid importing the root pdfjs-dist entry here because it can still try
+      // fake-worker setup in some runtimes even when disableWorker is passed.
+      const [pdfjsLegacy, workerUrlMod] = await Promise.all([
+        import("pdfjs-dist/legacy/build/pdf.mjs"),
+        import("pdfjs-dist/legacy/build/pdf.worker.min.mjs?url"),
+      ]);
+      if ((pdfjsLegacy as any)?.GlobalWorkerOptions) {
+        (pdfjsLegacy as any).GlobalWorkerOptions.workerSrc = String((workerUrlMod as any)?.default || "");
+      }
+      const loadingTask = (pdfjsLegacy as any).getDocument({ data: bytes });
+      const pdf = await loadingTask.promise;
+      const pageCount = Number(pdf?.numPages || 0);
+      const maxPages = Math.min(pageCount, 20);
+      const pages: Array<{ imageDataUrl: string; text: string; pageNumber: number }> = [];
+      const toPreservedText = (textContent: any) => {
+        const rawItems = Array.isArray(textContent?.items) ? textContent.items : [];
+        const positioned = rawItems
+          .map((item: any) => {
+            const str = String(item?.str || "");
+            const transform = Array.isArray(item?.transform) ? item.transform : [1, 0, 0, 1, 0, 0];
+            const x = Number(transform?.[4] || 0);
+            const y = Number(transform?.[5] || 0);
+            const width = Number(item?.width || 0);
+            const avgChar = str.length > 0 && width > 0 ? width / str.length : 7;
+            return { str, x, y, avgChar };
+          })
+          .filter((i: any) => i.str);
+
+        if (!positioned.length) return "";
+
+        const yTolerance = 3;
+        const rows: Array<{ y: number; items: any[] }> = [];
+        positioned.forEach((it: any) => {
+          const row = rows.find((r) => Math.abs(r.y - it.y) <= yTolerance);
+          if (row) {
+            row.items.push(it);
+            row.y = (row.y + it.y) / 2;
+          } else {
+            rows.push({ y: it.y, items: [it] });
+          }
+        });
+        rows.sort((a, b) => b.y - a.y);
+
+        const out: string[] = [];
+        let prevY: number | null = null;
+        rows.forEach((row) => {
+          row.items.sort((a, b) => a.x - b.x);
+          const avgChar =
+            row.items.reduce((sum, it) => sum + Number(it.avgChar || 7), 0) / Math.max(1, row.items.length) || 7;
+          const minX = Math.min(...row.items.map((it) => Number(it.x || 0)));
+          let line = "";
+          let cursorCol = 0;
+          row.items.forEach((it) => {
+            const relX = Math.max(0, Number(it.x || 0) - minX);
+            const targetCol = Math.max(0, Math.round(relX / Math.max(4, avgChar)));
+            const gap = Math.max(0, targetCol - cursorCol);
+            if (gap > 0) line += " ".repeat(gap);
+            line += String(it.str || "");
+            cursorCol = line.length;
+          });
+          if (prevY != null && Math.abs(prevY - row.y) > 18) out.push("");
+          out.push(line.replace(/\s+$/g, ""));
+          prevY = row.y;
+        });
+        return out.join("\n").trim();
+      };
+
+      for (let pageNum = 1; pageNum <= maxPages; pageNum += 1) {
+        try {
+          const page = await pdf.getPage(pageNum);
+          let imageDataUrl = "";
+          let text = "";
+
+          try {
+            const textContent = await page.getTextContent();
+            text = toPreservedText(textContent);
+          } catch {
+            text = "";
+          }
+
+          try {
+            const viewport = page.getViewport({ scale: 1.25 });
+            const canvas = document.createElement("canvas");
+            const ctx = canvas.getContext("2d");
+            if (ctx) {
+              canvas.width = Math.max(1, Math.floor(viewport.width));
+              canvas.height = Math.max(1, Math.floor(viewport.height));
+              await page.render({ canvasContext: ctx, viewport }).promise;
+              imageDataUrl = canvas.toDataURL("image/png");
+            }
+          } catch {
+            imageDataUrl = "";
+          }
+
+          if (imageDataUrl || text) {
+            pages.push({ imageDataUrl, text, pageNumber: pageNum });
+          }
+        } catch {
+          // Skip problematic pages instead of failing full import.
+        }
+      }
+      return { pages, pageCount };
+    };
+    const extractPdfPages = async (file: File) => {
+      const bytes = await file.arrayBuffer();
+      return extractPdfPagesFromBytes(bytes);
+    };
+    const tryExtractPdfPagesFromUrl = async (url: string) => {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error("Failed to fetch PDF");
+      const bytes = await response.arrayBuffer();
+      return extractPdfPagesFromBytes(bytes);
+    };
+    const addPdfStatusBlock = (
+      x: number,
+      y: number,
+      name: string,
+      message: string,
+      containerId: string | null
+    ) => {
+      const statusId = addTextBlockAt(
+        { x, y },
+        {
+          width: gridSize * 14,
+          height: gridSize * 4,
+          content: `PDF import status: ${name}\n${message}`,
+          format: "plain",
+        }
+      );
+      if (containerId) updateBlock(statusId, { containerId } as any);
+    };
+    const getPdfTextBlockHeight = (text: string) => {
+      const content = String(text || "");
+      if (!content) return gridSize * 5;
+      const brickWidthPx = gridSize * 16;
+      const wrappedLines = getWrappedLineCountForWidth(content, "body", brickWidthPx);
+      // Add small buffer rows so trailing lines don't clip with font metrics.
+      const rows = Math.max(8, wrappedLines * lineRowsForVariant("body") + 2);
+      return rows * gridSize;
+    };
+    const buildCombinedPdfText = (name: string, pages: Array<{ text: string; pageNumber: number }>) => {
+      const chunks = pages
+        .filter((p) => String(p?.text || "").trim())
+        .map((p) => `--- Page ${p.pageNumber} ---\n${String(p.text || "").trim()}`);
+      if (chunks.length === 0) {
+        return `PDF: ${name}\n\nNo extractable text was found in this PDF (it may be image-only/scanned).`;
+      }
+      return `PDF: ${name}\n\n${chunks.join("\n\n")}`;
+    };
 
     const getInsertWorld = (clientX?: number, clientY?: number) => {
       const el = containerRef.current;
@@ -1729,51 +2190,281 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
           continue;
         }
         if (String(f.type || "").startsWith("image/") && dataUrl.startsWith("data:image/")) {
-          const b = createCreateBlock(x, y, "image", { src: dataUrl });
-          b.width = gridSize * 10;
-          b.height = gridSize * 6;
+          const b = createCreateBlockSafe(x, y, "image", { src: dataUrl }, gridSize * 10, gridSize * 6);
           if (containerId) (b as any).containerId = containerId;
           addBlock(b);
           continue;
         }
-        const id = addFileBlockAt(
-          { x, y },
-          { name: f.name || "file", mime: f.type || "", dataUrl, width: gridSize * 12, height: gridSize * 3 }
-        );
-        if (containerId) updateBlock(id, { containerId } as any);
+        const mime = String(f.type || "");
+        const name = f.name || "file";
+        if (mime.startsWith("video/")) {
+          const b = createCreateBlockSafe(x, y, "video", { url: dataUrl, mime, name }, gridSize * 12, gridSize * 7);
+          if (containerId) (b as any).containerId = containerId;
+          addBlock(b);
+          continue;
+        }
+        if (mime.startsWith("audio/")) {
+          const b = createCreateBlockSafe(x, y, "embed", { url: dataUrl, mime, name }, gridSize * 12, gridSize * 4);
+          if (containerId) (b as any).containerId = containerId;
+          addBlock(b);
+          continue;
+        }
+        if (mime === "application/pdf" || /\.pdf$/i.test(name)) {
+          try {
+            const { pages, pageCount } = await extractPdfPages(f);
+            const previewPages = pages.length;
+            if (previewPages === 0) {
+              addPdfStatusBlock(
+                x,
+                y,
+                name,
+                "Parsed PDF but found 0 renderable pages. Falling back to embedded PDF block.",
+                containerId
+              );
+            }
+            const combined = buildCombinedPdfText(name, pages);
+            const textId = addTextBlockAt(
+              { x, y },
+              {
+                width: gridSize * 16,
+                height: getPdfTextBlockHeight(combined),
+                content: combined,
+                format: "plain",
+              }
+            );
+            if (containerId) updateBlock(textId, { containerId } as any);
+            // Success path: no extra status card needed.
+          } catch (error: any) {
+            addPdfStatusBlock(
+              x,
+              y,
+              name,
+              `PDF parsing failed in browser runtime: ${String(error?.message || error || "Unknown error")}. Embedded the PDF instead.`,
+              containerId
+            );
+            const b = createCreateBlockSafe(
+              x,
+              y,
+              "embed",
+              { url: dataUrl, mime: "application/pdf", name },
+              gridSize * 12,
+              gridSize * 8
+            );
+            if (containerId) (b as any).containerId = containerId;
+            addBlock(b);
+          }
+          continue;
+        }
+        const b = createCreateBlockSafe(x, y, "embed", { url: dataUrl, mime, name }, gridSize * 12, gridSize * 5);
+        if (containerId) (b as any).containerId = containerId;
+        addBlock(b);
       }
     };
 
-    const addUrlAsBlock = (url: string, clientX?: number, clientY?: number) => {
+    const addUrlAsBlock = async (url: string, clientX?: number, clientY?: number) => {
       const u = String(url || "").trim();
       if (!u) return;
       const base = getInsertWorld(clientX, clientY);
       const wx = snapToGrid(base.x, gridSize);
       const wy = snapToGrid(base.y, gridSize);
       const containerId = findCreateContainerAtWorld(wx, wy);
-      const vid = extractYouTubeVideoId(u);
-      if (vid) {
-        const id = addYouTubeBlockAt({ x: wx, y: wy }, { url: u, videoId: vid });
+      const kind = inferUrlKind(u);
+      if (kind === "youtube") {
+        const vid = extractYouTubeVideoId(u);
+        const id = addYouTubeBlockAt({ x: wx, y: wy }, { url: u, videoId: vid || "" });
         if (containerId) updateBlock(id, { containerId } as any);
         return;
       }
-      const id = addLinkBlockAt({ x: wx, y: wy }, { url: u });
-      if (containerId) updateBlock(id, { containerId } as any);
+      if (kind === "image") {
+        const b = createCreateBlockSafe(wx, wy, "image", { src: u }, gridSize * 10, gridSize * 6);
+        if (containerId) (b as any).containerId = containerId;
+        addBlock(b);
+        return;
+      }
+      if (kind === "file") {
+        const fileName = extractNameFromUrl(u) || "file";
+        const mime = inferMimeFromName(fileName);
+        if (mime.startsWith("video/")) {
+          const b = createCreateBlockSafe(wx, wy, "video", { url: u, mime, name: fileName }, gridSize * 12, gridSize * 7);
+          if (containerId) (b as any).containerId = containerId;
+          addBlock(b);
+          return;
+        }
+        if (mime.startsWith("audio/") || mime === "application/pdf") {
+          if (mime === "application/pdf") {
+            try {
+              const { pages, pageCount } = await tryExtractPdfPagesFromUrl(u);
+              const previewPages = pages.length;
+              if (previewPages === 0) {
+                addPdfStatusBlock(
+                  wx,
+                  wy,
+                  fileName,
+                  "URL PDF parsed but returned 0 pages. Falling back to embedded PDF block.",
+                  containerId
+                );
+              }
+              const combined = buildCombinedPdfText(fileName, pages);
+              const textId = addTextBlockAt(
+                { x: wx, y: wy },
+                {
+                  width: gridSize * 16,
+                  height: getPdfTextBlockHeight(combined),
+                  content: combined,
+                  format: "plain",
+                }
+              );
+              if (containerId) updateBlock(textId, { containerId } as any);
+              // Success path: no extra status card needed.
+              return;
+            } catch (error: any) {
+              addPdfStatusBlock(
+                wx,
+                wy,
+                fileName,
+                `Could not fetch/parse URL PDF: ${String(error?.message || error || "Unknown error")}. Embedded the PDF instead.`,
+                containerId
+              );
+              // Fall through to embed fallback when URL fetch/CORS blocks parsing.
+            }
+          }
+          const b = createCreateBlockSafe(
+            wx,
+            wy,
+            "embed",
+            { url: u, mime, name: fileName },
+            gridSize * 12,
+            mime === "application/pdf" ? gridSize * 8 : gridSize * 4
+          );
+          if (containerId) (b as any).containerId = containerId;
+          addBlock(b);
+          return;
+        }
+        const b = createCreateBlockSafe(wx, wy, "embed", { url: u, mime, name: fileName }, gridSize * 12, gridSize * 5);
+        if (containerId) (b as any).containerId = containerId;
+        addBlock(b);
+        return;
+      }
+      const b = createCreateBlockSafe(wx, wy, "embed", { url: u, name: extractNameFromUrl(u) || "Link" }, gridSize * 12, gridSize * 5);
+      if (containerId) (b as any).containerId = containerId;
+      addBlock(b);
     };
 
     const onLink = (e: Event) => {
       const ce = e as CustomEvent<{ url: string; clientX?: number; clientY?: number }>;
-      addUrlAsBlock(String(ce.detail?.url || ""), ce.detail?.clientX, ce.detail?.clientY);
+      void addUrlAsBlock(String(ce.detail?.url || ""), ce.detail?.clientX, ce.detail?.clientY);
+    };
+
+    const onMemoryText = (e: Event) => {
+      const ce = e as CustomEvent<{ title?: string; content?: string; clientX?: number; clientY?: number }>;
+      const title = String(ce.detail?.title || "Untitled memory").trim();
+      const body = String(ce.detail?.content || "").trim();
+      const combined = body ? `# ${title}\n\n${body}` : `# ${title}`;
+      const base = getInsertWorld(ce.detail?.clientX, ce.detail?.clientY);
+      const wx = snapToGrid(base.x, gridSize);
+      const wy = snapToGrid(base.y, gridSize);
+      const width = gridSize * 14;
+      const charsPerLine = Math.max(1, Math.floor((width * 0.85) / 8));
+      const wrappedLines = combined.split("\n").reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / charsPerLine)), 0);
+      const lineHeight = 22;
+      const padding = 32;
+      const rawHeight = wrappedLines * lineHeight + padding;
+      const height = snapToGrid(Math.max(gridSize * 4, rawHeight), gridSize);
+      addTextBlockAt({ x: wx, y: wy }, { width, height, content: combined, format: "rich" });
     };
 
     window.addEventListener("omnia_attach_files", onFiles as any);
     window.addEventListener("omnia_attach_link", onLink as any);
+    window.addEventListener("omnia_attach_memory_text", onMemoryText as any);
     return () => {
       window.removeEventListener("omnia_attach_files", onFiles as any);
       window.removeEventListener("omnia_attach_link", onLink as any);
+      window.removeEventListener("omnia_attach_memory_text", onMemoryText as any);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [addBlock, addFileBlockAt, addLinkBlockAt, addTextBlockAt, addYouTubeBlockAt, gridSize, scrollPos.left, scrollPos.top]);
+  }, [addBlock, addTextBlockAt, addYouTubeBlockAt, createCreateBlock, gridSize, scrollPos.left, scrollPos.top]);
+
+  // Global drop bridge: ensures files/links dropped over overlays/iframes
+  // are still forwarded into the canvas attachment pipeline.
+  useEffect(() => {
+    const hasSupportedDropData = (event: DragEvent) => {
+      const types = event?.dataTransfer?.types;
+      if (!types) return false;
+      const allTypes = Array.from(types);
+      return allTypes.includes("Files") || allTypes.includes("text/uri-list") || allTypes.includes("text/plain");
+    };
+
+    const extractDropUrl = (event: DragEvent) => {
+      const uri = String(event.dataTransfer?.getData("text/uri-list") || "");
+      const plain = String(event.dataTransfer?.getData("text/plain") || "");
+      const html = String(event.dataTransfer?.getData("text/html") || "");
+      const candidates: string[] = [];
+      for (const l of uri.split("\n")) {
+        const v = String(l || "").trim();
+        if (v && !v.startsWith("#")) candidates.push(v);
+      }
+      for (const m of plain.match(/https?:\/\/[^\s<>"')]+/gi) || []) candidates.push(String(m || "").trim());
+      for (const m of html.match(/href=["']([^"']+)["']/gi) || []) {
+        const v = String(m || "").replace(/^href=["']|["']$/gi, "").trim();
+        if (v) candidates.push(v);
+      }
+      const unique = Array.from(new Set(candidates.filter(Boolean)));
+      return unique.find((u) => !!extractYouTubeVideoId(u)) || unique[0] || "";
+    };
+
+    const onWindowDragOver = (event: DragEvent) => {
+      if ((window as any).__omnia_pending_memory) {
+        event.preventDefault();
+        return;
+      }
+      if (!hasSupportedDropData(event)) return;
+      event.preventDefault();
+    };
+
+    const onWindowDrop = (event: DragEvent) => {
+      const pending = consumePendingMemoryDrop();
+      if (pending) {
+        event.preventDefault();
+        processMemoryDrop(pending, event.clientX, event.clientY);
+        return;
+      }
+      if (!hasSupportedDropData(event)) return;
+      event.preventDefault();
+      const files = Array.from(event.dataTransfer?.files || []);
+      if (files.length > 0) {
+        window.dispatchEvent(
+          new CustomEvent("omnia_attach_files", {
+            detail: { files, clientX: event.clientX, clientY: event.clientY },
+          })
+        );
+        return;
+      }
+      const chosen = extractDropUrl(event);
+      if (chosen) {
+        window.dispatchEvent(
+          new CustomEvent("omnia_attach_link", {
+            detail: { url: chosen, clientX: event.clientX, clientY: event.clientY },
+          })
+        );
+        return;
+      }
+      const plainText = String(event.dataTransfer?.getData("text/plain") || "").trim();
+      if (plainText && !plainText.startsWith("http")) {
+        window.dispatchEvent(
+          new CustomEvent("omnia_attach_memory_text", {
+            detail: { title: "Quick Note", content: plainText, clientX: event.clientX, clientY: event.clientY },
+          })
+        );
+      }
+    };
+
+    window.addEventListener("dragover", onWindowDragOver);
+    window.addEventListener("drop", onWindowDrop);
+    return () => {
+      window.removeEventListener("dragover", onWindowDragOver);
+      window.removeEventListener("drop", onWindowDrop);
+    };
+  }, []);
 
   // Live AI (BrickEditor parity): debounce per-block input, keep a per-block thread,
   // ask the model for JSON { shouldRespond, assistant, actions }, then apply allowlisted actions.
@@ -2603,6 +3294,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
       onPointerDownCapture={(e) => {
         if (e.button === 0) {
           const t = e.target as Element | null;
+          if (t?.closest?.("[data-resize-handle]")) return;
           const blockEl = t?.closest?.("[data-canvas-block]") as HTMLElement | null;
           const blockId = blockEl?.getAttribute?.("data-block-id");
           if (blockId) {
@@ -2655,6 +3347,11 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
         e.preventDefault();
         e.stopPropagation();
         if (shapePickerOpen) setShapePickerOpen(false);
+        const pendingMemory = consumePendingMemoryDrop();
+        if (pendingMemory) {
+          processMemoryDrop(pendingMemory, e.clientX, e.clientY);
+          return;
+        }
         const shapeId = String(e.dataTransfer?.getData("omnia_shape") || "");
         if (shapeId) {
           const world = clientToWorld(e.clientX, e.clientY);
@@ -3210,6 +3907,25 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
         {visibleIds.map((id) => {
           const b = blocks[id];
           if (!b) return null;
+          const isAiResponseBubble = Boolean((b as any)?.data?.aiResponseBubble);
+          const isTextBrick = String((b as any)?.type || "") === "text";
+          const mode = String((b as any).mode || "").toLowerCase();
+          const createData = (b as any).data || {};
+          const embedUrl = String(createData.url || createData.dataUrl || "");
+          const embedMime = String(createData.mime || "");
+          const isCreateImage = (b as any).type === "create" && mode === "image";
+          const isCreateEmbedLink =
+            (b as any).type === "create" &&
+            mode === "embed" &&
+            embedUrl &&
+            !embedMime.startsWith("audio/") &&
+            embedMime !== "application/pdf";
+          if (isCreateImage) {
+            return <ImageBlock key={id} id={id} />;
+          }
+          if (isCreateEmbedLink) {
+            return <LinkBlock key={id} id={id} />;
+          }
           if ((b as any).type === "youtube" || ((b as any).type === "create" && (b as any).mode === "video")) {
             return <YouTubeBlock key={id} id={id} />;
           }
@@ -3217,6 +3933,29 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
             isActivated: typingBlockId === id ? false : activatedBrickIds.includes(id),
             isRaised: typingBlockId === id ? false : raisedBrickIds.includes(id),
             isTyping: typingBlockId === id,
+            enableWidthResize: isAiResponseBubble || isTextBrick,
+            resizeGridSize: gridSize,
+            resizeMinWidth: gridSize * 10,
+            resizeMaxWidth:
+              Math.max(
+                gridSize * 10,
+                Math.floor(
+                  (canvasWidth || viewport.width || window.innerWidth || 1280) -
+                    Math.max(0, Number((b as any)?.x || 0)) -
+                    gridSize
+                )
+              ),
+            onResizeWidth: (bid, width) => {
+              if (!(blocks as any)[bid]) return;
+              const cur: any = (blocks as any)[bid];
+              const data = cur?.data && typeof cur.data === "object" ? cur.data : {};
+              const variant = (String(data.textVariant || "body").toLowerCase() as "body" | "h2" | "h1") || "body";
+              const nextWidth = Math.max(gridSize * 10, Math.floor(width || gridSize * 10));
+              const wrappedLineCount = getWrappedLineCountForWidth(String(cur?.content || ""), variant, nextWidth);
+              const targetRows = Math.max(minRowsForVariant(variant), wrappedLineCount * lineRowsForVariant(variant));
+              const nextHeight = Math.max(gridSize, targetRows * gridSize);
+              updateBlock(bid as any, { width: nextWidth, height: nextHeight } as any);
+            },
             onTypingChange: (bid, raw, meta) => {
               if (!(blocks as any)[bid]) return;
               const cur: any = (blocks as any)[bid];

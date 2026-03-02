@@ -38,6 +38,8 @@ type ResizeState = {
   startW: number;
   startH: number;
   aspect: number;
+  maxW?: number;
+  maxH?: number;
   cornerAxis?: "x" | "y";
   raf: number | null;
   capturer: HTMLElement | null;
@@ -45,6 +47,8 @@ type ResizeState = {
 
 export const ImageBlock = memo(function ImageBlock({ id }: { id: string }) {
   const block = useCanvasStore((s) => s.blocks[id]);
+  const allBlocks = useCanvasStore((s) => s.blocks);
+  const canvasWidth = useCanvasStore((s) => s.canvasWidth);
   const bringToFront = useCanvasStore((s) => s.bringToFront);
   const selectBlocks = useCanvasStore((s) => s.selectBlocks);
   const toggleSelect = useCanvasStore((s) => s.toggleSelect);
@@ -65,17 +69,7 @@ export const ImageBlock = memo(function ImageBlock({ id }: { id: string }) {
 
   const style = useMemo(() => {
     if (!block) return null;
-    if (block.type === "image") {
-      return {
-        position: "absolute" as const,
-        left: `${block.x}px`,
-        top: `${block.y}px`,
-        width: `${block.width}px`,
-        height: `${block.height}px`,
-        overflow: "visible",
-      };
-    }
-    if (block.type === "create" && (block.mode === "image" || block.mode === "generated")) {
+    if (block.type === "create" && ((block as any).mode === "image" || (block as any).mode === "generated")) {
       return {
         position: "absolute" as const,
         left: `${block.x}px`,
@@ -103,6 +97,11 @@ export const ImageBlock = memo(function ImageBlock({ id }: { id: string }) {
   const snapSize = (n: number) => {
     const g = Math.max(1, Math.floor(gridSize || 24));
     return Math.max(g, snapToGrid(n, g));
+  };
+  const snapDownSize = (n: number) => {
+    const g = Math.max(1, Math.floor(gridSize || 24));
+    if (!Number.isFinite(n as any)) return Number.POSITIVE_INFINITY;
+    return Math.max(g, Math.floor(Number(n) / g) * g);
   };
 
   const endDrag = (pointerId: number) => {
@@ -189,6 +188,20 @@ export const ImageBlock = memo(function ImageBlock({ id }: { id: string }) {
     //   (Users may intentionally stretch first.)
     // - Natural aspect is still captured for future use, but not forced here.
     const aspect = Math.max(0.01, (block.width || 1) / Math.max(1, block.height || 1));
+    let maxW = Number.POSITIVE_INFINITY;
+    let maxH = Number.POSITIVE_INFINITY;
+    const containerId = String((block as any)?.containerId || "");
+    if (containerId) {
+      const container: any = (allBlocks as any)?.[containerId];
+      if (container && String(container.type || "") === "create") {
+        const cRight = Number(container.x || 0) + Number(container.width || 0);
+        const cBottom = Number(container.y || 0) + Number(container.height || 0);
+        maxW = Math.max(gridSize, cRight - Number(block.x || 0));
+        maxH = Math.max(gridSize, cBottom - Number(block.y || 0));
+      }
+    } else if (Number.isFinite(canvasWidth as any) && Number(canvasWidth) > 0) {
+      maxW = Math.max(gridSize, Number(canvasWidth) - Number(block.x || 0));
+    }
 
     resizeRef.current = {
       pointerId: e.pointerId,
@@ -200,6 +213,8 @@ export const ImageBlock = memo(function ImageBlock({ id }: { id: string }) {
       startW: block.width,
       startH: block.height,
       aspect,
+      maxW,
+      maxH,
       raf: null,
       capturer,
     };
@@ -318,10 +333,17 @@ export const ImageBlock = memo(function ImageBlock({ id }: { id: string }) {
 
             const min = Math.max(1, Math.floor(gridSize || 24));
             const bottom = rr.startY + rr.startH;
+            const maxW = snapDownSize(rr.maxW ?? Number.POSITIVE_INFINITY);
+            const maxH = snapDownSize(rr.maxH ?? Number.POSITIVE_INFINITY);
 
             if (rr.mode === "right") {
-              const nextW = snapSize(rr.startW + dx);
-              updateBlock(id, { width: Math.max(min, nextW) });
+              let nextW = snapSize(rr.startW + dx);
+              if (Number.isFinite(maxW)) nextW = Math.min(nextW, maxW);
+              updateBlock(id, {
+                x: rr.startX,
+                y: rr.startY,
+                width: Math.max(min, nextW),
+              });
               return;
             }
 
@@ -333,8 +355,13 @@ export const ImageBlock = memo(function ImageBlock({ id }: { id: string }) {
             }
 
             if (rr.mode === "bottom") {
-              const nextH = snapSize(rr.startH + dy);
-              updateBlock(id, { height: Math.max(min, nextH) });
+              let nextH = snapSize(rr.startH + dy);
+              if (Number.isFinite(maxH)) nextH = Math.min(nextH, maxH);
+              updateBlock(id, {
+                x: rr.startX,
+                y: rr.startY,
+                height: Math.max(min, nextH),
+              });
               return;
             }
 
@@ -346,9 +373,23 @@ export const ImageBlock = memo(function ImageBlock({ id }: { id: string }) {
             }
             const axis = rr.cornerAxis ?? (Math.abs(dx) >= Math.abs(dy) ? "x" : "y");
             const rawW = axis === "x" ? rr.startW + dx : (rr.startH + dy) * rr.aspect;
-            const nextW = snapSize(rawW);
-            const nextH = snapSize(nextW / rr.aspect);
-            updateBlock(id, { width: Math.max(min, nextW), height: Math.max(min, nextH) });
+            let nextW = snapSize(rawW);
+            if (Number.isFinite(maxW)) nextW = Math.min(nextW, maxW);
+            let nextH = snapSize(nextW / rr.aspect);
+            if (Number.isFinite(maxH) && nextH > maxH) {
+              nextH = maxH;
+              nextW = snapSize(nextH * rr.aspect);
+            }
+            if (Number.isFinite(maxW) && nextW > maxW) {
+              nextW = maxW;
+              nextH = snapSize(nextW / rr.aspect);
+            }
+            updateBlock(id, {
+              x: rr.startX,
+              y: rr.startY,
+              width: Math.max(min, nextW),
+              height: Math.max(min, nextH),
+            });
           });
           return;
         }
