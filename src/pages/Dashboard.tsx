@@ -448,7 +448,7 @@ Return ONLY a JSON array of 5 strings. No markdown, no explanation.`;
 
 function AISuggestionsPanel({ projects, events, model }: { projects: Project[]; events: CalendarEvent[]; model: string }) {
   return (
-    <div className="hidden lg:block fixed right-6 w-[15.625rem] z-30" style={{ top: "calc(6rem + 8.5rem + 2rem)" }}>
+    <div className="hidden lg:block w-[15.625rem] shrink-0 sticky top-24">
       <AISuggestions projects={projects} events={events} model={model} />
     </div>
   );
@@ -996,23 +996,25 @@ User: ${text}
           ) : (
             <section className="mt-6 space-y-3">
               <h2 className="text-lg font-semibold">Your Projects</h2>
-              <ProjectGrid
-                projects={projects}
-                onSelect={(project) => nav(`/project/${project.id}`)}
-                onRename={handleRenameProject}
-                onDelete={handleDeleteProject}
-                fallbackInitials={userInitials}
-                teamsByProject={teamsByProject}
-              />
+              <div className="flex gap-4 items-start">
+                <div className="flex-1 min-w-0">
+                  <ProjectGrid
+                    projects={projects}
+                    onSelect={(project) => nav(`/project/${project.id}`)}
+                    onRename={handleRenameProject}
+                    onDelete={handleDeleteProject}
+                    fallbackInitials={userInitials}
+                    teamsByProject={teamsByProject}
+                  />
+                </div>
+                <AISuggestionsPanel projects={projects} events={aiEvents} model={selectedModel} />
+              </div>
             </section>
           )}
         </main>
 
         {!hasNoProjects && (
-          <>
-            <AISuggestionsPanel projects={projects} events={aiEvents} model={selectedModel} />
-            <CalendarReminders />
-          </>
+          <CalendarReminders />
         )}
         {showChat && (
           <DraggableChat
