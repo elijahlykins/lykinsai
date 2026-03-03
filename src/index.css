@@ -9,7 +9,7 @@
    ========================================================= */
 html {
   --font-scale: 1;
-  font-size: calc(clamp(15px, 14px + 0.15vw, 18px) * var(--font-scale));
+  font-size: calc(clamp(16px, 14.5px + 0.2vw, 20px) * var(--font-scale));
 }
 
 /* =========================================================
