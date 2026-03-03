@@ -390,7 +390,7 @@ function NextEventCountdown({ events, timezone }) {
           const [ey, em, ed] = evt.date_key.split("-").map(Number);
           const evtDate = new Date(ey, em - 1, ed);
           const todayDate = new Date(tzY, tzMo - 1, tzD);
-          const dayDiff = Math.round((evtDate - todayDate) / 86400000);
+          const dayDiff = Math.round((evtDate.getTime() - todayDate.getTime()) / 86400000);
           diffMin = dayDiff * 1440 + evtMinutes - nowMinutes;
         } else {
           continue;
@@ -2912,6 +2912,22 @@ function MonthView({ selectedDate, onSelectDate, events, onEventClick, dayStatus
 }
 
 const EVENTS_STORAGE_KEY = "lykinsai_calendar_events";
+const GOOGLE_CALENDAR_CONNECTED_KEY = "lykinsai_google_calendar_connected";
+const GOOGLE_CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.readonly";
+
+function loadGoogleConnectedFlag() {
+  try {
+    return localStorage.getItem(GOOGLE_CALENDAR_CONNECTED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function saveGoogleConnectedFlag(value) {
+  try {
+    localStorage.setItem(GOOGLE_CALENDAR_CONNECTED_KEY, value ? "1" : "0");
+  } catch {}
+}
 
 function loadLocalEvents() {
   try {
@@ -2930,6 +2946,8 @@ function saveLocalEvents(events) {
 
 export default function CalendarPage() {
   const { user } = useAuth();
+  const showGoogleCalendarConnect = false;
+  const googleClientId = String(import.meta.env.VITE_GOOGLE_CALENDAR_CLIENT_ID || "").trim();
   const [topPanelOpen, setTopPanelOpen] = useState(false);
   const [showQuickNote, setShowQuickNote] = useState(false);
   const [quickNoteTitle, setQuickNoteTitle] = useState("");
@@ -3555,6 +3573,201 @@ export default function CalendarPage() {
   }, [user, syncing]);
 
   const [draftEvent, setDraftEvent] = useState(null);
+  const [googleConnected, setGoogleConnected] = useState(() => loadGoogleConnectedFlag());
+  const [googleSyncing, setGoogleSyncing] = useState(false);
+  const [googleSyncDone, setGoogleSyncDone] = useState(false);
+  const [googleError, setGoogleError] = useState("");
+  const googleScriptReadyRef = useRef(false);
+
+  const loadGoogleScript = useCallback(async () => {
+    const googleSdk = window["google"];
+    if (googleSdk?.accounts?.oauth2) {
+      googleScriptReadyRef.current = true;
+      return true;
+    }
+    if (googleScriptReadyRef.current) return true;
+
+    await new Promise((resolve, reject) => {
+      const existing = document.querySelector('script[data-google-identity="1"]');
+      if (existing) {
+        const waitForReady = () => {
+          const sdk = window["google"];
+          if (sdk?.accounts?.oauth2) {
+            googleScriptReadyRef.current = true;
+            resolve(true);
+          } else {
+            window.setTimeout(waitForReady, 50);
+          }
+        };
+        waitForReady();
+        return;
+      }
+
+      const script = document.createElement("script");
+      script.src = "https://accounts.google.com/gsi/client";
+      script.async = true;
+      script.defer = true;
+      script.dataset.googleIdentity = "1";
+      script.onload = () => {
+        googleScriptReadyRef.current = true;
+        resolve(true);
+      };
+      script.onerror = () => reject(new Error("Failed to load Google Identity script"));
+      document.head.appendChild(script);
+    });
+
+    return true;
+  }, []);
+
+  const syncGoogleCalendarEvents = useCallback(async (accessToken) => {
+    const now = new Date();
+    const start = new Date(now);
+    start.setDate(start.getDate() - 30);
+    const end = new Date(now);
+    end.setDate(end.getDate() + 120);
+
+    const params = new URLSearchParams({
+      singleEvents: "true",
+      orderBy: "startTime",
+      maxResults: "2500",
+      timeMin: start.toISOString(),
+      timeMax: end.toISOString(),
+    });
+    const res = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?${params.toString()}`, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+    if (!res.ok) {
+      throw new Error("Google Calendar sync failed.");
+    }
+    const payload = await res.json();
+    const items = Array.isArray(payload?.items) ? payload.items : [];
+
+    const importedEvents = items
+      .filter((evt) => evt?.status !== "cancelled" && evt?.start && evt?.end)
+      .map((evt) => {
+        const allDay = !evt.start?.dateTime;
+        const startDate = new Date(evt.start?.dateTime || `${evt.start?.date}T00:00:00`);
+        const endDate = new Date(evt.end?.dateTime || `${evt.end?.date}T00:00:00`);
+        const startHour = allDay ? 9 : startDate.getHours() + startDate.getMinutes() / 60;
+        const endHour = allDay
+          ? 10
+          : Math.max(startHour + 0.25, endDate.getHours() + endDate.getMinutes() / 60);
+
+        const normalizedDate = `${startDate.getFullYear()}-${String(startDate.getMonth() + 1).padStart(2, "0")}-${String(startDate.getDate()).padStart(2, "0")}`;
+        const summary = String(evt.summary || "Google Calendar Event").trim();
+        const description = allDay
+          ? `${evt.description ? `${evt.description}\n\n` : ""}[Google Calendar - All day]`
+          : `${evt.description || ""}`.trim();
+
+        return {
+          id: `gcal_${evt.id}`,
+          user_id: user?.id || "local",
+          title: summary,
+          description,
+          date_key: normalizedDate,
+          start_hour: Math.max(0, Math.min(23.75, startHour)),
+          end_hour: Math.max(0.25, Math.min(24, endHour)),
+          members: [],
+          preset_id: "custom",
+          reminder: "none",
+          recurrence: "none",
+          series_id: null,
+          created_at: new Date().toISOString(),
+        };
+      });
+
+    setEvents((prev) => {
+      const withoutPriorGoogle = prev.filter((evt) => !String(evt.id || "").startsWith("gcal_"));
+      const merged = [...importedEvents, ...withoutPriorGoogle];
+      saveLocalEvents(merged);
+      return merged;
+    });
+    window.dispatchEvent(new CustomEvent("calendar_events_changed"));
+
+    if (user?.id) {
+      try {
+        const { data: oldGoogleRows } = await supabase
+          .from("calendar_events")
+          .select("id")
+          .eq("user_id", user.id)
+          .like("id", "gcal_%");
+        if (oldGoogleRows?.length) {
+          for (const row of oldGoogleRows) {
+            await supabase.from("calendar_events").delete().eq("id", row.id).eq("user_id", user.id);
+          }
+        }
+        for (const evt of importedEvents) {
+          await supabase.from("calendar_events").upsert({
+            id: evt.id,
+            user_id: user.id,
+            title: evt.title,
+            description: evt.description,
+            date_key: evt.date_key,
+            start_hour: evt.start_hour,
+            end_hour: evt.end_hour,
+            members: evt.members,
+            preset_id: evt.preset_id,
+            reminder: evt.reminder,
+            recurrence: evt.recurrence,
+            series_id: evt.series_id,
+          });
+        }
+      } catch {
+        // Keep local sync even if cloud save fails.
+      }
+    }
+  }, [user?.id]);
+
+  const handleGoogleConnect = useCallback(async () => {
+    if (!googleClientId) {
+      setGoogleError("Missing Google Calendar client ID. Add VITE_GOOGLE_CALENDAR_CLIENT_ID to .env.");
+      return;
+    }
+    if (googleSyncing) return;
+    setGoogleError("");
+    setGoogleSyncDone(false);
+    setGoogleSyncing(true);
+
+    try {
+      await loadGoogleScript();
+      await new Promise((resolve, reject) => {
+        const sdk = window["google"];
+        if (!sdk?.accounts?.oauth2) {
+          reject(new Error("Google Identity SDK is not available."));
+          return;
+        }
+        const tokenClient = sdk.accounts.oauth2.initTokenClient({
+          client_id: googleClientId,
+          scope: GOOGLE_CALENDAR_SCOPE,
+          callback: async (response) => {
+            if (!response?.access_token) {
+              reject(new Error("Google auth failed."));
+              return;
+            }
+            try {
+              await syncGoogleCalendarEvents(response.access_token);
+              setGoogleConnected(true);
+              saveGoogleConnectedFlag(true);
+              setGoogleSyncDone(true);
+              window.setTimeout(() => setGoogleSyncDone(false), 2500);
+              resolve(true);
+            } catch (err) {
+              reject(err);
+            }
+          },
+          error_callback: () => reject(new Error("Google sign-in was cancelled.")),
+        });
+
+        tokenClient.requestAccessToken({ prompt: googleConnected ? "" : "consent" });
+      });
+    } catch (err) {
+      setGoogleError(err?.message || "Unable to connect Google Calendar.");
+    } finally {
+      setGoogleSyncing(false);
+    }
+  }, [googleClientId, googleConnected, googleSyncing, loadGoogleScript, syncGoogleCalendarEvents]);
 
   const handleSlotClick = (time, dateOverride) => {
     if (modalState?.mode === "edit") return;
@@ -4002,6 +4215,25 @@ export default function CalendarPage() {
               )}
             </div>
 
+            {showGoogleCalendarConnect && (
+              <button
+                type="button"
+                onClick={handleGoogleConnect}
+                disabled={googleSyncing || !user?.id}
+                className="flex items-center gap-1.5 text-[11px] font-medium px-3 py-1.5 rounded-full glass-control hover:opacity-90 transition-all disabled:opacity-40"
+                title={googleConnected ? "Sync Google Calendar" : "Connect Google Calendar"}
+              >
+                {googleSyncDone ? (
+                  <Check className="w-3 h-3 text-emerald-500" />
+                ) : (
+                  <CalendarIcon className={`w-3 h-3 text-black/50 dark:text-white/50 ${googleSyncing ? "animate-pulse" : ""}`} />
+                )}
+                <span className="text-black/70 dark:text-white/70">
+                  {googleSyncDone ? "Google Synced" : googleSyncing ? "Google Syncing…" : googleConnected ? "Sync Google" : "Connect Google"}
+                </span>
+              </button>
+            )}
+
             <button
               type="button"
               onClick={handleSync}
@@ -4020,6 +4252,11 @@ export default function CalendarPage() {
             </button>
           </div>
         </div>
+        {showGoogleCalendarConnect && googleError && (
+          <div className="px-6 -mt-1 pb-2">
+            <div className="text-xs text-red-600">{googleError}</div>
+          </div>
+        )}
 
         {viewMode === "day" ? (
           <DayView

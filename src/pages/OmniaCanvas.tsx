@@ -3,7 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { Canvas } from "@/canvas/Canvas";
 import { useCanvasStore } from "@/store/canvasStore";
 import type { Block } from "@/canvas/types";
-import { ChevronDown, ChevronUp, ArrowLeft, Undo2, Redo2, Trash2, Plus, Link as LinkIcon, Image as ImageIcon, Zap, MessageSquare, Mic, Volume2, BookOpen, X, Clock, Edit2, Folder as FolderIcon, Link2, MoreHorizontal, PanelRightClose, StickyNote } from "lucide-react";
+import { ChevronDown, ChevronUp, ArrowLeft, Undo2, Redo2, Trash2, Plus, Link as LinkIcon, Image as ImageIcon, Zap, MessageSquare, Mic, Volume2, BookOpen, X, Clock, Edit2, Folder as FolderIcon, Link2, MoreHorizontal, PanelRightClose, StickyNote, Brain, List, Infinity, Play, FileText, Music, Video } from "lucide-react";
 import DraggableQuickNote from "@/components/notes/DraggableQuickNote";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -43,10 +43,15 @@ type OrchestratorResult = {
   groundingSummary?: string;
 };
 
+type AiMode = "think" | "plan" | "agent";
+
+const AI_MODE_META: Record<AiMode, { label: string; icon: typeof Brain; description: string }> = {
+  think: { label: "Think", icon: Brain,    description: "Brainstorm & ideate" },
+  plan:  { label: "Plan",  icon: List,     description: "Strategize & outline" },
+  agent: { label: "Agent", icon: Infinity, description: "Execute & automate" },
+};
+
 const CHAT_TO_BOARD_IMPORT_KEY = "omnia_chat_board_import_v1";
-const CANVAS_TO_CHAT_HANDOFF_KEY = "omnia_canvas_to_chat_handoff_v1";
-const CHAT_ATTACHMENTS_PERSIST_KEY = "omnia_chat_attachments_v1";
-const CHAT_MESSAGES_PERSIST_KEY = "omnia_chat_messages_v1";
 
 type ImportedChatPrompt = {
   id?: string;
@@ -86,16 +91,50 @@ type ImportedChatBoardPayload = {
   attachments?: ImportedChatAttachment[];
 };
 
-type CanvasToChatHandoffPayload = {
-  version: number;
-  createdAt: number;
-  source: "canvas-page";
-  boardId: string | null;
-  boardTitle: string;
-  draftInput: string;
-  messages: Array<{ role: "user" | "assistant"; content: string; attachments?: any[] }>;
-  attachments?: any[];
+
+type FocusedChatAttachment = {
+  id: string;
+  type: string;
+  url: string;
+  name: string;
+  mime: string;
+  size: number;
+  videoId?: string;
+  memoryTitle?: string;
+  memoryContent?: string;
+  transcript?: string;
+  pdfText?: string;
 };
+
+const isYouTubeUrl = (url = "") =>
+  /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\//i.test(String(url).trim());
+
+const getUrlExtension = (url = "") => {
+  const raw = String(url || "").trim();
+  if (!raw) return "";
+  try {
+    const parsed = new URL(raw);
+    const fileName = decodeURIComponent(parsed.pathname.split("/").pop() || "");
+    const ext = fileName.includes(".") ? fileName.split(".").pop()?.toLowerCase() || "" : "";
+    return ext;
+  } catch { return ""; }
+};
+
+const inferUrlAttachmentType = (url = "") => {
+  const trimmed = String(url || "").trim();
+  if (!trimmed) return "link";
+  if (isYouTubeUrl(trimmed)) return "youtube";
+  const ext = getUrlExtension(trimmed);
+  if (["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif", "heic"].includes(ext)) return "image";
+  if (["mp4", "mov", "webm", "mkv", "avi"].includes(ext)) return "video";
+  if (["mp3", "wav", "m4a", "ogg", "aac", "flac"].includes(ext)) return "audio";
+  if (ext === "pdf") return "pdf";
+  return "link";
+};
+
+const makeAttId = () =>
+  (typeof crypto !== "undefined" && crypto.randomUUID && crypto.randomUUID()) ||
+  `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 type MemorySidebarNote = {
   id: string;
@@ -304,6 +343,16 @@ export default function OmniaCanvasPage() {
     return new File([blob], file.name, { type });
   };
   const [isEditingField, setIsEditingField] = useState(false);
+  const [aiMode, setAiMode] = useState<AiMode>(() => {
+    try {
+      const saved = localStorage.getItem("lykinsai_settings");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.aiMode && ["think", "plan", "agent"].includes(parsed.aiMode)) return parsed.aiMode;
+      }
+    } catch { /* ignore */ }
+    return "think";
+  });
   const [selectedModel, setSelectedModel] = useState(() => {
     try {
       const saved = localStorage.getItem("lykinsai_settings");
@@ -340,9 +389,10 @@ export default function OmniaCanvasPage() {
   const saveTimerRef = useRef<number | null>(null);
   const savingRef = useRef(false);
   const lastSavedTitleRef = useRef<string>("");
-  const [showChat, setShowChat] = useState(false);
+  const [chatMode, setChatMode] = useState(false);
   const [chatMessages, setChatMessages] = useState<PromptMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
+  const [focusedChatAttachments, setFocusedChatAttachments] = useState<FocusedChatAttachment[]>([]);
   const [isChatLoading, setIsChatLoading] = useState(false);
   const [isDictating, setIsDictating] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -544,25 +594,25 @@ export default function OmniaCanvasPage() {
 
   const getChatRailWidthPx = useCallback(
     (vw: number) => {
-      if (!showChat) return 0;
+      if (chatMode) return 0;
       const width = Math.max(0, Math.floor(vw || 0));
       if (width <= 900) return Math.max(220, Math.min(280, Math.floor(width * 0.34)));
       if (width <= 1300) return Math.max(240, Math.min(320, Math.floor(width * 0.3)));
       return Math.min(380, Math.floor(width * 0.42));
     },
-    [showChat]
+    [chatMode]
   );
 
-  const chatRailWidthPx = showChat
+  const chatRailWidthPx = !chatMode && chatMessages.length > 0
     ? clampChatRailWidth(chatRailWidthManual ?? getChatRailWidthPx(viewportWidth), viewportWidth)
     : 0;
 
   useEffect(() => {
-    if (!showChat) return;
+    if (!chatMode) return;
     if (chatRailWidthManual == null) return;
     const next = clampChatRailWidth(chatRailWidthManual, viewportWidth);
     if (next !== chatRailWidthManual) setChatRailWidthManual(next);
-  }, [chatRailWidthManual, clampChatRailWidth, showChat, viewportWidth]);
+  }, [chatRailWidthManual, clampChatRailWidth, chatMode, viewportWidth]);
 
   const handleStartChatResize = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
@@ -964,11 +1014,30 @@ export default function OmniaCanvasPage() {
   const calcAiBubbleSize = useCallback((text: string) => {
     const st = useCanvasStore.getState() as any;
     const g = Math.max(1, Math.floor(st.gridSize || 24));
+    const availableWidth = Number.isFinite(st.canvasWidth) && (st.canvasWidth as number) > 0
+      ? (st.canvasWidth as number)
+      : (window.innerWidth || 1280);
+    const maxWidthPx = Math.min(g * 24, Math.floor(availableWidth * 0.85));
+    const horizontalPad = 24;
+    const charWidthPx = 7.2;
+
     const lines = String(text || "").split("\n");
     const longest = lines.reduce((m, l) => Math.max(m, String(l || "").length), 0);
-    const widthCells = Math.max(8, Math.ceil((longest * 7.2 + 24) / g));
-    const heightCells = Math.max(1, lines.length);
-    return { width: widthCells * g, height: heightCells * g };
+    const naturalWidth = Math.ceil(longest * charWidthPx + horizontalPad);
+    const widthPx = Math.max(g * 8, Math.min(maxWidthPx, naturalWidth));
+
+    const usableWidth = Math.max(1, widthPx - horizontalPad);
+    const charsPerLine = Math.max(1, Math.floor(usableWidth / charWidthPx));
+    let wrappedLines = 0;
+    for (const line of lines) {
+      wrappedLines += Math.max(1, Math.ceil((line.length || 1) / charsPerLine));
+    }
+    const lineHeightPx = 20;
+    const verticalPad = 16;
+    const contentHeight = wrappedLines * lineHeightPx + verticalPad;
+    const heightPx = Math.max(g, Math.ceil(contentHeight / g) * g);
+
+    return { width: widthPx, height: heightPx };
   }, []);
 
   const typeIntoAiResponseBlock = useCallback(
@@ -1098,7 +1167,7 @@ export default function OmniaCanvasPage() {
     chatImportAppliedRef.current = String(boardId);
 
     if (importedPrompts.length) {
-      setShowChat(true);
+      setChatMode(true);
       setChatMessages(importedPrompts);
       aiThreadRef.current = importedPrompts.flatMap((p) =>
         p.aiResponse
@@ -1784,6 +1853,7 @@ export default function OmniaCanvasPage() {
         const parsed = JSON.parse(saved);
         if (parsed.aiModel) setSelectedModel(parsed.aiModel);
         if (typeof parsed.liveAIMode !== "undefined") setLiveAIMode(Boolean(parsed.liveAIMode));
+        if (parsed.aiMode && ["think", "plan", "agent"].includes(parsed.aiMode)) setAiMode(parsed.aiMode);
       } catch {
         // ignore
       }
@@ -1853,6 +1923,7 @@ export default function OmniaCanvasPage() {
     reset();
     setChatMessages([]);
     setChatInput("");
+    setFocusedChatAttachments([]);
     setChatStatusText("");
     setChatFlowMode("idle");
     aiThreadRef.current = [];
@@ -1936,134 +2007,7 @@ export default function OmniaCanvasPage() {
     [addTextBlockAt]
   );
 
-  const handleGoToChatPage = useCallback(() => {
-    let persistedMessages: any[] = [];
-    try {
-      const rawMsgs = localStorage.getItem(CHAT_MESSAGES_PERSIST_KEY);
-      if (rawMsgs) {
-        const parsed = JSON.parse(rawMsgs);
-        if (Array.isArray(parsed)) persistedMessages = parsed;
-        localStorage.removeItem(CHAT_MESSAGES_PERSIST_KEY);
-      }
-    } catch { /* ignore */ }
-
-    const exportedMessages: Array<{ role: "user" | "assistant"; content: string; attachments?: any[] }> = [];
-
-    if (persistedMessages.length > 0) {
-      persistedMessages.forEach((msg: any) => {
-        const role = msg?.role === "assistant" ? "assistant" as const : msg?.role === "user" ? "user" as const : null;
-        const content = String(msg?.content || "").trim();
-        if (!role || !content) return;
-        const entry: { role: "user" | "assistant"; content: string; attachments?: any[] } = { role, content };
-        if (Array.isArray(msg?.attachments) && msg.attachments.length > 0) {
-          entry.attachments = msg.attachments;
-        }
-        exportedMessages.push(entry);
-      });
-    } else {
-      chatMessages.forEach((msg) => {
-        const userText = String(msg?.content || "").trim();
-        if (userText) exportedMessages.push({ role: "user", content: userText });
-        const assistantText = String(msg?.aiResponse || "").trim();
-        if (assistantText) exportedMessages.push({ role: "assistant", content: assistantText });
-      });
-    }
-
-    let persistedAttachments: any[] = [];
-    try {
-      const raw = localStorage.getItem(CHAT_ATTACHMENTS_PERSIST_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) persistedAttachments = parsed;
-        localStorage.removeItem(CHAT_ATTACHMENTS_PERSIST_KEY);
-      }
-    } catch { /* ignore */ }
-
-    const st = useCanvasStore.getState() as any;
-    const ids: string[] = Array.isArray(st.blockOrder) ? st.blockOrder : [];
-    const canvasAttachments: any[] = [];
-    for (const id of ids) {
-      const b: any = st.blocks?.[id];
-      if (!b) continue;
-      if (b?.data?.aiResponseBubble) continue;
-
-      const bType = String(b.type || "").toLowerCase();
-      const mode = String(b.mode || "").toLowerCase();
-
-      if (bType === "youtube" || (bType === "create" && mode === "video")) {
-        const videoId = String(b.videoId || b?.data?.videoId || "");
-        const url = String(b.url || b?.data?.url || "");
-        if (videoId || url) {
-          canvasAttachments.push({
-            id: b.id,
-            title: String(b?.data?.title || b?.data?.name || "").trim() || "YouTube Video",
-            type: "youtube",
-            url: url || `https://www.youtube.com/watch?v=${videoId}`,
-            videoId: videoId || (extractYouTubeVideoId(url) || ""),
-          });
-        }
-      } else if (bType === "image" || (bType === "create" && ["image", "generated"].includes(mode))) {
-        const src = String(b.src || b?.data?.src || "");
-        if (src) {
-          canvasAttachments.push({
-            id: b.id,
-            title: String(b?.data?.title || b?.data?.name || "").trim() || "Image",
-            type: "image",
-            url: src,
-          });
-        }
-      } else if (bType === "link") {
-        const url = String(b.url || b?.data?.url || "");
-        if (url) {
-          const isPdf = /\.pdf(\?|$)/i.test(url);
-          canvasAttachments.push({
-            id: b.id,
-            title: String(b?.data?.title || b?.data?.name || "").trim() || url,
-            type: isPdf ? "pdf" : "link",
-            url,
-          });
-        }
-      } else if (bType === "file" || (bType === "create" && mode === "embed")) {
-        const url = String(b.dataUrl || b?.data?.dataUrl || b.url || b?.data?.url || "");
-        const mime = String(b.mime || b?.data?.mime || "");
-        const name = String(b.name || b?.data?.name || "").trim();
-        if (url || name) {
-          const isImage = mime.startsWith("image/") || /\.(png|jpe?g|gif|webp|svg)$/i.test(name);
-          const isPdf = mime === "application/pdf" || /\.pdf$/i.test(name) || /\.pdf(\?|$)/i.test(url);
-          canvasAttachments.push({
-            id: b.id,
-            title: name || "File",
-            type: isPdf ? "pdf" : isImage ? "image" : "file",
-            url,
-          });
-        }
-      }
-    }
-
-    const seenIds = new Set(persistedAttachments.map((a: any) => a?.id).filter(Boolean));
-    const merged = [
-      ...persistedAttachments,
-      ...canvasAttachments.filter((a) => !seenIds.has(a.id)),
-    ];
-
-    const payload: CanvasToChatHandoffPayload = {
-      version: 1,
-      createdAt: Date.now(),
-      source: "canvas-page",
-      boardId: boardId || null,
-      boardTitle: String(title || "Untitled board").trim() || "Untitled board",
-      draftInput: String(chatInput || "").trim(),
-      messages: exportedMessages,
-      attachments: merged,
-    };
-
-    try {
-      localStorage.setItem(CANVAS_TO_CHAT_HANDOFF_KEY, JSON.stringify(payload));
-    } catch {
-      // ignore localStorage write failures and still navigate
-    }
-    nav("/chat", { state: { canvasChatHandoff: payload } });
-  }, [boardId, chatInput, chatMessages, nav, title]);
+  // handleGoToChatPage removed — chat is now an inline mode on the canvas.
 
   useEffect(() => {
     if (!showMemorySidebar) return;
@@ -2098,30 +2042,45 @@ export default function OmniaCanvasPage() {
     lastSendSigRef.current = { text, at: now };
 
     isSendingRef.current = true;
+    const sentAttachments = [...focusedChatAttachments];
     setChatInput("");
+    setFocusedChatAttachments([]);
     setIsChatLoading(true);
     setChatStatusText("Understanding your request...");
     setChatFlowMode("idle");
     const promptId = `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-    setChatMessages((prev) => [...prev, { id: promptId, role: "user", content: text, kind: "prompt" }]);
 
-    // Keep only one AI response bubble on the canvas at all times.
-    const existingAiIds = (Array.isArray(blockOrder) ? blockOrder : []).filter((id) =>
-      Boolean((blocks as any)?.[id]?.data?.aiResponseBubble)
-    );
-    for (const id of existingAiIds) {
-      try {
-        deleteBlock(id as any);
-      } catch {
-        // ignore
+    const attachmentContext = sentAttachments.length > 0
+      ? "\n\n[Attached content]\n" + sentAttachments.map((a) => {
+          if (a.type === "memory" && a.memoryContent) return `Memory "${a.memoryTitle || "Untitled"}": ${a.memoryContent}`;
+          if (a.pdfText) return `PDF "${a.name}": ${a.pdfText}`;
+          if (a.transcript) return `Transcript "${a.name}": ${a.transcript}`;
+          if (a.url) return `${a.type}: ${a.url}`;
+          return `${a.type}: ${a.name}`;
+        }).join("\n")
+      : "";
+
+    const displayText = sentAttachments.length > 0
+      ? text + `\n\n[${sentAttachments.length} attachment${sentAttachments.length > 1 ? "s" : ""}]`
+      : text;
+    setChatMessages((prev) => [...prev, { id: promptId, role: "user", content: displayText, kind: "prompt" }]);
+
+    // In focused chat mode, skip canvas brick — responses go inline in the chat.
+    let responseBlockId: string | null = null;
+    if (!chatMode) {
+      const existingAiIds = (Array.isArray(blockOrder) ? blockOrder : []).filter((id) =>
+        Boolean((blocks as any)?.[id]?.data?.aiResponseBubble)
+      );
+      for (const id of existingAiIds) {
+        try { deleteBlock(id as any); } catch { /* ignore */ }
       }
+      lastAiResponseBlockRef.current = null;
+      responseBlockId = addAiResponseBlock("AI is thinking...") as string | null;
+      lastAiResponseBlockRef.current = responseBlockId ? String(responseBlockId) : null;
     }
-    lastAiResponseBlockRef.current = null;
-    const responseBlockId = addAiResponseBlock("AI is thinking...");
-    lastAiResponseBlockRef.current = responseBlockId ? String(responseBlockId) : null;
 
     try {
-      aiThreadRef.current.push({ role: "user", content: text });
+      aiThreadRef.current.push({ role: "user", content: text + attachmentContext });
       if (aiThreadRef.current.length > 40) aiThreadRef.current = aiThreadRef.current.slice(-40);
 
       const history = aiThreadRef.current
@@ -2185,8 +2144,8 @@ export default function OmniaCanvasPage() {
         setChatStatusText("Answered");
         return;
       }
-      const prompt = `You are a helpful chat assistant in a canvas app.
-Answer the user's latest message directly like a normal assistant.
+      const prompt = `You are LYKN — a multi-model orchestration agent powering an infinite canvas workspace.
+Answer the user's latest message directly.
 Do not ask follow-up questions unless the user explicitly asks you to ask them.
 Do not suggest taking notes. Just answer.
 Use available board context and YouTube transcript context when relevant.
@@ -2205,7 +2164,7 @@ Visible YouTube transcript context:
 ${youtubeGrounding || "(none)"}
 
 Latest user message:
-${text}`;
+${text}${attachmentContext}`;
       const res = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2214,6 +2173,7 @@ ${text}`;
           prompt,
           text,
           intent: "ask",
+          aiMode,
           returnActions: false,
           context: `${canvasContext || ""}\n\nYouTube transcript context:\n${youtubeGrounding || "(none)"}`.trim(),
           knowledgeBase: kbText,
@@ -2268,22 +2228,22 @@ ${text}`;
 
   const handleCenterAskSend = useCallback(async () => {
     if (!chatInput.trim() || isChatLoading || isSendingRef.current) return;
-    setShowChat(true);
+    setChatMode(true);
     await handleChatSend();
   }, [chatInput, handleChatSend, isChatLoading]);
 
   useEffect(() => {
-    if (!showChat) return;
+    if (!chatMode) return;
     const el = chatScrollRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
-  }, [chatMessages, isChatLoading, showChat]);
+  }, [chatMessages, isChatLoading, chatMode]);
 
   useEffect(() => {
-    if (!showChat) return;
+    if (!chatMode) return;
     const t = window.setTimeout(() => chatPanelInputRef.current?.focus(), 0);
     return () => window.clearTimeout(t);
-  }, [showChat]);
+  }, [chatMode]);
 
   const resizeChatInput = useCallback((el: HTMLTextAreaElement | null) => {
     if (!el) return;
@@ -2294,11 +2254,286 @@ ${text}`;
     el.style.overflowY = el.scrollHeight > maxHeight ? "auto" : "hidden";
   }, []);
 
+  const canvasFileBlocks = useMemo(() => {
+    if (!chatMode) return [];
+    const st = useCanvasStore.getState();
+    const ids = Array.isArray(st.blockOrder) ? st.blockOrder : [];
+    const items: { id: string; type: string; name: string; url: string; thumbUrl: string; videoId?: string; content?: string }[] = [];
+    for (const id of ids) {
+      const b = (st.blocks as any)?.[id];
+      if (!b) continue;
+      const bType = String(b.type || "");
+      const mode = String(b.mode || b.data?.mode || "").toLowerCase();
+
+      if (bType === "youtube" || (bType === "create" && mode === "video")) {
+        const videoId = String(b.videoId || b.data?.videoId || "");
+        const url = String(b.url || b.data?.url || "");
+        const vid = videoId || extractYouTubeVideoId(url) || "";
+        if (vid || url) {
+          items.push({ id, type: "youtube", name: b.data?.title || `YouTube ${vid}`, url: url || `https://www.youtube.com/watch?v=${vid}`, thumbUrl: vid ? `https://img.youtube.com/vi/${vid}/mqdefault.jpg` : "", videoId: vid });
+        }
+        continue;
+      }
+      if (bType === "image" || (bType === "create" && ["image", "generated"].includes(mode))) {
+        const src = String(b.src || b.data?.src || b.url || b.data?.url || b.dataUrl || b.data?.dataUrl || "");
+        if (src) items.push({ id, type: "image", name: b.name || b.data?.name || "Image", url: src, thumbUrl: src });
+        continue;
+      }
+      if (bType === "file" || (bType === "create" && mode === "embed")) {
+        const url = String(b.url || b.data?.url || b.dataUrl || b.data?.dataUrl || "");
+        const name = String(b.name || b.data?.name || "File");
+        const mime = String(b.mime || b.data?.mime || "").toLowerCase();
+        if (mime.startsWith("image/")) { items.push({ id, type: "image", name, url, thumbUrl: url }); continue; }
+        if (mime.startsWith("video/")) { items.push({ id, type: "video", name, url, thumbUrl: "" }); continue; }
+        if (mime.startsWith("audio/")) { items.push({ id, type: "audio", name, url, thumbUrl: "" }); continue; }
+        if (mime === "application/pdf" || name.toLowerCase().endsWith(".pdf")) { items.push({ id, type: "pdf", name, url, thumbUrl: "", content: String(b.data?.pdfText || b.data?.extractedText || "") }); continue; }
+        if (url) items.push({ id, type: "file", name, url, thumbUrl: "" });
+        continue;
+      }
+      if (bType === "link") {
+        const url = String(b.url || b.data?.url || "");
+        if (url) {
+          const yt = extractYouTubeVideoId(url);
+          if (yt) { items.push({ id, type: "youtube", name: b.data?.title || "YouTube", url, thumbUrl: `https://img.youtube.com/vi/${yt}/mqdefault.jpg`, videoId: yt }); }
+          else { items.push({ id, type: "link", name: b.data?.title || url, url, thumbUrl: "" }); }
+        }
+        continue;
+      }
+      if (bType === "text") {
+        const content = String(b.content || "").trim();
+        if (content) {
+          const isAi = Boolean(b.data?.aiResponseBubble);
+          const label = isAi ? "AI Response" : (content.split("\n")[0].slice(0, 40) || "Note");
+          items.push({ id, type: "note", name: label, url: "", thumbUrl: "", content });
+        }
+        continue;
+      }
+      // Catch-all for any remaining create blocks with content
+      if (bType === "create") {
+        const content = String(b.content || b.data?.content || b.data?.seedText || "").trim();
+        const name = String(b.data?.title || mode || "Block").trim();
+        if (content || mode) {
+          items.push({ id, type: "note", name, url: "", thumbUrl: "", content: content || `(${mode} block)` });
+        }
+      }
+    }
+    return items;
+  }, [chatMode, blocks, blockOrder]);
+
+  const removeFocusedAttachment = useCallback((id: string) => {
+    setFocusedChatAttachments((prev) => prev.filter((a) => a.id !== id));
+  }, []);
+
+  const addFocusedAttachment = useCallback((att: FocusedChatAttachment) => {
+    setFocusedChatAttachments((prev) => [...prev, att]);
+  }, []);
+
+  const applyMemoryDropToChat = useCallback(async (payload: any) => {
+    if (!payload) return;
+    const title = String(payload.title || "Memory").trim();
+    const content = String(payload.content || "").trim();
+    const payloadAttachments = Array.isArray(payload.attachments) ? payload.attachments : [];
+
+    if (payloadAttachments.length > 0) {
+      for (const att of payloadAttachments) {
+        let url = String(att?.url || "").trim();
+        if (!url) continue;
+        const attType = String(att?.type || "").toLowerCase();
+        const videoId = att?.videoId || (attType === "youtube" ? extractYouTubeVideoId(url) : "") || "";
+
+        if (!url.startsWith("http") && !url.startsWith("data:") && attType !== "youtube") {
+          try {
+            const path = att?.storagePath || url;
+            const bucket = att?.storageBucket || "user-files";
+            const { data } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 60 * 24);
+            if (data?.signedUrl) url = data.signedUrl;
+          } catch { /* ignore */ }
+        }
+
+        const transcript = String(att?.transcript || "").trim();
+        const pdfText = String(att?.pdfText || att?.extractedText || "").trim();
+        addFocusedAttachment({
+          id: makeAttId(),
+          type: attType || inferUrlAttachmentType(url),
+          url,
+          name: String(att?.name || att?.title || title || url).trim(),
+          mime: String(att?.mime || ""),
+          size: Number(att?.size || 0),
+          memoryTitle: title,
+          ...(videoId ? { videoId } : {}),
+          ...(transcript ? { transcript } : {}),
+          ...(pdfText ? { pdfText } : {}),
+        });
+      }
+    } else if (content) {
+      addFocusedAttachment({
+        id: makeAttId(),
+        type: "memory",
+        url: "",
+        name: title || "Memory",
+        mime: "",
+        size: 0,
+        memoryTitle: title,
+        memoryContent: content,
+      });
+    }
+    window.setTimeout(() => chatPanelInputRef.current?.focus(), 0);
+  }, [addFocusedAttachment]);
+
+  const renderFocusedAttachmentPreview = useCallback((att: FocusedChatAttachment) => {
+    const t = att.type.toLowerCase();
+    const videoId = att.videoId || (t === "youtube" ? extractYouTubeVideoId(att.url) : null);
+
+    if (t === "youtube" && videoId) {
+      return (
+        <div className="relative w-40 h-24 rounded-xl overflow-hidden bg-black flex-shrink-0 group">
+          <img src={`https://img.youtube.com/vi/${videoId}/mqdefault.jpg`} alt={att.name || "YouTube"} className="w-full h-full object-cover" draggable={false} />
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <div className="w-9 h-7 bg-red-600 rounded-lg flex items-center justify-center shadow-md"><Play className="w-3.5 h-3.5 text-white ml-0.5" fill="white" /></div>
+          </div>
+          <button type="button" onClick={() => removeFocusedAttachment(att.id)} className="absolute top-1 right-1 h-5 w-5 rounded-full bg-black/60 hover:bg-black/80 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"><X className="w-3 h-3" /></button>
+          <span className="absolute bottom-1 left-1 right-6 text-[10px] text-white truncate bg-black/50 rounded px-1">{att.memoryTitle || att.name || "YouTube Video"}</span>
+        </div>
+      );
+    }
+    if (t === "image") {
+      return (
+        <div className="relative w-24 h-24 rounded-xl overflow-hidden bg-black/5 flex-shrink-0 group">
+          <img src={att.url} alt={att.name || "Image"} className="w-full h-full object-cover" draggable={false} />
+          <button type="button" onClick={() => removeFocusedAttachment(att.id)} className="absolute top-1 right-1 h-5 w-5 rounded-full bg-black/60 hover:bg-black/80 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"><X className="w-3 h-3" /></button>
+        </div>
+      );
+    }
+    if (t === "video") {
+      return (
+        <div className="relative w-40 h-24 rounded-xl overflow-hidden bg-black flex-shrink-0 group">
+          <video src={att.url} className="w-full h-full object-cover" preload="metadata" muted draggable={false} />
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <div className="w-9 h-7 bg-white/80 rounded-lg flex items-center justify-center shadow-md"><Play className="w-3.5 h-3.5 text-black ml-0.5" fill="black" /></div>
+          </div>
+          <button type="button" onClick={() => removeFocusedAttachment(att.id)} className="absolute top-1 right-1 h-5 w-5 rounded-full bg-black/60 hover:bg-black/80 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"><X className="w-3 h-3" /></button>
+          <span className="absolute bottom-1 left-1 right-6 text-[10px] text-white truncate bg-black/50 rounded px-1">{att.memoryTitle || att.name || "Video"}</span>
+        </div>
+      );
+    }
+    if (t === "audio") {
+      return (
+        <div className="relative inline-flex items-center gap-2 rounded-xl border border-white/30 bg-white/30 px-3 py-2 group">
+          <Music className="w-4 h-4 flex-shrink-0 opacity-60" />
+          <span className="max-w-[180px] truncate text-xs">{att.memoryTitle || att.name || "Audio"}</span>
+          <button type="button" onClick={() => removeFocusedAttachment(att.id)} className="h-4 w-4 rounded-full hover:bg-black/10 flex items-center justify-center"><X className="w-3 h-3" /></button>
+        </div>
+      );
+    }
+    if (t === "memory") {
+      return (
+        <div className="relative inline-flex items-center gap-2 rounded-xl border border-violet-300/40 bg-violet-100/40 px-3 py-2 max-w-[260px] group">
+          <BookOpen className="w-4 h-4 flex-shrink-0 text-violet-500" />
+          <div className="min-w-0">
+            <span className="block text-xs font-medium truncate">{att.memoryTitle || "Memory"}</span>
+            {att.memoryContent && <span className="block text-[10px] opacity-60 truncate">{att.memoryContent.slice(0, 80)}</span>}
+          </div>
+          <button type="button" onClick={() => removeFocusedAttachment(att.id)} className="h-4 w-4 rounded-full hover:bg-black/10 flex items-center justify-center flex-shrink-0"><X className="w-3 h-3" /></button>
+        </div>
+      );
+    }
+    if (t === "pdf") {
+      return (
+        <div className="relative inline-flex items-center gap-2 rounded-xl border border-white/30 bg-white/30 px-3 py-2 group">
+          <FileText className="w-4 h-4 flex-shrink-0 opacity-60" />
+          <span className="max-w-[180px] truncate text-xs">{att.memoryTitle || att.name || "PDF"}</span>
+          <button type="button" onClick={() => removeFocusedAttachment(att.id)} className="h-4 w-4 rounded-full hover:bg-black/10 flex items-center justify-center"><X className="w-3 h-3" /></button>
+        </div>
+      );
+    }
+    if (t === "note") {
+      return (
+        <div className="relative inline-flex items-center gap-2 rounded-xl border border-amber-300/40 bg-amber-100/40 px-3 py-2 max-w-[260px] group">
+          <StickyNote className="w-4 h-4 flex-shrink-0 text-amber-600" />
+          <div className="min-w-0">
+            <span className="block text-xs font-medium truncate">{att.name || "Note"}</span>
+            {att.memoryContent && <span className="block text-[10px] opacity-60 truncate">{att.memoryContent.slice(0, 80)}</span>}
+          </div>
+          <button type="button" onClick={() => removeFocusedAttachment(att.id)} className="h-4 w-4 rounded-full hover:bg-black/10 flex items-center justify-center flex-shrink-0"><X className="w-3 h-3" /></button>
+        </div>
+      );
+    }
+    return (
+      <div className="relative inline-flex items-center gap-2 rounded-xl border border-white/30 bg-white/30 px-3 py-2 group">
+        <Link2 className="w-4 h-4 flex-shrink-0 opacity-60" />
+        <span className="max-w-[200px] truncate text-xs">{att.memoryTitle || att.name || att.url || "Attachment"}</span>
+        <button type="button" onClick={() => removeFocusedAttachment(att.id)} className="h-4 w-4 rounded-full hover:bg-black/10 flex items-center justify-center"><X className="w-3 h-3" /></button>
+      </div>
+    );
+  }, [removeFocusedAttachment]);
+
+  const handleFocusedChatDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = "copy";
+  }, []);
+
+  const handleFocusedChatDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    // Canvas file collage item
+    const canvasFileRaw = e.dataTransfer.getData("application/x-canvas-file");
+    if (canvasFileRaw) {
+      try {
+        const item = JSON.parse(canvasFileRaw);
+        const isNote = item.type === "note";
+        addFocusedAttachment({
+          id: makeAttId(),
+          type: item.type || "link",
+          url: item.url || "",
+          name: item.name || "Canvas file",
+          mime: "",
+          size: 0,
+          ...(item.videoId ? { videoId: item.videoId } : {}),
+          ...(isNote && item.content ? { memoryContent: item.content } : {}),
+          ...(!isNote && item.content ? { pdfText: item.content } : {}),
+        });
+        window.setTimeout(() => chatPanelInputRef.current?.focus(), 0);
+        return;
+      } catch { /* fall through */ }
+    }
+
+    const text = (e.dataTransfer.getData("text/uri-list") || e.dataTransfer.getData("text/plain") || e.dataTransfer.getData("text") || "").trim();
+    if (text) {
+      const urls = text.split(/\r?\n/).filter((u: string) => /^https?:\/\//i.test(u.trim()));
+      if (urls.length > 0) {
+        for (const u of urls) {
+          addFocusedAttachment({ id: makeAttId(), type: inferUrlAttachmentType(u.trim()), url: u.trim(), name: u.trim(), mime: "", size: 0 });
+        }
+      } else {
+        addFocusedAttachment({ id: makeAttId(), type: "memory", url: "", name: "Dropped text", mime: "", size: 0, memoryTitle: "Dropped text", memoryContent: text });
+      }
+    }
+    const files = Array.from(e.dataTransfer.files);
+    for (const f of files) {
+      const reader = new FileReader();
+      const file = f;
+      reader.onload = () => {
+        const dataUrl = reader.result as string;
+        const mime = file.type || "";
+        let type = "file";
+        if (mime.startsWith("image/")) type = "image";
+        else if (mime.startsWith("video/")) type = "video";
+        else if (mime.startsWith("audio/")) type = "audio";
+        else if (mime === "application/pdf") type = "pdf";
+        addFocusedAttachment({ id: makeAttId(), type, url: dataUrl, name: file.name, mime, size: file.size });
+      };
+      reader.readAsDataURL(f);
+    }
+    window.setTimeout(() => chatPanelInputRef.current?.focus(), 0);
+  }, [addFocusedAttachment]);
+
   useEffect(() => {
     // Keep whichever composer is visible synced with current text height.
     resizeChatInput(chatPanelInputRef.current);
     resizeChatInput(centerChatInputRef.current);
-  }, [chatInput, resizeChatInput, showChat]);
+  }, [chatInput, resizeChatInput, chatMode]);
 
   useEffect(() => {
     return () => {
@@ -2448,6 +2683,44 @@ ${text}`;
 
               <div className="w-px h-4 bg-black/10 dark:bg-white/10 mx-1" />
 
+              {/* AI mode selector (Think / Plan / Agent) */}
+              <Select
+                value={aiMode}
+                onValueChange={(value: string) => {
+                  const mode = value as AiMode;
+                  setAiMode(mode);
+                  try {
+                    const saved = localStorage.getItem("lykinsai_settings");
+                    const settings = saved ? JSON.parse(saved) : {};
+                    settings.aiMode = mode;
+                    localStorage.setItem("lykinsai_settings", JSON.stringify(settings));
+                    window.dispatchEvent(new CustomEvent("lykinsai_settings_changed"));
+                  } catch { /* ignore */ }
+                }}
+              >
+                <SelectTrigger className="w-[130px] h-9 rounded-full glass-control hover:opacity-90 text-xs font-medium justify-center gap-1">
+                  <SelectValue placeholder="Mode" />
+                </SelectTrigger>
+                <SelectContent
+                  align="end"
+                  className="glass-control border border-white/25 dark:border-white/10 bg-white/35 dark:bg-white/10 backdrop-blur-xl shadow-lg overflow-hidden"
+                >
+                  {(Object.entries(AI_MODE_META) as [AiMode, typeof AI_MODE_META["think"]][]).map(([key, meta]) => {
+                    const Icon = meta.icon;
+                    return (
+                      <SelectItem key={key} value={key}>
+                        <span className="inline-flex items-center gap-1.5">
+                          <Icon className="w-3.5 h-3.5 shrink-0" />
+                          {meta.label}
+                        </span>
+                      </SelectItem>
+                    );
+                  })}
+                </SelectContent>
+              </Select>
+
+              <div className="w-px h-4 bg-black/10 dark:bg-white/10 mx-1" />
+
               {/* AI model selector (matches old Create panel) */}
               <Select
                 value={selectedModel}
@@ -2558,11 +2831,11 @@ ${text}`;
 
               <button
                 type="button"
-                onClick={handleGoToChatPage}
-                className="rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center"
-                title="Go to chat page"
+                onClick={() => setChatMode((v) => !v)}
+                className={`rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center ${chatMode ? "bg-blue-500/15" : ""}`}
+                title={chatMode ? "Exit chat" : "Open chat"}
               >
-                <MessageSquare className="w-4 h-4" />
+                <MessageSquare className={`w-4 h-4 ${chatMode ? "text-blue-500" : ""}`} />
               </button>
 
               <div className="w-px h-4 bg-black/10 dark:bg-white/10 mx-1" />
@@ -2591,7 +2864,13 @@ ${text}`;
         </div>
       </div>
 
-      <div className="w-full h-full">
+      <div
+        className={`h-full transition-[width,margin-right] duration-300 ${chatMode ? "invisible pointer-events-none" : ""}`}
+        style={{
+          marginRight: `${chatRailWidthPx + (showMemorySidebar ? 380 : 0)}px`,
+          width: `calc(100% - ${chatRailWidthPx + (showMemorySidebar ? 380 : 0)}px)`,
+        }}
+      >
         <Canvas liveAIMode={false} isAiThinking={isChatLoading} />
       </div>
 
@@ -2614,6 +2893,13 @@ ${text}`;
             (window as any).__omnia_pending_memory = null;
 
             const attachments = Array.isArray(pending.attachments) ? pending.attachments : [];
+
+            // In focused chat mode, route dropped content as visual attachments
+            if (chatMode) {
+              void applyMemoryDropToChat(pending);
+              return;
+            }
+
             console.log("[MEMORY-DROP] attachments:", attachments.map((a: any) => ({ type: a.type, url: a.url?.substring(0, 80), videoId: a.videoId })));
             const youtubeAttach = attachments.find((a: any) =>
               a.type === "youtube" || a.videoId || (a.url && (a.url.includes("youtube.com") || a.url.includes("youtu.be")))
@@ -2823,166 +3109,262 @@ ${text}`;
         </DialogContentAny>
       </DialogAny>
 
-      {!showChat && (
+      {/* Center welcome prompt (no messages yet, not in chat mode) */}
+      {!chatMode && chatMessages.length === 0 && (
         <div className="fixed inset-0 z-[85] pointer-events-none flex items-center justify-center px-4 transition-all duration-300">
-        <div className="w-full max-w-2xl space-y-6">
-          <p className="pointer-events-none text-center text-3xl font-semibold tracking-tight min-h-[44px] text-black">
-            {typedWelcome}
-          </p>
-          <div
-            className="pointer-events-auto glass-control rounded-2xl p-2 w-full transition-all duration-300"
-          >
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={handleOpenAttachments}
-              className="h-10 w-10 rounded-full flex items-center justify-center transition-colors hover:bg-black/10"
-              title="Add attachments"
-            >
-              <Plus className="w-4 h-4" />
-            </button>
-            <textarea
-              ref={centerChatInputRef}
-              value={chatInput}
-              onChange={(e) => setChatInput(e.target.value)}
-              onInput={(e) => resizeChatInput(e.currentTarget)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  void handleCenterAskSend();
-                }
-              }}
-              placeholder="Ask me anything..."
-              rows={1}
-              className="w-full min-h-[44px] max-h-[220px] rounded-xl bg-transparent border border-white/30 px-4 py-3 text-sm text-black placeholder:text-black/55 outline-none resize-none leading-5 scrollbar-hide"
-            />
-            <button
-              type="button"
-              onClick={handleDictateToggle}
-              className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors hover:bg-black/10 ${
-                isDictating ? "bg-black/10 ring-1 ring-black/30" : ""
-              }`}
-              title="Dictate"
-            >
-              <Mic className="w-4 h-4" />
-            </button>
-            <button
-              type="button"
-              onClick={handleVoiceToggle}
-              className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors hover:bg-black/10 ${
-                isSpeaking ? "bg-black/10 ring-1 ring-black/30" : ""
-              }`}
-              title="Voice"
-            >
-              <Volume2 className="w-4 h-4" />
-            </button>
-          </div>
+          <div className="w-full max-w-2xl space-y-6">
+            <p className="pointer-events-none text-center text-3xl font-semibold tracking-tight min-h-[44px] text-black">
+              {typedWelcome}
+            </p>
+            <div className="pointer-events-auto glass-control rounded-2xl p-2 w-full transition-all duration-300">
+              <div className="flex items-center gap-2">
+                <button type="button" onClick={handleOpenAttachments} className="h-10 w-10 rounded-full flex items-center justify-center transition-colors hover:bg-black/10" title="Add attachments">
+                  <Plus className="w-4 h-4" />
+                </button>
+                <textarea
+                  ref={centerChatInputRef}
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  onInput={(e) => resizeChatInput(e.currentTarget)}
+                  onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void handleCenterAskSend(); } }}
+                  placeholder="Ask me anything..."
+                  rows={1}
+                  className="w-full min-h-[44px] max-h-[220px] rounded-xl bg-transparent border border-white/30 px-4 py-3 text-sm text-black placeholder:text-black/55 outline-none resize-none leading-5 scrollbar-hide"
+                />
+                <button type="button" onClick={handleDictateToggle} className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors hover:bg-black/10 ${isDictating ? "bg-black/10 ring-1 ring-black/30" : ""}`} title="Dictate">
+                  <Mic className="w-4 h-4" />
+                </button>
+                <button type="button" onClick={handleVoiceToggle} className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors hover:bg-black/10 ${isSpeaking ? "bg-black/10 ring-1 ring-black/30" : ""}`} title="Voice">
+                  <Volume2 className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
           </div>
         </div>
-      </div>
       )}
 
-      {showChat && (
+      {/* Side rail chat (canvas mode — messages exist) */}
+      {!chatMode && chatMessages.length > 0 && (
         <div
           className={`fixed top-[4.9rem] bottom-0 z-[64] flex flex-col bg-transparent border-l border-black/10 transition-[right] duration-300 ${showMemorySidebar ? "right-[380px]" : "right-0"}`}
           style={{ width: `${chatRailWidthPx}px` }}
         >
-          <div
-            className="absolute left-0 top-0 bottom-0 w-3 -translate-x-1/2 cursor-col-resize z-[70] pointer-events-auto"
-            onPointerDown={handleStartChatResize}
-            title="Drag to resize chat"
-          />
+          <div className="absolute left-0 top-0 bottom-0 w-3 -translate-x-1/2 cursor-col-resize z-[70] pointer-events-auto" onPointerDown={handleStartChatResize} title="Drag to resize chat" />
           <div ref={chatScrollRef} className="flex-1 overflow-y-auto scrollbar-hide p-3 space-y-3">
-            {isChatLoading && (
-              <div className="text-[11px] text-black/60 px-1" aria-live="polite">
-                Working...
+            {isChatLoading && (<div className="text-[11px] text-black/60 px-1" aria-live="polite">Working...</div>)}
+            {chatMessages.map((msg, idx) => (
+              <div key={msg.id || idx} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+                {msg.role === "user" ? (
+                  <button type="button" onClick={() => { void replaySavedPromptResponse(msg); }} disabled={!msg.aiResponse} className="group relative text-left max-w-[94%] disabled:cursor-default" title={msg.aiResponse ? "Show saved AI response" : "Waiting for AI response"}>
+                    {msg.aiResponse ? (<span className="pointer-events-none absolute -top-6 right-0 rounded-md bg-black/70 px-2 py-1 text-[10px] text-white opacity-0 transition-opacity duration-150 group-hover:opacity-100 whitespace-nowrap">Tap to view AI response</span>) : null}
+                    <div className="w-full rounded-2xl rounded-br-md px-3 py-2 text-xs leading-relaxed text-black/90 whitespace-pre-wrap break-words border border-white/55 bg-[linear-gradient(135deg,rgba(255,255,255,0.32),rgba(255,255,255,0.16))] backdrop-blur-xl shadow-[0_10px_28px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.35)]">{msg.content}</div>
+                  </button>
+                ) : (
+                  <div className="max-w-[94%] rounded-2xl rounded-bl-md px-3 py-2 text-xs leading-relaxed whitespace-pre-wrap break-words border bg-white/70 border-white/70 text-black/85">{msg.content}</div>
+                )}
               </div>
-            )}
-            {chatMessages.length === 0 ? (
-              <div className="h-full flex items-center justify-center text-center px-4">
-                <p className="text-xs text-black/60">Ask me anything to start your command chat.</p>
-              </div>
-            ) : (
-              chatMessages.map((msg, idx) => (
-                <div key={msg.id || idx} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-                  {msg.role === "user" ? (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        void replaySavedPromptResponse(msg);
-                      }}
-                      disabled={!msg.aiResponse}
-                      className="group relative text-left max-w-[94%] disabled:cursor-default"
-                      title={msg.aiResponse ? "Show saved AI response" : "Waiting for AI response"}
-                    >
-                    {msg.aiResponse ? (
-                      <span className="pointer-events-none absolute -top-6 right-0 rounded-md bg-black/70 px-2 py-1 text-[10px] text-white opacity-0 transition-opacity duration-150 group-hover:opacity-100 whitespace-nowrap">
-                        Tap to view AI response
-                      </span>
-                    ) : null}
-                    <div className="w-full rounded-2xl rounded-br-md px-3 py-2 text-xs leading-relaxed text-black/90 whitespace-pre-wrap break-words border border-white/55 bg-[linear-gradient(135deg,rgba(255,255,255,0.32),rgba(255,255,255,0.16))] backdrop-blur-xl shadow-[0_10px_28px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.35)]">
-                      {msg.content}
-                    </div>
-                    </button>
-                  ) : (
-                    <div className="max-w-[94%] rounded-2xl rounded-bl-md px-3 py-2 text-xs leading-relaxed whitespace-pre-wrap break-words border bg-white/70 border-white/70 text-black/85">
-                      {msg.content}
-                    </div>
-                  )}
-                  </div>
-              ))
-            )}
+            ))}
           </div>
           <div className="p-2 pb-3">
             <div className="glass-control rounded-2xl p-2 w-full">
-            <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={handleOpenAttachments}
-              className="h-10 w-10 rounded-full flex items-center justify-center transition-colors hover:bg-black/10"
-              title="Add attachments"
-            >
-              <Plus className="w-4 h-4" />
-            </button>
-            <textarea
-              ref={chatPanelInputRef}
-              value={chatInput}
-              onChange={(e) => setChatInput(e.target.value)}
-              onInput={(e) => resizeChatInput(e.currentTarget)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  void handleChatSend();
-                }
-              }}
-              placeholder="Ask me anything..."
-              rows={1}
-              className="w-full min-h-[44px] max-h-[220px] rounded-xl bg-white/12 border border-white/30 px-3 py-3 text-sm text-black placeholder:text-black/55 outline-none resize-none leading-5 scrollbar-hide"
-            />
-            <button
-              type="button"
-              onClick={handleDictateToggle}
-              className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors hover:bg-black/10 ${
-                isDictating ? "bg-black/10 ring-1 ring-black/30" : ""
-              }`}
-              title="Dictate"
-            >
-              <Mic className="w-4 h-4" />
-            </button>
-            <button
-              type="button"
-              onClick={handleVoiceToggle}
-              className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors hover:bg-black/10 ${
-                isSpeaking ? "bg-black/10 ring-1 ring-black/30" : ""
-              }`}
-              title="Voice"
-            >
-              <Volume2 className="w-4 h-4" />
-            </button>
-            </div>
+              <div className="flex items-center gap-2">
+                <button type="button" onClick={handleOpenAttachments} className="h-10 w-10 rounded-full flex items-center justify-center transition-colors hover:bg-black/10" title="Add attachments">
+                  <Plus className="w-4 h-4" />
+                </button>
+                <textarea
+                  ref={chatPanelInputRef}
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  onInput={(e) => resizeChatInput(e.currentTarget)}
+                  onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void handleChatSend(); } }}
+                  placeholder="Ask me anything..."
+                  rows={1}
+                  className="w-full min-h-[44px] max-h-[220px] rounded-xl bg-white/12 border border-white/30 px-3 py-3 text-sm text-black placeholder:text-black/55 outline-none resize-none leading-5 scrollbar-hide"
+                />
+                <button type="button" onClick={handleDictateToggle} className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors hover:bg-black/10 ${isDictating ? "bg-black/10 ring-1 ring-black/30" : ""}`} title="Dictate">
+                  <Mic className="w-4 h-4" />
+                </button>
+                <button type="button" onClick={handleVoiceToggle} className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors hover:bg-black/10 ${isSpeaking ? "bg-black/10 ring-1 ring-black/30" : ""}`} title="Voice">
+                  <Volume2 className="w-4 h-4" />
+                </button>
+              </div>
             </div>
           </div>
         </div>
+      )}
+
+      {/* Focused chat mode — centered, below top panel, no overlay */}
+      {chatMode && (
+        <>
+          {/* Left collage panel — canvas files */}
+          {canvasFileBlocks.length > 0 && (
+            <div className="fixed top-[4.2rem] bottom-0 left-0 z-[66] w-[220px] overflow-y-auto scrollbar-hide p-3 space-y-2 bg-white/20 backdrop-blur-sm border-r border-black/5 transition-all duration-300">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-black/40 px-1 mb-1">Canvas Files</p>
+              <div className="flex flex-col gap-2">
+                {canvasFileBlocks.map((item) => (
+                  <div
+                    key={item.id}
+                    draggable
+                    onDragStart={(e) => {
+                      e.dataTransfer.effectAllowed = "copy";
+                      e.dataTransfer.setData("application/x-canvas-file", JSON.stringify(item));
+                      e.dataTransfer.setData("text/plain", item.url);
+                    }}
+                    className="relative rounded-xl overflow-hidden bg-black/5 border border-white/30 cursor-grab active:cursor-grabbing hover:ring-2 hover:ring-blue-400/50 transition-all group"
+                    title={`Drag to chat: ${item.name}`}
+                  >
+                    {item.type === "youtube" && item.thumbUrl ? (
+                      <div className="aspect-video relative">
+                        <img src={item.thumbUrl} alt={item.name} className="w-full h-full object-cover" draggable={false} />
+                        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                          <div className="w-7 h-5 bg-red-600 rounded flex items-center justify-center"><Play className="w-2.5 h-2.5 text-white ml-px" fill="white" /></div>
+                        </div>
+                      </div>
+                    ) : item.type === "image" && item.thumbUrl ? (
+                      <div className="aspect-square">
+                        <img src={item.thumbUrl} alt={item.name} className="w-full h-full object-cover" draggable={false} />
+                      </div>
+                    ) : item.type === "video" ? (
+                      <div className="aspect-video bg-black flex items-center justify-center">
+                        <Play className="w-5 h-5 text-white/60" />
+                      </div>
+                    ) : item.type === "audio" ? (
+                      <div className="aspect-square flex items-center justify-center bg-white/30">
+                        <Music className="w-5 h-5 text-black/40" />
+                      </div>
+                    ) : item.type === "pdf" ? (
+                      <div className="aspect-square flex items-center justify-center bg-white/30">
+                        <FileText className="w-5 h-5 text-black/40" />
+                      </div>
+                    ) : item.type === "note" ? (
+                      <div className="aspect-square flex items-center justify-center bg-white/20 px-1.5">
+                        <span className="text-[8px] text-black/50 leading-tight line-clamp-4 text-center">{(item.content || "").slice(0, 80)}</span>
+                      </div>
+                    ) : (
+                      <div className="aspect-square flex items-center justify-center bg-white/30">
+                        <Link2 className="w-5 h-5 text-black/40" />
+                      </div>
+                    )}
+                    <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent px-1.5 pb-1 pt-3">
+                      <span className="text-[9px] text-white leading-tight line-clamp-2 break-all">{item.name}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {chatMessages.length === 0 ? (
+            /* Empty state: identical to the canvas first-render welcome */
+            <div
+              className={`fixed inset-0 z-[65] flex items-center justify-center px-4 transition-all duration-300 ${canvasFileBlocks.length > 0 ? "pl-[232px]" : ""}`}
+              onDragOver={handleFocusedChatDragOver}
+              onDrop={handleFocusedChatDrop}
+            >
+              <div className="w-full max-w-2xl space-y-6">
+                <p className="text-center text-3xl font-semibold tracking-tight min-h-[44px] text-black pointer-events-none">
+                  {typedWelcome}
+                </p>
+                <div className="glass-control rounded-2xl p-2 w-full transition-all duration-300">
+                  {focusedChatAttachments.length > 0 && (
+                    <div className="mb-2 flex flex-wrap gap-2 items-end">
+                      {focusedChatAttachments.map((att) => (
+                        <div key={att.id}>{renderFocusedAttachmentPreview(att)}</div>
+                      ))}
+                    </div>
+                  )}
+                  <div className="flex items-center gap-2">
+                    <button type="button" onClick={handleOpenAttachments} className="h-10 w-10 rounded-full flex items-center justify-center transition-colors hover:bg-black/10" title="Add attachments">
+                      <Plus className="w-4 h-4" />
+                    </button>
+                    <textarea
+                      ref={chatPanelInputRef}
+                      value={chatInput}
+                      onChange={(e) => setChatInput(e.target.value)}
+                      onInput={(e) => resizeChatInput(e.currentTarget)}
+                      onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void handleChatSend(); } }}
+                      placeholder="Ask me anything..."
+                      rows={1}
+                      className="w-full min-h-[44px] max-h-[220px] rounded-xl bg-transparent border border-white/30 px-4 py-3 text-sm text-black placeholder:text-black/55 outline-none resize-none leading-5 scrollbar-hide"
+                    />
+                    <button type="button" onClick={handleDictateToggle} className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors hover:bg-black/10 ${isDictating ? "bg-black/10 ring-1 ring-black/30" : ""}`} title="Dictate">
+                      <Mic className="w-4 h-4" />
+                    </button>
+                    <button type="button" onClick={handleVoiceToggle} className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors hover:bg-black/10 ${isSpeaking ? "bg-black/10 ring-1 ring-black/30" : ""}`} title="Voice">
+                      <Volume2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            /* Active conversation: messages scrollable, input pinned to bottom */
+            <div
+              className={`fixed top-[4.2rem] bottom-0 right-0 z-[65] flex flex-col items-center bg-transparent transition-all duration-300 ${canvasFileBlocks.length > 0 ? "left-[220px]" : "left-0"}`}
+              onDragOver={handleFocusedChatDragOver}
+              onDrop={handleFocusedChatDrop}
+            >
+              <div ref={chatScrollRef} className="flex-1 w-full max-w-2xl overflow-y-auto scrollbar-hide px-4 pt-6 pb-4 space-y-4">
+                {chatMessages.map((msg, idx) => (
+                  <React.Fragment key={msg.id || idx}>
+                    {msg.role === "user" && (
+                      <div className="flex justify-end">
+                        <div className="max-w-[80%] rounded-2xl rounded-br-md px-4 py-3 text-sm leading-relaxed text-black/90 whitespace-pre-wrap break-words border border-white/55 bg-[linear-gradient(135deg,rgba(255,255,255,0.32),rgba(255,255,255,0.16))] backdrop-blur-xl shadow-[0_10px_28px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.35)]">{msg.content}</div>
+                      </div>
+                    )}
+                    {msg.role === "user" && msg.aiResponse && (
+                      <div className="flex justify-start">
+                        <div className="max-w-[80%] rounded-2xl rounded-bl-md px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap break-words border bg-white/80 border-white/70 text-black/85 backdrop-blur-md">{msg.aiResponse}</div>
+                      </div>
+                    )}
+                    {msg.role !== "user" && (
+                      <div className="flex justify-start">
+                        <div className="max-w-[80%] rounded-2xl rounded-bl-md px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap break-words border bg-white/80 border-white/70 text-black/85 backdrop-blur-md">{msg.content}</div>
+                      </div>
+                    )}
+                  </React.Fragment>
+                ))}
+                {isChatLoading && (
+                  <div className="flex justify-start">
+                    <div className="max-w-[80%] rounded-2xl rounded-bl-md px-4 py-3 text-sm leading-relaxed border bg-white/80 border-white/70 text-black/60 backdrop-blur-md animate-pulse">Thinking...</div>
+                  </div>
+                )}
+              </div>
+              <div className="w-full max-w-2xl px-4 pb-6 pt-2">
+                <div className="glass-control rounded-2xl p-2 w-full">
+                  {focusedChatAttachments.length > 0 && (
+                    <div className="mb-2 flex flex-wrap gap-2 items-end">
+                      {focusedChatAttachments.map((att) => (
+                        <div key={att.id}>{renderFocusedAttachmentPreview(att)}</div>
+                      ))}
+                    </div>
+                  )}
+                  <div className="flex items-center gap-2">
+                    <button type="button" onClick={handleOpenAttachments} className="h-10 w-10 rounded-full flex items-center justify-center transition-colors hover:bg-black/10" title="Add attachments">
+                      <Plus className="w-4 h-4" />
+                    </button>
+                    <textarea
+                      ref={chatPanelInputRef}
+                      value={chatInput}
+                      onChange={(e) => setChatInput(e.target.value)}
+                      onInput={(e) => resizeChatInput(e.currentTarget)}
+                      onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void handleChatSend(); } }}
+                      placeholder="Ask me anything..."
+                      rows={1}
+                      className="w-full min-h-[44px] max-h-[220px] rounded-xl bg-transparent border border-white/30 px-4 py-3 text-sm text-black placeholder:text-black/55 outline-none resize-none leading-5 scrollbar-hide"
+                    />
+                    <button type="button" onClick={handleDictateToggle} className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors hover:bg-black/10 ${isDictating ? "bg-black/10 ring-1 ring-black/30" : ""}`} title="Dictate">
+                      <Mic className="w-4 h-4" />
+                    </button>
+                    <button type="button" onClick={handleVoiceToggle} className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors hover:bg-black/10 ${isSpeaking ? "bg-black/10 ring-1 ring-black/30" : ""}`} title="Voice">
+                      <Volume2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </>
       )}
 
       <DialogAny open={showAttachMenu} onOpenChange={setShowAttachMenu}>
@@ -3151,15 +3533,6 @@ ${text}`;
           onClose={() => { void handleCloseQuickNote(); }}
         />
       )}
-
-      <button
-        type="button"
-        onClick={() => setShowQuickNote(true)}
-        className="fixed bottom-8 right-8 w-14 h-14 rounded-full glass-control hover:opacity-90 shadow-lg hover:shadow-xl transition-all flex items-center justify-center hover:scale-110 z-[80]"
-        title="Quick Notes"
-      >
-        <StickyNote className="w-6 h-6" />
-      </button>
     </div>
   );
 }

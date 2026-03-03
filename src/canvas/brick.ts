@@ -97,12 +97,16 @@ function BrickTextSurface(props: {
   };
   const slashOptions = useMemo(
     () => [
-      { id: "h1", command: "/h1", label: "Heading 1", hint: "3 bricks tall" },
-      { id: "h2", command: "/h2", label: "Heading 2", hint: "2 bricks tall" },
-      { id: "text", command: "/text", label: "Text", hint: "1 brick tall" },
-      { id: "bulleted-list", command: "/bulleted list", label: "Bulleted List", hint: "auto • on Enter" },
-      { id: "numbered-list", command: "/numbered list", label: "Numbered List", hint: "auto 1. 2. on Enter" },
-      { id: "checklist", command: "/checklist", label: "Checklist", hint: "auto [ ] on Enter" },
+      { id: "h1", command: "/h1", label: "Heading 1", hint: "3 bricks tall", section: "text" as const },
+      { id: "h2", command: "/h2", label: "Heading 2", hint: "2 bricks tall", section: "text" as const },
+      { id: "text", command: "/text", label: "Text", hint: "1 brick tall", section: "text" as const },
+      { id: "bulleted-list", command: "/bulleted list", label: "Bulleted List", hint: "auto • on Enter", section: "text" as const },
+      { id: "numbered-list", command: "/numbered list", label: "Numbered List", hint: "auto 1. 2. on Enter", section: "text" as const },
+      { id: "checklist", command: "/checklist", label: "Checklist", hint: "auto [ ] on Enter", section: "text" as const },
+      { id: "table", command: "/table", label: "Table", hint: "spreadsheet grid", section: "block" as const },
+      { id: "calendar", command: "/calendar", label: "Calendar", hint: "mini calendar", section: "block" as const },
+      { id: "media", command: "/media", label: "Media", hint: "image, video, embed", section: "block" as const },
+      { id: "button", command: "/button", label: "Button", hint: "action button", section: "block" as const },
     ],
     []
   );
@@ -633,39 +637,55 @@ function BrickTextSurface(props: {
               e.stopPropagation();
             },
           },
-          filteredSlashOptions.map((opt) =>
-            React.createElement(
-              "button",
-              {
-                key: opt.id,
-                type: "button",
-                className: `w-full text-left px-2 py-1 rounded text-[12px] text-black/85 transition-colors flex items-center justify-between ${
-                  filteredSlashOptions[activeSlashIndex]?.id === opt.id ? "bg-black/10" : "hover:bg-black/10"
-                }`,
-                onPointerDown: (e: any) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  applySlashCommand(opt.command);
-                },
-                onMouseEnter: () => {
-                  const idx = filteredSlashOptions.findIndex((x) => x.id === opt.id);
-                  if (idx >= 0) setActiveSlashIndex(idx);
-                },
-                onMouseDown: (e: any) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  applySlashCommand(opt.command);
-                },
-                onClick: (e: any) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  applySlashCommand(opt.command);
-                },
-              },
-              React.createElement("span", null, `${opt.command} ${opt.label}`),
-              React.createElement("span", { className: "text-[10px] text-black/55 ml-2" }, opt.hint)
-            )
-          )
+          (() => {
+            const items: React.ReactNode[] = [];
+            let lastSection = "";
+            filteredSlashOptions.forEach((opt) => {
+              if ((opt as any).section && (opt as any).section !== lastSection && lastSection !== "") {
+                items.push(
+                  React.createElement("div", {
+                    key: `sep-${(opt as any).section}`,
+                    className: "my-1 border-t border-black/10",
+                  })
+                );
+              }
+              lastSection = (opt as any).section || lastSection;
+              items.push(
+                React.createElement(
+                  "button",
+                  {
+                    key: opt.id,
+                    type: "button",
+                    className: `w-full text-left px-2 py-1 rounded text-[12px] text-black/85 transition-colors flex items-center justify-between ${
+                      filteredSlashOptions[activeSlashIndex]?.id === opt.id ? "bg-black/10" : "hover:bg-black/10"
+                    }`,
+                    onPointerDown: (e: any) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      applySlashCommand(opt.command);
+                    },
+                    onMouseEnter: () => {
+                      const idx = filteredSlashOptions.findIndex((x) => x.id === opt.id);
+                      if (idx >= 0) setActiveSlashIndex(idx);
+                    },
+                    onMouseDown: (e: any) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      applySlashCommand(opt.command);
+                    },
+                    onClick: (e: any) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      applySlashCommand(opt.command);
+                    },
+                  },
+                  React.createElement("span", null, `${opt.command} ${opt.label}`),
+                  React.createElement("span", { className: "text-[10px] text-black/55 ml-2" }, opt.hint)
+                )
+              );
+            });
+            return items;
+          })()
         )
       : null
   );

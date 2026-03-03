@@ -21,6 +21,8 @@ import {
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/SupabaseAuth";
 
+const PROJECTS_CHANGED_EVENT = "lykinsai_projects_changed";
+
 const projectColors = [
   "rgba(219,234,254,0.6)",
   "rgba(220,252,231,0.55)",
@@ -52,8 +54,13 @@ export default function AppSidebar() {
       if (active) setProjects(data || []);
     };
     load();
+    const onProjectsChanged = () => {
+      load();
+    };
+    window.addEventListener(PROJECTS_CHANGED_EVENT, onProjectsChanged);
     return () => {
       active = false;
+      window.removeEventListener(PROJECTS_CHANGED_EVENT, onProjectsChanged);
     };
   }, [user?.id]);
 
@@ -161,7 +168,7 @@ export default function AppSidebar() {
           </button>
           <button
             type="button"
-            onClick={() => nav("/chat")}
+            onClick={() => nav("/omnia")}
             className="w-full text-left text-[11px] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
           >
             <MessageSquare className="w-3.5 h-3.5 text-black/60" />

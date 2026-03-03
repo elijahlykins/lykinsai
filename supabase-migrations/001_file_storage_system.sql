@@ -265,6 +265,7 @@ CREATE POLICY "Users can insert own chat queries" ON chat_queries
 -- ============================================
 
 -- Function to automatically create workspace for new users
+-- Uses EXCEPTION handler so a failure here never blocks user creation
 CREATE OR REPLACE FUNCTION create_workspace_for_user()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -272,10 +273,14 @@ BEGIN
   VALUES (NEW.id, 'My Workspace')
   ON CONFLICT (owner_id) DO NOTHING;
   RETURN NEW;
+EXCEPTION WHEN OTHERS THEN
+  RAISE WARNING 'Could not auto-create workspace for user %: %', NEW.id, SQLERRM;
+  RETURN NEW;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 -- Trigger to create workspace when user signs up
+-- NOTE: If this trigger fails, the get_user_workspace() function handles lazy creation
 CREATE TRIGGER on_auth_user_created
   AFTER INSERT ON auth.users
   FOR EACH ROW

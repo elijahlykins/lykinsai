@@ -273,17 +273,29 @@ export const useCanvasStore = create<CanvasState>()(
         state.canvasWidth = next;
 
         // Clamp existing blocks so split-screen / resizing can't strand blocks off-screen.
+        // Strategy: relocate blocks left first to preserve their width, then only
+        // shrink width if the block is wider than the entire canvas.
         if (next != null) {
+          const minBlockWidth = g * 4;
           for (const id of state.blockOrder) {
             const b = state.blocks[id];
             if (!b) continue;
             if ((b as any).type === "create") continue;
             const bw = Math.max(1, Math.floor((b as any).width || g));
-            const bx = Math.floor((b as any).x || 0);
-            const clampedW = clampWidthWithinCanvas({ x: bx, width: bw, canvasWidth: next });
-            const clampedX = clampXWithinCanvas({ x: bx, width: clampedW, canvasWidth: next });
-            (b as any).width = clampedW;
-            (b as any).x = clampedX;
+            let bx = Math.floor((b as any).x || 0);
+
+            // 1. If block overflows right, slide it left to fit at its current width.
+            if (bx + bw > next) {
+              bx = Math.max(0, next - bw);
+            }
+            // 2. Only shrink width if wider than the full canvas; enforce minimum.
+            let finalW = bw;
+            if (bw > next) {
+              finalW = Math.max(minBlockWidth, next);
+              bx = 0;
+            }
+            (b as any).x = bx;
+            (b as any).width = finalW;
           }
         }
       });
@@ -295,10 +307,15 @@ export const useCanvasStore = create<CanvasState>()(
         const g = Math.max(1, Math.floor(state.gridSize || 24));
         const canvasWidth = state.canvasWidth;
         const bw = Math.max(1, Math.floor((block as any).width || g));
-        const bx = Math.floor((block as any).x || 0);
+        let bx = Math.floor((block as any).x || 0);
         if (canvasWidth != null && (block as any).type !== "create") {
-          (block as any).width = clampWidthWithinCanvas({ x: bx, width: bw, canvasWidth });
-          (block as any).x = clampXWithinCanvas({ x: bx, width: (block as any).width, canvasWidth });
+          const cw = Math.floor(canvasWidth as number);
+          const minW = Math.max(1, g * 4);
+          if (bx + bw > cw) bx = Math.max(0, cw - bw);
+          let finalW = bw;
+          if (bw > cw) { finalW = Math.max(minW, cw); bx = 0; }
+          (block as any).width = finalW;
+          (block as any).x = bx;
         }
         state.blocks[block.id] = block;
         if (!state.blockOrder.includes(block.id)) {
@@ -444,9 +461,17 @@ export const useCanvasStore = create<CanvasState>()(
         let nextX = nextXRaw;
         let nextW = nextWRaw;
         if (canvasWidth != null && (b as any).type !== "create") {
-          nextW = clampWidthWithinCanvas({ x: nextXRaw, width: nextWRaw, canvasWidth });
-          nextX = clampXWithinCanvas({ x: nextXRaw, width: nextW, canvasWidth });
-          nextW = clampWidthWithinCanvas({ x: nextX, width: nextW, canvasWidth });
+          const cw = Math.floor(canvasWidth as number);
+          const minW = Math.max(1, state.gridSize * 4);
+          // Slide left first to preserve width, then only shrink if wider than canvas.
+          if (nextX + nextW > cw) {
+            nextX = Math.max(0, cw - nextW);
+          }
+          if (nextW > cw) {
+            nextW = Math.max(minW, cw);
+            nextX = 0;
+          }
+          nextX = Math.max(0, nextX);
         }
 
         Object.assign(b, patch);

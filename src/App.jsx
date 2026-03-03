@@ -2,7 +2,7 @@ import React, { Suspense, useEffect } from "react";
 import { Toaster } from "@/components/ui/toaster";
 import { QueryClientProvider } from '@tanstack/react-query';
 import { queryClientInstance } from '@/lib/query-client';
-import { BrowserRouter as Router, Route, Routes, useLocation } from 'react-router-dom';
+import { BrowserRouter as Router, Route, Routes, useLocation, Navigate } from 'react-router-dom';
 import PageNotFound from './lib/PageNotFound';
 import { SupabaseAuthProvider, useAuth } from '@/lib/SupabaseAuth';
 import LoadingScreen from "@/components/LoadingScreen";
@@ -20,7 +20,7 @@ import TagManagementNew from "./pages/new/TagManagementNew";
 import TrashNew from "./pages/new/TrashNew";
 import BillingNew from "./pages/new/BillingNew";
 import RemindersNew from "./pages/new/RemindersNew";
-import ChatPage from "./pages/Chat";
+
 import CalendarPage from "./pages/CalendarPage";
 import TeamSpaces from "./pages/TeamSpaces";
 
@@ -32,10 +32,21 @@ const LegacyBilling = React.lazy(() => import("./pages/Billing"));
 const LegacyReminders = React.lazy(() => import("./pages/Reminders"));
 const loadingFallback = <LoadingScreen isLoading={true} />;
 
+function ProtectedRoute({ children }) {
+  const { user, loading } = useAuth();
+  const location = useLocation();
+
+  if (loading) return null;
+  if (!user) return <Navigate to="/login" state={{ from: location }} replace />;
+  return children;
+}
+
 function AppShell() {
+  const { user, loading } = useAuth();
   const location = useLocation();
   const search = new URLSearchParams(location.search);
   const isEmbeddedMemory = location.pathname === "/memory" && search.get("embedded") === "1";
+  const isLoginPage = location.pathname === "/login";
 
   useEffect(() => {
     document.documentElement.classList.toggle("embedded-memory-mode", isEmbeddedMemory);
@@ -46,94 +57,111 @@ function AppShell() {
     };
   }, [isEmbeddedMemory]);
 
+  if (!loading && !user && !isLoginPage) {
+    return (
+      <Routes>
+        <Route path="*" element={<Navigate to="/login" state={{ from: location }} replace />} />
+      </Routes>
+    );
+  }
+
   return (
     <>
-      {!isEmbeddedMemory && <AppSidebar />}
-      <div className="app-content">
+      {!isEmbeddedMemory && !isLoginPage && <AppSidebar />}
+      <div className={isLoginPage ? "" : "app-content"}>
         <Routes>
-          <Route path="/" element={<Dashboard />} />
           <Route path="/login" element={<Login />} />
-          <Route path="/settings" element={<Settings />} />
-          <Route path="/canvas/:boardId" element={<OmniaCanvas />} />
-          <Route path="/project/:projectId" element={<ProjectPlaceholder />} />
-          <Route path="/omnia" element={<OmniaCanvas />} />
-          <Route
-            path="/memory"
-            element={<MemoryNew />}
-          />
+          <Route path="/" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+          <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
+          <Route path="/canvas/:boardId" element={<ProtectedRoute><OmniaCanvas /></ProtectedRoute>} />
+          <Route path="/project/:projectId" element={<ProtectedRoute><ProjectPlaceholder /></ProtectedRoute>} />
+          <Route path="/omnia" element={<ProtectedRoute><OmniaCanvas /></ProtectedRoute>} />
+          <Route path="/memory" element={<ProtectedRoute><MemoryNew /></ProtectedRoute>} />
           <Route
             path="/tag-management"
             element={
-              legacyEnabled ? (
-                <Suspense fallback={loadingFallback}>
-                  <LegacyTagManagement />
-                </Suspense>
-              ) : (
-                <TagManagementNew />
-              )
+              <ProtectedRoute>
+                {legacyEnabled ? (
+                  <Suspense fallback={loadingFallback}>
+                    <LegacyTagManagement />
+                  </Suspense>
+                ) : (
+                  <TagManagementNew />
+                )}
+              </ProtectedRoute>
             }
           />
           <Route
             path="/trash"
             element={
-              legacyEnabled ? (
-                <Suspense fallback={loadingFallback}>
-                  <LegacyTrash />
-                </Suspense>
-              ) : (
-                <TrashNew />
-              )
+              <ProtectedRoute>
+                {legacyEnabled ? (
+                  <Suspense fallback={loadingFallback}>
+                    <LegacyTrash />
+                  </Suspense>
+                ) : (
+                  <TrashNew />
+                )}
+              </ProtectedRoute>
             }
           />
           <Route
             path="/memorychat"
             element={
-              legacyEnabled ? (
-                <Suspense fallback={loadingFallback}>
-                  <LegacyMemoryChat />
-                </Suspense>
-              ) : (
-                <MemoryChatNew />
-              )
+              <ProtectedRoute>
+                {legacyEnabled ? (
+                  <Suspense fallback={loadingFallback}>
+                    <LegacyMemoryChat />
+                  </Suspense>
+                ) : (
+                  <MemoryChatNew />
+                )}
+              </ProtectedRoute>
             }
           />
           <Route
             path="/memory-chat"
             element={
-              legacyEnabled ? (
-                <Suspense fallback={loadingFallback}>
-                  <LegacyMemoryChat />
-                </Suspense>
-              ) : (
-                <MemoryChatNew />
-              )
+              <ProtectedRoute>
+                {legacyEnabled ? (
+                  <Suspense fallback={loadingFallback}>
+                    <LegacyMemoryChat />
+                  </Suspense>
+                ) : (
+                  <MemoryChatNew />
+                )}
+              </ProtectedRoute>
             }
           />
-          <Route path="/chat" element={<ChatPage />} />
-          <Route path="/calendar" element={<CalendarPage />} />
-          <Route path="/teamspaces" element={<TeamSpaces />} />
+          {/* Chat is now an inline mode on the canvas — no separate route */}
+          <Route path="/calendar" element={<ProtectedRoute><CalendarPage /></ProtectedRoute>} />
+          <Route path="/teamspaces" element={<ProtectedRoute><TeamSpaces /></ProtectedRoute>} />
           <Route
             path="/reminders"
             element={
-              legacyEnabled ? (
-                <Suspense fallback={loadingFallback}>
-                  <LegacyReminders />
-                </Suspense>
-              ) : (
-                <RemindersNew />
-              )
+              <ProtectedRoute>
+                {legacyEnabled ? (
+                  <Suspense fallback={loadingFallback}>
+                    <LegacyReminders />
+                  </Suspense>
+                ) : (
+                  <RemindersNew />
+                )}
+              </ProtectedRoute>
             }
           />
           <Route
             path="/billing"
             element={
-              legacyEnabled ? (
-                <Suspense fallback={loadingFallback}>
-                  <LegacyBilling />
-                </Suspense>
-              ) : (
-                <BillingNew />
-              )
+              <ProtectedRoute>
+                {legacyEnabled ? (
+                  <Suspense fallback={loadingFallback}>
+                    <LegacyBilling />
+                  </Suspense>
+                ) : (
+                  <BillingNew />
+                )}
+              </ProtectedRoute>
             }
           />
           <Route path="*" element={<PageNotFound />} />

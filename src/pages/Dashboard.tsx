@@ -1,9 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Bell, Calendar, ChevronDown, ChevronUp, Clock, MessageSquare, Plus, Sparkles, StickyNote, X, Zap } from "lucide-react";
+import { ArrowRight, Bell, Calendar, ChevronDown, ChevronUp, Clock, MessageSquare, Plus, Sparkles, StickyNote, X, Zap } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/SupabaseAuth";
-import ProjectModal from "@/components/ProjectModal";
 import ProjectGrid from "@/components/ProjectGrid";
 import DraggableChat from "@/components/notes/DraggableChat";
 import DraggableQuickNote from "@/components/notes/DraggableQuickNote";
@@ -25,6 +24,7 @@ type Project = {
 
 const EVENTS_STORAGE_KEY = "lykinsai_calendar_events";
 const DISMISSED_REMINDERS_KEY = "lykinsai_dismissed_reminders";
+const PROJECTS_CHANGED_EVENT = "lykinsai_projects_changed";
 
 type CalendarEvent = {
   id: string;
@@ -472,7 +472,7 @@ export default function Dashboard() {
   const nav = useNavigate();
   const { user, loading } = useAuth();
   const [projects, setProjects] = useState<Project[]>([]);
-  const [openModal, setOpenModal] = useState(false);
+  const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [topPanelOpen, setTopPanelOpen] = useState(false);
   const [showChat, setShowChat] = useState(false);
   const [showQuickNote, setShowQuickNote] = useState(false);
@@ -660,6 +660,7 @@ User: ${text}
       .eq("id", project.id)
       .eq("user_id", user.id);
     await fetchProjects(user.id);
+    window.dispatchEvent(new CustomEvent(PROJECTS_CHANGED_EVENT));
   };
 
   const handleDeleteProject = async (project: Project) => {
@@ -670,6 +671,7 @@ User: ${text}
       .eq("id", project.id)
       .eq("user_id", user.id);
     await fetchProjects(user.id);
+    window.dispatchEvent(new CustomEvent(PROJECTS_CHANGED_EVENT));
   };
 
   useEffect(() => {
@@ -739,29 +741,24 @@ User: ${text}
     return () => { active = false; };
   }, [user?.id, projects]);
 
-  const handleCreateProject = async (args: { name: string; mode: "blank" | "files" }) => {
-    if (!user) return;
-    const { data: project } = await supabase
-      .from("omnia_projects")
-      .insert({ user_id: user.id, name: args.name })
-      .select("id, name, created_at, updated_at")
-      .single();
-    const projectId = project?.id;
-    if (!projectId) return;
-    setOpenModal(false);
-    await fetchProjects(user.id);
-    if (args.mode === "files") {
+  const handleCreateProject = async () => {
+    if (!user || isCreatingProject) return;
+    setIsCreatingProject(true);
+    try {
+      const { data: project } = await supabase
+        .from("omnia_projects")
+        .insert({ user_id: user.id, name: "New Project" })
+        .select("id, name, created_at, updated_at")
+        .single();
+      const projectId = project?.id;
+      if (!projectId) {
+        return;
+      }
+      await fetchProjects(user.id);
+      window.dispatchEvent(new CustomEvent(PROJECTS_CHANGED_EVENT));
       nav(`/project/${projectId}`);
-      return;
-    }
-    const { data: board } = await supabase
-      .from("omnia_boards")
-      .insert({ user_id: user.id, title: args.name })
-      .select("id")
-      .single();
-    if (board?.id) {
-      localStorage.setItem("omnia_board_id", board.id);
-      nav(`/canvas/${board.id}`);
+    } finally {
+      setIsCreatingProject(false);
     }
   };
 
@@ -785,6 +782,8 @@ User: ${text}
       setIsQuickNoteSaving(false);
     }
   };
+
+  const hasNoProjects = projects.length === 0;
 
   return (
       <div
@@ -914,37 +913,107 @@ User: ${text}
               <p className="text-black/60">Your creative workspace is ready.</p>
               <button
                 type="button"
-                onClick={() => setOpenModal(true)}
+                onClick={handleCreateProject}
+                disabled={isCreatingProject}
                 className="mt-4 inline-flex items-center gap-2 rounded-xl glass-control px-4 py-2 text-sm font-semibold text-black/80 dark:text-white/80 hover:opacity-90 transition-all"
                 style={{ boxShadow: "0 1px 3px rgba(0,0,0,0.06)" }}
                 aria-label="Create new project"
               >
                 <Plus className="w-4 h-4" />
-                Create New Project
+                {isCreatingProject ? "Creating..." : "Create New Project"}
               </button>
             </div>
-            <div className="w-full sm:w-auto sm:min-w-[340px] sm:max-w-[420px]">
-              <CalendarDayInfo />
-            </div>
+            {!hasNoProjects && (
+              <div className="w-full sm:w-auto sm:min-w-[340px] sm:max-w-[420px]">
+                <CalendarDayInfo />
+              </div>
+            )}
           </section>
 
-          <section className="mt-8 space-y-4">
-            <h2 className="text-lg font-semibold">Your Projects</h2>
-            <ProjectGrid
-              projects={projects}
-              onSelect={(project) => nav(`/project/${project.id}`)}
-              onRename={handleRenameProject}
-              onDelete={handleDeleteProject}
-              fallbackInitials={userInitials}
-              teamsByProject={teamsByProject}
-            />
-          </section>
+          {hasNoProjects ? (
+            <section className="mt-8 space-y-5">
+              <div className="rounded-2xl border border-white/30 bg-white/35 dark:bg-white/5 backdrop-blur-xl shadow-md p-6 sm:p-8">
+                <div className="inline-flex items-center gap-2 rounded-full bg-blue-500/10 text-blue-600 px-3 py-1 text-xs font-semibold">
+                  <Sparkles className="w-3.5 h-3.5" />
+                  First-time setup
+                </div>
+                <h2 className="mt-4 text-2xl sm:text-3xl font-semibold text-black/85 dark:text-white/85">
+                  Let&apos;s set up your LYKN workspace
+                </h2>
+                <p className="mt-2 text-sm sm:text-base text-black/60 dark:text-white/60 max-w-2xl">
+                  Start by creating your first project, then connect your calendar and preferences so LYKN can tailor your daily workflow.
+                </p>
+
+                <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <button
+                    type="button"
+                    onClick={handleCreateProject}
+                    disabled={isCreatingProject}
+                    className="rounded-xl border border-white/40 bg-white/45 dark:bg-white/10 p-4 text-left hover:bg-white/60 transition-all"
+                  >
+                    <div className="flex items-center gap-2 text-sm font-semibold text-black/80 dark:text-white/80">
+                      <Plus className="w-4 h-4 text-blue-600" />
+                      Create first project
+                    </div>
+                    <p className="mt-2 text-xs text-black/55 dark:text-white/55">Set up your first workspace for notes, docs, and AI support.</p>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => nav("/calendar")}
+                    className="rounded-xl border border-white/40 bg-white/45 dark:bg-white/10 p-4 text-left hover:bg-white/60 transition-all"
+                  >
+                    <div className="flex items-center gap-2 text-sm font-semibold text-black/80 dark:text-white/80">
+                      <Calendar className="w-4 h-4 text-blue-600" />
+                      Connect your schedule
+                    </div>
+                    <p className="mt-2 text-xs text-black/55 dark:text-white/55">Add key events so LYKN can suggest focused work windows.</p>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => nav("/settings")}
+                    className="rounded-xl border border-white/40 bg-white/45 dark:bg-white/10 p-4 text-left hover:bg-white/60 transition-all"
+                  >
+                    <div className="flex items-center gap-2 text-sm font-semibold text-black/80 dark:text-white/80">
+                      <Sparkles className="w-4 h-4 text-blue-600" />
+                      Personalize AI settings
+                    </div>
+                    <p className="mt-2 text-xs text-black/55 dark:text-white/55">Choose your preferred AI model and workspace behavior.</p>
+                  </button>
+                </div>
+
+                <div className="mt-6 flex flex-wrap items-center gap-3 text-xs text-black/55 dark:text-white/55">
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
+                    Takes less than 2 minutes
+                  </span>
+                  <span className="inline-flex items-center gap-1.5">
+                    <ArrowRight className="w-3.5 h-3.5 text-blue-600" />
+                    You can skip and do this later
+                  </span>
+                </div>
+              </div>
+            </section>
+          ) : (
+            <section className="mt-8 space-y-4">
+              <h2 className="text-lg font-semibold">Your Projects</h2>
+              <ProjectGrid
+                projects={projects}
+                onSelect={(project) => nav(`/project/${project.id}`)}
+                onRename={handleRenameProject}
+                onDelete={handleDeleteProject}
+                fallbackInitials={userInitials}
+                teamsByProject={teamsByProject}
+              />
+            </section>
+          )}
         </main>
 
-        <AISuggestionsPanel projects={projects} events={aiEvents} model={selectedModel} />
-
-        <CalendarReminders />
-        <ProjectModal open={openModal} onOpenChange={setOpenModal} onCreate={handleCreateProject} />
+        {!hasNoProjects && (
+          <>
+            <AISuggestionsPanel projects={projects} events={aiEvents} model={selectedModel} />
+            <CalendarReminders />
+          </>
+        )}
         {showChat && (
           <DraggableChat
             messages={chatMessages}

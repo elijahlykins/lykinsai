@@ -7,6 +7,10 @@ import { extractYouTubeVideoId } from "@/canvas/utils/youtube";
 import { YouTubeBlock } from "@/canvas/blocks/YouTubeBlock";
 import { ImageBlock } from "@/canvas/blocks/ImageBlock";
 import { LinkBlock } from "@/canvas/blocks/LinkBlock";
+import { SpreadsheetBlock } from "@/canvas/blocks/SpreadsheetBlock";
+import { CalendarBlock } from "@/canvas/blocks/CalendarBlock";
+import { ButtonBlock } from "@/canvas/blocks/ButtonBlock";
+import { MediaBlock } from "@/canvas/blocks/MediaBlock";
 import type { AiAnswerEntry } from "@/canvas/types";
 import { canUseActiveBrickLogic, renderBrickShell } from "./brick";
 
@@ -1402,6 +1406,18 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
         listType: "todo" as const,
         consumed: true,
       };
+    }
+    if (/^\/table(?:\s+|$)/i.test(trimmed)) {
+      return { content: "", variant: currentVariant, listType: currentListType, consumed: true, transform: "table" as const };
+    }
+    if (/^\/calendar(?:\s+|$)/i.test(trimmed)) {
+      return { content: "", variant: currentVariant, listType: currentListType, consumed: true, transform: "calendar" as const };
+    }
+    if (/^\/media(?:\s+|$)/i.test(trimmed)) {
+      return { content: "", variant: currentVariant, listType: currentListType, consumed: true, transform: "media" as const };
+    }
+    if (/^\/button(?:\s+|$)/i.test(trimmed)) {
+      return { content: "", variant: currentVariant, listType: currentListType, consumed: true, transform: "button" as const };
     }
     return {
       content: currentListType === "todo" ? normalizeTodoMarkers(s) : s,
@@ -3929,6 +3945,19 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
           if ((b as any).type === "youtube" || ((b as any).type === "create" && (b as any).mode === "video")) {
             return <YouTubeBlock key={id} id={id} />;
           }
+          const blockFormat = String((b as any).format || "").toLowerCase();
+          if ((b as any).type === "text" && blockFormat === "table") {
+            return <SpreadsheetBlock key={id} id={id} />;
+          }
+          if ((b as any).type === "text" && blockFormat === "calendar") {
+            return <CalendarBlock key={id} id={id} />;
+          }
+          if ((b as any).type === "text" && blockFormat === "button") {
+            return <ButtonBlock key={id} id={id} />;
+          }
+          if ((b as any).type === "text" && blockFormat === "media") {
+            return <MediaBlock key={id} id={id} />;
+          }
           return renderBrickShell(b as any, id, {
             isActivated: typingBlockId === id ? false : activatedBrickIds.includes(id),
             isRaised: typingBlockId === id ? false : raisedBrickIds.includes(id),
@@ -3965,6 +3994,48 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
               const currentListType =
                 (String(data.listType || "none").toLowerCase() as "none" | "bullet" | "numbered" | "todo") || "none";
               const parsed = parseTextSlashVariant(raw, currentVariant, currentListType);
+              if ((parsed as any).transform) {
+                const transform = (parsed as any).transform as string;
+                setTypingBlockId(null);
+                if (transform === "table") {
+                  const sheet = { version: 1, rows: 10, cols: 6, colWidths: Array.from({ length: 6 }, () => 96), cells: {} };
+                  updateBlock(bid as any, {
+                    content: JSON.stringify(sheet),
+                    format: "table",
+                    width: Math.max(gridSize * 18, cur.width || 0),
+                    height: Math.max(gridSize * 12, cur.height || 0),
+                    data: { ...data, textVariant: "body", listType: "none" },
+                  } as any);
+                } else if (transform === "calendar") {
+                  const calData = { events: [] };
+                  updateBlock(bid as any, {
+                    content: JSON.stringify(calData),
+                    format: "calendar",
+                    width: Math.max(gridSize * 12, cur.width || 0),
+                    height: Math.max(gridSize * 14, cur.height || 0),
+                    data: { ...data, textVariant: "body", listType: "none" },
+                  } as any);
+                } else if (transform === "media") {
+                  const mediaData = { mode: "picker" };
+                  updateBlock(bid as any, {
+                    content: JSON.stringify(mediaData),
+                    format: "media",
+                    width: Math.max(gridSize * 10, cur.width || 0),
+                    height: Math.max(gridSize * 8, cur.height || 0),
+                    data: { ...data, textVariant: "body", listType: "none" },
+                  } as any);
+                } else if (transform === "button") {
+                  const btnData = { label: "Button", icon: "zap", style: "filled", action: "url", url: "", navigateTarget: "page", navigateValue: "", navigateLabel: "", copyText: "", webhookUrl: "", aiPrompt: "", eventName: "", targetBlockId: "", blockAction: "scroll", onClickCode: "", description: "", _needsSetup: true, confirm: false, toggleState: false };
+                  updateBlock(bid as any, {
+                    content: JSON.stringify(btnData),
+                    format: "button",
+                    width: Math.max(gridSize * 8, Math.min(gridSize * 12, cur.width || gridSize * 8)),
+                    height: gridSize,
+                    data: { ...data, textVariant: "body", listType: "none" },
+                  } as any);
+                }
+                return;
+              }
               const textValue = parsed.content;
               const nextVariant = parsed.variant;
               const nextListType = parsed.listType;

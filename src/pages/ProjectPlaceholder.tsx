@@ -38,6 +38,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useMindmapStore } from "@/store/mindmapStore";
 import { extractYouTubeVideoId, getYouTubeEmbedUrl } from "@/canvas/utils/youtube";
 
+const PROJECTS_CHANGED_EVENT = "lykinsai_projects_changed";
+
 type FolderEntry = {
   id: string;
   name: string;
@@ -745,6 +747,7 @@ export default function ProjectPlaceholder() {
     }
     await supabase.from("omnia_projects").update({ name: next }).eq("id", projectId);
     setProjectName(next);
+    window.dispatchEvent(new CustomEvent(PROJECTS_CHANGED_EVENT));
     setIsEditingTitle(false);
   };
 
@@ -1765,7 +1768,7 @@ If the user asks about old memories or references past ideas, refer to the memor
               <div className="grid gap-4 sm:grid-cols-2">
                 <button
                   type="button"
-                  onClick={() => nav("/chat")}
+                  onClick={() => nav("/omnia")}
                   className="rounded-xl border-2 border-dashed border-black/15 bg-white/30 hover:bg-white/50 hover:border-black/25 backdrop-blur-md p-4 flex flex-col items-center justify-center gap-2 transition-all h-[88px]"
                 >
                   <div className="w-9 h-9 rounded-lg bg-white/60 border border-white/70 flex items-center justify-center">
