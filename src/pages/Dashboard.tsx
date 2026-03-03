@@ -864,43 +864,7 @@ User: ${text}
                   </SelectContent>
                 </Select>
 
-                <div className="w-px h-3 bg-black/10 dark:bg-white/10 mx-0.5" />
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    const next = !liveAIMode;
-                    setLiveAIMode(next);
-                    try {
-                      const saved = localStorage.getItem("lykinsai_settings");
-                      const settings = saved ? JSON.parse(saved) : {};
-                      settings.liveAIMode = next;
-                      localStorage.setItem("lykinsai_settings", JSON.stringify(settings));
-                      window.dispatchEvent(new CustomEvent("lykinsai_settings_changed"));
-                    } catch {
-                      // ignore
-                    }
-                  }}
-                  className={`rounded-full px-1.5 h-7 gap-1 text-[0.6875rem] glass-control hover:opacity-90 touch-manipulation flex items-center ${
-                    liveAIMode ? "ring-1 ring-white/40 dark:ring-white/20" : ""
-                  }`}
-                  title="Live AI"
-                >
-                  <Zap className={`w-3 h-3 ${liveAIMode ? "text-yellow-500" : "text-black"}`} />
-                  <span>Live AI</span>
-                </button>
-
-                <div className="w-px h-3 bg-black/10 dark:bg-white/10 mx-0.5" />
-
-                <button
-                  type="button"
-                  onClick={() => setShowChat((v) => !v)}
-                  className="rounded-full px-1.5 h-7 text-[0.6875rem] glass-control hover:opacity-90 touch-manipulation flex items-center gap-1"
-                  title="Chat with AI"
-                >
-                  <span className="hidden md:inline">Chat</span>
-                  <MessageSquare className="w-3 h-3 md:hidden" />
-                </button>
+                
               </div>
             )}
           </div>
