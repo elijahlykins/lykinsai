@@ -1200,7 +1200,7 @@ export default function ChatPage() {
           >
             <X className="w-3 h-3" />
           </button>
-          <span className="absolute bottom-1 left-1 right-6 text-[10px] text-white truncate bg-black/50 rounded px-1">
+          <span className="absolute bottom-1 left-1 right-6 text-[0.625rem] text-white truncate bg-black/50 rounded px-1">
             {att.memoryTitle || att.name || "YouTube Video"}
           </span>
         </div>
@@ -1249,7 +1249,7 @@ export default function ChatPage() {
           >
             <X className="w-3 h-3" />
           </button>
-          <span className="absolute bottom-1 left-1 right-6 text-[10px] text-white truncate bg-black/50 rounded px-1">
+          <span className="absolute bottom-1 left-1 right-6 text-[0.625rem] text-white truncate bg-black/50 rounded px-1">
             {att.memoryTitle || att.name || "Video"}
           </span>
         </div>
@@ -1279,7 +1279,7 @@ export default function ChatPage() {
           <div className="min-w-0">
             <span className="block text-xs font-medium truncate">{att.memoryTitle || "Memory"}</span>
             {att.memoryContent && (
-              <span className="block text-[10px] opacity-60 truncate">{att.memoryContent.slice(0, 80)}</span>
+              <span className="block text-[0.625rem] opacity-60 truncate">{att.memoryContent.slice(0, 80)}</span>
             )}
           </div>
           <button
@@ -1605,7 +1605,7 @@ export default function ChatPage() {
                                   <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                                     <div className="w-9 h-7 bg-red-600 rounded-lg flex items-center justify-center"><Play className="w-3.5 h-3.5 text-white ml-0.5" fill="white" /></div>
                                   </div>
-                                  <span className="block px-2 py-1 text-[10px] text-white/80 truncate">{att.memoryTitle || att.name || "YouTube"}</span>
+                                  <span className="block px-2 py-1 text-[0.625rem] text-white/80 truncate">{att.memoryTitle || att.name || "YouTube"}</span>
                                 </a>
                               );
                             }

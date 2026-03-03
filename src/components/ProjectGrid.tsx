@@ -167,7 +167,7 @@ export default function ProjectGrid({
                   <h3 className="text-sm font-semibold drop-shadow-[0_0_8px_rgba(255,255,255,0.55)] leading-tight line-clamp-1">
                     {project.name}
                   </h3>
-                  <div className="mt-1 text-[11px] text-black/55 leading-tight">
+                  <div className="mt-1 text-[0.6875rem] text-black/55 leading-tight">
                     Last modified: {formatDate(project.updated_at || project.created_at)}
                   </div>
                   {(teamsByProject[project.id] ?? []).length > 0 && (

@@ -312,7 +312,7 @@ export const CalendarBlock = memo(function CalendarBlock({ id }: { id: string })
         <button type="button" className="p-0.5 rounded hover:bg-black/10 transition-colors" onClick={prevMonth}>
           <ChevronLeft className="w-3.5 h-3.5 text-black/70 dark:text-white/70" />
         </button>
-        <span className="text-[11px] font-semibold text-black/80 dark:text-white/80 select-none">
+        <span className="text-[0.6875rem] font-semibold text-black/80 dark:text-white/80 select-none">
           {MONTHS[viewMonth]} {viewYear}
         </span>
         <button type="button" className="p-0.5 rounded hover:bg-black/10 transition-colors" onClick={nextMonth}>
@@ -379,15 +379,15 @@ export const CalendarBlock = memo(function CalendarBlock({ id }: { id: string })
           <div className="flex items-center gap-1.5">
             <button
               type="button"
-              className="text-[10px] text-black/50 dark:text-white/50 hover:text-blue-500 transition-colors"
+              className="text-[0.625rem] text-black/50 dark:text-white/50 hover:text-blue-500 transition-colors"
               onClick={goBackToMonth}
             >
               {MONTHS[selectedDate.getMonth()].slice(0, 3)}
             </button>
-            <span className={`text-[12px] font-semibold select-none ${isToday ? "text-blue-600 dark:text-blue-400" : "text-black/80 dark:text-white/80"}`}>
+            <span className={`text-[0.75rem] font-semibold select-none ${isToday ? "text-blue-600 dark:text-blue-400" : "text-black/80 dark:text-white/80"}`}>
               {selectedDate.getDate()}
             </span>
-            <span className="text-[10px] text-black/50 dark:text-white/50 select-none">
+            <span className="text-[0.625rem] text-black/50 dark:text-white/50 select-none">
               {WEEKDAYS_SHORT[selectedDate.getDay()]}
             </span>
           </div>
@@ -422,7 +422,7 @@ export const CalendarBlock = memo(function CalendarBlock({ id }: { id: string })
                   className="absolute rounded px-1.5 py-0.5 overflow-hidden z-[5] group/evt"
                   style={{ top: `${topPx}px`, height: `${heightPx}px`, left: "36px", right: "4px", background: ec.bg, borderLeft: `2px solid ${ec.border}` }}
                 >
-                  <div className="text-[10px] font-semibold text-black/80 dark:text-white/80 truncate">{evt.title || "Event"}</div>
+                  <div className="text-[0.625rem] font-semibold text-black/80 dark:text-white/80 truncate">{evt.title || "Event"}</div>
                   <div className="text-[8px] text-black/45 dark:text-white/45">{formatTime(start)} – {formatTime(end)}</div>
                   {/* Delete button on hover */}
                   <button
@@ -446,7 +446,7 @@ export const CalendarBlock = memo(function CalendarBlock({ id }: { id: string })
                   <input
                     ref={addInputRef}
                     autoFocus
-                    className="w-full bg-transparent text-[10px] font-medium text-black/80 dark:text-white/80 outline-none placeholder:text-black/30"
+                    className="w-full bg-transparent text-[0.625rem] font-medium text-black/80 dark:text-white/80 outline-none placeholder:text-black/30"
                     placeholder="Event title..."
                     value={newTitle}
                     onChange={(e) => setNewTitle(e.target.value)}

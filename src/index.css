@@ -3,6 +3,16 @@
 @tailwind utilities;
 
 /* =========================================================
+   RESPONSIVE SCALING — Fluid root font-size for cross-monitor consistency
+   Scales all rem-based values (spacing, font sizes, widths) proportionally.
+   At 1280px → ~15.9px, at 1440px → ~16.2px, at 1920px → ~16.9px, at 2560px → ~17.8px
+   ========================================================= */
+html {
+  --font-scale: 1;
+  font-size: calc(clamp(15px, 14px + 0.15vw, 18px) * var(--font-scale));
+}
+
+/* =========================================================
    THEME VARIABLES — Full Control Over All UI Elements
    ========================================================= */
 @layer base {
@@ -13,6 +23,9 @@
 
     /* App background (customizable) */
     --app-background: hsl(var(--background));
+
+    /* Layout density multiplier (set via Settings; default = comfortable) */
+    --layout-density: 1;
 
     --border: 0 0% 89.8%;
     --input: 0 0% 89.8%;
@@ -382,7 +395,7 @@ html.embedded-transparent #root {
 }
 
 body.sidebar-push .app-content {
-  padding-left: 190px;
+  padding-left: 12rem;
 }
 
 /* Embedded memory pullout: make iframe document transparent */
@@ -572,8 +585,7 @@ body.embedded-memory-mode .app-content {
 }
 
 .ql-editor {
-  /* 1. Slightly bigger font */
-  font-size: 15px; /* or 1.0625rem — just a hair bigger than default 16px */
+  font-size: 0.9375rem;
 
   /* 2. Thinner letters */
   font-weight: 300; /* "Normal" — avoid 500/600 which feel bold */
@@ -777,6 +789,26 @@ body.embedded-memory-mode .app-content {
 @media (min-width: 769px) and (max-width: 1024px) {
   .clay-card {
     padding: 1.25rem;
+  }
+}
+
+/* Laptop / small-desktop optimizations (most MacBooks, 13-15" Windows laptops) */
+@media (min-width: 1025px) and (max-width: 1440px) {
+  .clay-card {
+    padding: calc(1.25rem * var(--layout-density, 1));
+  }
+
+  body.sidebar-push .app-content {
+    padding-left: 11rem;
+  }
+}
+
+/* Large / ultra-wide screens — prevent content from floating in whitespace */
+@media (min-width: 2200px) {
+  .app-content {
+    max-width: 120rem;
+    margin-left: auto;
+    margin-right: auto;
   }
 }
 

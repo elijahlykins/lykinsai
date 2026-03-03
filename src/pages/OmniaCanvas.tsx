@@ -23,6 +23,7 @@ type PromptMessage = {
   content: string;
   aiResponse?: string;
   kind?: "prompt";
+  attachments?: FocusedChatAttachment[];
 };
 
 type CreateAction =
@@ -104,6 +105,7 @@ type FocusedChatAttachment = {
   memoryContent?: string;
   transcript?: string;
   pdfText?: string;
+  canvasBlockId?: string;
 };
 
 const isYouTubeUrl = (url = "") =>
@@ -2050,20 +2052,82 @@ export default function OmniaCanvasPage() {
     setChatFlowMode("idle");
     const promptId = `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 
+    // Whisper-transcribe video/YouTube attachments that have no transcript yet
+    const { API_BASE_URL: apiBase } = await import("@/lib/api-config");
+    for (const att of sentAttachments) {
+      if (att.transcript) continue;
+      const isVideoType = ["video", "youtube"].includes(att.type?.toLowerCase());
+      if (!isVideoType) continue;
+      // YouTube attachments: use the transcript endpoint (server now has Whisper fallback)
+      if (att.videoId) {
+        try {
+          setChatStatusText("Transcribing video with Whisper...");
+          const tRes = await fetch(`${apiBase}/api/youtube/transcript?id=${encodeURIComponent(att.videoId)}`);
+          if (tRes.ok) {
+            const tData = await tRes.json();
+            const t = String(tData?.transcript || "").trim();
+            if (t) att.transcript = t;
+          }
+        } catch { /* continue without transcript */ }
+        continue;
+      }
+      // Uploaded video with a data URL or blob: send to Whisper endpoint
+      if (att.url && (att.url.startsWith("data:video/") || att.url.startsWith("data:audio/"))) {
+        try {
+          setChatStatusText("Transcribing uploaded video with Whisper...");
+          const base64 = att.url.split(",")[1];
+          if (base64) {
+            const binaryStr = atob(base64);
+            const bytes = new Uint8Array(binaryStr.length);
+            for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+            const mime = att.mime || att.url.split(";")[0].split(":")[1] || "video/webm";
+            const ext = mime.split("/")[1] || "webm";
+            const blob = new Blob([bytes], { type: mime });
+            const formData = new FormData();
+            formData.append("file", blob, att.name || `video.${ext}`);
+            const wRes = await fetch(`${apiBase}/api/whisper/transcribe`, { method: "POST", body: formData });
+            if (wRes.ok) {
+              const wData = await wRes.json();
+              const t = String(wData?.transcript || "").trim();
+              if (t) att.transcript = t;
+            }
+          }
+        } catch { /* continue without transcript */ }
+      }
+    }
+
     const attachmentContext = sentAttachments.length > 0
       ? "\n\n[Attached content]\n" + sentAttachments.map((a) => {
-          if (a.type === "memory" && a.memoryContent) return `Memory "${a.memoryTitle || "Untitled"}": ${a.memoryContent}`;
-          if (a.pdfText) return `PDF "${a.name}": ${a.pdfText}`;
-          if (a.transcript) return `Transcript "${a.name}": ${a.transcript}`;
-          if (a.url) return `${a.type}: ${a.url}`;
-          return `${a.type}: ${a.name}`;
-        }).join("\n")
+          const t = (a.type || "").toLowerCase();
+          const label = a.name || a.memoryTitle || "Untitled";
+          const parts: string[] = [];
+          if (a.memoryContent) parts.push(a.memoryContent);
+          if (a.pdfText) parts.push(a.pdfText);
+          if (a.transcript) parts.push(a.transcript);
+          if (t === "memory" || t === "note") {
+            return `${t === "note" ? "Note" : "Memory"} "${label}": ${parts.join("\n") || "(empty)"}`;
+          }
+          if (t === "pdf") return `PDF "${label}": ${parts.join("\n") || `(PDF at ${a.url})`}`;
+          if (t === "youtube") {
+            const ctx = parts.length ? parts.join("\n") : "";
+            return `YouTube video "${label}"${a.videoId ? ` (${a.videoId})` : ""}${a.url ? ` — ${a.url}` : ""}${ctx ? `\nTranscript: ${ctx}` : ""}`;
+          }
+          if (t === "video" || t === "audio") {
+            return `${t === "video" ? "Video" : "Audio"} "${label}"${a.url ? ` — ${a.url}` : ""}${parts.length ? `\nTranscript: ${parts.join("\n")}` : ""}`;
+          }
+          if (t === "image") return `Image "${label}"${a.url ? ` — ${a.url}` : ""}`;
+          if (t === "link") return `Link "${label}"${a.url ? ` — ${a.url}` : ""}${parts.length ? `\nContent: ${parts.join("\n")}` : ""}`;
+          if (parts.length) return `${label}: ${parts.join("\n")}`;
+          if (a.url) return `${t || "File"} "${label}" — ${a.url}`;
+          return `${t || "File"}: ${label}`;
+        }).join("\n\n")
       : "";
 
-    const displayText = sentAttachments.length > 0
-      ? text + `\n\n[${sentAttachments.length} attachment${sentAttachments.length > 1 ? "s" : ""}]`
-      : text;
-    setChatMessages((prev) => [...prev, { id: promptId, role: "user", content: displayText, kind: "prompt" }]);
+    const displayText = text;
+    setChatMessages((prev) => [...prev, {
+      id: promptId, role: "user", content: displayText, kind: "prompt",
+      ...(sentAttachments.length ? { attachments: sentAttachments } : {}),
+    }]);
 
     // In focused chat mode, skip canvas brick — responses go inline in the chat.
     let responseBlockId: string | null = null;
@@ -2090,28 +2154,65 @@ export default function OmniaCanvasPage() {
 
       const canvasContext = buildCanvasContext();
       const kbText = await getKnowledgeBaseContext();
-      const { API_BASE_URL } = await import("@/lib/api-config");
+      const API_BASE_URL = apiBase;
       const asksAboutVideo = isVideoQuestion(text);
       const visibleVideos = getVisibleYouTubeBlocks();
+      // Also consider YouTube attachments sent alongside the message
+      const attachedYouTubeVideos = sentAttachments
+        .filter((a) => a.type?.toLowerCase() === "youtube" && a.videoId)
+        .map((a) => ({ videoId: a.videoId!, url: a.url, title: a.name || `YouTube ${a.videoId}` }));
+      const allYouTubeVideos = [
+        ...visibleVideos,
+        ...attachedYouTubeVideos.filter((av) => !visibleVideos.some((vv) => vv.videoId === av.videoId)),
+      ];
       let youtubeGrounding = "";
       if (!asksAboutVideo) {
         setChatStatusText("Analyzing visible YouTube videos...");
         youtubeGrounding = await buildYouTubeGrounding(API_BASE_URL, text);
       }
-      if (asksAboutVideo && visibleVideos.length) {
+      if (asksAboutVideo && allYouTubeVideos.length) {
         setChatStatusText("Answering from YouTube transcript...");
+        const targetVideo = allYouTubeVideos[0];
         const answerRes = await fetch(`${API_BASE_URL}/api/youtube/answer`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            videoId: visibleVideos[0].videoId,
+            videoId: targetVideo.videoId,
             question: text,
             allowOcr: false,
           }),
         });
         const answerData = await answerRes.json().catch(() => ({}));
         if (!answerRes.ok) {
-          // Fallback path: if /api/youtube/answer is unavailable, answer from visible transcript/description context.
+          setChatStatusText("No captions found — transcribing with Whisper...");
+          const whisperTRes = await fetch(`${API_BASE_URL}/api/youtube/transcript?id=${encodeURIComponent(targetVideo.videoId)}`).catch(() => null);
+          const whisperTJson = whisperTRes && whisperTRes.ok ? await whisperTRes.json().catch(() => ({})) : {};
+          const whisperTranscript = String((whisperTJson as any)?.transcript || "").trim();
+          if (whisperTranscript) {
+            youtubeTranscriptCacheRef.current[targetVideo.videoId] = {
+              fetchedAt: Date.now(),
+              title: targetVideo.title || `YouTube ${targetVideo.videoId}`,
+              url: targetVideo.url,
+              transcript: whisperTranscript,
+              segments: Array.isArray((whisperTJson as any)?.segments) ? (whisperTJson as any).segments : [],
+            };
+            setChatStatusText("Whisper transcript ready — answering...");
+            const retryRes = await fetch(`${API_BASE_URL}/api/youtube/answer`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ videoId: targetVideo.videoId, question: text, allowOcr: false }),
+            });
+            const retryData = await retryRes.json().catch(() => ({}));
+            if (retryRes.ok) {
+              const finalText = formatGroundedVideoAnswer(retryData);
+              setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: finalText } : m)));
+              aiThreadRef.current.push({ role: "assistant", content: finalText });
+              if (aiThreadRef.current.length > 40) aiThreadRef.current = aiThreadRef.current.slice(-40);
+              if (responseBlockId) await typeIntoAiResponseBlock(String(responseBlockId), finalText);
+              setChatStatusText("Answered");
+              return;
+            }
+          }
           setChatStatusText("Falling back to available YouTube context...");
           youtubeGrounding = await buildYouTubeGrounding(API_BASE_URL, text);
           const fallback = buildDirectVideoAnswerFromGrounding(youtubeGrounding);
@@ -2135,8 +2236,8 @@ export default function OmniaCanvasPage() {
         setChatStatusText("Answered");
         return;
       }
-      if (asksAboutVideo && !visibleVideos.length) {
-        const finalText = "I can't find a visible YouTube block on the board right now. Bring a YouTube video into view and ask again.";
+      if (asksAboutVideo && !allYouTubeVideos.length) {
+        const finalText = "I can't find a YouTube video on the board or in your attachments. Add a YouTube video and ask again.";
         setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: finalText } : m)));
         aiThreadRef.current.push({ role: "assistant", content: finalText });
         if (aiThreadRef.current.length > 40) aiThreadRef.current = aiThreadRef.current.slice(-40);
@@ -2148,7 +2249,8 @@ export default function OmniaCanvasPage() {
 Answer the user's latest message directly.
 Do not ask follow-up questions unless the user explicitly asks you to ask them.
 Do not suggest taking notes. Just answer.
-Use available board context and YouTube transcript context when relevant.
+Use available board context, YouTube transcript context, and any attached content when relevant.
+The user may attach files, notes, images, videos, PDFs, links, or memory items alongside their message — always read and reference that attached content in your answer.
 If transcript evidence is missing, say that clearly.
 
 Conversation so far:
@@ -2165,6 +2267,9 @@ ${youtubeGrounding || "(none)"}
 
 Latest user message:
 ${text}${attachmentContext}`;
+      const attachedImageUrls = sentAttachments
+        .filter((a) => a.type?.toLowerCase() === "image" && a.url)
+        .map((a) => a.url);
       const res = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2178,6 +2283,7 @@ ${text}${attachmentContext}`;
           context: `${canvasContext || ""}\n\nYouTube transcript context:\n${youtubeGrounding || "(none)"}`.trim(),
           knowledgeBase: kbText,
           projectId,
+          ...(attachedImageUrls.length ? { imageUrls: attachedImageUrls } : {}),
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -2317,15 +2423,26 @@ ${text}${attachmentContext}`;
         }
       }
     }
-    return items;
-  }, [chatMode, blocks, blockOrder]);
+    const attachedBlockIds = new Set(focusedChatAttachments.map((a) => a.canvasBlockId).filter(Boolean));
+    return attachedBlockIds.size > 0 ? items.filter((item) => !attachedBlockIds.has(item.id)) : items;
+  }, [chatMode, blocks, blockOrder, focusedChatAttachments]);
 
   const removeFocusedAttachment = useCallback((id: string) => {
     setFocusedChatAttachments((prev) => prev.filter((a) => a.id !== id));
   }, []);
 
   const addFocusedAttachment = useCallback((att: FocusedChatAttachment) => {
-    setFocusedChatAttachments((prev) => [...prev, att]);
+    setFocusedChatAttachments((prev) => {
+      const isDup = prev.some((existing) => {
+        if (att.url && existing.url && att.url === existing.url) return true;
+        if (att.videoId && existing.videoId && att.videoId === existing.videoId) return true;
+        if (att.type === "memory" && existing.type === "memory" && att.memoryContent && existing.memoryContent && att.memoryContent === existing.memoryContent) return true;
+        if (att.type === "note" && existing.type === "note" && att.memoryContent && existing.memoryContent && att.memoryContent === existing.memoryContent) return true;
+        return false;
+      });
+      if (isDup) return prev;
+      return [...prev, att];
+    });
   }, []);
 
   const applyMemoryDropToChat = useCallback(async (payload: any) => {
@@ -2392,7 +2509,7 @@ ${text}${attachmentContext}`;
             <div className="w-9 h-7 bg-red-600 rounded-lg flex items-center justify-center shadow-md"><Play className="w-3.5 h-3.5 text-white ml-0.5" fill="white" /></div>
           </div>
           <button type="button" onClick={() => removeFocusedAttachment(att.id)} className="absolute top-1 right-1 h-5 w-5 rounded-full bg-black/60 hover:bg-black/80 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"><X className="w-3 h-3" /></button>
-          <span className="absolute bottom-1 left-1 right-6 text-[10px] text-white truncate bg-black/50 rounded px-1">{att.memoryTitle || att.name || "YouTube Video"}</span>
+          <span className="absolute bottom-1 left-1 right-6 text-[0.625rem] text-white truncate bg-black/50 rounded px-1">{att.memoryTitle || att.name || "YouTube Video"}</span>
         </div>
       );
     }
@@ -2412,7 +2529,7 @@ ${text}${attachmentContext}`;
             <div className="w-9 h-7 bg-white/80 rounded-lg flex items-center justify-center shadow-md"><Play className="w-3.5 h-3.5 text-black ml-0.5" fill="black" /></div>
           </div>
           <button type="button" onClick={() => removeFocusedAttachment(att.id)} className="absolute top-1 right-1 h-5 w-5 rounded-full bg-black/60 hover:bg-black/80 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"><X className="w-3 h-3" /></button>
-          <span className="absolute bottom-1 left-1 right-6 text-[10px] text-white truncate bg-black/50 rounded px-1">{att.memoryTitle || att.name || "Video"}</span>
+          <span className="absolute bottom-1 left-1 right-6 text-[0.625rem] text-white truncate bg-black/50 rounded px-1">{att.memoryTitle || att.name || "Video"}</span>
         </div>
       );
     }
@@ -2420,18 +2537,18 @@ ${text}${attachmentContext}`;
       return (
         <div className="relative inline-flex items-center gap-2 rounded-xl border border-white/30 bg-white/30 px-3 py-2 group">
           <Music className="w-4 h-4 flex-shrink-0 opacity-60" />
-          <span className="max-w-[180px] truncate text-xs">{att.memoryTitle || att.name || "Audio"}</span>
+          <span className="max-w-[11.25rem] truncate text-xs">{att.memoryTitle || att.name || "Audio"}</span>
           <button type="button" onClick={() => removeFocusedAttachment(att.id)} className="h-4 w-4 rounded-full hover:bg-black/10 flex items-center justify-center"><X className="w-3 h-3" /></button>
         </div>
       );
     }
     if (t === "memory") {
       return (
-        <div className="relative inline-flex items-center gap-2 rounded-xl border border-violet-300/40 bg-violet-100/40 px-3 py-2 max-w-[260px] group">
+        <div className="relative inline-flex items-center gap-2 rounded-xl border border-violet-300/40 bg-violet-100/40 px-3 py-2 max-w-[16.25rem] group">
           <BookOpen className="w-4 h-4 flex-shrink-0 text-violet-500" />
           <div className="min-w-0">
             <span className="block text-xs font-medium truncate">{att.memoryTitle || "Memory"}</span>
-            {att.memoryContent && <span className="block text-[10px] opacity-60 truncate">{att.memoryContent.slice(0, 80)}</span>}
+            {att.memoryContent && <span className="block text-[0.625rem] opacity-60 truncate">{att.memoryContent.slice(0, 80)}</span>}
           </div>
           <button type="button" onClick={() => removeFocusedAttachment(att.id)} className="h-4 w-4 rounded-full hover:bg-black/10 flex items-center justify-center flex-shrink-0"><X className="w-3 h-3" /></button>
         </div>
@@ -2441,18 +2558,18 @@ ${text}${attachmentContext}`;
       return (
         <div className="relative inline-flex items-center gap-2 rounded-xl border border-white/30 bg-white/30 px-3 py-2 group">
           <FileText className="w-4 h-4 flex-shrink-0 opacity-60" />
-          <span className="max-w-[180px] truncate text-xs">{att.memoryTitle || att.name || "PDF"}</span>
+          <span className="max-w-[11.25rem] truncate text-xs">{att.memoryTitle || att.name || "PDF"}</span>
           <button type="button" onClick={() => removeFocusedAttachment(att.id)} className="h-4 w-4 rounded-full hover:bg-black/10 flex items-center justify-center"><X className="w-3 h-3" /></button>
         </div>
       );
     }
     if (t === "note") {
       return (
-        <div className="relative inline-flex items-center gap-2 rounded-xl border border-amber-300/40 bg-amber-100/40 px-3 py-2 max-w-[260px] group">
+        <div className="relative inline-flex items-center gap-2 rounded-xl border border-amber-300/40 bg-amber-100/40 px-3 py-2 max-w-[16.25rem] group">
           <StickyNote className="w-4 h-4 flex-shrink-0 text-amber-600" />
           <div className="min-w-0">
             <span className="block text-xs font-medium truncate">{att.name || "Note"}</span>
-            {att.memoryContent && <span className="block text-[10px] opacity-60 truncate">{att.memoryContent.slice(0, 80)}</span>}
+            {att.memoryContent && <span className="block text-[0.625rem] opacity-60 truncate">{att.memoryContent.slice(0, 80)}</span>}
           </div>
           <button type="button" onClick={() => removeFocusedAttachment(att.id)} className="h-4 w-4 rounded-full hover:bg-black/10 flex items-center justify-center flex-shrink-0"><X className="w-3 h-3" /></button>
         </div>
@@ -2461,7 +2578,7 @@ ${text}${attachmentContext}`;
     return (
       <div className="relative inline-flex items-center gap-2 rounded-xl border border-white/30 bg-white/30 px-3 py-2 group">
         <Link2 className="w-4 h-4 flex-shrink-0 opacity-60" />
-        <span className="max-w-[200px] truncate text-xs">{att.memoryTitle || att.name || att.url || "Attachment"}</span>
+        <span className="max-w-[12.5rem] truncate text-xs">{att.memoryTitle || att.name || att.url || "Attachment"}</span>
         <button type="button" onClick={() => removeFocusedAttachment(att.id)} className="h-4 w-4 rounded-full hover:bg-black/10 flex items-center justify-center"><X className="w-3 h-3" /></button>
       </div>
     );
@@ -2482,17 +2599,20 @@ ${text}${attachmentContext}`;
     if (canvasFileRaw) {
       try {
         const item = JSON.parse(canvasFileRaw);
-        const isNote = item.type === "note";
+        const itemType = String(item.type || "link").toLowerCase();
+        const hasContent = Boolean(item.content);
         addFocusedAttachment({
           id: makeAttId(),
-          type: item.type || "link",
+          type: itemType,
           url: item.url || "",
           name: item.name || "Canvas file",
           mime: "",
           size: 0,
           ...(item.videoId ? { videoId: item.videoId } : {}),
-          ...(isNote && item.content ? { memoryContent: item.content } : {}),
-          ...(!isNote && item.content ? { pdfText: item.content } : {}),
+          ...(hasContent && (itemType === "note" || itemType === "memory") ? { memoryContent: item.content } : {}),
+          ...(hasContent && itemType === "pdf" ? { pdfText: item.content } : {}),
+          ...(hasContent && !["note", "memory", "pdf"].includes(itemType) ? { memoryContent: item.content } : {}),
+          ...(item.id ? { canvasBlockId: item.id } : {}),
         });
         window.setTimeout(() => chatPanelInputRef.current?.focus(), 0);
         return;
@@ -2698,7 +2818,7 @@ ${text}${attachmentContext}`;
                   } catch { /* ignore */ }
                 }}
               >
-                <SelectTrigger className="w-[130px] h-9 rounded-full glass-control hover:opacity-90 text-xs font-medium justify-center gap-1">
+                <SelectTrigger className="w-[8.125rem] h-9 rounded-full glass-control hover:opacity-90 text-xs font-medium justify-center gap-1">
                   <SelectValue placeholder="Mode" />
                 </SelectTrigger>
                 <SelectContent
@@ -2737,7 +2857,7 @@ ${text}${attachmentContext}`;
                   }
                 }}
               >
-                <SelectTrigger className="w-[130px] h-9 rounded-full glass-control hover:opacity-90 text-xs font-medium">
+                <SelectTrigger className="w-[8.125rem] h-9 rounded-full glass-control hover:opacity-90 text-xs font-medium">
                   <SelectValue placeholder="Model" />
                 </SelectTrigger>
                 <SelectContent
@@ -2941,6 +3061,12 @@ ${text}${attachmentContext}`;
               console.log("[MEMORY-DROP] YouTube processing:", { ytUrl, vid, extractedVid });
               if (ytUrl && extractedVid) {
                 const st = useCanvasStore.getState();
+                const existingIds = Array.isArray(st.blockOrder) ? st.blockOrder : [];
+                const alreadyOnCanvas = existingIds.some((bid: string) => {
+                  const blk = (st.blocks as any)?.[bid];
+                  return blk && (blk.videoId === extractedVid || blk.data?.videoId === extractedVid || blk.url === ytUrl || blk.data?.url === ytUrl);
+                });
+                if (alreadyOnCanvas) { console.log("[MEMORY-DROP] YouTube duplicate, skipping"); return; }
                 const g = Math.max(1, Math.floor(st.gridSize || 24));
                 const canvasEl = document.querySelector<HTMLElement>(".overflow-auto.overscroll-contain");
                 const rect = canvasEl?.getBoundingClientRect();
@@ -3044,7 +3170,7 @@ ${text}${attachmentContext}`;
       )}
 
       <aside
-        className={`fixed top-0 right-0 z-[95] h-[100svh] w-[380px] max-w-[92vw] border-l border-white/20 dark:border-white/10 bg-white/40 dark:bg-[rgba(20,20,24,0.55)] shadow-[0_18px_60px_rgba(0,0,0,0.22)] backdrop-blur-[40px] backdrop-saturate-[1.6] transition-transform duration-300 ${
+        className={`fixed top-0 right-0 z-[95] h-[100svh] w-[23.75rem] max-w-[92vw] border-l border-white/20 dark:border-white/10 bg-white/40 dark:bg-[rgba(20,20,24,0.55)] shadow-[0_18px_60px_rgba(0,0,0,0.22)] backdrop-blur-[40px] backdrop-saturate-[1.6] transition-transform duration-300 ${
           showMemorySidebar ? "translate-x-0 pointer-events-auto" : "translate-x-full pointer-events-none"
         }`}
       >
@@ -3151,12 +3277,25 @@ ${text}${attachmentContext}`;
         >
           <div className="absolute left-0 top-0 bottom-0 w-3 -translate-x-1/2 cursor-col-resize z-[70] pointer-events-auto" onPointerDown={handleStartChatResize} title="Drag to resize chat" />
           <div ref={chatScrollRef} className="flex-1 overflow-y-auto scrollbar-hide p-3 space-y-3">
-            {isChatLoading && (<div className="text-[11px] text-black/60 px-1" aria-live="polite">Working...</div>)}
+            {isChatLoading && (<div className="text-[0.6875rem] text-black/60 px-1" aria-live="polite">Working...</div>)}
             {chatMessages.map((msg, idx) => (
-              <div key={msg.id || idx} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+              <div key={msg.id || idx} className={`flex flex-col ${msg.role === "user" ? "items-end" : "items-start"}`}>
+                {msg.role === "user" && msg.attachments && msg.attachments.length > 0 && (
+                  <div className="max-w-[94%] flex flex-wrap gap-1.5 justify-end mb-1.5">
+                    {msg.attachments.map((att) => {
+                      const at = (att.type || "").toLowerCase();
+                      if (at === "youtube" && att.videoId) {
+                        return <div key={att.id} className="w-full max-w-[15rem] rounded-lg overflow-hidden border border-white/30"><iframe src={`https://www.youtube.com/embed/${att.videoId}`} className="w-full aspect-video" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowFullScreen title={att.name || "YouTube"} /></div>;
+                      }
+                      if (at === "image" && att.url) return <img key={att.id} src={att.url} alt={att.name || "Image"} className="max-w-[11.25rem] max-h-[120px] rounded-lg border border-white/30 object-cover" />;
+                      if (at === "video" && att.url) return <div key={att.id} className="w-full max-w-[15rem] rounded-lg overflow-hidden border border-white/30"><video src={att.url} controls className="w-full" preload="metadata" /></div>;
+                      return <div key={att.id} className="flex items-center gap-1 rounded-lg border border-white/30 bg-white/20 px-2 py-1 text-[0.625rem]"><FileText className="w-3 h-3 opacity-60" /><span className="truncate max-w-[7.5rem]">{att.name || "File"}</span></div>;
+                    })}
+                  </div>
+                )}
                 {msg.role === "user" ? (
                   <button type="button" onClick={() => { void replaySavedPromptResponse(msg); }} disabled={!msg.aiResponse} className="group relative text-left max-w-[94%] disabled:cursor-default" title={msg.aiResponse ? "Show saved AI response" : "Waiting for AI response"}>
-                    {msg.aiResponse ? (<span className="pointer-events-none absolute -top-6 right-0 rounded-md bg-black/70 px-2 py-1 text-[10px] text-white opacity-0 transition-opacity duration-150 group-hover:opacity-100 whitespace-nowrap">Tap to view AI response</span>) : null}
+                    {msg.aiResponse ? (<span className="pointer-events-none absolute -top-6 right-0 rounded-md bg-black/70 px-2 py-1 text-[0.625rem] text-white opacity-0 transition-opacity duration-150 group-hover:opacity-100 whitespace-nowrap">Tap to view AI response</span>) : null}
                     <div className="w-full rounded-2xl rounded-br-md px-3 py-2 text-xs leading-relaxed text-black/90 whitespace-pre-wrap break-words border border-white/55 bg-[linear-gradient(135deg,rgba(255,255,255,0.32),rgba(255,255,255,0.16))] backdrop-blur-xl shadow-[0_10px_28px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.35)]">{msg.content}</div>
                   </button>
                 ) : (
@@ -3198,8 +3337,8 @@ ${text}${attachmentContext}`;
         <>
           {/* Left collage panel — canvas files */}
           {canvasFileBlocks.length > 0 && (
-            <div className="fixed top-[4.2rem] bottom-0 left-0 z-[66] w-[220px] overflow-y-auto scrollbar-hide p-3 space-y-2 bg-white/20 backdrop-blur-sm border-r border-black/5 transition-all duration-300">
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-black/40 px-1 mb-1">Canvas Files</p>
+            <div className="fixed top-[4.2rem] bottom-0 left-0 z-[66] w-[13.75rem] overflow-y-auto scrollbar-hide p-3 space-y-2 bg-white/20 backdrop-blur-sm border-r border-black/5 transition-all duration-300">
+              <p className="text-[0.625rem] font-semibold uppercase tracking-wider text-black/40 px-1 mb-1">Canvas Files</p>
               <div className="flex flex-col gap-2">
                 {canvasFileBlocks.map((item) => (
                   <div
@@ -3308,7 +3447,68 @@ ${text}${attachmentContext}`;
                 {chatMessages.map((msg, idx) => (
                   <React.Fragment key={msg.id || idx}>
                     {msg.role === "user" && (
-                      <div className="flex justify-end">
+                      <div className="flex flex-col items-end gap-2">
+                        {msg.attachments && msg.attachments.length > 0 && (
+                          <div className="max-w-[80%] flex flex-wrap gap-2 justify-end">
+                            {msg.attachments.map((att) => {
+                              const at = (att.type || "").toLowerCase();
+                              if (at === "youtube" && att.videoId) {
+                                return (
+                                  <div key={att.id} className="w-full max-w-[20rem] rounded-xl overflow-hidden border border-white/30 shadow-sm">
+                                    <iframe
+                                      src={`https://www.youtube.com/embed/${att.videoId}`}
+                                      className="w-full aspect-video"
+                                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                                      allowFullScreen
+                                      title={att.name || "YouTube"}
+                                    />
+                                  </div>
+                                );
+                              }
+                              if (at === "image" && att.url) {
+                                return <img key={att.id} src={att.url} alt={att.name || "Image"} className="max-w-[16.25rem] max-h-[200px] rounded-xl border border-white/30 object-cover shadow-sm" />;
+                              }
+                              if (at === "video" && att.url) {
+                                return (
+                                  <div key={att.id} className="w-full max-w-[20rem] rounded-xl overflow-hidden border border-white/30 shadow-sm">
+                                    <video src={att.url} controls className="w-full" preload="metadata" />
+                                  </div>
+                                );
+                              }
+                              if (at === "audio" && att.url) {
+                                return (
+                                  <div key={att.id} className="flex items-center gap-2 rounded-xl border border-white/30 bg-white/20 px-3 py-2">
+                                    <Music className="w-4 h-4 opacity-60" />
+                                    <audio src={att.url} controls className="h-8" preload="metadata" />
+                                    <span className="text-[0.625rem] truncate max-w-[7.5rem]">{att.name || "Audio"}</span>
+                                  </div>
+                                );
+                              }
+                              if (at === "pdf") {
+                                return (
+                                  <div key={att.id} className="flex items-center gap-2 rounded-xl border border-white/30 bg-white/20 px-3 py-2">
+                                    <FileText className="w-4 h-4 opacity-60" />
+                                    <span className="text-xs truncate max-w-[12.5rem]">{att.name || "PDF"}</span>
+                                  </div>
+                                );
+                              }
+                              if (at === "note" || at === "memory") {
+                                return (
+                                  <div key={att.id} className="rounded-xl border border-white/30 bg-white/20 px-3 py-2 max-w-[16.25rem]">
+                                    <div className="flex items-center gap-1 mb-1"><StickyNote className="w-3.5 h-3.5 opacity-60" /><span className="text-[0.625rem] font-medium truncate">{att.name || "Note"}</span></div>
+                                    {att.memoryContent && <p className="text-[0.6875rem] text-black/70 line-clamp-3 whitespace-pre-wrap">{att.memoryContent.slice(0, 200)}</p>}
+                                  </div>
+                                );
+                              }
+                              return (
+                                <div key={att.id} className="flex items-center gap-2 rounded-xl border border-white/30 bg-white/20 px-3 py-2">
+                                  <FileText className="w-4 h-4 opacity-60" />
+                                  <span className="text-xs truncate max-w-[12.5rem]">{att.name || att.url || "File"}</span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
                         <div className="max-w-[80%] rounded-2xl rounded-br-md px-4 py-3 text-sm leading-relaxed text-black/90 whitespace-pre-wrap break-words border border-white/55 bg-[linear-gradient(135deg,rgba(255,255,255,0.32),rgba(255,255,255,0.16))] backdrop-blur-xl shadow-[0_10px_28px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.35)]">{msg.content}</div>
                       </div>
                     )}
@@ -3412,7 +3612,7 @@ ${text}${attachmentContext}`;
                   if (!files.length) return null;
                   return (
                     <div key={folder.id}>
-                      <div className="text-[11px] font-semibold text-black/60 dark:text-white/60 px-2 py-1">
+                      <div className="text-[0.6875rem] font-semibold text-black/60 dark:text-white/60 px-2 py-1">
                         {folder.name}
                       </div>
                       <div className="space-y-1">
@@ -3450,7 +3650,7 @@ ${text}${attachmentContext}`;
                 })}
                 {projectFiles.filter((f) => !f.folderId).length > 0 && (
                   <div>
-                    <div className="text-[11px] font-semibold text-black/60 dark:text-white/60 px-2 py-1">
+                    <div className="text-[0.6875rem] font-semibold text-black/60 dark:text-white/60 px-2 py-1">
                       Unsorted
                     </div>
                     <div className="space-y-1">
@@ -3509,7 +3709,7 @@ ${text}${attachmentContext}`;
 
       {aiSuggestions.length > 0 && (
         <div
-          className={`fixed right-6 bottom-6 z-[85] w-[320px] rounded-2xl border border-white/60 bg-[#f2f2f7]/85 backdrop-blur-lg shadow-2xl shadow-white/20 p-4 text-black transition-transform duration-300 ${
+          className={`fixed right-6 bottom-6 z-[85] w-[20rem] rounded-2xl border border-white/60 bg-[#f2f2f7]/85 backdrop-blur-lg shadow-2xl shadow-white/20 p-4 text-black transition-transform duration-300 ${
             showAiSuggestionToast ? "translate-x-0 opacity-100" : "translate-x-8 opacity-0 pointer-events-none"
           }`}
         >

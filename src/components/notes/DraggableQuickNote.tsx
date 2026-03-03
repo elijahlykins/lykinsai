@@ -60,7 +60,7 @@ export default function DraggableQuickNote({
           {!content.trim() && (
             <div className="pointer-events-none absolute inset-0 px-3 py-3 text-sm text-black/45 select-none">
               <div>Write your quick note...</div>
-              <div className="mt-2 text-[11px] text-black/50">Tip: Press Ctrl/Cmd + Enter to save.</div>
+              <div className="mt-2 text-[0.6875rem] text-black/50">Tip: Press Ctrl/Cmd + Enter to save.</div>
             </div>
           )}
         </div>

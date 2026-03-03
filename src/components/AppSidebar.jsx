@@ -104,10 +104,10 @@ export default function AppSidebar() {
               signInWithOAuth("google");
             }
           }}
-          className="flex items-center gap-2 rounded-full glass-text-card px-2 py-1 text-[11px] text-black/70 hover:opacity-90"
+          className="flex items-center gap-2 rounded-full glass-text-card px-2 py-1 text-[0.6875rem] text-black/70 hover:opacity-90"
           title={user ? "Sign out" : "Sign in"}
         >
-          <div className="h-6 w-6 rounded-full glass-text-card text-[11px] font-semibold text-black/70 flex items-center justify-center">
+          <div className="h-6 w-6 rounded-full glass-text-card text-[0.6875rem] font-semibold text-black/70 flex items-center justify-center">
             {user?.email ? user.email.charAt(0).toUpperCase() : "?"}
           </div>
           <span className="pr-1">{user ? "Signed in" : "Sign in"}</span>
@@ -115,17 +115,17 @@ export default function AppSidebar() {
       </div>
 
       <div
-        className={`fixed top-0 left-0 z-[70] h-[100svh] w-[190px] bg-transparent p-3 pt-12 transition-transform duration-200 flex flex-col ${
+        className={`fixed top-0 left-0 z-[70] h-[100svh] w-[12rem] bg-transparent p-3 pt-12 transition-transform duration-200 flex flex-col ${
           open ? "translate-x-0" : "-translate-x-[120%]"
         }`}
       >
         <div className="absolute right-0 top-0 bottom-0 w-px bg-transparent pointer-events-none" />
         <div className="mt-5 flex items-center justify-between px-2 py-1">
-          <div className="text-[11px] font-semibold text-black/70">Navigation</div>
+          <div className="text-[0.6875rem] font-semibold text-black/70">Navigation</div>
         </div>
 
         <div className="px-2 pt-2">
-          <div className="flex items-center gap-2 rounded-xl border border-black/10 bg-transparent px-2 py-1.5 text-[11px] text-black/60">
+          <div className="flex items-center gap-2 rounded-xl border border-black/10 bg-transparent px-2 py-1.5 text-[0.6875rem] text-black/60">
             <SearchIcon className="w-3.5 h-3.5" />
             <input
               placeholder="Search"
@@ -138,7 +138,7 @@ export default function AppSidebar() {
           <button
             type="button"
             onClick={() => nav("/")}
-            className="w-full text-left text-[11px] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
+            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
           >
             <Home className="w-3.5 h-3.5 text-black/60" />
             Home
@@ -161,7 +161,7 @@ export default function AppSidebar() {
                 nav(`/canvas/${id}`);
               }
             }}
-            className="w-full text-left text-[11px] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
+            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
           >
             <Plus className="w-3.5 h-3.5 text-black/60" />
             Create
@@ -169,7 +169,7 @@ export default function AppSidebar() {
           <button
             type="button"
             onClick={() => nav("/omnia")}
-            className="w-full text-left text-[11px] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
+            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
           >
             <MessageSquare className="w-3.5 h-3.5 text-black/60" />
             Chat
@@ -177,24 +177,24 @@ export default function AppSidebar() {
           <button
             type="button"
             onClick={() => nav("/memory")}
-            className="w-full text-left text-[11px] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
+            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
           >
             <ImageIcon className="w-3.5 h-3.5 text-black/60" />
             Memory
           </button>
         </div>
 
-        <div className="mt-5 text-[11px] font-semibold text-black/70 px-2 py-1">Projects</div>
+        <div className="mt-5 text-[0.6875rem] font-semibold text-black/70 px-2 py-1">Projects</div>
         <div className="flex flex-col gap-1 max-h-[28vh] overflow-y-auto pr-1">
           {projects.length === 0 ? (
-            <div className="text-[11px] text-black/50 px-2.5 py-1.5">No projects yet.</div>
+            <div className="text-[0.6875rem] text-black/50 px-2.5 py-1.5">No projects yet.</div>
           ) : (
             projects.map((project, idx) => (
               <button
                 key={project.id}
                 type="button"
                 onClick={() => nav(`/project/${project.id}`)}
-                className="w-full text-left text-[11px] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
+                className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
               >
                 <span className="inline-block h-1 w-1 rounded-full bg-black/70" />
                 <span className="truncate">{project.name}</span>
@@ -203,12 +203,12 @@ export default function AppSidebar() {
           )}
         </div>
 
-        <div className="mt-5 text-[11px] font-semibold text-black/70 px-2 py-1">Workspace</div>
+        <div className="mt-5 text-[0.6875rem] font-semibold text-black/70 px-2 py-1">Workspace</div>
         <div className="flex flex-col gap-1">
           <button
             type="button"
             onClick={() => nav("/teamspaces")}
-            className="w-full text-left text-[11px] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
+            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
           >
             <Users className="w-3.5 h-3.5 text-black/60" />
             Teamspaces
@@ -216,19 +216,19 @@ export default function AppSidebar() {
           <button
             type="button"
             onClick={() => nav("/calendar")}
-            className="w-full text-left text-[11px] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
+            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
           >
             <Calendar className="w-3.5 h-3.5 text-black/60" />
             Calendar
           </button>
         </div>
 
-        <div className="mt-5 text-[11px] font-semibold text-black/70 px-2 py-1">Account</div>
+        <div className="mt-5 text-[0.6875rem] font-semibold text-black/70 px-2 py-1">Account</div>
         <div className="flex flex-col gap-1">
           <button
             type="button"
             onClick={() => nav("/settings")}
-            className="w-full text-left text-[11px] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
+            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
           >
             <SettingsIcon className="w-3.5 h-3.5 text-black/60" />
             Settings
@@ -236,7 +236,7 @@ export default function AppSidebar() {
           <button
             type="button"
             onClick={() => nav("/connections")}
-            className="w-full text-left text-[11px] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
+            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
           >
             <LinkIcon className="w-3.5 h-3.5 text-black/60" />
             Connections
@@ -244,7 +244,7 @@ export default function AppSidebar() {
           <button
             type="button"
             onClick={() => nav("/trash")}
-            className="w-full text-left text-[11px] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
+            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
           >
             <Trash2 className="w-3.5 h-3.5 text-black/60" />
             Trash
@@ -252,7 +252,7 @@ export default function AppSidebar() {
           <button
             type="button"
             onClick={() => nav("/billing")}
-            className="w-full text-left text-[11px] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
+            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
           >
             <CreditCard className="w-3.5 h-3.5 text-black/60" />
             Billing
@@ -263,7 +263,7 @@ export default function AppSidebar() {
           <button
             type="button"
             onClick={() => nav("/support")}
-            className="w-full text-left text-[11px] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
+            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
           >
             <LifeBuoy className="w-3.5 h-3.5 text-black/60" />
             Get support
@@ -273,7 +273,7 @@ export default function AppSidebar() {
             <button
               type="button"
               onClick={() => signOut()}
-              className="mt-2 w-full text-left text-[11px] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
+              className="mt-2 w-full text-left text-[0.6875rem] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
             >
               <LogOut className="w-3.5 h-3.5 text-black/60" />
               Log out

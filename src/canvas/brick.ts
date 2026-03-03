@@ -656,7 +656,7 @@ function BrickTextSurface(props: {
                   {
                     key: opt.id,
                     type: "button",
-                    className: `w-full text-left px-2 py-1 rounded text-[12px] text-black/85 transition-colors flex items-center justify-between ${
+                    className: `w-full text-left px-2 py-1 rounded text-[0.75rem] text-black/85 transition-colors flex items-center justify-between ${
                       filteredSlashOptions[activeSlashIndex]?.id === opt.id ? "bg-black/10" : "hover:bg-black/10"
                     }`,
                     onPointerDown: (e: any) => {
@@ -680,7 +680,7 @@ function BrickTextSurface(props: {
                     },
                   },
                   React.createElement("span", null, `${opt.command} ${opt.label}`),
-                  React.createElement("span", { className: "text-[10px] text-black/55 ml-2" }, opt.hint)
+                  React.createElement("span", { className: "text-[0.625rem] text-black/55 ml-2" }, opt.hint)
                 )
               );
             });

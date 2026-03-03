@@ -2185,6 +2185,30 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
       return { x: scrollPos.left || 0, y: scrollPos.top || 0 };
     };
 
+    const isDuplicateOnCanvas = (check: { url?: string; videoId?: string; src?: string; name?: string; content?: string }): boolean => {
+      const st = useCanvasStore.getState();
+      const ids = Array.isArray(st.blockOrder) ? st.blockOrder : [];
+      for (const id of ids) {
+        const b = (st.blocks as any)?.[id];
+        if (!b) continue;
+        if (check.url && check.url === (b.url || b.data?.url || "")) return true;
+        if (check.src && check.src === (b.src || b.data?.src || "")) return true;
+        if (check.videoId) {
+          const bVid = b.videoId || b.data?.videoId || "";
+          if (bVid && bVid === check.videoId) return true;
+        }
+        if (check.name && check.name !== "file" && check.name !== "Link") {
+          const bName = b.name || b.data?.name || "";
+          if (bName && bName === check.name) return true;
+        }
+        if (check.content) {
+          const bContent = b.content || b.data?.content || "";
+          if (bContent && bContent === check.content) return true;
+        }
+      }
+      return false;
+    };
+
     const onFiles = async (e: Event) => {
       const ce = e as CustomEvent<{ files: File[]; clientX?: number; clientY?: number }>;
       const files = Array.isArray(ce.detail?.files) ? ce.detail.files : [];
@@ -2196,6 +2220,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
 
       for (let i = 0; i < files.length; i += 1) {
         const f = files[i];
+        if (isDuplicateOnCanvas({ name: f.name || "file" })) continue;
         const x = baseX;
         const y = baseY + i * gridSize * 7;
         const containerId = findCreateContainerAtWorld(x, y);
@@ -2280,6 +2305,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
     const addUrlAsBlock = async (url: string, clientX?: number, clientY?: number) => {
       const u = String(url || "").trim();
       if (!u) return;
+      if (isDuplicateOnCanvas({ url: u, src: u })) return;
       const base = getInsertWorld(clientX, clientY);
       const wx = snapToGrid(base.x, gridSize);
       const wy = snapToGrid(base.y, gridSize);
@@ -2287,6 +2313,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
       const kind = inferUrlKind(u);
       if (kind === "youtube") {
         const vid = extractYouTubeVideoId(u);
+        if (isDuplicateOnCanvas({ videoId: vid || "" })) return;
         const id = addYouTubeBlockAt({ x: wx, y: wy }, { url: u, videoId: vid || "" });
         if (containerId) updateBlock(id, { containerId } as any);
         return;
@@ -2376,6 +2403,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
       const title = String(ce.detail?.title || "Untitled memory").trim();
       const body = String(ce.detail?.content || "").trim();
       const combined = body ? `# ${title}\n\n${body}` : `# ${title}`;
+      if (isDuplicateOnCanvas({ content: combined })) return;
       const base = getInsertWorld(ce.detail?.clientX, ce.detail?.clientY);
       const wx = snapToGrid(base.x, gridSize);
       const wy = snapToGrid(base.y, gridSize);
@@ -3623,7 +3651,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
                   }}
                 />
               )}
-              {shape.id === "star" && <div className="text-[10px] leading-none text-black/70">★</div>}
+              {shape.id === "star" && <div className="text-[0.625rem] leading-none text-black/70">★</div>}
             </div>
           ))}
         </div>
@@ -3904,7 +3932,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
         {/* Drop frame: mute canvas inside a canvas block while dragging */}
         {dropContainerId && blocks[dropContainerId] && (
           <div
-            className="absolute pointer-events-none flex items-center justify-center text-[11px] text-black/60"
+            className="absolute pointer-events-none flex items-center justify-center text-[0.6875rem] text-black/60"
             style={{
               left: `${(blocks as any)[dropContainerId].x}px`,
               top: `${(blocks as any)[dropContainerId].y}px`,

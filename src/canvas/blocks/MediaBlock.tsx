@@ -208,7 +208,7 @@ export const MediaBlock = memo(function MediaBlock({ id }: { id: string }) {
     if (media.mode === "picker" || !media.src) {
       return (
         <div className="h-full flex flex-col items-center justify-center gap-2 p-3">
-          <div className="text-[11px] font-medium text-black/50 mb-1">Add media</div>
+          <div className="text-[0.6875rem] font-medium text-black/50 mb-1">Add media</div>
           <div className="grid grid-cols-3 gap-1.5 w-full max-w-[200px]">
             {MEDIA_OPTIONS.map((opt) => {
               const Icon = opt.icon;
@@ -246,7 +246,7 @@ export const MediaBlock = memo(function MediaBlock({ id }: { id: string }) {
             <div className="w-full max-w-[200px] mt-1">
               <input
                 autoFocus
-                className="w-full px-2 py-1 rounded border border-black/15 bg-white text-[11px] outline-none focus:border-blue-400"
+                className="w-full px-2 py-1 rounded border border-black/15 bg-white text-[0.6875rem] outline-none focus:border-blue-400"
                 placeholder={urlMode === "video" ? "YouTube URL..." : urlMode === "embed" ? "Embed URL..." : "URL..."}
                 value={urlDraft}
                 onChange={(e) => setUrlDraft(e.target.value)}
@@ -309,7 +309,7 @@ export const MediaBlock = memo(function MediaBlock({ id }: { id: string }) {
           onPointerDown={(e) => e.stopPropagation()}
         >
           <Link2 className="w-6 h-6 text-blue-500/70" />
-          <span className="text-[11px] text-blue-600/80 font-medium truncate max-w-full">{media.url || media.src}</span>
+          <span className="text-[0.6875rem] text-blue-600/80 font-medium truncate max-w-full">{media.url || media.src}</span>
           <span className="text-[9px] text-black/40">Click to open</span>
         </a>
       );
@@ -319,7 +319,7 @@ export const MediaBlock = memo(function MediaBlock({ id }: { id: string }) {
       return (
         <div className="w-full h-full flex flex-col items-center justify-center gap-1 p-3">
           <FileUp className="w-6 h-6 text-black/40" />
-          <span className="text-[11px] text-black/70 font-medium truncate max-w-full">{media.fileName || "File"}</span>
+          <span className="text-[0.6875rem] text-black/70 font-medium truncate max-w-full">{media.fileName || "File"}</span>
           <span className="text-[9px] text-black/40">{media.mimeType || "Unknown type"}</span>
         </div>
       );

@@ -1,5 +1,7 @@
 import fetch from "node-fetch";
 import { YoutubeTranscript } from "youtube-transcript";
+import ytdl from "@distube/ytdl-core";
+import { Readable } from "stream";
 
 const CACHE_TTL_MS = 30 * 60 * 1000;
 const RETRANSCRIBE_TTL_MS = 6 * 60 * 60 * 1000;
@@ -200,6 +202,120 @@ async function tryWhisperProvider(baseUrl, payload, apiKey) {
   };
 }
 
+async function streamToBuffer(stream) {
+  const chunks = [];
+  for await (const chunk of stream) chunks.push(chunk);
+  return Buffer.concat(chunks);
+}
+
+async function tryOpenAIWhisper(videoId) {
+  const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
+  if (!apiKey || !videoId) return null;
+  try {
+    const url = `https://www.youtube.com/watch?v=${videoId}`;
+    if (!ytdl.validateURL(url)) return null;
+    console.log(`[Whisper] Downloading audio for ${videoId}...`);
+    const audioStream = ytdl(url, { filter: "audioonly", quality: "lowestaudio" });
+    const audioBuffer = await streamToBuffer(audioStream);
+    if (!audioBuffer.length) { console.warn("[Whisper] Empty audio buffer"); return null; }
+    const sizeMB = audioBuffer.length / 1024 / 1024;
+    console.log(`[Whisper] Downloaded ${sizeMB.toFixed(1)}MB, sending to OpenAI...`);
+    if (sizeMB > 24.5) { console.warn(`[Whisper] Audio too large (${sizeMB.toFixed(1)}MB > 25MB limit), skipping`); return null; }
+
+    const boundary = `----WhisperBoundary${Date.now()}`;
+    const fieldParts = [];
+    fieldParts.push(`--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nwhisper-1\r\n`);
+    fieldParts.push(`--${boundary}\r\nContent-Disposition: form-data; name="response_format"\r\n\r\nverbose_json\r\n`);
+    fieldParts.push(`--${boundary}\r\nContent-Disposition: form-data; name="language"\r\n\r\nen\r\n`);
+    const fileHeader = `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="audio.webm"\r\nContent-Type: audio/webm\r\n\r\n`;
+    const tail = `\r\n--${boundary}--\r\n`;
+    const preFile = Buffer.from(fieldParts.join("") + fileHeader, "utf-8");
+    const postFile = Buffer.from(tail, "utf-8");
+    const body = Buffer.concat([preFile, audioBuffer, postFile]);
+
+    const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": `multipart/form-data; boundary=${boundary}`,
+        "Content-Length": String(body.length),
+      },
+      body,
+    });
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "");
+      console.warn(`[Whisper] OpenAI returned ${res.status}: ${errText.slice(0, 200)}`);
+      return null;
+    }
+    const data = await res.json().catch(() => ({}));
+    const segments = Array.isArray(data.segments) ? data.segments.map((s) => ({
+      startSec: Number(s.start || 0),
+      endSec: Number(s.end || 0),
+      text: String(s.text || "").trim(),
+      source: "openai_whisper",
+      confidence: 0.85,
+    })).filter((s) => s.text) : [];
+    const fullText = String(data.text || "").trim();
+    if (!segments.length && !fullText) return null;
+    if (!segments.length && fullText) {
+      return {
+        segments: [{ startSec: 0, endSec: Number(data.duration || 0), text: fullText, source: "openai_whisper", confidence: 0.85 }],
+        model: "whisper-1",
+        provider: "openai",
+      };
+    }
+    console.log(`[Whisper] Transcribed ${segments.length} segments for ${videoId}`);
+    return { segments, model: "whisper-1", provider: "openai" };
+  } catch (err) {
+    console.warn(`[Whisper] OpenAI Whisper failed for ${videoId}:`, err?.message || err);
+    return null;
+  }
+}
+
+export async function transcribeBuffer(audioBuffer, filename = "audio.webm", mimeType = "audio/webm") {
+  const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
+  if (!apiKey || !audioBuffer?.length) throw new Error("Missing API key or audio data");
+
+  const boundary = `----WhisperBoundary${Date.now()}`;
+  const fieldParts = [];
+  fieldParts.push(`--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nwhisper-1\r\n`);
+  fieldParts.push(`--${boundary}\r\nContent-Disposition: form-data; name="response_format"\r\n\r\nverbose_json\r\n`);
+  const fileHeader = `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: ${mimeType}\r\n\r\n`;
+  const tail = `\r\n--${boundary}--\r\n`;
+  const preFile = Buffer.from(fieldParts.join("") + fileHeader, "utf-8");
+  const postFile = Buffer.from(tail, "utf-8");
+  const body = Buffer.concat([preFile, Buffer.from(audioBuffer), postFile]);
+
+  const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": `multipart/form-data; boundary=${boundary}`,
+      "Content-Length": String(body.length),
+    },
+    body,
+  });
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    throw new Error(`OpenAI Whisper returned ${res.status}: ${errText.slice(0, 300)}`);
+  }
+  const data = await res.json().catch(() => ({}));
+  const segments = Array.isArray(data.segments) ? data.segments.map((s) => ({
+    startSec: Number(s.start || 0),
+    endSec: Number(s.end || 0),
+    text: String(s.text || "").trim(),
+    source: "openai_whisper",
+    confidence: 0.85,
+  })).filter((s) => s.text) : [];
+  return {
+    transcript: String(data.text || "").trim(),
+    segments,
+    duration: Number(data.duration || 0),
+    language: String(data.language || ""),
+    model: "whisper-1",
+  };
+}
+
 async function whisperHybridTranscribe(payload) {
   if (typeof testAdapters.whisperImpl === "function") {
     return testAdapters.whisperImpl(payload);
@@ -209,6 +325,10 @@ async function whisperHybridTranscribe(payload) {
   if (hosted) return { ...hosted, strategy: "hosted_default" };
   const local = await tryWhisperProvider(env.localBaseUrl, payload, "");
   if (local) return { ...local, strategy: "local_fallback" };
+  if (payload.videoId) {
+    const openai = await tryOpenAIWhisper(payload.videoId);
+    if (openai) return { ...openai, strategy: "openai_whisper" };
+  }
   return null;
 }
 

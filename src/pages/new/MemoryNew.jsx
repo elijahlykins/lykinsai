@@ -1100,7 +1100,7 @@ User: ${text}`;
               <Video className="w-4 h-4 mt-0.5" />
               <div className="min-w-0">
                 <p className="text-xs font-medium text-black/85 truncate">{title}</p>
-                <p className="text-[11px] text-black/55 mt-1 truncate">{attachment.url}</p>
+                <p className="text-[0.6875rem] text-black/55 mt-1 truncate">{attachment.url}</p>
               </div>
             </div>
           </a>
@@ -1134,7 +1134,7 @@ User: ${text}`;
             <FileText className="w-4 h-4 mt-0.5" />
             <div className="min-w-0">
               <p className="text-xs font-medium text-black/85 truncate">{title}</p>
-              <p className="text-[11px] text-black/55 mt-1">{type.toUpperCase()} file</p>
+              <p className="text-[0.6875rem] text-black/55 mt-1">{type.toUpperCase()} file</p>
             </div>
           </div>
         </a>
@@ -1147,7 +1147,7 @@ User: ${text}`;
           {type === "youtube" ? <Video className="w-4 h-4 mt-0.5" /> : <FileText className="w-4 h-4 mt-0.5" />}
           <div className="min-w-0">
             <p className="text-xs font-medium text-black/85 truncate">{title}</p>
-            <p className="text-[11px] text-black/55 mt-1">
+            <p className="text-[0.6875rem] text-black/55 mt-1">
               {type === "youtube" ? "YouTube video" : "File"}
             </p>
           </div>
@@ -1536,7 +1536,7 @@ User: ${text}`;
                   }
                 }}
               >
-                <SelectTrigger className="w-[124px] !h-7 rounded-full glass-control hover:opacity-90 text-[11px] font-medium px-2">
+                <SelectTrigger className="w-[124px] !h-7 rounded-full glass-control hover:opacity-90 text-[0.6875rem] font-medium px-2">
                   <SelectValue placeholder="Model" />
                 </SelectTrigger>
                 <SelectContent
@@ -1599,7 +1599,7 @@ User: ${text}`;
                     // ignore
                   }
                 }}
-                className={`rounded-full px-1.5 h-7 gap-1 text-[11px] glass-control hover:opacity-90 touch-manipulation flex items-center ${
+                className={`rounded-full px-1.5 h-7 gap-1 text-[0.6875rem] glass-control hover:opacity-90 touch-manipulation flex items-center ${
                   liveAIMode ? "ring-1 ring-white/40 dark:ring-white/20" : ""
                 }`}
                 title="Live AI"
@@ -1613,7 +1613,7 @@ User: ${text}`;
               <button
                 type="button"
                 onClick={() => setShowChat((v) => !v)}
-                className="rounded-full px-1.5 h-7 text-[11px] glass-control hover:opacity-90 touch-manipulation flex items-center gap-1"
+                className="rounded-full px-1.5 h-7 text-[0.6875rem] glass-control hover:opacity-90 touch-manipulation flex items-center gap-1"
                 title="Chat with AI"
               >
                 <span className="hidden md:inline">Chat</span>
@@ -1832,7 +1832,7 @@ User: ${text}`;
                               e.stopPropagation();
                               setOpenAttachmentNotesCardId((prev) => (prev === card.id ? null : card.id));
                             }}
-                            className="absolute top-2 right-2 h-6 min-w-6 px-1 rounded-full glass-control text-[11px] font-semibold flex items-center justify-center gap-1 z-[125]"
+                            className="absolute top-2 right-2 h-6 min-w-6 px-1 rounded-full glass-control text-[0.6875rem] font-semibold flex items-center justify-center gap-1 z-[125]"
                             title="View file notes"
                           >
                             <MessageSquare className="w-3 h-3" />
@@ -1848,12 +1848,12 @@ User: ${text}`;
                             onPointerDown={(e) => e.stopPropagation()}
                             onMouseDown={(e) => e.stopPropagation()}
                           >
-                            <div className="px-2 py-1 text-[11px] font-medium text-black/60">File notes</div>
+                            <div className="px-2 py-1 text-[0.6875rem] font-medium text-black/60">File notes</div>
                             <div className="max-h-44 overflow-y-auto scrollbar-hide space-y-1">
                               {parseAttachmentNotes(card.attachment).map((note) => (
                                 <div key={note.id} className="rounded-md px-2 py-2 bg-black/5">
                                   <p className="text-xs text-black/85 whitespace-pre-wrap break-words">{note.text}</p>
-                                  <p className="mt-1 text-[10px] text-black/50">
+                                  <p className="mt-1 text-[0.625rem] text-black/50">
                                     {note.created_at ? formatDate(note.created_at) : ""}
                                   </p>
                                 </div>
@@ -1895,7 +1895,7 @@ User: ${text}`;
                                 onPointerDown={(e) => e.stopPropagation()}
                                 onMouseDown={(e) => e.stopPropagation()}
                               >
-                                <div className="px-2 py-1 text-[11px] font-medium text-black/60">Add to project</div>
+                                <div className="px-2 py-1 text-[0.6875rem] font-medium text-black/60">Add to project</div>
                                 <div className="space-y-1">
                                   <button
                                     type="button"
@@ -1914,7 +1914,7 @@ User: ${text}`;
                                   <div className="my-1 h-px bg-black/10" />
                                   <div className="max-h-44 overflow-y-auto scrollbar-hide space-y-1">
                                     {projects.length === 0 ? (
-                                      <div className="px-2 py-1.5 text-[11px] text-black/55">
+                                      <div className="px-2 py-1.5 text-[0.6875rem] text-black/55">
                                         No projects found.
                                       </div>
                                     ) : (
@@ -1979,17 +1979,17 @@ User: ${text}`;
                       <div className="p-4 space-y-3">
                         <div className="flex items-center justify-between">
                           <h2 className="text-sm font-semibold text-black/90 truncate">{card.title}</h2>
-                          <span className="text-[11px] text-black/60">{card.turnsCount} turns</span>
+                          <span className="text-[0.6875rem] text-black/60">{card.turnsCount} turns</span>
                         </div>
                         <div className="rounded-xl bg-white/40 border border-white/45 px-3 py-2">
-                          <p className="text-[12px] text-black/80 line-clamp-3">{card.question}</p>
+                          <p className="text-[0.75rem] text-black/80 line-clamp-3">{card.question}</p>
                         </div>
                         {card.answer && (
                           <div className="rounded-xl bg-black/10 border border-white/30 px-3 py-2">
-                            <p className="text-[12px] text-black/75 line-clamp-4">{card.answer}</p>
+                            <p className="text-[0.75rem] text-black/75 line-clamp-4">{card.answer}</p>
                           </div>
                         )}
-                        <div className="text-[11px] text-black/55 flex items-center gap-1">
+                        <div className="text-[0.6875rem] text-black/55 flex items-center gap-1">
                           <Clock className="w-3 h-3" />
                           <span>{card.dateLabel}</span>
                         </div>
@@ -2004,7 +2004,7 @@ User: ${text}`;
                           <div className="max-h-56 overflow-y-auto scrollbar-hide">
                             <p className="text-sm text-black/70 whitespace-pre-wrap break-words">{card.excerpt}</p>
                           </div>
-                          <div className="mt-3 text-[11px] text-black/55 flex items-center gap-1">
+                          <div className="mt-3 text-[0.6875rem] text-black/55 flex items-center gap-1">
                             <Clock className="w-3 h-3" />
                             <span>{card.dateLabel}</span>
                           </div>
@@ -2041,7 +2041,7 @@ User: ${text}`;
                                 onPointerDown={(e) => e.stopPropagation()}
                                 onMouseDown={(e) => e.stopPropagation()}
                               >
-                                <div className="px-2 py-1 text-[11px] font-medium text-black/60">Add to project</div>
+                                <div className="px-2 py-1 text-[0.6875rem] font-medium text-black/60">Add to project</div>
                                 <div className="space-y-1">
                                   <button
                                     type="button"
@@ -2060,7 +2060,7 @@ User: ${text}`;
                                   <div className="my-1 h-px bg-black/10" />
                                   <div className="max-h-44 overflow-y-auto scrollbar-hide space-y-1">
                                     {projects.length === 0 ? (
-                                      <div className="px-2 py-1.5 text-[11px] text-black/55">
+                                      <div className="px-2 py-1.5 text-[0.6875rem] text-black/55">
                                         No projects found.
                                       </div>
                                     ) : (
@@ -2179,7 +2179,7 @@ User: ${text}`;
             {!attachmentNoteDraft.trim() && (
               <div className="pointer-events-none absolute inset-0 px-6 py-6 text-sm text-black/45 select-none">
                 <div>Write your quick note...</div>
-                <div className="mt-2 text-[11px] text-black/50">Auto-saves as you type (empty notes are not saved).</div>
+                <div className="mt-2 text-[0.6875rem] text-black/50">Auto-saves as you type (empty notes are not saved).</div>
               </div>
             )}
           </div>

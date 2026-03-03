@@ -335,8 +335,8 @@ export default function SettingsModal({ isOpen, onClose }) {
   const handleSave = () => {
     localStorage.setItem('lykinsai_settings', JSON.stringify(settings));
     document.documentElement.classList.toggle('dark', settings.theme === 'dark');
-    const fontSizes = { small: '14px', medium: '16px', large: '18px' };
-    document.documentElement.style.fontSize = fontSizes[settings.fontSize];
+    const fontScales = { small: '0.875', medium: '1', large: '1.125' };
+    document.documentElement.style.setProperty('--font-scale', fontScales[settings.fontSize]);
     const densities = { compact: '0.75', comfortable: '1', spacious: '1.25' };
     document.documentElement.style.setProperty('--layout-density', densities[settings.layoutDensity]);
     if (settings.backgroundColor) {

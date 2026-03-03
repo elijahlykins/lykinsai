@@ -138,7 +138,7 @@ function TeamModal({ team, onClose, onSave }) {
 
         <form onSubmit={handleSubmit} className="flex flex-col gap-3">
           <div>
-            <label className="text-[10px] font-semibold text-black/45 dark:text-white/45 uppercase tracking-wider mb-1.5 block">
+            <label className="text-[0.625rem] font-semibold text-black/45 dark:text-white/45 uppercase tracking-wider mb-1.5 block">
               Team Name
             </label>
             <input
@@ -147,12 +147,12 @@ function TeamModal({ team, onClose, onSave }) {
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="e.g. Marketing, Engineering, Design..."
-              className="w-full rounded-xl border border-black/10 dark:border-white/10 bg-white/20 dark:bg-white/5 px-3 py-2 text-[13px] text-black/80 dark:text-white/80 placeholder:text-black/35 dark:placeholder:text-white/35 outline-none focus:border-black/20 dark:focus:border-white/20 transition-colors"
+              className="w-full rounded-xl border border-black/10 dark:border-white/10 bg-white/20 dark:bg-white/5 px-3 py-2 text-[0.8125rem] text-black/80 dark:text-white/80 placeholder:text-black/35 dark:placeholder:text-white/35 outline-none focus:border-black/20 dark:focus:border-white/20 transition-colors"
             />
           </div>
 
           <div>
-            <label className="text-[10px] font-semibold text-black/45 dark:text-white/45 uppercase tracking-wider mb-1.5 block">
+            <label className="text-[0.625rem] font-semibold text-black/45 dark:text-white/45 uppercase tracking-wider mb-1.5 block">
               Description
             </label>
             <textarea
@@ -160,7 +160,7 @@ function TeamModal({ team, onClose, onSave }) {
               onChange={(e) => setDescription(e.target.value)}
               placeholder="What does this team work on? (optional)"
               rows={2}
-              className="w-full rounded-xl border border-black/10 dark:border-white/10 bg-white/20 dark:bg-white/5 px-3 py-2 text-[13px] text-black/80 dark:text-white/80 placeholder:text-black/35 dark:placeholder:text-white/35 outline-none focus:border-black/20 dark:focus:border-white/20 transition-colors resize-none"
+              className="w-full rounded-xl border border-black/10 dark:border-white/10 bg-white/20 dark:bg-white/5 px-3 py-2 text-[0.8125rem] text-black/80 dark:text-white/80 placeholder:text-black/35 dark:placeholder:text-white/35 outline-none focus:border-black/20 dark:focus:border-white/20 transition-colors resize-none"
             />
           </div>
 
@@ -168,14 +168,14 @@ function TeamModal({ team, onClose, onSave }) {
             <button
               type="button"
               onClick={onClose}
-              className="text-[11px] font-medium px-3 py-1.5 rounded-full hover:bg-black/[0.06] dark:hover:bg-white/[0.08] text-black/50 dark:text-white/50 transition-colors"
+              className="text-[0.6875rem] font-medium px-3 py-1.5 rounded-full hover:bg-black/[0.06] dark:hover:bg-white/[0.08] text-black/50 dark:text-white/50 transition-colors"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={!name.trim() || saving}
-              className="text-[11px] font-medium px-4 py-1.5 rounded-full glass-control hover:opacity-90 transition-all disabled:opacity-40"
+              className="text-[0.6875rem] font-medium px-4 py-1.5 rounded-full glass-control hover:opacity-90 transition-all disabled:opacity-40"
             >
               {saving ? "Saving..." : isEdit ? "Save Changes" : "Create Team"}
             </button>
@@ -246,7 +246,7 @@ function InviteModal({ team, onClose, onInvite }) {
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
             <div
-              className="w-8 h-8 rounded-lg flex items-center justify-center text-[11px] font-bold text-white"
+              className="w-8 h-8 rounded-lg flex items-center justify-center text-[0.6875rem] font-bold text-white"
               style={{ background: TEAM_ACCENT_COLORS[colorIdx] }}
             >
               {getInitials(team?.name || "T")}
@@ -255,7 +255,7 @@ function InviteModal({ team, onClose, onInvite }) {
               <h3 className="text-sm font-semibold text-black/80 dark:text-white/80">
                 Invite to {team?.name}
               </h3>
-              <p className="text-[10px] text-black/40 dark:text-white/40">
+              <p className="text-[0.625rem] text-black/40 dark:text-white/40">
                 Send invites to Google accounts
               </p>
             </div>
@@ -274,7 +274,7 @@ function InviteModal({ team, onClose, onInvite }) {
             <div className="w-12 h-12 rounded-full bg-green-500/15 flex items-center justify-center mx-auto mb-3">
               <Mail className="w-5 h-5 text-green-600 dark:text-green-400" />
             </div>
-            <p className="text-[13px] font-medium text-black/70 dark:text-white/70">
+            <p className="text-[0.8125rem] font-medium text-black/70 dark:text-white/70">
               Invites sent!
             </p>
           </div>
@@ -285,7 +285,7 @@ function InviteModal({ team, onClose, onInvite }) {
                 {emails.map((email) => (
                   <span
                     key={email}
-                    className="inline-flex items-center gap-1 rounded-full bg-black/[0.06] dark:bg-white/[0.08] px-2.5 py-1 text-[10px] text-black/65 dark:text-white/65"
+                    className="inline-flex items-center gap-1 rounded-full bg-black/[0.06] dark:bg-white/[0.08] px-2.5 py-1 text-[0.625rem] text-black/65 dark:text-white/65"
                   >
                     <Mail className="w-2.5 h-2.5" />
                     {email}
@@ -318,18 +318,18 @@ function InviteModal({ team, onClose, onInvite }) {
                   }
                 }}
                 placeholder="name@gmail.com"
-                className="flex-1 rounded-xl border border-black/10 dark:border-white/10 bg-white/20 dark:bg-white/5 px-3 py-2 text-[13px] text-black/80 dark:text-white/80 placeholder:text-black/35 dark:placeholder:text-white/35 outline-none focus:border-black/20 dark:focus:border-white/20 transition-colors"
+                className="flex-1 rounded-xl border border-black/10 dark:border-white/10 bg-white/20 dark:bg-white/5 px-3 py-2 text-[0.8125rem] text-black/80 dark:text-white/80 placeholder:text-black/35 dark:placeholder:text-white/35 outline-none focus:border-black/20 dark:focus:border-white/20 transition-colors"
               />
               <button
                 type="button"
                 onClick={addEmail}
-                className="rounded-lg glass-control px-3 py-2 text-[11px] font-medium hover:opacity-90"
+                className="rounded-lg glass-control px-3 py-2 text-[0.6875rem] font-medium hover:opacity-90"
               >
                 Add
               </button>
             </div>
 
-            <p className="text-[10px] text-black/35 dark:text-white/35">
+            <p className="text-[0.625rem] text-black/35 dark:text-white/35">
               Press Enter, comma, or space to add multiple emails
             </p>
 
@@ -337,14 +337,14 @@ function InviteModal({ team, onClose, onInvite }) {
               <button
                 type="button"
                 onClick={onClose}
-                className="text-[11px] font-medium px-3 py-1.5 rounded-full hover:bg-black/[0.06] dark:hover:bg-white/[0.08] text-black/50 dark:text-white/50 transition-colors"
+                className="text-[0.6875rem] font-medium px-3 py-1.5 rounded-full hover:bg-black/[0.06] dark:hover:bg-white/[0.08] text-black/50 dark:text-white/50 transition-colors"
               >
                 Cancel
               </button>
               <button
                 type="submit"
                 disabled={emails.length === 0 && !input.trim() || sending}
-                className="text-[11px] font-medium px-4 py-1.5 rounded-full glass-control hover:opacity-90 transition-all disabled:opacity-40 flex items-center gap-1.5"
+                className="text-[0.6875rem] font-medium px-4 py-1.5 rounded-full glass-control hover:opacity-90 transition-all disabled:opacity-40 flex items-center gap-1.5"
               >
                 <Mail className="w-3 h-3" />
                 {sending ? "Sending..." : `Send Invite${emails.length > 1 ? "s" : ""}`}
@@ -369,14 +369,14 @@ function DeleteConfirmModal({ team, onClose, onConfirm }) {
         <h3 className="text-sm font-semibold text-black/80 dark:text-white/80 mb-2">
           Delete "{team?.name}"?
         </h3>
-        <p className="text-[12px] text-black/50 dark:text-white/50 mb-4 leading-relaxed">
+        <p className="text-[0.75rem] text-black/50 dark:text-white/50 mb-4 leading-relaxed">
           This will permanently remove the team and all its data. Members will lose access to shared boards and calendar events.
         </p>
         <div className="flex items-center justify-end gap-2">
           <button
             type="button"
             onClick={onClose}
-            className="text-[11px] font-medium px-3 py-1.5 rounded-full hover:bg-black/[0.06] dark:hover:bg-white/[0.08] text-black/50 dark:text-white/50 transition-colors"
+            className="text-[0.6875rem] font-medium px-3 py-1.5 rounded-full hover:bg-black/[0.06] dark:hover:bg-white/[0.08] text-black/50 dark:text-white/50 transition-colors"
           >
             Cancel
           </button>
@@ -387,7 +387,7 @@ function DeleteConfirmModal({ team, onClose, onConfirm }) {
               await onConfirm();
             }}
             disabled={deleting}
-            className="text-[11px] font-medium px-4 py-1.5 rounded-full bg-red-500/15 text-red-600 dark:text-red-400 hover:bg-red-500/25 transition-all disabled:opacity-40 flex items-center gap-1.5"
+            className="text-[0.6875rem] font-medium px-4 py-1.5 rounded-full bg-red-500/15 text-red-600 dark:text-red-400 hover:bg-red-500/25 transition-all disabled:opacity-40 flex items-center gap-1.5"
           >
             <Trash2 className="w-3 h-3" />
             {deleting ? "Deleting..." : "Delete Team"}
@@ -426,7 +426,7 @@ function TeamCard({ team, index, onClick, onInvite, onEdit, onDelete }) {
       <div className="p-4">
         <div className="flex items-start justify-between mb-3">
           <div
-            className="w-10 h-10 rounded-xl flex items-center justify-center text-[13px] font-bold text-white shadow-sm"
+            className="w-10 h-10 rounded-xl flex items-center justify-center text-[0.8125rem] font-bold text-white shadow-sm"
             style={{ background: TEAM_ACCENT_COLORS[colorIdx] }}
           >
             {getInitials(team.name)}
@@ -452,7 +452,7 @@ function TeamCard({ team, index, onClick, onInvite, onEdit, onDelete }) {
                       setMenuOpen(false);
                       onInvite(team);
                     }}
-                    className="w-full text-left text-[11px] px-3 py-2 hover:bg-black/[0.06] dark:hover:bg-white/[0.08] transition-colors text-black/65 dark:text-white/65 flex items-center gap-2"
+                    className="w-full text-left text-[0.6875rem] px-3 py-2 hover:bg-black/[0.06] dark:hover:bg-white/[0.08] transition-colors text-black/65 dark:text-white/65 flex items-center gap-2"
                   >
                     <UserPlus className="w-3 h-3" /> Invite Members
                   </button>
@@ -463,7 +463,7 @@ function TeamCard({ team, index, onClick, onInvite, onEdit, onDelete }) {
                       setMenuOpen(false);
                       onEdit(team);
                     }}
-                    className="w-full text-left text-[11px] px-3 py-2 hover:bg-black/[0.06] dark:hover:bg-white/[0.08] transition-colors text-black/65 dark:text-white/65 flex items-center gap-2"
+                    className="w-full text-left text-[0.6875rem] px-3 py-2 hover:bg-black/[0.06] dark:hover:bg-white/[0.08] transition-colors text-black/65 dark:text-white/65 flex items-center gap-2"
                   >
                     <Edit2 className="w-3 h-3" /> Edit Team
                   </button>
@@ -474,7 +474,7 @@ function TeamCard({ team, index, onClick, onInvite, onEdit, onDelete }) {
                       setMenuOpen(false);
                       onDelete(team);
                     }}
-                    className="w-full text-left text-[11px] px-3 py-2 hover:bg-black/[0.06] dark:hover:bg-white/[0.08] transition-colors text-red-500/70 flex items-center gap-2"
+                    className="w-full text-left text-[0.6875rem] px-3 py-2 hover:bg-black/[0.06] dark:hover:bg-white/[0.08] transition-colors text-red-500/70 flex items-center gap-2"
                   >
                     <Trash2 className="w-3 h-3" /> Delete Team
                   </button>
@@ -484,22 +484,22 @@ function TeamCard({ team, index, onClick, onInvite, onEdit, onDelete }) {
           </div>
         </div>
 
-        <h3 className="text-[14px] font-semibold text-black/80 dark:text-white/80 mb-0.5 truncate">
+        <h3 className="text-[0.875rem] font-semibold text-black/80 dark:text-white/80 mb-0.5 truncate">
           {team.name}
         </h3>
         {team.description && (
-          <p className="text-[11px] text-black/45 dark:text-white/45 mb-3 line-clamp-2 leading-relaxed">
+          <p className="text-[0.6875rem] text-black/45 dark:text-white/45 mb-3 line-clamp-2 leading-relaxed">
             {team.description}
           </p>
         )}
 
         <div className="flex items-center justify-between mt-3 pt-3 border-t border-black/[0.06] dark:border-white/[0.06]">
           <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1 text-[10px] text-black/45 dark:text-white/45">
+            <div className="flex items-center gap-1 text-[0.625rem] text-black/45 dark:text-white/45">
               <Users className="w-3 h-3" />
               <span>{memberCount} member{memberCount !== 1 ? "s" : ""}</span>
             </div>
-            <div className="flex items-center gap-1 text-[10px] text-black/45 dark:text-white/45">
+            <div className="flex items-center gap-1 text-[0.625rem] text-black/45 dark:text-white/45">
               <Layout className="w-3 h-3" />
               <span>{boardCount} board{boardCount !== 1 ? "s" : ""}</span>
             </div>
@@ -548,7 +548,7 @@ function TeamDetail({ team, onBack, onInvite, onEdit, onNavigateCalendar, onNavi
         <button
           type="button"
           onClick={onBack}
-          className="flex items-center gap-1.5 text-[11px] text-black/50 dark:text-white/50 hover:text-black/70 dark:hover:text-white/70 transition-colors mb-4"
+          className="flex items-center gap-1.5 text-[0.6875rem] text-black/50 dark:text-white/50 hover:text-black/70 dark:hover:text-white/70 transition-colors mb-4"
         >
           <ArrowLeft className="w-3.5 h-3.5" />
           All Teams
@@ -557,7 +557,7 @@ function TeamDetail({ team, onBack, onInvite, onEdit, onNavigateCalendar, onNavi
         <div className="flex items-start justify-between">
           <div className="flex items-center gap-3">
             <div
-              className="w-12 h-12 rounded-xl flex items-center justify-center text-[15px] font-bold text-white shadow-sm"
+              className="w-12 h-12 rounded-xl flex items-center justify-center text-[0.9375rem] font-bold text-white shadow-sm"
               style={{ background: TEAM_ACCENT_COLORS[colorIdx] }}
             >
               {getInitials(team.name)}
@@ -567,7 +567,7 @@ function TeamDetail({ team, onBack, onInvite, onEdit, onNavigateCalendar, onNavi
                 {team.name}
               </h1>
               {team.description && (
-                <p className="text-[12px] text-black/45 dark:text-white/45 mt-0.5">
+                <p className="text-[0.75rem] text-black/45 dark:text-white/45 mt-0.5">
                   {team.description}
                 </p>
               )}
@@ -578,7 +578,7 @@ function TeamDetail({ team, onBack, onInvite, onEdit, onNavigateCalendar, onNavi
             <button
               type="button"
               onClick={() => onInvite(team)}
-              className="flex items-center gap-1.5 text-[11px] font-medium px-3 py-1.5 rounded-full glass-control hover:opacity-90 transition-all"
+              className="flex items-center gap-1.5 text-[0.6875rem] font-medium px-3 py-1.5 rounded-full glass-control hover:opacity-90 transition-all"
             >
               <UserPlus className="w-3 h-3" />
               Invite
@@ -603,7 +603,7 @@ function TeamDetail({ team, onBack, onInvite, onEdit, onNavigateCalendar, onNavi
                 key={tab.id}
                 type="button"
                 onClick={() => setActiveTab(tab.id)}
-                className={`flex items-center gap-1.5 text-[11px] font-medium px-3 py-1.5 rounded-full transition-all ${
+                className={`flex items-center gap-1.5 text-[0.6875rem] font-medium px-3 py-1.5 rounded-full transition-all ${
                   isActive
                     ? "glass-control shadow-sm text-black/80 dark:text-white/80"
                     : "text-black/45 dark:text-white/45 hover:text-black/65 dark:hover:text-white/65 hover:bg-black/[0.04] dark:hover:bg-white/[0.04]"
@@ -710,7 +710,7 @@ function LinkProjectModal({ team, existingProjects, linkedIds, onClose, onLink }
             <h3 className="text-sm font-semibold text-black/80 dark:text-white/80">
               Link Existing Project
             </h3>
-            <p className="text-[10px] text-black/40 dark:text-white/40 mt-0.5">
+            <p className="text-[0.625rem] text-black/40 dark:text-white/40 mt-0.5">
               Add your existing projects to {team?.name}
             </p>
           </div>
@@ -730,7 +730,7 @@ function LinkProjectModal({ team, existingProjects, linkedIds, onClose, onLink }
             placeholder="Search your projects..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="flex-1 bg-transparent outline-none text-[12px] text-black/70 dark:text-white/70 placeholder:text-black/35 dark:placeholder:text-white/35"
+            className="flex-1 bg-transparent outline-none text-[0.75rem] text-black/70 dark:text-white/70 placeholder:text-black/35 dark:placeholder:text-white/35"
             autoFocus
           />
         </div>
@@ -738,7 +738,7 @@ function LinkProjectModal({ team, existingProjects, linkedIds, onClose, onLink }
         <div className="max-h-[280px] overflow-y-auto -mx-1 px-1">
           {filtered.length === 0 ? (
             <div className="text-center py-8">
-              <p className="text-[12px] text-black/40 dark:text-white/40">
+              <p className="text-[0.75rem] text-black/40 dark:text-white/40">
                 {available.length === 0
                   ? "All your projects are already linked"
                   : "No projects match your search"}
@@ -773,10 +773,10 @@ function LinkProjectModal({ team, existingProjects, linkedIds, onClose, onLink }
                       )}
                     </div>
                     <div className="flex-1 min-w-0">
-                      <p className="text-[12px] font-medium text-black/70 dark:text-white/70 truncate">
+                      <p className="text-[0.75rem] font-medium text-black/70 dark:text-white/70 truncate">
                         {project.name || "Untitled Project"}
                       </p>
-                      <p className="text-[10px] text-black/35 dark:text-white/35">
+                      <p className="text-[0.625rem] text-black/35 dark:text-white/35">
                         {timeAgo(project.updated_at || project.created_at)}
                       </p>
                     </div>
@@ -788,14 +788,14 @@ function LinkProjectModal({ team, existingProjects, linkedIds, onClose, onLink }
         </div>
 
         <div className="flex items-center justify-between pt-3 mt-3 border-t border-black/[0.06] dark:border-white/[0.06]">
-          <span className="text-[10px] text-black/40 dark:text-white/40">
+          <span className="text-[0.625rem] text-black/40 dark:text-white/40">
             {selected.size > 0 ? `${selected.size} selected` : ""}
           </span>
           <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={onClose}
-              className="text-[11px] font-medium px-3 py-1.5 rounded-full hover:bg-black/[0.06] dark:hover:bg-white/[0.08] text-black/50 dark:text-white/50 transition-colors"
+              className="text-[0.6875rem] font-medium px-3 py-1.5 rounded-full hover:bg-black/[0.06] dark:hover:bg-white/[0.08] text-black/50 dark:text-white/50 transition-colors"
             >
               Cancel
             </button>
@@ -803,7 +803,7 @@ function LinkProjectModal({ team, existingProjects, linkedIds, onClose, onLink }
               type="button"
               onClick={handleSubmit}
               disabled={selected.size === 0 || linking}
-              className="text-[11px] font-medium px-4 py-1.5 rounded-full glass-control hover:opacity-90 transition-all disabled:opacity-40 flex items-center gap-1.5"
+              className="text-[0.6875rem] font-medium px-4 py-1.5 rounded-full glass-control hover:opacity-90 transition-all disabled:opacity-40 flex items-center gap-1.5"
             >
               <Link2 className="w-3 h-3" />
               {linking ? "Linking..." : `Link ${selected.size > 0 ? selected.size : ""} Project${selected.size !== 1 ? "s" : ""}`}
@@ -867,8 +867,8 @@ function ProjectsTab({ team, onCreateProject, onLinkProject, onNavigateProject, 
           <div className="w-14 h-14 rounded-2xl bg-black/[0.04] dark:bg-white/[0.04] flex items-center justify-center mx-auto mb-3">
             <FolderOpen className="w-6 h-6 text-black/25 dark:text-white/25" />
           </div>
-          <p className="text-[13px] text-black/45 dark:text-white/45 mb-1">No projects yet</p>
-          <p className="text-[11px] text-black/30 dark:text-white/30">
+          <p className="text-[0.8125rem] text-black/45 dark:text-white/45 mb-1">No projects yet</p>
+          <p className="text-[0.6875rem] text-black/30 dark:text-white/30">
             Create a new project or link an existing one using the buttons above
           </p>
         </div>
@@ -898,7 +898,7 @@ function ProjectsTab({ team, onCreateProject, onLinkProject, onNavigateProject, 
                     <h3 className="text-sm font-semibold drop-shadow-[0_0_8px_rgba(255,255,255,0.55)] leading-tight line-clamp-1">
                       {project.name || "Untitled Project"}
                     </h3>
-                    <div className="mt-1 text-[11px] text-black/55 leading-tight">
+                    <div className="mt-1 text-[0.6875rem] text-black/55 leading-tight">
                       Last modified: {formatProjectDate(project.updated_at || project.created_at)}
                     </div>
                   </div>
@@ -925,14 +925,14 @@ function BoardsTab({ team, onCreateBoard, onNavigateBoard, colorIdx }) {
           <div className="w-14 h-14 rounded-2xl bg-black/[0.04] dark:bg-white/[0.04] flex items-center justify-center mx-auto mb-3">
             <Layout className="w-6 h-6 text-black/25 dark:text-white/25" />
           </div>
-          <p className="text-[13px] text-black/45 dark:text-white/45 mb-1">No boards yet</p>
-          <p className="text-[11px] text-black/30 dark:text-white/30 mb-4">
+          <p className="text-[0.8125rem] text-black/45 dark:text-white/45 mb-1">No boards yet</p>
+          <p className="text-[0.6875rem] text-black/30 dark:text-white/30 mb-4">
             Create a shared board for your team to collaborate on
           </p>
           <button
             type="button"
             onClick={() => onCreateBoard(team)}
-            className="inline-flex items-center gap-1.5 text-[11px] font-medium px-4 py-2 rounded-full glass-control hover:opacity-90 transition-all"
+            className="inline-flex items-center gap-1.5 text-[0.6875rem] font-medium px-4 py-2 rounded-full glass-control hover:opacity-90 transition-all"
           >
             <Plus className="w-3 h-3" />
             Create Board
@@ -946,7 +946,7 @@ function BoardsTab({ team, onCreateBoard, onNavigateBoard, colorIdx }) {
             className="rounded-xl border-2 border-dashed border-black/[0.08] dark:border-white/[0.08] hover:border-black/[0.15] dark:hover:border-white/[0.15] transition-all p-6 flex flex-col items-center justify-center gap-2 min-h-[120px]"
           >
             <Plus className="w-5 h-5 text-black/25 dark:text-white/25" />
-            <span className="text-[11px] text-black/40 dark:text-white/40 font-medium">New Board</span>
+            <span className="text-[0.6875rem] text-black/40 dark:text-white/40 font-medium">New Board</span>
           </button>
           {boards.map((board, i) => (
             <div
@@ -956,16 +956,16 @@ function BoardsTab({ team, onCreateBoard, onNavigateBoard, colorIdx }) {
               style={{ background: TEAM_COLORS[colorIdx] }}
             >
               <div>
-                <h4 className="text-[13px] font-semibold text-black/75 dark:text-white/75 truncate">
+                <h4 className="text-[0.8125rem] font-semibold text-black/75 dark:text-white/75 truncate">
                   {board.title || "Untitled Board"}
                 </h4>
-                <p className="text-[10px] text-black/40 dark:text-white/40 mt-0.5">
+                <p className="text-[0.625rem] text-black/40 dark:text-white/40 mt-0.5">
                   {timeAgo(board.updated_at || board.created_at)}
                 </p>
               </div>
               <div className="flex items-center gap-1 mt-3">
                 <Layout className="w-3 h-3 text-black/30 dark:text-white/30" />
-                <span className="text-[10px] text-black/35 dark:text-white/35">
+                <span className="text-[0.625rem] text-black/35 dark:text-white/35">
                   Canvas Board
                 </span>
               </div>
@@ -1035,18 +1035,18 @@ function CalendarTab({ team, onNavigateCalendar }) {
           className="rounded-xl border border-black/[0.06] dark:border-white/[0.06] p-3 flex items-center gap-3 hover:bg-black/[0.02] dark:hover:bg-white/[0.02] transition-colors"
         >
           <div className="w-10 text-center shrink-0">
-            <div className="text-[10px] text-black/40 dark:text-white/40 uppercase">
+            <div className="text-[0.625rem] text-black/40 dark:text-white/40 uppercase">
               {new Date(evt.date_key + "T00:00:00").toLocaleDateString("en-US", { month: "short" })}
             </div>
-            <div className="text-[16px] font-semibold text-black/70 dark:text-white/70">
+            <div className="text-[1rem] font-semibold text-black/70 dark:text-white/70">
               {new Date(evt.date_key + "T00:00:00").getDate()}
             </div>
           </div>
           <div className="flex-1 min-w-0">
-            <h4 className="text-[12px] font-semibold text-black/70 dark:text-white/70 truncate">
+            <h4 className="text-[0.75rem] font-semibold text-black/70 dark:text-white/70 truncate">
               {evt.title}
             </h4>
-            <p className="text-[10px] text-black/40 dark:text-white/40 mt-0.5">
+            <p className="text-[0.625rem] text-black/40 dark:text-white/40 mt-0.5">
               {formatTime(evt.start_hour)} — {formatTime(evt.end_hour)}
             </p>
           </div>
@@ -1072,17 +1072,17 @@ function CalendarTab({ team, onNavigateCalendar }) {
     <div>
       <div className="flex items-center justify-between mb-4">
         <div>
-          <h3 className="text-[13px] font-semibold text-black/70 dark:text-white/70">
+          <h3 className="text-[0.8125rem] font-semibold text-black/70 dark:text-white/70">
             Team Calendar
           </h3>
-          <p className="text-[11px] text-black/40 dark:text-white/40 mt-0.5">
+          <p className="text-[0.6875rem] text-black/40 dark:text-white/40 mt-0.5">
             Events linked to this team space from the calendar
           </p>
         </div>
         <button
           type="button"
           onClick={onNavigateCalendar}
-          className="flex items-center gap-1.5 text-[11px] font-medium px-3 py-1.5 rounded-full glass-control hover:opacity-90 transition-all"
+          className="flex items-center gap-1.5 text-[0.6875rem] font-medium px-3 py-1.5 rounded-full glass-control hover:opacity-90 transition-all"
         >
           <Calendar className="w-3 h-3" />
           Open Calendar
@@ -1094,8 +1094,8 @@ function CalendarTab({ team, onNavigateCalendar }) {
           <div className="w-14 h-14 rounded-2xl bg-black/[0.04] dark:bg-white/[0.04] flex items-center justify-center mx-auto mb-3">
             <Calendar className="w-6 h-6 text-black/25 dark:text-white/25" />
           </div>
-          <p className="text-[13px] text-black/45 dark:text-white/45 mb-1">No linked events</p>
-          <p className="text-[11px] text-black/30 dark:text-white/30">
+          <p className="text-[0.8125rem] text-black/45 dark:text-white/45 mb-1">No linked events</p>
+          <p className="text-[0.6875rem] text-black/30 dark:text-white/30">
             Link events to this team space from the calendar to see them here
           </p>
         </div>
@@ -1103,7 +1103,7 @@ function CalendarTab({ team, onNavigateCalendar }) {
         <div className="space-y-5">
           {upcomingEvents.length > 0 && (
             <div>
-              <h4 className="text-[11px] font-semibold text-black/40 dark:text-white/40 uppercase tracking-wider mb-2">
+              <h4 className="text-[0.6875rem] font-semibold text-black/40 dark:text-white/40 uppercase tracking-wider mb-2">
                 Upcoming
               </h4>
               {renderEventList(upcomingEvents)}
@@ -1111,7 +1111,7 @@ function CalendarTab({ team, onNavigateCalendar }) {
           )}
           {pastEvents.length > 0 && (
             <div>
-              <h4 className="text-[11px] font-semibold text-black/40 dark:text-white/40 uppercase tracking-wider mb-2">
+              <h4 className="text-[0.6875rem] font-semibold text-black/40 dark:text-white/40 uppercase tracking-wider mb-2">
                 Past
               </h4>
               {renderEventList(pastEvents)}
@@ -1231,8 +1231,8 @@ function MembersChatTab({ team, onUpdateTeam }) {
             <div className="w-14 h-14 rounded-2xl bg-black/[0.04] dark:bg-white/[0.04] flex items-center justify-center mx-auto mb-3">
               <MessageSquare className="w-6 h-6 text-black/25 dark:text-white/25" />
             </div>
-            <p className="text-[13px] text-black/45 dark:text-white/45 mb-1">No messages yet</p>
-            <p className="text-[11px] text-black/30 dark:text-white/30">
+            <p className="text-[0.8125rem] text-black/45 dark:text-white/45 mb-1">No messages yet</p>
+            <p className="text-[0.6875rem] text-black/30 dark:text-white/30">
               Start a conversation with your team
             </p>
           </div>
@@ -1246,7 +1246,7 @@ function MembersChatTab({ team, onUpdateTeam }) {
                 <div key={gi} className={`flex gap-2.5 ${isMe ? "flex-row-reverse" : ""}`}>
                   {!isMe && (
                     <div
-                      className="w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold text-white shrink-0 mt-0.5"
+                      className="w-7 h-7 rounded-full flex items-center justify-center text-[0.625rem] font-bold text-white shrink-0 mt-0.5"
                       style={{ background: TEAM_ACCENT_COLORS[colorIdx] }}
                     >
                       {(group.senderName || group.sender).charAt(0).toUpperCase()}
@@ -1254,14 +1254,14 @@ function MembersChatTab({ team, onUpdateTeam }) {
                   )}
                   <div className={`flex flex-col gap-0.5 max-w-[75%] ${isMe ? "items-end" : "items-start"}`}>
                     {!isMe && (
-                      <span className="text-[10px] font-medium text-black/45 dark:text-white/45 px-1">
+                      <span className="text-[0.625rem] font-medium text-black/45 dark:text-white/45 px-1">
                         {group.senderName || group.sender.split("@")[0]}
                       </span>
                     )}
                     {group.messages.map((msg) => (
                       <div
                         key={msg.id}
-                        className={`rounded-2xl px-3 py-2 text-[13px] leading-relaxed ${
+                        className={`rounded-2xl px-3 py-2 text-[0.8125rem] leading-relaxed ${
                           isMe
                             ? "bg-blue-500/15 text-black/80 dark:text-white/80 rounded-tr-md"
                             : "bg-black/[0.05] dark:bg-white/[0.08] text-black/75 dark:text-white/75 rounded-tl-md"
@@ -1285,7 +1285,7 @@ function MembersChatTab({ team, onUpdateTeam }) {
       {/* Input area */}
       <div className="pt-3 mt-auto border-t border-black/[0.06] dark:border-white/[0.06]">
         {members.length === 0 && (
-          <p className="text-[10px] text-black/35 dark:text-white/35 mb-2 text-center">
+          <p className="text-[0.625rem] text-black/35 dark:text-white/35 mb-2 text-center">
             Invite team members to start chatting together
           </p>
         )}
@@ -1303,7 +1303,7 @@ function MembersChatTab({ team, onUpdateTeam }) {
               }}
               placeholder="Type a message..."
               rows={1}
-              className="w-full bg-transparent outline-none text-[13px] text-black/80 dark:text-white/80 placeholder:text-black/35 dark:placeholder:text-white/35 resize-none max-h-[120px]"
+              className="w-full bg-transparent outline-none text-[0.8125rem] text-black/80 dark:text-white/80 placeholder:text-black/35 dark:placeholder:text-white/35 resize-none max-h-[120px]"
               style={{ minHeight: "20px" }}
             />
           </div>
@@ -1331,17 +1331,17 @@ function MembersTab({ team, onInvite, onRemoveMember }) {
     <div>
       <div className="flex items-center justify-between mb-4">
         <div>
-          <h3 className="text-[13px] font-semibold text-black/70 dark:text-white/70">
+          <h3 className="text-[0.8125rem] font-semibold text-black/70 dark:text-white/70">
             Team Members
           </h3>
-          <p className="text-[11px] text-black/40 dark:text-white/40 mt-0.5">
+          <p className="text-[0.6875rem] text-black/40 dark:text-white/40 mt-0.5">
             {members.length} member{members.length !== 1 ? "s" : ""} in this team
           </p>
         </div>
         <button
           type="button"
           onClick={onInvite}
-          className="flex items-center gap-1.5 text-[11px] font-medium px-3 py-1.5 rounded-full glass-control hover:opacity-90 transition-all"
+          className="flex items-center gap-1.5 text-[0.6875rem] font-medium px-3 py-1.5 rounded-full glass-control hover:opacity-90 transition-all"
         >
           <UserPlus className="w-3 h-3" />
           Invite
@@ -1353,14 +1353,14 @@ function MembersTab({ team, onInvite, onRemoveMember }) {
           <div className="w-14 h-14 rounded-2xl bg-black/[0.04] dark:bg-white/[0.04] flex items-center justify-center mx-auto mb-3">
             <Users className="w-6 h-6 text-black/25 dark:text-white/25" />
           </div>
-          <p className="text-[13px] text-black/45 dark:text-white/45 mb-1">No members yet</p>
-          <p className="text-[11px] text-black/30 dark:text-white/30 mb-4">
+          <p className="text-[0.8125rem] text-black/45 dark:text-white/45 mb-1">No members yet</p>
+          <p className="text-[0.6875rem] text-black/30 dark:text-white/30 mb-4">
             Invite team members via their Google account
           </p>
           <button
             type="button"
             onClick={onInvite}
-            className="inline-flex items-center gap-1.5 text-[11px] font-medium px-4 py-2 rounded-full glass-control hover:opacity-90 transition-all"
+            className="inline-flex items-center gap-1.5 text-[0.6875rem] font-medium px-4 py-2 rounded-full glass-control hover:opacity-90 transition-all"
           >
             <UserPlus className="w-3 h-3" />
             Send Invites
@@ -1378,12 +1378,12 @@ function MembersTab({ team, onInvite, onRemoveMember }) {
                 key={email || i}
                 className="flex items-center gap-3 rounded-xl px-3 py-2.5 hover:bg-black/[0.03] dark:hover:bg-white/[0.03] transition-colors group"
               >
-                <div className="w-8 h-8 rounded-full bg-black/[0.06] dark:bg-white/[0.06] text-[12px] font-bold flex items-center justify-center text-black/55 dark:text-white/55">
+                <div className="w-8 h-8 rounded-full bg-black/[0.06] dark:bg-white/[0.06] text-[0.75rem] font-bold flex items-center justify-center text-black/55 dark:text-white/55">
                   {email?.charAt(0).toUpperCase() || "?"}
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
-                    <span className="text-[12px] font-medium text-black/70 dark:text-white/70 truncate">
+                    <span className="text-[0.75rem] font-medium text-black/70 dark:text-white/70 truncate">
                       {email}
                     </span>
                     {role === "owner" && (
@@ -1393,7 +1393,7 @@ function MembersTab({ team, onInvite, onRemoveMember }) {
                     )}
                   </div>
                   {joined && (
-                    <p className="text-[10px] text-black/35 dark:text-white/35">
+                    <p className="text-[0.625rem] text-black/35 dark:text-white/35">
                       Joined {timeAgo(joined)}
                     </p>
                   )}
@@ -1795,7 +1795,7 @@ export default function TeamSpaces() {
               <button
                 type="button"
                 onClick={() => setModal({ type: "create" })}
-                className="flex items-center gap-1.5 text-[11px] font-medium px-3 py-1 rounded-full glass-control hover:opacity-90"
+                className="flex items-center gap-1.5 text-[0.6875rem] font-medium px-3 py-1 rounded-full glass-control hover:opacity-90"
               >
                 <Plus className="w-3 h-3" />
                 New Team
@@ -1836,20 +1836,20 @@ export default function TeamSpaces() {
                   <h1 className="text-2xl font-semibold text-black/85 dark:text-white/85">
                     Team Spaces
                   </h1>
-                  <p className="text-[13px] text-black/45 dark:text-white/45 mt-0.5">
+                  <p className="text-[0.8125rem] text-black/45 dark:text-white/45 mt-0.5">
                     {teams.length} team{teams.length !== 1 ? "s" : ""} &middot; Collaborate with boards, calendars, and more
                   </p>
                 </div>
 
                 <div className="flex items-center gap-2 shrink-0 pt-1">
-                  <div className="flex items-center gap-2 rounded-xl border border-black/10 dark:border-white/10 bg-transparent px-2.5 py-1.5 text-[11px] text-black/60 dark:text-white/60">
+                  <div className="flex items-center gap-2 rounded-xl border border-black/10 dark:border-white/10 bg-transparent px-2.5 py-1.5 text-[0.6875rem] text-black/60 dark:text-white/60">
                     <Search className="w-3.5 h-3.5" />
                     <input
                       type="text"
                       placeholder="Search teams..."
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
-                      className="w-32 bg-transparent outline-none placeholder:text-black/35 dark:placeholder:text-white/35 text-black/70 dark:text-white/70 text-[11px]"
+                      className="w-32 bg-transparent outline-none placeholder:text-black/35 dark:placeholder:text-white/35 text-black/70 dark:text-white/70 text-[0.6875rem]"
                     />
                   </div>
                 </div>
@@ -1863,16 +1863,16 @@ export default function TeamSpaces() {
                   <div className="w-16 h-16 rounded-2xl bg-black/[0.04] dark:bg-white/[0.04] flex items-center justify-center mx-auto mb-4">
                     <Users className="w-7 h-7 text-black/20 dark:text-white/20" />
                   </div>
-                  <h2 className="text-[15px] font-semibold text-black/60 dark:text-white/60 mb-1">
+                  <h2 className="text-[0.9375rem] font-semibold text-black/60 dark:text-white/60 mb-1">
                     Create your first team
                   </h2>
-                  <p className="text-[12px] text-black/35 dark:text-white/35 mb-5 max-w-sm mx-auto leading-relaxed">
+                  <p className="text-[0.75rem] text-black/35 dark:text-white/35 mb-5 max-w-sm mx-auto leading-relaxed">
                     Organize your work by creating teams. Invite members, share boards, and coordinate through shared calendars.
                   </p>
                   <button
                     type="button"
                     onClick={() => setModal({ type: "create" })}
-                    className="inline-flex items-center gap-1.5 text-[12px] font-medium px-5 py-2.5 rounded-full glass-control hover:opacity-90 transition-all"
+                    className="inline-flex items-center gap-1.5 text-[0.75rem] font-medium px-5 py-2.5 rounded-full glass-control hover:opacity-90 transition-all"
                   >
                     <Plus className="w-3.5 h-3.5" />
                     Create Team
@@ -1883,10 +1883,10 @@ export default function TeamSpaces() {
                   <div className="w-16 h-16 rounded-2xl bg-black/[0.04] dark:bg-white/[0.04] flex items-center justify-center mx-auto mb-4">
                     <Users className="w-7 h-7 text-black/20 dark:text-white/20" />
                   </div>
-                  <h2 className="text-[15px] font-semibold text-black/60 dark:text-white/60 mb-1">
+                  <h2 className="text-[0.9375rem] font-semibold text-black/60 dark:text-white/60 mb-1">
                     No matching teams
                   </h2>
-                  <p className="text-[12px] text-black/35 dark:text-white/35">
+                  <p className="text-[0.75rem] text-black/35 dark:text-white/35">
                     Try adjusting your search query
                   </p>
                 </div>
@@ -1900,7 +1900,7 @@ export default function TeamSpaces() {
                     <div className="w-10 h-10 rounded-xl bg-black/[0.04] dark:bg-white/[0.04] flex items-center justify-center">
                       <Plus className="w-5 h-5 text-black/25 dark:text-white/25" />
                     </div>
-                    <span className="text-[11px] text-black/40 dark:text-white/40 font-medium">New Team</span>
+                    <span className="text-[0.6875rem] text-black/40 dark:text-white/40 font-medium">New Team</span>
                   </button>
                   {filteredTeams.map((team, i) => (
                     <TeamCard

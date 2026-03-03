@@ -1233,7 +1233,7 @@ If the user asks about old memories or references past ideas, refer to the memor
       onDrop={handleDrop}
     >
       <header className="fixed top-0 left-0 right-0 z-30 bg-white/60 backdrop-blur-md">
-        <div className="mx-auto w-full max-w-[1600px] pl-[170px] xl:pl-6 pr-4 sm:pr-6 py-3 sm:py-4">
+        <div className="mx-auto w-full max-w-[100rem] pl-[10.625rem] xl:pl-6 pr-4 sm:pr-6 py-3 sm:py-4">
           <div className="text-base sm:text-lg font-semibold">
             {isEditingTitle ? (
               <input
@@ -1250,7 +1250,7 @@ If the user asks about old memories or references past ideas, refer to the memor
                   }
                 }}
                 autoFocus
-                className="w-full max-w-[280px] sm:max-w-[420px] bg-white/70 border border-white/60 rounded-lg px-3 py-1 text-base sm:text-lg font-semibold outline-none"
+                className="w-full max-w-[17.5rem] sm:max-w-[26.25rem] bg-white/70 border border-white/60 rounded-lg px-3 py-1 text-base sm:text-lg font-semibold outline-none"
               />
             ) : (
               <button
@@ -1299,7 +1299,7 @@ If the user asks about old memories or references past ideas, refer to the memor
               <div className="w-px h-4 bg-black/10 mx-1" />
 
               <Select value={selectedModel} onValueChange={updateSelectedModel}>
-                <SelectTrigger className="w-[100px] sm:w-[130px] h-9 rounded-full glass-control hover:opacity-90 text-xs font-medium">
+                <SelectTrigger className="w-[6.25rem] sm:w-[8.125rem] h-9 rounded-full glass-control hover:opacity-90 text-xs font-medium">
                   <SelectValue placeholder="Model" />
                 </SelectTrigger>
                 <SelectContent
@@ -1371,13 +1371,13 @@ If the user asks about old memories or references past ideas, refer to the memor
         </div>
       </div>
 
-      <main className="mx-auto max-w-[1600px] px-4 sm:px-6 pt-28 pb-16 grid grid-cols-1 md:grid-cols-[280px_1fr] xl:grid-cols-[340px_1fr_280px] gap-5">
+      <main className="mx-auto max-w-[100rem] px-4 sm:px-6 pt-28 pb-16 grid grid-cols-1 md:grid-cols-[17.5rem_1fr] xl:grid-cols-[21.25rem_1fr_17.5rem] gap-5">
         {/* Left: File Collage */}
         <div className="space-y-5">
         <section className="rounded-2xl border border-white/60 bg-[#e9e9ef]/75 backdrop-blur-lg shadow-xl shadow-white/20 p-4">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-sm font-semibold">All Files</h2>
-            <span className="text-[11px] text-black/50">{allFilesForCollage.length} file{allFilesForCollage.length !== 1 ? "s" : ""}</span>
+            <span className="text-[0.6875rem] text-black/50">{allFilesForCollage.length} file{allFilesForCollage.length !== 1 ? "s" : ""}</span>
           </div>
           {allFilesForCollage.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 text-center">
@@ -1407,7 +1407,7 @@ If the user asks about old memories or references past ideas, refer to the memor
                       </div>
                       <div className="min-w-0 flex-1">
                         <p className="text-xs font-medium text-black/85 truncate">{label}</p>
-                        {subtitle && <p className="text-[11px] text-black/55 mt-0.5 truncate">{subtitle}</p>}
+                        {subtitle && <p className="text-[0.6875rem] text-black/55 mt-0.5 truncate">{subtitle}</p>}
                       </div>
                     </div>
                   </div>
@@ -1480,7 +1480,7 @@ If the user asks about old memories or references past ideas, refer to the memor
                         {displayUrl ? (
                           <audio src={displayUrl} controls className="w-full h-10" preload="metadata" />
                         ) : (
-                          <p className="text-[11px] text-black/50">Audio file</p>
+                          <p className="text-[0.6875rem] text-black/50">Audio file</p>
                         )}
                       </div>
                     );
@@ -1523,7 +1523,7 @@ If the user asks about old memories or references past ideas, refer to the memor
                           <div className="max-h-56 overflow-y-auto scrollbar-hide">
                             <p className="text-sm text-black/70 whitespace-pre-wrap break-words">{file.content}</p>
                           </div>
-                          <div className="mt-3 text-[11px] text-black/55 flex items-center gap-1">
+                          <div className="mt-3 text-[0.6875rem] text-black/55 flex items-center gap-1">
                             <Clock className="w-3 h-3" />
                             <span>{file.name}</span>
                           </div>
@@ -1636,7 +1636,7 @@ If the user asks about old memories or references past ideas, refer to the memor
 
         {/* Center: Boards, Connections */}
         <div className="min-w-0 space-y-6">
-          <div className="w-full flex items-center gap-2 rounded-xl border border-white/60 bg-white/70 backdrop-blur-md px-4 py-2 text-[12px] text-black/70">
+          <div className="w-full flex items-center gap-2 rounded-xl border border-white/60 bg-white/70 backdrop-blur-md px-4 py-2 text-[0.75rem] text-black/70">
             <SearchIcon className="w-4 h-4" />
             <input
               value={search}
@@ -1651,7 +1651,7 @@ If the user asks about old memories or references past ideas, refer to the memor
             <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
               <div className="min-w-0">
                 <h2 className="text-base sm:text-lg font-semibold">{centerTab === "boards" ? "Boards" : "Chats"}</h2>
-                <p className="text-[11px] sm:text-xs text-black/60">
+                <p className="text-[0.6875rem] sm:text-xs text-black/60">
                   {centerTab === "boards"
                     ? "Create and organize boards inside this project."
                     : "Conversations and AI chats in this project."}
@@ -1799,7 +1799,7 @@ If the user asks about old memories or references past ideas, refer to the memor
             <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
               <div className="min-w-0">
                 <h2 className="text-base sm:text-lg font-semibold">{bottomTab === "connections" ? "Connections" : "Graph"}</h2>
-                <p className="text-[11px] sm:text-xs text-black/60">
+                <p className="text-[0.6875rem] sm:text-xs text-black/60">
                   {bottomTab === "connections"
                     ? "Boards and their files in this project."
                     : "Visual graph of boards and files in this project."}
@@ -1807,7 +1807,7 @@ If the user asks about old memories or references past ideas, refer to the memor
               </div>
               <div className="flex items-center gap-2">
                 {bottomTab === "connections" && (
-                  <div className="hidden sm:block rounded-full border border-white/60 bg-white/60 px-3 py-1 text-[11px] text-black/60">
+                  <div className="hidden sm:block rounded-full border border-white/60 bg-white/60 px-3 py-1 text-[0.6875rem] text-black/60">
                     {boards.length} board{boards.length !== 1 ? "s" : ""} · {files.length} file{files.length !== 1 ? "s" : ""}
                   </div>
                 )}
@@ -1844,13 +1844,13 @@ If the user asks about old memories or references past ideas, refer to the memor
                     </div>
                     <div>
                       <div className="text-sm font-semibold">Project Root</div>
-                      <div className="text-[11px] text-black/50">{files.length} file{files.length !== 1 ? "s" : ""} total</div>
+                      <div className="text-[0.6875rem] text-black/50">{files.length} file{files.length !== 1 ? "s" : ""} total</div>
                     </div>
                   </div>
                   {files.length > 0 ? (
                     <div className="flex flex-wrap gap-1.5">
                       {files.map((f) => (
-                        <div key={f.id} className="inline-flex items-center gap-1.5 rounded-lg bg-white/50 border border-white/60 px-2.5 py-1 text-[11px] text-black/70">
+                        <div key={f.id} className="inline-flex items-center gap-1.5 rounded-lg bg-white/50 border border-white/60 px-2.5 py-1 text-[0.6875rem] text-black/70">
                           {f.kind === "image" ? <ImageIcon className="w-3 h-3 text-black/40" /> :
                            f.kind === "video" ? <Video className="w-3 h-3 text-black/40" /> :
                            f.kind === "audio" ? <Music className="w-3 h-3 text-black/40" /> :
@@ -1858,12 +1858,12 @@ If the user asks about old memories or references past ideas, refer to the memor
                            f.kind === "doc" ? <StickyNote className="w-3 h-3 text-black/40" /> :
                            f.kind === "link" ? <Link2 className="w-3 h-3 text-black/40" /> :
                            <FileIcon className="w-3 h-3 text-black/40" />}
-                          <span className="truncate max-w-[120px]">{f.name}</span>
+                          <span className="truncate max-w-[7.5rem]">{f.name}</span>
                         </div>
                       ))}
                     </div>
                   ) : (
-                    <p className="text-[11px] text-black/40">No files yet.</p>
+                    <p className="text-[0.6875rem] text-black/40">No files yet.</p>
                   )}
                 </div>
 
@@ -1878,13 +1878,13 @@ If the user asks about old memories or references past ideas, refer to the memor
                         </div>
                         <div>
                           <div className="text-sm font-semibold">{board.title}</div>
-                          <div className="text-[11px] text-black/50">{boardFiles.length} file{boardFiles.length !== 1 ? "s" : ""}</div>
+                          <div className="text-[0.6875rem] text-black/50">{boardFiles.length} file{boardFiles.length !== 1 ? "s" : ""}</div>
                         </div>
                       </div>
                       {boardFiles.length > 0 ? (
                         <div className="flex flex-wrap gap-1.5">
                           {boardFiles.map((f) => (
-                            <div key={f.id} className="inline-flex items-center gap-1.5 rounded-lg bg-white/50 border border-white/60 px-2.5 py-1 text-[11px] text-black/70">
+                            <div key={f.id} className="inline-flex items-center gap-1.5 rounded-lg bg-white/50 border border-white/60 px-2.5 py-1 text-[0.6875rem] text-black/70">
                               {f.kind === "image" ? <ImageIcon className="w-3 h-3 text-black/40" /> :
                                f.kind === "video" ? <Video className="w-3 h-3 text-black/40" /> :
                                f.kind === "audio" ? <Music className="w-3 h-3 text-black/40" /> :
@@ -1892,18 +1892,18 @@ If the user asks about old memories or references past ideas, refer to the memor
                                f.kind === "doc" ? <StickyNote className="w-3 h-3 text-black/40" /> :
                                f.kind === "link" ? <Link2 className="w-3 h-3 text-black/40" /> :
                                <FileIcon className="w-3 h-3 text-black/40" />}
-                              <span className="truncate max-w-[120px]">{f.name}</span>
+                              <span className="truncate max-w-[7.5rem]">{f.name}</span>
                             </div>
                           ))}
                         </div>
                       ) : (
-                        <p className="text-[11px] text-black/40">No files in this board.</p>
+                        <p className="text-[0.6875rem] text-black/40">No files in this board.</p>
                       )}
                     </div>
                   );
                 }) : (
                   <div className="rounded-2xl border border-white/50 bg-white/30 backdrop-blur-md p-4 text-center">
-                    <p className="text-[11px] text-black/40">No boards yet. Create one above.</p>
+                    <p className="text-[0.6875rem] text-black/40">No boards yet. Create one above.</p>
                   </div>
                 )}
               </div>
@@ -1919,7 +1919,7 @@ If the user asks about old memories or references past ideas, refer to the memor
                   ].map((stat) => (
                     <div key={stat.label} className="rounded-xl border border-white/50 bg-white/40 backdrop-blur-md p-3 text-center">
                       <div className="text-xl font-bold" style={{ color: stat.color }}>{stat.value}</div>
-                      <div className="text-[11px] text-black/50 mt-0.5">{stat.label}</div>
+                      <div className="text-[0.6875rem] text-black/50 mt-0.5">{stat.label}</div>
                     </div>
                   ))}
                 </div>
@@ -1937,14 +1937,14 @@ If the user asks about old memories or references past ideas, refer to the memor
                       { label: "Other", value: files.filter((f) => f.kind === "file").length, max: Math.max(files.length, 1), color: "#bfdbfe" },
                     ].map((bar) => (
                       <div key={bar.label} className="flex items-center gap-2">
-                        <span className="text-[11px] text-black/60 w-16 shrink-0">{bar.label}</span>
+                        <span className="text-[0.6875rem] text-black/60 w-16 shrink-0">{bar.label}</span>
                         <div className="flex-1 h-4 rounded-full bg-black/5 overflow-hidden">
                           <div
                             className="h-full rounded-full transition-all duration-500"
                             style={{ width: `${Math.max((bar.value / bar.max) * 100, bar.value > 0 ? 8 : 0)}%`, backgroundColor: bar.color }}
                           />
                         </div>
-                        <span className="text-[11px] font-medium w-5 text-right">{bar.value}</span>
+                        <span className="text-[0.6875rem] font-medium w-5 text-right">{bar.value}</span>
                       </div>
                     ))}
                   </div>
@@ -1985,14 +1985,14 @@ If the user asks about old memories or references past ideas, refer to the memor
                           referrerPolicy="no-referrer"
                         />
                       ) : (
-                        <div className="w-8 h-8 rounded-full border-2 border-white bg-blue-500 flex items-center justify-center text-[11px] font-bold text-white">
+                        <div className="w-8 h-8 rounded-full border-2 border-white bg-blue-500 flex items-center justify-center text-[0.6875rem] font-bold text-white">
                           {(user?.email?.[0] || "?").toUpperCase()}
                         </div>
                       )}
                       {linkedTeams.map((team) => (
                         <div
                           key={team.id}
-                          className="w-8 h-8 rounded-full border-2 border-white flex items-center justify-center text-[10px] font-bold text-white cursor-default"
+                          className="w-8 h-8 rounded-full border-2 border-white flex items-center justify-center text-[0.625rem] font-bold text-white cursor-default"
                           style={{ background: team.color }}
                           title={team.name}
                         >
@@ -2006,7 +2006,7 @@ If the user asks about old memories or references past ideas, refer to the memor
                         <Plus className="w-3.5 h-3.5" />
                       </button>
                     </div>
-                    <div className="text-[11px] text-black/50 mt-2">
+                    <div className="text-[0.6875rem] text-black/50 mt-2">
                       {linkedTeams.length > 0
                         ? `${user?.user_metadata?.full_name || user?.email || "You"} · ${linkedTeams.map((t) => t.name).join(", ")}`
                         : (user?.user_metadata?.full_name || user?.email || "1 member")}
@@ -2018,8 +2018,8 @@ If the user asks about old memories or references past ideas, refer to the memor
                       <div className="h-full rounded-full bg-blue-500" style={{ width: "32%" }} />
                     </div>
                     <div className="flex items-center justify-between mt-2">
-                      <span className="text-[11px] text-black/50">3.2 GB</span>
-                      <span className="text-[11px] text-black/40">of 10 GB</span>
+                      <span className="text-[0.6875rem] text-black/50">3.2 GB</span>
+                      <span className="text-[0.6875rem] text-black/40">of 10 GB</span>
                     </div>
                   </div>
                 </div>
@@ -2085,7 +2085,7 @@ If the user asks about old memories or references past ideas, refer to the memor
                     <div className="text-xs text-black/80 leading-relaxed group-hover:text-black">
                       {suggestion.text}
                     </div>
-                    <div className="text-[10px] text-black/40 mt-1 group-hover:text-black/55">
+                    <div className="text-[0.625rem] text-black/40 mt-1 group-hover:text-black/55">
                       Click to take action
                     </div>
                   </button>
@@ -2115,7 +2115,7 @@ If the user asks about old memories or references past ideas, refer to the memor
                 <div className="text-sm font-semibold" style={{ color: projectHealth.color }}>
                   {projectHealth.label}
                 </div>
-                <div className="text-[11px] text-black/50">Health score</div>
+                <div className="text-[0.6875rem] text-black/50">Health score</div>
               </div>
             </div>
 
@@ -2232,7 +2232,7 @@ If the user asks about old memories or references past ideas, refer to the memor
       {/* Memory Sidebar */}
       {showMemorySidebar && (
         <aside
-          className="fixed top-0 right-0 z-[95] h-[100svh] w-[380px] max-w-[92vw] border-l border-white/20 bg-transparent"
+          className="fixed top-0 right-0 z-[95] h-[100svh] w-[23.75rem] max-w-[92vw] border-l border-white/20 bg-transparent"
         >
           <div className="h-full flex flex-col bg-transparent">
             <div className="px-4 py-3 border-b border-black/10 flex items-center justify-between gap-3 bg-transparent">

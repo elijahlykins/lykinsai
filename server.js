@@ -8,6 +8,7 @@ import {
   getTranscriptPriority,
   localizeQuestion,
   retranscribeSegment,
+  transcribeBuffer,
 } from './youtubeQa.js';
 
 dotenv.config();
@@ -1182,6 +1183,26 @@ app.post('/api/youtube/answer', async (req, res) => {
       code: 'YOUTUBE_ANSWER_FAILED',
       reason: String(error?.message || 'Unknown YouTube answer failure'),
     });
+  }
+});
+
+// Whisper transcription endpoint for direct file uploads
+app.post('/api/whisper/transcribe', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded. Send a video/audio file as multipart "file" field.' });
+    }
+    if (!process.env.OPENAI_API_KEY) {
+      return res.status(500).json({ error: 'OPENAI_API_KEY not configured on the server.' });
+    }
+    const filename = req.file.originalname || 'upload.webm';
+    const mime = req.file.mimetype || 'audio/webm';
+    console.log(`[Whisper API] Transcribing uploaded file: ${filename} (${(req.file.size / 1024 / 1024).toFixed(1)}MB, ${mime})`);
+    const result = await transcribeBuffer(req.file.buffer, filename, mime);
+    return res.json(result);
+  } catch (error) {
+    console.error('[Whisper API] Error:', error.message);
+    return res.status(500).json({ error: `Whisper transcription failed: ${error.message}` });
   }
 });
 

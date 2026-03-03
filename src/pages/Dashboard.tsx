@@ -135,13 +135,13 @@ function CalendarReminders() {
             <Bell className="w-4 h-4 text-blue-600 dark:text-blue-400" />
           </div>
           <div className="flex-1 min-w-0">
-            <p className="text-[12px] font-semibold text-black/80 dark:text-white/80 truncate">
+            <p className="text-[0.75rem] font-semibold text-black/80 dark:text-white/80 truncate">
               {evt.title}
             </p>
-            <p className="text-[11px] text-black/50 dark:text-white/50 mt-0.5">
+            <p className="text-[0.6875rem] text-black/50 dark:text-white/50 mt-0.5">
               {evt.date_key} &middot; {formatHour(evt.start_hour)} – {formatHour(evt.end_hour)}
             </p>
-            <p className="text-[10px] text-blue-600 dark:text-blue-400 font-medium mt-1 flex items-center gap-1">
+            <p className="text-[0.625rem] text-blue-600 dark:text-blue-400 font-medium mt-1 flex items-center gap-1">
               <Clock className="w-3 h-3" /> Upcoming event reminder
             </p>
           </div>
@@ -296,19 +296,19 @@ function CalendarDayInfo() {
 
       <div className="flex items-center gap-3 flex-wrap">
         <span
-          className="inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1 rounded-full"
+          className="inline-flex items-center gap-1.5 text-[0.6875rem] font-semibold px-2.5 py-1 rounded-full"
           style={{ color: busyness.color, background: busyness.bg }}
         >
           <span className="w-1.5 h-1.5 rounded-full" style={{ background: busyness.color }} />
           {busyness.label}
         </span>
 
-        <span className="text-[11px] text-black/50 dark:text-white/50">
+        <span className="text-[0.6875rem] text-black/50 dark:text-white/50">
           {todayEvents.length} event{todayEvents.length !== 1 ? "s" : ""} today
         </span>
 
         {countdown && (
-          <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-blue-600/80 dark:text-blue-400/80">
+          <span className="inline-flex items-center gap-1.5 text-[0.6875rem] font-medium text-blue-600/80 dark:text-blue-400/80">
             <Clock className="w-3 h-3" />
             {countdown} until {nextTitle}
           </span>
@@ -434,7 +434,7 @@ Return ONLY a JSON array of 5 strings. No markdown, no explanation.`;
         ) : (
           <ul className="space-y-3">
             {tips.map((tip, i) => (
-              <li key={i} className="flex items-start gap-2 text-[11px] text-black/55 dark:text-white/55 leading-relaxed">
+              <li key={i} className="flex items-start gap-2 text-[0.6875rem] text-black/55 dark:text-white/55 leading-relaxed">
                 <span className="text-black/30 dark:text-white/30 mt-px shrink-0">•</span>
                 <span>{tip}</span>
               </li>
@@ -448,7 +448,7 @@ Return ONLY a JSON array of 5 strings. No markdown, no explanation.`;
 
 function AISuggestionsPanel({ projects, events, model }: { projects: Project[]; events: CalendarEvent[]; model: string }) {
   return (
-    <div className="hidden lg:block fixed right-6 w-[250px] z-30" style={{ top: "calc(6rem + 8.5rem + 2rem)" }}>
+    <div className="hidden lg:block fixed right-6 w-[15.625rem] z-30" style={{ top: "calc(6rem + 8.5rem + 2rem)" }}>
       <AISuggestions projects={projects} events={events} model={model} />
     </div>
   );
@@ -818,7 +818,7 @@ User: ${text}
                     }
                   }}
                 >
-                  <SelectTrigger className="w-[124px] !h-7 rounded-full glass-control hover:opacity-90 text-[11px] font-medium px-2">
+                  <SelectTrigger className="w-[7.75rem] !h-7 rounded-full glass-control hover:opacity-90 text-[0.6875rem] font-medium px-2">
                     <SelectValue placeholder="Model" />
                   </SelectTrigger>
                   <SelectContent
@@ -881,7 +881,7 @@ User: ${text}
                       // ignore
                     }
                   }}
-                  className={`rounded-full px-1.5 h-7 gap-1 text-[11px] glass-control hover:opacity-90 touch-manipulation flex items-center ${
+                  className={`rounded-full px-1.5 h-7 gap-1 text-[0.6875rem] glass-control hover:opacity-90 touch-manipulation flex items-center ${
                     liveAIMode ? "ring-1 ring-white/40 dark:ring-white/20" : ""
                   }`}
                   title="Live AI"
@@ -895,7 +895,7 @@ User: ${text}
                 <button
                   type="button"
                   onClick={() => setShowChat((v) => !v)}
-                  className="rounded-full px-1.5 h-7 text-[11px] glass-control hover:opacity-90 touch-manipulation flex items-center gap-1"
+                  className="rounded-full px-1.5 h-7 text-[0.6875rem] glass-control hover:opacity-90 touch-manipulation flex items-center gap-1"
                   title="Chat with AI"
                 >
                   <span className="hidden md:inline">Chat</span>
@@ -908,7 +908,7 @@ User: ${text}
 
         <main className="relative z-20 mx-auto max-w-6xl px-6 pt-24 pb-16">
           <section className="flex items-start gap-6 flex-wrap">
-            <div className="flex-1 min-w-[240px] space-y-2">
+            <div className="flex-1 min-w-[15rem] space-y-2">
               <h1 className="text-3xl font-semibold">Welcome back, {greetingName}</h1>
               <p className="text-black/60">Your creative workspace is ready.</p>
               <button
@@ -924,7 +924,7 @@ User: ${text}
               </button>
             </div>
             {!hasNoProjects && (
-              <div className="w-full sm:w-auto sm:min-w-[340px] sm:max-w-[420px]">
+              <div className="w-full sm:w-auto sm:min-w-[21.25rem] sm:max-w-[26.25rem]">
                 <CalendarDayInfo />
               </div>
             )}

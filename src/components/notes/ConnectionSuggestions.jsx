@@ -126,7 +126,7 @@ Return ONLY a JSON object: {"suggestions": [{"note_id": "id1", "reason": "reason
                     className="w-full p-3 bg-white/50 dark:bg-black/20 rounded-xl hover:bg-white dark:hover:bg-black/40 transition-all text-left"
                   >
                     <h4 className="font-medium text-black dark:text-white text-xs mb-1">{note.title}</h4>
-                    <p className="text-[10px] text-gray-500 dark:text-gray-400 leading-tight line-clamp-2">{reason}</p>
+                    <p className="text-[0.625rem] text-gray-500 dark:text-gray-400 leading-tight line-clamp-2">{reason}</p>
                   </button>
                   <button
                     onClick={(e) => { e.stopPropagation(); handleConnect(note.id); }}

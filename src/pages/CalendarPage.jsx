@@ -350,7 +350,7 @@ function LiveClock({ timezone }) {
   }, [timezone]);
 
   return (
-    <span className="text-[13px] font-medium text-black/55 dark:text-white/55 tabular-nums">
+    <span className="text-[0.8125rem] font-medium text-black/55 dark:text-white/55 tabular-nums">
       {time}
     </span>
   );
@@ -429,7 +429,7 @@ function NextEventCountdown({ events, timezone }) {
   if (!label) return null;
 
   return (
-    <span className="inline-flex items-center gap-1.5 text-[10px] font-medium px-2.5 py-0.5 rounded-full glass-control text-blue-600 dark:text-blue-400">
+    <span className="inline-flex items-center gap-1.5 text-[0.625rem] font-medium px-2.5 py-0.5 rounded-full glass-control text-blue-600 dark:text-blue-400">
       <Clock className="w-3 h-3" />
       {label}
     </span>
@@ -652,7 +652,7 @@ function EventBlock({ event, index, onClick, onMove, onResize, colIndex = 0, col
       onClick={handleClick}
     >
       <div className="flex items-center gap-1">
-        <div className="text-[11px] font-semibold text-black/80 dark:text-white/80 truncate flex-1 min-w-0">
+        <div className="text-[0.6875rem] font-semibold text-black/80 dark:text-white/80 truncate flex-1 min-w-0">
           {displayTitle(event)}
         </div>
         {event.recurrence && event.recurrence !== "none" && (
@@ -669,7 +669,7 @@ function EventBlock({ event, index, onClick, onMove, onResize, colIndex = 0, col
         {formatTime(start)} – {formatTime(end)}
       </div>
       {heightPx > 30 && event.description && (
-        <div className="text-[10px] text-black/50 dark:text-white/50 truncate mt-0.5">
+        <div className="text-[0.625rem] text-black/50 dark:text-white/50 truncate mt-0.5">
           {event.description}
         </div>
       )}
@@ -746,7 +746,7 @@ function DraftEventBlock({ draft, onDragEnd, leftClass = "left-16", rightClass =
       }}
     >
       <div className="px-2 py-1">
-        <div className="text-[10px] font-medium text-black/40 dark:text-white/40 truncate">
+        <div className="text-[0.625rem] font-medium text-black/40 dark:text-white/40 truncate">
           {draft.preset?.label || "New Event"}
         </div>
       </div>
@@ -923,7 +923,7 @@ function PresetPicker({ onSelect, onClose }) {
       <div className="absolute inset-0 bg-black/20 backdrop-blur-sm" onClick={onClose} />
       <div className="relative w-[260px] max-w-[90vw] rounded-2xl glass-control border border-white/25 dark:border-white/10 shadow-2xl p-4">
         <div className="flex items-center justify-between mb-2">
-          <h3 className="text-[12px] font-semibold text-black/70 dark:text-white/70">
+          <h3 className="text-[0.75rem] font-semibold text-black/70 dark:text-white/70">
             Event type
           </h3>
           <button
@@ -946,7 +946,7 @@ function PresetPicker({ onSelect, onClose }) {
                 className="w-2.5 h-2.5 rounded-full shrink-0"
                 style={{ background: preset.border }}
               />
-              <span className="text-[12px] font-medium text-black/75 dark:text-white/75">
+              <span className="text-[0.75rem] font-medium text-black/75 dark:text-white/75">
                 {preset.label}
               </span>
             </button>
@@ -968,7 +968,7 @@ function PresetPicker({ onSelect, onClose }) {
                   }
                 }}
                 placeholder="Preset name"
-                className="w-full rounded-lg border border-black/10 dark:border-white/10 bg-white/20 dark:bg-white/5 px-2.5 py-1.5 text-[11px] text-black/80 dark:text-white/80 placeholder:text-black/35 dark:placeholder:text-white/35 outline-none"
+                className="w-full rounded-lg border border-black/10 dark:border-white/10 bg-white/20 dark:bg-white/5 px-2.5 py-1.5 text-[0.6875rem] text-black/80 dark:text-white/80 placeholder:text-black/35 dark:placeholder:text-white/35 outline-none"
               />
               <p className="text-[9px] text-black/35 dark:text-white/35 uppercase tracking-wider">Preset colors</p>
               <div className="flex flex-wrap gap-1.5">
@@ -1026,7 +1026,7 @@ function PresetPicker({ onSelect, onClose }) {
                 <button
                   type="button"
                   onClick={() => { setCreating(false); setNewName(""); setPickerCustomHex(null); }}
-                  className="text-[10px] font-medium px-2.5 py-1 rounded-full hover:bg-black/[0.06] dark:hover:bg-white/[0.08] text-black/50 dark:text-white/50 transition-colors"
+                  className="text-[0.625rem] font-medium px-2.5 py-1 rounded-full hover:bg-black/[0.06] dark:hover:bg-white/[0.08] text-black/50 dark:text-white/50 transition-colors"
                 >
                   Cancel
                 </button>
@@ -1034,7 +1034,7 @@ function PresetPicker({ onSelect, onClose }) {
                   type="button"
                   onClick={handleCreate}
                   disabled={!newName.trim()}
-                  className="text-[10px] font-medium px-3 py-1 rounded-full glass-control hover:opacity-90 transition-all disabled:opacity-40"
+                  className="text-[0.625rem] font-medium px-3 py-1 rounded-full glass-control hover:opacity-90 transition-all disabled:opacity-40"
                 >
                   Create
                 </button>
@@ -1047,7 +1047,7 @@ function PresetPicker({ onSelect, onClose }) {
               className="flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-black/[0.05] dark:hover:bg-white/[0.06] transition-colors text-left w-full"
             >
               <Plus className="w-3 h-3 text-black/40 dark:text-white/40" />
-              <span className="text-[12px] font-medium text-black/50 dark:text-white/50">
+              <span className="text-[0.75rem] font-medium text-black/50 dark:text-white/50">
                 Create preset
               </span>
             </button>
@@ -1289,7 +1289,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                   {/* Preset colors — clicking changes ALL events of this preset */}
                   {activePreset.id !== "custom" && (
                     <>
-                      <p className="text-[10px] font-semibold text-black/40 dark:text-white/40 uppercase tracking-wider mb-1.5">
+                      <p className="text-[0.625rem] font-semibold text-black/40 dark:text-white/40 uppercase tracking-wider mb-1.5">
                         Preset colors
                       </p>
                       <p className="text-[8px] text-black/30 dark:text-white/25 mb-2">Changes all {activePreset.label} events</p>
@@ -1349,7 +1349,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
 
                   {/* My colors — clicking changes only THIS event */}
                   <div className={activePreset.id !== "custom" ? "border-t border-black/[0.06] dark:border-white/[0.06] pt-2.5" : ""}>
-                    <p className="text-[10px] font-semibold text-black/40 dark:text-white/40 uppercase tracking-wider mb-1.5">
+                    <p className="text-[0.625rem] font-semibold text-black/40 dark:text-white/40 uppercase tracking-wider mb-1.5">
                       My colors
                     </p>
                     <p className="text-[8px] text-black/30 dark:text-white/25 mb-2">Changes only this event</p>
@@ -1378,7 +1378,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
 
                   {/* Custom color — pick then apply */}
                   <div className="border-t border-black/[0.06] dark:border-white/[0.06] pt-2.5">
-                    <p className="text-[10px] font-semibold text-black/40 dark:text-white/40 uppercase tracking-wider mb-2">
+                    <p className="text-[0.625rem] font-semibold text-black/40 dark:text-white/40 uppercase tracking-wider mb-2">
                       Custom color
                     </p>
                     <div className="flex items-center gap-2">
@@ -1405,7 +1405,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                             saveUserPresetColors(updated);
                           }
                         }}
-                        className="text-[10px] font-medium px-3 py-1 rounded-full glass-control hover:opacity-90 transition-all"
+                        className="text-[0.625rem] font-medium px-3 py-1 rounded-full glass-control hover:opacity-90 transition-all"
                       >
                         Apply
                       </button>
@@ -1451,7 +1451,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               placeholder="Event title"
-              className="w-full rounded-xl border border-black/10 dark:border-white/10 bg-white/20 dark:bg-white/5 px-3 py-2 text-[13px] text-black/80 dark:text-white/80 placeholder:text-black/35 dark:placeholder:text-white/35 outline-none focus:border-black/20 dark:focus:border-white/20 transition-colors"
+              className="w-full rounded-xl border border-black/10 dark:border-white/10 bg-white/20 dark:bg-white/5 px-3 py-2 text-[0.8125rem] text-black/80 dark:text-white/80 placeholder:text-black/35 dark:placeholder:text-white/35 outline-none focus:border-black/20 dark:focus:border-white/20 transition-colors"
             />
 
             <textarea
@@ -1459,17 +1459,17 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
               onChange={(e) => setDescription(e.target.value)}
               placeholder="Brief description (optional)"
               rows={2}
-              className="w-full rounded-xl border border-black/10 dark:border-white/10 bg-white/20 dark:bg-white/5 px-3 py-2 text-[13px] text-black/80 dark:text-white/80 placeholder:text-black/35 dark:placeholder:text-white/35 outline-none focus:border-black/20 dark:focus:border-white/20 transition-colors resize-none"
+              className="w-full rounded-xl border border-black/10 dark:border-white/10 bg-white/20 dark:bg-white/5 px-3 py-2 text-[0.8125rem] text-black/80 dark:text-white/80 placeholder:text-black/35 dark:placeholder:text-white/35 outline-none focus:border-black/20 dark:focus:border-white/20 transition-colors resize-none"
             />
 
             {/* Time range with 30-min increments */}
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-[11px] text-black/50 dark:text-white/50">From</span>
+              <span className="text-[0.6875rem] text-black/50 dark:text-white/50">From</span>
               <div className="relative" ref={startDropRef}>
                 <button
                   type="button"
                   onClick={() => { setStartOpen((v) => !v); setEndOpen(false); }}
-                  className="flex items-center gap-1 text-[12px] font-medium text-black/70 dark:text-white/70 glass-control rounded-lg px-2.5 py-1 cursor-pointer"
+                  className="flex items-center gap-1 text-[0.75rem] font-medium text-black/70 dark:text-white/70 glass-control rounded-lg px-2.5 py-1 cursor-pointer"
                 >
                   {formatTime(startHour)}
                   <ChevronDown className="w-3 h-3 text-black/40 dark:text-white/40" />
@@ -1485,7 +1485,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                           if (endHour <= t) setEndHour(Math.min(t + 0.25, 24));
                           setStartOpen(false);
                         }}
-                        className={`w-full text-left text-[11px] px-3 py-1.5 hover:bg-black/[0.06] dark:hover:bg-white/[0.08] transition-colors ${
+                        className={`w-full text-left text-[0.6875rem] px-3 py-1.5 hover:bg-black/[0.06] dark:hover:bg-white/[0.08] transition-colors ${
                           startHour === t ? "font-semibold text-black dark:text-white" : "text-black/65 dark:text-white/65"
                         }`}
                       >
@@ -1495,12 +1495,12 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                   </div>
                 )}
               </div>
-              <span className="text-[11px] text-black/50 dark:text-white/50">to</span>
+              <span className="text-[0.6875rem] text-black/50 dark:text-white/50">to</span>
               <div className="relative" ref={endDropRef}>
                 <button
                   type="button"
                   onClick={() => { setEndOpen((v) => !v); setStartOpen(false); }}
-                  className="flex items-center gap-1 text-[12px] font-medium text-black/70 dark:text-white/70 glass-control rounded-lg px-2.5 py-1 cursor-pointer"
+                  className="flex items-center gap-1 text-[0.75rem] font-medium text-black/70 dark:text-white/70 glass-control rounded-lg px-2.5 py-1 cursor-pointer"
                 >
                   {formatTime(endHour)}
                   <ChevronDown className="w-3 h-3 text-black/40 dark:text-white/40" />
@@ -1512,7 +1512,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                         key={t}
                         type="button"
                         onClick={() => { setEndHour(t); setEndOpen(false); }}
-                        className={`w-full text-left text-[11px] px-3 py-1.5 hover:bg-black/[0.06] dark:hover:bg-white/[0.08] transition-colors ${
+                        className={`w-full text-left text-[0.6875rem] px-3 py-1.5 hover:bg-black/[0.06] dark:hover:bg-white/[0.08] transition-colors ${
                           endHour === t ? "font-semibold text-black dark:text-white" : "text-black/65 dark:text-white/65"
                         }`}
                       >
@@ -1522,7 +1522,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                     <button
                       type="button"
                       onClick={() => { setEndHour(24); setEndOpen(false); }}
-                      className={`w-full text-left text-[11px] px-3 py-1.5 hover:bg-black/[0.06] dark:hover:bg-white/[0.08] transition-colors ${
+                      className={`w-full text-left text-[0.6875rem] px-3 py-1.5 hover:bg-black/[0.06] dark:hover:bg-white/[0.08] transition-colors ${
                         endHour === 24 ? "font-semibold text-black dark:text-white" : "text-black/65 dark:text-white/65"
                       }`}
                     >
@@ -1536,12 +1536,12 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
             {/* Reminder */}
             <div className="flex items-center gap-2">
               <Clock className="w-3.5 h-3.5 text-black/40 dark:text-white/40 shrink-0" />
-              <span className="text-[11px] text-black/50 dark:text-white/50">Reminder</span>
+              <span className="text-[0.6875rem] text-black/50 dark:text-white/50">Reminder</span>
               <div className="relative flex-1" ref={reminderDropRef}>
                 <button
                   type="button"
                   onClick={() => { setReminderOpen((v) => !v); setStartOpen(false); setEndOpen(false); }}
-                  className="flex items-center justify-between w-full text-[12px] font-medium text-black/70 dark:text-white/70 glass-control rounded-lg px-2.5 py-1 cursor-pointer"
+                  className="flex items-center justify-between w-full text-[0.75rem] font-medium text-black/70 dark:text-white/70 glass-control rounded-lg px-2.5 py-1 cursor-pointer"
                 >
                   <span>{{ none: "None", "0": "At time of event", "5": "5 min before", "15": "15 min before", "30": "30 min before", "60": "1 hour before", "1440": "1 day before" }[reminder] || "None"}</span>
                   <ChevronDown className="w-3 h-3 text-black/40 dark:text-white/40" />
@@ -1561,7 +1561,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                         key={opt.value}
                         type="button"
                         onClick={() => { setReminder(opt.value); setReminderOpen(false); }}
-                        className={`w-full text-left text-[11px] px-3 py-1.5 hover:bg-black/[0.06] dark:hover:bg-white/[0.08] transition-colors ${
+                        className={`w-full text-left text-[0.6875rem] px-3 py-1.5 hover:bg-black/[0.06] dark:hover:bg-white/[0.08] transition-colors ${
                           reminder === opt.value ? "font-semibold text-black dark:text-white" : "text-black/65 dark:text-white/65"
                         }`}
                       >
@@ -1576,12 +1576,12 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
             {/* Repeat */}
             <div className="flex items-center gap-2">
               <RefreshCw className="w-3.5 h-3.5 text-black/40 dark:text-white/40 shrink-0" />
-              <span className="text-[11px] text-black/50 dark:text-white/50">Repeat</span>
+              <span className="text-[0.6875rem] text-black/50 dark:text-white/50">Repeat</span>
               <div className="relative flex-1" ref={recurrenceDropRef}>
                 <button
                   type="button"
                   onClick={() => { setRecurrenceOpen((v) => !v); setStartOpen(false); setEndOpen(false); setReminderOpen(false); }}
-                  className="flex items-center justify-between w-full text-[12px] font-medium text-black/70 dark:text-white/70 glass-control rounded-lg px-2.5 py-1 cursor-pointer"
+                  className="flex items-center justify-between w-full text-[0.75rem] font-medium text-black/70 dark:text-white/70 glass-control rounded-lg px-2.5 py-1 cursor-pointer"
                 >
                   <span>{{ none: "Does not repeat", daily: "Daily", weekdays: "Every weekday (Mon–Fri)", weekly: "Weekly", biweekly: "Every 2 weeks", monthly: "Monthly", custom_weekly: `Every ${(() => { const dayNames = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"]; const d = new Date(event?.date_key ? event.date_key + "T00:00:00" : date); return dayNames[d.getDay()]; })()}` }[recurrence] || "Does not repeat"}</span>
                   <ChevronDown className="w-3 h-3 text-black/40 dark:text-white/40" />
@@ -1600,7 +1600,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                         key={opt.value}
                         type="button"
                         onClick={() => { setRecurrence(opt.value); setRecurrenceOpen(false); }}
-                        className={`w-full text-left text-[11px] px-3 py-1.5 hover:bg-black/[0.06] dark:hover:bg-white/[0.08] transition-colors ${
+                        className={`w-full text-left text-[0.6875rem] px-3 py-1.5 hover:bg-black/[0.06] dark:hover:bg-white/[0.08] transition-colors ${
                           recurrence === opt.value ? "font-semibold text-black dark:text-white" : "text-black/65 dark:text-white/65"
                         }`}
                       >
@@ -1614,7 +1614,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
 
             {/* Preset switcher */}
             <div className="pt-1">
-              <p className="text-[10px] font-semibold text-black/40 dark:text-white/40 uppercase tracking-wider mb-1.5 px-1">
+              <p className="text-[0.625rem] font-semibold text-black/40 dark:text-white/40 uppercase tracking-wider mb-1.5 px-1">
                 Event type
               </p>
               <div className="flex flex-col rounded-xl border border-black/[0.06] dark:border-white/[0.06] overflow-hidden">
@@ -1639,7 +1639,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                       className="w-2 h-2 rounded-full shrink-0"
                       style={{ background: p.border }}
                     />
-                    <span className={`text-[11px] ${
+                    <span className={`text-[0.6875rem] ${
                       activePreset.id === p.id
                         ? "font-semibold text-black/80 dark:text-white/80"
                         : "font-medium text-black/55 dark:text-white/55"
@@ -1661,7 +1661,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                     onChange={(e) => setNewPresetName(e.target.value)}
                     onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleCreatePreset(); } }}
                     placeholder="Preset name"
-                    className="w-full rounded-lg border border-black/10 dark:border-white/10 bg-white/20 dark:bg-white/5 px-2.5 py-1.5 text-[11px] text-black/80 dark:text-white/80 placeholder:text-black/35 dark:placeholder:text-white/35 outline-none"
+                    className="w-full rounded-lg border border-black/10 dark:border-white/10 bg-white/20 dark:bg-white/5 px-2.5 py-1.5 text-[0.6875rem] text-black/80 dark:text-white/80 placeholder:text-black/35 dark:placeholder:text-white/35 outline-none"
                   />
                   <p className="text-[9px] text-black/35 dark:text-white/35 uppercase tracking-wider">Preset colors</p>
                   <div className="flex flex-wrap gap-1.5">
@@ -1719,7 +1719,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                     <button
                       type="button"
                       onClick={() => { setCreatingPreset(false); setNewPresetName(""); setNewPresetCustomHex(null); }}
-                      className="text-[10px] font-medium px-2.5 py-1 rounded-full hover:bg-black/[0.06] dark:hover:bg-white/[0.08] text-black/50 dark:text-white/50 transition-colors"
+                      className="text-[0.625rem] font-medium px-2.5 py-1 rounded-full hover:bg-black/[0.06] dark:hover:bg-white/[0.08] text-black/50 dark:text-white/50 transition-colors"
                     >
                       Cancel
                     </button>
@@ -1727,7 +1727,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                       type="button"
                       onClick={handleCreatePreset}
                       disabled={!newPresetName.trim()}
-                      className="text-[10px] font-medium px-3 py-1 rounded-full glass-control hover:opacity-90 transition-all disabled:opacity-40"
+                      className="text-[0.625rem] font-medium px-3 py-1 rounded-full glass-control hover:opacity-90 transition-all disabled:opacity-40"
                     >
                       Create
                     </button>
@@ -1740,7 +1740,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                   className="flex items-center gap-2.5 px-3 py-2 border-t border-black/[0.06] dark:border-white/[0.06] hover:bg-black/[0.03] dark:hover:bg-white/[0.04] transition-colors text-left w-full"
                 >
                   <Plus className="w-3 h-3 text-black/40 dark:text-white/40" />
-                  <span className="text-[11px] font-medium text-black/50 dark:text-white/50">
+                  <span className="text-[0.6875rem] font-medium text-black/50 dark:text-white/50">
                     Create preset
                   </span>
                 </button>
@@ -1754,7 +1754,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                   {members.map((m) => (
                     <span
                       key={m}
-                      className="inline-flex items-center gap-1 rounded-full bg-black/[0.06] dark:bg-white/[0.08] px-2 py-0.5 text-[10px] text-black/65 dark:text-white/65"
+                      className="inline-flex items-center gap-1 rounded-full bg-black/[0.06] dark:bg-white/[0.08] px-2 py-0.5 text-[0.625rem] text-black/65 dark:text-white/65"
                     >
                       {m}
                       <button
@@ -1782,13 +1782,13 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                       }
                     }}
                     placeholder="Enter email address"
-                    className="flex-1 rounded-lg border border-black/10 dark:border-white/10 bg-white/20 dark:bg-white/5 px-2.5 py-1.5 text-[11px] text-black/70 dark:text-white/70 placeholder:text-black/35 dark:placeholder:text-white/35 outline-none"
+                    className="flex-1 rounded-lg border border-black/10 dark:border-white/10 bg-white/20 dark:bg-white/5 px-2.5 py-1.5 text-[0.6875rem] text-black/70 dark:text-white/70 placeholder:text-black/35 dark:placeholder:text-white/35 outline-none"
                     autoFocus
                   />
                   <button
                     type="button"
                     onClick={addMember}
-                    className="rounded-lg glass-control px-2.5 py-1.5 text-[11px] font-medium hover:opacity-90"
+                    className="rounded-lg glass-control px-2.5 py-1.5 text-[0.6875rem] font-medium hover:opacity-90"
                   >
                     Add
                   </button>
@@ -1797,7 +1797,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                 <button
                   type="button"
                   onClick={() => setShowMemberInput(true)}
-                  className="flex items-center gap-1.5 text-[11px] text-black/50 dark:text-white/50 hover:text-black/70 dark:hover:text-white/70 transition-colors"
+                  className="flex items-center gap-1.5 text-[0.6875rem] text-black/50 dark:text-white/50 hover:text-black/70 dark:hover:text-white/70 transition-colors"
                 >
                   <UserPlus className="w-3.5 h-3.5" />
                   Add team members
@@ -1816,7 +1816,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                       return (
                         <span
                           key={tsId}
-                          className="inline-flex items-center gap-1 rounded-full bg-blue-500/10 px-2 py-0.5 text-[10px] text-blue-700 dark:text-blue-300 font-medium"
+                          className="inline-flex items-center gap-1 rounded-full bg-blue-500/10 px-2 py-0.5 text-[0.625rem] text-blue-700 dark:text-blue-300 font-medium"
                         >
                           <Users className="w-2.5 h-2.5" />
                           {ts.name}
@@ -1836,7 +1836,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                   <button
                     type="button"
                     onClick={() => setTeamSpaceDropdownOpen((v) => !v)}
-                    className="flex items-center gap-1.5 text-[11px] text-black/50 dark:text-white/50 hover:text-black/70 dark:hover:text-white/70 transition-colors"
+                    className="flex items-center gap-1.5 text-[0.6875rem] text-black/50 dark:text-white/50 hover:text-black/70 dark:hover:text-white/70 transition-colors"
                   >
                     <Users className="w-3.5 h-3.5" />
                     Link Team Space
@@ -1845,7 +1845,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                   {teamSpaceDropdownOpen && (
                     <div className="absolute left-0 top-full mt-1 z-50 w-56 rounded-xl border border-black/10 dark:border-white/10 bg-white/90 dark:bg-black/80 backdrop-blur-xl shadow-xl py-1 max-h-48 overflow-y-auto">
                       {availableTeamSpaces.filter((ts) => !linkedTeamSpaces.includes(ts.id)).length === 0 ? (
-                        <div className="px-3 py-2 text-[11px] text-black/40 dark:text-white/40">All team spaces linked</div>
+                        <div className="px-3 py-2 text-[0.6875rem] text-black/40 dark:text-white/40">All team spaces linked</div>
                       ) : (
                         availableTeamSpaces
                           .filter((ts) => !linkedTeamSpaces.includes(ts.id))
@@ -1857,7 +1857,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                                 setLinkedTeamSpaces((prev) => [...prev, ts.id]);
                                 setTeamSpaceDropdownOpen(false);
                               }}
-                              className="w-full text-left px-3 py-1.5 text-[11px] text-black/70 dark:text-white/70 hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors flex items-center gap-2"
+                              className="w-full text-left px-3 py-1.5 text-[0.6875rem] text-black/70 dark:text-white/70 hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors flex items-center gap-2"
                             >
                               <Users className="w-3 h-3 text-blue-500" />
                               {ts.name}
@@ -1877,14 +1877,14 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                   <button
                     type="button"
                     onClick={() => setReportOpen(true)}
-                    className="flex items-center gap-2 w-full text-left text-[11px] font-medium px-3 py-2 rounded-lg transition-all hover:bg-black/[0.04] dark:hover:bg-white/[0.04] text-black/60 dark:text-white/60"
+                    className="flex items-center gap-2 w-full text-left text-[0.6875rem] font-medium px-3 py-2 rounded-lg transition-all hover:bg-black/[0.04] dark:hover:bg-white/[0.04] text-black/60 dark:text-white/60"
                   >
                     <FileText className="w-3.5 h-3.5" />
                     {reportStatus ? (
                       <span className="flex items-center gap-1.5">
                         Report:
                         <span
-                          className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full"
+                          className="inline-flex items-center gap-1 text-[0.625rem] font-semibold px-2 py-0.5 rounded-full"
                           style={{
                             color: REPORT_STATUSES.find((s) => s.id === reportStatus)?.color,
                             background: REPORT_STATUSES.find((s) => s.id === reportStatus)?.bg,
@@ -1899,7 +1899,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                   <div className="space-y-2.5">
                     <div className="flex items-center gap-1.5 mb-1">
                       <FileText className="w-3 h-3 text-black/40 dark:text-white/40" />
-                      <span className="text-[10px] font-semibold text-black/45 dark:text-white/45 uppercase tracking-wider">
+                      <span className="text-[0.625rem] font-semibold text-black/45 dark:text-white/45 uppercase tracking-wider">
                         Event Report
                       </span>
                     </div>
@@ -1912,7 +1912,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                             key={s.id}
                             type="button"
                             onClick={() => setReportStatus(active ? null : s.id)}
-                            className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-[10px] font-semibold transition-all border"
+                            className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-[0.625rem] font-semibold transition-all border"
                             style={active ? {
                               color: s.color,
                               background: s.bg,
@@ -1934,12 +1934,12 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                       onChange={(e) => setReportNote(e.target.value)}
                       placeholder="Brief notes on this event..."
                       rows={2}
-                      className="w-full text-[11px] px-3 py-2 rounded-lg bg-black/[0.03] dark:bg-white/[0.05] border border-black/[0.06] dark:border-white/[0.08] text-black/80 dark:text-white/80 placeholder:text-black/30 dark:placeholder:text-white/30 resize-none focus:outline-none focus:ring-1 focus:ring-black/10 dark:focus:ring-white/10"
+                      className="w-full text-[0.6875rem] px-3 py-2 rounded-lg bg-black/[0.03] dark:bg-white/[0.05] border border-black/[0.06] dark:border-white/[0.08] text-black/80 dark:text-white/80 placeholder:text-black/30 dark:placeholder:text-white/30 resize-none focus:outline-none focus:ring-1 focus:ring-black/10 dark:focus:ring-white/10"
                     />
                     <button
                       type="button"
                       onClick={() => setReportOpen(false)}
-                      className="text-[10px] text-black/40 dark:text-white/40 hover:text-black/60 dark:hover:text-white/60 transition-colors"
+                      className="text-[0.625rem] text-black/40 dark:text-white/40 hover:text-black/60 dark:hover:text-white/60 transition-colors"
                     >
                       Collapse
                     </button>
@@ -1956,7 +1956,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                     type="button"
                     onClick={handleDelete}
                     disabled={deleting}
-                    className="flex items-center gap-1.5 text-[11px] font-medium px-3 py-1.5 rounded-full text-red-500/70 hover:text-red-600 hover:bg-red-500/10 transition-all"
+                    className="flex items-center gap-1.5 text-[0.6875rem] font-medium px-3 py-1.5 rounded-full text-red-500/70 hover:text-red-600 hover:bg-red-500/10 transition-all"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                     Delete
@@ -1967,7 +1967,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                     type="button"
                     onClick={() => handleDelete("single")}
                     disabled={deleting}
-                    className="flex items-center gap-1.5 text-[11px] font-medium px-3 py-1.5 rounded-full bg-red-500/15 text-red-600 dark:text-red-400 hover:bg-red-500/25 transition-all"
+                    className="flex items-center gap-1.5 text-[0.6875rem] font-medium px-3 py-1.5 rounded-full bg-red-500/15 text-red-600 dark:text-red-400 hover:bg-red-500/25 transition-all"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                     {deleting ? "Deleting..." : "Confirm Delete"}
@@ -1975,13 +1975,13 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                 )}
                 {isEdit && confirmDelete && isSeries && (
                   <div className="flex flex-col gap-1">
-                    <span className="text-[10px] text-red-500/70 font-medium px-1">Delete recurring event:</span>
+                    <span className="text-[0.625rem] text-red-500/70 font-medium px-1">Delete recurring event:</span>
                     <div className="flex items-center gap-1">
                       <button
                         type="button"
                         onClick={() => handleDelete("single")}
                         disabled={deleting}
-                        className="text-[10px] font-medium px-2.5 py-1 rounded-full bg-red-500/15 text-red-600 dark:text-red-400 hover:bg-red-500/25 transition-all"
+                        className="text-[0.625rem] font-medium px-2.5 py-1 rounded-full bg-red-500/15 text-red-600 dark:text-red-400 hover:bg-red-500/25 transition-all"
                       >
                         This event
                       </button>
@@ -1989,7 +1989,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                         type="button"
                         onClick={() => handleDelete("future")}
                         disabled={deleting}
-                        className="text-[10px] font-medium px-2.5 py-1 rounded-full bg-red-500/15 text-red-600 dark:text-red-400 hover:bg-red-500/25 transition-all"
+                        className="text-[0.625rem] font-medium px-2.5 py-1 rounded-full bg-red-500/15 text-red-600 dark:text-red-400 hover:bg-red-500/25 transition-all"
                       >
                         This &amp; future
                       </button>
@@ -1997,7 +1997,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                         type="button"
                         onClick={() => handleDelete("series")}
                         disabled={deleting}
-                        className="text-[10px] font-medium px-2.5 py-1 rounded-full bg-red-500/15 text-red-600 dark:text-red-400 hover:bg-red-500/25 transition-all"
+                        className="text-[0.625rem] font-medium px-2.5 py-1 rounded-full bg-red-500/15 text-red-600 dark:text-red-400 hover:bg-red-500/25 transition-all"
                       >
                         All events
                       </button>
@@ -2009,7 +2009,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                 <button
                   type="button"
                   onClick={isEdit && editing ? () => setEditing(false) : onClose}
-                  className="text-[11px] font-medium px-3 py-1.5 rounded-full hover:bg-black/[0.06] dark:hover:bg-white/[0.08] text-black/50 dark:text-white/50 transition-colors"
+                  className="text-[0.6875rem] font-medium px-3 py-1.5 rounded-full hover:bg-black/[0.06] dark:hover:bg-white/[0.08] text-black/50 dark:text-white/50 transition-colors"
                 >
                   Cancel
                 </button>
@@ -2019,7 +2019,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                       type="button"
                       disabled={!title.trim() || saving}
                       onClick={(e) => handleSubmit(e, "single")}
-                      className="text-[10px] font-medium px-3 py-1.5 rounded-full glass-control hover:opacity-90 transition-all disabled:opacity-40"
+                      className="text-[0.625rem] font-medium px-3 py-1.5 rounded-full glass-control hover:opacity-90 transition-all disabled:opacity-40"
                     >
                       {saving ? "Saving..." : "This event"}
                     </button>
@@ -2027,7 +2027,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                       type="button"
                       disabled={!title.trim() || saving}
                       onClick={(e) => handleSubmit(e, "series")}
-                      className="text-[10px] font-medium px-3 py-1.5 rounded-full glass-control hover:opacity-90 transition-all disabled:opacity-40"
+                      className="text-[0.625rem] font-medium px-3 py-1.5 rounded-full glass-control hover:opacity-90 transition-all disabled:opacity-40"
                     >
                       All in series
                     </button>
@@ -2036,7 +2036,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                   <button
                     type="submit"
                     disabled={!title.trim() || saving}
-                    className="text-[11px] font-medium px-4 py-1.5 rounded-full glass-control hover:opacity-90 transition-all disabled:opacity-40"
+                    className="text-[0.6875rem] font-medium px-4 py-1.5 rounded-full glass-control hover:opacity-90 transition-all disabled:opacity-40"
                   >
                     {saving ? "Saving..." : isEdit ? "Save Changes" : "Create Event"}
                   </button>
@@ -2050,7 +2050,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
             <div className="flex items-center gap-3 mb-3">
               <div className="flex items-center gap-1.5">
                 <Clock className="w-3 h-3 text-black/40 dark:text-white/40" />
-                <span className="text-[11px] text-black/50 dark:text-white/50">
+                <span className="text-[0.6875rem] text-black/50 dark:text-white/50">
                   {formatTime(event.start_hour)} — {formatTime(event.end_hour ?? event.start_hour + 1)}
                 </span>
               </div>
@@ -2067,7 +2067,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
             {event.recurrence && event.recurrence !== "none" && (
               <div className="flex items-center gap-1.5 mb-3">
                 <RefreshCw className="w-3 h-3 text-blue-500/60" />
-                <span className="text-[11px] text-blue-600/70 dark:text-blue-400/70 font-medium">
+                <span className="text-[0.6875rem] text-blue-600/70 dark:text-blue-400/70 font-medium">
                   {{ daily: "Repeats daily", weekdays: "Repeats every weekday", weekly: "Repeats weekly", biweekly: "Repeats every 2 weeks", monthly: "Repeats monthly" }[event.recurrence] || "Repeating"}
                 </span>
               </div>
@@ -2075,7 +2075,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
 
             {event.description && (
               <div className="mb-3">
-                <p className="text-[12px] text-black/60 dark:text-white/60 leading-relaxed">
+                <p className="text-[0.75rem] text-black/60 dark:text-white/60 leading-relaxed">
                   {event.description}
                 </p>
               </div>
@@ -2085,7 +2085,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
               <div className="mb-3">
                 <div className="flex items-center gap-1.5 mb-2">
                   <Users className="w-3 h-3 text-black/40 dark:text-white/40" />
-                  <span className="text-[10px] font-semibold text-black/45 dark:text-white/45 uppercase tracking-wider">
+                  <span className="text-[0.625rem] font-semibold text-black/45 dark:text-white/45 uppercase tracking-wider">
                     Team Members
                   </span>
                 </div>
@@ -2093,7 +2093,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                   {event.members.map((m, i) => (
                     <span
                       key={i}
-                      className="inline-flex items-center gap-1.5 rounded-full bg-black/[0.06] dark:bg-white/[0.08] px-2.5 py-1 text-[10px] text-black/65 dark:text-white/65"
+                      className="inline-flex items-center gap-1.5 rounded-full bg-black/[0.06] dark:bg-white/[0.08] px-2.5 py-1 text-[0.625rem] text-black/65 dark:text-white/65"
                     >
                       <div className="w-4 h-4 rounded-full bg-black/10 dark:bg-white/10 text-[8px] font-bold flex items-center justify-center">
                         {m.charAt(0).toUpperCase()}
@@ -2109,7 +2109,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
               <div className="mb-3">
                 <div className="flex items-center gap-1.5 mb-2">
                   <Users className="w-3 h-3 text-blue-500/60" />
-                  <span className="text-[10px] font-semibold text-black/45 dark:text-white/45 uppercase tracking-wider">
+                  <span className="text-[0.625rem] font-semibold text-black/45 dark:text-white/45 uppercase tracking-wider">
                     Team Spaces
                   </span>
                 </div>
@@ -2119,7 +2119,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                     return (
                       <span
                         key={tsId}
-                        className="inline-flex items-center gap-1.5 rounded-full bg-blue-500/10 px-2.5 py-1 text-[10px] text-blue-700 dark:text-blue-300 font-medium"
+                        className="inline-flex items-center gap-1.5 rounded-full bg-blue-500/10 px-2.5 py-1 text-[0.625rem] text-blue-700 dark:text-blue-300 font-medium"
                       >
                         <Users className="w-3 h-3" />
                         {ts?.name || "Unknown"}
@@ -2138,10 +2138,10 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                 <div className="mb-3 p-2.5 rounded-lg" style={{ background: rs.bg, border: `1px solid ${rs.border}` }}>
                   <div className="flex items-center gap-1.5 mb-1">
                     <Icon className="w-3.5 h-3.5" style={{ color: rs.color }} />
-                    <span className="text-[11px] font-semibold" style={{ color: rs.color }}>{rs.label}</span>
+                    <span className="text-[0.6875rem] font-semibold" style={{ color: rs.color }}>{rs.label}</span>
                   </div>
                   {event.report_note && (
-                    <p className="text-[11px] text-black/60 dark:text-white/60 leading-relaxed">{event.report_note}</p>
+                    <p className="text-[0.6875rem] text-black/60 dark:text-white/60 leading-relaxed">{event.report_note}</p>
                   )}
                 </div>
               );
@@ -2154,7 +2154,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                     type="button"
                     onClick={handleDelete}
                     disabled={deleting}
-                    className="flex items-center gap-1.5 text-[11px] font-medium px-3 py-1.5 rounded-full text-red-500/70 hover:text-red-600 hover:bg-red-500/10 transition-all"
+                    className="flex items-center gap-1.5 text-[0.6875rem] font-medium px-3 py-1.5 rounded-full text-red-500/70 hover:text-red-600 hover:bg-red-500/10 transition-all"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                     Delete
@@ -2165,7 +2165,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                     type="button"
                     onClick={() => handleDelete("single")}
                     disabled={deleting}
-                    className="flex items-center gap-1.5 text-[11px] font-medium px-3 py-1.5 rounded-full bg-red-500/15 text-red-600 dark:text-red-400 hover:bg-red-500/25 transition-all"
+                    className="flex items-center gap-1.5 text-[0.6875rem] font-medium px-3 py-1.5 rounded-full bg-red-500/15 text-red-600 dark:text-red-400 hover:bg-red-500/25 transition-all"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                     {deleting ? "Deleting..." : "Confirm Delete"}
@@ -2173,13 +2173,13 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                 )}
                 {confirmDelete && isSeries && (
                   <div className="flex flex-col gap-1">
-                    <span className="text-[10px] text-red-500/70 font-medium px-1">Delete recurring event:</span>
+                    <span className="text-[0.625rem] text-red-500/70 font-medium px-1">Delete recurring event:</span>
                     <div className="flex items-center gap-1">
                       <button
                         type="button"
                         onClick={() => handleDelete("single")}
                         disabled={deleting}
-                        className="text-[10px] font-medium px-2.5 py-1 rounded-full bg-red-500/15 text-red-600 dark:text-red-400 hover:bg-red-500/25 transition-all"
+                        className="text-[0.625rem] font-medium px-2.5 py-1 rounded-full bg-red-500/15 text-red-600 dark:text-red-400 hover:bg-red-500/25 transition-all"
                       >
                         This event
                       </button>
@@ -2187,7 +2187,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                         type="button"
                         onClick={() => handleDelete("future")}
                         disabled={deleting}
-                        className="text-[10px] font-medium px-2.5 py-1 rounded-full bg-red-500/15 text-red-600 dark:text-red-400 hover:bg-red-500/25 transition-all"
+                        className="text-[0.625rem] font-medium px-2.5 py-1 rounded-full bg-red-500/15 text-red-600 dark:text-red-400 hover:bg-red-500/25 transition-all"
                       >
                         This &amp; future
                       </button>
@@ -2195,7 +2195,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
                         type="button"
                         onClick={() => handleDelete("series")}
                         disabled={deleting}
-                        className="text-[10px] font-medium px-2.5 py-1 rounded-full bg-red-500/15 text-red-600 dark:text-red-400 hover:bg-red-500/25 transition-all"
+                        className="text-[0.625rem] font-medium px-2.5 py-1 rounded-full bg-red-500/15 text-red-600 dark:text-red-400 hover:bg-red-500/25 transition-all"
                       >
                         All events
                       </button>
@@ -2206,7 +2206,7 @@ function EventModal({ event, startTime, date, preset, onClose, onSave, onDelete,
               <button
                 type="button"
                 onClick={onClose}
-                className="text-[11px] font-medium px-3 py-1.5 rounded-full glass-control hover:opacity-90"
+                className="text-[0.6875rem] font-medium px-3 py-1.5 rounded-full glass-control hover:opacity-90"
               >
                 Close
               </button>
@@ -2265,7 +2265,7 @@ function DayView({ selectedDate, onSelectDate, timezone, events, onSlotClick, on
                   onClick={() => onSelectDate(new Date(group.year, group.month, 1))}
                   className="w-full flex flex-col items-center py-2.5 my-0.5 rounded-lg hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors"
                 >
-                  <span className="text-[10px] font-bold text-black/50 dark:text-white/50 uppercase tracking-wider">
+                  <span className="text-[0.625rem] font-bold text-black/50 dark:text-white/50 uppercase tracking-wider">
                     {MONTHS_SHORT[group.month]}
                   </span>
                   <span className="text-[9px] text-black/30 dark:text-white/30">
@@ -2277,7 +2277,7 @@ function DayView({ selectedDate, onSelectDate, timezone, events, onSlotClick, on
             return (
               <div key={key}>
                 <div className="flex flex-col items-center py-2 mb-1">
-                  <span className="text-[10px] font-bold text-black/70 dark:text-white/70 uppercase tracking-wider">
+                  <span className="text-[0.625rem] font-bold text-black/70 dark:text-white/70 uppercase tracking-wider">
                     {MONTHS_SHORT[group.month]} {group.year}
                   </span>
                 </div>
@@ -2378,7 +2378,7 @@ function DayView({ selectedDate, onSelectDate, timezone, events, onSlotClick, on
               >
                 <div className="w-16 shrink-0 pr-3 pt-0.5 text-right">
                   {label && (
-                    <span className="text-[10px] text-black/35 dark:text-white/35 font-medium">
+                    <span className="text-[0.625rem] text-black/35 dark:text-white/35 font-medium">
                       {label}
                     </span>
                   )}
@@ -2670,7 +2670,7 @@ function MultiDayView({ selectedDate, onSelectDate, timezone, events, onSlotClic
                     }}
                   >
                     <div className="flex items-center gap-0.5">
-                      <div className="text-[10px] font-semibold text-black/80 dark:text-white/80 truncate flex-1 min-w-0">
+                      <div className="text-[0.625rem] font-semibold text-black/80 dark:text-white/80 truncate flex-1 min-w-0">
                         {displayTitle(evt)}
                       </div>
                       {evt.report_status && (() => {
@@ -2820,7 +2820,7 @@ function MonthView({ selectedDate, onSelectDate, events, onEventClick, dayStatus
           {WEEKDAYS_SHORT.map((wd) => (
             <div
               key={wd}
-              className="text-center text-[10px] font-semibold text-black/40 dark:text-white/40 uppercase tracking-wider py-2"
+              className="text-center text-[0.625rem] font-semibold text-black/40 dark:text-white/40 uppercase tracking-wider py-2"
             >
               {wd}
             </div>
@@ -2856,7 +2856,7 @@ function MonthView({ selectedDate, onSelectDate, events, onEventClick, dayStatus
                 style={cellStatusHue ? { background: cellStatusHue } : undefined}
               >
                 <span
-                  className={`text-[12px] font-medium text-center ${
+                  className={`text-[0.75rem] font-medium text-center ${
                     isSelected
                       ? "text-black dark:text-white font-bold"
                       : isCellToday
@@ -3816,7 +3816,7 @@ export default function CalendarPage() {
               <button
                 type="button"
                 onClick={goToToday}
-                className="text-[11px] font-medium px-3 py-1 rounded-full glass-control hover:opacity-90"
+                className="text-[0.6875rem] font-medium px-3 py-1 rounded-full glass-control hover:opacity-90"
               >
                 Today
               </button>
@@ -3843,7 +3843,7 @@ export default function CalendarPage() {
               <LiveClock timezone={timezone} />
             </div>
             <div className="flex items-center gap-2 mt-0.5">
-              <p className="text-[13px] text-black/45 dark:text-white/45">
+              <p className="text-[0.8125rem] text-black/45 dark:text-white/45">
                 {viewMode === "month"
                   ? MONTHS[selectedDate.getMonth()] + " " + selectedDate.getFullYear()
                   : isSameDay(selectedDate, new Date())
@@ -3863,7 +3863,7 @@ export default function CalendarPage() {
                 const level = getBusyness(dayEvts);
                 return (
                   <span
-                    className="inline-flex items-center gap-1.5 text-[10px] font-semibold px-2 py-0.5 rounded-full"
+                    className="inline-flex items-center gap-1.5 text-[0.625rem] font-semibold px-2 py-0.5 rounded-full"
                     style={{ color: level.color, background: level.bg }}
                   >
                     <span
@@ -3879,7 +3879,7 @@ export default function CalendarPage() {
                   <button
                     type="button"
                     onClick={() => setDayStatusOpen((v) => !v)}
-                    className="inline-flex items-center gap-1.5 text-[10px] font-medium px-2.5 py-0.5 rounded-full glass-control hover:opacity-90 cursor-pointer"
+                    className="inline-flex items-center gap-1.5 text-[0.625rem] font-medium px-2.5 py-0.5 rounded-full glass-control hover:opacity-90 cursor-pointer"
                   >
                     {currentDayStatus.hue && (
                       <span className="w-1.5 h-1.5 rounded-full" style={{ background: currentDayStatus.hue.replace(/[\d.]+\)$/, "0.6)") }} />
@@ -3905,7 +3905,7 @@ export default function CalendarPage() {
                             key={s.id}
                             type="button"
                             onClick={() => handleSetDayStatus(s.id)}
-                            className={`w-full text-left text-[11px] px-3 py-1.5 flex items-center gap-2 hover:bg-black/[0.06] dark:hover:bg-white/[0.08] transition-colors ${
+                            className={`w-full text-left text-[0.6875rem] px-3 py-1.5 flex items-center gap-2 hover:bg-black/[0.06] dark:hover:bg-white/[0.08] transition-colors ${
                               currentDayStatus.id === s.id ? "font-semibold text-black dark:text-white" : "text-black/65 dark:text-white/65"
                             } ${dayTypeColorPickerFor === s.id ? "bg-black/[0.04] dark:bg-white/[0.04]" : ""}`}
                           >
@@ -3925,7 +3925,7 @@ export default function CalendarPage() {
                                 <button
                                   type="button"
                                   onClick={() => handleSetDayStatus(s.id)}
-                                  className={`flex-1 text-left text-[11px] px-3 py-1.5 flex items-center gap-2 hover:bg-black/[0.06] dark:hover:bg-white/[0.08] transition-colors ${
+                                  className={`flex-1 text-left text-[0.6875rem] px-3 py-1.5 flex items-center gap-2 hover:bg-black/[0.06] dark:hover:bg-white/[0.08] transition-colors ${
                                     currentDayStatus.id === s.id ? "font-semibold text-black dark:text-white" : "text-black/65 dark:text-white/65"
                                   } ${dayTypeColorPickerFor === s.id ? "bg-black/[0.04] dark:bg-white/[0.04]" : ""}`}
                                 >
@@ -4015,7 +4015,7 @@ export default function CalendarPage() {
                                 const hex = dayTypeColorInputRef.current?.value;
                                 if (hex) handleSetDayTypeColor(dayTypeColorPickerFor, hex);
                               }}
-                              className="text-[10px] font-medium px-2 py-0.5 rounded-lg glass-control hover:opacity-90"
+                              className="text-[0.625rem] font-medium px-2 py-0.5 rounded-lg glass-control hover:opacity-90"
                             >
                               Apply
                             </button>
@@ -4023,7 +4023,7 @@ export default function CalendarPage() {
                               <button
                                 type="button"
                                 onClick={() => handleClearDayTypeColor(dayTypeColorPickerFor)}
-                                className="text-[10px] text-black/40 dark:text-white/40 hover:text-black/60 dark:hover:text-white/60"
+                                className="text-[0.625rem] text-black/40 dark:text-white/40 hover:text-black/60 dark:hover:text-white/60"
                               >
                                 Reset
                               </button>
@@ -4031,7 +4031,7 @@ export default function CalendarPage() {
                             <button
                               type="button"
                               onClick={() => { setDayTypeColorPickerFor(null); setDayStatusOpen(false); }}
-                              className="ml-auto text-[10px] font-medium px-2 py-0.5 rounded-lg glass-control hover:opacity-90"
+                              className="ml-auto text-[0.625rem] font-medium px-2 py-0.5 rounded-lg glass-control hover:opacity-90"
                             >
                               Done
                             </button>
@@ -4069,7 +4069,7 @@ export default function CalendarPage() {
                                 }
                               }}
                               placeholder="Day type name"
-                              className="w-full rounded-lg border border-black/10 dark:border-white/10 bg-white/30 dark:bg-white/5 px-2 py-1 text-[11px] text-black/70 dark:text-white/70 placeholder:text-black/35 dark:placeholder:text-white/35 outline-none"
+                              className="w-full rounded-lg border border-black/10 dark:border-white/10 bg-white/30 dark:bg-white/5 px-2 py-1 text-[0.6875rem] text-black/70 dark:text-white/70 placeholder:text-black/35 dark:placeholder:text-white/35 outline-none"
                               autoFocus
                             />
                             <div className="flex flex-wrap gap-1">
@@ -4105,14 +4105,14 @@ export default function CalendarPage() {
                                   setCreatingDayType(false);
                                 }}
                                 disabled={!newDayTypeName.trim()}
-                                className="flex-1 text-[10px] font-medium px-2 py-1 rounded-lg glass-control hover:opacity-90 transition-all disabled:opacity-40"
+                                className="flex-1 text-[0.625rem] font-medium px-2 py-1 rounded-lg glass-control hover:opacity-90 transition-all disabled:opacity-40"
                               >
                                 Add
                               </button>
                               <button
                                 type="button"
                                 onClick={() => { setCreatingDayType(false); setNewDayTypeName(""); }}
-                                className="text-[10px] font-medium px-2 py-1 rounded-lg text-black/40 dark:text-white/40 hover:text-black/60 dark:hover:text-white/60 transition-colors"
+                                className="text-[0.625rem] font-medium px-2 py-1 rounded-lg text-black/40 dark:text-white/40 hover:text-black/60 dark:hover:text-white/60 transition-colors"
                               >
                                 Cancel
                               </button>
@@ -4125,7 +4125,7 @@ export default function CalendarPage() {
                               setCreatingDayType(true);
                               setTimeout(() => newDayTypeInputRef.current?.focus(), 50);
                             }}
-                            className="w-full text-left text-[11px] px-3 py-2 flex items-center gap-2 text-black/50 dark:text-white/50 hover:text-black/70 dark:hover:text-white/70 hover:bg-black/[0.04] dark:hover:bg-white/[0.04] transition-colors"
+                            className="w-full text-left text-[0.6875rem] px-3 py-2 flex items-center gap-2 text-black/50 dark:text-white/50 hover:text-black/70 dark:hover:text-white/70 hover:bg-black/[0.04] dark:hover:bg-white/[0.04] transition-colors"
                           >
                             <Plus className="w-3 h-3" />
                             Create Day Type
@@ -4147,7 +4147,7 @@ export default function CalendarPage() {
               <button
                 type="button"
                 onClick={() => setViewDropdownOpen((v) => !v)}
-                className="flex items-center gap-1.5 text-[11px] font-medium px-3 py-1.5 rounded-full glass-control hover:opacity-90"
+                className="flex items-center gap-1.5 text-[0.6875rem] font-medium px-3 py-1.5 rounded-full glass-control hover:opacity-90"
               >
                 <CalendarIcon className="w-3 h-3 text-black/50 dark:text-white/50" />
                 <span className="text-black/70 dark:text-white/70">
@@ -4166,7 +4166,7 @@ export default function CalendarPage() {
                           setViewMode(m.value);
                           setViewDropdownOpen(false);
                         }}
-                        className={`w-full text-left text-[11px] px-3 py-2 hover:bg-black/[0.06] dark:hover:bg-white/[0.08] transition-colors ${
+                        className={`w-full text-left text-[0.6875rem] px-3 py-2 hover:bg-black/[0.06] dark:hover:bg-white/[0.08] transition-colors ${
                           viewMode === m.value
                             ? "font-semibold text-black dark:text-white"
                             : "text-black/65 dark:text-white/65"
@@ -4184,7 +4184,7 @@ export default function CalendarPage() {
               <button
                 type="button"
                 onClick={() => setTzDropdownOpen((v) => !v)}
-                className="flex items-center gap-1.5 text-[11px] font-medium px-3 py-1.5 rounded-full glass-control hover:opacity-90"
+                className="flex items-center gap-1.5 text-[0.6875rem] font-medium px-3 py-1.5 rounded-full glass-control hover:opacity-90"
               >
                 <Globe className="w-3 h-3 text-black/50 dark:text-white/50" />
                 <span className="text-black/70 dark:text-white/70">{tzLabel}</span>
@@ -4201,7 +4201,7 @@ export default function CalendarPage() {
                           setTimezone(tz.value);
                           setTzDropdownOpen(false);
                         }}
-                        className={`w-full text-left text-[11px] px-3 py-2 hover:bg-black/[0.06] dark:hover:bg-white/[0.08] transition-colors ${
+                        className={`w-full text-left text-[0.6875rem] px-3 py-2 hover:bg-black/[0.06] dark:hover:bg-white/[0.08] transition-colors ${
                           timezone === tz.value
                             ? "font-semibold text-black dark:text-white"
                             : "text-black/65 dark:text-white/65"
@@ -4220,7 +4220,7 @@ export default function CalendarPage() {
                 type="button"
                 onClick={handleGoogleConnect}
                 disabled={googleSyncing || !user?.id}
-                className="flex items-center gap-1.5 text-[11px] font-medium px-3 py-1.5 rounded-full glass-control hover:opacity-90 transition-all disabled:opacity-40"
+                className="flex items-center gap-1.5 text-[0.6875rem] font-medium px-3 py-1.5 rounded-full glass-control hover:opacity-90 transition-all disabled:opacity-40"
                 title={googleConnected ? "Sync Google Calendar" : "Connect Google Calendar"}
               >
                 {googleSyncDone ? (
@@ -4238,7 +4238,7 @@ export default function CalendarPage() {
               type="button"
               onClick={handleSync}
               disabled={syncing || !user?.id}
-              className="flex items-center gap-1.5 text-[11px] font-medium px-3 py-1.5 rounded-full glass-control hover:opacity-90 transition-all disabled:opacity-40"
+              className="flex items-center gap-1.5 text-[0.6875rem] font-medium px-3 py-1.5 rounded-full glass-control hover:opacity-90 transition-all disabled:opacity-40"
               title="Sync calendar"
             >
               {syncDone ? (

@@ -548,14 +548,14 @@ export const ButtonBlock = memo(function ButtonBlock({ id }: { id: string }) {
           >
             <input
               type="text"
-              className="flex-1 min-w-0 bg-transparent text-[13px] text-black/80 dark:text-white/80 outline-none placeholder:text-black/35 dark:placeholder:text-white/35"
+              className="flex-1 min-w-0 bg-transparent text-[0.8125rem] text-black/80 dark:text-white/80 outline-none placeholder:text-black/35 dark:placeholder:text-white/35"
               placeholder="Describe what you want this button to do..."
               value={aiInput}
               onChange={(e) => setAiInput(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); generateConfig(aiInput); } }}
               autoFocus
             />
-            {aiError && <span className="text-[10px] text-red-500 flex-shrink-0 truncate max-w-[80px]" title={aiError}>Error</span>}
+            {aiError && <span className="text-[0.625rem] text-red-500 flex-shrink-0 truncate max-w-[80px]" title={aiError}>Error</span>}
             <button
               type="button"
               className="flex-shrink-0 w-6 h-6 rounded-md bg-blue-500/90 hover:bg-blue-500 text-white flex items-center justify-center transition-colors disabled:opacity-40"
@@ -568,17 +568,17 @@ export const ButtonBlock = memo(function ButtonBlock({ id }: { id: string }) {
           </div>
         ) : confirming ? (
           /* ── Confirm prompt ── */
-          <div className="w-full h-full rounded-lg border border-amber-400/50 bg-amber-50/90 backdrop-blur-sm flex items-center justify-center gap-2 text-[12px]">
+          <div className="w-full h-full rounded-lg border border-amber-400/50 bg-amber-50/90 backdrop-blur-sm flex items-center justify-center gap-2 text-[0.75rem]">
             <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
             <span className="text-amber-800 font-medium">Sure?</span>
-            <button type="button" className="px-2 py-0.5 rounded bg-red-500 text-white text-[10px] font-semibold hover:bg-red-600" onClick={(e) => { e.stopPropagation(); executeAction(); }} onPointerDown={(e) => e.stopPropagation()}>Yes</button>
-            <button type="button" className="px-2 py-0.5 rounded bg-black/10 text-black/60 text-[10px] font-semibold hover:bg-black/15" onClick={(e) => { e.stopPropagation(); cancelConfirm(); }} onPointerDown={(e) => e.stopPropagation()}>No</button>
+            <button type="button" className="px-2 py-0.5 rounded bg-red-500 text-white text-[0.625rem] font-semibold hover:bg-red-600" onClick={(e) => { e.stopPropagation(); executeAction(); }} onPointerDown={(e) => e.stopPropagation()}>Yes</button>
+            <button type="button" className="px-2 py-0.5 rounded bg-black/10 text-black/60 text-[0.625rem] font-semibold hover:bg-black/15" onClick={(e) => { e.stopPropagation(); cancelConfirm(); }} onPointerDown={(e) => e.stopPropagation()}>No</button>
           </div>
         ) : (
           /* ── The configured button ── */
           <button
             type="button"
-            className={`w-full h-full ${isIconOnly ? "rounded-full" : "rounded-lg"} border backdrop-blur-sm flex items-center justify-center gap-1.5 transition-all text-[13px] font-medium ${baseStyle}`}
+            className={`w-full h-full ${isIconOnly ? "rounded-full" : "rounded-lg"} border backdrop-blur-sm flex items-center justify-center gap-1.5 transition-all text-[0.8125rem] font-medium ${baseStyle}`}
             onClick={(e) => { e.stopPropagation(); executeAction(); }}
             onPointerDown={(e) => e.stopPropagation()}
             disabled={loading}
@@ -593,7 +593,7 @@ export const ButtonBlock = memo(function ButtonBlock({ id }: { id: string }) {
                 {showLabel && <span>{config.label}</span>}
               </>
             )}
-            {feedbackMsg && <span className="text-[10px] ml-1 opacity-80">{feedbackMsg}</span>}
+            {feedbackMsg && <span className="text-[0.625rem] ml-1 opacity-80">{feedbackMsg}</span>}
           </button>
         )}
 
@@ -601,19 +601,19 @@ export const ButtonBlock = memo(function ButtonBlock({ id }: { id: string }) {
         {configOpen && !needsSetup && (
           <div
             data-config-panel
-            className="absolute left-0 top-full mt-2 w-80 rounded-lg border border-white/40 bg-white/95 backdrop-blur-xl shadow-xl z-50 p-3 text-[12px]"
+            className="absolute left-0 top-full mt-2 w-80 rounded-lg border border-white/40 bg-white/95 backdrop-blur-xl shadow-xl z-50 p-3 text-[0.75rem]"
             onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => e.stopPropagation()}
           >
             {/* Tabs */}
             <div className="flex gap-1 mb-2">
-              <button type="button" className={`flex-1 px-2 py-1 rounded text-[10px] font-medium flex items-center justify-center gap-1 ${configTab === "ai" ? "bg-blue-50 text-blue-700 border border-blue-200" : "hover:bg-black/5 border border-transparent"}`} onClick={() => { setConfigTab("ai"); setAiInput(config.description || ""); setAiError(""); }}>
+              <button type="button" className={`flex-1 px-2 py-1 rounded text-[0.625rem] font-medium flex items-center justify-center gap-1 ${configTab === "ai" ? "bg-blue-50 text-blue-700 border border-blue-200" : "hover:bg-black/5 border border-transparent"}`} onClick={() => { setConfigTab("ai"); setAiInput(config.description || ""); setAiError(""); }}>
                 <Sparkles className="w-3 h-3" /> Describe
               </button>
-              <button type="button" className={`flex-1 px-2 py-1 rounded text-[10px] font-medium flex items-center justify-center gap-1 ${configTab === "manual" ? "bg-black/10 border border-black/10" : "hover:bg-black/5 border border-transparent"}`} onClick={() => setConfigTab("manual")}>
+              <button type="button" className={`flex-1 px-2 py-1 rounded text-[0.625rem] font-medium flex items-center justify-center gap-1 ${configTab === "manual" ? "bg-black/10 border border-black/10" : "hover:bg-black/5 border border-transparent"}`} onClick={() => setConfigTab("manual")}>
                 <Settings className="w-3 h-3" /> Manual
               </button>
-              <button type="button" className={`flex-1 px-2 py-1 rounded text-[10px] font-medium flex items-center justify-center gap-1 ${configTab === "icon" ? "bg-black/10 border border-black/10" : "hover:bg-black/5 border border-transparent"}`} onClick={() => setConfigTab("icon")}>
+              <button type="button" className={`flex-1 px-2 py-1 rounded text-[0.625rem] font-medium flex items-center justify-center gap-1 ${configTab === "icon" ? "bg-black/10 border border-black/10" : "hover:bg-black/5 border border-transparent"}`} onClick={() => setConfigTab("icon")}>
                 <Palette className="w-3 h-3" /> Icon
               </button>
             </div>
@@ -623,7 +623,7 @@ export const ButtonBlock = memo(function ButtonBlock({ id }: { id: string }) {
               <div className="space-y-2">
                 <div className="glass-text-card rounded-lg p-2.5 flex items-start gap-2">
                   <textarea
-                    className="flex-1 bg-transparent text-[12px] leading-relaxed text-black/80 dark:text-white/80 outline-none resize-none placeholder:text-black/35 dark:placeholder:text-white/35 overflow-hidden scrollbar-hide"
+                    className="flex-1 bg-transparent text-[0.75rem] leading-relaxed text-black/80 dark:text-white/80 outline-none resize-none placeholder:text-black/35 dark:placeholder:text-white/35 overflow-hidden scrollbar-hide"
                     style={{ overflow: "hidden" }}
                     rows={2}
                     placeholder="Describe what this button should do..."
@@ -641,15 +641,15 @@ export const ButtonBlock = memo(function ButtonBlock({ id }: { id: string }) {
                     {generating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
                   </button>
                 </div>
-                {aiError && <div className="text-[10px] text-red-500 px-1">{aiError}</div>}
+                {aiError && <div className="text-[0.625rem] text-red-500 px-1">{aiError}</div>}
 
                 {config.description && (
-                  <div className="px-1 text-[10px] text-black/40 flex items-center gap-1.5">
+                  <div className="px-1 text-[0.625rem] text-black/40 flex items-center gap-1.5">
                     <Check className="w-3 h-3 text-emerald-500 flex-shrink-0" />
                     <span className="truncate"><span className="text-black/60 font-medium">{config.label}</span> · {config.action === "custom" ? "custom code" : config.action}</span>
                   </div>
                 )}
-                <button type="button" className="w-full py-1 rounded bg-black/5 hover:bg-black/10 text-[11px] font-medium text-black/70 transition-colors" onClick={() => setConfigOpen(false)}>Done</button>
+                <button type="button" className="w-full py-1 rounded bg-black/5 hover:bg-black/10 text-[0.6875rem] font-medium text-black/70 transition-colors" onClick={() => setConfigOpen(false)}>Done</button>
               </div>
             )}
 
@@ -658,17 +658,17 @@ export const ButtonBlock = memo(function ButtonBlock({ id }: { id: string }) {
               <div className="space-y-2.5">
                 {/* Label */}
                 <div>
-                  <label className="block text-[10px] font-medium text-black/60 mb-0.5">Label</label>
-                  <input className="w-full px-2 py-1 rounded border border-black/15 bg-white text-[12px] outline-none focus:border-blue-400" value={config.label} onChange={(e) => save({ label: e.target.value })} />
+                  <label className="block text-[0.625rem] font-medium text-black/60 mb-0.5">Label</label>
+                  <input className="w-full px-2 py-1 rounded border border-black/15 bg-white text-[0.75rem] outline-none focus:border-blue-400" value={config.label} onChange={(e) => save({ label: e.target.value })} />
                 </div>
 
                 {/* Style */}
                 <div>
-                  <label className="block text-[10px] font-medium text-black/60 mb-0.5">Style</label>
+                  <label className="block text-[0.625rem] font-medium text-black/60 mb-0.5">Style</label>
                   <div className="flex gap-1 flex-wrap">
                     {(["filled", "outline", "ghost", "icon", "icon-label"] as ButtonStyle[]).map((s) => (
                       <button key={s} type="button"
-                        className={`px-2 py-0.5 rounded text-[10px] border ${config.style === s ? "border-blue-400 bg-blue-50" : "border-black/10 hover:bg-black/5"}`}
+                        className={`px-2 py-0.5 rounded text-[0.625rem] border ${config.style === s ? "border-blue-400 bg-blue-50" : "border-black/10 hover:bg-black/5"}`}
                         onClick={() => save({ style: s })}
                       >{s}</button>
                     ))}
@@ -677,7 +677,7 @@ export const ButtonBlock = memo(function ButtonBlock({ id }: { id: string }) {
 
                 {/* Action */}
                 <div>
-                  <label className="block text-[10px] font-medium text-black/60 mb-0.5">Action</label>
+                  <label className="block text-[0.625rem] font-medium text-black/60 mb-0.5">Action</label>
                   <div className="grid grid-cols-3 gap-1">
                     {VISIBLE_ACTIONS.map((a) => {
                       const meta = ACTION_META[a];
@@ -699,48 +699,48 @@ export const ButtonBlock = memo(function ButtonBlock({ id }: { id: string }) {
 
                 {config.action === "url" && (
                   <div>
-                    <label className="block text-[10px] font-medium text-black/60 mb-0.5">URL</label>
-                    <input className="w-full px-2 py-1 rounded border border-black/15 bg-white text-[12px] outline-none focus:border-blue-400" placeholder="https://..." value={config.url || ""} onChange={(e) => save({ url: e.target.value })} />
+                    <label className="block text-[0.625rem] font-medium text-black/60 mb-0.5">URL</label>
+                    <input className="w-full px-2 py-1 rounded border border-black/15 bg-white text-[0.75rem] outline-none focus:border-blue-400" placeholder="https://..." value={config.url || ""} onChange={(e) => save({ url: e.target.value })} />
                   </div>
                 )}
 
                 {config.action === "navigate" && (
                   <div>
-                    <label className="block text-[10px] font-medium text-black/60 mb-0.5">Navigate To</label>
+                    <label className="block text-[0.625rem] font-medium text-black/60 mb-0.5">Navigate To</label>
                     <div className="flex gap-1 mb-1.5">
                       {(["page", "board", "project"] as NavigateTarget[]).map((t) => (
                         <button key={t} type="button"
-                          className={`flex-1 px-2 py-1 rounded text-[10px] font-medium border ${(config.navigateTarget || "page") === t ? "border-blue-400 bg-blue-50" : "border-black/10 hover:bg-black/5"}`}
+                          className={`flex-1 px-2 py-1 rounded text-[0.625rem] font-medium border ${(config.navigateTarget || "page") === t ? "border-blue-400 bg-blue-50" : "border-black/10 hover:bg-black/5"}`}
                           onClick={() => { save({ navigateTarget: t, navigateValue: "", navigateLabel: "" }); setNavSearch(""); }}
                         >{t.charAt(0).toUpperCase() + t.slice(1)}</button>
                       ))}
                     </div>
                     <div className="relative mb-1">
                       <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-black/30 pointer-events-none" />
-                      <input className="w-full pl-6 pr-2 py-1 rounded border border-black/15 bg-white text-[11px] outline-none focus:border-blue-400" placeholder={`Search ${config.navigateTarget || "page"}s...`} value={navSearch} onChange={(e) => setNavSearch(e.target.value)} />
+                      <input className="w-full pl-6 pr-2 py-1 rounded border border-black/15 bg-white text-[0.6875rem] outline-none focus:border-blue-400" placeholder={`Search ${config.navigateTarget || "page"}s...`} value={navSearch} onChange={(e) => setNavSearch(e.target.value)} />
                     </div>
                     <div className="max-h-[120px] overflow-y-auto rounded border border-black/10 scrollbar-hide">
                       {(config.navigateTarget || "page") === "page" && filteredPages.map((p) => {
                         const PIcon = ICON_MAP[p.icon] || Globe;
                         const selected = config.navigateValue === p.path;
                         return (
-                          <button key={p.path} type="button" className={`w-full flex items-center gap-2 px-2 py-1.5 text-left text-[11px] hover:bg-blue-50/50 ${selected ? "bg-blue-50 text-blue-700 font-medium" : "text-black/70"}`} onClick={() => save({ navigateValue: p.path, navigateLabel: p.label })}>
+                          <button key={p.path} type="button" className={`w-full flex items-center gap-2 px-2 py-1.5 text-left text-[0.6875rem] hover:bg-blue-50/50 ${selected ? "bg-blue-50 text-blue-700 font-medium" : "text-black/70"}`} onClick={() => save({ navigateValue: p.path, navigateLabel: p.label })}>
                             <PIcon className="w-3.5 h-3.5 flex-shrink-0 opacity-60" /><span className="truncate flex-1">{p.label}</span><span className="text-[9px] text-black/30">{p.path}</span>{selected && <Check className="w-3 h-3 ml-1 text-blue-500" />}
                           </button>
                         );
                       })}
                       {(config.navigateTarget || "page") === "board" && (filteredBoards.length === 0
-                        ? <div className="px-2 py-3 text-center text-[10px] text-black/40">{boards.length === 0 ? "No boards yet" : "No matches"}</div>
+                        ? <div className="px-2 py-3 text-center text-[0.625rem] text-black/40">{boards.length === 0 ? "No boards yet" : "No matches"}</div>
                         : filteredBoards.map((b) => {
                           const selected = config.navigateValue === b.id;
-                          return (<button key={b.id} type="button" className={`w-full flex items-center gap-2 px-2 py-1.5 text-left text-[11px] hover:bg-blue-50/50 ${selected ? "bg-blue-50 text-blue-700 font-medium" : "text-black/70"}`} onClick={() => save({ navigateValue: b.id, navigateLabel: b.title || "Untitled Board" })}><LayoutGrid className="w-3.5 h-3.5 flex-shrink-0 opacity-60" /><span className="truncate flex-1">{b.title || "Untitled Board"}</span>{selected && <Check className="w-3 h-3 ml-1 text-blue-500" />}</button>);
+                          return (<button key={b.id} type="button" className={`w-full flex items-center gap-2 px-2 py-1.5 text-left text-[0.6875rem] hover:bg-blue-50/50 ${selected ? "bg-blue-50 text-blue-700 font-medium" : "text-black/70"}`} onClick={() => save({ navigateValue: b.id, navigateLabel: b.title || "Untitled Board" })}><LayoutGrid className="w-3.5 h-3.5 flex-shrink-0 opacity-60" /><span className="truncate flex-1">{b.title || "Untitled Board"}</span>{selected && <Check className="w-3 h-3 ml-1 text-blue-500" />}</button>);
                         })
                       )}
                       {(config.navigateTarget || "page") === "project" && (filteredProjects.length === 0
-                        ? <div className="px-2 py-3 text-center text-[10px] text-black/40">{projects.length === 0 ? "No projects yet" : "No matches"}</div>
+                        ? <div className="px-2 py-3 text-center text-[0.625rem] text-black/40">{projects.length === 0 ? "No projects yet" : "No matches"}</div>
                         : filteredProjects.map((p) => {
                           const selected = config.navigateValue === p.id;
-                          return (<button key={p.id} type="button" className={`w-full flex items-center gap-2 px-2 py-1.5 text-left text-[11px] hover:bg-blue-50/50 ${selected ? "bg-blue-50 text-blue-700 font-medium" : "text-black/70"}`} onClick={() => save({ navigateValue: p.id, navigateLabel: p.name || "Untitled Project" })}><Folder className="w-3.5 h-3.5 flex-shrink-0 opacity-60" /><span className="truncate flex-1">{p.name || "Untitled Project"}</span>{selected && <Check className="w-3 h-3 ml-1 text-blue-500" />}</button>);
+                          return (<button key={p.id} type="button" className={`w-full flex items-center gap-2 px-2 py-1.5 text-left text-[0.6875rem] hover:bg-blue-50/50 ${selected ? "bg-blue-50 text-blue-700 font-medium" : "text-black/70"}`} onClick={() => save({ navigateValue: p.id, navigateLabel: p.name || "Untitled Project" })}><Folder className="w-3.5 h-3.5 flex-shrink-0 opacity-60" /><span className="truncate flex-1">{p.name || "Untitled Project"}</span>{selected && <Check className="w-3 h-3 ml-1 text-blue-500" />}</button>);
                         })
                       )}
                     </div>
@@ -749,52 +749,52 @@ export const ButtonBlock = memo(function ButtonBlock({ id }: { id: string }) {
 
                 {config.action === "copy" && (
                   <div>
-                    <label className="block text-[10px] font-medium text-black/60 mb-0.5">Text to Copy</label>
-                    <textarea className="w-full px-2 py-1 rounded border border-black/15 bg-white text-[12px] outline-none focus:border-blue-400 resize-none" rows={2} placeholder="Text to copy..." value={config.copyText || ""} onChange={(e) => save({ copyText: e.target.value })} />
+                    <label className="block text-[0.625rem] font-medium text-black/60 mb-0.5">Text to Copy</label>
+                    <textarea className="w-full px-2 py-1 rounded border border-black/15 bg-white text-[0.75rem] outline-none focus:border-blue-400 resize-none" rows={2} placeholder="Text to copy..." value={config.copyText || ""} onChange={(e) => save({ copyText: e.target.value })} />
                   </div>
                 )}
 
                 {config.action === "automate" && (
                   <div>
-                    <label className="block text-[10px] font-medium text-black/60 mb-0.5">Webhook URL</label>
-                    <input className="w-full px-2 py-1 rounded border border-black/15 bg-white text-[12px] outline-none focus:border-blue-400" placeholder="https://api.example.com/webhook" value={config.webhookUrl || ""} onChange={(e) => save({ webhookUrl: e.target.value })} />
+                    <label className="block text-[0.625rem] font-medium text-black/60 mb-0.5">Webhook URL</label>
+                    <input className="w-full px-2 py-1 rounded border border-black/15 bg-white text-[0.75rem] outline-none focus:border-blue-400" placeholder="https://api.example.com/webhook" value={config.webhookUrl || ""} onChange={(e) => save({ webhookUrl: e.target.value })} />
                   </div>
                 )}
 
                 {config.action === "ai" && (
                   <div>
-                    <label className="block text-[10px] font-medium text-black/60 mb-0.5">AI Prompt</label>
-                    <textarea className="w-full px-2 py-1 rounded border border-black/15 bg-white text-[12px] outline-none focus:border-blue-400 resize-none" rows={2} placeholder="Generate a summary of..." value={config.aiPrompt || ""} onChange={(e) => save({ aiPrompt: e.target.value })} />
+                    <label className="block text-[0.625rem] font-medium text-black/60 mb-0.5">AI Prompt</label>
+                    <textarea className="w-full px-2 py-1 rounded border border-black/15 bg-white text-[0.75rem] outline-none focus:border-blue-400 resize-none" rows={2} placeholder="Generate a summary of..." value={config.aiPrompt || ""} onChange={(e) => save({ aiPrompt: e.target.value })} />
                   </div>
                 )}
 
                 {config.action === "submit" && (
                   <div>
-                    <label className="block text-[10px] font-medium text-black/60 mb-0.5">Event Name</label>
-                    <input className="w-full px-2 py-1 rounded border border-black/15 bg-white text-[12px] outline-none focus:border-blue-400" placeholder="my_custom_event" value={config.eventName || ""} onChange={(e) => save({ eventName: e.target.value })} />
+                    <label className="block text-[0.625rem] font-medium text-black/60 mb-0.5">Event Name</label>
+                    <input className="w-full px-2 py-1 rounded border border-black/15 bg-white text-[0.75rem] outline-none focus:border-blue-400" placeholder="my_custom_event" value={config.eventName || ""} onChange={(e) => save({ eventName: e.target.value })} />
                   </div>
                 )}
 
                 {config.action === "block" && (
                   <div>
-                    <label className="block text-[10px] font-medium text-black/60 mb-0.5">Target Block</label>
+                    <label className="block text-[0.625rem] font-medium text-black/60 mb-0.5">Target Block</label>
                     <div className="relative mb-1">
                       <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-black/30 pointer-events-none" />
-                      <input className="w-full pl-6 pr-2 py-1 rounded border border-black/15 bg-white text-[11px] outline-none focus:border-blue-400" placeholder="Search blocks..." value={blockSearch} onChange={(e) => setBlockSearch(e.target.value)} />
+                      <input className="w-full pl-6 pr-2 py-1 rounded border border-black/15 bg-white text-[0.6875rem] outline-none focus:border-blue-400" placeholder="Search blocks..." value={blockSearch} onChange={(e) => setBlockSearch(e.target.value)} />
                     </div>
                     <div className="max-h-[100px] overflow-y-auto rounded border border-black/10 scrollbar-hide mb-1.5">
                       {filteredBlocks.length === 0
-                        ? <div className="px-2 py-3 text-center text-[10px] text-black/40">{canvasBlocks.length === 0 ? "No other blocks" : "No matches"}</div>
+                        ? <div className="px-2 py-3 text-center text-[0.625rem] text-black/40">{canvasBlocks.length === 0 ? "No other blocks" : "No matches"}</div>
                         : filteredBlocks.map((b) => {
                           const selected = config.targetBlockId === b.id;
-                          return (<button key={b.id} type="button" className={`w-full flex items-center gap-2 px-2 py-1.5 text-left text-[11px] hover:bg-blue-50/50 ${selected ? "bg-blue-50 text-blue-700 font-medium" : "text-black/70"}`} onClick={() => save({ targetBlockId: b.id })}><Crosshair className="w-3.5 h-3.5 flex-shrink-0 opacity-50" /><span className="truncate flex-1">{b.preview}</span>{selected && <Check className="w-3 h-3 ml-1 text-blue-500" />}</button>);
+                          return (<button key={b.id} type="button" className={`w-full flex items-center gap-2 px-2 py-1.5 text-left text-[0.6875rem] hover:bg-blue-50/50 ${selected ? "bg-blue-50 text-blue-700 font-medium" : "text-black/70"}`} onClick={() => save({ targetBlockId: b.id })}><Crosshair className="w-3.5 h-3.5 flex-shrink-0 opacity-50" /><span className="truncate flex-1">{b.preview}</span>{selected && <Check className="w-3 h-3 ml-1 text-blue-500" />}</button>);
                         })
                       }
                     </div>
-                    <label className="block text-[10px] font-medium text-black/60 mb-0.5">When Clicked</label>
+                    <label className="block text-[0.625rem] font-medium text-black/60 mb-0.5">When Clicked</label>
                     <div className="flex gap-1">
                       {(["scroll", "select"] as BlockTargetAction[]).map((a) => (
-                        <button key={a} type="button" className={`flex-1 px-2 py-1 rounded text-[10px] font-medium border ${(config.blockAction || "scroll") === a ? "border-blue-400 bg-blue-50" : "border-black/10 hover:bg-black/5"}`} onClick={() => save({ blockAction: a })}>{a === "scroll" ? "Scroll To" : "Select"}</button>
+                        <button key={a} type="button" className={`flex-1 px-2 py-1 rounded text-[0.625rem] font-medium border ${(config.blockAction || "scroll") === a ? "border-blue-400 bg-blue-50" : "border-black/10 hover:bg-black/5"}`} onClick={() => save({ blockAction: a })}>{a === "scroll" ? "Scroll To" : "Select"}</button>
                       ))}
                     </div>
                   </div>
@@ -802,9 +802,9 @@ export const ButtonBlock = memo(function ButtonBlock({ id }: { id: string }) {
 
                 {config.action === "custom" && (
                   <div>
-                    <label className="block text-[10px] font-medium text-black/60 mb-0.5">JavaScript Code</label>
+                    <label className="block text-[0.625rem] font-medium text-black/60 mb-0.5">JavaScript Code</label>
                     <textarea
-                      className="w-full px-2 py-1 rounded border border-black/15 bg-white text-[11px] font-mono outline-none focus:border-blue-400 resize-none"
+                      className="w-full px-2 py-1 rounded border border-black/15 bg-white text-[0.6875rem] font-mono outline-none focus:border-blue-400 resize-none"
                       rows={4}
                       placeholder={`ctx.showFeedback("Hello!");\nctx.navigate("/calendar");`}
                       value={config.onClickCode || ""}
@@ -816,14 +816,14 @@ export const ButtonBlock = memo(function ButtonBlock({ id }: { id: string }) {
 
                 {/* Modifiers */}
                 <div>
-                  <label className="block text-[10px] font-medium text-black/60 mb-0.5">Behavior</label>
-                  <label className="flex items-center gap-1 text-[10px] text-black/70 cursor-pointer">
+                  <label className="block text-[0.625rem] font-medium text-black/60 mb-0.5">Behavior</label>
+                  <label className="flex items-center gap-1 text-[0.625rem] text-black/70 cursor-pointer">
                     <input type="checkbox" className="rounded" checked={config.confirm} onChange={(e) => save({ confirm: e.target.checked })} />
                     Confirm before action
                   </label>
                 </div>
 
-                <button type="button" className="w-full py-1 rounded bg-black/5 hover:bg-black/10 text-[11px] font-medium text-black/70 transition-colors" onClick={() => setConfigOpen(false)}>Done</button>
+                <button type="button" className="w-full py-1 rounded bg-black/5 hover:bg-black/10 text-[0.6875rem] font-medium text-black/70 transition-colors" onClick={() => setConfigOpen(false)}>Done</button>
               </div>
             )}
 
@@ -831,7 +831,7 @@ export const ButtonBlock = memo(function ButtonBlock({ id }: { id: string }) {
             {configTab === "icon" && (
               <div>
                 <input
-                  className="w-full px-2 py-1 rounded border border-black/15 bg-white text-[12px] outline-none focus:border-blue-400 mb-2"
+                  className="w-full px-2 py-1 rounded border border-black/15 bg-white text-[0.75rem] outline-none focus:border-blue-400 mb-2"
                   placeholder="Search icons..."
                   value={iconSearch}
                   onChange={(e) => setIconSearch(e.target.value)}
@@ -850,7 +850,7 @@ export const ButtonBlock = memo(function ButtonBlock({ id }: { id: string }) {
                       </button>
                     );
                   })}
-                  {filteredIcons.length === 0 && <div className="col-span-8 text-center text-[10px] text-black/40 py-4">No icons found</div>}
+                  {filteredIcons.length === 0 && <div className="col-span-8 text-center text-[0.625rem] text-black/40 py-4">No icons found</div>}
                 </div>
               </div>
             )}
