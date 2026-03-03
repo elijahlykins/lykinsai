@@ -907,7 +907,7 @@ User: ${text}
         </div>
 
         <main className="relative z-20 mx-auto max-w-6xl px-6 pt-24 pb-16">
-          <section className="flex items-start gap-6 flex-wrap">
+          <section className="flex items-start gap-4 flex-wrap">
             <div className="flex-1 min-w-[15rem] space-y-2">
               <h1 className="text-3xl font-semibold">Welcome back, {greetingName}</h1>
               <p className="text-black/60">Your creative workspace is ready.</p>
@@ -931,7 +931,7 @@ User: ${text}
           </section>
 
           {hasNoProjects ? (
-            <section className="mt-8 space-y-5">
+            <section className="mt-6 space-y-3">
               <div className="rounded-2xl border border-white/30 bg-white/35 dark:bg-white/5 backdrop-blur-xl shadow-md p-6 sm:p-8">
                 <div className="inline-flex items-center gap-2 rounded-full bg-blue-500/10 text-blue-600 px-3 py-1 text-xs font-semibold">
                   <Sparkles className="w-3.5 h-3.5" />
@@ -994,7 +994,7 @@ User: ${text}
               </div>
             </section>
           ) : (
-            <section className="mt-8 space-y-4">
+            <section className="mt-6 space-y-3">
               <h2 className="text-lg font-semibold">Your Projects</h2>
               <ProjectGrid
                 projects={projects}

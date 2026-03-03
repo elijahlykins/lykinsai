@@ -1371,7 +1371,7 @@ If the user asks about old memories or references past ideas, refer to the memor
         </div>
       </div>
 
-      <main className="mx-auto max-w-[100rem] px-4 sm:px-6 pt-28 pb-16 grid grid-cols-1 md:grid-cols-[17.5rem_1fr] xl:grid-cols-[21.25rem_1fr_17.5rem] gap-5">
+      <main className="mx-auto max-w-[100rem] px-4 sm:px-6 pt-28 pb-16 grid grid-cols-1 md:grid-cols-[17.5rem_1fr] xl:grid-cols-[21.25rem_1fr_17.5rem] gap-3">
         {/* Left: File Collage */}
         <div className="space-y-5">
         <section className="rounded-2xl border border-white/60 bg-[#e9e9ef]/75 backdrop-blur-lg shadow-xl shadow-white/20 p-4">

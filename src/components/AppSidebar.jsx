@@ -184,7 +184,7 @@ export default function AppSidebar() {
           </button>
         </div>
 
-        <div className="mt-5 text-[0.6875rem] font-semibold text-black/70 px-2 py-1">Projects</div>
+        <div className="mt-3 text-[0.6875rem] font-semibold text-black/70 px-2 py-1">Projects</div>
         <div className="flex flex-col gap-1 max-h-[28vh] overflow-y-auto pr-1">
           {projects.length === 0 ? (
             <div className="text-[0.6875rem] text-black/50 px-2.5 py-1.5">No projects yet.</div>
@@ -203,7 +203,7 @@ export default function AppSidebar() {
           )}
         </div>
 
-        <div className="mt-5 text-[0.6875rem] font-semibold text-black/70 px-2 py-1">Workspace</div>
+        <div className="mt-3 text-[0.6875rem] font-semibold text-black/70 px-2 py-1">Workspace</div>
         <div className="flex flex-col gap-1">
           <button
             type="button"
@@ -223,7 +223,7 @@ export default function AppSidebar() {
           </button>
         </div>
 
-        <div className="mt-5 text-[0.6875rem] font-semibold text-black/70 px-2 py-1">Account</div>
+        <div className="mt-3 text-[0.6875rem] font-semibold text-black/70 px-2 py-1">Account</div>
         <div className="flex flex-col gap-1">
           <button
             type="button"
