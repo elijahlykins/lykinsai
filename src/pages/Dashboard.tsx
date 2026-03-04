@@ -785,6 +785,25 @@ User: ${text}
 
   const hasNoProjects = projects.length === 0;
 
+  const [setupDismissed, setSetupDismissed] = useState(() => {
+    try { return localStorage.getItem("lykinsai_setup_dismissed") === "1"; } catch { return false; }
+  });
+  const [calendarVisited, setCalendarVisited] = useState(() => {
+    try { return localStorage.getItem("lykinsai_calendar_visited") === "1"; } catch { return false; }
+  });
+  const showSetup = !setupDismissed;
+
+  const dismissSetup = () => {
+    setSetupDismissed(true);
+    try { localStorage.setItem("lykinsai_setup_dismissed", "1"); } catch {}
+  };
+
+  const handleCalendarNav = () => {
+    try { localStorage.setItem("lykinsai_calendar_visited", "1"); } catch {}
+    setCalendarVisited(true);
+    nav("/calendar");
+  };
+
   return (
       <div
         className="min-h-screen bg-transparent text-black relative overflow-x-hidden"
@@ -887,16 +906,24 @@ User: ${text}
                 {isCreatingProject ? "Creating..." : "Create New Project"}
               </button>
             </div>
-            {!hasNoProjects && (
+            {calendarVisited && !hasNoProjects && (
               <div className="w-full sm:w-auto sm:min-w-[21.25rem] sm:max-w-[26.25rem]">
                 <CalendarDayInfo />
               </div>
             )}
           </section>
 
-          {hasNoProjects ? (
+          {showSetup && (
             <section className="mt-6 space-y-3">
-              <div className="rounded-2xl border border-white/30 bg-white/35 dark:bg-white/5 backdrop-blur-xl shadow-md p-6 sm:p-8">
+              <div className="relative rounded-2xl border border-white/30 bg-white/35 dark:bg-white/5 backdrop-blur-xl shadow-md p-6 sm:p-8">
+                <button
+                  type="button"
+                  onClick={dismissSetup}
+                  className="absolute top-4 right-4 p-1 rounded-full hover:bg-black/10 dark:hover:bg-white/10 transition-colors"
+                  title="Dismiss setup"
+                >
+                  <X className="w-4 h-4 text-black/40 dark:text-white/40" />
+                </button>
                 <div className="inline-flex items-center gap-2 rounded-full bg-blue-500/10 text-blue-600 px-3 py-1 text-xs font-semibold">
                   <Sparkles className="w-3.5 h-3.5" />
                   First-Time Setup
@@ -915,18 +942,19 @@ User: ${text}
                     type="button"
                     onClick={handleCreateProject}
                     disabled={isCreatingProject}
-                    className="rounded-xl border border-white/40 bg-white/45 dark:bg-white/10 p-4 text-left hover:bg-white/60 transition-all"
+                    className={`rounded-xl border p-4 text-left transition-all ${!hasNoProjects ? "border-green-400/40 bg-green-50/40 dark:bg-green-900/10" : "border-white/40 bg-white/45 dark:bg-white/10 hover:bg-white/60"}`}
                   >
                     <div className="flex items-center gap-2 text-sm font-semibold text-black/80 dark:text-white/80">
-                      <span className="flex items-center justify-center w-6 h-6 rounded-full bg-blue-500/10 text-blue-600 text-xs font-bold shrink-0">1</span>
+                      <span className={`flex items-center justify-center w-6 h-6 rounded-full text-xs font-bold shrink-0 ${!hasNoProjects ? "bg-green-500/20 text-green-600" : "bg-blue-500/10 text-blue-600"}`}>
+                        {!hasNoProjects ? "\u2713" : "1"}
+                      </span>
                       Create Your First Project
                     </div>
                     <p className="mt-2 text-xs text-black/55 dark:text-white/55 pl-8">Start a workspace for your notes, docs, and AI collaboration.</p>
                   </button>
                   <button
                     type="button"
-                    onClick={handleCreateProject}
-                    disabled={isCreatingProject}
+                    onClick={() => { if (!hasNoProjects) nav(`/project/${projects[0]?.id}`); else handleCreateProject(); }}
                     className="rounded-xl border border-white/40 bg-white/45 dark:bg-white/10 p-4 text-left hover:bg-white/60 transition-all"
                   >
                     <div className="flex items-center gap-2 text-sm font-semibold text-black/80 dark:text-white/80">
@@ -937,11 +965,13 @@ User: ${text}
                   </button>
                   <button
                     type="button"
-                    onClick={() => nav("/calendar")}
-                    className="rounded-xl border border-white/40 bg-white/45 dark:bg-white/10 p-4 text-left hover:bg-white/60 transition-all"
+                    onClick={handleCalendarNav}
+                    className={`rounded-xl border p-4 text-left transition-all ${calendarVisited ? "border-green-400/40 bg-green-50/40 dark:bg-green-900/10" : "border-white/40 bg-white/45 dark:bg-white/10 hover:bg-white/60"}`}
                   >
                     <div className="flex items-center gap-2 text-sm font-semibold text-black/80 dark:text-white/80">
-                      <span className="flex items-center justify-center w-6 h-6 rounded-full bg-blue-500/10 text-blue-600 text-xs font-bold shrink-0">3</span>
+                      <span className={`flex items-center justify-center w-6 h-6 rounded-full text-xs font-bold shrink-0 ${calendarVisited ? "bg-green-500/20 text-green-600" : "bg-blue-500/10 text-blue-600"}`}>
+                        {calendarVisited ? "\u2713" : "3"}
+                      </span>
                       Connect Your Calendar
                     </div>
                     <p className="mt-2 text-xs text-black/55 dark:text-white/55 pl-8">Sync your schedule so LYKN can suggest focused work sessions.</p>
@@ -961,7 +991,9 @@ User: ${text}
                 </div>
               </div>
             </section>
-          ) : (
+          )}
+
+          {!hasNoProjects && (
             <section className="mt-6 space-y-3">
               <h2 className="text-lg font-semibold">Your Projects</h2>
               <div className="flex gap-4 items-start">
