@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowRight, Bell, Calendar, ChevronDown, ChevronUp, Clock, MessageSquare, Plus, Sparkles, StickyNote, X, Zap } from "lucide-react";
+import { ArrowRight, Bell, Calendar, ChevronDown, ChevronUp, Clock, MessageSquare, Plus, Sparkles, StickyNote, Upload, Users, X, Zap } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/SupabaseAuth";
@@ -785,6 +785,25 @@ User: ${text}
 
   const hasNoProjects = projects.length === 0;
 
+  const [setupDismissed, setSetupDismissed] = useState(() => {
+    try { return localStorage.getItem("lykinsai_setup_dismissed") === "1"; } catch { return false; }
+  });
+  const [calendarVisited, setCalendarVisited] = useState(() => {
+    try { return localStorage.getItem("lykinsai_calendar_visited") === "1"; } catch { return false; }
+  });
+  const showSetup = !setupDismissed;
+
+  const dismissSetup = () => {
+    setSetupDismissed(true);
+    try { localStorage.setItem("lykinsai_setup_dismissed", "1"); } catch {}
+  };
+
+  const handleCalendarNav = () => {
+    try { localStorage.setItem("lykinsai_calendar_visited", "1"); } catch {}
+    setCalendarVisited(true);
+    nav("/calendar");
+  };
+
   return (
       <div
         className="min-h-screen bg-transparent text-black relative overflow-x-hidden"
@@ -887,77 +906,94 @@ User: ${text}
                 {isCreatingProject ? "Creating..." : "Create New Project"}
               </button>
             </div>
-            {!hasNoProjects && (
+            {calendarVisited && !hasNoProjects && (
               <div className="w-full sm:w-auto sm:min-w-[21.25rem] sm:max-w-[26.25rem]">
                 <CalendarDayInfo />
               </div>
             )}
           </section>
 
-          {hasNoProjects ? (
+          {showSetup && (
             <section className="mt-6 space-y-3">
-              <div className="rounded-2xl border border-white/30 bg-white/35 dark:bg-white/5 backdrop-blur-xl shadow-md p-6 sm:p-8">
+              <div className="relative rounded-2xl border border-white/30 bg-white/35 dark:bg-white/5 backdrop-blur-xl shadow-md p-6 sm:p-8">
+                <button
+                  type="button"
+                  onClick={dismissSetup}
+                  className="absolute top-4 right-4 p-1 rounded-full hover:bg-black/10 dark:hover:bg-white/10 transition-colors"
+                  title="Dismiss setup"
+                >
+                  <X className="w-4 h-4 text-black/40 dark:text-white/40" />
+                </button>
                 <div className="inline-flex items-center gap-2 rounded-full bg-blue-500/10 text-blue-600 px-3 py-1 text-xs font-semibold">
                   <Sparkles className="w-3.5 h-3.5" />
-                  First-time setup
+                  First-Time Setup
                 </div>
                 <h2 className="mt-4 text-2xl sm:text-3xl font-semibold text-black/85 dark:text-white/85">
                   Let&apos;s set up your LYKN workspace
                 </h2>
                 <p className="mt-2 text-sm sm:text-base text-black/60 dark:text-white/60 max-w-2xl">
-                  Start by creating your first project, then connect your calendar and preferences so LYKN can tailor your daily workflow.
+                  Create your foundation, bring in your content, and connect your workflow.
+                  <br />
+                  <span className="text-black/45 dark:text-white/45">Takes less than 2 minutes.</span>
                 </p>
 
-                <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-3">
                   <button
                     type="button"
                     onClick={handleCreateProject}
                     disabled={isCreatingProject}
-                    className="rounded-xl border border-white/40 bg-white/45 dark:bg-white/10 p-4 text-left hover:bg-white/60 transition-all"
+                    className={`rounded-xl border p-4 text-left transition-all ${!hasNoProjects ? "border-green-400/40 bg-green-50/40 dark:bg-green-900/10" : "border-white/40 bg-white/45 dark:bg-white/10 hover:bg-white/60"}`}
                   >
                     <div className="flex items-center gap-2 text-sm font-semibold text-black/80 dark:text-white/80">
-                      <Plus className="w-4 h-4 text-blue-600" />
-                      Create first project
+                      <span className={`flex items-center justify-center w-6 h-6 rounded-full text-xs font-bold shrink-0 ${!hasNoProjects ? "bg-green-500/20 text-green-600" : "bg-blue-500/10 text-blue-600"}`}>
+                        {!hasNoProjects ? "\u2713" : "1"}
+                      </span>
+                      Create Your First Project
                     </div>
-                    <p className="mt-2 text-xs text-black/55 dark:text-white/55">Set up your first workspace for notes, docs, and AI support.</p>
+                    <p className="mt-2 text-xs text-black/55 dark:text-white/55 pl-8">Start a workspace for your notes, docs, and AI collaboration.</p>
                   </button>
                   <button
                     type="button"
-                    onClick={() => nav("/calendar")}
+                    onClick={() => { if (!hasNoProjects) nav(`/project/${projects[0]?.id}`); else handleCreateProject(); }}
                     className="rounded-xl border border-white/40 bg-white/45 dark:bg-white/10 p-4 text-left hover:bg-white/60 transition-all"
                   >
                     <div className="flex items-center gap-2 text-sm font-semibold text-black/80 dark:text-white/80">
-                      <Calendar className="w-4 h-4 text-blue-600" />
-                      Connect your schedule
+                      <span className="flex items-center justify-center w-6 h-6 rounded-full bg-blue-500/10 text-blue-600 text-xs font-bold shrink-0">2</span>
+                      Add Files &amp; Media
                     </div>
-                    <p className="mt-2 text-xs text-black/55 dark:text-white/55">Add key events so LYKN can suggest focused work windows.</p>
+                    <p className="mt-2 text-xs text-black/55 dark:text-white/55 pl-8">Drag and drop documents, links, or media to bring your work into LYKN.</p>
                   </button>
                   <button
                     type="button"
-                    onClick={() => nav("/settings")}
+                    onClick={handleCalendarNav}
+                    className={`rounded-xl border p-4 text-left transition-all ${calendarVisited ? "border-green-400/40 bg-green-50/40 dark:bg-green-900/10" : "border-white/40 bg-white/45 dark:bg-white/10 hover:bg-white/60"}`}
+                  >
+                    <div className="flex items-center gap-2 text-sm font-semibold text-black/80 dark:text-white/80">
+                      <span className={`flex items-center justify-center w-6 h-6 rounded-full text-xs font-bold shrink-0 ${calendarVisited ? "bg-green-500/20 text-green-600" : "bg-blue-500/10 text-blue-600"}`}>
+                        {calendarVisited ? "\u2713" : "3"}
+                      </span>
+                      Connect Your Calendar
+                    </div>
+                    <p className="mt-2 text-xs text-black/55 dark:text-white/55 pl-8">Sync your schedule so LYKN can suggest focused work sessions.</p>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => nav("/teamspaces")}
                     className="rounded-xl border border-white/40 bg-white/45 dark:bg-white/10 p-4 text-left hover:bg-white/60 transition-all"
                   >
                     <div className="flex items-center gap-2 text-sm font-semibold text-black/80 dark:text-white/80">
-                      <Sparkles className="w-4 h-4 text-blue-600" />
-                      Personalize AI settings
+                      <span className="flex items-center justify-center w-6 h-6 rounded-full bg-blue-500/10 text-blue-600 text-xs font-bold shrink-0">4</span>
+                      Invite Your Team
+                      <span className="text-xs font-normal text-black/40 dark:text-white/40">(Optional)</span>
                     </div>
-                    <p className="mt-2 text-xs text-black/55 dark:text-white/55">Choose your preferred AI model and workspace behavior.</p>
+                    <p className="mt-2 text-xs text-black/55 dark:text-white/55 pl-8">Create shared spaces and collaborate in real time.</p>
                   </button>
-                </div>
-
-                <div className="mt-6 flex flex-wrap items-center gap-3 text-xs text-black/55 dark:text-white/55">
-                  <span className="inline-flex items-center gap-1.5">
-                    <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
-                    Takes less than 2 minutes
-                  </span>
-                  <span className="inline-flex items-center gap-1.5">
-                    <ArrowRight className="w-3.5 h-3.5 text-blue-600" />
-                    You can skip and do this later
-                  </span>
                 </div>
               </div>
             </section>
-          ) : (
+          )}
+
+          {!hasNoProjects && (
             <section className="mt-6 space-y-3">
               <h2 className="text-lg font-semibold">Your Projects</h2>
               <div className="flex gap-4 items-start">

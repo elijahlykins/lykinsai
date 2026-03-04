@@ -2947,6 +2947,10 @@ function saveLocalEvents(events) {
 export default function CalendarPage() {
   const { user } = useAuth();
   const showGoogleCalendarConnect = false;
+
+  useEffect(() => {
+    try { localStorage.setItem("lykinsai_calendar_visited", "1"); } catch {}
+  }, []);
   const googleClientId = String(import.meta.env.VITE_GOOGLE_CALENDAR_CLIENT_ID || "").trim();
   const [topPanelOpen, setTopPanelOpen] = useState(false);
   const [showQuickNote, setShowQuickNote] = useState(false);
