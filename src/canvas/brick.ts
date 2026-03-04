@@ -27,6 +27,7 @@ export type BrickShellRenderOptions = {
   isRaised?: boolean;
   isActivated?: boolean;
   onPress?: (id: string, shiftKey: boolean, source: "pointerdown" | "click") => void;
+  onDoubleClick?: (id: string) => void;
   isTyping?: boolean;
   onTypingChange?: (id: string, value: string, meta?: { isPaste?: boolean }) => void;
   onTypingKeyDown?: (id: string, e: React.KeyboardEvent<HTMLDivElement>) => void;
@@ -698,6 +699,7 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
   const isTyping = Boolean(opts?.isTyping);
   const handlePointerDown = (e: any) => opts?.onPress?.(shell.id, Boolean(e?.shiftKey), "pointerdown");
   const handleClick = (e: any) => opts?.onPress?.(shell.id, Boolean(e?.shiftKey), "click");
+  const handleDoubleClick = (e: any) => { e.stopPropagation(); opts?.onDoubleClick?.(shell.id); };
   const canResizeWidth = Boolean(opts?.enableWidthResize && typeof opts?.onResizeWidth === "function");
   const startWidthResize = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!canResizeWidth) return;
@@ -748,6 +750,7 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
       className: "absolute group cursor-pointer select-none",
       onPointerDown: handlePointerDown,
       onClick: handleClick,
+      onDoubleClick: handleDoubleClick,
       style: {
         left: `${shell.x}px`,
         top: `${shell.y}px`,

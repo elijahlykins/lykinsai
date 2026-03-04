@@ -1233,8 +1233,9 @@ If the user asks about old memories or references past ideas, refer to the memor
       onDrop={handleDrop}
     >
       <header className="fixed top-0 left-0 right-0 z-30 bg-white/60 backdrop-blur-md">
-        <div className="mx-auto w-full max-w-[100rem] pl-[10.625rem] xl:pl-6 pr-4 sm:pr-6 py-3 sm:py-4">
-          <div className="text-base sm:text-lg font-semibold">
+        <div className="mx-auto w-full max-w-[100rem] px-4 sm:px-6 py-3 sm:py-4 flex items-center">
+          <div className="w-[17.5rem] md:w-[17.5rem] xl:w-[21.25rem] shrink-0" />
+          <div className="text-base sm:text-lg font-semibold shrink-0">
             {isEditingTitle ? (
               <input
                 value={draftTitle}

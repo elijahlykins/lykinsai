@@ -486,6 +486,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
     moveRangeIndexes: number[];
     startGrouped: string[];
     moveGrouped: string[];
+    startText: Record<string, string>;
   }>({
     active: false,
     moved: false,
@@ -501,6 +502,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
     moveRangeIndexes: [],
     startGrouped: [],
     moveGrouped: [],
+    startText: {},
   });
   const groupDragRef = useRef<{
     active: boolean;
@@ -516,6 +518,8 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
     keys: [],
   });
   const suppressBrickClickRef = useRef(false);
+  const floatingBrickRef = useRef<{ active: boolean; ids: string[] }>({ active: false, ids: [] });
+  const lastShapeCellClickRef = useRef<{ key: string; at: number }>({ key: "", at: 0 });
 
   const [aiPanel, setAiPanel] = useState<{
     open: boolean;
@@ -586,6 +590,25 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
   const moveBlocksFromSnapshot = useCanvasStore((s) => s.moveBlocksFromSnapshot);
   const pushHistory = useCanvasStore((s) => s.pushHistory);
   const deleteBlock = useCanvasStore((s) => s.deleteBlock);
+
+  const prevBlockCountRef = useRef(Object.keys(blocks).length);
+  useEffect(() => {
+    const count = Object.keys(blocks).length;
+    if (prevBlockCountRef.current > 0 && count === 0) {
+      setActivatedGridCellKeys([]);
+      setRaisedGridCellKeys([]);
+      setActivatedGridRanges([]);
+      setGroupedGridCellKeys([]);
+      setShapeCellTextByKey({});
+      setTypingShapeCellKey(null);
+      setTypingBlockId(null);
+      setActivatedBrickIds([]);
+      setRaisedBrickIds([]);
+      setShiftAnchor(null);
+      setShiftLinkedGridSelection(false);
+    }
+    prevBlockCountRef.current = count;
+  }, [blocks]);
 
   const makeCreateBlockLocal = (x: number, y: number, mode: string, data: Record<string, any>, width: number, height: number) => ({
     id: `create-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
@@ -965,6 +988,10 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
     const onKeyDown = (e: KeyboardEvent) => {
       const key = String(e.key || "").toLowerCase();
       if (key !== "delete" && key !== "backspace") return;
+      const t = e.target as Element | null;
+      const inEditable = Boolean(t?.closest?.("[contenteditable='true']") || (t instanceof HTMLInputElement) || (t instanceof HTMLTextAreaElement));
+      if (inEditable) return;
+
       const heldBrick = groupDragRef.current;
       if (heldBrick.active && heldBrick.snapshot.length) {
         const ids = Array.from(new Set(heldBrick.snapshot.map((s) => s.id).filter((id) => Boolean(blocks[id]))));
@@ -981,6 +1008,20 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
         heldBrick.startWorldY = 0;
         heldBrick.snapshot = [];
         return;
+      }
+
+      if (floatingBrickRef.current.active && floatingBrickRef.current.ids.length) {
+        const ids = floatingBrickRef.current.ids.filter((id) => Boolean(blocks[id]));
+        if (ids.length) {
+          e.preventDefault();
+          deleteBlocks(ids as any);
+          if (typingBlockId && ids.some((id) => id === typingBlockId)) setTypingBlockId(null);
+          setActivatedBrickIds([]);
+          setRaisedBrickIds([]);
+          floatingBrickRef.current = { active: false, ids: [] };
+          pushHistory();
+          return;
+        }
       }
 
       const heldShape = gridShapeDragRef.current;
@@ -1040,6 +1081,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
         moveRangeIndexes: [],
         startGrouped: [],
         moveGrouped: [],
+        startText: {},
       };
       return;
     };
@@ -1224,6 +1266,41 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
       [targetKey]: nextText,
     }));
   };
+  const handleShapeCellSlashCommand = (cellKeyStr: string, raw: string) => {
+    const parsed = parseTextSlashVariant(raw, "body", "none");
+    if (!parsed.consumed) return false;
+    const p = parseCellKey(cellKeyStr);
+    const st = useCanvasStore.getState();
+    const existingId = findBlockAtCell(p.x, p.y);
+    if ((parsed as any).transform) {
+      const transform = (parsed as any).transform as string;
+      const id = existingId || st.addTextBlockAt({ x: p.x, y: p.y }, { width: gridSize, height: gridSize, content: "", format: "plain" } as any);
+      const cur: any = st.blocks[id] || {};
+      const data = cur?.data && typeof cur.data === "object" ? { ...cur.data } : {};
+      if (transform === "table") {
+        const sheet = { version: 1, rows: 10, cols: 6, colWidths: Array.from({ length: 6 }, () => 96), cells: {} };
+        st.updateBlock(id as any, { content: JSON.stringify(sheet), format: "table", width: Math.max(gridSize * 18, cur.width || 0), height: Math.max(gridSize * 12, cur.height || 0), data: { ...data, textVariant: "body", listType: "none" } } as any);
+      } else if (transform === "calendar") {
+        st.updateBlock(id as any, { content: JSON.stringify({ events: [] }), format: "calendar", width: Math.max(gridSize * 12, cur.width || 0), height: Math.max(gridSize * 14, cur.height || 0), data: { ...data, textVariant: "body", listType: "none" } } as any);
+      } else if (transform === "media") {
+        st.updateBlock(id as any, { content: JSON.stringify({ mode: "picker" }), format: "media", width: Math.max(gridSize * 10, cur.width || 0), height: Math.max(gridSize * 8, cur.height || 0), data: { ...data, textVariant: "body", listType: "none" } } as any);
+      } else if (transform === "button") {
+        const btnData = { label: "Button", icon: "zap", style: "filled", action: "url", url: "", navigateTarget: "page", navigateValue: "", navigateLabel: "", copyText: "", webhookUrl: "", aiPrompt: "", eventName: "", targetBlockId: "", blockAction: "scroll", onClickCode: "", description: "", _needsSetup: true, confirm: false, toggleState: false };
+        st.updateBlock(id as any, { content: JSON.stringify(btnData), format: "button", width: Math.max(gridSize * 8, Math.min(gridSize * 12, cur.width || gridSize * 8)), height: gridSize, data: { ...data, textVariant: "body", listType: "none" } } as any);
+      }
+    } else {
+      const id = existingId || st.addTextBlockAt({ x: p.x, y: p.y }, { width: gridSize, height: gridSize, content: "", format: "plain" } as any);
+      const freshBlock: any = useCanvasStore.getState().blocks[id] || {};
+      const data = freshBlock?.data && typeof freshBlock.data === "object" ? { ...freshBlock.data } : {};
+      st.updateBlock(id as any, { content: parsed.content, data: { ...data, textVariant: parsed.variant, listType: parsed.listType } } as any);
+      setTypingBlockId(id);
+      focusBrickInputById(id);
+    }
+    setShapeCellTextByKey((prev) => { const next = { ...prev }; delete next[cellKeyStr]; return next; });
+    setTypingShapeCellKey(null);
+    setActivatedGridCellKeys((prev) => prev.filter((k) => k !== cellKeyStr));
+    return true;
+  };
   useEffect(() => {
     if (!typingShapeCellKey) return;
     // Ensure first entry into shape-cell typing places caret at end reliably.
@@ -1236,24 +1313,28 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
   const lineRowsForVariant = (variant: "body" | "h2" | "h1") => (variant === "h1" ? 3 : variant === "h2" ? 2 : 1);
   const fontSizeForVariant = (variant: "body" | "h2" | "h1") => (variant === "h1" ? 42 : variant === "h2" ? 28 : 14);
   const fontWeightForVariant = (variant: "body" | "h2" | "h1") => (variant === "body" ? 400 : 500);
+  const measureCtxRef = useRef<{ canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D } | null>(null);
+  const getMeasureCtx = () => {
+    if (measureCtxRef.current) return measureCtxRef.current.ctx;
+    if (typeof document === "undefined") return null;
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+    if (ctx) measureCtxRef.current = { canvas, ctx };
+    return ctx;
+  };
   const getRequiredHorizontalCells = (text: string, variant: "body" | "h2" | "h1") => {
     const s = String(text || "");
     const lines = s.split("\n");
     const longest = lines.reduce((m, line) => (line.length > m.length ? line : m), "");
-    // Measure actual text width so growth occurs only when current brick is truly filled.
     let textPx = longest.length * 7.2;
-    if (typeof document !== "undefined") {
-      const measureCanvas = document.createElement("canvas");
-      const ctx = measureCanvas.getContext("2d");
-      if (ctx) {
-        const fontWeight = fontWeightForVariant(variant);
-        const fontSize = fontSizeForVariant(variant);
-        ctx.font = `${fontWeight} ${fontSize}px ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"`;
-        textPx = ctx.measureText(longest).width;
-      }
+    const ctx = getMeasureCtx();
+    if (ctx) {
+      const fontWeight = fontWeightForVariant(variant);
+      const fontSize = fontSizeForVariant(variant);
+      ctx.font = `${fontWeight} ${fontSize}px ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"`;
+      textPx = ctx.measureText(longest).width;
     }
-    const horizontalPaddingPx = 16; // 8px left + 8px right, matching editor styles.
-    // Small guard avoids one-frame wrap flicker at boundary while typing.
+    const horizontalPaddingPx = 16;
     const wrapGuardPx = variant === "body" ? 4 : 8;
     return Math.max(1, Math.ceil((textPx + horizontalPaddingPx + wrapGuardPx) / gridSize));
   };
@@ -1265,18 +1346,14 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
   const getWrappedLineCountForWidth = (text: string, variant: "body" | "h2" | "h1", widthPx: number) => {
     const s = String(text || "");
     const lines = s.split("\n");
-    const horizontalPaddingPx = 16; // 8px left + 8px right in BrickTextSurface
+    const horizontalPaddingPx = 16;
     const availableWidthPx = Math.max(8, Math.floor(widthPx) - horizontalPaddingPx);
 
-    let ctx: CanvasRenderingContext2D | null = null;
-    if (typeof document !== "undefined") {
-      const measureCanvas = document.createElement("canvas");
-      ctx = measureCanvas.getContext("2d");
-      if (ctx) {
-        const fontWeight = fontWeightForVariant(variant);
-        const fontSize = fontSizeForVariant(variant);
-        ctx.font = `${fontWeight} ${fontSize}px ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"`;
-      }
+    const ctx = getMeasureCtx();
+    if (ctx) {
+      const fontWeight = fontWeightForVariant(variant);
+      const fontSize = fontSizeForVariant(variant);
+      ctx.font = `${fontWeight} ${fontSize}px ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"`;
     }
     const measureTextWidth = (value: string) => {
       if (!value) return 0;
@@ -1488,26 +1565,15 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
   };
 
   useEffect(() => {
-    const active = new Set([...activatedGridCellKeys, ...raisedGridCellKeys]);
-    setGroupedGridCellKeys((prev) => prev.filter((k) => active.has(k)));
-  }, [activatedGridCellKeys, raisedGridCellKeys]);
-
-  useEffect(() => {
-    const activeShapeKeys = new Set(toUnique([...activatedGridCellKeys, ...activatedGridRanges.flatMap((r) => cellKeysForRange(r))]));
-    setShapeCellTextByKey((prev) => {
-      const next: Record<string, string> = {};
-      let changed = false;
-      for (const [k, v] of Object.entries(prev)) {
-        if (!activeShapeKeys.has(k)) {
-          changed = true;
-          continue;
-        }
-        next[k] = v;
-      }
-      return changed ? next : prev;
-    });
+    const activeShapeKeys = new Set(toUnique([
+      ...activatedGridCellKeys,
+      ...raisedGridCellKeys,
+      ...groupedGridCellKeys,
+      ...activatedGridRanges.flatMap((r) => cellKeysForRange(r)),
+      ...Object.keys(shapeCellTextByKey).filter((k) => shapeCellTextByKey[k]),
+    ]));
     setTypingShapeCellKey((prev) => (prev && activeShapeKeys.has(prev) ? prev : null));
-  }, [activatedGridCellKeys, activatedGridRanges]);
+  }, [activatedGridCellKeys, activatedGridRanges, raisedGridCellKeys, groupedGridCellKeys, shapeCellTextByKey]);
 
   const beginGridShapeDrag = (
     e: React.PointerEvent,
@@ -1611,6 +1677,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
       moveRangeIndexes,
       startGrouped: groupedGridCellKeys.slice(),
       moveGrouped,
+      startText: { ...shapeCellTextByKey },
     };
     setShiftAnchor(null);
   };
@@ -1648,9 +1715,18 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
         const next: Record<string, string> = {};
         let changed = false;
         for (const [k, v] of Object.entries(prev)) {
-          const nk = moveMap.get(k) || k;
-          if (nk !== k) changed = true;
-          if (typeof next[nk] === "undefined") next[nk] = v;
+          if (moveMap.has(k)) {
+            changed = true;
+            continue;
+          }
+          next[k] = v;
+        }
+        for (const [origKey, newKey] of moveMap) {
+          const txt = d.startText[origKey];
+          if (txt) {
+            next[newKey] = txt;
+            if (newKey !== origKey) changed = true;
+          }
         }
         if (typingShapeCellKey && moveMap.has(typingShapeCellKey)) {
           const nk = moveMap.get(typingShapeCellKey) as string;
@@ -1696,12 +1772,30 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
         moveRangeIndexes: [],
         startGrouped: [],
         moveGrouped: [],
+        startText: {},
       };
       // Press/hold behavior: release always drops raised/blue state.
-      setRaisedGridCellKeys([]);
       setShiftLinkedGridSelection(false);
       heldShapeDeleteRef.current = { active: false, pointerId: null, keys: [] };
       if (!d.moved && d.pressCellKey) {
+        const now = Date.now();
+        const last = lastShapeCellClickRef.current;
+        const isDoubleClick = last.key === d.pressCellKey && now - last.at < 400;
+        lastShapeCellClickRef.current = { key: d.pressCellKey, at: now };
+
+        if (isDoubleClick) {
+          const groupedSet = new Set(groupedGridCellKeys);
+          const keysToRaise = groupedSet.has(d.pressCellKey)
+            ? groupedGridCellKeys.slice()
+            : d.startCells.length > 1
+              ? d.startCells.slice()
+              : [d.pressCellKey];
+          setRaisedGridCellKeys(keysToRaise);
+          setTypingShapeCellKey(null);
+          return;
+        }
+
+        setRaisedGridCellKeys([]);
         commitShapeCellEditorByKey();
         setTypingBlockId(null);
         setActivatedBrickIds([]);
@@ -1709,6 +1803,8 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
         setTypingShapeCellKey(d.pressCellKey);
         const existing = String(shapeCellTextByKey[d.pressCellKey] || "");
         focusShapeCellEditorByKey(d.pressCellKey, existing, existing.length === 0);
+      } else {
+        setRaisedGridCellKeys([]);
       }
     };
     window.addEventListener("pointermove", onMove, true);
@@ -1723,6 +1819,9 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
 
   // Group-aware dragging for pressed shape shells.
   useEffect(() => {
+    const blockSelect = (e: Event) => {
+      if (groupDragRef.current.active) e.preventDefault();
+    };
     const onMove = (e: PointerEvent) => {
       const d = groupDragRef.current;
       if (!d.active) return;
@@ -1734,6 +1833,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
         const manhattan = Math.abs(dx) + Math.abs(dy);
         if (manhattan < Math.max(2, Math.floor(gridSize / 5))) return;
         d.moved = true;
+        window.getSelection()?.removeAllRanges();
         const draggedIds = d.snapshot.map((s) => s.id).filter(Boolean);
         if (draggedIds.length) {
           setActivatedBrickIds(draggedIds);
@@ -1760,15 +1860,40 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
         pushHistory();
       }
     };
+    document.addEventListener("selectstart", blockSelect, true);
     window.addEventListener("pointermove", onMove, true);
     window.addEventListener("pointerup", onUp, true);
     window.addEventListener("pointercancel", onUp, true);
     return () => {
+      document.removeEventListener("selectstart", blockSelect, true);
       window.removeEventListener("pointermove", onMove, true);
       window.removeEventListener("pointerup", onUp, true);
       window.removeEventListener("pointercancel", onUp, true);
     };
   }, [clientToWorld, gridSize, moveBlocksFromSnapshot, pushHistory]);
+
+  // Floating brick: double-click lifts visually; click anywhere or Escape to drop.
+  useEffect(() => {
+    const dropFloating = () => {
+      if (!floatingBrickRef.current.active) return;
+      floatingBrickRef.current = { active: false, ids: [] };
+      setActivatedBrickIds([]);
+      setRaisedBrickIds([]);
+    };
+    const onDown = () => {
+      if (!floatingBrickRef.current.active) return;
+      window.setTimeout(dropFloating, 200);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") dropFloating();
+    };
+    window.addEventListener("pointerdown", onDown, true);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      window.removeEventListener("pointerdown", onDown, true);
+      window.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, []);
 
   const pairShiftTargets = (anchor: PressTarget, target: PressTarget) => {
     const ak = String(anchor.key || "");
@@ -2469,11 +2594,13 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
       const pending = consumePendingMemoryDrop();
       if (pending) {
         event.preventDefault();
+        window.dispatchEvent(new CustomEvent("omnia_canvas_interact"));
         processMemoryDrop(pending, event.clientX, event.clientY);
         return;
       }
       if (!hasSupportedDropData(event)) return;
       event.preventDefault();
+      window.dispatchEvent(new CustomEvent("omnia_canvas_interact"));
       const files = Array.from(event.dataTransfer?.files || []);
       if (files.length > 0) {
         window.dispatchEvent(
@@ -3342,6 +3469,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
           const blockEl = t?.closest?.("[data-canvas-block]") as HTMLElement | null;
           const blockId = blockEl?.getAttribute?.("data-block-id");
           if (blockId) {
+            window.dispatchEvent(new CustomEvent("omnia_canvas_interact"));
             const gid = getMoveGroupId(blockId);
             const ids = gid ? getMoveGroupMembers(gid) : [blockId];
             const snapshot = ids
@@ -3383,6 +3511,24 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
           cur.ids = ids;
         }, 0);
       }}
+      onDoubleClickCapture={(e) => {
+        const t = e.target as Element | null;
+        const blockEl = t?.closest?.("[data-canvas-block]") as HTMLElement | null;
+        const blockId = blockEl?.getAttribute?.("data-block-id");
+        if (!blockId) return;
+        const gid = getMoveGroupId(blockId);
+        const ids = gid ? getMoveGroupMembers(gid) : [blockId];
+        if (floatingBrickRef.current.active) {
+          floatingBrickRef.current = { active: false, ids: [] };
+          setActivatedBrickIds([]);
+          setRaisedBrickIds([]);
+          return;
+        }
+        setTypingBlockId(null);
+        setActivatedBrickIds(ids);
+        setRaisedBrickIds(ids);
+        floatingBrickRef.current = { active: true, ids };
+      }}
       onDragOver={(e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -3390,6 +3536,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
       onDrop={(e) => {
         e.preventDefault();
         e.stopPropagation();
+        window.dispatchEvent(new CustomEvent("omnia_canvas_interact"));
         if (shapePickerOpen) setShapePickerOpen(false);
         const pendingMemory = consumePendingMemoryDrop();
         if (pendingMemory) {
@@ -3452,6 +3599,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
         const t = e.target as Element | null;
         if (shapePickerOpen && !t?.closest?.("[data-shape-picker]")) setShapePickerOpen(false);
         if (t?.closest?.("[data-canvas-block]")) return;
+        window.dispatchEvent(new CustomEvent("omnia_canvas_interact"));
         commitShapeCellEditorByKey();
         setTypingShapeCellKey(null);
         // Keep canvas focused so '/' works after clicking.
@@ -3836,15 +3984,47 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
           );
         })}
         {(() => {
-          const keys = toUnique([...activatedGridCellKeys, ...activatedGridRanges.flatMap((r) => cellKeysForRange(r))]);
+          const keys = toUnique([
+            ...activatedGridCellKeys,
+            ...activatedGridRanges.flatMap((r) => cellKeysForRange(r)),
+            ...groupedGridCellKeys,
+            ...Object.keys(shapeCellTextByKey).filter((k) => shapeCellTextByKey[k]),
+          ]);
+          const activatedSet = new Set(activatedGridCellKeys);
           return keys.map((k) => {
             const p = parseCellKey(k);
             const txt = String(shapeCellTextByKey[k] || "");
             const isTyping = typingShapeCellKey === k;
+            const isOrphanText = txt && !isTyping && !activatedSet.has(k);
             return (
               <div
                 key={`shape-text-${k}`}
-                className="absolute"
+                className={`absolute ${isOrphanText ? "cursor-grab active:cursor-grabbing" : ""}`}
+                onPointerDown={isOrphanText ? (e: React.PointerEvent) => {
+                  if (e.button !== 0) return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setActivatedGridCellKeys((prev) => toUnique([...prev, k]));
+                  setRaisedGridCellKeys([k]);
+                  const world = clientToWorld(e.clientX, e.clientY);
+                  gridShapeDragRef.current = {
+                    active: true,
+                    moved: false,
+                    pointerId: e.pointerId,
+                    startWorldX: world.x,
+                    startWorldY: world.y,
+                    pressCellKey: k,
+                    startCells: [k],
+                    startRaised: [k],
+                    startRanges: [],
+                    moveCells: [k],
+                    moveRaised: [k],
+                    moveRangeIndexes: [],
+                    startGrouped: groupedGridCellKeys.slice(),
+                    moveGrouped: new Set(groupedGridCellKeys).has(k) ? groupedGridCellKeys.slice() : [],
+                    startText: { ...shapeCellTextByKey },
+                  };
+                } : undefined}
                 style={{
                   left: `${p.x}px`,
                   top: `${p.y}px`,
@@ -3877,17 +4057,33 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
                       minHeight: `${gridSize}px`,
                       overflow: "visible",
                     }}
-                    onPointerDown={(e) => e.stopPropagation()}
-                    onInput={(e) =>
-                      setShapeCellTextByKey((prev) => {
-                        const el = e.currentTarget as HTMLDivElement | null;
-                        const nextText = String(el?.innerText || "").replace(/\r\n/g, "\n");
-                        return {
-                          ...prev,
-                          [k]: nextText,
-                        };
-                      })
-                    }
+                    onPointerDown={(e) => {
+                      e.stopPropagation();
+                      const now = Date.now();
+                      const last = lastShapeCellClickRef.current;
+                      if (last.key === k && now - last.at < 400) {
+                        e.preventDefault();
+                        lastShapeCellClickRef.current = { key: "", at: 0 };
+                        const groupedSet = new Set(groupedGridCellKeys);
+                        const keysToRaise = groupedSet.has(k)
+                          ? groupedGridCellKeys.slice()
+                          : activatedGridCellKeys.length > 1
+                            ? activatedGridCellKeys.slice()
+                            : [k];
+                        setRaisedGridCellKeys(keysToRaise);
+                        setTypingShapeCellKey(null);
+                        return;
+                      }
+                    }}
+                    onInput={(e) => {
+                      const el = e.currentTarget as HTMLDivElement | null;
+                      const nextText = String(el?.innerText || "").replace(/\r\n/g, "\n");
+                      if (handleShapeCellSlashCommand(k, nextText)) return;
+                      setShapeCellTextByKey((prev) => ({
+                        ...prev,
+                        [k]: nextText,
+                      }));
+                    }}
                     onKeyDown={(e) => {
                       if (e.key === "Escape") {
                         e.preventDefault();
@@ -3919,6 +4115,13 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
                       paddingTop: "2px",
                       paddingBottom: "2px",
                       overflow: "visible",
+                      ...(isOrphanText ? {
+                        background: "linear-gradient(145deg, rgba(255,255,255,0.62), rgba(255,255,255,0.34))",
+                        backdropFilter: "blur(8px)",
+                        borderRadius: "0px",
+                        border: "1px solid rgba(255,255,255,0.55)",
+                        boxShadow: "inset 0 1px 0 rgba(255,255,255,0.55), 0 6px 18px rgba(0,0,0,0.14)",
+                      } : {}),
                     }}
                   >
                     {txt}
@@ -4069,10 +4272,8 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
               const nextListType = parsed.listType;
               const currentHeightRows = Math.max(1, Math.round(Number(cur.height || gridSize) / gridSize));
               const currentWidthCells = Math.max(1, Math.round(Number(cur.width || gridSize) / gridSize));
-              // Bubble behavior: width follows longest typed line, even after Enter.
               const targetCells = getRequiredHorizontalCells(textValue, nextVariant);
               const neededCells = targetCells;
-              // Keep checklist growth one step ahead so typing never "catches" the edge.
               const leadCells = nextListType === "todo" ? 1 : 0;
               const desiredCells = neededCells + leadCells;
               const widthCells = Math.max(currentWidthCells, desiredCells);
@@ -4088,15 +4289,26 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
                     ? Math.min(targetRows, currentHeightRows + 1)
                     : targetRows;
               const newHeight = Math.max(gridSize, neededRows * gridSize);
-              updateBlock(
-                bid as any,
-                {
-                  content: textValue,
-                  width: newWidth,
-                  height: newHeight,
-                  data: { ...data, textVariant: nextVariant, listType: nextListType },
-                } as any
-              );
+
+              const contentSame = cur.content === textValue;
+              const sizeSame = cur.width === newWidth && cur.height === newHeight;
+              const variantSame = currentVariant === nextVariant && currentListType === nextListType;
+              if (contentSame && sizeSame && variantSame) {
+                if (parsed.consumed) syncBrickEditorText(bid, textValue);
+                return;
+              }
+
+              const patch: any = { content: textValue };
+              if (!sizeSame) {
+                patch.width = newWidth;
+                patch.height = newHeight;
+              }
+              if (!variantSame) {
+                patch.data = { ...data, textVariant: nextVariant, listType: nextListType };
+              } else if (!sizeSame || !contentSame) {
+                patch.data = data;
+              }
+              updateBlock(bid as any, patch);
               if (parsed.consumed) syncBrickEditorText(bid, textValue);
             },
             onTypingKeyDown: (bid, e) => {
@@ -4148,6 +4360,20 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
                 setRaisedBrickIds([]);
               }
             },
+            onDoubleClick: (bid) => {
+              if (floatingBrickRef.current.active) {
+                floatingBrickRef.current = { active: false, ids: [] };
+                setActivatedBrickIds([]);
+                setRaisedBrickIds([]);
+                return;
+              }
+              const gid = getMoveGroupId(bid);
+              const ids = gid ? getMoveGroupMembers(gid) : [bid];
+              setTypingBlockId(null);
+              setActivatedBrickIds(ids);
+              setRaisedBrickIds(ids);
+              floatingBrickRef.current = { active: true, ids };
+            },
             onPress: (bid, shiftKey, source) => {
               const target: PressTarget = { kind: "brick", key: bid };
               if (source !== "click") return;
@@ -4178,6 +4404,30 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
               setShiftAnchor(target);
             },
           });
+        })}
+
+        {raisedBrickIds.map((rid) => {
+          const rb = blocks[rid] as any;
+          if (!rb) return null;
+          const isBrickShell = String(rb.type || "") === "text" && !["table", "calendar", "button", "media"].includes(String(rb.format || "").toLowerCase());
+          if (isBrickShell) return null;
+          return (
+            <div
+              key={`raised-${rid}`}
+              className="absolute pointer-events-none rounded-lg transition-all duration-150"
+              style={{
+                left: `${rb.x}px`,
+                top: `${rb.y}px`,
+                width: `${rb.width}px`,
+                height: `${rb.height}px`,
+                zIndex: 50,
+                transform: "translateY(-8px) scale(1.02)",
+                boxShadow: "0 20px 36px rgba(0,0,0,0.25)",
+                border: "2px solid rgba(59,130,246,0.7)",
+                borderRadius: "8px",
+              }}
+            />
+          );
         })}
       </div>
     </div>

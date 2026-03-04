@@ -450,10 +450,11 @@ export const useCanvasStore = create<CanvasState>()(
       set((state) => {
         const b = state.blocks[id];
         if (!b) return;
-        // Apply patch, but keep blocks within left/right "walls" when canvasWidth is known.
         const canvasWidth = state.canvasWidth;
         const prevX = Math.floor((b as any).x || 0);
+        const prevY = Math.floor((b as any).y || 0);
         const prevW = Math.max(1, Math.floor((b as any).width || state.gridSize || 24));
+        const prevH = Math.max(1, Math.floor((b as any).height || state.gridSize || 24));
 
         const nextXRaw = patch.x != null ? Math.floor(patch.x as any) : prevX;
         const nextWRaw = patch.width != null ? Math.max(1, Math.floor(patch.width as any)) : prevW;
@@ -463,7 +464,6 @@ export const useCanvasStore = create<CanvasState>()(
         if (canvasWidth != null && (b as any).type !== "create") {
           const cw = Math.floor(canvasWidth as number);
           const minW = Math.max(1, state.gridSize * 4);
-          // Slide left first to preserve width, then only shrink if wider than canvas.
           if (nextX + nextW > cw) {
             nextX = Math.max(0, cw - nextW);
           }
@@ -483,7 +483,13 @@ export const useCanvasStore = create<CanvasState>()(
         (b as any).x = bounded.x;
         (b as any).y = bounded.y;
 
-        if (b.type === "create" && (patch.x != null || patch.y != null || patch.width != null || patch.height != null)) {
+        const geometryChanged =
+          (b as any).x !== prevX ||
+          (b as any).y !== prevY ||
+          (b as any).width !== prevW ||
+          (b as any).height !== prevH;
+
+        if (b.type === "create" && geometryChanged) {
           for (const bid of state.blockOrder) {
             const child = state.blocks[bid];
             if (!child || (child as any).containerId !== b.id) continue;
@@ -497,7 +503,7 @@ export const useCanvasStore = create<CanvasState>()(
             (child as any).y = childBound.y;
           }
         }
-        if (patch.x != null || patch.y != null || patch.width != null || patch.height != null) {
+        if (geometryChanged) {
           upsertBrickConnections(state, [id]);
         }
       });

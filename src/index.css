@@ -856,6 +856,17 @@ body.embedded-memory-mode .app-content {
   animation: slideInRight 0.2s ease-out;
 }
 
+@keyframes chatRailSlideIn {
+  from {
+    opacity: 0;
+    transform: translateX(40%);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
 input[type="color"].color-circle {
   -webkit-appearance: none;
   -moz-appearance: none;

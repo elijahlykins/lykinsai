@@ -1,6 +1,8 @@
 // server.js
 import express from 'express';
 import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import fetch from 'node-fetch';
 import multer from 'multer';
 import {
@@ -11,7 +13,8 @@ import {
   transcribeBuffer,
 } from './youtubeQa.js';
 
-dotenv.config();
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: path.join(__dirname, '.env') });
 
 // Debug: Check if API keys are loaded (without exposing the actual keys)
 console.log('🔑 Environment check:');

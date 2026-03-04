@@ -3,7 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { Canvas } from "@/canvas/Canvas";
 import { useCanvasStore } from "@/store/canvasStore";
 import type { Block } from "@/canvas/types";
-import { ChevronDown, ChevronUp, ArrowLeft, Undo2, Redo2, Trash2, Plus, Link as LinkIcon, Image as ImageIcon, Zap, MessageSquare, Mic, Volume2, BookOpen, X, Clock, Edit2, Folder as FolderIcon, Link2, MoreHorizontal, PanelRightClose, StickyNote, Brain, List, Infinity, Play, FileText, Music, Video } from "lucide-react";
+import { ChevronDown, ChevronUp, ArrowLeft, Undo2, Redo2, Trash2, Plus, Link as LinkIcon, Image as ImageIcon, Zap, MessageSquare, Mic, Volume2, BookOpen, X, Clock, Edit2, Folder as FolderIcon, Link2, MoreHorizontal, PanelRightClose, PanelRight, StickyNote, Brain, List, Infinity, Play, FileText, Music, Video } from "lucide-react";
 import DraggableQuickNote from "@/components/notes/DraggableQuickNote";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -394,6 +394,9 @@ export default function OmniaCanvasPage() {
   const [chatMode, setChatMode] = useState(false);
   const [chatMessages, setChatMessages] = useState<PromptMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
+  const [chatRailOpen, setChatRailOpen] = useState(false);
+  const [chatRailVisible, setChatRailVisible] = useState(false);
+  const [centerChatLeaving, setCenterChatLeaving] = useState(false);
   const [focusedChatAttachments, setFocusedChatAttachments] = useState<FocusedChatAttachment[]>([]);
   const [isChatLoading, setIsChatLoading] = useState(false);
   const [isDictating, setIsDictating] = useState(false);
@@ -406,6 +409,7 @@ export default function OmniaCanvasPage() {
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const aiTypingRunRef = useRef(0);
+  const chatTypingTimerRef = useRef<number | null>(null);
   const chatImportAppliedRef = useRef<string | null>(null);
   const isSendingRef = useRef(false);
   const lastAiResponseBlockRef = useRef<string | null>(null);
@@ -605,7 +609,7 @@ export default function OmniaCanvasPage() {
     [chatMode]
   );
 
-  const chatRailWidthPx = !chatMode && chatMessages.length > 0
+  const chatRailWidthPx = !chatMode && (chatMessages.length > 0 || chatRailVisible)
     ? clampChatRailWidth(chatRailWidthManual ?? getChatRailWidthPx(viewportWidth), viewportWidth)
     : 0;
 
@@ -853,15 +857,7 @@ export default function OmniaCanvasPage() {
     return /(video|youtube|clip|summari[sz]e.*video|explain.*video|talk.*about.*video|what.*video.*about|what.*youtube.*about)/i.test(t);
   }, []);
   const sanitizeAssistantResponse = useCallback((s: string) => {
-    const raw = String(s || "").trim();
-    if (!raw) return "";
-    const cleaned = raw
-      .split(/\n+/)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .filter((line) => !/(would you like|do you want|want me to|should i|it seems like|would you want|do you need)/i.test(line))
-      .join("\n");
-    return cleaned.trim();
+    return String(s || "").trim();
   }, []);
   const buildDirectVideoAnswerFromGrounding = useCallback((grounding: string) => {
     const raw = String(grounding || "").trim();
@@ -1169,7 +1165,8 @@ export default function OmniaCanvasPage() {
     chatImportAppliedRef.current = String(boardId);
 
     if (importedPrompts.length) {
-      setChatMode(true);
+      setChatRailOpen(true);
+      setChatRailVisible(true);
       setChatMessages(importedPrompts);
       aiThreadRef.current = importedPrompts.flatMap((p) =>
         p.aiResponse
@@ -1771,6 +1768,8 @@ export default function OmniaCanvasPage() {
       unsubscribe();
       if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
       saveTimerRef.current = null;
+      if (chatTypingTimerRef.current) window.clearInterval(chatTypingTimerRef.current);
+      chatTypingTimerRef.current = null;
     };
   }, [boardId, markProjectDirty, projectId, scheduleSave, user?.id]);
 
@@ -2033,6 +2032,33 @@ export default function OmniaCanvasPage() {
     return () => window.removeEventListener("message", handler);
   }, []);
 
+  const typeResponseIntoChat = useCallback((promptId: string, fullText: string): Promise<void> => {
+    return new Promise((resolve) => {
+      if (chatTypingTimerRef.current) {
+        window.clearInterval(chatTypingTimerRef.current);
+        chatTypingTimerRef.current = null;
+      }
+      const words = fullText.split(/(\s+)/);
+      let idx = 0;
+      const WORDS_PER_TICK = 3;
+      const TICK_MS = 30;
+      setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: "" } : m)));
+      chatTypingTimerRef.current = window.setInterval(() => {
+        idx += WORDS_PER_TICK;
+        const partial = words.slice(0, idx).join("");
+        setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: partial } : m)));
+        const el = chatScrollRef.current;
+        if (el) el.scrollTop = el.scrollHeight;
+        if (idx >= words.length) {
+          if (chatTypingTimerRef.current) window.clearInterval(chatTypingTimerRef.current);
+          chatTypingTimerRef.current = null;
+          setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: fullText } : m)));
+          resolve();
+        }
+      }, TICK_MS);
+    });
+  }, []);
+
   const handleChatSend = async () => {
     const text = chatInput.trim();
     if (!text || isChatLoading || isSendingRef.current) return;
@@ -2205,7 +2231,7 @@ export default function OmniaCanvasPage() {
             const retryData = await retryRes.json().catch(() => ({}));
             if (retryRes.ok) {
               const finalText = formatGroundedVideoAnswer(retryData);
-              setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: finalText } : m)));
+              await typeResponseIntoChat(promptId, finalText);
               aiThreadRef.current.push({ role: "assistant", content: finalText });
               if (aiThreadRef.current.length > 40) aiThreadRef.current = aiThreadRef.current.slice(-40);
               if (responseBlockId) await typeIntoAiResponseBlock(String(responseBlockId), finalText);
@@ -2221,7 +2247,7 @@ export default function OmniaCanvasPage() {
             fallback ||
             apiReason ||
             "I can see the video, but I couldn't fetch enough transcript data right now. I can still answer once captions/transcript become available.";
-          setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: finalText } : m)));
+          await typeResponseIntoChat(promptId, finalText);
           aiThreadRef.current.push({ role: "assistant", content: finalText });
           if (aiThreadRef.current.length > 40) aiThreadRef.current = aiThreadRef.current.slice(-40);
           if (responseBlockId) await typeIntoAiResponseBlock(String(responseBlockId), finalText);
@@ -2229,7 +2255,7 @@ export default function OmniaCanvasPage() {
           return;
         }
         const finalText = formatGroundedVideoAnswer(answerData);
-        setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: finalText } : m)));
+        await typeResponseIntoChat(promptId, finalText);
         aiThreadRef.current.push({ role: "assistant", content: finalText });
         if (aiThreadRef.current.length > 40) aiThreadRef.current = aiThreadRef.current.slice(-40);
         if (responseBlockId) await typeIntoAiResponseBlock(String(responseBlockId), finalText);
@@ -2238,20 +2264,19 @@ export default function OmniaCanvasPage() {
       }
       if (asksAboutVideo && !allYouTubeVideos.length) {
         const finalText = "I can't find a YouTube video on the board or in your attachments. Add a YouTube video and ask again.";
-        setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: finalText } : m)));
+        await typeResponseIntoChat(promptId, finalText);
         aiThreadRef.current.push({ role: "assistant", content: finalText });
         if (aiThreadRef.current.length > 40) aiThreadRef.current = aiThreadRef.current.slice(-40);
         if (responseBlockId) await typeIntoAiResponseBlock(String(responseBlockId), finalText);
         setChatStatusText("Answered");
         return;
       }
-      const prompt = `You are LYKN — a multi-model orchestration agent powering an infinite canvas workspace.
-Answer the user's latest message directly.
+      const prompt = `You are LYKN — a helpful, knowledgeable AI assistant powering an infinite canvas workspace.
+Answer the user's latest message directly and naturally, using your own knowledge.
+If board context, YouTube transcripts, or attached content are available, incorporate them into your answer.
+If no board context is available, answer the question anyway using your general knowledge — never refuse to answer just because the board is empty.
 Do not ask follow-up questions unless the user explicitly asks you to ask them.
 Do not suggest taking notes. Just answer.
-Use available board context, YouTube transcript context, and any attached content when relevant.
-The user may attach files, notes, images, videos, PDFs, links, or memory items alongside their message — always read and reference that attached content in your answer.
-If transcript evidence is missing, say that clearly.
 
 Conversation so far:
 ${history || "(none)"}
@@ -2292,7 +2317,7 @@ ${text}${attachmentContext}`;
         const finalText =
           apiError ||
           "The AI service is available but returned an error for this request. Please try again.";
-        setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: finalText } : m)));
+        await typeResponseIntoChat(promptId, finalText);
         aiThreadRef.current.push({ role: "assistant", content: finalText });
         if (aiThreadRef.current.length > 40) aiThreadRef.current = aiThreadRef.current.slice(-40);
         if (responseBlockId) await typeIntoAiResponseBlock(String(responseBlockId), finalText);
@@ -2302,18 +2327,12 @@ ${text}${attachmentContext}`;
       let aiText = String(data?.response || data?.answer || data?.text || "").trim();
       const hasYouTubeGrounding = Boolean(String(youtubeGrounding || "").trim() && String(youtubeGrounding || "").trim() !== "(none)");
       aiText = sanitizeAssistantResponse(aiText);
-      if (!hasYouTubeGrounding && asksAboutVideo) {
-        aiText = "I can see a YouTube block, but I couldn't access a usable transcript yet. Please play/reload the video or share a link with captions enabled, and I will answer directly from it.";
-      } else if (hasYouTubeGrounding && asksAboutVideo) {
-        // For direct video questions, force transcript-grounded answer instead of model guesses.
+      if (asksAboutVideo && hasYouTubeGrounding) {
         const fallback = buildDirectVideoAnswerFromGrounding(youtubeGrounding);
-        if (fallback) aiText = fallback;
-      } else if (hasYouTubeGrounding && (looksLikeDeflectingQuestion(aiText) || !aiText)) {
-        const fallback = buildDirectVideoAnswerFromGrounding(youtubeGrounding);
-        if (fallback) aiText = fallback;
+        if (fallback && (!aiText || looksLikeDeflectingQuestion(aiText))) aiText = fallback;
       }
-      const finalText = String(aiText || "").trim() || "I couldn't find enough grounded information on the board to answer that yet.";
-      setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: finalText } : m)));
+      const finalText = aiText || "I'm not sure how to answer that. Could you rephrase?";
+      await typeResponseIntoChat(promptId, finalText);
       aiThreadRef.current.push({ role: "assistant", content: finalText });
       if (aiThreadRef.current.length > 40) aiThreadRef.current = aiThreadRef.current.slice(-40);
       if (responseBlockId) await typeIntoAiResponseBlock(String(responseBlockId), finalText);
@@ -2334,16 +2353,18 @@ ${text}${attachmentContext}`;
 
   const handleCenterAskSend = useCallback(async () => {
     if (!chatInput.trim() || isChatLoading || isSendingRef.current) return;
-    setChatMode(true);
+    setChatRailOpen(true);
+    setChatRailVisible(true);
+    setCenterChatLeaving(false);
     await handleChatSend();
   }, [chatInput, handleChatSend, isChatLoading]);
 
   useEffect(() => {
-    if (!chatMode) return;
+    if (!chatMode && !chatRailVisible) return;
     const el = chatScrollRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
-  }, [chatMessages, isChatLoading, chatMode]);
+  }, [chatMessages, isChatLoading, chatMode, chatRailVisible]);
 
   useEffect(() => {
     if (!chatMode) return;
@@ -2351,11 +2372,32 @@ ${text}${attachmentContext}`;
     return () => window.clearTimeout(t);
   }, [chatMode]);
 
+  const chatTransitionTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    const handleCanvasInteract = () => {
+      if (chatMode || chatRailOpen || chatMessages.length > 0) return;
+      setCenterChatLeaving(true);
+      if (chatTransitionTimerRef.current) window.clearTimeout(chatTransitionTimerRef.current);
+      chatTransitionTimerRef.current = window.setTimeout(() => {
+        setChatRailOpen(true);
+        setChatRailVisible(true);
+        setCenterChatLeaving(false);
+        chatTransitionTimerRef.current = null;
+      }, 400);
+    };
+    window.addEventListener("omnia_canvas_interact", handleCanvasInteract);
+    return () => {
+      window.removeEventListener("omnia_canvas_interact", handleCanvasInteract);
+      if (chatTransitionTimerRef.current) window.clearTimeout(chatTransitionTimerRef.current);
+    };
+  }, [chatMode, chatRailOpen, chatMessages.length]);
+
   const resizeChatInput = useCallback((el: HTMLTextAreaElement | null) => {
     if (!el) return;
     const maxHeight = 220;
     el.style.height = "auto";
-    const nextHeight = Math.min(maxHeight, Math.max(44, el.scrollHeight));
+    const minH = el.dataset.minH ? Number(el.dataset.minH) : 36;
+    const nextHeight = Math.min(maxHeight, Math.max(minH, el.scrollHeight));
     el.style.height = `${nextHeight}px`;
     el.style.overflowY = el.scrollHeight > maxHeight ? "auto" : "hidden";
   }, []);
@@ -2364,7 +2406,7 @@ ${text}${attachmentContext}`;
     if (!chatMode) return [];
     const st = useCanvasStore.getState();
     const ids = Array.isArray(st.blockOrder) ? st.blockOrder : [];
-    const items: { id: string; type: string; name: string; url: string; thumbUrl: string; videoId?: string; content?: string }[] = [];
+    const items: { id: string; type: string; name: string; url: string; thumbUrl: string; videoId?: string; content?: string; isAi?: boolean }[] = [];
     for (const id of ids) {
       const b = (st.blocks as any)?.[id];
       if (!b) continue;
@@ -2410,7 +2452,7 @@ ${text}${attachmentContext}`;
         if (content) {
           const isAi = Boolean(b.data?.aiResponseBubble);
           const label = isAi ? "AI Response" : (content.split("\n")[0].slice(0, 40) || "Note");
-          items.push({ id, type: "note", name: label, url: "", thumbUrl: "", content });
+          items.push({ id, type: "note", name: label, url: "", thumbUrl: "", content, isAi });
         }
         continue;
       }
@@ -2624,7 +2666,18 @@ ${text}${attachmentContext}`;
       const urls = text.split(/\r?\n/).filter((u: string) => /^https?:\/\//i.test(u.trim()));
       if (urls.length > 0) {
         for (const u of urls) {
-          addFocusedAttachment({ id: makeAttId(), type: inferUrlAttachmentType(u.trim()), url: u.trim(), name: u.trim(), mime: "", size: 0 });
+          const trimmedUrl = u.trim();
+          const urlType = inferUrlAttachmentType(trimmedUrl);
+          const videoId = urlType === "youtube" ? (extractYouTubeVideoId(trimmedUrl) || "") : "";
+          addFocusedAttachment({
+            id: makeAttId(),
+            type: urlType,
+            url: trimmedUrl,
+            name: trimmedUrl,
+            mime: "",
+            size: 0,
+            ...(videoId ? { videoId } : {}),
+          });
         }
       } else {
         addFocusedAttachment({ id: makeAttId(), type: "memory", url: "", name: "Dropped text", mime: "", size: 0, memoryTitle: "Dropped text", memoryContent: text });
@@ -2778,7 +2831,7 @@ ${text}${attachmentContext}`;
     <div className="w-full h-[100svh] relative overflow-hidden bg-transparent">
       {/* Match BrickEditor layout: minimal chrome + floating controls */}
       {/* Heading panel (matches Create view top pill) */}
-      <div className={`fixed top-3 left-0 z-[70] px-3 flex items-center justify-end pointer-events-none transition-[right] duration-300 ${showMemorySidebar ? "right-[380px]" : "right-0"}`}>
+      <div className="fixed top-3 left-0 right-0 z-[70] px-3 flex items-center justify-end pointer-events-none">
         <div className="pointer-events-auto flex items-center gap-2">
           <button
             type="button"
@@ -2818,17 +2871,17 @@ ${text}${attachmentContext}`;
                   } catch { /* ignore */ }
                 }}
               >
-                <SelectTrigger className="w-[8.125rem] h-9 rounded-full glass-control hover:opacity-90 text-xs font-medium justify-center gap-1">
+                <SelectTrigger className="w-[8.125rem] h-9 rounded-full glass-control hover:opacity-90 text-xs font-medium gap-1.5 px-3 [&>span]:flex [&>span]:items-center [&>span]:justify-center [&>span]:w-full">
                   <SelectValue placeholder="Mode" />
                 </SelectTrigger>
                 <SelectContent
                   align="end"
-                  className="glass-control border border-white/25 dark:border-white/10 bg-white/35 dark:bg-white/10 backdrop-blur-xl shadow-lg overflow-hidden"
+                  className="glass-control border border-white/25 dark:border-white/10 bg-white/35 dark:bg-white/10 backdrop-blur-xl shadow-lg overflow-hidden min-w-[8.125rem]"
                 >
                   {(Object.entries(AI_MODE_META) as [AiMode, typeof AI_MODE_META["think"]][]).map(([key, meta]) => {
                     const Icon = meta.icon;
                     return (
-                      <SelectItem key={key} value={key}>
+                      <SelectItem key={key} value={key} className="flex items-center justify-center pl-3 pr-8 text-xs">
                         <span className="inline-flex items-center gap-1.5">
                           <Icon className="w-3.5 h-3.5 shrink-0" />
                           {meta.label}
@@ -2951,11 +3004,36 @@ ${text}${attachmentContext}`;
 
               <button
                 type="button"
-                onClick={() => setChatMode((v) => !v)}
+                onClick={() => {
+                  setChatMode((v) => {
+                    if (!v) setChatRailVisible(false);
+                    return !v;
+                  });
+                }}
                 className={`rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center ${chatMode ? "bg-blue-500/15" : ""}`}
                 title={chatMode ? "Exit chat" : "Open chat"}
               >
                 <MessageSquare className={`w-4 h-4 ${chatMode ? "text-blue-500" : ""}`} />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setChatRailVisible((v) => {
+                    if (!v) {
+                      setChatRailOpen(true);
+                      setChatMode(false);
+                    }
+                    return !v;
+                  });
+                  setCenterChatLeaving(false);
+                }}
+                className={`rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center ${chatRailVisible ? "bg-blue-500/15" : ""}`}
+                title={chatRailVisible ? "Hide side chat" : "Show side chat"}
+              >
+                {chatRailVisible
+                  ? <PanelRightClose className="w-4 h-4 text-blue-500" />
+                  : <PanelRight className="w-4 h-4" />}
               </button>
 
               <div className="w-px h-4 bg-black/10 dark:bg-white/10 mx-1" />
@@ -3007,6 +3085,7 @@ ${text}${attachmentContext}`;
             e.preventDefault();
             e.stopPropagation();
             setMemoryDragActive(false);
+            window.dispatchEvent(new CustomEvent("omnia_canvas_interact"));
             const pending = (window as any).__omnia_pending_memory;
             console.log("[MEMORY-DROP] overlay onDrop fired, pending:", !!pending, pending);
             if (!pending || typeof pending !== "object") { console.log("[MEMORY-DROP] no pending data, aborting"); return; }
@@ -3170,7 +3249,7 @@ ${text}${attachmentContext}`;
       )}
 
       <aside
-        className={`fixed top-0 right-0 z-[95] h-[100svh] w-[23.75rem] max-w-[92vw] border-l border-white/20 dark:border-white/10 bg-white/40 dark:bg-[rgba(20,20,24,0.55)] shadow-[0_18px_60px_rgba(0,0,0,0.22)] backdrop-blur-[40px] backdrop-saturate-[1.6] transition-transform duration-300 ${
+        className={`fixed top-[4.9rem] bottom-0 right-0 z-[65] w-[23.75rem] max-w-[92vw] border-l border-white/20 dark:border-white/10 bg-white/40 dark:bg-[rgba(20,20,24,0.55)] shadow-[0_18px_60px_rgba(0,0,0,0.22)] backdrop-blur-[40px] backdrop-saturate-[1.6] transition-transform duration-300 ${
           showMemorySidebar ? "translate-x-0 pointer-events-auto" : "translate-x-full pointer-events-none"
         }`}
       >
@@ -3236,10 +3315,16 @@ ${text}${attachmentContext}`;
       </DialogAny>
 
       {/* Center welcome prompt (no messages yet, not in chat mode) */}
-      {!chatMode && chatMessages.length === 0 && (
-        <div className="fixed inset-0 z-[85] pointer-events-none flex items-center justify-center px-4 transition-all duration-300">
+      {!chatMode && chatMessages.length === 0 && (!chatRailOpen || centerChatLeaving) && (
+        <div
+          className={`fixed inset-0 z-[85] pointer-events-none flex items-center justify-center px-4 ease-out ${centerChatLeaving ? "opacity-0 translate-x-[40vw] scale-[0.85]" : "opacity-100 translate-x-0 scale-100"}`}
+          style={{ transition: "all 400ms cubic-bezier(0.22,1,0.36,1)" }}
+        >
           <div className="w-full max-w-2xl space-y-6">
-            <p className="pointer-events-none text-center text-3xl font-semibold tracking-tight min-h-[44px] text-black">
+            <p
+              className={`pointer-events-none text-center text-3xl font-semibold tracking-tight min-h-[44px] text-black ${centerChatLeaving ? "opacity-0" : ""}`}
+              style={{ transition: "opacity 400ms ease-out" }}
+            >
               {typedWelcome}
             </p>
             <div className="pointer-events-auto glass-control rounded-2xl p-2 w-full transition-all duration-300">
@@ -3269,11 +3354,14 @@ ${text}${attachmentContext}`;
         </div>
       )}
 
-      {/* Side rail chat (canvas mode — messages exist) */}
-      {!chatMode && chatMessages.length > 0 && (
+      {/* Side rail chat (canvas mode — toggled open via button or canvas interaction) */}
+      {!chatMode && chatRailVisible && (
         <div
-          className={`fixed top-[4.9rem] bottom-0 z-[64] flex flex-col bg-transparent border-l border-black/10 transition-[right] duration-300 ${showMemorySidebar ? "right-[380px]" : "right-0"}`}
-          style={{ width: `${chatRailWidthPx}px` }}
+          className={`fixed top-[4.9rem] bottom-0 z-[64] flex flex-col bg-white/40 backdrop-blur-sm border-l border-black/10 transition-[right] duration-300 ${showMemorySidebar ? "right-[380px]" : "right-0"}`}
+          style={{
+            width: `${chatRailWidthPx}px`,
+            animation: "chatRailSlideIn 350ms cubic-bezier(0.22,1,0.36,1) both",
+          }}
         >
           <div className="absolute left-0 top-0 bottom-0 w-3 -translate-x-1/2 cursor-col-resize z-[70] pointer-events-auto" onPointerDown={handleStartChatResize} title="Drag to resize chat" />
           <div ref={chatScrollRef} className="flex-1 overflow-y-auto scrollbar-hide p-3 space-y-3">
@@ -3304,27 +3392,28 @@ ${text}${attachmentContext}`;
               </div>
             ))}
           </div>
-          <div className="p-2 pb-3">
-            <div className="glass-control rounded-2xl p-2 w-full">
-              <div className="flex items-center gap-2">
-                <button type="button" onClick={handleOpenAttachments} className="h-10 w-10 rounded-full flex items-center justify-center transition-colors hover:bg-black/10" title="Add attachments">
-                  <Plus className="w-4 h-4" />
+          <div className="p-2 pb-2">
+            <div className="glass-control rounded-2xl px-2 py-1.5 w-full">
+              <div className="flex items-center gap-1.5">
+                <button type="button" onClick={handleOpenAttachments} className="h-8 w-8 rounded-full flex items-center justify-center transition-colors hover:bg-black/10 shrink-0" title="Add attachments">
+                  <Plus className="w-3.5 h-3.5" />
                 </button>
                 <textarea
                   ref={chatPanelInputRef}
+                  data-min-h="32"
                   value={chatInput}
                   onChange={(e) => setChatInput(e.target.value)}
                   onInput={(e) => resizeChatInput(e.currentTarget)}
                   onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void handleChatSend(); } }}
                   placeholder="Ask me anything..."
                   rows={1}
-                  className="w-full min-h-[44px] max-h-[220px] rounded-xl bg-white/12 border border-white/30 px-3 py-3 text-sm text-black placeholder:text-black/55 outline-none resize-none leading-5 scrollbar-hide"
+                  className="w-full min-h-[32px] max-h-[220px] rounded-xl bg-white/12 border border-white/30 px-3 py-1.5 text-sm text-black placeholder:text-black/55 outline-none resize-none leading-5 scrollbar-hide"
                 />
-                <button type="button" onClick={handleDictateToggle} className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors hover:bg-black/10 ${isDictating ? "bg-black/10 ring-1 ring-black/30" : ""}`} title="Dictate">
-                  <Mic className="w-4 h-4" />
+                <button type="button" onClick={handleDictateToggle} className={`h-8 w-8 rounded-full flex items-center justify-center transition-colors hover:bg-black/10 ${isDictating ? "bg-black/10 ring-1 ring-black/30" : ""}`} title="Dictate">
+                  <Mic className="w-3.5 h-3.5" />
                 </button>
-                <button type="button" onClick={handleVoiceToggle} className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors hover:bg-black/10 ${isSpeaking ? "bg-black/10 ring-1 ring-black/30" : ""}`} title="Voice">
-                  <Volume2 className="w-4 h-4" />
+                <button type="button" onClick={handleVoiceToggle} className={`h-8 w-8 rounded-full flex items-center justify-center transition-colors hover:bg-black/10 ${isSpeaking ? "bg-black/10 ring-1 ring-black/30" : ""}`} title="Voice">
+                  <Volume2 className="w-3.5 h-3.5" />
                 </button>
               </div>
             </div>
@@ -3376,17 +3465,25 @@ ${text}${attachmentContext}`;
                         <FileText className="w-5 h-5 text-black/40" />
                       </div>
                     ) : item.type === "note" ? (
-                      <div className="aspect-square flex items-center justify-center bg-white/20 px-1.5">
-                        <span className="text-[8px] text-black/50 leading-tight line-clamp-4 text-center">{(item.content || "").slice(0, 80)}</span>
-                      </div>
+                      <>
+                        <div className="glass-text-card relative rounded-lg p-2.5 min-h-[3rem]">
+                          {item.isAi && <div className="pointer-events-none absolute inset-0 rounded-lg" style={{ background: "rgba(0,0,0,0.035)" }} />}
+                          <p className="relative text-[0.6875rem] leading-relaxed text-black/80 whitespace-pre-wrap break-words" style={{ display: "-webkit-box", WebkitLineClamp: 8, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{item.content || ""}</p>
+                        </div>
+                        <div className="px-1.5 py-1">
+                          <span className="text-[9px] text-black/50 leading-tight line-clamp-1 break-all">{item.isAi ? "AI Response" : item.name}</span>
+                        </div>
+                      </>
                     ) : (
                       <div className="aspect-square flex items-center justify-center bg-white/30">
                         <Link2 className="w-5 h-5 text-black/40" />
                       </div>
                     )}
-                    <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent px-1.5 pb-1 pt-3">
-                      <span className="text-[9px] text-white leading-tight line-clamp-2 break-all">{item.name}</span>
-                    </div>
+                    {item.type !== "note" && (
+                      <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent px-1.5 pb-1 pt-3">
+                        <span className="text-[9px] text-white leading-tight line-clamp-2 break-all">{item.name}</span>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -3514,12 +3611,12 @@ ${text}${attachmentContext}`;
                     )}
                     {msg.role === "user" && msg.aiResponse && (
                       <div className="flex justify-start">
-                        <div className="max-w-[80%] rounded-2xl rounded-bl-md px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap break-words border bg-white/80 border-white/70 text-black/85 backdrop-blur-md">{msg.aiResponse}</div>
+                        <div className="max-w-[80%] px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap break-words text-black/85">{msg.aiResponse}</div>
                       </div>
                     )}
                     {msg.role !== "user" && (
                       <div className="flex justify-start">
-                        <div className="max-w-[80%] rounded-2xl rounded-bl-md px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap break-words border bg-white/80 border-white/70 text-black/85 backdrop-blur-md">{msg.content}</div>
+                        <div className="max-w-[80%] px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap break-words text-black/85">{msg.content}</div>
                       </div>
                     )}
                   </React.Fragment>
