@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useLocation } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import {
   ChevronDown,
   ChevronUp,
@@ -10,6 +10,7 @@ import {
   Music,
   Plus,
   StickyNote,
+  LayoutGrid,
   Trash2,
   Video,
   X,
@@ -394,7 +395,9 @@ function extractYouTubeLinks(content = "") {
 
 export default function MemoryNew() {
   const location = useLocation();
+  const nav = useNavigate();
   const { user, loading } = useAuth();
+  const addMediaTriggerRef = useRef(null);
   const isEmbeddedMode = useMemo(
     () => new URLSearchParams(location.search).get("embedded") === "1",
     [location.search]
@@ -417,7 +420,8 @@ export default function MemoryNew() {
   const [isChatLoading, setIsChatLoading] = useState(false);
   const [showQuickNote, setShowQuickNote] = useState(false);
   const [activeMemoryPage, setActiveMemoryPage] = useState("everything");
-  const [orderByPage, setOrderByPage] = useState({ everything: [], chats: [] });
+  const [orderByPage, setOrderByPage] = useState({ everything: [], boards: [] });
+  const [boardCards, setBoardCards] = useState([]);
   const [draggedCardId, setDraggedCardId] = useState(null);
   const [dropTargetCardId, setDropTargetCardId] = useState(null);
   const [hasMoreNotes, setHasMoreNotes] = useState(true);
@@ -631,6 +635,72 @@ export default function MemoryNew() {
   }, [loading, refreshProjects]);
 
   useEffect(() => {
+    if (loading || !user?.id) return;
+    let cancelled = false;
+    const loadBoards = async () => {
+      const { data: boards } = await supabase
+        .from("omnia_boards")
+        .select("id, title, project_id, created_at, updated_at")
+        .eq("user_id", user.id)
+        .order("updated_at", { ascending: false });
+      if (cancelled || !boards?.length) {
+        if (!cancelled) setBoardCards([]);
+        return;
+      }
+
+      const boardIds = boards.map((b) => b.id);
+      const { data: states } = await supabase
+        .from("omnia_board_states")
+        .select("board_id, state")
+        .in("board_id", boardIds)
+        .order("created_at", { ascending: false });
+
+      const latestStateByBoard = {};
+      for (const row of (states || [])) {
+        if (!latestStateByBoard[row.board_id]) {
+          latestStateByBoard[row.board_id] = row.state;
+        }
+      }
+
+      const hasContent = (state) => {
+        if (!state) return false;
+        const blocksMap = state.blocks || {};
+        const order = Array.isArray(state.blockOrder) ? state.blockOrder : Object.keys(blocksMap);
+        return order.some((id) => {
+          const b = blocksMap[id];
+          if (!b) return false;
+          const data = b?.data && typeof b.data === "object" ? b.data : {};
+          const content = String(data.content ?? data.body ?? b?.content ?? "").trim();
+          const fmt = String(b?.format || data.format || "").toLowerCase();
+          if (["media", "calendar", "table", "button"].includes(fmt)) return true;
+          return content.length > 0;
+        });
+      };
+
+      const filtered = boards.filter((b) => {
+        const state = latestStateByBoard[b.id];
+        return hasContent(state);
+      });
+
+      if (cancelled) return;
+      setBoardCards(
+        filtered.map((b) => ({
+          id: `board-${b.id}`,
+          boardId: b.id,
+          kind: "board",
+          title: b.title || "Untitled Board",
+          projectId: b.project_id,
+          dateLabel: b.updated_at
+            ? new Date(b.updated_at).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })
+            : "",
+        }))
+      );
+    };
+    loadBoards();
+    return () => { cancelled = true; };
+  }, [loading, user?.id]);
+
+  useEffect(() => {
     const onPointerDown = (event) => {
       if (cardMenuRef.current && !cardMenuRef.current.contains(event.target)) {
         setOpenCardMenuId(null);
@@ -776,11 +846,11 @@ export default function MemoryNew() {
   }, [memoryCards, user?.id]);
 
   const visibleCards = useMemo(() => {
-    if (activeMemoryPage === "chats") {
-      return memoryCards.filter((card) => card.kind === "chat-preview");
+    if (activeMemoryPage === "boards") {
+      return boardCards;
     }
     return memoryCards.filter((card) => card.kind !== "chat-preview");
-  }, [activeMemoryPage, memoryCards]);
+  }, [activeMemoryPage, memoryCards, boardCards]);
 
   const filteredVisibleCards = useMemo(() => {
     const query = String(embeddedSearch || "").trim().toLowerCase();
@@ -1156,6 +1226,32 @@ User: ${text}`;
     );
   };
 
+  const removeCardFromProjects = useCallback((card) => {
+    const storageTarget = parseStorageTarget(card?.attachment || {});
+    const storagePath = storageTarget?.path || "";
+    const cardUrl = card?.attachment?.url || "";
+    if (!storagePath && !cardUrl) return;
+
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (!key || !key.startsWith("project:")) continue;
+      try {
+        const parsed = JSON.parse(localStorage.getItem(key));
+        const files = Array.isArray(parsed?.files) ? parsed.files : [];
+        const filtered = files.filter((f) => {
+          if (storagePath && (f.path === storagePath || f.url?.includes(storagePath))) return false;
+          if (cardUrl && f.url === cardUrl) return false;
+          return true;
+        });
+        if (filtered.length !== files.length) {
+          localStorage.setItem(key, JSON.stringify({ ...parsed, files: filtered }));
+        }
+      } catch {
+        // ignore malformed project data
+      }
+    }
+  }, []);
+
   const removeAttachmentFromNote = useCallback(async (card) => {
     if (!user?.id || !card?.noteId) return;
     setIsCardActionBusy(true);
@@ -1205,6 +1301,8 @@ User: ${text}`;
         }
       }
 
+      removeCardFromProjects(card);
+
       const storageTarget = parseStorageTarget(card.attachment || {});
       if (storageTarget?.bucket && storageTarget?.path) {
         await supabase.storage.from(storageTarget.bucket).remove([storageTarget.path]);
@@ -1213,7 +1311,7 @@ User: ${text}`;
       setOpenCardMenuId(null);
       setIsCardActionBusy(false);
     }
-  }, [notes, user?.id]);
+  }, [notes, user?.id, removeCardFromProjects]);
 
   const removeQuickNoteCard = useCallback(async (card) => {
     if (!user?.id || !card?.noteId) return;
@@ -1221,11 +1319,12 @@ User: ${text}`;
     try {
       await supabase.from("notes").delete().eq("id", card.noteId).eq("user_id", user.id);
       setNotes((prev) => prev.filter((n) => String(n?.id) !== String(card.noteId)));
+      removeCardFromProjects(card);
       setOpenCardMenuId(null);
     } finally {
       setIsCardActionBusy(false);
     }
-  }, [user?.id]);
+  }, [user?.id, removeCardFromProjects]);
 
   const addCardToProject = useCallback(async (card, projectId) => {
     if (!card || !projectId) return;
@@ -1496,6 +1595,7 @@ User: ${text}`;
   return (
     <div className={`min-h-screen bg-transparent text-black relative overflow-x-hidden`}>
       <DragDropFileUpload
+        triggerRef={addMediaTriggerRef}
         onUploadComplete={(payload) => {
           const createdNotes = Array.isArray(payload?.createdNotes) ? payload.createdNotes : [];
           if (createdNotes.length > 0) {
@@ -1637,31 +1737,33 @@ User: ${text}`;
             />
           ) : (
             <>
-              <h1 className="text-3xl font-semibold">Memory</h1>
+              <h1 className="text-3xl font-semibold">Media</h1>
               <p className="text-black/60 mt-1">
                 Your digital collage of media files, videos, images, and quick notes. Drag and drop files or folders anywhere on this page.
               </p>
             </>
           )}
-          <div className="mt-4 inline-flex items-center gap-1 p-1 rounded-full glass-control">
-            <button
-              type="button"
-              onClick={() => setActiveMemoryPage("everything")}
-              className={`rounded-full px-3 py-1.5 text-xs font-medium transition ${
-                activeMemoryPage === "everything" ? "bg-white/50 text-black" : "text-black/65 hover:text-black"
-              }`}
-            >
-              Media
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveMemoryPage("chats")}
-              className={`rounded-full px-3 py-1.5 text-xs font-medium transition ${
-                activeMemoryPage === "chats" ? "bg-white/50 text-black" : "text-black/65 hover:text-black"
-              }`}
-            >
-              AI Chats
-            </button>
+          <div className="mt-4 flex items-center gap-3 flex-wrap">
+            <div className="inline-flex items-center gap-1 p-1 rounded-full glass-control">
+              <button
+                type="button"
+                onClick={() => setActiveMemoryPage("everything")}
+                className={`rounded-full px-3 py-1.5 text-xs font-medium transition ${
+                  activeMemoryPage === "everything" ? "bg-white/50 text-black" : "text-black/65 hover:text-black"
+                }`}
+              >
+                Media
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveMemoryPage("boards")}
+                className={`rounded-full px-3 py-1.5 text-xs font-medium transition ${
+                  activeMemoryPage === "boards" ? "bg-white/50 text-black" : "text-black/65 hover:text-black"
+                }`}
+              >
+                Boards
+              </button>
+            </div>
           </div>
         </section>
 
@@ -1680,17 +1782,43 @@ User: ${text}`;
         {!loading && !isLoadingNotes && user && !notesError && (
           <>
             {orderedVisibleCards.length === 0 ? (
-              <div className="glass-control rounded-2xl px-5 py-4 inline-block">
-                <p className="text-sm text-black/70">
-                  {embeddedSearch.trim()
-                    ? "No memories match your search."
-                    : activeMemoryPage === "chats"
-                    ? "No AI chats saved yet."
-                    : "No media yet. Drop files to start your collage board."}
-                </p>
+              <div className="flex flex-col items-start gap-4">
+                <button
+                  type="button"
+                  onClick={() => addMediaTriggerRef.current?.()}
+                  className="group/add break-inside-avoid mb-5 rounded-2xl border-2 border-dashed border-blue-500/30 hover:border-blue-500/50 p-6 flex flex-col items-center justify-center text-center transition-all hover:bg-blue-500/[0.04] dark:hover:bg-blue-400/[0.04] w-full sm:w-64 min-h-[160px]"
+                >
+                  <div className="w-12 h-12 rounded-full bg-blue-500/10 flex items-center justify-center mb-3 group-hover/add:bg-blue-500/20 transition-colors">
+                    <Plus className="w-6 h-6 text-blue-500" />
+                  </div>
+                  <span className="text-sm font-medium text-black/40 dark:text-white/40 group-hover/add:text-blue-500 transition-colors">
+                    Add Media
+                  </span>
+                </button>
+                {(embeddedSearch.trim() || activeMemoryPage === "boards") && (
+                  <div className="glass-control rounded-2xl px-5 py-4 inline-block">
+                    <p className="text-sm text-black/70">
+                      {embeddedSearch.trim()
+                        ? "No results match your search."
+                        : "No boards yet. Create a board inside a project to get started."}
+                    </p>
+                  </div>
+                )}
               </div>
             ) : (
               <div className={isEmbeddedMode ? "columns-2 gap-3" : "columns-1 sm:columns-2 md:columns-3 xl:columns-4 2xl:columns-5 gap-4 md:gap-5"}>
+                <button
+                  type="button"
+                  onClick={() => addMediaTriggerRef.current?.()}
+                  className="group/add break-inside-avoid mb-5 rounded-2xl border-2 border-dashed border-blue-500/30 hover:border-blue-500/50 p-6 flex flex-col items-center justify-center text-center transition-all hover:bg-blue-500/[0.04] dark:hover:bg-blue-400/[0.04] min-h-[160px]"
+                >
+                  <div className="w-12 h-12 rounded-full bg-blue-500/10 flex items-center justify-center mb-3 group-hover/add:bg-blue-500/20 transition-colors">
+                    <Plus className="w-6 h-6 text-blue-500" />
+                  </div>
+                  <span className="text-sm font-medium text-black/40 dark:text-white/40 group-hover/add:text-blue-500 transition-colors">
+                    Add Media
+                  </span>
+                </button>
                 {orderedVisibleCards.map((card) => (
                   <article
                     key={card.id}
@@ -1798,7 +1926,7 @@ User: ${text}`;
                       }
                     }}
                     className={`break-inside-avoid ${isEmbeddedMode ? "mb-0" : "mb-5"} rounded-2xl relative ${
-                      card.kind === "chat-preview" ? "overflow-hidden" : "overflow-visible"
+                      card.kind === "chat-preview" || card.kind === "board" ? "overflow-hidden" : "overflow-visible"
                     } ${
                       card.kind === "attachment" || card.kind === "quick-note"
                         ? "bg-transparent border-0 shadow-none backdrop-blur-0"
@@ -1975,6 +2103,23 @@ User: ${text}`;
                           </div>
                         </div>
                       </>
+                    ) : card.kind === "board" ? (
+                      <button
+                        type="button"
+                        onClick={() => nav(`/canvas/${card.boardId}`)}
+                        className="w-full text-left p-4 space-y-3"
+                      >
+                        <div className="flex items-center gap-2">
+                          <LayoutGrid className="w-4 h-4 text-blue-500 shrink-0" />
+                          <h2 className="text-sm font-semibold text-black/90 dark:text-white/90 truncate">{card.title}</h2>
+                        </div>
+                        {card.dateLabel && (
+                          <div className="text-[0.6875rem] text-black/55 dark:text-white/55 flex items-center gap-1">
+                            <Clock className="w-3 h-3" />
+                            <span>{card.dateLabel}</span>
+                          </div>
+                        )}
+                      </button>
                     ) : card.kind === "chat-preview" ? (
                       <div className="p-4 space-y-3">
                         <div className="flex items-center justify-between">

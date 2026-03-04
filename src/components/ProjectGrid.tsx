@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { MoreHorizontal } from "lucide-react";
+import { MoreHorizontal, Plus } from "lucide-react";
 type Project = {
   id: string;
   name: string;
@@ -27,6 +27,8 @@ type ProjectGridProps = {
   fallbackInitials?: string;
   onSetProjectImage?: (projectId: string, dataUrl: string) => void | Promise<void>;
   teamsByProject?: Record<string, LinkedTeam[]>;
+  onCreateNew?: () => void;
+  onAddTeamMembers?: (project: Project) => void;
 };
 
 const PROJECT_CARD_IMAGES_KEY = "omnia_project_card_images";
@@ -62,6 +64,12 @@ function getProjectImage(project: Project) {
   );
 }
 
+function getGridCols(count: number) {
+  if (count <= 1) return "grid-cols-1 sm:grid-cols-2";
+  if (count <= 3) return "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3";
+  return "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4";
+}
+
 export default function ProjectGrid({
   projects,
   onSelect,
@@ -70,6 +78,8 @@ export default function ProjectGrid({
   fallbackInitials = "?",
   onSetProjectImage,
   teamsByProject = {},
+  onCreateNew,
+  onAddTeamMembers,
 }: ProjectGridProps) {
   if (!projects.length) {
     return (
@@ -134,11 +144,25 @@ export default function ProjectGrid({
         className="hidden"
         onChange={handleImageFileChange}
       />
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+      <div className={`grid ${getGridCols(projects.length)} gap-4`}>
+        {onCreateNew && (
+          <button
+            type="button"
+            onClick={onCreateNew}
+            className="group/add relative min-h-[220px] rounded-2xl border-2 border-dashed border-black/10 dark:border-white/10 hover:border-blue-500/40 dark:hover:border-blue-400/40 p-4 flex flex-col items-center justify-center text-center transition-all hover:bg-blue-500/[0.04] dark:hover:bg-blue-400/[0.04]"
+          >
+            <div className="w-12 h-12 rounded-full bg-blue-500/10 dark:bg-blue-400/10 flex items-center justify-center mb-3 group-hover/add:bg-blue-500/20 dark:group-hover/add:bg-blue-400/20 transition-colors">
+              <Plus className="w-6 h-6 text-blue-500 dark:text-blue-400" />
+            </div>
+            <span className="text-sm font-medium text-black/40 dark:text-white/40 group-hover/add:text-blue-500 dark:group-hover/add:text-blue-400 transition-colors">
+              New Project
+            </span>
+          </button>
+        )}
         {projects.map((project) => (
         <div
           key={project.id}
-          className="group relative min-h-[210px] rounded-2xl border border-white/30 bg-[rgba(160,160,170,0.25)] backdrop-blur-[30px] backdrop-saturate-[1.4] p-4 text-black shadow-[0_2px_8px_rgba(0,0,0,0.06)] transition-transform hover:scale-[1.02] hover:shadow-[0_4px_12px_rgba(0,0,0,0.1)] flex items-center justify-center text-center overflow-hidden"
+          className="group relative min-h-[220px] rounded-2xl border border-white/30 bg-[rgba(160,160,170,0.25)] backdrop-blur-[30px] backdrop-saturate-[1.4] p-4 text-black shadow-[0_2px_8px_rgba(0,0,0,0.06)] transition-transform hover:scale-[1.02] hover:shadow-[0_4px_12px_rgba(0,0,0,0.1)] flex items-center justify-center text-center overflow-hidden"
         >
           {(() => {
             const localImg = localImageMap[project.id];
@@ -209,7 +233,7 @@ export default function ProjectGrid({
                   e.stopPropagation();
                   setOpenMenuId((prev) => (prev === project.id ? null : project.id));
                 }}
-                className="w-7 h-7 rounded-full glass-control hover:opacity-90 flex items-center justify-center"
+                className="w-7 h-7 rounded-full hover:bg-black/10 dark:hover:bg-white/10 flex items-center justify-center transition-colors"
                 aria-label="Project actions"
               >
                 <MoreHorizontal className="w-4 h-4" />
@@ -231,6 +255,10 @@ export default function ProjectGrid({
                   <button
                     type="button"
                     className="w-full text-left text-xs px-2 py-2 rounded-lg hover:bg-black/5"
+                    onClick={() => {
+                      onAddTeamMembers?.(project);
+                      setOpenMenuId(null);
+                    }}
                   >
                     Add team members
                   </button>

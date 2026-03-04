@@ -788,6 +788,7 @@ User: ${text}
   const [setupDismissed, setSetupDismissed] = useState(() => {
     try { return localStorage.getItem("lykinsai_setup_dismissed") === "1"; } catch { return false; }
   });
+  const [setupConfirmingSkip, setSetupConfirmingSkip] = useState(false);
   const [calendarVisited, setCalendarVisited] = useState(() => {
     try { return localStorage.getItem("lykinsai_calendar_visited") === "1"; } catch { return false; }
   });
@@ -795,6 +796,7 @@ User: ${text}
 
   const dismissSetup = () => {
     setSetupDismissed(true);
+    setSetupConfirmingSkip(false);
     try { localStorage.setItem("lykinsai_setup_dismissed", "1"); } catch {}
   };
 
@@ -898,8 +900,8 @@ User: ${text}
                 type="button"
                 onClick={handleCreateProject}
                 disabled={isCreatingProject}
-                className="mt-4 inline-flex items-center gap-2 rounded-xl glass-control px-4 py-2 text-sm font-semibold text-black/80 dark:text-white/80 hover:opacity-90 transition-all"
-                style={{ boxShadow: "0 1px 3px rgba(0,0,0,0.06)" }}
+                className="mt-4 inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold text-white hover:opacity-90 transition-all"
+                style={{ background: "#3b82f6", boxShadow: "0 1px 3px rgba(59,130,246,0.3)" }}
                 aria-label="Create new project"
               >
                 <Plus className="w-4 h-4" />
@@ -916,14 +918,33 @@ User: ${text}
           {showSetup && (
             <section className="mt-6 space-y-3">
               <div className="relative rounded-2xl border border-white/30 bg-white/35 dark:bg-white/5 backdrop-blur-xl shadow-md p-6 sm:p-8">
-                <button
-                  type="button"
-                  onClick={dismissSetup}
-                  className="absolute top-4 right-4 p-1 rounded-full hover:bg-black/10 dark:hover:bg-white/10 transition-colors"
-                  title="Dismiss setup"
-                >
-                  <X className="w-4 h-4 text-black/40 dark:text-white/40" />
-                </button>
+                {setupConfirmingSkip ? (
+                  <div className="absolute top-4 right-4 flex items-center gap-2 rounded-xl bg-white/60 dark:bg-black/40 backdrop-blur-md border border-white/40 dark:border-white/10 px-3 py-2 shadow-lg z-10">
+                    <span className="text-xs font-medium text-black/70 dark:text-white/70">Skip setup?</span>
+                    <button
+                      type="button"
+                      onClick={dismissSetup}
+                      className="text-xs font-semibold text-red-500 hover:text-red-600 px-2 py-0.5 rounded-md hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
+                    >
+                      Yes, skip
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSetupConfirmingSkip(false)}
+                      className="text-xs font-semibold text-black/50 dark:text-white/50 hover:text-black/70 dark:hover:text-white/70 px-2 py-0.5 rounded-md hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setSetupConfirmingSkip(true)}
+                    className="absolute top-4 right-4 text-xs font-medium text-black/35 dark:text-white/35 hover:text-black/60 dark:hover:text-white/60 px-2 py-1 rounded-lg hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
+                  >
+                    Skip setup
+                  </button>
+                )}
                 <div className="inline-flex items-center gap-2 rounded-full bg-blue-500/10 text-blue-600 px-3 py-1 text-xs font-semibold">
                   <Sparkles className="w-3.5 h-3.5" />
                   First-Time Setup
@@ -954,7 +975,7 @@ User: ${text}
                   </button>
                   <button
                     type="button"
-                    onClick={() => { if (!hasNoProjects) nav(`/project/${projects[0]?.id}`); else handleCreateProject(); }}
+                    onClick={() => nav("/memory")}
                     className="rounded-xl border border-white/40 bg-white/45 dark:bg-white/10 p-4 text-left hover:bg-white/60 transition-all"
                   >
                     <div className="flex items-center gap-2 text-sm font-semibold text-black/80 dark:text-white/80">
@@ -1005,6 +1026,8 @@ User: ${text}
                     onDelete={handleDeleteProject}
                     fallbackInitials={userInitials}
                     teamsByProject={teamsByProject}
+                    onCreateNew={handleCreateProject}
+                    onAddTeamMembers={(project) => nav(`/project/${project.id}?team=1`)}
                   />
                 </div>
                 <AISuggestionsPanel projects={projects} events={aiEvents} model={selectedModel} />

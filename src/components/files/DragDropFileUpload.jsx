@@ -20,12 +20,13 @@ import { useAuth } from '@/lib/SupabaseAuth';
  * This component creates an invisible overlay that captures drag-and-drop events
  * across the entire page when used in Memory page.
  */
-export default function DragDropFileUpload({ onUploadComplete }) {
+export default function DragDropFileUpload({ onUploadComplete, triggerRef }) {
   const { user } = useAuth();
   const [isDragging, setIsDragging] = useState(false);
   const [uploads, setUploads] = useState([]); // Array of { file, progress, status, error, fileId }
   const [, setIsUploading] = useState(false);
   const fileInputRef = useRef(null);
+  const addMediaInputRef = useRef(null);
   const dragHideTimeoutRef = useRef(null);
   const internalCollageDragRef = useRef(false);
 
@@ -427,6 +428,12 @@ Size: ${sizeDisplay}
     await handleFileUpload(acceptedFiles);
   }, [handleFileUpload]);
 
+  useEffect(() => {
+    if (triggerRef) {
+      triggerRef.current = () => addMediaInputRef.current?.click();
+    }
+  }, [triggerRef]);
+
   // Ignore upload overlay while user is reordering cards in collage.
   useEffect(() => {
     const onInternalDragStart = () => {
@@ -606,6 +613,15 @@ Size: ${sizeDisplay}
         onChange={handleFileInput}
         multiple
         webkitdirectory=""
+        style={{ display: 'none' }}
+      />
+      {/* Hidden file input for add-media button */}
+      <input
+        type="file"
+        ref={addMediaInputRef}
+        onChange={handleFileInput}
+        multiple
+        accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.txt,.md,.csv,.json"
         style={{ display: 'none' }}
       />
 

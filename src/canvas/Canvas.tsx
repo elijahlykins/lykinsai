@@ -3052,6 +3052,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
         '- If you are unsure, set "shouldRespond": true with a short helpful clarification question.',
         '- IMPORTANT: respond ONLY to the LATEST user message (the last USER line in the conversation). Do NOT re-answer older questions unless the latest user message explicitly asks you to.',
         '- IMPORTANT: do NOT repeat or restate the user question/prompt. Answer directly (no "You asked...", no quoting the question).',
+        '- Response length: for simple/easy answers use 1-50 words. For more complex or detailed answers use 20-150 words. Always finish your thought completely — never cut off mid-sentence or mid-paragraph.',
         "",
         "Supported actions (allowlist):",
         '- { "type": "create_spreadsheet", "rows": 30, "cols": 20, "cells2d": [["Header A","Header B"],["A2","B2"]] }',
@@ -4278,15 +4279,19 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
               const desiredCells = neededCells + leadCells;
               const widthCells = Math.max(currentWidthCells, desiredCells);
               const newWidth = Math.max(gridSize, widthCells * gridSize);
+              const wrappedLines = getWrappedLineCountForWidth(textValue, nextVariant, newWidth);
               const targetRows = Math.max(
                 minRowsForVariant(nextVariant),
-                getRequiredVerticalCells(textValue) * lineRowsForVariant(nextVariant)
+                Math.max(
+                  getRequiredVerticalCells(textValue) * lineRowsForVariant(nextVariant),
+                  wrappedLines * lineRowsForVariant(nextVariant)
+                )
               );
               const neededRows =
                 meta?.isPaste
                   ? targetRows
                   : targetRows > currentHeightRows
-                    ? Math.min(targetRows, currentHeightRows + 1)
+                    ? Math.min(targetRows, currentHeightRows + 3)
                     : targetRows;
               const newHeight = Math.max(gridSize, neededRows * gridSize);
 

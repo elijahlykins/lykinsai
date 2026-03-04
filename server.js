@@ -182,7 +182,7 @@ const invokeOpenAIModel = async (model, prompt, imageUrls = []) => {
       body: JSON.stringify({
         model,
         input: prompt,
-        max_output_tokens: 1000,
+        max_output_tokens: 2048,
       }),
     });
 
@@ -207,7 +207,7 @@ const invokeOpenAIModel = async (model, prompt, imageUrls = []) => {
     body: JSON.stringify({
       model,
       messages: [{ role: 'user', content: hasImages ? contentParts : prompt }],
-      max_completion_tokens: 1000,
+      max_completion_tokens: 2048,
     }),
   });
 
@@ -626,7 +626,7 @@ ${t}
         body: JSON.stringify({
           model: anthropicModel,
           messages: [{ role: 'user', content: imageUrls.length > 0 ? anthropicContent : prompt }],
-          max_tokens: 1000
+          max_tokens: 2048
         })
       });
 
@@ -703,7 +703,7 @@ ${t}
             parts: geminiParts
           }],
           generationConfig: {
-            maxOutputTokens: 1000,
+            maxOutputTokens: 2048,
             temperature: 0.7
           }
       };
@@ -830,7 +830,7 @@ ${t}
         body: JSON.stringify({
           model: grokModel,
           messages: [{ role: 'user', content: grokContent }],
-          max_tokens: 1000
+          max_tokens: 2048
         })
       });
 
@@ -885,6 +885,241 @@ ${t}
       error: `AI request failed: ${error.message}`,
       details: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
+  }
+});
+
+app.post('/api/ai/stream', async (req, res) => {
+  try {
+    const normalizedModel = normalizeRequestedModel(req.body?.model);
+    const incomingImageUrls = Array.isArray(req.body?.imageUrls) ? req.body.imageUrls : [];
+    const imageUrls = incomingImageUrls.slice(0, 4);
+    let { prompt, text, intent, context, knowledgeBase, projectId, conversation } = req.body;
+    let model = normalizedModel;
+
+    if (!model) return res.status(400).json({ error: 'Missing model parameter' });
+    if (!prompt && text) prompt = `Answer the user's question clearly and concisely.\nQuestion:\n${text}\n`;
+    if (!prompt) return res.status(400).json({ error: 'Missing prompt' });
+
+    const kbText = (() => {
+      if (!knowledgeBase) return "";
+      const raw = typeof knowledgeBase === "string" ? knowledgeBase : JSON.stringify(knowledgeBase);
+      const trimmed = String(raw || "").trim();
+      return trimmed.length > 12000 ? `${trimmed.slice(0, 12000)}…` : trimmed;
+    })();
+
+    const buildLyknStreamPrompt = (input) => {
+      const latestUserMessage = String(input?.text || "").trim() || String(input?.prompt || "").trim();
+      const rawPrompt = String(input?.prompt || "").trim();
+      const contextText = String(input?.context || "").trim().slice(0, 6000);
+      const kb = String(input?.knowledgeBase || "").trim().slice(0, 12000);
+      return [
+        "SYSTEM",
+        "You are the built-in AI assistant for LYKN.",
+        "Mode: chat_only.",
+        "",
+        "Primary behavior:",
+        "- Answer the latest user message directly and clearly.",
+        "- Be practical, concise, and action-oriented.",
+        "- If uncertain, say so briefly and suggest the next best step.",
+        "",
+        "Output rules:",
+        "- Return plain natural language only.",
+        "- Do not return JSON, markdown wrappers, tool calls, or action payloads.",
+        "",
+        contextText ? `[BOARD_CONTEXT]\n${contextText}` : "",
+        kb ? `[PROJECT_KNOWLEDGE]\n${kb}` : "",
+        rawPrompt ? `[REQUEST_CONTEXT]\n${rawPrompt}` : "",
+        `[LATEST_USER_MESSAGE]\n${latestUserMessage || "(empty)"}`,
+      ].filter(Boolean).join("\n\n");
+    };
+
+    const normalizedIntent = String(intent || "").trim().toLowerCase();
+    const isChatIntent = normalizedIntent === "ask" || normalizedIntent === "chat" || normalizedIntent === "question";
+    if (isChatIntent) {
+      prompt = buildLyknStreamPrompt({ prompt, text, context, knowledgeBase: kbText, projectId, intent: normalizedIntent || "ask" });
+    }
+
+    let actualModel = model;
+    if (model === 'unified-auto') {
+      if (process.env.GOOGLE_API_KEY) actualModel = 'gemini-flash-latest';
+      else if (process.env.OPENAI_API_KEY) actualModel = 'gpt-4o';
+      else actualModel = 'gpt-3.5-turbo';
+    }
+
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+    });
+
+    const sendChunk = (text) => res.write(`data: ${JSON.stringify({ t: text })}\n\n`);
+    const sendDone = () => { res.write('data: [DONE]\n\n'); res.end(); };
+    const sendError = (msg) => { res.write(`data: ${JSON.stringify({ error: msg })}\n\n`); res.end(); };
+
+    if (actualModel.startsWith('gpt-')) {
+      if (!process.env.OPENAI_API_KEY) return sendError('OpenAI API key not configured');
+      const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: actualModel,
+          messages: [{ role: 'user', content: prompt }],
+          max_completion_tokens: 2048,
+          stream: true,
+        }),
+      });
+      if (!openaiRes.ok) {
+        const err = await openaiRes.json().catch(() => ({}));
+        return sendError(err?.error?.message || openaiRes.statusText);
+      }
+      const reader = openaiRes.body;
+      let buffer = '';
+      reader.on('data', (chunk) => {
+        buffer += chunk.toString();
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || !trimmed.startsWith('data: ')) continue;
+          const payload = trimmed.slice(6);
+          if (payload === '[DONE]') return sendDone();
+          try {
+            const parsed = JSON.parse(payload);
+            const delta = parsed.choices?.[0]?.delta?.content;
+            if (delta) sendChunk(delta);
+          } catch {}
+        }
+      });
+      reader.on('end', () => sendDone());
+      reader.on('error', () => sendError('Stream interrupted'));
+
+    } else if (actualModel.includes('claude')) {
+      if (!process.env.ANTHROPIC_API_KEY) return sendError('Anthropic API key not configured');
+      const anthropicModel = resolveAnthropicModel(actualModel);
+      const anthropicRes = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'x-api-key': process.env.ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: anthropicModel,
+          messages: [{ role: 'user', content: prompt }],
+          max_tokens: 2048,
+          stream: true,
+        }),
+      });
+      if (!anthropicRes.ok) {
+        const err = await anthropicRes.json().catch(() => ({}));
+        return sendError(err?.error?.message || anthropicRes.statusText);
+      }
+      const reader = anthropicRes.body;
+      let buffer = '';
+      reader.on('data', (chunk) => {
+        buffer += chunk.toString();
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data: ')) continue;
+          try {
+            const parsed = JSON.parse(trimmed.slice(6));
+            if (parsed.type === 'content_block_delta' && parsed.delta?.text) sendChunk(parsed.delta.text);
+            if (parsed.type === 'message_stop') return sendDone();
+          } catch {}
+        }
+      });
+      reader.on('end', () => sendDone());
+      reader.on('error', () => sendError('Stream interrupted'));
+
+    } else if (actualModel.startsWith('gemini-') || actualModel.includes('gemini')) {
+      if (!process.env.GOOGLE_API_KEY) return sendError('Google API key not configured');
+      let geminiModel = actualModel;
+      if (actualModel === 'gemini-pro' || actualModel === 'gemini-1.5-flash') geminiModel = 'gemini-flash-latest';
+      else if (actualModel === 'gemini-1.5-pro') geminiModel = 'gemini-pro-latest';
+
+      const geminiRes = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:streamGenerateContent?alt=sse&key=${process.env.GOOGLE_API_KEY}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: { maxOutputTokens: 2048, temperature: 0.7 },
+          }),
+        }
+      );
+      if (!geminiRes.ok) {
+        const err = await geminiRes.json().catch(() => ({}));
+        return sendError(err?.error?.message || geminiRes.statusText);
+      }
+      const reader = geminiRes.body;
+      let buffer = '';
+      reader.on('data', (chunk) => {
+        buffer += chunk.toString();
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data: ')) continue;
+          try {
+            const parsed = JSON.parse(trimmed.slice(6));
+            const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (text) sendChunk(text);
+          } catch {}
+        }
+      });
+      reader.on('end', () => sendDone());
+      reader.on('error', () => sendError('Stream interrupted'));
+
+    } else if (actualModel.includes('grok')) {
+      if (!process.env.XAI_API_KEY) return sendError('xAI API key not configured');
+      const grokRes = await fetch('https://api.x.ai/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${process.env.XAI_API_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: actualModel,
+          messages: [{ role: 'user', content: prompt }],
+          max_tokens: 2048,
+          stream: true,
+        }),
+      });
+      if (!grokRes.ok) {
+        const err = await grokRes.json().catch(() => ({}));
+        return sendError(err?.error?.message || grokRes.statusText);
+      }
+      const reader = grokRes.body;
+      let buffer = '';
+      reader.on('data', (chunk) => {
+        buffer += chunk.toString();
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || !trimmed.startsWith('data: ')) continue;
+          const payload = trimmed.slice(6);
+          if (payload === '[DONE]') return sendDone();
+          try {
+            const parsed = JSON.parse(payload);
+            const delta = parsed.choices?.[0]?.delta?.content;
+            if (delta) sendChunk(delta);
+          } catch {}
+        }
+      });
+      reader.on('end', () => sendDone());
+      reader.on('error', () => sendError('Stream interrupted'));
+
+    } else {
+      return sendError(`Unsupported model: ${actualModel}`);
+    }
+  } catch (error) {
+    console.error('❌ Stream error:', error.message);
+    if (!res.headersSent) {
+      res.status(500).json({ error: `Stream failed: ${error.message}` });
+    } else {
+      try { res.write(`data: ${JSON.stringify({ error: error.message })}\n\n`); res.end(); } catch {}
+    }
   }
 });
 

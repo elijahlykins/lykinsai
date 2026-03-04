@@ -522,8 +522,10 @@ export default function OmniaCanvasPage() {
       gridSize: st.gridSize,
       title: title || "Untitled board",
       version: SNAPSHOT_VERSION,
+      chatMessages: chatMessages.length > 0 ? chatMessages : undefined,
+      aiThread: aiThreadRef.current.length > 0 ? aiThreadRef.current : undefined,
     };
-  }, [SNAPSHOT_VERSION, title]);
+  }, [SNAPSHOT_VERSION, chatMessages, title]);
 
   const applySnapshot = useCallback(
     (snapshot: any) => {
@@ -587,6 +589,15 @@ export default function OmniaCanvasPage() {
       const g = Number.isFinite(snapshot.gridSize) ? Number(snapshot.gridSize) : gridSize;
       loadBlocks(blocks, { camera, gridSize: g });
       if (snapshot.title) setTitle(String(snapshot.title));
+
+      if (Array.isArray(snapshot.chatMessages) && snapshot.chatMessages.length > 0) {
+        setChatMessages(snapshot.chatMessages);
+        setChatRailOpen(true);
+        setChatRailVisible(true);
+      }
+      if (Array.isArray(snapshot.aiThread) && snapshot.aiThread.length > 0) {
+        aiThreadRef.current = snapshot.aiThread;
+      }
     },
     [gridSize, loadBlocks]
   );
@@ -1617,10 +1628,44 @@ export default function OmniaCanvasPage() {
     await generateProjectSummary(projectId);
   }, [generateProjectSummary, projectId]);
 
+  const isBoardEmpty = useCallback(() => {
+    if (chatMessages.length > 0) return false;
+    if (aiThreadRef.current.length > 0) return false;
+    const st = useCanvasStore.getState();
+    const blockIds = st.blockOrder || [];
+    const blocksMap = st.blocks || {};
+    const meaningful = blockIds.filter((id: string) => {
+      const b = blocksMap[id];
+      if (!b) return false;
+      const data = (b as any)?.data && typeof (b as any).data === "object" ? (b as any).data : {};
+      const content = String(data.content ?? data.body ?? (b as any)?.content ?? "").trim();
+      const fmt = String((b as any)?.format || data.format || "").toLowerCase();
+      if (fmt === "media" || fmt === "calendar" || fmt === "table" || fmt === "button") return true;
+      if (content.length > 0) return true;
+      return false;
+    });
+    return meaningful.length === 0;
+  }, [chatMessages.length]);
+
+  const deleteEmptyBoard = useCallback(async () => {
+    if (!boardId || !user?.id) return;
+    try {
+      await supabase.from("omnia_board_states").delete().eq("board_id", boardId);
+      await supabase.from("omnia_boards").delete().eq("id", boardId).eq("user_id", user.id);
+      localStorage.removeItem("omnia_board_id");
+    } catch {
+      // ignore
+    }
+  }, [boardId, user?.id]);
+
   const saveSnapshot = useCallback(async () => {
     if (!user?.id || !boardId || savingRef.current || !hydratedRef.current) return;
     savingRef.current = true;
     try {
+      if (isBoardEmpty()) {
+        await deleteEmptyBoard();
+        return;
+      }
       const snapshot = buildSnapshot();
       await supabase.from("omnia_board_states").insert({ board_id: boardId, state: snapshot, version: snapshot.version || SNAPSHOT_VERSION });
       await supabase
@@ -1633,7 +1678,7 @@ export default function OmniaCanvasPage() {
     } finally {
       savingRef.current = false;
     }
-  }, [boardId, buildSnapshot, user?.id]);
+  }, [boardId, buildSnapshot, deleteEmptyBoard, isBoardEmpty, user?.id]);
 
   const commitBoardTitle = useCallback(async () => {
     if (!boardId || !user?.id) return;
@@ -1654,7 +1699,7 @@ export default function OmniaCanvasPage() {
     saveTimerRef.current = window.setTimeout(() => {
       saveTimerRef.current = null;
       saveSnapshot();
-    }, 15000);
+    }, 5000);
   }, [boardId, saveSnapshot, user?.id]);
 
   useEffect(() => {
@@ -1779,6 +1824,11 @@ export default function OmniaCanvasPage() {
   }, [boardId, scheduleSave, title, user?.id]);
 
   useEffect(() => {
+    if (!boardId || !user?.id || !hydratedRef.current) return;
+    if (chatMessages.length > 0) scheduleSave();
+  }, [boardId, chatMessages, scheduleSave, user?.id]);
+
+  useEffect(() => {
     if (!projectId) return;
     refreshKnowledgeBase(projectId);
   }, [projectId, refreshKnowledgeBase]);
@@ -1799,17 +1849,24 @@ export default function OmniaCanvasPage() {
     const onVis = () => {
       if (document.visibilityState === "hidden") saveSnapshot();
     };
+    const onBeforeUnload = () => {
+      savingRef.current = false;
+      saveSnapshot();
+    };
     window.addEventListener("blur", onBlur);
     document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("beforeunload", onBeforeUnload);
     return () => {
       window.removeEventListener("blur", onBlur);
       document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("beforeunload", onBeforeUnload);
     };
   }, [boardId, saveSnapshot, user?.id]);
 
   useEffect(() => {
     if (!boardId || !user?.id) return;
     return () => {
+      savingRef.current = false;
       saveSnapshot();
     };
   }, [boardId, saveSnapshot, user?.id]);
@@ -2173,9 +2230,13 @@ export default function OmniaCanvasPage() {
       aiThreadRef.current.push({ role: "user", content: text + attachmentContext });
       if (aiThreadRef.current.length > 40) aiThreadRef.current = aiThreadRef.current.slice(-40);
 
-      const history = aiThreadRef.current
-        .slice(-40)
-        .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
+      const recentThread = aiThreadRef.current.slice(-10);
+      const history = recentThread
+        .map((m) => {
+          const label = m.role === "user" ? "User" : "Assistant";
+          const trimmed = m.content.length > 400 ? m.content.slice(0, 400) + "…" : m.content;
+          return `${label}: ${trimmed}`;
+        })
         .join("\n");
 
       const canvasContext = buildCanvasContext();
@@ -2271,72 +2332,136 @@ export default function OmniaCanvasPage() {
         setChatStatusText("Answered");
         return;
       }
-      const prompt = `You are LYKN — a helpful, knowledgeable AI assistant powering an infinite canvas workspace.
-Answer the user's latest message directly and naturally, using your own knowledge.
-If board context, YouTube transcripts, or attached content are available, incorporate them into your answer.
-If no board context is available, answer the question anyway using your general knowledge — never refuse to answer just because the board is empty.
-Do not ask follow-up questions unless the user explicitly asks you to ask them.
-Do not suggest taking notes. Just answer.
-
-Conversation so far:
-${history || "(none)"}
-
-Canvas context:
-${canvasContext || "(empty)"}
-
-Project knowledge base:
-${kbText || "(none)"}
-
-Visible YouTube transcript context:
-${youtubeGrounding || "(none)"}
-
-Latest user message:
-${text}${attachmentContext}`;
+      const prompt = [
+        history ? `Conversation so far:\n${history}` : "",
+        youtubeGrounding ? `YouTube transcript context:\n${youtubeGrounding}` : "",
+        `Latest user message:\n${text}${attachmentContext}`,
+      ].filter(Boolean).join("\n\n");
       const attachedImageUrls = sentAttachments
         .filter((a) => a.type?.toLowerCase() === "image" && a.url)
         .map((a) => a.url);
-      const res = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: selectedModel,
-          prompt,
-          text,
-          intent: "ask",
-          aiMode,
-          returnActions: false,
-          context: `${canvasContext || ""}\n\nYouTube transcript context:\n${youtubeGrounding || "(none)"}`.trim(),
-          knowledgeBase: kbText,
-          projectId,
-          ...(attachedImageUrls.length ? { imageUrls: attachedImageUrls } : {}),
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        const apiError = String((data as any)?.error || "").trim();
-        const finalText =
-          apiError ||
-          "The AI service is available but returned an error for this request. Please try again.";
+
+      setChatStatusText("Thinking...");
+      setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: "" } : m)));
+
+      const requestBody = {
+        model: selectedModel,
+        prompt,
+        text,
+        intent: "ask",
+        context: `${canvasContext || ""}\n\nYouTube transcript context:\n${youtubeGrounding || "(none)"}`.trim(),
+        knowledgeBase: kbText,
+        projectId,
+        ...(attachedImageUrls.length ? { imageUrls: attachedImageUrls } : {}),
+      };
+
+      let streamRes: Response | null = null;
+      let useStreaming = false;
+      try {
+        streamRes = await fetch(`${API_BASE_URL}/api/ai/stream`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(requestBody),
+        });
+        if (streamRes.ok && streamRes.headers.get("content-type")?.includes("text/event-stream")) {
+          useStreaming = true;
+        }
+      } catch {
+        streamRes = null;
+      }
+
+      if (useStreaming && streamRes) {
+        const reader = streamRes.body?.getReader();
+        const decoder = new TextDecoder();
+        let accumulated = "";
+        let firstToken = true;
+        let sseBuffer = "";
+
+        if (reader) {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            sseBuffer += decoder.decode(value, { stream: true });
+            const lines = sseBuffer.split("\n");
+            sseBuffer = lines.pop() || "";
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed.startsWith("data: ")) continue;
+              const payload = trimmed.slice(6);
+              if (payload === "[DONE]") break;
+              try {
+                const parsed = JSON.parse(payload);
+                if (parsed.error) {
+                  accumulated = String(parsed.error);
+                  break;
+                }
+                if (parsed.t) {
+                  if (firstToken) {
+                    setChatStatusText("Responding...");
+                    firstToken = false;
+                  }
+                  accumulated += parsed.t;
+                  setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: accumulated } : m)));
+                  if (responseBlockId && typeof updateBlock === "function") {
+                    const normalized = normalizeAiTextForBlock(accumulated);
+                    const size = calcAiBubbleSize(normalized);
+                    updateBlock(String(responseBlockId), { content: normalized, width: size.width, height: size.height } as any);
+                  }
+                  const el = chatScrollRef.current;
+                  if (el) el.scrollTop = el.scrollHeight;
+                }
+              } catch {}
+            }
+          }
+        }
+
+        let aiText = sanitizeAssistantResponse(accumulated.trim());
+        const hasYTG = Boolean(String(youtubeGrounding || "").trim() && String(youtubeGrounding || "").trim() !== "(none)");
+        if (asksAboutVideo && hasYTG) {
+          const fallback = buildDirectVideoAnswerFromGrounding(youtubeGrounding);
+          if (fallback && (!aiText || looksLikeDeflectingQuestion(aiText))) aiText = fallback;
+        }
+        const finalText = aiText || "I'm not sure how to answer that. Could you rephrase?";
+        setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: finalText } : m)));
+        aiThreadRef.current.push({ role: "assistant", content: finalText });
+        if (aiThreadRef.current.length > 40) aiThreadRef.current = aiThreadRef.current.slice(-40);
+        if (responseBlockId && typeof updateBlock === "function") {
+          const normalized = normalizeAiTextForBlock(finalText);
+          const size = calcAiBubbleSize(normalized);
+          updateBlock(String(responseBlockId), { content: normalized, width: size.width, height: size.height } as any);
+        }
+        setChatStatusText("Answered");
+      } else {
+        const res = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...requestBody, aiMode, returnActions: false }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          const apiError = String((data as any)?.error || "").trim();
+          const finalText = apiError || "The AI service returned an error. Please try again.";
+          setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: finalText } : m)));
+          aiThreadRef.current.push({ role: "assistant", content: finalText });
+          if (aiThreadRef.current.length > 40) aiThreadRef.current = aiThreadRef.current.slice(-40);
+          if (responseBlockId) await typeIntoAiResponseBlock(String(responseBlockId), finalText);
+          setChatStatusText("Answered");
+          return;
+        }
+        let aiText = String(data?.response || data?.answer || data?.text || "").trim();
+        const hasYTG = Boolean(String(youtubeGrounding || "").trim() && String(youtubeGrounding || "").trim() !== "(none)");
+        aiText = sanitizeAssistantResponse(aiText);
+        if (asksAboutVideo && hasYTG) {
+          const fallback = buildDirectVideoAnswerFromGrounding(youtubeGrounding);
+          if (fallback && (!aiText || looksLikeDeflectingQuestion(aiText))) aiText = fallback;
+        }
+        const finalText = aiText || "I'm not sure how to answer that. Could you rephrase?";
         await typeResponseIntoChat(promptId, finalText);
         aiThreadRef.current.push({ role: "assistant", content: finalText });
         if (aiThreadRef.current.length > 40) aiThreadRef.current = aiThreadRef.current.slice(-40);
         if (responseBlockId) await typeIntoAiResponseBlock(String(responseBlockId), finalText);
         setChatStatusText("Answered");
-        return;
       }
-      let aiText = String(data?.response || data?.answer || data?.text || "").trim();
-      const hasYouTubeGrounding = Boolean(String(youtubeGrounding || "").trim() && String(youtubeGrounding || "").trim() !== "(none)");
-      aiText = sanitizeAssistantResponse(aiText);
-      if (asksAboutVideo && hasYouTubeGrounding) {
-        const fallback = buildDirectVideoAnswerFromGrounding(youtubeGrounding);
-        if (fallback && (!aiText || looksLikeDeflectingQuestion(aiText))) aiText = fallback;
-      }
-      const finalText = aiText || "I'm not sure how to answer that. Could you rephrase?";
-      await typeResponseIntoChat(promptId, finalText);
-      aiThreadRef.current.push({ role: "assistant", content: finalText });
-      if (aiThreadRef.current.length > 40) aiThreadRef.current = aiThreadRef.current.slice(-40);
-      if (responseBlockId) await typeIntoAiResponseBlock(String(responseBlockId), finalText);
-      setChatStatusText("Answered");
     } catch {
       setChatFlowMode("idle");
       setChatStatusText("Generation failed. Please retry.");

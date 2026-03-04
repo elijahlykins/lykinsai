@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   Search as SearchIcon,
   StickyNote,
@@ -120,7 +120,9 @@ function storeValue<T>(key: string, value: T) {
 export default function ProjectPlaceholder() {
   const { projectId } = useParams();
   const nav = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { user } = useAuth();
+  const teamMembersRef = useRef<HTMLDivElement | null>(null);
   const [projectName, setProjectName] = useState("Project");
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [draftTitle, setDraftTitle] = useState("Project");
@@ -200,6 +202,16 @@ export default function ProjectPlaceholder() {
     } catch { /* ignore */ }
     return { visits: 0, totalSeconds: 0, lastVisit: null as string | null };
   });
+
+  useEffect(() => {
+    if (searchParams.get("team") === "1") {
+      searchParams.delete("team");
+      setSearchParams(searchParams, { replace: true });
+      setTimeout(() => {
+        teamMembersRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+      }, 400);
+    }
+  }, [searchParams, setSearchParams]);
 
   useEffect(() => {
     setHealthData((prev: typeof healthData) => {
@@ -1273,7 +1285,7 @@ If the user asks about old memories or references past ideas, refer to the memor
       {/* Top Panel */}
       <div
         className="fixed top-3 left-0 z-[70] px-3 flex items-center justify-end pointer-events-none transition-all duration-300"
-        style={{ right: showMemorySidebar ? "min(392px, 92vw)" : "0px" }}
+        style={{ right: "0px" }}
       >
         <div className="pointer-events-auto flex items-center gap-2">
           <button
@@ -1363,7 +1375,7 @@ If the user asks about old memories or references past ideas, refer to the memor
                 type="button"
                 onClick={() => setShowMemorySidebar((v) => !v)}
                 className="rounded-full w-9 h-9 p-0 hover:bg-black/10 transition-colors touch-manipulation flex items-center justify-center"
-                title={showMemorySidebar ? "Hide memory sidebar" : "Open memory sidebar"}
+                title={showMemorySidebar ? "Hide media sidebar" : "Open media sidebar"}
               >
                 {showMemorySidebar ? <PanelRightClose className="w-4 h-4" /> : <BookOpen className="w-4 h-4" />}
               </button>
@@ -1975,7 +1987,7 @@ If the user asks about old memories or references past ideas, refer to the memor
 
                 {/* Collaboration & storage (filler) */}
                 <div className="grid grid-cols-2 gap-3">
-                  <div className="rounded-xl border border-white/50 bg-white/30 backdrop-blur-md p-4">
+                  <div ref={teamMembersRef} className="rounded-xl border border-white/50 bg-white/30 backdrop-blur-md p-4">
                     <div className="text-xs font-semibold mb-2">Team Members</div>
                     <div className="flex -space-x-2">
                       {user?.user_metadata?.avatar_url ? (
@@ -2230,33 +2242,31 @@ If the user asks about old memories or references past ideas, refer to the memor
         onChange={handleFileInputChange}
       />
 
-      {/* Memory Sidebar */}
+      {/* Media Sidebar */}
       {showMemorySidebar && (
         <aside
-          className="fixed top-0 right-0 z-[95] h-[100svh] w-[23.75rem] max-w-[92vw] border-l border-white/20 bg-transparent"
+          className="fixed top-14 right-0 z-[95] bottom-0 w-[23.75rem] max-w-[92vw] border-l border-black/10 dark:border-white/10 bg-[#f5f5f5] dark:bg-[#1a1a1a] shadow-[-4px_0_24px_rgba(0,0,0,0.08)]"
         >
-          <div className="h-full flex flex-col bg-transparent">
-            <div className="px-4 py-3 border-b border-black/10 flex items-center justify-between gap-3 bg-transparent">
+          <div className="h-full flex flex-col">
+            <div className="px-4 py-3 border-b border-black/8 dark:border-white/8 flex items-center justify-between gap-3">
               <div>
-                <h2 className="text-sm font-semibold text-black">Memory</h2>
-                <p className="text-xs opacity-70">Full memory view</p>
+                <h2 className="text-sm font-semibold text-black/90 dark:text-white/90">Media</h2>
+                <p className="text-xs text-black/50 dark:text-white/50">Your files and media</p>
               </div>
               <button
                 type="button"
                 onClick={() => setShowMemorySidebar(false)}
-                className="h-8 w-8 rounded-full hover:bg-black/10 transition-colors flex items-center justify-center"
-                title="Close memory sidebar"
+                className="h-8 w-8 rounded-full hover:bg-black/10 dark:hover:bg-white/10 transition-colors flex items-center justify-center"
+                title="Close media sidebar"
               >
                 <PanelRightClose className="w-4 h-4" />
               </button>
             </div>
-            <div className="flex-1 min-h-0 bg-transparent">
+            <div className="flex-1 min-h-0">
               <iframe
                 src="/memory?embedded=1"
-                title="Memory"
+                title="Media"
                 className="w-full h-full border-0"
-                allowTransparency={true as any}
-                style={{ backgroundColor: "transparent" }}
               />
             </div>
           </div>

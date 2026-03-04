@@ -409,7 +409,7 @@ ${t}
         body: JSON.stringify({
           model: requestedModel,
           input: userPrompt,
-          max_output_tokens: 1000,
+          max_output_tokens: 2048,
         }),
       });
 
@@ -425,7 +425,7 @@ ${t}
         body: JSON.stringify({
           model: requestedModel,
           messages: [{ role: "user", content: userPrompt }],
-          max_tokens: 1000,
+          max_tokens: 2048,
           temperature: 0.7
         })
       });
@@ -600,7 +600,7 @@ ${t}
         body: JSON.stringify({
           model: anthropicModel,
           messages: [{ role: 'user', content: prompt }],
-          max_tokens: 1000,
+          max_tokens: 2048,
           temperature: 0.7
         })
       });
@@ -642,7 +642,7 @@ ${t}
             parts: [{ text: prompt }]
           }],
           generationConfig: {
-            maxOutputTokens: 1000,
+            maxOutputTokens: 2048,
             temperature: 0.7
           }
         })

@@ -29,6 +29,24 @@ const FloatingOrb = ({ className, delay = 0 }) => (
   />
 );
 
+function friendlyError(raw) {
+  if (!raw) return null;
+  const lower = raw.toLowerCase();
+  if (lower.includes("code verifier") || lower.includes("auth code") || lower.includes("invalid request"))
+    return "Something went wrong. Please sign in with Google or enter your email and password to get started.";
+  if (lower.includes("invalid login") || lower.includes("invalid credentials"))
+    return "Incorrect email or password. Please try again.";
+  if (lower.includes("email not confirmed"))
+    return "Please check your inbox and confirm your email before signing in.";
+  if (lower.includes("user already registered") || lower.includes("already been registered"))
+    return "An account with this email already exists. Try signing in instead.";
+  if (lower.includes("rate limit") || lower.includes("too many requests"))
+    return "Too many attempts. Please wait a moment and try again.";
+  if (lower.includes("network") || lower.includes("fetch"))
+    return "Connection error. Please check your internet and try again.";
+  return raw;
+}
+
 export default function Login() {
   const nav = useNavigate();
   const location = useLocation();
@@ -47,7 +65,7 @@ export default function Login() {
     if (!loading && user) nav(from, { replace: true });
   }, [loading, nav, user, from]);
 
-  const displayError = error || authError;
+  const displayError = friendlyError(error || authError);
 
   const handleSubmit = async (e) => {
     e?.preventDefault();
