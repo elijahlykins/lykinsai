@@ -13,10 +13,14 @@ import { ButtonBlock } from "@/canvas/blocks/ButtonBlock";
 import { MediaBlock } from "@/canvas/blocks/MediaBlock";
 import type { AiAnswerEntry } from "@/canvas/types";
 import { canUseActiveBrickLogic, renderBrickShell } from "./brick";
+import { useThinkingStatus } from "@/hooks/useThinkingStatus";
+import { getAiPrefs } from "@/lib/ai-prefs";
+import { extractTextFromFile, isDocumentFile } from "@/lib/extract-text";
 
 type CanvasProps = {
   liveAIMode?: boolean;
   isAiThinking?: boolean;
+  thinkingStatusText?: string;
 };
 
 const ENABLE_CANVAS_HOTKEYS = false;
@@ -430,7 +434,7 @@ function makeDuplicateId(prefix = "b") {
   return `${prefix}-dup-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps) {
+export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatusText = "" }: CanvasProps) {
   type PressTarget = { kind: "cell" | "brick"; key: string };
   type GridRange = { minX: number; maxX: number; minY: number; maxY: number };
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -548,6 +552,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
     heightBricks: 1,
     maxWidthPx: 520,
   });
+  const aiThinkingStatus = useThinkingStatus(aiPanel.loading);
   const aiAbortRef = useRef<AbortController | null>(null);
   const aiThreadByBlockRef = useRef<Map<string, { key: string; messages: Array<{ role: "user" | "assistant"; content: string }> }>>(new Map());
   const aiLastUserLineRef = useRef<Map<string, string>>(new Map()); // blockId -> last processed promptText
@@ -1841,20 +1846,36 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
           setTypingBlockId(null);
         }
       }
-      moveBlocksFromSnapshot(d.snapshot as any, dx, dy, { snap: true, snapSize: gridSize } as any);
+      const grid = gridSize;
+      for (const s of d.snapshot) {
+        const snappedDx = Math.round(dx / grid) * grid;
+        const snappedDy = Math.round(dy / grid) * grid;
+        const el = document.querySelector(`[data-block-id="${s.id}"]`) as HTMLElement | null;
+        if (el) el.style.transform = `translate(${snappedDx}px, ${snappedDy}px)`;
+      }
     };
     const onUp = (e: PointerEvent) => {
       const d = groupDragRef.current;
       if (!d.active) return;
       if (d.pointerId != null && e.pointerId !== d.pointerId) return;
       const moved = d.moved;
+      const snapshot = d.snapshot;
+      if (moved) {
+        for (const s of snapshot) {
+          const el = document.querySelector(`[data-block-id="${s.id}"]`) as HTMLElement | null;
+          if (el) el.style.transform = "";
+        }
+        const world = clientToWorld(e.clientX, e.clientY);
+        const dx = world.x - d.startWorldX;
+        const dy = world.y - d.startWorldY;
+        moveBlocksFromSnapshot(snapshot as any, dx, dy, { snap: true, snapSize: gridSize } as any);
+      }
       groupDragRef.current = { active: false, moved: false, pointerId: null, startWorldX: 0, startWorldY: 0, snapshot: [] };
       if (moved) {
         suppressBrickClickRef.current = true;
         window.setTimeout(() => {
           suppressBrickClickRef.current = false;
         }, 0);
-        // On release after drag, drop visual raised/selected state.
         setActivatedBrickIds([]);
         setRaisedBrickIds([]);
         pushHistory();
@@ -2123,7 +2144,23 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
         wav: "audio/wav",
         m4a: "audio/mp4",
         ogg: "audio/ogg",
+        flac: "audio/flac",
+        aac: "audio/aac",
         pdf: "application/pdf",
+        doc: "application/msword",
+        docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        xls: "application/vnd.ms-excel",
+        xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ppt: "application/vnd.ms-powerpoint",
+        pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        odt: "application/vnd.oasis.opendocument.text",
+        csv: "text/csv",
+        rtf: "application/rtf",
+        txt: "text/plain",
+        md: "text/markdown",
+        json: "application/json",
+        html: "text/html",
+        htm: "text/html",
       };
       return mimeByExt[ext] || "";
     };
@@ -2363,14 +2400,19 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
         }
         const mime = String(f.type || "");
         const name = f.name || "file";
-        if (mime.startsWith("video/")) {
-          const b = createCreateBlockSafe(x, y, "video", { url: dataUrl, mime, name }, gridSize * 12, gridSize * 7);
+        const fileExt = (name || "").split(".").pop()?.toLowerCase() || "";
+        const videoExts = new Set(["mp4", "mov", "avi", "webm", "mkv", "wmv"]);
+        if (mime.startsWith("video/") || videoExts.has(fileExt)) {
+          const effectiveMime = mime || inferMimeFromName(name) || "video/mp4";
+          const b = createCreateBlockSafe(x, y, "video", { url: dataUrl, mime: effectiveMime, name }, gridSize * 12, gridSize * 7);
           if (containerId) (b as any).containerId = containerId;
           addBlock(b);
           continue;
         }
-        if (mime.startsWith("audio/")) {
-          const b = createCreateBlockSafe(x, y, "embed", { url: dataUrl, mime, name }, gridSize * 12, gridSize * 4);
+        const audioExts = new Set(["mp3", "wav", "m4a", "ogg", "aac", "flac", "wma"]);
+        if (mime.startsWith("audio/") || audioExts.has(fileExt)) {
+          const effectiveMime = mime || inferMimeFromName(name) || "audio/mpeg";
+          const b = createCreateBlockSafe(x, y, "embed", { url: dataUrl, mime: effectiveMime, name }, gridSize * 12, gridSize * 4);
           if (containerId) (b as any).containerId = containerId;
           addBlock(b);
           continue;
@@ -2420,6 +2462,31 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
             addBlock(b);
           }
           continue;
+        }
+        // Document files (TXT, MD, JSON, HTML, CSV, RTF, DOCX, XLSX, PPTX, ODT)
+        if (isDocumentFile(f)) {
+          try {
+            const { API_BASE_URL } = await import("@/lib/api-config");
+            const result = await extractTextFromFile(f, API_BASE_URL);
+            if (result && result.text) {
+              const header = `📄 ${name} (${result.format.toUpperCase()})\n${"─".repeat(40)}\n`;
+              const content = header + result.text.slice(0, 50000);
+              const textId = addTextBlockAt(
+                { x, y },
+                {
+                  width: gridSize * 16,
+                  height: getPdfTextBlockHeight(content),
+                  content,
+                  format: "plain",
+                }
+              );
+              if (containerId) updateBlock(textId, { containerId } as any);
+              updateBlock(textId, { data: { extractedText: result.text, sourceFileName: name, sourceFormat: result.format } } as any);
+              continue;
+            }
+          } catch (err: any) {
+            console.warn(`Document extraction failed for ${name}:`, err?.message);
+          }
         }
         const b = createCreateBlockSafe(x, y, "embed", { url: dataUrl, mime, name }, gridSize * 12, gridSize * 5);
         if (containerId) (b as any).containerId = containerId;
@@ -2656,7 +2723,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
       const res = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: aiModel, prompt: String(prompt || "") }),
+        body: JSON.stringify({ model: aiModel, prompt: String(prompt || ""), ...getAiPrefs() }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -3362,7 +3429,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
     if (!el) return;
     const extraPx = 2;
     const paddingPx = 36; // left 8 + right 28 (close button clearance)
-    const toShow = String(aiPanel.loading ? "Thinking…" : aiPanel.answer || "");
+    const toShow = String(aiPanel.loading ? aiThinkingStatus : aiPanel.answer || "");
     el.textContent = toShow;
     const measuredW = Math.max(0, Math.ceil(el.getBoundingClientRect().width || 0));
     const desiredPx = measuredW + paddingPx + extraPx;
@@ -3661,7 +3728,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
             top: `${aiPanel.top}px`,
             left: `${aiPanel.left}px`,
             width: `${Math.max(3, Math.floor(aiPanel.widthBricks || 6)) * Math.max(1, gridSize)}px`,
-            minHeight: `${Math.max(1, String(aiPanel.loading ? "Thinking…" : aiPanel.answer || "").split("\n").length) * Math.max(1, gridSize)}px`,
+            minHeight: `${Math.max(1, String(aiPanel.loading ? aiThinkingStatus : aiPanel.answer || "").split("\n").length) * Math.max(1, gridSize)}px`,
             maxWidth: `${Math.max(220, Math.floor(aiPanel.maxWidthPx || 520))}px`,
           }}
         >
@@ -3712,7 +3779,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
                 overflowWrap: "anywhere",
               }}
             >
-              {String(aiPanel.loading ? "Thinking…" : aiPanel.answer || "")}
+              {String(aiPanel.loading ? aiThinkingStatus : aiPanel.answer || "")}
             </div>
 
             {/* offscreen measure node: keeps bubble width tight to text */}
@@ -4162,6 +4229,16 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
           const embedUrl = String(createData.url || createData.dataUrl || "");
           const embedMime = String(createData.mime || "");
           const isCreateImage = (b as any).type === "create" && mode === "image";
+          const isCreateEmbedAudio =
+            (b as any).type === "create" &&
+            mode === "embed" &&
+            embedUrl &&
+            embedMime.startsWith("audio/");
+          const isCreateEmbedPdf =
+            (b as any).type === "create" &&
+            mode === "embed" &&
+            embedUrl &&
+            (embedMime === "application/pdf" || String(createData.name || "").toLowerCase().endsWith(".pdf"));
           const isCreateEmbedLink =
             (b as any).type === "create" &&
             mode === "embed" &&
@@ -4170,6 +4247,55 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
             embedMime !== "application/pdf";
           if (isCreateImage) {
             return <ImageBlock key={id} id={id} />;
+          }
+          if (isCreateEmbedAudio) {
+            const audioName = String(createData.name || "Audio");
+            const audioExtra = React.createElement(
+              "div",
+              {
+                className: "px-3 pb-2 pt-1 cursor-grab active:cursor-grabbing",
+                onClick: (e: React.MouseEvent) => e.stopPropagation(),
+                onDoubleClick: (e: React.MouseEvent) => e.stopPropagation(),
+              },
+              React.createElement("div", { className: "text-[0.7rem] font-medium text-black/60 dark:text-white/60 truncate mb-1.5 text-center" }, audioName),
+              React.createElement("div", {
+                onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
+                onClick: (e: React.MouseEvent) => e.stopPropagation(),
+              },
+                React.createElement("audio", {
+                  controls: true,
+                  preload: "metadata",
+                  className: "w-full",
+                  style: { maxHeight: "40px" },
+                },
+                  React.createElement("source", { src: embedUrl, type: embedMime || undefined }),
+                  React.createElement("source", { src: embedUrl }),
+                ),
+              ),
+            );
+            const audioBrick = renderBrickShell(b as any, id, { extraContent: audioExtra, resizeGridSize: gridSize });
+            return React.cloneElement(audioBrick as React.ReactElement, { key: id });
+          }
+          if (isCreateEmbedPdf) {
+            const pdfName = String(createData.name || "PDF");
+            const pdfExtra = React.createElement(
+              "div",
+              {
+                className: "flex flex-col flex-1 overflow-hidden",
+                onClick: (e: React.MouseEvent) => e.stopPropagation(),
+                onDoubleClick: (e: React.MouseEvent) => e.stopPropagation(),
+                onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
+              },
+              React.createElement("div", { className: "text-[0.7rem] font-medium text-black/60 dark:text-white/60 truncate px-3 py-1.5 border-b border-black/5 dark:border-white/5" }, pdfName),
+              React.createElement("iframe", {
+                src: embedUrl,
+                title: pdfName,
+                className: "flex-1 w-full border-0",
+                style: { minHeight: "200px" },
+              }),
+            );
+            const pdfBrick = renderBrickShell(b as any, id, { extraContent: pdfExtra, resizeGridSize: gridSize });
+            return React.cloneElement(pdfBrick as React.ReactElement, { key: id });
           }
           if (isCreateEmbedLink) {
             return <LinkBlock key={id} id={id} />;
@@ -4190,11 +4316,77 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
           if ((b as any).type === "text" && blockFormat === "media") {
             return <MediaBlock key={id} id={id} />;
           }
-          return renderBrickShell(b as any, id, {
+          const blockSources: { title: string; url: string; enabled: boolean }[] =
+            isAiResponseBubble && Array.isArray(createData.sources) ? createData.sources : [];
+          const sourcesExtraContent = blockSources.length > 0
+            ? React.createElement(
+                "div",
+                {
+                  className: "flex-shrink-0 px-3 pb-2 pt-1 border-t border-black/5 dark:border-white/5",
+                  onClick: (e: React.MouseEvent) => e.stopPropagation(),
+                  onDoubleClick: (e: React.MouseEvent) => e.stopPropagation(),
+                  onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
+                },
+                React.createElement("div", { className: "text-[0.6rem] text-black/40 dark:text-white/40 mb-1 font-medium" }, "Sources"),
+                React.createElement(
+                  "div",
+                  { className: "flex flex-wrap gap-1.5" },
+                  ...blockSources.map((src: { title: string; url: string; enabled: boolean }, idx: number) => {
+                    let hostname = "";
+                    try { hostname = new URL(src.url).hostname.replace(/^www\./, ""); } catch { /* skip */ }
+                    return React.createElement(
+                      "label",
+                      {
+                        key: idx,
+                        className: `inline-flex items-center gap-1.5 px-2 py-1 text-[0.65rem] rounded-md border cursor-pointer transition-all ${
+                          src.enabled !== false
+                            ? "border-white/40 dark:border-white/10 bg-white/50 dark:bg-white/5 text-black/70 dark:text-white/70 hover:border-black/30 dark:hover:border-white/30"
+                            : "border-black/5 dark:border-white/5 bg-black/3 dark:bg-white/2 text-black/30 dark:text-white/30 line-through"
+                        }`,
+                      },
+                      React.createElement("input", {
+                        type: "checkbox",
+                        checked: src.enabled !== false,
+                        className: "w-3 h-3 rounded accent-black/60 dark:accent-white/60 cursor-pointer",
+                        onChange: () => {
+                          const st = useCanvasStore.getState();
+                          const blk = st.blocks[id];
+                          if (!blk) return;
+                          const d = (blk as any).data && typeof (blk as any).data === "object" ? { ...(blk as any).data } : {};
+                          const srcs = Array.isArray(d.sources) ? [...d.sources] : [];
+                          const wasEnabled = srcs[idx]?.enabled !== false;
+                          if (srcs[idx]) srcs[idx] = { ...srcs[idx], enabled: !wasEnabled };
+                          st.updateBlock(id, { data: { ...d, sources: srcs } } as any);
+                          window.dispatchEvent(new CustomEvent("omnia_source_toggled", {
+                            detail: { blockId: id, sources: srcs },
+                          }));
+                        },
+                      }),
+                      React.createElement(
+                        "a",
+                        {
+                          href: src.url,
+                          target: "_blank",
+                          rel: "noopener noreferrer",
+                          className: "truncate max-w-[8rem] hover:underline",
+                          onClick: (e: React.MouseEvent) => e.stopPropagation(),
+                        },
+                        src.title
+                      ),
+                      hostname
+                        ? React.createElement("span", { className: "text-[0.55rem] opacity-40 truncate" }, hostname)
+                        : null
+                    );
+                  })
+                )
+              )
+            : null;
+          const brickEl = renderBrickShell(b as any, id, {
             isActivated: typingBlockId === id ? false : activatedBrickIds.includes(id),
             isRaised: typingBlockId === id ? false : raisedBrickIds.includes(id),
             isTyping: typingBlockId === id,
             enableWidthResize: isAiResponseBubble || isTextBrick,
+            extraContent: sourcesExtraContent,
             resizeGridSize: gridSize,
             resizeMinWidth: gridSize * 10,
             resizeMaxWidth:
@@ -4409,6 +4601,28 @@ export function Canvas({ liveAIMode = false, isAiThinking = false }: CanvasProps
               setShiftAnchor(target);
             },
           });
+
+          if (isAiResponseBubble && isAiThinking) {
+            const bx = Number((b as any).x || 0);
+            const by = Number((b as any).y || 0);
+            return (
+              <React.Fragment key={id}>
+                <div
+                  className="absolute pointer-events-none"
+                  style={{
+                    left: `${bx - 32}px`,
+                    top: `${by}px`,
+                    zIndex: 11,
+                  }}
+                >
+                  <div className="brick-spinner" />
+                </div>
+                {brickEl}
+              </React.Fragment>
+            );
+          }
+
+          return brickEl;
         })}
 
         {raisedBrickIds.map((rid) => {

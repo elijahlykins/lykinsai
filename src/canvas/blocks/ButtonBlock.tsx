@@ -12,6 +12,7 @@ import {
   Home, Calendar, CreditCard, Crosshair, Compass,
 } from "lucide-react";
 import { useCanvasStore } from "@/store/canvasStore";
+import { getAiPrefs } from "@/lib/ai-prefs";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/SupabaseAuth";
 
@@ -315,7 +316,7 @@ export const ButtonBlock = memo(function ButtonBlock({ id }: { id: string }) {
       const res = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "claude-3-opus-20240229", prompt }),
+        body: JSON.stringify({ model: "claude-3-opus-20240229", prompt, ...getAiPrefs() }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));

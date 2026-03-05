@@ -6,6 +6,7 @@ import { Sparkles, TrendingUp, Clock, X } from 'lucide-react';
 import { format } from 'date-fns';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { getSelectedAiModel } from '@/lib/ai-model';
+import { getAiPrefs } from '@/lib/ai-prefs';
 
 export default function RecommendationsPanel({ notes, onSelectNote }) {
   const [recommendations, setRecommendations] = useState([]);
@@ -62,7 +63,7 @@ Return ONLY a JSON object: {"recommendations": [{"type": "type", "title": "title
       const response = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: getSelectedAiModel(), prompt })
+        body: JSON.stringify({ model: getSelectedAiModel(), prompt, ...getAiPrefs() })
       });
 
       if (!response.ok) throw new Error('AI request failed');

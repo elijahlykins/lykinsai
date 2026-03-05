@@ -11,6 +11,7 @@ import {
 } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { getSelectedAiModel } from '@/lib/ai-model';
+import { getAiPrefs } from '@/lib/ai-prefs';
 
 export default function EnhancedKnowledgeGraph({ 
   notes, 
@@ -80,7 +81,7 @@ Return ONLY a JSON object: {"relationships": [...], "clusters": [...]}`;
       const response = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: getSelectedAiModel(), prompt })
+        body: JSON.stringify({ model: getSelectedAiModel(), prompt, ...getAiPrefs() })
       });
 
       if (!response.ok) throw new Error('AI request failed');
@@ -423,7 +424,7 @@ Return ONLY a JSON object: {"suggestions": [{"note_id": "id", "reason": "reason"
       const response = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: getSelectedAiModel(), prompt })
+        body: JSON.stringify({ model: getSelectedAiModel(), prompt, ...getAiPrefs() })
       });
 
       if (!response.ok) throw new Error('AI request failed');

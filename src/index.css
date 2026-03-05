@@ -843,6 +843,55 @@ body.embedded-memory-mode .app-content {
   animation: canvasAiThinkingSweep 2.4s ease-in-out infinite;
 }
 
+/* Animated thinking brick — full-sized tile that floats, flips, and rotates */
+@keyframes brickThink {
+  0%   { transform: translateY(0px) rotateY(0deg)   rotateZ(0deg);   }
+  25%  { transform: translateY(-4px) rotateY(180deg) rotateZ(0deg);   }
+  50%  { transform: translateY(0px) rotateY(180deg) rotateZ(90deg);  }
+  75%  { transform: translateY(-4px) rotateY(360deg) rotateZ(90deg);  }
+  100% { transform: translateY(0px) rotateY(360deg) rotateZ(180deg); }
+}
+
+.brick-spinner {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  border-radius: 3px;
+  perspective: 400px;
+  transform-style: preserve-3d;
+  animation: brickThink 1s ease-in-out infinite;
+  background:
+    linear-gradient(145deg, rgba(255,255,255,0.44), rgba(255,255,255,0.20)),
+    rgba(120,120,120,0.12);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid;
+  border-top-color: rgba(255,255,255,0.55);
+  border-left-color: rgba(255,255,255,0.40);
+  border-right-color: rgba(255,255,255,0.20);
+  border-bottom-color: rgba(255,255,255,0.20);
+  box-shadow:
+    0 6px 20px rgba(0,0,0,0.14),
+    0 2px 6px rgba(0,0,0,0.10),
+    inset 0 1px 0 rgba(255,255,255,0.35),
+    inset 1px 1px 0 rgba(255,255,255,0.20);
+}
+
+.dark .brick-spinner {
+  background:
+    linear-gradient(145deg, rgba(255,255,255,0.14), rgba(255,255,255,0.06)),
+    rgba(255,255,255,0.06);
+  border-top-color: rgba(255,255,255,0.26);
+  border-left-color: rgba(255,255,255,0.18);
+  border-right-color: rgba(255,255,255,0.10);
+  border-bottom-color: rgba(255,255,255,0.10);
+  box-shadow:
+    0 6px 20px rgba(0,0,0,0.30),
+    0 2px 6px rgba(0,0,0,0.20),
+    inset 0 1px 0 rgba(255,255,255,0.12),
+    inset 1px 1px 0 rgba(255,255,255,0.08);
+}
+
 @keyframes slideInRight {
   from {
     transform: translateX(100%);

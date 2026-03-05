@@ -37,6 +37,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useMindmapStore } from "@/store/mindmapStore";
 import { extractYouTubeVideoId, getYouTubeEmbedUrl } from "@/canvas/utils/youtube";
+import { getAiPrefs } from "@/lib/ai-prefs";
 
 const PROJECTS_CHANGED_EVENT = "lykinsai_projects_changed";
 
@@ -1183,7 +1184,7 @@ If the user asks about old memories or references past ideas, refer to the memor
       const aiResponse = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: selectedModel, prompt }),
+        body: JSON.stringify({ model: selectedModel, prompt, ...getAiPrefs() }),
       });
 
       if (!aiResponse.ok) {

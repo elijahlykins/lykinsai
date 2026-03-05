@@ -37,6 +37,7 @@ export type BrickShellRenderOptions = {
   resizeMinWidth?: number;
   resizeMaxWidth?: number;
   onResizeWidth?: (id: string, width: number) => void;
+  extraContent?: React.ReactNode;
 };
 
 export function toBrickShellModel(block: Block | any): BrickShellModel {
@@ -755,15 +756,18 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
         left: `${shell.x}px`,
         top: `${shell.y}px`,
         width: `${shell.width}px`,
-        height: `${shell.height}px`,
+        ...(opts?.extraContent
+          ? { minHeight: `${shell.height}px`, height: "auto" }
+          : { height: `${shell.height}px` }),
         zIndex: isRaised ? 40 : 10,
+        willChange: "transform",
       },
     },
     React.createElement(
       "div",
       {
         className:
-          "h-full w-full rounded border border-white/45 bg-[linear-gradient(145deg,rgba(255,255,255,0.34),rgba(255,255,255,0.18))] backdrop-blur-[2px] transition-all duration-150",
+          `w-full rounded border border-white/45 bg-[linear-gradient(145deg,rgba(255,255,255,0.34),rgba(255,255,255,0.18))] backdrop-blur-[2px]${opts?.extraContent ? " min-h-full" : " h-full"}`,
         style: {
           transform: isRaised ? "translateY(-8px) scale(1.02)" : "translateY(0px) scale(1)",
           boxShadow: isRaised
@@ -772,6 +776,7 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
               ? "inset 0 1px 0 rgba(255,255,255,0.55), 0 6px 18px rgba(0,0,0,0.14)"
               : "0 2px 8px rgba(0,0,0,0.10)",
           borderColor: isRaised ? "rgba(59,130,246,0.78)" : isActivated ? "rgba(59,130,246,0.45)" : "rgba(255,255,255,0.45)",
+          transition: "transform 150ms, box-shadow 150ms, border-color 150ms",
         },
       },
       React.createElement(BrickTextSurface, {
@@ -781,6 +786,7 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
         onTypingKeyDown: opts?.onTypingKeyDown,
         onTypingBlur: opts?.onTypingBlur,
       }),
+      opts?.extraContent || null,
       canResizeWidth
         ? React.createElement("div", {
             "data-resize-handle": true,

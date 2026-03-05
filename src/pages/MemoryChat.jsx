@@ -12,6 +12,8 @@ import { useNavigate } from 'react-router-dom';
 import { createPageUrl } from '../utils';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/SupabaseAuth';
+import { useThinkingStatus } from '@/hooks/useThinkingStatus';
+import { getAiPrefs } from '@/lib/ai-prefs';
 
 export default function MemoryChatPage() {
   const { user } = useAuth();
@@ -25,6 +27,7 @@ export default function MemoryChatPage() {
   const [attachments, setAttachments] = useState([]);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
   const [followUpQuestions, setFollowUpQuestions] = useState(null);
+  const thinkingStatus = useThinkingStatus(isLoading);
   const scrollRef = useRef(null);
   const fileInputRef = useRef(null);
   const navigate = useNavigate();
@@ -512,7 +515,7 @@ Provide thoughtful, insightful responses based on their memories and interests. 
       const aiResponse = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: currentModel, prompt })
+        body: JSON.stringify({ model: currentModel, prompt, ...getAiPrefs() })
       });
 
       if (!aiResponse.ok) {
@@ -870,9 +873,10 @@ Provide thoughtful, insightful responses based on their memories and interests. 
                   </div>
                 ))}
                 {isLoading && (
-                  <div className="flex">
-                    <div className="text-gray-600 dark:text-gray-400 text-sm">
-                      <span className="inline-block animate-pulse">Thinking...</span>
+                  <div className="flex items-center gap-2">
+                    <div className="text-gray-600 dark:text-gray-400 text-sm flex items-center gap-1.5">
+                      <span className="inline-block w-1.5 h-1.5 rounded-full bg-current animate-pulse" />
+                      <span>{thinkingStatus}</span>
                     </div>
                   </div>
                 )}

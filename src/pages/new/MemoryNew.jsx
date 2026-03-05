@@ -24,6 +24,7 @@ import DraggableQuickNote from "@/components/notes/DraggableQuickNote";
 import DragDropFileUpload from "@/components/files/DragDropFileUpload";
 import { extractYouTubeVideoId, getYouTubeEmbedUrl } from "@/canvas/utils/youtube";
 import LoadingScreen from "@/components/LoadingScreen";
+import { getAiPrefs } from "@/lib/ai-prefs";
 
 function stripAttachmentJsonMarker(content) {
   if (!content) return "";
@@ -1035,7 +1036,7 @@ User: ${text}`;
       const res = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: selectedModel, prompt }),
+        body: JSON.stringify({ model: selectedModel, prompt, ...getAiPrefs() }),
       });
       if (!res.ok) throw new Error("AI request failed");
       const data = await res.json().catch(() => ({}));

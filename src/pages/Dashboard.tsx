@@ -8,6 +8,7 @@ import DraggableChat from "@/components/notes/DraggableChat";
 import DraggableQuickNote from "@/components/notes/DraggableQuickNote";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import createButtonBackground from "@/assets/Colored.jpg";
+import { getAiPrefs } from "@/lib/ai-prefs";
 
 type Project = {
   id: string;
@@ -381,7 +382,7 @@ Return ONLY a JSON array of 5 strings. No markdown, no explanation.`;
         const res = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model, prompt }),
+          body: JSON.stringify({ model, prompt, ...getAiPrefs() }),
         });
         if (!res.ok) throw new Error("fail");
         const data = await res.json().catch(() => ({}));
@@ -593,7 +594,7 @@ User: ${text}
       const res = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: selectedModel, prompt }),
+        body: JSON.stringify({ model: selectedModel, prompt, ...getAiPrefs() }),
       });
       if (!res.ok) throw new Error("AI request failed");
       const data = await res.json().catch(() => ({}));

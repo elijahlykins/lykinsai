@@ -4,7 +4,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
-import { Save, LogOut, User, Mail, Key, Globe, Link2, RefreshCw, X, Check } from 'lucide-react';
+import { Save, LogOut, User, Mail, Key, Globe, Link2, RefreshCw, X, MessageSquare } from 'lucide-react';
 import { useAuth } from '@/lib/SupabaseAuth';
 import { supabase } from '@/lib/supabase';
 
@@ -18,7 +18,9 @@ export default function SettingsModal({ isOpen, onClose }) {
     aiPersonality: 'balanced',
     aiDetailLevel: 'medium',
     aiModel: 'gemini-flash-latest',
-    backgroundColor: '' // CSS color string (e.g. "#f5f5f7")
+    backgroundColor: '',
+    userPrompt: '',
+    responseLength: 'medium',
   });
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -622,6 +624,30 @@ export default function SettingsModal({ isOpen, onClose }) {
             )}
           </div>
 
+          {/* Custom User Prompt */}
+          <div className="p-4 bg-gray-50 dark:bg-[#1f1d1d]/80 rounded-xl border border-gray-200 dark:border-gray-700">
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-10 h-10 rounded-full bg-gray-200 dark:bg-gray-700 flex items-center justify-center">
+                <MessageSquare className="w-5 h-5 text-gray-600 dark:text-gray-300" />
+              </div>
+              <div className="flex-1">
+                <p className="font-semibold text-black dark:text-white">Personal AI Instructions</p>
+                <p className="text-sm text-gray-600 dark:text-gray-400">
+                  Tell the AI about yourself and how you want it to respond
+                </p>
+              </div>
+            </div>
+            <textarea
+              value={settings.userPrompt || ''}
+              onChange={(e) => setSettings({ ...settings, userPrompt: e.target.value })}
+              placeholder="e.g. I'm a software developer. Always respond in concise bullet points. I prefer technical explanations over simplified ones."
+              className="w-full h-28 px-3 py-2 text-sm bg-white dark:bg-[#171515] border border-gray-200 dark:border-gray-700 text-black dark:text-white rounded-lg resize-none focus:outline-none focus:ring-1 focus:ring-black/20 dark:focus:ring-white/20"
+            />
+            <p className="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+              This is added to every AI conversation so it knows your preferences.
+            </p>
+          </div>
+
           {/* All your other settings... */}
           <div className="space-y-3">
             <div className="flex items-center justify-between">
@@ -630,6 +656,20 @@ export default function SettingsModal({ isOpen, onClose }) {
                 checked={settings.aiAnalysisAuto}
                 onCheckedChange={(checked) => setSettings({...settings, aiAnalysisAuto: checked})}
               />
+            </div>
+
+            <div className="space-y-2">
+              <Label className="text-gray-900 dark:text-white">Response Length</Label>
+              <Select value={settings.responseLength || 'medium'} onValueChange={(value) => setSettings({...settings, responseLength: value})}>
+                <SelectTrigger className="bg-white/60 dark:bg-gray-800/60 border-white/40 dark:border-gray-700/40 text-gray-900 dark:text-white backdrop-blur-md rounded-xl">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="bg-glass-card border-white/30 dark:border-gray-700/30 backdrop-blur-2xl">
+                  <SelectItem value="concise">Concise</SelectItem>
+                  <SelectItem value="medium">Medium</SelectItem>
+                  <SelectItem value="detailed">Detailed</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
 
             <div className="space-y-2">

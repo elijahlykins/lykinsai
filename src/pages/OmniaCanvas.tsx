@@ -16,12 +16,15 @@ import { getBlockDefinition } from "@/canvas/blockSystem/definitions";
 import type { UniversalBlockType } from "@/canvas/blockSystem/types";
 import { createDatabaseBlockData } from "@/canvas/blockSystem/notionModel";
 import { extractYouTubeVideoId } from "@/canvas/utils/youtube";
+import { useThinkingStatus } from "@/hooks/useThinkingStatus";
+import { getAiPrefs } from "@/lib/ai-prefs";
 
 type PromptMessage = {
   id: string;
   role: "user";
   content: string;
   aiResponse?: string;
+  sources?: { title: string; url: string }[];
   kind?: "prompt";
   attachments?: FocusedChatAttachment[];
 };
@@ -105,7 +108,9 @@ type FocusedChatAttachment = {
   memoryContent?: string;
   transcript?: string;
   pdfText?: string;
+  extractedText?: string;
   canvasBlockId?: string;
+  rawFile?: File;
 };
 
 const isYouTubeUrl = (url = "") =>
@@ -122,6 +127,8 @@ const getUrlExtension = (url = "") => {
   } catch { return ""; }
 };
 
+const DOCUMENT_EXTS = new Set(["doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "txt", "md", "markdown", "json", "html", "htm", "csv", "rtf"]);
+
 const inferUrlAttachmentType = (url = "") => {
   const trimmed = String(url || "").trim();
   if (!trimmed) return "link";
@@ -131,6 +138,7 @@ const inferUrlAttachmentType = (url = "") => {
   if (["mp4", "mov", "webm", "mkv", "avi"].includes(ext)) return "video";
   if (["mp3", "wav", "m4a", "ogg", "aac", "flac"].includes(ext)) return "audio";
   if (ext === "pdf") return "pdf";
+  if (DOCUMENT_EXTS.has(ext)) return "document";
   return "link";
 };
 
@@ -433,6 +441,7 @@ export default function OmniaCanvasPage() {
   const kbCacheRef = useRef<{ projectId: string; text: string; fetchedAt: number } | null>(null);
   const [chatFlowMode, setChatFlowMode] = useState<"idle" | "clarifying" | "generating">("idle");
   const [chatStatusText, setChatStatusText] = useState("");
+  const thinkingStatus = useThinkingStatus(isChatLoading, chatStatusText);
   const [typedWelcome, setTypedWelcome] = useState("");
   const [showAiSuggestionToast, setShowAiSuggestionToast] = useState(false);
   const lastSuggestionKeyRef = useRef<string>("");
@@ -991,6 +1000,45 @@ export default function OmniaCanvasPage() {
     ].includes(t);
   }, []);
 
+  const extractSourceLinks = useCallback((text: string): { cleanText: string; sources: { title: string; url: string }[] } => {
+    const sourcesMatch = text.match(/\n*(?:Sources?|References?):?\s*\n([\s\S]*?)$/i);
+    if (!sourcesMatch) return { cleanText: text, sources: [] };
+    const cleanText = text.slice(0, sourcesMatch.index).trimEnd();
+    const block = sourcesMatch[1].trim();
+    const sources: { title: string; url: string }[] = [];
+    const linkRe = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g;
+    let m: RegExpExecArray | null;
+    while ((m = linkRe.exec(block)) !== null) {
+      sources.push({ title: m[1], url: m[2] });
+    }
+    if (sources.length === 0) {
+      const bareUrlRe = /(?:^|\n)\s*\d+\.\s*(https?:\/\/[^\s]+)/g;
+      while ((m = bareUrlRe.exec(block)) !== null) {
+        try {
+          const u = new URL(m[1]);
+          sources.push({ title: u.hostname.replace(/^www\./, ""), url: m[1] });
+        } catch { /* skip */ }
+      }
+    }
+    return { cleanText, sources };
+  }, []);
+
+  const attachSourcesToBlock = useCallback((responseBlockId: string, sources: { title: string; url: string }[]) => {
+    if (!sources.length || !responseBlockId) return;
+    const st = useCanvasStore.getState();
+    const g = Math.max(1, Math.floor(st.gridSize || 24));
+    const rb = st.blocks[responseBlockId];
+    if (!rb) return;
+    const existingData = (rb as any).data && typeof (rb as any).data === "object" ? { ...(rb as any).data } : {};
+    const sourcesWithState = sources.map((s) => ({ ...s, enabled: true }));
+    const sourceRowHeight = Math.ceil(sources.length / 2) * 32 + 24;
+    const extraHeight = Math.ceil(sourceRowHeight / g) * g;
+    updateBlock(responseBlockId as any, {
+      data: { ...existingData, sources: sourcesWithState },
+      height: Number(rb.height || 0) + extraHeight,
+    } as any);
+  }, [updateBlock]);
+
   const addAiResponseBlock = useCallback((initialContent = "") => {
     const st = useCanvasStore.getState();
     const g = Math.max(1, Math.floor(st.gridSize || 24));
@@ -1026,9 +1074,9 @@ export default function OmniaCanvasPage() {
     const availableWidth = Number.isFinite(st.canvasWidth) && (st.canvasWidth as number) > 0
       ? (st.canvasWidth as number)
       : (window.innerWidth || 1280);
-    const maxWidthPx = Math.min(g * 24, Math.floor(availableWidth * 0.85));
-    const horizontalPad = 24;
-    const charWidthPx = 7.2;
+    const maxWidthPx = Math.min(g * 28, Math.floor(availableWidth * 0.85));
+    const horizontalPad = 32;
+    const charWidthPx = 7.8;
 
     const lines = String(text || "").split("\n");
     const longest = lines.reduce((m, l) => Math.max(m, String(l || "").length), 0);
@@ -1041,10 +1089,10 @@ export default function OmniaCanvasPage() {
     for (const line of lines) {
       wrappedLines += Math.max(1, Math.ceil((line.length || 1) / charsPerLine));
     }
-    const lineHeightPx = 20;
-    const verticalPad = 16;
+    const lineHeightPx = 24;
+    const verticalPad = 36;
     const contentHeight = wrappedLines * lineHeightPx + verticalPad;
-    const heightPx = Math.max(g, Math.ceil(contentHeight / g) * g);
+    const heightPx = Math.max(g * 2, Math.ceil(contentHeight / g) * g + g);
 
     return { width: widthPx, height: heightPx };
   }, []);
@@ -1057,8 +1105,8 @@ export default function OmniaCanvasPage() {
 
       while (shown.length < text.length && aiTypingRunRef.current === runId) {
         const nextChar = text.charAt(shown.length);
-        const step = nextChar === "\n" ? 4 : 2;
-        const delay = nextChar === "\n" ? 24 : /[.,!?]/.test(nextChar) ? 28 : 16;
+        const step = nextChar === "\n" ? 10 : 7;
+        const delay = nextChar === "\n" ? 12 : /[.,!?]/.test(nextChar) ? 14 : 8;
         const nextLen = Math.min(text.length, shown.length + step);
         shown = text.slice(0, nextLen);
         const size = calcAiBubbleSize(shown);
@@ -1075,7 +1123,7 @@ export default function OmniaCanvasPage() {
   );
 
   const replaySavedPromptResponse = useCallback(
-    async (msg: PromptMessage) => {
+    (msg: PromptMessage) => {
       const saved = String(msg?.aiResponse || "").trim();
       if (!saved) return;
       const existingAiIds = (Array.isArray(blockOrder) ? blockOrder : []).filter((id) =>
@@ -1088,12 +1136,17 @@ export default function OmniaCanvasPage() {
           // ignore
         }
       }
-      const responseBlockId = addAiResponseBlock("");
+      const text = normalizeAiTextForBlock(saved);
+      const responseBlockId = addAiResponseBlock(text);
       if (!responseBlockId) return;
       lastAiResponseBlockRef.current = String(responseBlockId);
-      await typeIntoAiResponseBlock(String(responseBlockId), saved);
+      const size = calcAiBubbleSize(text);
+      updateBlock(String(responseBlockId) as any, { content: text, width: size.width, height: size.height } as any);
+      if (Array.isArray(msg.sources) && msg.sources.length > 0) {
+        attachSourcesToBlock(String(responseBlockId), msg.sources);
+      }
     },
-    [addAiResponseBlock, blockOrder, blocks, deleteBlock, typeIntoAiResponseBlock]
+    [addAiResponseBlock, attachSourcesToBlock, blockOrder, blocks, calcAiBubbleSize, deleteBlock, normalizeAiTextForBlock, updateBlock]
   );
 
   useEffect(() => {
@@ -2131,20 +2184,20 @@ export default function OmniaCanvasPage() {
     setChatInput("");
     setFocusedChatAttachments([]);
     setIsChatLoading(true);
-    setChatStatusText("Understanding your request...");
+    setChatStatusText("");
     setChatFlowMode("idle");
     const promptId = `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 
-    // Whisper-transcribe video/YouTube attachments that have no transcript yet
+    // Whisper-transcribe video/audio/YouTube attachments that have no transcript yet
     const { API_BASE_URL: apiBase } = await import("@/lib/api-config");
     for (const att of sentAttachments) {
       if (att.transcript) continue;
-      const isVideoType = ["video", "youtube"].includes(att.type?.toLowerCase());
-      if (!isVideoType) continue;
-      // YouTube attachments: use the transcript endpoint (server now has Whisper fallback)
-      if (att.videoId) {
+      const attType = (att.type || "").toLowerCase();
+
+      // YouTube attachments: use the transcript endpoint (server has Whisper fallback)
+      if (attType === "youtube" && att.videoId) {
         try {
-          setChatStatusText("Transcribing video with Whisper...");
+          setChatStatusText("Fetching video transcript...");
           const tRes = await fetch(`${apiBase}/api/youtube/transcript?id=${encodeURIComponent(att.videoId)}`);
           if (tRes.ok) {
             const tData = await tRes.json();
@@ -2154,20 +2207,26 @@ export default function OmniaCanvasPage() {
         } catch { /* continue without transcript */ }
         continue;
       }
-      // Uploaded video with a data URL or blob: send to Whisper endpoint
-      if (att.url && (att.url.startsWith("data:video/") || att.url.startsWith("data:audio/"))) {
+
+      // Uploaded video/audio: send to Whisper for transcription
+      if (attType === "video" || attType === "audio") {
         try {
-          setChatStatusText("Transcribing uploaded video with Whisper...");
-          const base64 = att.url.split(",")[1];
-          if (base64) {
-            const binaryStr = atob(base64);
-            const bytes = new Uint8Array(binaryStr.length);
-            for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
-            const mime = att.mime || att.url.split(";")[0].split(":")[1] || "video/webm";
-            const ext = mime.split("/")[1] || "webm";
-            const blob = new Blob([bytes], { type: mime });
-            const formData = new FormData();
-            formData.append("file", blob, att.name || `video.${ext}`);
+          setChatStatusText(`Transcribing ${att.name || attType}...`);
+          const formData = new FormData();
+          if (att.rawFile) {
+            formData.append("file", att.rawFile, att.name || "upload");
+          } else if (att.url && (att.url.startsWith("data:video/") || att.url.startsWith("data:audio/"))) {
+            const base64 = att.url.split(",")[1];
+            if (base64) {
+              const binaryStr = atob(base64);
+              const bytes = new Uint8Array(binaryStr.length);
+              for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+              const mimeType = att.mime || att.url.split(";")[0].split(":")[1] || "audio/webm";
+              const ext = mimeType.split("/")[1] || "webm";
+              formData.append("file", new Blob([bytes], { type: mimeType }), att.name || `upload.${ext}`);
+            }
+          }
+          if (formData.has("file")) {
             const wRes = await fetch(`${apiBase}/api/whisper/transcribe`, { method: "POST", body: formData });
             if (wRes.ok) {
               const wData = await wRes.json();
@@ -2176,6 +2235,7 @@ export default function OmniaCanvasPage() {
             }
           }
         } catch { /* continue without transcript */ }
+        continue;
       }
     }
 
@@ -2186,22 +2246,27 @@ export default function OmniaCanvasPage() {
           const parts: string[] = [];
           if (a.memoryContent) parts.push(a.memoryContent);
           if (a.pdfText) parts.push(a.pdfText);
+          if (a.extractedText) parts.push(a.extractedText);
           if (a.transcript) parts.push(a.transcript);
           if (t === "memory" || t === "note") {
             return `${t === "note" ? "Note" : "Memory"} "${label}": ${parts.join("\n") || "(empty)"}`;
           }
           if (t === "pdf") return `PDF "${label}": ${parts.join("\n") || `(PDF at ${a.url})`}`;
+          if (t === "document") {
+            return `Document "${label}": ${parts.join("\n") || "(could not extract text)"}`;
+          }
+          const safeUrl = a.url && !a.url.startsWith("data:") ? a.url : "";
           if (t === "youtube") {
             const ctx = parts.length ? parts.join("\n") : "";
-            return `YouTube video "${label}"${a.videoId ? ` (${a.videoId})` : ""}${a.url ? ` — ${a.url}` : ""}${ctx ? `\nTranscript: ${ctx}` : ""}`;
+            return `YouTube video "${label}"${a.videoId ? ` (${a.videoId})` : ""}${safeUrl ? ` — ${safeUrl}` : ""}${ctx ? `\nTranscript: ${ctx}` : ""}`;
           }
           if (t === "video" || t === "audio") {
-            return `${t === "video" ? "Video" : "Audio"} "${label}"${a.url ? ` — ${a.url}` : ""}${parts.length ? `\nTranscript: ${parts.join("\n")}` : ""}`;
+            return `${t === "video" ? "Video" : "Audio"} "${label}"${parts.length ? `\nTranscript: ${parts.join("\n")}` : " (no transcript available)"}`;
           }
-          if (t === "image") return `Image "${label}"${a.url ? ` — ${a.url}` : ""}`;
-          if (t === "link") return `Link "${label}"${a.url ? ` — ${a.url}` : ""}${parts.length ? `\nContent: ${parts.join("\n")}` : ""}`;
+          if (t === "image") return `Image "${label}"${safeUrl ? ` — ${safeUrl}` : ""}`;
+          if (t === "link") return `Link "${label}"${safeUrl ? ` — ${safeUrl}` : ""}${parts.length ? `\nContent: ${parts.join("\n")}` : ""}`;
           if (parts.length) return `${label}: ${parts.join("\n")}`;
-          if (a.url) return `${t || "File"} "${label}" — ${a.url}`;
+          if (safeUrl) return `${t || "File"} "${label}" — ${safeUrl}`;
           return `${t || "File"}: ${label}`;
         }).join("\n\n")
       : "";
@@ -2341,7 +2406,7 @@ export default function OmniaCanvasPage() {
         .filter((a) => a.type?.toLowerCase() === "image" && a.url)
         .map((a) => a.url);
 
-      setChatStatusText("Thinking...");
+      setChatStatusText("");
       setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: "" } : m)));
 
       const requestBody = {
@@ -2353,6 +2418,7 @@ export default function OmniaCanvasPage() {
         knowledgeBase: kbText,
         projectId,
         ...(attachedImageUrls.length ? { imageUrls: attachedImageUrls } : {}),
+        ...getAiPrefs(),
       };
 
       let streamRes: Response | null = null;
@@ -2401,9 +2467,10 @@ export default function OmniaCanvasPage() {
                     firstToken = false;
                   }
                   accumulated += parsed.t;
-                  setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: accumulated } : m)));
+                  const visibleText = accumulated.replace(/\n*(?:Sources?|References?):?\s*\n[\s\S]*$/i, "").trimEnd();
+                  setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: visibleText } : m)));
                   if (responseBlockId && typeof updateBlock === "function") {
-                    const normalized = normalizeAiTextForBlock(accumulated);
+                    const normalized = normalizeAiTextForBlock(visibleText);
                     const size = calcAiBubbleSize(normalized);
                     updateBlock(String(responseBlockId), { content: normalized, width: size.width, height: size.height } as any);
                   }
@@ -2422,13 +2489,15 @@ export default function OmniaCanvasPage() {
           if (fallback && (!aiText || looksLikeDeflectingQuestion(aiText))) aiText = fallback;
         }
         const finalText = aiText || "I'm not sure how to answer that. Could you rephrase?";
-        setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: finalText } : m)));
+        const { cleanText: displayText, sources } = extractSourceLinks(finalText);
+        setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: displayText, sources } : m)));
         aiThreadRef.current.push({ role: "assistant", content: finalText });
         if (aiThreadRef.current.length > 40) aiThreadRef.current = aiThreadRef.current.slice(-40);
         if (responseBlockId && typeof updateBlock === "function") {
-          const normalized = normalizeAiTextForBlock(finalText);
+          const normalized = normalizeAiTextForBlock(displayText);
           const size = calcAiBubbleSize(normalized);
           updateBlock(String(responseBlockId), { content: normalized, width: size.width, height: size.height } as any);
+          if (sources.length > 0) attachSourcesToBlock(String(responseBlockId), sources);
         }
         setChatStatusText("Answered");
       } else {
@@ -2456,10 +2525,15 @@ export default function OmniaCanvasPage() {
           if (fallback && (!aiText || looksLikeDeflectingQuestion(aiText))) aiText = fallback;
         }
         const finalText = aiText || "I'm not sure how to answer that. Could you rephrase?";
-        await typeResponseIntoChat(promptId, finalText);
+        const { cleanText: displayText2, sources: sources2 } = extractSourceLinks(finalText);
+        await typeResponseIntoChat(promptId, displayText2);
+        setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, sources: sources2 } : m)));
         aiThreadRef.current.push({ role: "assistant", content: finalText });
         if (aiThreadRef.current.length > 40) aiThreadRef.current = aiThreadRef.current.slice(-40);
-        if (responseBlockId) await typeIntoAiResponseBlock(String(responseBlockId), finalText);
+        if (responseBlockId) {
+          await typeIntoAiResponseBlock(String(responseBlockId), displayText2);
+          if (sources2.length > 0) attachSourcesToBlock(String(responseBlockId), sources2);
+        }
         setChatStatusText("Answered");
       }
     } catch {
@@ -2516,6 +2590,85 @@ export default function OmniaCanvasPage() {
       if (chatTransitionTimerRef.current) window.clearTimeout(chatTransitionTimerRef.current);
     };
   }, [chatMode, chatRailOpen, chatMessages.length]);
+
+  useEffect(() => {
+    const handleSourceToggled = async (e: Event) => {
+      const ce = e as CustomEvent<{ blockId: string; sources: { title: string; url: string; enabled: boolean }[] }>;
+      const { blockId, sources } = ce.detail || {};
+      if (!blockId || !Array.isArray(sources)) return;
+
+      const enabledSources = sources.filter((s) => s.enabled !== false);
+      const disabledTitles = sources.filter((s) => s.enabled === false).map((s) => s.title);
+      if (disabledTitles.length === 0) return;
+
+      const msg = chatMessages.find((m) => m.aiResponse && m.sources?.some((s) => sources.some((ns) => ns.url === s.url)));
+      if (!msg) return;
+      const userPrompt = msg.content;
+      if (!userPrompt) return;
+
+      const st = useCanvasStore.getState();
+      const blk = st.blocks[blockId];
+      if (!blk) return;
+
+      setChatStatusText("Re-generating without disabled sources...");
+      setIsChatLoading(true);
+
+      try {
+        const sourceContext = enabledSources.length > 0
+          ? `[WEB_SEARCH_RESULTS]\nUse ONLY these sources (the user has disabled the others):\n${enabledSources.map((s, i) => `${i + 1}. [${s.title}](${s.url})`).join("\n")}`
+          : "";
+        const regenPrompt = sourceContext
+          ? `${userPrompt}\n\n${sourceContext}\n\nIMPORTANT: Do NOT use or reference these disabled sources: ${disabledTitles.join(", ")}. Re-answer using only the enabled sources above.`
+          : `${userPrompt}\n\nIMPORTANT: The user has disabled all web sources. Answer this question using only your own knowledge, without citing any web sources.`;
+
+        const { API_BASE_URL } = await import("@/lib/api-config");
+        const res = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: selectedModel,
+            prompt: regenPrompt,
+            text: userPrompt,
+            intent: "ask",
+            ...getAiPrefs(),
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        let aiText = String(data?.response || data?.answer || data?.text || "").trim();
+        if (!res.ok) aiText = String(data?.error || "Regeneration failed.").trim();
+
+        const { cleanText } = extractSourceLinks(aiText);
+        const normalized = normalizeAiTextForBlock(cleanText);
+        const size = calcAiBubbleSize(normalized);
+
+        const existingData = (blk as any).data && typeof (blk as any).data === "object" ? { ...(blk as any).data } : {};
+        const sourceRowHeight = Math.ceil(sources.length / 2) * 32 + 24;
+        const g = Math.max(1, Math.floor(st.gridSize || 24));
+        const extraHeight = Math.ceil(sourceRowHeight / g) * g;
+        updateBlock(blockId as any, {
+          content: normalized,
+          width: size.width,
+          height: size.height + extraHeight,
+          data: { ...existingData, sources },
+        } as any);
+
+        setChatMessages((prev) => prev.map((m) =>
+          m.id === msg.id ? { ...m, aiResponse: cleanText, sources } : m
+        ));
+        aiThreadRef.current = aiThreadRef.current.map((t) =>
+          t.role === "assistant" && t.content === msg.aiResponse ? { ...t, content: cleanText } : t
+        );
+        setChatStatusText("Answered");
+      } catch {
+        setChatStatusText("Regeneration failed.");
+      } finally {
+        setIsChatLoading(false);
+      }
+    };
+
+    window.addEventListener("omnia_source_toggled", handleSourceToggled);
+    return () => window.removeEventListener("omnia_source_toggled", handleSourceToggled);
+  }, [chatMessages, selectedModel, calcAiBubbleSize, extractSourceLinks, normalizeAiTextForBlock, updateBlock]);
 
   const resizeChatInput = useCallback((el: HTMLTextAreaElement | null) => {
     if (!el) return;
@@ -2574,6 +2727,10 @@ export default function OmniaCanvasPage() {
       }
       if (bType === "text") {
         const content = String(b.content || "").trim();
+        if (b.data?.extractedText && b.data?.sourceFileName) {
+          items.push({ id, type: "document", name: String(b.data.sourceFileName), url: "", thumbUrl: "", content: String(b.data.extractedText) });
+          continue;
+        }
         if (content) {
           const isAi = Boolean(b.data?.aiResponseBubble);
           const label = isAi ? "AI Response" : (content.split("\n")[0].slice(0, 40) || "Note");
@@ -2778,7 +2935,8 @@ export default function OmniaCanvasPage() {
           ...(item.videoId ? { videoId: item.videoId } : {}),
           ...(hasContent && (itemType === "note" || itemType === "memory") ? { memoryContent: item.content } : {}),
           ...(hasContent && itemType === "pdf" ? { pdfText: item.content } : {}),
-          ...(hasContent && !["note", "memory", "pdf"].includes(itemType) ? { memoryContent: item.content } : {}),
+          ...(hasContent && itemType === "document" ? { extractedText: item.content } : {}),
+          ...(hasContent && !["note", "memory", "pdf", "document"].includes(itemType) ? { memoryContent: item.content } : {}),
           ...(item.id ? { canvasBlockId: item.id } : {}),
         });
         window.setTimeout(() => chatPanelInputRef.current?.focus(), 0);
@@ -2810,16 +2968,43 @@ export default function OmniaCanvasPage() {
     }
     const files = Array.from(e.dataTransfer.files);
     for (const f of files) {
-      const reader = new FileReader();
       const file = f;
+      const mime = file.type || "";
+      const ext = (file.name || "").split(".").pop()?.toLowerCase() || "";
+      const isDoc = DOCUMENT_EXTS.has(ext);
+      if (isDoc) {
+        (async () => {
+          try {
+            const { extractTextFromFile } = await import("@/lib/extract-text");
+            const { API_BASE_URL } = await import("@/lib/api-config");
+            const result = await extractTextFromFile(file, API_BASE_URL);
+            addFocusedAttachment({
+              id: makeAttId(), type: "document", url: "", name: file.name, mime, size: file.size,
+              extractedText: result?.text || "",
+            });
+          } catch {
+            addFocusedAttachment({ id: makeAttId(), type: "document", url: "", name: file.name, mime, size: file.size });
+          }
+        })();
+        continue;
+      }
+      const AUDIO_EXTS = new Set(["mp3", "wav", "m4a", "ogg", "aac", "flac", "wma"]);
+      const VIDEO_EXTS = new Set(["mp4", "mov", "avi", "webm", "mkv", "wmv"]);
+      const isAudio = mime.startsWith("audio/") || AUDIO_EXTS.has(ext);
+      const isVideo = mime.startsWith("video/") || VIDEO_EXTS.has(ext);
+      if (isAudio || isVideo) {
+        addFocusedAttachment({
+          id: makeAttId(), type: isAudio ? "audio" : "video",
+          url: "", name: file.name, mime, size: file.size, rawFile: file,
+        });
+        continue;
+      }
+      const reader = new FileReader();
       reader.onload = () => {
         const dataUrl = reader.result as string;
-        const mime = file.type || "";
         let type = "file";
         if (mime.startsWith("image/")) type = "image";
-        else if (mime.startsWith("video/")) type = "video";
-        else if (mime.startsWith("audio/")) type = "audio";
-        else if (mime === "application/pdf") type = "pdf";
+        else if (mime === "application/pdf" || ext === "pdf") type = "pdf";
         addFocusedAttachment({ id: makeAttId(), type, url: dataUrl, name: file.name, mime, size: file.size });
       };
       reader.readAsDataURL(f);
@@ -3194,7 +3379,7 @@ export default function OmniaCanvasPage() {
           width: `calc(100% - ${chatRailWidthPx + (showMemorySidebar ? 380 : 0)}px)`,
         }}
       >
-        <Canvas liveAIMode={false} isAiThinking={isChatLoading} />
+        <Canvas liveAIMode={false} isAiThinking={isChatLoading} thinkingStatusText={thinkingStatus} />
       </div>
 
       {memoryDragActive && (
@@ -3490,7 +3675,7 @@ export default function OmniaCanvasPage() {
         >
           <div className="absolute left-0 top-0 bottom-0 w-3 -translate-x-1/2 cursor-col-resize z-[70] pointer-events-auto" onPointerDown={handleStartChatResize} title="Drag to resize chat" />
           <div ref={chatScrollRef} className="flex-1 overflow-y-auto scrollbar-hide p-3 space-y-3">
-            {isChatLoading && (<div className="text-[0.6875rem] text-black/60 px-1" aria-live="polite">Working...</div>)}
+            {isChatLoading && (<div className="text-[0.6875rem] text-black/60 px-1 flex items-center gap-2" aria-live="polite"><div className="brick-spinner" />{thinkingStatus}</div>)}
             {chatMessages.map((msg, idx) => (
               <div key={msg.id || idx} className={`flex flex-col ${msg.role === "user" ? "items-end" : "items-start"}`}>
                 {msg.role === "user" && msg.attachments && msg.attachments.length > 0 && (
@@ -3736,19 +3921,46 @@ export default function OmniaCanvasPage() {
                     )}
                     {msg.role === "user" && msg.aiResponse && (
                       <div className="flex justify-start">
-                        <div className="max-w-[80%] px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap break-words text-black/85">{msg.aiResponse}</div>
+                        <div className="max-w-[80%]">
+                          <div className="px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap break-words text-black/85">{msg.aiResponse}</div>
+                          {Array.isArray((msg as any).sources) && (msg as any).sources.length > 0 && (
+                            <div className="flex flex-wrap gap-1.5 px-4 pb-3">
+                              {(msg as any).sources.map((src: { title: string; url: string }, i: number) => (
+                                <a key={i} href={src.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg border border-white/40 dark:border-white/10 bg-white/60 dark:bg-white/5 backdrop-blur-md text-black/70 dark:text-white/70 hover:border-black/30 dark:hover:border-white/30 hover:shadow-sm transition-all">
+                                  <svg className="w-3 h-3 flex-shrink-0 opacity-40" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-4.5-6h6m0 0v6m0-6L9.75 14.25" /></svg>
+                                  <span className="truncate max-w-[10rem]">{src.title}</span>
+                                </a>
+                              ))}
+                            </div>
+                          )}
+                        </div>
                       </div>
                     )}
                     {msg.role !== "user" && (
                       <div className="flex justify-start">
-                        <div className="max-w-[80%] px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap break-words text-black/85">{msg.content}</div>
+                        <div className="max-w-[80%]">
+                          <div className="px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap break-words text-black/85">{msg.content}</div>
+                          {Array.isArray((msg as any).sources) && (msg as any).sources.length > 0 && (
+                            <div className="flex flex-wrap gap-1.5 px-4 pb-3">
+                              {(msg as any).sources.map((src: { title: string; url: string }, i: number) => (
+                                <a key={i} href={src.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg border border-white/40 dark:border-white/10 bg-white/60 dark:bg-white/5 backdrop-blur-md text-black/70 dark:text-white/70 hover:border-black/30 dark:hover:border-white/30 hover:shadow-sm transition-all">
+                                  <svg className="w-3 h-3 flex-shrink-0 opacity-40" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-4.5-6h6m0 0v6m0-6L9.75 14.25" /></svg>
+                                  <span className="truncate max-w-[10rem]">{src.title}</span>
+                                </a>
+                              ))}
+                            </div>
+                          )}
+                        </div>
                       </div>
                     )}
                   </React.Fragment>
                 ))}
                 {isChatLoading && (
                   <div className="flex justify-start">
-                    <div className="max-w-[80%] rounded-2xl rounded-bl-md px-4 py-3 text-sm leading-relaxed border bg-white/80 border-white/70 text-black/60 backdrop-blur-md animate-pulse">Thinking...</div>
+                    <div className="max-w-[80%] rounded-2xl rounded-bl-md px-4 py-3 text-sm leading-relaxed border bg-white/80 border-white/70 text-black/60 backdrop-blur-md flex items-center gap-3">
+                      <div className="brick-spinner" />
+                      {thinkingStatus}
+                    </div>
                   </div>
                 )}
               </div>
@@ -3916,12 +4128,54 @@ export default function OmniaCanvasPage() {
           <input
             ref={fileInputRef}
             type="file"
-            accept="*/*,.pdf,application/pdf"
+            accept="*/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.txt,.md,.json,.html,.csv,.rtf,.png,.jpg,.jpeg,.gif,.webp,.mp3,.wav,.ogg,.flac,.mp4,.mov,.avi,.webm,.m4a,.aac,.wma"
             multiple
             className="hidden"
             onChange={(e) => {
               const files = Array.from(e.target.files || []);
-              if (files.length) window.dispatchEvent(new CustomEvent("omnia_attach_files", { detail: { files } }));
+              if (!files.length) { e.target.value = ""; return; }
+              if (chatMode) {
+                for (const file of files) {
+                  const mime = file.type || "";
+                  const ext = (file.name || "").split(".").pop()?.toLowerCase() || "";
+                  const AUDIO_EXTS_LOCAL = new Set(["mp3", "wav", "m4a", "ogg", "aac", "flac", "wma"]);
+                  const VIDEO_EXTS_LOCAL = new Set(["mp4", "mov", "avi", "webm", "mkv", "wmv"]);
+                  const isAudio = mime.startsWith("audio/") || AUDIO_EXTS_LOCAL.has(ext);
+                  const isVideo = mime.startsWith("video/") || VIDEO_EXTS_LOCAL.has(ext);
+                  if (isAudio || isVideo) {
+                    addFocusedAttachment({
+                      id: makeAttId(), type: isAudio ? "audio" : "video",
+                      url: "", name: file.name, mime, size: file.size, rawFile: file,
+                    });
+                  } else if (DOCUMENT_EXTS.has(ext)) {
+                    (async () => {
+                      try {
+                        const { extractTextFromFile } = await import("@/lib/extract-text");
+                        const { API_BASE_URL } = await import("@/lib/api-config");
+                        const result = await extractTextFromFile(file, API_BASE_URL);
+                        addFocusedAttachment({
+                          id: makeAttId(), type: "document", url: "", name: file.name, mime, size: file.size,
+                          extractedText: result?.text || "",
+                        });
+                      } catch {
+                        addFocusedAttachment({ id: makeAttId(), type: "document", url: "", name: file.name, mime, size: file.size });
+                      }
+                    })();
+                  } else {
+                    const reader = new FileReader();
+                    reader.onload = () => {
+                      const dataUrl = reader.result as string;
+                      let type = "file";
+                      if (mime.startsWith("image/")) type = "image";
+                      else if (mime === "application/pdf" || ext === "pdf") type = "pdf";
+                      addFocusedAttachment({ id: makeAttId(), type, url: dataUrl, name: file.name, mime, size: file.size });
+                    };
+                    reader.readAsDataURL(file);
+                  }
+                }
+              } else {
+                window.dispatchEvent(new CustomEvent("omnia_attach_files", { detail: { files } }));
+              }
               e.target.value = "";
               setShowAttachMenu(false);
             }}

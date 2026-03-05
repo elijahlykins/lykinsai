@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Brain, Loader2, Download, Sparkles } from 'lucide-react';
 import { getSelectedAiModel } from '@/lib/ai-model';
+import { getAiPrefs } from '@/lib/ai-prefs';
 // ❌ Removed base44 import
 
 export default function MindMapGenerator({ note, allNotes, onUpdate }) {
@@ -59,7 +60,7 @@ Return ONLY a JSON object with this structure:
       const response = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: getSelectedAiModel(), prompt })
+        body: JSON.stringify({ model: getSelectedAiModel(), prompt, ...getAiPrefs() })
       });
 
       if (!response.ok) throw new Error('AI request failed');

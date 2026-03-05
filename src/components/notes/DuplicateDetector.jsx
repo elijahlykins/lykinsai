@@ -7,6 +7,7 @@ import { format } from 'date-fns';
 import { Label } from '@/components/ui/label';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { getSelectedAiModel } from '@/lib/ai-model';
+import { getAiPrefs } from '@/lib/ai-prefs';
 import {
   Dialog,
   DialogContent,
@@ -62,7 +63,7 @@ Return ONLY a JSON object: {"duplicates": [{"note1_id": "id1", "note2_id": "id2"
       const response = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: getSelectedAiModel(), prompt })
+        body: JSON.stringify({ model: getSelectedAiModel(), prompt, ...getAiPrefs() })
       });
 
       if (!response.ok) throw new Error('AI request failed');
@@ -119,7 +120,7 @@ Create a well-structured merged note that captures all important information fro
       const contentResponse = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: getSelectedAiModel(), prompt: contentPrompt })
+        body: JSON.stringify({ model: getSelectedAiModel(), prompt: contentPrompt, ...getAiPrefs() })
       });
       const contentResult = await contentResponse.json();
       const mergedContent = contentResult.response;
@@ -129,7 +130,7 @@ Create a well-structured merged note that captures all important information fro
       const titleResponse = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: getSelectedAiModel(), prompt: titlePrompt })
+        body: JSON.stringify({ model: getSelectedAiModel(), prompt: titlePrompt, ...getAiPrefs() })
       });
       const titleResult = await titleResponse.json();
       const mergedTitle = titleResult.response.trim();

@@ -5,6 +5,7 @@ import { HelpCircle, Loader2, MessageCircle } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { createPageUrl } from '../../utils';
 import { getSelectedAiModel } from '@/lib/ai-model';
+import { getAiPrefs } from '@/lib/ai-prefs';
 
 export default function FollowUpQuestions({ note, allNotes, onChatStart }) {
   const [questions, setQuestions] = useState([]);
@@ -61,7 +62,7 @@ Return ONLY a JSON object: {"questions": ["Question 1?", "Question 2?", ...]}`;
       const response = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: getSelectedAiModel(), prompt })
+        body: JSON.stringify({ model: getSelectedAiModel(), prompt, ...getAiPrefs() })
       });
 
       if (!response.ok) throw new Error('AI request failed');

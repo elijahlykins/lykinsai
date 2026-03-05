@@ -621,7 +621,7 @@ Size: ${sizeDisplay}
         ref={addMediaInputRef}
         onChange={handleFileInput}
         multiple
-        accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.txt,.md,.csv,.json"
+        accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.txt,.md,.json,.html,.csv,.rtf,.png,.jpg,.jpeg,.gif,.webp,.mp3,.wav,.ogg,.flac,.mp4,.mov,.avi,.webm"
         style={{ display: 'none' }}
       />
 

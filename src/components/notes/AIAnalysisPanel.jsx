@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Sparkles, Link2, Loader2, CheckCircle } from 'lucide-react';
 import { getSelectedAiModel } from '@/lib/ai-model';
+import { getAiPrefs } from '@/lib/ai-prefs';
 
 export default function AIAnalysisPanel({ note, allNotes, onUpdateNote, onViewNote }) {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -49,7 +50,7 @@ Return ONLY a JSON object: {"validation": "Your analysis here"}`;
       const response = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: getSelectedAiModel(), prompt })
+        body: JSON.stringify({ model: getSelectedAiModel(), prompt, ...getAiPrefs() })
       });
 
       if (!response.ok) throw new Error(`AI error: ${response.statusText}`);
@@ -108,7 +109,7 @@ Return ONLY a JSON array of note IDs: ["id1", "id2", ...]`;
       const response = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: getSelectedAiModel(), prompt })
+        body: JSON.stringify({ model: getSelectedAiModel(), prompt, ...getAiPrefs() })
       });
 
       if (!response.ok) throw new Error(`AI error: ${response.statusText}`);

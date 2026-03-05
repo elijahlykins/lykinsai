@@ -5,6 +5,7 @@ import { Search, Loader2, ArrowRight } from 'lucide-react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { getSelectedAiModel } from '@/lib/ai-model';
+import { getAiPrefs } from '@/lib/ai-prefs';
 
 export default function AISearchOverlay({ isOpen, onClose, onNavigate, allNotes = [] }) {
   const [query, setQuery] = useState('');
@@ -25,7 +26,7 @@ export default function AISearchOverlay({ isOpen, onClose, onNavigate, allNotes 
           const response = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model: getSelectedAiModel(), prompt })
+            body: JSON.stringify({ model: getSelectedAiModel(), prompt, ...getAiPrefs() })
           });
 
           if (!response.ok) throw new Error('AI request failed');
@@ -78,7 +79,7 @@ Return at most 5 results.`;
       const response = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: getSelectedAiModel(), prompt })
+        body: JSON.stringify({ model: getSelectedAiModel(), prompt, ...getAiPrefs() })
       });
 
       if (!response.ok) throw new Error('Search AI failed');

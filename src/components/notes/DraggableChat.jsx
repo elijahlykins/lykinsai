@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Loader2, Send, X, MessageSquare } from 'lucide-react';
+import { useThinkingStatus } from '@/hooks/useThinkingStatus';
 
 export default function DraggableChat({ 
   messages, 
@@ -14,6 +15,7 @@ export default function DraggableChat({
   onClose,
   onNoteClick 
 }) {
+  const thinkingStatus = useThinkingStatus(isLoading);
   const scrollRef = useRef(null);
   const constraintsRef = useRef(null);
 
@@ -112,7 +114,7 @@ export default function DraggableChat({
                 <div className="flex justify-start">
                   <div className="glass-control p-3 rounded-2xl rounded-tl-none border border-white/10 shadow-sm flex items-center gap-2">
                     <Loader2 className="w-3 h-3 animate-spin text-black/70 dark:text-white/70" />
-                    <span className="text-xs text-black/60 dark:text-white/60">Thinking...</span>
+                    <span className="text-xs text-black/60 dark:text-white/60">{thinkingStatus}</span>
                   </div>
                 </div>
               )}

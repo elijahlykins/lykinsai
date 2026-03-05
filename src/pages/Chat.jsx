@@ -9,6 +9,8 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { useAuth } from "@/lib/SupabaseAuth";
 import { supabase } from "@/lib/supabase";
 import RichTextRenderer from "@/components/notes/RichTextRenderer";
+import { useThinkingStatus } from "@/hooks/useThinkingStatus";
+import { getAiPrefs } from "@/lib/ai-prefs";
 
 const DEFAULT_MODEL = "gemini-flash-latest";
 const TYPING_DELAY_MS = 14;
@@ -320,6 +322,7 @@ export default function ChatPage() {
   const mediaStreamRef = useRef(null);
   const audioChunksRef = useRef([]);
   const canvasHandoffAppliedRef = useRef(false);
+  const thinkingStatus = useThinkingStatus(isLoading);
 
   const rotatingPhrases = useMemo(() => {
     const emailName = String(user?.email || "").split("@")[0].trim();
@@ -700,6 +703,7 @@ export default function ChatPage() {
           imageUrls,
           conversation: [...conversation, { ...userMessage, content: prompt }],
           returnActions: false,
+          ...getAiPrefs(),
         }),
       });
 
@@ -1381,7 +1385,7 @@ export default function ChatPage() {
         ref={fileInputRef}
         type="file"
         multiple
-        accept="image/*,video/*,audio/*,.pdf,.svg,.png,.mp3,.mp4,.mov,*/*"
+        accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.txt,.md,.json,.html,.csv,.rtf,.png,.jpg,.jpeg,.gif,.webp,.mp3,.wav,.ogg,.flac,.mp4,.mov,.avi,.webm,*/*"
         className="hidden"
         onChange={(e) => {
           const files = Array.from(e.target.files || []);
@@ -1634,7 +1638,10 @@ export default function ChatPage() {
                         </div>
                       )}
                       {msg.role === "assistant" && isLoading && idx === messages.length - 1 ? (
-                        <span className="inline-block ml-0.5 animate-pulse">|</span>
+                        <span className="inline-flex items-center gap-1.5 ml-0.5 text-xs text-black/50 dark:text-white/50">
+                          <span className="inline-block w-1.5 h-1.5 rounded-full bg-current animate-pulse" />
+                          {thinkingStatus}
+                        </span>
                       ) : null}
                     </div>
                   </div>
