@@ -2094,6 +2094,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         if (manhattan < Math.max(2, Math.floor(gridSize / 5))) return;
         d.moved = true;
         window.getSelection()?.removeAllRanges();
+        setHoveredSpecialBlockId(null);
         const draggedIds = d.snapshot.map((s) => s.id).filter(Boolean);
         if (draggedIds.length) {
           setActivatedBrickIds(draggedIds);
@@ -2105,7 +2106,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       for (const s of d.snapshot) {
         const snappedDx = Math.round(dx / grid) * grid;
         const snappedDy = Math.round(dy / grid) * grid;
-        const el = document.querySelector(`[data-block-id="${s.id}"]`) as HTMLElement | null;
+        const el = document.querySelector(`[data-canvas-block][data-block-id="${s.id}"]`) as HTMLElement | null;
         if (el) el.style.transform = `translate(${snappedDx}px, ${snappedDy}px)`;
       }
     };
@@ -2116,14 +2117,17 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       const moved = d.moved;
       const snapshot = d.snapshot;
       if (moved) {
-        for (const s of snapshot) {
-          const el = document.querySelector(`[data-block-id="${s.id}"]`) as HTMLElement | null;
-          if (el) el.style.transform = "";
-        }
         const world = clientToWorld(e.clientX, e.clientY);
         const dx = world.x - d.startWorldX;
         const dy = world.y - d.startWorldY;
-        moveBlocksFromSnapshot(snapshot as any, dx, dy, { snap: true, snapSize: gridSize } as any);
+        const grid = gridSize;
+        const snappedDx = Math.round(dx / grid) * grid;
+        const snappedDy = Math.round(dy / grid) * grid;
+        for (const s of snapshot) {
+          const el = document.querySelector(`[data-canvas-block][data-block-id="${s.id}"]`) as HTMLElement | null;
+          if (el) el.style.transform = "";
+        }
+        moveBlocksFromSnapshot(snapshot as any, snappedDx, snappedDy, { snap: false } as any);
       }
       groupDragRef.current = { active: false, moved: false, pointerId: null, startWorldX: 0, startWorldY: 0, snapshot: [] };
       if (moved) {
@@ -3948,11 +3952,13 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         const blockEl = t?.closest?.("[data-block-id]") as HTMLElement | null;
         const overMenuZone = Boolean(t?.closest?.("[data-block-menu-zone]"));
         const overBlock = Boolean(t?.closest?.("[data-canvas-block]"));
-        if (blockEl) {
-          const bid = blockEl.getAttribute("data-block-id") || "";
-          setHoveredSpecialBlockId((prev) => prev === bid ? prev : bid);
-        } else if (!overMenuZone) {
-          setHoveredSpecialBlockId((prev) => prev ? null : prev);
+        if (!groupDragRef.current.moved) {
+          if (blockEl) {
+            const bid = blockEl.getAttribute("data-block-id") || "";
+            setHoveredSpecialBlockId((prev) => prev === bid ? prev : bid);
+          } else if (!overMenuZone) {
+            setHoveredSpecialBlockId((prev) => prev ? null : prev);
+          }
         }
         if (overBlock) {
           if (hoverCell) setHoverCell(null);
@@ -4625,8 +4631,6 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
               : blockFormat === "form" ? FormBlock
               : blockFormat === "gallery" ? GalleryBlock
               : PageBlock;
-            const sbx = Number((b as any).x || 0);
-            const sby = Number((b as any).y || 0);
             const sbh = Number((b as any).height || gridSize);
             return (
               <React.Fragment key={id}>
@@ -4634,7 +4638,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
                 <div
                   data-block-menu-zone
                   className="absolute"
-                  style={{ left: `${sbx - 32}px`, top: `${sby}px`, width: 32, height: `${sbh}px`, zIndex: 11 }}
+                  style={{ left: `${Number((b as any).x || 0) - 32}px`, top: `${Number((b as any).y || 0)}px`, width: 32, height: `${sbh}px`, zIndex: 11 }}
                   onPointerEnter={() => setHoveredSpecialBlockId(id)}
                   onPointerLeave={() => setHoveredSpecialBlockId((prev) => prev === id ? null : prev)}
                 >
