@@ -3,7 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { Canvas } from "@/canvas/Canvas";
 import { useCanvasStore } from "@/store/canvasStore";
 import type { Block } from "@/canvas/types";
-import { ChevronDown, ChevronUp, ArrowLeft, Undo2, Redo2, Trash2, Plus, Link as LinkIcon, Image as ImageIcon, Zap, MessageSquare, Mic, Volume2, BookOpen, X, Clock, Edit2, Folder as FolderIcon, Link2, MoreHorizontal, PanelRightClose, PanelRight, StickyNote, Brain, List, Infinity, Play, FileText, Music, Video } from "lucide-react";
+import { ChevronDown, ChevronUp, ArrowLeft, Undo2, Redo2, Trash2, Plus, Link as LinkIcon, Image as ImageIcon, Zap, MessageSquare, Mic, BookOpen, X, Clock, Edit2, Folder as FolderIcon, Link2, MoreHorizontal, PanelRightClose, PanelRight, StickyNote, Brain, List, Infinity, Play, FileText, Music, Video } from "lucide-react";
 import DraggableQuickNote from "@/components/notes/DraggableQuickNote";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -408,7 +408,7 @@ export default function OmniaCanvasPage() {
   const [focusedChatAttachments, setFocusedChatAttachments] = useState<FocusedChatAttachment[]>([]);
   const [isChatLoading, setIsChatLoading] = useState(false);
   const [isDictating, setIsDictating] = useState(false);
-  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
   const updateBlock = useCanvasStore((s) => s.updateBlock);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
   const chatPanelInputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -416,6 +416,7 @@ export default function OmniaCanvasPage() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+  const dictationTimerRef = useRef<number | null>(null);
   const aiTypingRunRef = useRef(0);
   const chatTypingTimerRef = useRef<number | null>(null);
   const chatImportAppliedRef = useRef<string | null>(null);
@@ -629,7 +630,7 @@ export default function OmniaCanvasPage() {
     [chatMode]
   );
 
-  const chatRailWidthPx = !chatMode && (chatMessages.length > 0 || chatRailVisible)
+  const chatRailWidthPx = !chatMode && chatRailVisible
     ? clampChatRailWidth(chatRailWidthManual ?? getChatRailWidthPx(viewportWidth), viewportWidth)
     : 0;
 
@@ -669,7 +670,8 @@ export default function OmniaCanvasPage() {
   const buildCanvasContext = useCallback(() => {
     const st = useCanvasStore.getState();
     const ids = (Array.isArray(st.blockOrder) ? st.blockOrder : []).slice(-40);
-    const take = (v: any, n = 180) =>
+    const focused = new Set(st.focusedBrickIds || []);
+    const take = (v: any, n = 300) =>
       String(v || "")
         .replace(/\s+/g, " ")
         .trim()
@@ -681,54 +683,62 @@ export default function OmniaCanvasPage() {
         return "";
       }
     };
+    const describeBlock = (b: any, id: string) => {
+      const focusTag = focused.has(id) ? " [FOCUSED]" : "";
+      const base = `- id=${id} type=${b.type} x=${Math.floor(b.x || 0)} y=${Math.floor(b.y || 0)} w=${Math.floor(b.width || 0)} h=${Math.floor(
+        b.height || 0
+      )}${focusTag}`;
+      if (b?.type === "text") {
+        const format = String(b?.format || "plain");
+        const content = take(b?.content, focused.has(id) ? 2000 : 300);
+        return `${base} format=${format}${content ? ` content="${content}"` : ""}`;
+      }
+      if (b?.type === "youtube" || (b?.type === "create" && String(b?.mode || "").toLowerCase() === "video")) {
+        const videoId = String(b?.videoId || b?.data?.videoId || "");
+        const url = String(b?.url || b?.data?.url || "");
+        return `${base} kind=youtube videoId=${videoId || "unknown"}${url ? ` url="${take(url, 120)}"` : ""}`;
+      }
+      if (b?.type === "image" || (b?.type === "create" && ["image", "generated"].includes(String(b?.mode || "").toLowerCase()))) {
+        const src = String(b?.src || b?.data?.src || "");
+        return `${base} kind=image${src ? ` srcHost=${host(src) || "local"} src="${take(src, 120)}"` : ""}`;
+      }
+      if (b?.type === "file" || (b?.type === "create" && String(b?.mode || "").toLowerCase() === "embed")) {
+        const name = take(b?.name || b?.data?.name, 80);
+        const mime = take(b?.mime || b?.data?.mime, 60);
+        const dataUrl = String(b?.dataUrl || b?.data?.dataUrl || "");
+        const url = String(b?.url || b?.data?.url || "");
+        return `${base} kind=file${name ? ` name="${name}"` : ""}${mime ? ` mime=${mime}` : ""}${url ? ` url="${take(url, 120)}"` : ""}${
+          dataUrl ? ` dataUrl=true` : ""
+        }`;
+      }
+      if (b?.type === "link" || (b?.type === "create" && String(b?.mode || "").toLowerCase() === "embed")) {
+        const url = String(b?.url || b?.data?.url || "");
+        if (url) return `${base} kind=link host=${host(url) || "unknown"} url="${take(url, 140)}"`;
+      }
+      if (b?.type === "create" && String(b?.mode || "").toLowerCase() === "design") {
+        const elCount = Array.isArray(b?.data?.board?.elements) ? b.data.board.elements.length : 0;
+        const seedText = take(b?.data?.seedText || "", 120);
+        return `${base} kind=design elements=${elCount}${seedText ? ` seed="${seedText}"` : ""}`;
+      }
+      if (b?.type === "create" && String(b?.mode || "").toLowerCase() === "taskboard") {
+        const colCount = Array.isArray(b?.data?.columns) ? b.data.columns.length : 0;
+        const title = take(b?.data?.title || "", 80);
+        return `${base} kind=taskboard columns=${colCount}${title ? ` title="${title}"` : ""}`;
+      }
+      const content = take(b?.content || b?.data?.content || "", focused.has(id) ? 2000 : 300);
+      return `${base}${content ? ` content="${content}"` : ""}`;
+    };
     const lines = ids
-      .map((id) => (st.blocks as any)?.[id])
-      .filter(Boolean)
-      .map((b: any) => {
-        const base = `- type=${b.type} x=${Math.floor(b.x || 0)} y=${Math.floor(b.y || 0)} w=${Math.floor(b.width || 0)} h=${Math.floor(
-          b.height || 0
-        )}`;
-        if (b?.type === "text") {
-          const format = String(b?.format || "plain");
-          const content = take(b?.content, 220);
-          return `${base} format=${format}${content ? ` content="${content}"` : ""}`;
-        }
-        if (b?.type === "youtube" || (b?.type === "create" && String(b?.mode || "").toLowerCase() === "video")) {
-          const videoId = String(b?.videoId || b?.data?.videoId || "");
-          const url = String(b?.url || b?.data?.url || "");
-          return `${base} kind=youtube videoId=${videoId || "unknown"}${url ? ` url="${take(url, 120)}"` : ""}`;
-        }
-        if (b?.type === "image" || (b?.type === "create" && ["image", "generated"].includes(String(b?.mode || "").toLowerCase()))) {
-          const src = String(b?.src || b?.data?.src || "");
-          return `${base} kind=image${src ? ` srcHost=${host(src) || "local"} src="${take(src, 120)}"` : ""}`;
-        }
-        if (b?.type === "file" || (b?.type === "create" && String(b?.mode || "").toLowerCase() === "embed")) {
-          const name = take(b?.name || b?.data?.name, 80);
-          const mime = take(b?.mime || b?.data?.mime, 60);
-          const dataUrl = String(b?.dataUrl || b?.data?.dataUrl || "");
-          const url = String(b?.url || b?.data?.url || "");
-          return `${base} kind=file${name ? ` name="${name}"` : ""}${mime ? ` mime=${mime}` : ""}${url ? ` url="${take(url, 120)}"` : ""}${
-            dataUrl ? ` dataUrl=true` : ""
-          }`;
-        }
-        if (b?.type === "link" || (b?.type === "create" && String(b?.mode || "").toLowerCase() === "embed")) {
-          const url = String(b?.url || b?.data?.url || "");
-          if (url) return `${base} kind=link host=${host(url) || "unknown"} url="${take(url, 140)}"`;
-        }
-        if (b?.type === "create" && String(b?.mode || "").toLowerCase() === "design") {
-          const elCount = Array.isArray(b?.data?.board?.elements) ? b.data.board.elements.length : 0;
-          const seedText = take(b?.data?.seedText || "", 120);
-          return `${base} kind=design elements=${elCount}${seedText ? ` seed="${seedText}"` : ""}`;
-        }
-        if (b?.type === "create" && String(b?.mode || "").toLowerCase() === "taskboard") {
-          const colCount = Array.isArray(b?.data?.columns) ? b.data.columns.length : 0;
-          const title = take(b?.data?.title || "", 80);
-          return `${base} kind=taskboard columns=${colCount}${title ? ` title="${title}"` : ""}`;
-        }
-        const content = take(b?.content || b?.data?.content || "", 180);
-        return `${base}${content ? ` content="${content}"` : ""}`;
-      });
-    return lines.join("\n");
+      .map((id) => {
+        const b = (st.blocks as any)?.[id];
+        return b ? describeBlock(b, id) : null;
+      })
+      .filter(Boolean);
+    let result = lines.join("\n");
+    if (focused.size > 0) {
+      result = `[USER_FOCUS]\nThe user has focused on ${focused.size} brick(s) by double-clicking them. Blocks marked [FOCUSED] are what the user wants to discuss or work on. Prioritize these blocks in your response.\n\n` + result;
+    }
+    return result;
   }, []);
   const getVisibleYouTubeBlocks = useCallback(() => {
     const st = useCanvasStore.getState() as any;
@@ -2126,6 +2136,12 @@ export default function OmniaCanvasPage() {
   }, [showMemorySidebar, loadMemoryNotes]);
 
   useEffect(() => {
+    const openSidebar = () => setShowMemorySidebar(true);
+    window.addEventListener("omnia_open_memory_sidebar", openSidebar);
+    return () => window.removeEventListener("omnia_open_memory_sidebar", openSidebar);
+  }, []);
+
+  useEffect(() => {
     const handler = (e: MessageEvent) => {
       if (!e.data || typeof e.data !== "object") return;
       if (e.data.type === "omnia-memory-drag-start" && e.data.data) {
@@ -2409,6 +2425,8 @@ export default function OmniaCanvasPage() {
       setChatStatusText("");
       setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: "" } : m)));
 
+      const st = useCanvasStore.getState();
+      const hasFocusedBricks = (st.focusedBrickIds || []).length > 0;
       const requestBody = {
         model: selectedModel,
         prompt,
@@ -2417,6 +2435,7 @@ export default function OmniaCanvasPage() {
         context: `${canvasContext || ""}\n\nYouTube transcript context:\n${youtubeGrounding || "(none)"}`.trim(),
         knowledgeBase: kbText,
         projectId,
+        hasFocusedBricks,
         ...(attachedImageUrls.length ? { imageUrls: attachedImageUrls } : {}),
         ...getAiPrefs(),
       };
@@ -3021,21 +3040,19 @@ export default function OmniaCanvasPage() {
   useEffect(() => {
     return () => {
       aiTypingRunRef.current += 1;
+      if (dictationTimerRef.current) {
+        window.clearInterval(dictationTimerRef.current);
+        dictationTimerRef.current = null;
+      }
       try {
         if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
           mediaRecorderRef.current.stop();
         }
-      } catch {
-        // ignore
-      }
+      } catch { /* ignore */ }
       try {
         mediaStreamRef.current?.getTracks?.().forEach((track) => track.stop());
-      } catch {
-        // ignore
-      }
-      if (typeof window !== "undefined" && window.speechSynthesis) {
-        window.speechSynthesis.cancel();
-      }
+      } catch { /* ignore */ }
+    
     };
   }, []);
 
@@ -3044,98 +3061,84 @@ export default function OmniaCanvasPage() {
   }, []);
 
   const handleDictateToggle = useCallback(() => {
-    const stopRecorder = () => {
+    if (isDictating) {
       try {
         if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
           mediaRecorderRef.current.stop();
         }
-      } catch {
-        // ignore
-      }
-      try {
-        mediaStreamRef.current?.getTracks?.().forEach((track) => track.stop());
-      } catch {
-        // ignore
-      }
-      mediaStreamRef.current = null;
-    };
-
-    const transcribeAudio = async (blob: Blob) => {
-      if (!blob || blob.size <= 0) return;
-      try {
-        const { API_BASE_URL } = await import("@/lib/api-config");
-        const formData = new FormData();
-        formData.append("audio", blob, "dictation.webm");
-        formData.append("model", "whisper-1");
-        const res = await fetch(`${API_BASE_URL}/api/ai/transcribe`, {
-          method: "POST",
-          body: formData,
-        });
-        const data = await res.json().catch(() => ({}));
-        const transcript = String(data?.text || "").trim();
-        if (res.ok && transcript) {
-          setChatInput((prev) => `${String(prev || "").trim()} ${transcript}`.trim());
-        }
-      } catch {
-        // ignore transient dictation failures
-      }
-    };
-
-    if (isDictating) {
-      stopRecorder();
-      setIsDictating(false);
+      } catch { /* ignore */ }
       return;
     }
+
+    const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+      ? "audio/webm;codecs=opus"
+      : "audio/webm";
 
     navigator.mediaDevices
       .getUserMedia({ audio: true })
       .then((stream) => {
         mediaStreamRef.current = stream;
         audioChunksRef.current = [];
-        const recorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+        const recorder = new MediaRecorder(stream, { mimeType });
         mediaRecorderRef.current = recorder;
+
         recorder.ondataavailable = (event) => {
           if (event.data && event.data.size > 0) {
             audioChunksRef.current.push(event.data);
           }
         };
+
         recorder.onstop = async () => {
+          try {
+            mediaStreamRef.current?.getTracks?.().forEach((t) => t.stop());
+          } catch { /* ignore */ }
+          mediaStreamRef.current = null;
+          mediaRecorderRef.current = null;
           setIsDictating(false);
-          const blob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+
+          const blob = new Blob(audioChunksRef.current, { type: mimeType });
           audioChunksRef.current = [];
-          await transcribeAudio(blob);
+          if (blob.size < 2000) return;
+
+          setIsTranscribing(true);
+          try {
+            const { API_BASE_URL } = await import("@/lib/api-config");
+            const formData = new FormData();
+            formData.append("audio", blob, "dictation.webm");
+            formData.append("model", "whisper-1");
+            formData.append("language", "en");
+            const currentText = String(chatInput || "").trim();
+            if (currentText) {
+              formData.append("prompt", currentText.split(/\s+/).slice(-12).join(" "));
+            }
+            const res = await fetch(`${API_BASE_URL}/api/ai/transcribe`, {
+              method: "POST",
+              body: formData,
+            });
+            const data = await res.json().catch(() => ({}));
+            const transcript = String(data?.text || "").trim();
+            if (res.ok && transcript) {
+              setChatInput((prev) => {
+                const cur = String(prev || "").trim();
+                return cur ? `${cur} ${transcript}` : transcript;
+              });
+            }
+          } catch { /* ignore */ }
+          setIsTranscribing(false);
         };
+
         recorder.onerror = () => {
           setIsDictating(false);
+          setIsTranscribing(false);
         };
+
         recorder.start();
         setIsDictating(true);
       })
       .catch(() => {
         setIsDictating(false);
       });
-  }, [isDictating]);
-
-  const handleVoiceToggle = useCallback(() => {
-    if (typeof window === "undefined" || !window.speechSynthesis) return;
-    if (isSpeaking) {
-      window.speechSynthesis.cancel();
-      setIsSpeaking(false);
-      return;
-    }
-    const latestAssistant = [...chatMessages]
-      .reverse()
-      .find((m) => String(m?.aiResponse || "").trim());
-    const textToRead = String(latestAssistant?.aiResponse || "").trim();
-    if (!textToRead) return;
-
-    const utterance = new SpeechSynthesisUtterance(textToRead);
-    utterance.onend = () => setIsSpeaking(false);
-    utterance.onerror = () => setIsSpeaking(false);
-    window.speechSynthesis.cancel();
-    setIsSpeaking(true);
-    window.speechSynthesis.speak(utterance);
-  }, [chatMessages, isSpeaking]);
+  }, [chatInput, isDictating]);
 
   return (
     <div className="w-full h-[100svh] relative overflow-hidden bg-transparent">
@@ -3642,21 +3645,24 @@ export default function OmniaCanvasPage() {
                 <button type="button" onClick={handleOpenAttachments} className="h-10 w-10 rounded-full flex items-center justify-center transition-colors hover:bg-black/10" title="Add attachments">
                   <Plus className="w-4 h-4" />
                 </button>
-                <textarea
-                  ref={centerChatInputRef}
-                  value={chatInput}
-                  onChange={(e) => setChatInput(e.target.value)}
-                  onInput={(e) => resizeChatInput(e.currentTarget)}
-                  onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void handleCenterAskSend(); } }}
-                  placeholder="Ask me anything..."
-                  rows={1}
-                  className="w-full min-h-[44px] max-h-[220px] rounded-xl bg-transparent border border-white/30 px-4 py-3 text-sm text-black placeholder:text-black/55 outline-none resize-none leading-5 scrollbar-hide"
-                />
-                <button type="button" onClick={handleDictateToggle} className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors hover:bg-black/10 ${isDictating ? "bg-black/10 ring-1 ring-black/30" : ""}`} title="Dictate">
-                  <Mic className="w-4 h-4" />
-                </button>
-                <button type="button" onClick={handleVoiceToggle} className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors hover:bg-black/10 ${isSpeaking ? "bg-black/10 ring-1 ring-black/30" : ""}`} title="Voice">
-                  <Volume2 className="w-4 h-4" />
+                {isDictating || isTranscribing ? (
+                  <div className="w-full min-h-[44px] rounded-xl border border-blue-400/40 bg-blue-500/5 px-4 py-3 flex items-center gap-3">
+                    {isDictating ? (<><div className="dictation-wave"><span /><span /><span /><span /><span /></div><span className="text-sm text-blue-500 font-medium">Recording...</span></>) : (<><div className="brick-spinner" style={{ width: 16, height: 16 }} /><span className="text-sm text-black/60">Transcribing...</span></>)}
+                  </div>
+                ) : (
+                  <textarea
+                    ref={centerChatInputRef}
+                    value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    onInput={(e) => resizeChatInput(e.currentTarget)}
+                    onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void handleCenterAskSend(); } }}
+                    placeholder="Ask me anything..."
+                    rows={1}
+                    className="w-full min-h-[44px] max-h-[220px] rounded-xl bg-transparent border border-white/30 px-4 py-3 text-sm text-black placeholder:text-black/55 outline-none resize-none leading-5 scrollbar-hide"
+                  />
+                )}
+                <button type="button" onClick={handleDictateToggle} className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors ${isDictating ? "bg-blue-500/15" : "hover:bg-black/10"}`} title={isDictating ? "Stop recording" : "Dictate"}>
+                  <Mic className={`w-4 h-4 ${isDictating ? "text-blue-500" : ""}`} />
                 </button>
               </div>
             </div>
@@ -3708,22 +3714,25 @@ export default function OmniaCanvasPage() {
                 <button type="button" onClick={handleOpenAttachments} className="h-8 w-8 rounded-full flex items-center justify-center transition-colors hover:bg-black/10 shrink-0" title="Add attachments">
                   <Plus className="w-3.5 h-3.5" />
                 </button>
-                <textarea
-                  ref={chatPanelInputRef}
-                  data-min-h="32"
-                  value={chatInput}
-                  onChange={(e) => setChatInput(e.target.value)}
-                  onInput={(e) => resizeChatInput(e.currentTarget)}
-                  onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void handleChatSend(); } }}
-                  placeholder="Ask me anything..."
-                  rows={1}
-                  className="w-full min-h-[32px] max-h-[220px] rounded-xl bg-white/12 border border-white/30 px-3 py-1.5 text-sm text-black placeholder:text-black/55 outline-none resize-none leading-5 scrollbar-hide"
-                />
-                <button type="button" onClick={handleDictateToggle} className={`h-8 w-8 rounded-full flex items-center justify-center transition-colors hover:bg-black/10 ${isDictating ? "bg-black/10 ring-1 ring-black/30" : ""}`} title="Dictate">
-                  <Mic className="w-3.5 h-3.5" />
-                </button>
-                <button type="button" onClick={handleVoiceToggle} className={`h-8 w-8 rounded-full flex items-center justify-center transition-colors hover:bg-black/10 ${isSpeaking ? "bg-black/10 ring-1 ring-black/30" : ""}`} title="Voice">
-                  <Volume2 className="w-3.5 h-3.5" />
+                {isDictating || isTranscribing ? (
+                  <div className="w-full min-h-[32px] rounded-xl border border-blue-400/40 bg-blue-500/5 px-3 py-1.5 flex items-center gap-2">
+                    {isDictating ? (<><div className="dictation-wave"><span /><span /><span /><span /><span /></div><span className="text-xs text-blue-500 font-medium">Recording...</span></>) : (<><div className="brick-spinner" style={{ width: 14, height: 14 }} /><span className="text-xs text-black/60">Transcribing...</span></>)}
+                  </div>
+                ) : (
+                  <textarea
+                    ref={chatPanelInputRef}
+                    data-min-h="32"
+                    value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    onInput={(e) => resizeChatInput(e.currentTarget)}
+                    onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void handleChatSend(); } }}
+                    placeholder="Ask me anything..."
+                    rows={1}
+                    className="w-full min-h-[32px] max-h-[220px] rounded-xl bg-white/12 border border-white/30 px-3 py-1.5 text-sm text-black placeholder:text-black/55 outline-none resize-none leading-5 scrollbar-hide"
+                  />
+                )}
+                <button type="button" onClick={handleDictateToggle} className={`h-8 w-8 rounded-full flex items-center justify-center transition-colors ${isDictating ? "bg-blue-500/15" : "hover:bg-black/10"}`} title={isDictating ? "Stop recording" : "Dictate"}>
+                  <Mic className={`w-3.5 h-3.5 ${isDictating ? "text-blue-500" : ""}`} />
                 </button>
               </div>
             </div>
@@ -3823,21 +3832,24 @@ export default function OmniaCanvasPage() {
                     <button type="button" onClick={handleOpenAttachments} className="h-10 w-10 rounded-full flex items-center justify-center transition-colors hover:bg-black/10" title="Add attachments">
                       <Plus className="w-4 h-4" />
                     </button>
-                    <textarea
-                      ref={chatPanelInputRef}
-                      value={chatInput}
-                      onChange={(e) => setChatInput(e.target.value)}
-                      onInput={(e) => resizeChatInput(e.currentTarget)}
-                      onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void handleChatSend(); } }}
-                      placeholder="Ask me anything..."
-                      rows={1}
-                      className="w-full min-h-[44px] max-h-[220px] rounded-xl bg-transparent border border-white/30 px-4 py-3 text-sm text-black placeholder:text-black/55 outline-none resize-none leading-5 scrollbar-hide"
-                    />
-                    <button type="button" onClick={handleDictateToggle} className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors hover:bg-black/10 ${isDictating ? "bg-black/10 ring-1 ring-black/30" : ""}`} title="Dictate">
-                      <Mic className="w-4 h-4" />
-                    </button>
-                    <button type="button" onClick={handleVoiceToggle} className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors hover:bg-black/10 ${isSpeaking ? "bg-black/10 ring-1 ring-black/30" : ""}`} title="Voice">
-                      <Volume2 className="w-4 h-4" />
+                    {isDictating || isTranscribing ? (
+                      <div className="w-full min-h-[44px] rounded-xl border border-blue-400/40 bg-blue-500/5 px-4 py-3 flex items-center gap-3">
+                        {isDictating ? (<><div className="dictation-wave"><span /><span /><span /><span /><span /></div><span className="text-sm text-blue-500 font-medium">Recording...</span></>) : (<><div className="brick-spinner" style={{ width: 16, height: 16 }} /><span className="text-sm text-black/60">Transcribing...</span></>)}
+                      </div>
+                    ) : (
+                      <textarea
+                        ref={chatPanelInputRef}
+                        value={chatInput}
+                        onChange={(e) => setChatInput(e.target.value)}
+                        onInput={(e) => resizeChatInput(e.currentTarget)}
+                        onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void handleChatSend(); } }}
+                        placeholder="Ask me anything..."
+                        rows={1}
+                        className="w-full min-h-[44px] max-h-[220px] rounded-xl bg-transparent border border-white/30 px-4 py-3 text-sm text-black placeholder:text-black/55 outline-none resize-none leading-5 scrollbar-hide"
+                      />
+                    )}
+                    <button type="button" onClick={handleDictateToggle} className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors ${isDictating ? "bg-blue-500/15" : "hover:bg-black/10"}`} title={isDictating ? "Stop recording" : "Dictate"}>
+                      <Mic className={`w-4 h-4 ${isDictating ? "text-blue-500" : ""}`} />
                     </button>
                   </div>
                 </div>
@@ -3977,21 +3989,24 @@ export default function OmniaCanvasPage() {
                     <button type="button" onClick={handleOpenAttachments} className="h-10 w-10 rounded-full flex items-center justify-center transition-colors hover:bg-black/10" title="Add attachments">
                       <Plus className="w-4 h-4" />
                     </button>
-                    <textarea
-                      ref={chatPanelInputRef}
-                      value={chatInput}
-                      onChange={(e) => setChatInput(e.target.value)}
-                      onInput={(e) => resizeChatInput(e.currentTarget)}
-                      onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void handleChatSend(); } }}
-                      placeholder="Ask me anything..."
-                      rows={1}
-                      className="w-full min-h-[44px] max-h-[220px] rounded-xl bg-transparent border border-white/30 px-4 py-3 text-sm text-black placeholder:text-black/55 outline-none resize-none leading-5 scrollbar-hide"
-                    />
-                    <button type="button" onClick={handleDictateToggle} className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors hover:bg-black/10 ${isDictating ? "bg-black/10 ring-1 ring-black/30" : ""}`} title="Dictate">
-                      <Mic className="w-4 h-4" />
-                    </button>
-                    <button type="button" onClick={handleVoiceToggle} className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors hover:bg-black/10 ${isSpeaking ? "bg-black/10 ring-1 ring-black/30" : ""}`} title="Voice">
-                      <Volume2 className="w-4 h-4" />
+                    {isDictating || isTranscribing ? (
+                      <div className="w-full min-h-[44px] rounded-xl border border-blue-400/40 bg-blue-500/5 px-4 py-3 flex items-center gap-3">
+                        {isDictating ? (<><div className="dictation-wave"><span /><span /><span /><span /><span /></div><span className="text-sm text-blue-500 font-medium">Recording...</span></>) : (<><div className="brick-spinner" style={{ width: 16, height: 16 }} /><span className="text-sm text-black/60">Transcribing...</span></>)}
+                      </div>
+                    ) : (
+                      <textarea
+                        ref={chatPanelInputRef}
+                        value={chatInput}
+                        onChange={(e) => setChatInput(e.target.value)}
+                        onInput={(e) => resizeChatInput(e.currentTarget)}
+                        onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void handleChatSend(); } }}
+                        placeholder="Ask me anything..."
+                        rows={1}
+                        className="w-full min-h-[44px] max-h-[220px] rounded-xl bg-transparent border border-white/30 px-4 py-3 text-sm text-black placeholder:text-black/55 outline-none resize-none leading-5 scrollbar-hide"
+                      />
+                    )}
+                    <button type="button" onClick={handleDictateToggle} className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors ${isDictating ? "bg-blue-500/15" : "hover:bg-black/10"}`} title={isDictating ? "Stop recording" : "Dictate"}>
+                      <Mic className={`w-4 h-4 ${isDictating ? "text-blue-500" : ""}`} />
                     </button>
                   </div>
                 </div>
@@ -4209,6 +4224,7 @@ export default function OmniaCanvasPage() {
           onClose={() => { void handleCloseQuickNote(); }}
         />
       )}
+
     </div>
   );
 }

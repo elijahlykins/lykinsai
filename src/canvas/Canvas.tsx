@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Trash2 } from "lucide-react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Trash2, ZoomIn, ZoomOut, Maximize, ChevronUp, ChevronDown, Copy, CopyPlus, Send, Palette, Type as TypeIcon, CalendarPlus, Square, Mic, MoreHorizontal } from "lucide-react";
 import { useCanvasStore } from "@/store/canvasStore";
 import { isInViewport } from "@/canvas/utils/isInViewport";
 import { snapToGrid } from "@/canvas/utils/snap";
@@ -11,6 +11,12 @@ import { SpreadsheetBlock } from "@/canvas/blocks/SpreadsheetBlock";
 import { CalendarBlock } from "@/canvas/blocks/CalendarBlock";
 import { ButtonBlock } from "@/canvas/blocks/ButtonBlock";
 import { MediaBlock } from "@/canvas/blocks/MediaBlock";
+import { CodeBlock } from "@/canvas/blocks/CodeBlock";
+import { PageBlock } from "@/canvas/blocks/PageBlock";
+import { ChartBlock } from "@/canvas/blocks/ChartBlock";
+import { BoardBlock } from "@/canvas/blocks/BoardBlock";
+import { FormBlock } from "@/canvas/blocks/FormBlock";
+import { GalleryBlock, GalleryModalPortal } from "@/canvas/blocks/GalleryBlock";
 import type { AiAnswerEntry } from "@/canvas/types";
 import { canUseActiveBrickLogic, renderBrickShell } from "./brick";
 import { useThinkingStatus } from "@/hooks/useThinkingStatus";
@@ -452,7 +458,15 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
   const [raisedBrickIds, setRaisedBrickIds] = useState<string[]>([]);
   const [shiftAnchor, setShiftAnchor] = useState<PressTarget | null>(null);
   const [scrollPos, setScrollPos] = useState({ left: 0, top: 0 });
+  const [canvasZoom, setCanvasZoom] = useState(1);
+  const canvasZoomRef = useRef(1);
+  const [zoomPanelOpen, setZoomPanelOpen] = useState(false);
   const lastPointerClientRef = useRef<{ x: number; y: number } | null>(null);
+  const [brickMenu, setBrickMenu] = useState<{ id: string; x: number; y: number } | null>(null);
+  const [brickMenuSub, setBrickMenuSub] = useState<"brick-color" | "text-color" | "calendar" | null>(null);
+  const [hoveredSpecialBlockId, setHoveredSpecialBlockId] = useState<string | null>(null);
+  const [calPickerDate, setCalPickerDate] = useState("");
+  const [calPickerTime, setCalPickerTime] = useState("");
   const [deleteZoneOpen, setDeleteZoneOpen] = useState(false);
   const [dropContainerId, setDropContainerId] = useState<string | null>(null);
   const [shapePickerOpen, setShapePickerOpen] = useState(false);
@@ -569,6 +583,134 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
   const aiPanelSizeRef = useRef<{ w: number; h: number }>({ w: 360, h: 140 });
   const aiPanelDragRef = useRef<{ startX: number; startY: number; originLeft: number; originTop: number } | null>(null);
 
+  const [dictatingBlockId, setDictatingBlockId] = useState<string | null>(null);
+  const [dictateTranscribingBlockId, setDictateTranscribingBlockId] = useState<string | null>(null);
+  const dictateRecorderRef = useRef<MediaRecorder | null>(null);
+  const dictateStreamRef = useRef<MediaStream | null>(null);
+  const dictateChunksRef = useRef<Blob[]>([]);
+  const dictateTypewriterRef = useRef<{ blockId: string; full: string; prefix: string; charIndex: number; timer: number | null; measureCtx: CanvasRenderingContext2D | null } | null>(null);
+
+  const startBrickDictation = useCallback((blockId: string) => {
+    const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+      ? "audio/webm;codecs=opus"
+      : "audio/webm";
+
+    navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
+      dictateStreamRef.current = stream;
+      dictateChunksRef.current = [];
+      const recorder = new MediaRecorder(stream, { mimeType });
+      dictateRecorderRef.current = recorder;
+
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          dictateChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onstop = async () => {
+        try { dictateStreamRef.current?.getTracks?.().forEach((t) => t.stop()); } catch {}
+        dictateStreamRef.current = null;
+        dictateRecorderRef.current = null;
+        setDictatingBlockId(null);
+
+        const blob = new Blob(dictateChunksRef.current, { type: mimeType });
+        dictateChunksRef.current = [];
+        if (blob.size < 2000) return;
+
+        setDictateTranscribingBlockId(blockId);
+        try {
+          const { API_BASE_URL } = await import("@/lib/api-config");
+          const formData = new FormData();
+          formData.append("audio", blob, "dictation.webm");
+          formData.append("model", "whisper-1");
+          formData.append("language", "en");
+          const res = await fetch(`${API_BASE_URL}/api/ai/transcribe`, { method: "POST", body: formData });
+          const data = await res.json().catch(() => ({}));
+          const transcript = String(data?.text || "").trim();
+          if (res.ok && transcript) {
+            const st = useCanvasStore.getState();
+            const cur: any = st.blocks[blockId];
+            if (cur) {
+              const existing = String(cur.content || "").trim();
+              const prefix = existing ? `${existing} ` : "";
+              const gs = 24;
+              let mCtx: CanvasRenderingContext2D | null = null;
+              try {
+                const c = document.createElement("canvas");
+                mCtx = c.getContext("2d");
+                if (mCtx) mCtx.font = '400 14px ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial';
+              } catch {}
+              const fixedW = Math.max(cur.width || gs * 10, gs * 10);
+              dictateTypewriterRef.current = { blockId, full: transcript, prefix, charIndex: 0, timer: null, measureCtx: mCtx };
+
+              const tick = () => {
+                const tw = dictateTypewriterRef.current;
+                if (!tw || tw.blockId !== blockId) return;
+                tw.charIndex = Math.min(tw.full.length, tw.charIndex + 2);
+                const partial = tw.full.slice(0, tw.charIndex);
+                const content = tw.prefix + partial;
+
+                const availW = Math.max(8, fixedW - 24);
+                const lines = content.split("\n");
+                let wrappedLines = 0;
+                for (const line of lines) {
+                  if (!line) { wrappedLines += 1; continue; }
+                  const lw = tw.measureCtx ? tw.measureCtx.measureText(line).width : line.length * 7.2;
+                  wrappedLines += Math.max(1, Math.ceil((lw + 4) / availW));
+                }
+                const neededH = Math.max(gs, (wrappedLines + 1) * gs);
+
+                useCanvasStore.getState().updateBlock(blockId as any, { content, width: fixedW, height: neededH } as any);
+
+                if (tw.charIndex >= tw.full.length) {
+                  dictateTypewriterRef.current = null;
+                  setDictateTranscribingBlockId(null);
+                  return;
+                }
+                const ch = tw.full.charAt(tw.charIndex);
+                const delay = ch === "\n" ? 24 : /[.,!?]/.test(ch) ? 28 : 16;
+                tw.timer = window.setTimeout(tick, delay) as unknown as number;
+              };
+              tick();
+              return;
+            }
+          }
+        } catch {}
+        setDictateTranscribingBlockId(null);
+      };
+
+      recorder.onerror = () => {
+        setDictatingBlockId(null);
+        setDictateTranscribingBlockId(null);
+      };
+
+      recorder.start();
+      setDictatingBlockId(blockId);
+    }).catch(() => {
+      setDictatingBlockId(null);
+    });
+  }, []);
+
+  const stopBrickDictation = useCallback(() => {
+    try {
+      if (dictateRecorderRef.current && dictateRecorderRef.current.state !== "inactive") {
+        dictateRecorderRef.current.stop();
+      }
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      try {
+        if (dictateRecorderRef.current && dictateRecorderRef.current.state !== "inactive") {
+          dictateRecorderRef.current.stop();
+        }
+        dictateStreamRef.current?.getTracks?.().forEach((t) => t.stop());
+        if (dictateTypewriterRef.current?.timer) window.clearTimeout(dictateTypewriterRef.current.timer);
+      } catch {}
+    };
+  }, []);
+
   const blocks = useCanvasStore((s) => s.blocks);
   const blockOrder = useCanvasStore((s) => s.blockOrder);
   const selectedIds = useCanvasStore((s) => s.selectedIds);
@@ -595,6 +737,11 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
   const moveBlocksFromSnapshot = useCanvasStore((s) => s.moveBlocksFromSnapshot);
   const pushHistory = useCanvasStore((s) => s.pushHistory);
   const deleteBlock = useCanvasStore((s) => s.deleteBlock);
+  const setFocusedBrickIds = useCanvasStore((s) => s.setFocusedBrickIds);
+
+  useEffect(() => {
+    setFocusedBrickIds(raisedBrickIds);
+  }, [raisedBrickIds, setFocusedBrickIds]);
 
   const prevBlockCountRef = useRef(Object.keys(blocks).length);
   useEffect(() => {
@@ -614,6 +761,15 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
     }
     prevBlockCountRef.current = count;
   }, [blocks]);
+
+  const ZOOM_MIN = 0.25;
+  const ZOOM_MAX = 2;
+  const ZOOM_STEP = 0.15;
+  const applyZoom = useCallback((next: number) => {
+    const clamped = Math.round(Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, next)) * 100) / 100;
+    canvasZoomRef.current = clamped;
+    setCanvasZoom(clamped);
+  }, []);
 
   const makeCreateBlockLocal = (x: number, y: number, mode: string, data: Record<string, any>, width: number, height: number) => ({
     id: `create-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
@@ -675,13 +831,39 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       const top = el.scrollTop || 0;
       if (el.scrollLeft !== 0) el.scrollLeft = 0;
       setScrollPos((p) => (p.left === left && p.top === top ? p : { left, top }));
-      // Keep zoom at 1 for the "old scrolling" feel.
-      setCamera({ x: 0, y: top, zoom: 1 });
+      const z = canvasZoomRef.current;
+      setCamera({ x: 0, y: top / z, zoom: z });
     };
     onScroll();
     el.addEventListener("scroll", onScroll, { passive: true });
     return () => el.removeEventListener("scroll", onScroll as any);
   }, [setCamera]);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      e.preventDefault();
+      const z = canvasZoomRef.current;
+      const delta = e.deltaY > 0 ? -ZOOM_STEP : ZOOM_STEP;
+      const next = Math.round(Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z + delta)) * 100) / 100;
+      if (next === z) return;
+
+      const scrollTop = el.scrollTop;
+      const rect = el.getBoundingClientRect();
+      const pointerY = (e.clientY - rect.top + scrollTop) / z;
+
+      canvasZoomRef.current = next;
+      setCanvasZoom(next);
+
+      requestAnimationFrame(() => {
+        el.scrollTop = pointerY * next - (e.clientY - rect.top);
+      });
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
 
   // Drag-to-delete: hold a dragged block against the RIGHT wall for 2s to reveal a drop-to-delete zone.
   useEffect(() => {
@@ -807,6 +989,25 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       window.removeEventListener("blur", onBlur, true);
     };
   }, [deleteBlocks]);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      const key = e.key;
+      if (key === "=" || key === "+") {
+        e.preventDefault();
+        applyZoom(canvasZoomRef.current + ZOOM_STEP);
+      } else if (key === "-") {
+        e.preventDefault();
+        applyZoom(canvasZoomRef.current - ZOOM_STEP);
+      } else if (key === "0") {
+        e.preventDefault();
+        applyZoom(1);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown, { capture: true });
+    return () => window.removeEventListener("keydown", onKeyDown, { capture: true } as any);
+  }, [applyZoom]);
 
   // Undo/redo hotkeys + Create block hotkeys.
   useEffect(() => {
@@ -1123,21 +1324,20 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
 
   // Expand the inner scroll surface to fit placed blocks (BrickEditor-like infinite down scroll).
   const surface = useMemo(() => {
-    const baseH = Math.max(viewport.height || 0, 900);
+    const z = canvasZoom || 1;
+    const baseH = Math.max((viewport.height || 0) / z, 900);
     let maxBottom = 0;
     for (const id of blockOrder) {
       const b = blocks[id];
       if (!b) continue;
       maxBottom = Math.max(maxBottom, (b.y || 0) + (b.height || gridSize));
     }
-    // Add breathing room below so the user can keep scrolling downward.
     const padBottom = gridSize * 12;
     return {
-      // Horizontal walls: as wide as the visible viewport (no infinite horizontal growth).
-      width: Math.max(gridSize, Math.floor((canvasWidth || viewport.width || 0) as number) || gridSize),
+      width: Math.max(gridSize, Math.floor(((canvasWidth || viewport.width || 0) as number) / z) || gridSize),
       height: Math.max(baseH, maxBottom + padBottom),
     };
-  }, [blockOrder, blocks, canvasWidth, gridSize, viewport.height, viewport.width]);
+  }, [blockOrder, blocks, canvasWidth, canvasZoom, gridSize, viewport.height, viewport.width]);
 
   const visibleIds = useMemo(() => {
     const ids: string[] = [];
@@ -1145,7 +1345,6 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
     for (const id of blockOrder) {
       const b = blocks[id];
       if (!b) continue;
-      // With scroll-as-camera, treat camera.x/y as scrollLeft/scrollTop, zoom always 1.
       if (isInViewport(b, camera, vp, 400)) ids.push(id);
     }
     return ids;
@@ -1157,9 +1356,10 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
     const rect = el.getBoundingClientRect();
     const localX = clientX - rect.left;
     const localY = clientY - rect.top;
+    const z = canvasZoomRef.current;
     return {
-      x: (scrollPos.left || 0) + localX,
-      y: (scrollPos.top || 0) + localY,
+      x: ((scrollPos.left || 0) + localX) / z,
+      y: ((scrollPos.top || 0) + localY) / z,
     };
   }
 
@@ -1292,6 +1492,20 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       } else if (transform === "button") {
         const btnData = { label: "Button", icon: "zap", style: "filled", action: "url", url: "", navigateTarget: "page", navigateValue: "", navigateLabel: "", copyText: "", webhookUrl: "", aiPrompt: "", eventName: "", targetBlockId: "", blockAction: "scroll", onClickCode: "", description: "", _needsSetup: true, confirm: false, toggleState: false };
         st.updateBlock(id as any, { content: JSON.stringify(btnData), format: "button", width: Math.max(gridSize * 8, Math.min(gridSize * 12, cur.width || gridSize * 8)), height: gridSize, data: { ...data, textVariant: "body", listType: "none" } } as any);
+      } else if (transform === "dictate") {
+        st.updateBlock(id as any, { content: "", width: Math.max(gridSize * 10, st.blocks[id]?.width || 0), data: { ...data, textVariant: "body", listType: "none" } } as any);
+        startBrickDictation(id);
+      } else if (transform === "page") {
+        const pageData = { html: "<p><br></p>", title: "Untitled" };
+        st.updateBlock(id as any, { content: JSON.stringify(pageData), format: "page", width: Math.max(gridSize * 22, cur.width || 0), height: Math.max(gridSize * 30, cur.height || 0), data: { ...data, textVariant: "body", listType: "none" } } as any);
+      } else if (transform === "chart") {
+        st.updateBlock(id as any, { content: "", format: "chart", width: Math.max(gridSize * 20, cur.width || 0), height: Math.max(gridSize * 14, cur.height || 0), data: { ...data, textVariant: "body", listType: "none" } } as any);
+      } else if (transform === "board") {
+        st.updateBlock(id as any, { content: "", format: "board", width: Math.max(gridSize * 22, cur.width || 0), height: Math.max(gridSize * 14, cur.height || 0), data: { ...data, textVariant: "body", listType: "none" } } as any);
+      } else if (transform === "form") {
+        st.updateBlock(id as any, { content: "", format: "form", width: Math.max(gridSize * 14, cur.width || 0), height: Math.max(gridSize * 18, cur.height || 0), data: { ...data, textVariant: "body", listType: "none" } } as any);
+      } else if (transform === "gallery") {
+        st.updateBlock(id as any, { content: "", format: "gallery", width: Math.max(gridSize * 22, cur.width || 0), height: Math.max(gridSize * 16, cur.height || 0), data: { ...data, textVariant: "body", listType: "none" } } as any);
       }
     } else {
       const id = existingId || st.addTextBlockAt({ x: p.x, y: p.y }, { width: gridSize, height: gridSize, content: "", format: "plain" } as any);
@@ -1419,7 +1633,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
   const parseTextSlashVariant = (
     raw: string,
     currentVariant: "body" | "h2" | "h1",
-    currentListType: "none" | "bullet" | "numbered" | "todo"
+    currentListType: "none" | "bullet" | "numbered" | "todo" | "toggle" | "quote"
   ) => {
     const TODO_EMPTY = "[ ]";
     const TODO_FILLED = "[x]";
@@ -1434,9 +1648,9 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
           return line;
         })
         .join("\n");
-    const ensureListSeed = (content: string, listType: "bullet" | "numbered" | "todo") => {
+    const ensureListSeed = (content: string, listType: "bullet" | "numbered" | "todo" | "toggle" | "quote") => {
       const s = String(content || "");
-      const marker = listType === "bullet" ? "• " : listType === "todo" ? `${TODO_EMPTY} ` : "1. ";
+      const marker = listType === "bullet" ? "• " : listType === "todo" ? `${TODO_EMPTY} ` : listType === "toggle" ? "▶ " : listType === "quote" ? "" : "1. ";
       if (!s.trim()) return marker;
       const firstLine = s.split("\n")[0] || "";
       if (listType === "bullet" && /^\s*(?:•|-)\s/.test(firstLine)) return s;
@@ -1446,6 +1660,8 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       )
         return normalizeTodoMarkers(s);
       if (listType === "numbered" && /^\s*\d+\.\s/.test(firstLine)) return s;
+      if (listType === "toggle" && /^\s*[▶▼]\s/.test(firstLine)) return s;
+      if (listType === "quote") return s;
       return `${marker}${s}`;
     };
     const s = String(raw || "");
@@ -1489,6 +1705,27 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         consumed: true,
       };
     }
+    if (/^\/(?:toggle\s*list|toggle|collapsible(?:\s*list)?)(?:\s+|$)/i.test(trimmed)) {
+      const content = trimmed.replace(/^\/(?:toggle\s*list|toggle|collapsible(?:\s*list)?)(?:\s+)?/i, "");
+      return {
+        content: ensureListSeed(content, "toggle"),
+        variant: "body" as const,
+        listType: "toggle" as const,
+        consumed: true,
+      };
+    }
+    if (/^\/(?:quote|callout|blockquote)(?:\s+|$)/i.test(trimmed)) {
+      const content = trimmed.replace(/^\/(?:quote|callout|blockquote)(?:\s+)?/i, "");
+      return {
+        content: ensureListSeed(content, "quote"),
+        variant: "body" as const,
+        listType: "quote" as const,
+        consumed: true,
+      };
+    }
+    if (/^\/code(?:\s+|$)/i.test(trimmed)) {
+      return { content: "", variant: currentVariant, listType: currentListType, consumed: true, transform: "code" as const };
+    }
     if (/^\/table(?:\s+|$)/i.test(trimmed)) {
       return { content: "", variant: currentVariant, listType: currentListType, consumed: true, transform: "table" as const };
     }
@@ -1500,6 +1737,24 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
     }
     if (/^\/button(?:\s+|$)/i.test(trimmed)) {
       return { content: "", variant: currentVariant, listType: currentListType, consumed: true, transform: "button" as const };
+    }
+    if (/^\/dictate(?:\s+|$)/i.test(trimmed)) {
+      return { content: "", variant: currentVariant, listType: currentListType, consumed: true, transform: "dictate" as const };
+    }
+    if (/^\/page(?:\s+|$)/i.test(trimmed)) {
+      return { content: "", variant: currentVariant, listType: currentListType, consumed: true, transform: "page" as const };
+    }
+    if (/^\/chart(?:\s+|$)/i.test(trimmed)) {
+      return { content: "", variant: currentVariant, listType: currentListType, consumed: true, transform: "chart" as const };
+    }
+    if (/^\/board(?:\s+|$)/i.test(trimmed)) {
+      return { content: "", variant: currentVariant, listType: currentListType, consumed: true, transform: "board" as const };
+    }
+    if (/^\/form(?:\s+|$)/i.test(trimmed)) {
+      return { content: "", variant: currentVariant, listType: currentListType, consumed: true, transform: "form" as const };
+    }
+    if (/^\/gallery(?:\s+|$)/i.test(trimmed)) {
+      return { content: "", variant: currentVariant, listType: currentListType, consumed: true, transform: "gallery" as const };
     }
     return {
       content: currentListType === "todo" ? normalizeTodoMarkers(s) : s,
@@ -1901,8 +2156,11 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       setActivatedBrickIds([]);
       setRaisedBrickIds([]);
     };
-    const onDown = () => {
+    const onDown = (e: PointerEvent) => {
       if (!floatingBrickRef.current.active) return;
+      if (e.shiftKey) return;
+      const t = e.target as Element | null;
+      if (!t?.closest?.("[data-omnia-canvas]")) return;
       window.setTimeout(dropFloating, 200);
     };
     const onKeyDown = (e: KeyboardEvent) => {
@@ -3523,6 +3781,30 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
     };
   }, []);
 
+  const prevRaisedRef = useRef<string[]>([]);
+  useLayoutEffect(() => {
+    const prev = prevRaisedRef.current;
+    const removed = prev.filter((id) => !raisedBrickIds.includes(id));
+    for (const rid of removed) {
+      const el = containerRef.current?.querySelector(`[data-block-id="${rid}"]`) as HTMLElement | null;
+      if (!el) continue;
+      el.style.transform = "";
+      el.style.boxShadow = "";
+      el.style.zIndex = "";
+      el.style.transition = "";
+    }
+    for (const rid of raisedBrickIds) {
+      const el = containerRef.current?.querySelector(`[data-block-id="${rid}"]`) as HTMLElement | null;
+      if (!el) continue;
+      if (el.hasAttribute("data-brick-shell")) continue;
+      el.style.transition = "transform 0.15s cubic-bezier(0.34,1.56,0.64,1), box-shadow 0.15s ease";
+      el.style.transform = "translateY(-8px) scale(1.02)";
+      el.style.boxShadow = "0 20px 36px rgba(0,0,0,0.30)";
+      el.style.zIndex = "40";
+    }
+    prevRaisedRef.current = raisedBrickIds;
+  }, [raisedBrickIds]);
+
   return (
     <div
       ref={containerRef}
@@ -3586,6 +3868,23 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         if (!blockId) return;
         const gid = getMoveGroupId(blockId);
         const ids = gid ? getMoveGroupMembers(gid) : [blockId];
+        if (e.shiftKey && floatingBrickRef.current.active) {
+          const alreadyRaised = floatingBrickRef.current.ids;
+          const allIncoming = ids.every((id) => alreadyRaised.includes(id));
+          const next = allIncoming
+            ? alreadyRaised.filter((id) => !ids.includes(id))
+            : [...alreadyRaised, ...ids.filter((id) => !alreadyRaised.includes(id))];
+          if (next.length === 0) {
+            floatingBrickRef.current = { active: false, ids: [] };
+            setActivatedBrickIds([]);
+            setRaisedBrickIds([]);
+          } else {
+            floatingBrickRef.current = { active: true, ids: next };
+            setActivatedBrickIds(next);
+            setRaisedBrickIds(next);
+          }
+          return;
+        }
         if (floatingBrickRef.current.active) {
           floatingBrickRef.current = { active: false, ids: [] };
           setActivatedBrickIds([]);
@@ -3646,26 +3945,31 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         if (!el) return;
         lastPointerClientRef.current = { x: e.clientX, y: e.clientY };
         const t = e.target as Element | null;
+        const blockEl = t?.closest?.("[data-block-id]") as HTMLElement | null;
+        const overMenuZone = Boolean(t?.closest?.("[data-block-menu-zone]"));
         const overBlock = Boolean(t?.closest?.("[data-canvas-block]"));
+        if (blockEl) {
+          const bid = blockEl.getAttribute("data-block-id") || "";
+          setHoveredSpecialBlockId((prev) => prev === bid ? prev : bid);
+        } else if (!overMenuZone) {
+          setHoveredSpecialBlockId((prev) => prev ? null : prev);
+        }
         if (overBlock) {
           if (hoverCell) setHoverCell(null);
           return;
         }
-        const rect = el.getBoundingClientRect();
-        const localX = e.clientX - rect.left;
-        const localY = e.clientY - rect.top;
-        const worldX = (scrollPos.left || 0) + localX;
-        const worldY = (scrollPos.top || 0) + localY;
-        const sx = snapToGrid(worldX, gridSize);
-        const sy = snapToGrid(worldY, gridSize);
+        const world = clientToWorld(e.clientX, e.clientY);
+        const sx = snapToGrid(world.x, gridSize);
+        const sy = snapToGrid(world.y, gridSize);
         setHoverCell((prev) => (prev && prev.x === sx && prev.y === sy ? prev : { x: sx, y: sy }));
       }}
-      onPointerLeave={() => setHoverCell(null)}
+      onPointerLeave={() => { setHoverCell(null); setHoveredSpecialBlockId(null); }}
       onPointerDown={(e) => {
         const el = containerRef.current;
         if (!el) return;
         const t = e.target as Element | null;
         if (shapePickerOpen && !t?.closest?.("[data-shape-picker]")) setShapePickerOpen(false);
+        if (brickMenu) { setBrickMenu(null); setBrickMenuSub(null); }
         if (t?.closest?.("[data-canvas-block]")) return;
         window.dispatchEvent(new CustomEvent("omnia_canvas_interact"));
         commitShapeCellEditorByKey();
@@ -3673,13 +3977,9 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         // Keep canvas focused so '/' works after clicking.
         el.focus();
         clearSelection();
-        const rect = el.getBoundingClientRect();
-        const localX = e.clientX - rect.left;
-        const localY = e.clientY - rect.top;
-        const worldX = (scrollPos.left || 0) + localX;
-        const worldY = (scrollPos.top || 0) + localY;
-        const sx = snapToGrid(worldX, gridSize);
-        const sy = snapToGrid(worldY, gridSize);
+        const world = clientToWorld(e.clientX, e.clientY);
+        const sx = snapToGrid(world.x, gridSize);
+        const sy = snapToGrid(world.y, gridSize);
         const key = cellKey(sx, sy);
         const target: PressTarget = { kind: "cell", key };
         if (e.shiftKey) {
@@ -3875,8 +4175,16 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       <div
         className="absolute left-0 top-0"
         style={{
+          width: `${surface.width * canvasZoom}px`,
+          height: `${surface.height * canvasZoom}px`,
+        }}
+      >
+      <div
+        style={{
           width: `${surface.width}px`,
           height: `${surface.height}px`,
+          transform: `scale(${canvasZoom})`,
+          transformOrigin: "top left",
         }}
       >
         {/* Canvas "walls" (left/right) */}
@@ -3902,10 +4210,10 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
           <div
             className="absolute z-50"
             style={{
-              left: `${Math.max(0, surface.width - Math.min(160, Math.max(96, Math.floor((viewport.width || surface.width) * 0.2))))}px`,
-              top: `${scrollPos.top}px`,
-              width: `${Math.min(160, Math.max(96, Math.floor((viewport.width || surface.width) * 0.2)))}px`,
-              height: `${viewport.height || 0}px`,
+              left: `${Math.max(0, surface.width - Math.min(160, Math.max(96, Math.floor((viewport.width / (canvasZoom || 1) || surface.width) * 0.2))))}px`,
+              top: `${(scrollPos.top || 0) / (canvasZoom || 1)}px`,
+              width: `${Math.min(160, Math.max(96, Math.floor((viewport.width / (canvasZoom || 1) || surface.width) * 0.2)))}px`,
+              height: `${(viewport.height || 0) / (canvasZoom || 1)}px`,
               pointerEvents: "none",
             }}
           >
@@ -4222,6 +4530,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         {visibleIds.map((id) => {
           const b = blocks[id];
           if (!b) return null;
+
           const isAiResponseBubble = Boolean((b as any)?.data?.aiResponseBubble);
           const isTextBrick = String((b as any)?.type || "") === "text";
           const mode = String((b as any).mode || "").toLowerCase();
@@ -4304,17 +4613,50 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
             return <YouTubeBlock key={id} id={id} />;
           }
           const blockFormat = String((b as any).format || "").toLowerCase();
-          if ((b as any).type === "text" && blockFormat === "table") {
-            return <SpreadsheetBlock key={id} id={id} />;
-          }
-          if ((b as any).type === "text" && blockFormat === "calendar") {
-            return <CalendarBlock key={id} id={id} />;
-          }
-          if ((b as any).type === "text" && blockFormat === "button") {
-            return <ButtonBlock key={id} id={id} />;
-          }
-          if ((b as any).type === "text" && blockFormat === "media") {
-            return <MediaBlock key={id} id={id} />;
+          const isSpecialBlock = (b as any).type === "text" && ["table", "calendar", "button", "media", "code", "page", "chart", "board", "form", "gallery"].includes(blockFormat);
+          if (isSpecialBlock) {
+            const Component = blockFormat === "table" ? SpreadsheetBlock
+              : blockFormat === "calendar" ? CalendarBlock
+              : blockFormat === "button" ? ButtonBlock
+              : blockFormat === "media" ? MediaBlock
+              : blockFormat === "code" ? CodeBlock
+              : blockFormat === "chart" ? ChartBlock
+              : blockFormat === "board" ? BoardBlock
+              : blockFormat === "form" ? FormBlock
+              : blockFormat === "gallery" ? GalleryBlock
+              : PageBlock;
+            const sbx = Number((b as any).x || 0);
+            const sby = Number((b as any).y || 0);
+            const sbh = Number((b as any).height || gridSize);
+            return (
+              <React.Fragment key={id}>
+                <Component id={id} />
+                <div
+                  data-block-menu-zone
+                  className="absolute"
+                  style={{ left: `${sbx - 32}px`, top: `${sby}px`, width: 32, height: `${sbh}px`, zIndex: 11 }}
+                  onPointerEnter={() => setHoveredSpecialBlockId(id)}
+                  onPointerLeave={() => setHoveredSpecialBlockId((prev) => prev === id ? null : prev)}
+                >
+                  {hoveredSpecialBlockId === id && (
+                    <button
+                      className="absolute flex items-center justify-center w-6 h-6 rounded-md hover:bg-black/8 dark:hover:bg-white/12 transition-opacity"
+                      style={{ top: 2, left: 3 }}
+                      title="Options"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const btn = e.currentTarget as HTMLElement;
+                        setBrickMenuSub(null);
+                        setBrickMenu((prev) => prev?.id === id ? null : { id, x: btn.getBoundingClientRect().left, y: btn.getBoundingClientRect().bottom + 4 });
+                      }}
+                      onPointerDown={(e) => e.stopPropagation()}
+                    >
+                      <MoreHorizontal className="w-3.5 h-3.5 text-black/50 dark:text-white/50" />
+                    </button>
+                  )}
+                </div>
+              </React.Fragment>
+            );
           }
           const blockSources: { title: string; url: string; enabled: boolean }[] =
             isAiResponseBubble && Array.isArray(createData.sources) ? createData.sources : [];
@@ -4416,12 +4758,20 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
               const data = cur?.data && typeof cur.data === "object" ? { ...cur.data } : {};
               const currentVariant = (String(data.textVariant || "body").toLowerCase() as "body" | "h2" | "h1") || "body";
               const currentListType =
-                (String(data.listType || "none").toLowerCase() as "none" | "bullet" | "numbered" | "todo") || "none";
+                (String(data.listType || "none").toLowerCase() as "none" | "bullet" | "numbered" | "todo" | "toggle" | "quote") || "none";
               const parsed = parseTextSlashVariant(raw, currentVariant, currentListType);
               if ((parsed as any).transform) {
                 const transform = (parsed as any).transform as string;
                 setTypingBlockId(null);
-                if (transform === "table") {
+                if (transform === "code") {
+                  const blockPos = { x: cur.x, y: cur.y };
+                  const bid_ = bid as string;
+                  deleteBlock(bid_ as any);
+                  addCodeBlockAt(blockPos, {
+                    width: Math.max(gridSize * 14, cur.width || 0),
+                    height: Math.max(gridSize * 7, cur.height || 0),
+                  });
+                } else if (transform === "table") {
                   const sheet = { version: 1, rows: 10, cols: 6, colWidths: Array.from({ length: 6 }, () => 96), cells: {} };
                   updateBlock(bid as any, {
                     content: JSON.stringify(sheet),
@@ -4457,6 +4807,30 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
                     height: gridSize,
                     data: { ...data, textVariant: "body", listType: "none" },
                   } as any);
+                } else if (transform === "dictate") {
+                  updateBlock(bid as any, {
+                    content: "",
+                    width: Math.max(gridSize * 10, cur.width || 0),
+                    data: { ...data, textVariant: "body", listType: "none" },
+                  } as any);
+                  startBrickDictation(bid);
+                } else if (transform === "page") {
+                  const pageData = { html: "<p><br></p>", title: "Untitled" };
+                  updateBlock(bid as any, {
+                    content: JSON.stringify(pageData),
+                    format: "page",
+                    width: Math.max(gridSize * 22, cur.width || 0),
+                    height: Math.max(gridSize * 30, cur.height || 0),
+                    data: { ...data, textVariant: "body", listType: "none" },
+                  } as any);
+                } else if (transform === "chart") {
+                  updateBlock(bid as any, { content: "", format: "chart", width: Math.max(gridSize * 20, cur.width || 0), height: Math.max(gridSize * 14, cur.height || 0), data: { ...data, textVariant: "body", listType: "none" } } as any);
+                } else if (transform === "board") {
+                  updateBlock(bid as any, { content: "", format: "board", width: Math.max(gridSize * 22, cur.width || 0), height: Math.max(gridSize * 14, cur.height || 0), data: { ...data, textVariant: "body", listType: "none" } } as any);
+                } else if (transform === "form") {
+                  updateBlock(bid as any, { content: "", format: "form", width: Math.max(gridSize * 14, cur.width || 0), height: Math.max(gridSize * 18, cur.height || 0), data: { ...data, textVariant: "body", listType: "none" } } as any);
+                } else if (transform === "gallery") {
+                  updateBlock(bid as any, { content: "", format: "gallery", width: Math.max(gridSize * 22, cur.width || 0), height: Math.max(gridSize * 16, cur.height || 0), data: { ...data, textVariant: "body", listType: "none" } } as any);
                 }
                 return;
               }
@@ -4491,6 +4865,10 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
               const sizeSame = cur.width === newWidth && cur.height === newHeight;
               const variantSame = currentVariant === nextVariant && currentListType === nextListType;
               if (contentSame && sizeSame && variantSame) {
+                if (parsed.consumed) syncBrickEditorText(bid, textValue);
+                return;
+              }
+              if (contentSame && variantSame) {
                 if (parsed.consumed) syncBrickEditorText(bid, textValue);
                 return;
               }
@@ -4557,24 +4935,11 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
                 setRaisedBrickIds([]);
               }
             },
-            onDoubleClick: (bid) => {
-              if (floatingBrickRef.current.active) {
-                floatingBrickRef.current = { active: false, ids: [] };
-                setActivatedBrickIds([]);
-                setRaisedBrickIds([]);
-                return;
-              }
-              const gid = getMoveGroupId(bid);
-              const ids = gid ? getMoveGroupMembers(gid) : [bid];
-              setTypingBlockId(null);
-              setActivatedBrickIds(ids);
-              setRaisedBrickIds(ids);
-              floatingBrickRef.current = { active: true, ids };
-            },
             onPress: (bid, shiftKey, source) => {
               const target: PressTarget = { kind: "brick", key: bid };
               if (source !== "click") return;
               if (suppressBrickClickRef.current) return;
+              if (shiftKey && floatingBrickRef.current.active) return;
               commitShapeCellEditorByKey();
               setTypingShapeCellKey(null);
               if (shiftKey) {
@@ -4592,7 +4957,6 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
                 setActivatedGridRanges([]);
               }
               setShiftLinkedGridSelection(false);
-              // Click = edit mode, no blue ring.
               setActivatedBrickIds([]);
               setRaisedBrickIds([]);
               dropEmptyTypingBlockIfNeeded(bid);
@@ -4600,7 +4964,60 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
               focusBrickInputById(bid);
               setShiftAnchor(target);
             },
+            onBrickMenu: (bid, rect) => {
+              setBrickMenuSub(null);
+              setBrickMenu((prev) => prev?.id === bid ? null : { id: bid, x: rect.left, y: rect.bottom + 4 });
+            },
           });
+
+          if (dictatingBlockId === id || dictateTranscribingBlockId === id) {
+            const bx = Number((b as any).x || 0);
+            const by = Number((b as any).y || 0);
+            const bw = Number((b as any).width || gridSize);
+            const bh = Number((b as any).height || gridSize);
+            const isRecording = dictatingBlockId === id;
+            const isTranscribing = dictateTranscribingBlockId === id && !isRecording;
+            return (
+              <React.Fragment key={id}>
+                {brickEl}
+                {isRecording && (
+                  <div
+                    className="absolute flex flex-row items-center gap-2 px-3"
+                    style={{
+                      left: `${bx}px`,
+                      top: `${by}px`,
+                      width: `${bw}px`,
+                      height: `${bh}px`,
+                      zIndex: 12,
+                      background: "rgba(59,130,246,0.05)",
+                      borderRadius: "6px",
+                      border: "1.5px solid rgba(59,130,246,0.4)",
+                    }}
+                  >
+                    <Mic className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                    <div className="dictation-wave" style={{ height: 16 }}>
+                      <span /><span /><span /><span /><span />
+                    </div>
+                    <span style={{ fontSize: 12, fontWeight: 500, color: "#3b82f6", whiteSpace: "nowrap" }}>Recording…</span>
+                    <div style={{ flex: 1 }} />
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); stopBrickDictation(); }}
+                      style={{
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        width: 24, height: 24, borderRadius: 6,
+                        background: "rgba(59,130,246,0.12)", border: "none", cursor: "pointer",
+                        flexShrink: 0,
+                      }}
+                      title="Stop recording"
+                    >
+                      <Square className="w-3 h-3 text-blue-500" fill="#3b82f6" />
+                    </button>
+                  </div>
+                )}
+              </React.Fragment>
+            );
+          }
 
           if (isAiResponseBubble && isAiThinking) {
             const bx = Number((b as any).x || 0);
@@ -4625,30 +5042,350 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
           return brickEl;
         })}
 
-        {raisedBrickIds.map((rid) => {
-          const rb = blocks[rid] as any;
-          if (!rb) return null;
-          const isBrickShell = String(rb.type || "") === "text" && !["table", "calendar", "button", "media"].includes(String(rb.format || "").toLowerCase());
-          if (isBrickShell) return null;
-          return (
-            <div
-              key={`raised-${rid}`}
-              className="absolute pointer-events-none rounded-lg transition-all duration-150"
-              style={{
-                left: `${rb.x}px`,
-                top: `${rb.y}px`,
-                width: `${rb.width}px`,
-                height: `${rb.height}px`,
-                zIndex: 50,
-                transform: "translateY(-8px) scale(1.02)",
-                boxShadow: "0 20px 36px rgba(0,0,0,0.25)",
-                border: "2px solid rgba(59,130,246,0.7)",
-                borderRadius: "8px",
-              }}
-            />
-          );
-        })}
+        
       </div>
+      </div>
+
+      {/* Brick context menu */}
+      {brickMenu && (() => {
+        const BRICK_COLORS = [
+          { label: "Default", value: "" },
+          { label: "Blue", value: "rgba(59,130,246,0.18)" },
+          { label: "Green", value: "rgba(22,163,74,0.18)" },
+          { label: "Amber", value: "rgba(217,119,6,0.18)" },
+          { label: "Red", value: "rgba(220,38,38,0.18)" },
+          { label: "Purple", value: "rgba(124,58,237,0.18)" },
+          { label: "Pink", value: "rgba(219,39,119,0.18)" },
+          { label: "Teal", value: "rgba(15,118,110,0.18)" },
+        ];
+        const TEXT_COLORS = [
+          { label: "Default", value: "" },
+          { label: "Blue", value: "#3B82F6" },
+          { label: "Green", value: "#16A34A" },
+          { label: "Amber", value: "#D97706" },
+          { label: "Red", value: "#DC2626" },
+          { label: "Purple", value: "#7C3AED" },
+          { label: "Pink", value: "#DB2777" },
+          { label: "Teal", value: "#0F766E" },
+        ];
+        const applyBrickData = (bid: string, patch: Record<string, any>) => {
+          const st = useCanvasStore.getState();
+          const cur: any = (st.blocks as any)?.[bid];
+          if (!cur) return;
+          const data = cur?.data && typeof cur.data === "object" ? { ...cur.data, ...patch } : { ...patch };
+          updateBlock(bid as any, { data } as any);
+        };
+        const addBrickToCalendar = (bid: string, dateStr?: string, timeStr?: string) => {
+          const st = useCanvasStore.getState();
+          const orig: any = (st.blocks as any)?.[bid];
+          if (!orig) return;
+          const text = String(orig.content || orig.data?.content || "").trim();
+          const title = text.split("\n")[0]?.slice(0, 60) || "Canvas Brick";
+          const description = text;
+          const dk = dateStr || (() => { const n = new Date(); return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}-${String(n.getDate()).padStart(2, "0")}`; })();
+          const startHour = timeStr ? parseInt(timeStr.split(":")[0], 10) + (parseInt(timeStr.split(":")[1] || "0", 10) >= 30 ? 0.5 : 0) : new Date().getHours();
+          const evt = {
+            id: `ev-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+            date_key: dk,
+            title,
+            description,
+            start_hour: startHour,
+            end_hour: Math.min(24, startHour + 1),
+            custom_color: "rgba(59,130,246,0.55)",
+          };
+          const KEY = "lykinsai_calendar_events";
+          try {
+            const existing = JSON.parse(localStorage.getItem(KEY) || "[]");
+            existing.push(evt);
+            localStorage.setItem(KEY, JSON.stringify(existing));
+          } catch {}
+          window.dispatchEvent(new CustomEvent("calendar_events_changed"));
+
+          const allIds = Array.isArray(st.blockOrder) ? st.blockOrder : [];
+          let calId = allIds.find((id) => {
+            const b: any = (st.blocks as any)?.[id];
+            return b?.type === "text" && String(b?.format || "").toLowerCase() === "calendar";
+          });
+
+          if (!calId) {
+            const brickX = Number(orig.x || 0);
+            const brickY = Number(orig.y || 0) + Number(orig.height || gridSize) + gridSize;
+            const calW = Math.max(gridSize * 12, 288);
+            const calH = Math.max(gridSize * 14, 336);
+            calId = `cal-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+            const calBlock = {
+              id: calId,
+              type: "text",
+              format: "calendar",
+              x: snapToGrid(brickX, gridSize),
+              y: snapToGrid(brickY, gridSize),
+              width: calW,
+              height: calH,
+              content: JSON.stringify({ events: [] }),
+              data: { textVariant: "body", listType: "none" },
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            };
+            useCanvasStore.getState().addBlock(calBlock as any);
+          }
+
+          requestAnimationFrame(() => {
+            const el = containerRef.current?.querySelector(`[data-block-id="${calId}"]`) as HTMLElement | null;
+            if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+          });
+        };
+        return (
+          <>
+            <div className="fixed inset-0 z-[299]" onClick={() => { setBrickMenu(null); setBrickMenuSub(null); }} onContextMenu={(e) => { e.preventDefault(); setBrickMenu(null); setBrickMenuSub(null); }} />
+            <div
+              className="fixed z-[300] min-w-[180px] rounded-xl py-1.5 flex flex-col"
+              style={{
+                top: `${brickMenu.y}px`,
+                left: `${brickMenu.x}px`,
+                background: "rgba(30, 30, 30, 0.92)",
+                backdropFilter: "blur(16px)",
+                border: "1px solid rgba(255,255,255,0.10)",
+                boxShadow: "0 8px 32px rgba(0,0,0,0.45)",
+                animation: "zoomPanelSlideUp 0.12s ease-out",
+              }}
+              onPointerDown={(e) => e.stopPropagation()}
+            >
+              {!brickMenuSub && (
+                <>
+                  {[
+                    { icon: CopyPlus, label: "Duplicate", action: "duplicate" },
+                    { icon: Copy, label: "Copy", action: "copy" },
+                    { icon: Send, label: "Send Brick to…", action: "send" },
+                  ].map((item) => (
+                    <button
+                      key={item.action}
+                      className="flex items-center gap-2.5 px-3 py-1.5 text-[12px] text-left text-white/80 hover:bg-white/10 transition-colors"
+                      onClick={() => {
+                        const bid = brickMenu.id;
+                        setBrickMenu(null);
+                        if (item.action === "duplicate") {
+                          const st = useCanvasStore.getState();
+                          const orig: any = (st.blocks as any)?.[bid];
+                          if (!orig) return;
+                          const dup = { ...orig, id: `dup-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`, x: orig.x + gridSize, y: orig.y + gridSize };
+                          if (dup.data) dup.data = { ...dup.data };
+                          useCanvasStore.getState().addBlock(dup);
+                        } else if (item.action === "copy") {
+                          const st = useCanvasStore.getState();
+                          const orig: any = (st.blocks as any)?.[bid];
+                          if (!orig) return;
+                          const text = String(orig.content || orig.data?.content || "");
+                          if (text) navigator.clipboard?.writeText(text);
+                        } else if (item.action === "send") {
+                          window.dispatchEvent(new CustomEvent("omnia_brick_send", { detail: { blockId: bid } }));
+                        }
+                      }}
+                    >
+                      <item.icon className="w-3.5 h-3.5 shrink-0" />
+                      <span>{item.label}</span>
+                    </button>
+                  ))}
+                  <div className="mx-2 my-1 h-px bg-white/8" />
+                  <button
+                    className="flex items-center gap-2.5 px-3 py-1.5 text-[12px] text-left text-white/80 hover:bg-white/10 transition-colors"
+                    onClick={() => setBrickMenuSub("brick-color")}
+                  >
+                    <Palette className="w-3.5 h-3.5 shrink-0" />
+                    <span>Change Brick Color</span>
+                    <ChevronDown className="w-3 h-3 ml-auto opacity-40 -rotate-90" />
+                  </button>
+                  <button
+                    className="flex items-center gap-2.5 px-3 py-1.5 text-[12px] text-left text-white/80 hover:bg-white/10 transition-colors"
+                    onClick={() => setBrickMenuSub("text-color")}
+                  >
+                    <TypeIcon className="w-3.5 h-3.5 shrink-0" />
+                    <span>Change Text Color</span>
+                    <ChevronDown className="w-3 h-3 ml-auto opacity-40 -rotate-90" />
+                  </button>
+                  <div className="mx-2 my-1 h-px bg-white/8" />
+                  <button
+                    className="flex items-center gap-2.5 px-3 py-1.5 text-[12px] text-left text-white/80 hover:bg-white/10 transition-colors"
+                    onClick={() => {
+                      const now = new Date();
+                      setCalPickerDate(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`);
+                      setCalPickerTime(`${String(now.getHours()).padStart(2, "0")}:00`);
+                      setBrickMenuSub("calendar");
+                    }}
+                  >
+                    <CalendarPlus className="w-3.5 h-3.5 shrink-0" />
+                    <span>Add Brick to Calendar</span>
+                    <ChevronDown className="w-3 h-3 ml-auto opacity-40 -rotate-90" />
+                  </button>
+                  <div className="mx-2 my-1 h-px bg-white/8" />
+                  <button
+                    className="flex items-center gap-2.5 px-3 py-1.5 text-[12px] text-left text-red-400 hover:bg-red-500/15 transition-colors"
+                    onClick={() => { deleteBlock(brickMenu.id as any); setBrickMenu(null); }}
+                  >
+                    <Trash2 className="w-3.5 h-3.5 shrink-0" />
+                    <span>Delete</span>
+                  </button>
+                </>
+              )}
+
+              {brickMenuSub === "brick-color" && (
+                <>
+                  <button
+                    className="flex items-center gap-2 px-3 py-1.5 text-[12px] text-white/60 hover:bg-white/10 transition-colors"
+                    onClick={() => setBrickMenuSub(null)}
+                  >
+                    <ChevronDown className="w-3 h-3 rotate-90" />
+                    <span>Brick Color</span>
+                  </button>
+                  <div className="mx-2 my-1 h-px bg-white/8" />
+                  <div className="grid grid-cols-5 gap-1.5 px-3 py-2">
+                    {BRICK_COLORS.map((c) => (
+                      <button
+                        key={c.label}
+                        className="w-7 h-7 rounded-lg border border-white/15 hover:scale-110 transition-transform flex items-center justify-center"
+                        style={{ background: c.value || "linear-gradient(145deg, rgba(255,255,255,0.34), rgba(255,255,255,0.18))" }}
+                        title={c.label}
+                        onClick={() => {
+                          applyBrickData(brickMenu.id, { brickColor: c.value || undefined });
+                          setBrickMenu(null);
+                          setBrickMenuSub(null);
+                        }}
+                      >
+                        {!c.value && <span className="text-[9px] text-white/40">∅</span>}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+
+              {brickMenuSub === "text-color" && (
+                <>
+                  <button
+                    className="flex items-center gap-2 px-3 py-1.5 text-[12px] text-white/60 hover:bg-white/10 transition-colors"
+                    onClick={() => setBrickMenuSub(null)}
+                  >
+                    <ChevronDown className="w-3 h-3 rotate-90" />
+                    <span>Text Color</span>
+                  </button>
+                  <div className="mx-2 my-1 h-px bg-white/8" />
+                  <div className="grid grid-cols-5 gap-1.5 px-3 py-2">
+                    {TEXT_COLORS.map((c) => (
+                      <button
+                        key={c.label}
+                        className="w-7 h-7 rounded-lg border border-white/15 hover:scale-110 transition-transform flex items-center justify-center"
+                        style={{ background: c.value || "transparent" }}
+                        title={c.label}
+                        onClick={() => {
+                          applyBrickData(brickMenu.id, { textColor: c.value || undefined });
+                          setBrickMenu(null);
+                          setBrickMenuSub(null);
+                        }}
+                      >
+                        {!c.value && <span className="text-[9px] text-white/40">∅</span>}
+                        {c.value && <span className="text-[11px] font-bold" style={{ color: c.value, textShadow: "0 1px 2px rgba(0,0,0,0.5)" }}>A</span>}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+
+              {brickMenuSub === "calendar" && (
+                <>
+                  <button
+                    className="flex items-center gap-2 px-3 py-1.5 text-[12px] text-white/60 hover:bg-white/10 transition-colors"
+                    onClick={() => setBrickMenuSub(null)}
+                  >
+                    <ChevronDown className="w-3 h-3 rotate-90" />
+                    <span>Add to Calendar</span>
+                  </button>
+                  <div className="mx-2 my-1 h-px bg-white/8" />
+                  <div className="flex flex-col gap-2 px-3 py-2">
+                    <label className="text-[11px] text-white/50">Date</label>
+                    <input
+                      type="date"
+                      value={calPickerDate}
+                      onChange={(e) => setCalPickerDate(e.target.value)}
+                      className="w-full rounded-lg bg-white/8 border border-white/10 text-white/90 text-[12px] px-2.5 py-1.5 outline-none focus:border-blue-400/50"
+                      style={{ colorScheme: "dark" }}
+                    />
+                    <label className="text-[11px] text-white/50">Time</label>
+                    <input
+                      type="time"
+                      value={calPickerTime}
+                      onChange={(e) => setCalPickerTime(e.target.value)}
+                      className="w-full rounded-lg bg-white/8 border border-white/10 text-white/90 text-[12px] px-2.5 py-1.5 outline-none focus:border-blue-400/50"
+                      style={{ colorScheme: "dark" }}
+                    />
+                    <button
+                      className="mt-1 w-full rounded-lg bg-blue-500/80 hover:bg-blue-500 text-white text-[12px] font-medium py-1.5 transition-colors"
+                      onClick={() => {
+                        addBrickToCalendar(brickMenu.id, calPickerDate, calPickerTime);
+                        setBrickMenu(null);
+                        setBrickMenuSub(null);
+                      }}
+                    >
+                      Add Event
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </>
+        );
+      })()}
+
+      {/* Zoom toggle + panel */}
+      <div className="fixed z-[200] flex items-end gap-2" style={{ bottom: "16px", left: "16px" }} onPointerDown={(e) => e.stopPropagation()}>
+        <button
+          type="button"
+          onClick={() => setZoomPanelOpen((v) => !v)}
+          className="rounded-full w-9 h-9 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center"
+          title={zoomPanelOpen ? "Hide zoom" : "Show zoom"}
+        >
+          {zoomPanelOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronUp className="w-4 h-4" />}
+        </button>
+        {zoomPanelOpen && (
+          <div
+            className="flex items-center gap-1 rounded-xl px-1.5 py-1"
+            style={{
+              background: "rgba(30, 30, 30, 0.85)",
+              backdropFilter: "blur(12px)",
+              border: "1px solid rgba(255,255,255,0.10)",
+              boxShadow: "0 4px 20px rgba(0,0,0,0.35)",
+              animation: "zoomPanelSlideUp 0.15s ease-out",
+            }}
+          >
+            <button
+              className="flex items-center justify-center w-7 h-7 rounded-lg hover:bg-white/10 transition-colors text-white/70 hover:text-white"
+              onClick={() => applyZoom(canvasZoom - ZOOM_STEP)}
+              title="Zoom out"
+            >
+              <ZoomOut className="w-3.5 h-3.5" />
+            </button>
+            <button
+              className="flex items-center justify-center min-w-[42px] h-7 rounded-lg hover:bg-white/10 transition-colors text-[11px] font-medium text-white/60 hover:text-white tabular-nums"
+              onClick={() => applyZoom(1)}
+              title="Reset zoom"
+            >
+              {Math.round(canvasZoom * 100)}%
+            </button>
+            <button
+              className="flex items-center justify-center w-7 h-7 rounded-lg hover:bg-white/10 transition-colors text-white/70 hover:text-white"
+              onClick={() => applyZoom(canvasZoom + ZOOM_STEP)}
+              title="Zoom in"
+            >
+              <ZoomIn className="w-3.5 h-3.5" />
+            </button>
+            <button
+              className="flex items-center justify-center w-7 h-7 rounded-lg hover:bg-white/10 transition-colors text-white/50 hover:text-white"
+              onClick={() => applyZoom(1)}
+              title="Fit to view"
+            >
+              <Maximize className="w-3 h-3" />
+            </button>
+          </div>
+        )}
+      </div>
+      <GalleryModalPortal />
     </div>
   );
 }

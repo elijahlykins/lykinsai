@@ -19,19 +19,21 @@ const MONTHS_SHORT = [
 
 const EVENT_COLORS = [
   "rgba(59,130,246,0.18)",
-  "rgba(16,185,129,0.18)",
-  "rgba(245,158,11,0.18)",
-  "rgba(239,68,68,0.18)",
-  "rgba(139,92,246,0.18)",
-  "rgba(236,72,153,0.18)",
+  "rgba(22,163,74,0.18)",
+  "rgba(217,119,6,0.18)",
+  "rgba(220,38,38,0.18)",
+  "rgba(124,58,237,0.18)",
+  "rgba(219,39,119,0.18)",
+  "rgba(15,118,110,0.18)",
 ];
 const EVENT_BORDER_COLORS = [
   "rgba(59,130,246,0.55)",
-  "rgba(16,185,129,0.55)",
-  "rgba(245,158,11,0.55)",
-  "rgba(239,68,68,0.55)",
-  "rgba(139,92,246,0.55)",
-  "rgba(236,72,153,0.55)",
+  "rgba(22,163,74,0.55)",
+  "rgba(217,119,6,0.55)",
+  "rgba(220,38,38,0.55)",
+  "rgba(124,58,237,0.55)",
+  "rgba(219,39,119,0.55)",
+  "rgba(15,118,110,0.55)",
 ];
 
 const EVENT_PRESETS = [
@@ -764,17 +766,12 @@ function DraftEventBlock({ draft, onDragEnd, leftClass = "left-16", rightClass =
 const CUSTOM_PRESETS_KEY = "lykinsai_custom_presets";
 const PRESET_COLOR_OPTIONS = [
   { color: "rgba(59,130,246,0.85)",  border: "rgba(59,130,246,0.55)",  bg: "rgba(59,130,246,0.14)" },
-  { color: "rgba(16,185,129,0.85)",  border: "rgba(16,185,129,0.55)",  bg: "rgba(16,185,129,0.14)" },
-  { color: "rgba(245,158,11,0.85)",  border: "rgba(245,158,11,0.55)",  bg: "rgba(245,158,11,0.14)" },
-  { color: "rgba(239,68,68,0.85)",   border: "rgba(239,68,68,0.55)",   bg: "rgba(239,68,68,0.14)" },
-  { color: "rgba(139,92,246,0.85)",  border: "rgba(139,92,246,0.55)",  bg: "rgba(139,92,246,0.14)" },
-  { color: "rgba(236,72,153,0.85)",  border: "rgba(236,72,153,0.55)",  bg: "rgba(236,72,153,0.14)" },
-  { color: "rgba(14,165,233,0.85)",  border: "rgba(14,165,233,0.55)",  bg: "rgba(14,165,233,0.14)" },
-  { color: "rgba(234,179,8,0.85)",   border: "rgba(234,179,8,0.55)",   bg: "rgba(234,179,8,0.14)" },
-  { color: "rgba(249,115,22,0.85)",  border: "rgba(249,115,22,0.55)",  bg: "rgba(249,115,22,0.14)" },
-  { color: "rgba(34,197,94,0.85)",   border: "rgba(34,197,94,0.55)",   bg: "rgba(34,197,94,0.14)" },
-  { color: "rgba(100,116,139,0.85)", border: "rgba(100,116,139,0.55)", bg: "rgba(100,116,139,0.14)" },
-  { color: "rgba(99,102,241,0.85)",  border: "rgba(99,102,241,0.55)",  bg: "rgba(99,102,241,0.14)" },
+  { color: "rgba(22,163,74,0.85)",   border: "rgba(22,163,74,0.55)",   bg: "rgba(22,163,74,0.14)" },
+  { color: "rgba(217,119,6,0.85)",   border: "rgba(217,119,6,0.55)",   bg: "rgba(217,119,6,0.14)" },
+  { color: "rgba(220,38,38,0.85)",   border: "rgba(220,38,38,0.55)",   bg: "rgba(220,38,38,0.14)" },
+  { color: "rgba(124,58,237,0.85)",  border: "rgba(124,58,237,0.55)",  bg: "rgba(124,58,237,0.14)" },
+  { color: "rgba(219,39,119,0.85)",  border: "rgba(219,39,119,0.55)",  bg: "rgba(219,39,119,0.14)" },
+  { color: "rgba(15,118,110,0.85)",  border: "rgba(15,118,110,0.55)",  bg: "rgba(15,118,110,0.14)" },
 ];
 
 const CUSTOM_COLORS_KEY = "lykinsai_custom_colors";

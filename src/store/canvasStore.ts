@@ -70,6 +70,9 @@ type CanvasState = {
   transformBrickTrait: (id: BlockId, trait: BrickTrait) => void;
   transformSelectedBrickTraits: (trait: BrickTrait) => void;
 
+  focusedBrickIds: BlockId[];
+  setFocusedBrickIds: (ids: BlockId[]) => void;
+
   pushHistory: () => void;
   undo: () => void;
   redo: () => void;
@@ -263,6 +266,9 @@ export const useCanvasStore = create<CanvasState>()(
     canvasWidth: null,
     history: [],
     future: [],
+    focusedBrickIds: [],
+
+    setFocusedBrickIds: (ids) => set((state) => { state.focusedBrickIds = ids; }),
 
     setCanvasWidth: (width) => {
       set((state) => {

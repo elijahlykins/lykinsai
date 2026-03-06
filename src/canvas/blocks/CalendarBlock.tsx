@@ -1,5 +1,5 @@
 import React, { memo, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight, Plus, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Plus } from "lucide-react";
 import { useCanvasStore } from "@/store/canvasStore";
 import { snapToGrid } from "@/canvas/utils/snap";
 import { useAuth } from "@/lib/SupabaseAuth";
@@ -20,12 +20,14 @@ const TOTAL_GRID_HEIGHT = SLOT_COUNT * SLOT_HEIGHT;
 const TIME_OPTIONS: number[] = Array.from({ length: 48 }, (_, i) => i * 0.5);
 
 const EVENT_COLORS = [
-  "rgba(59,130,246,0.55)", "rgba(16,185,129,0.55)", "rgba(245,158,11,0.55)",
-  "rgba(239,68,68,0.55)", "rgba(139,92,246,0.55)", "rgba(236,72,153,0.55)",
+  "rgba(59,130,246,0.55)", "rgba(22,163,74,0.55)", "rgba(217,119,6,0.55)",
+  "rgba(220,38,38,0.55)", "rgba(124,58,237,0.55)", "rgba(219,39,119,0.55)",
+  "rgba(15,118,110,0.55)",
 ];
 const EVENT_BG_COLORS = [
-  "rgba(59,130,246,0.14)", "rgba(16,185,129,0.14)", "rgba(245,158,11,0.14)",
-  "rgba(239,68,68,0.14)", "rgba(139,92,246,0.14)", "rgba(236,72,153,0.14)",
+  "rgba(59,130,246,0.14)", "rgba(22,163,74,0.14)", "rgba(217,119,6,0.14)",
+  "rgba(220,38,38,0.14)", "rgba(124,58,237,0.14)", "rgba(219,39,119,0.14)",
+  "rgba(15,118,110,0.14)",
 ];
 
 /* ── Types ─────────────────────────────────────────────────────────── */
@@ -115,7 +117,6 @@ export const CalendarBlock = memo(function CalendarBlock({ id }: { id: string })
   const isSelected = useCanvasStore((s) => s.selectedIds.includes(id));
   const updateBlock = useCanvasStore((s) => s.updateBlock);
   const pushHistory = useCanvasStore((s) => s.pushHistory);
-  const deleteBlock = useCanvasStore((s) => s.deleteBlock);
   const gridSize = useCanvasStore((s) => s.gridSize);
   const moveBlocksFromSnapshot = useCanvasStore((s) => s.moveBlocksFromSnapshot);
 
@@ -504,7 +505,7 @@ export const CalendarBlock = memo(function CalendarBlock({ id }: { id: string })
       onPointerDownCapture={(e) => {
         if (e.button !== 0) return;
         const t = e.target as Element | null;
-        if (t?.closest?.("[data-delete-button]") || t?.closest?.("[data-resize-handle]") || t?.closest?.("[data-drag-handle]")) return;
+        if (t?.closest?.("[data-resize-handle]") || t?.closest?.("[data-drag-handle]")) return;
         if (e.shiftKey) toggleSelect(id); else if (!isSelected) selectBlocks([id]);
       }}
       onPointerMove={(e) => {
@@ -525,14 +526,6 @@ export const CalendarBlock = memo(function CalendarBlock({ id }: { id: string })
       onLostPointerCapture={(e) => endResize(e.pointerId)}
     >
       <div className={`glass-block overflow-hidden relative ${isSelected ? "omnia-selected-glass" : ""}`} style={{ width: "100%", height: "100%" }}>
-        {/* Delete */}
-        <button data-delete-button type="button"
-          className="absolute top-2 right-2 z-30 w-7 h-7 rounded-full glass-control hover:opacity-90 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity text-black/70 dark:text-white/70 hover:text-red-500 hover:ring-2 hover:ring-red-400/35"
-          onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-          onClick={(e) => { e.stopPropagation(); pushHistory(); deleteBlock(id); }}
-          title="Delete"
-        ><X className="w-3.5 h-3.5" /></button>
-
         {/* Drag */}
         <div data-drag-handle
           className="relative z-20 w-full cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 transition-opacity" style={{ height: "8px" }}

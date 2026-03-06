@@ -235,7 +235,6 @@ export const ButtonBlock = memo(function ButtonBlock({ id }: { id: string }) {
   const isSelected = useCanvasStore((s) => s.selectedIds.includes(id));
   const updateBlock = useCanvasStore((s) => s.updateBlock);
   const pushHistory = useCanvasStore((s) => s.pushHistory);
-  const deleteBlock = useCanvasStore((s) => s.deleteBlock);
   const moveBlocksFromSnapshot = useCanvasStore((s) => s.moveBlocksFromSnapshot);
   const setCamera = useCanvasStore((s) => s.setCamera);
   const blockOrder = useCanvasStore((s) => s.blockOrder);
@@ -511,18 +510,11 @@ export const ButtonBlock = memo(function ButtonBlock({ id }: { id: string }) {
       onPointerDownCapture={(e) => {
         if (e.button !== 0) return;
         const t = e.target as Element | null;
-        if (t?.closest?.("[data-delete-button]") || t?.closest?.("[data-drag-handle]") || t?.closest?.("[data-config-panel]")) return;
+        if (t?.closest?.("[data-drag-handle]") || t?.closest?.("[data-config-panel]")) return;
         if (e.shiftKey) toggleSelect(id); else if (!isSelected) selectBlocks([id]);
       }}
     >
       <div className={`h-full w-full relative ${isSelected ? "omnia-selected-glass" : ""}`}>
-        {/* Delete */}
-        <button data-delete-button type="button"
-          className="absolute -top-2 -right-2 z-30 w-5 h-5 rounded-full bg-white/80 border border-black/15 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity text-black/70 hover:text-red-500"
-          onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-          onClick={(e) => { e.stopPropagation(); pushHistory(); deleteBlock(id); }}
-        ><X className="w-3 h-3" /></button>
-
         {/* Settings gear (hidden during initial setup) */}
         {!needsSetup && (
           <button type="button"

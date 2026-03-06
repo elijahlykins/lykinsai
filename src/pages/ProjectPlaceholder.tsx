@@ -360,7 +360,7 @@ export default function ProjectPlaceholder() {
   }, [projectId]);
 
   const TEAM_ACCENT_COLORS = [
-    "#3b82f6", "#10b981", "#f59e0b", "#8b5cf6", "#ec4899", "#06b6d4",
+    "#3B82F6", "#16A34A", "#D97706", "#DC2626", "#7C3AED", "#DB2777", "#0F766E",
   ];
 
   useEffect(() => {

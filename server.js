@@ -87,20 +87,21 @@ const SKIP_SEARCH_PATTERNS = /^(hi|hello|hey|thanks|thank you|ok|okay|yes|no|sur
 const KNOWLEDGE_QUESTION = /\b(what is|who is|who are|where is|when did|how does|how do|how to|why does|why is|explain|tell me about|define|describe|compare|difference between|history of|meaning of)\b/i;
 const SITE_REFERENCE = /\b\w+\.(com|org|net|io|co|gov|edu|store|shop|app|dev|ai)\b/i;
 
-function needsWebSearch(text) {
+function needsWebSearch(text, opts = {}) {
   if (!text || !process.env.SERPER_API_KEY) return false;
   const t = String(text).trim();
   if (t.length < 8) return false;
   if (SKIP_SEARCH_PATTERNS.test(t)) return false;
-  if (WEB_SEARCH_KEYWORDS.test(t) || WEB_SEARCH_PHRASES.test(t)) return true;
+  const hasExplicitWebIntent = WEB_SEARCH_KEYWORDS.test(t) || WEB_SEARCH_PHRASES.test(t) || SITE_REFERENCE.test(t);
+  if (opts.hasFocusedBricks && !hasExplicitWebIntent) return false;
+  if (hasExplicitWebIntent) return true;
   if (KNOWLEDGE_QUESTION.test(t) && t.length > 15) return true;
   if (t.endsWith("?") && t.length > 20) return true;
-  if (SITE_REFERENCE.test(t)) return true;
   return false;
 }
 
-async function runWebSearchIfNeeded(text) {
-  if (!needsWebSearch(text)) return "";
+async function runWebSearchIfNeeded(text, opts = {}) {
+  if (!needsWebSearch(text, opts)) return "";
   try {
     const query = String(text).trim().slice(0, 200);
     console.log(`🔍 Web search (Serper): "${query.slice(0, 80)}..."`);
@@ -426,7 +427,7 @@ app.post('/api/ai/invoke', async (req, res) => {
       imageUrlPrefixes: incomingImageUrls.map(u => String(u || '').slice(0, 60)),
     });
     
-    const { intent, text, returnActions, context, knowledgeBase, projectId, conversation, imageUrls: rawImageUrls, userPrompt, responseLength } = req.body;
+    const { intent, text, returnActions, context, knowledgeBase, projectId, conversation, imageUrls: rawImageUrls, userPrompt, responseLength, hasFocusedBricks } = req.body;
     const model = normalizedModel;
     const imageUrls = (Array.isArray(rawImageUrls) ? rawImageUrls : [])
       .map((u) => String(u || '').trim())
@@ -558,7 +559,7 @@ ${t}
     const buildLyknChatPrompt = (input) => {
       const latestUserMessage = String(input?.text || "").trim() || String(input?.prompt || "").trim();
       const rawPrompt = String(input?.prompt || "").trim();
-      const contextText = String(input?.context || "").trim().slice(0, 6000);
+      const contextText = String(input?.context || "").trim().slice(0, 12000);
       const kb = String(input?.knowledgeBase || "").trim().slice(0, 12000);
       const convo = Array.isArray(input?.conversation)
         ? input.conversation
@@ -691,7 +692,7 @@ ${t}
     const userText = String(text || prompt || "");
     const [scrapedContent, searchResults] = await Promise.all([
       scrapeUrlsFromText(userText),
-      runWebSearchIfNeeded(userText),
+      runWebSearchIfNeeded(userText, { hasFocusedBricks: Boolean(hasFocusedBricks) }),
     ]);
     if (scrapedContent) prompt += "\n\n" + scrapedContent;
     if (searchResults) prompt += "\n\n" + searchResults;
@@ -1039,7 +1040,7 @@ app.post('/api/ai/stream', async (req, res) => {
     const normalizedModel = normalizeRequestedModel(req.body?.model);
     const incomingImageUrls = Array.isArray(req.body?.imageUrls) ? req.body.imageUrls : [];
     const imageUrls = incomingImageUrls.slice(0, 4);
-    let { prompt, text, intent, context, knowledgeBase, projectId, conversation, userPrompt, responseLength } = req.body;
+    let { prompt, text, intent, context, knowledgeBase, projectId, conversation, userPrompt, responseLength, hasFocusedBricks } = req.body;
     let model = normalizedModel;
 
     if (!model) return res.status(400).json({ error: 'Missing model parameter' });
@@ -1056,7 +1057,7 @@ app.post('/api/ai/stream', async (req, res) => {
     const buildLyknStreamPrompt = (input) => {
       const latestUserMessage = String(input?.text || "").trim() || String(input?.prompt || "").trim();
       const rawPrompt = String(input?.prompt || "").trim();
-      const contextText = String(input?.context || "").trim().slice(0, 6000);
+      const contextText = String(input?.context || "").trim().slice(0, 12000);
       const kb = String(input?.knowledgeBase || "").trim().slice(0, 12000);
 
       const responseLengthGuide = responseLength === "concise"
@@ -1107,7 +1108,7 @@ app.post('/api/ai/stream', async (req, res) => {
     const userText = String(text || prompt || "");
     const [scrapedContent, searchResults] = await Promise.all([
       scrapeUrlsFromText(userText),
-      runWebSearchIfNeeded(userText),
+      runWebSearchIfNeeded(userText, { hasFocusedBricks: Boolean(hasFocusedBricks) }),
     ]);
     if (scrapedContent) prompt += "\n\n" + scrapedContent;
     if (searchResults) prompt += "\n\n" + searchResults;
@@ -1312,9 +1313,15 @@ app.post('/api/ai/transcribe', upload.single('audio'), async (req, res) => {
     const model = String(req.body?.model || 'whisper-1').trim() || 'whisper-1';
     const mimeType = String(audioFile.mimetype || 'audio/webm');
     const fileName = String(audioFile.originalname || 'dictation.webm');
+    const language = String(req.body?.language || 'en').trim();
+    const promptHint = String(req.body?.prompt || '').trim();
 
     const formData = new FormData();
     formData.append('model', model);
+    formData.append('language', language);
+    formData.append('response_format', 'verbose_json');
+    formData.append('temperature', '0');
+    if (promptHint) formData.append('prompt', promptHint);
     formData.append(
       'file',
       new Blob([audioFile.buffer], { type: mimeType }),
@@ -1336,11 +1343,74 @@ app.post('/api/ai/transcribe', upload.single('audio'), async (req, res) => {
     }
 
     const text = String(data?.text || '').trim();
-    return res.json({ text });
+    const segments = Array.isArray(data?.segments) ? data.segments : [];
+    const avgNoSpeech = segments.length > 0
+      ? segments.reduce((sum, s) => sum + (s?.no_speech_prob || 0), 0) / segments.length
+      : 0;
+
+    return res.json({ text, no_speech_prob: avgNoSpeech });
   } catch (error) {
     return res.status(500).json({
       error: `Transcription failed: ${error?.message || 'Unknown error'}`,
     });
+  }
+});
+
+// ──────────────────────────────────────────────────
+// TTS — OpenAI Text-to-Speech
+// ──────────────────────────────────────────────────
+app.post('/api/ai/tts', async (req, res) => {
+  try {
+    if (!process.env.OPENAI_API_KEY) {
+      return res.status(500).json({ error: 'OpenAI API key not configured.' });
+    }
+
+    const text = String(req.body?.text || '').trim();
+    if (!text) return res.status(400).json({ error: 'Missing text field.' });
+
+    const voice = String(req.body?.voice || 'nova').trim();
+    const model = String(req.body?.model || 'tts-1').trim();
+    const speed = Number(req.body?.speed) || 1;
+
+    const ttsRes = await fetch('https://api.openai.com/v1/audio/speech', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model,
+        voice,
+        input: text,
+        response_format: 'mp3',
+        speed: Math.max(0.25, Math.min(4, speed)),
+      }),
+    });
+
+    if (!ttsRes.ok) {
+      const errData = await ttsRes.json().catch(() => ({}));
+      const msg = String(errData?.error?.message || ttsRes.statusText || 'TTS request failed');
+      return res.status(500).json({ error: `TTS: ${msg}` });
+    }
+
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Transfer-Encoding', 'chunked');
+
+    const reader = ttsRes.body.getReader();
+    const pump = async () => {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        res.write(value);
+      }
+      res.end();
+    };
+    await pump();
+  } catch (error) {
+    if (!res.headersSent) {
+      return res.status(500).json({ error: `TTS failed: ${error?.message || 'Unknown error'}` });
+    }
+    res.end();
   }
 });
 

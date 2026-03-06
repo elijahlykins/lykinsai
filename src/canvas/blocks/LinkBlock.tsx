@@ -1,5 +1,5 @@
 import React, { memo, useMemo, useRef } from "react";
-import { ExternalLink, FileText, Link as LinkIcon, Music2, Video, X } from "lucide-react";
+import { ExternalLink, FileText, Link as LinkIcon, Music2, Video } from "lucide-react";
 import { useCanvasStore } from "@/store/canvasStore";
 import { snapToGrid } from "@/canvas/utils/snap";
 
@@ -78,7 +78,6 @@ export const LinkBlock = memo(function LinkBlock({ id }: { id: string }) {
   const gridSize = useCanvasStore((s) => s.gridSize);
   const canvasWidth = useCanvasStore((s) => s.canvasWidth);
   const pushHistory = useCanvasStore((s) => s.pushHistory);
-  const deleteBlock = useCanvasStore((s) => s.deleteBlock);
 
   const dragRef = useRef<DragState | null>(null);
   const resizeRef = useRef<ResizeState | null>(null);
@@ -295,7 +294,6 @@ export const LinkBlock = memo(function LinkBlock({ id }: { id: string }) {
         const t = e.target as Element | null;
         if (t?.closest?.("[data-drag-handle]")) return;
         if (t?.closest?.("[data-resize-handle]")) return;
-        if (t?.closest?.("[data-delete-button]")) return;
         if (e.shiftKey) toggleSelect(id);
         else if (!isSelected) selectBlocks([id]);
       }}
@@ -380,24 +378,6 @@ export const LinkBlock = memo(function LinkBlock({ id }: { id: string }) {
               </div>
             </button>
           )}
-
-          <button
-            data-delete-button
-            type="button"
-            className="absolute top-2 right-2 z-20 w-7 h-7 rounded-full glass-control hover:opacity-90 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity text-black/70 dark:text-white/70 hover:text-red-500"
-            onPointerDown={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-            }}
-            onClick={(e) => {
-              e.stopPropagation();
-              pushHistory();
-              deleteBlock(id);
-            }}
-            title="Delete"
-          >
-            <X className="w-3.5 h-3.5" />
-          </button>
 
           <button
             type="button"

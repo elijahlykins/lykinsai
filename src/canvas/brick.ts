@@ -1,4 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { Heading1, Heading2, Type, List, ListOrdered, ListChecks, ListCollapse, TextQuote, Table, Calendar, Image, MousePointerClick, Code, Mic, FileText, BarChart3, Kanban, ClipboardList, LayoutGrid, MoreHorizontal } from "lucide-react";
+import { useCanvasStore } from "@/store/canvasStore";
 import type { Block } from "@/canvas/types";
 
 export const BRICK_BEHAVIOR = {
@@ -20,7 +22,9 @@ export type BrickShellModel = {
   label: string;
   content: string;
   textVariant: "body" | "h2" | "h1";
-  listType: "none" | "bullet" | "numbered" | "todo";
+  listType: "none" | "bullet" | "numbered" | "todo" | "toggle" | "quote";
+  brickColor?: string;
+  textColor?: string;
 };
 
 export type BrickShellRenderOptions = {
@@ -38,6 +42,7 @@ export type BrickShellRenderOptions = {
   resizeMaxWidth?: number;
   onResizeWidth?: (id: string, width: number) => void;
   extraContent?: React.ReactNode;
+  onBrickMenu?: (id: string, rect: DOMRect) => void;
 };
 
 export function toBrickShellModel(block: Block | any): BrickShellModel {
@@ -48,8 +53,8 @@ export function toBrickShellModel(block: Block | any): BrickShellModel {
   const rawVariant = String(data.textVariant || "body").toLowerCase();
   const textVariant: "body" | "h2" | "h1" = rawVariant === "h1" ? "h1" : rawVariant === "h2" ? "h2" : "body";
   const rawListType = String(data.listType || "none").toLowerCase();
-  const listType: "none" | "bullet" | "numbered" | "todo" =
-    rawListType === "bullet" ? "bullet" : rawListType === "numbered" ? "numbered" : rawListType === "todo" ? "todo" : "none";
+  const listType: "none" | "bullet" | "numbered" | "todo" | "toggle" | "quote" =
+    rawListType === "bullet" ? "bullet" : rawListType === "numbered" ? "numbered" : rawListType === "todo" ? "todo" : rawListType === "toggle" ? "toggle" : rawListType === "quote" ? "quote" : "none";
   return {
     id: String(b?.id || ""),
     x: Number(b?.x || 0),
@@ -60,6 +65,8 @@ export function toBrickShellModel(block: Block | any): BrickShellModel {
     content,
     textVariant,
     listType,
+    brickColor: data.brickColor || undefined,
+    textColor: data.textColor || undefined,
   };
 }
 
@@ -75,6 +82,12 @@ function BrickTextSurface(props: {
   onTypingBlur?: (id: string) => void;
 }) {
   const { shell, isTyping, onTypingChange, onTypingKeyDown, onTypingBlur } = props;
+  const updateBlock = useCanvasStore((s) => s.updateBlock);
+  const pushHistory = useCanvasStore((s) => s.pushHistory);
+  const blockData = useCanvasStore((s) => {
+    const b = s.blocks[shell.id] as any;
+    return b?.data && typeof b.data === "object" ? b.data : {};
+  });
   const editorRef = useRef<HTMLDivElement | null>(null);
   const todoInputRefs = useRef<Record<number, HTMLInputElement | null>>({});
   const pendingTodoFocusIndexRef = useRef<number | null>(null);
@@ -99,16 +112,25 @@ function BrickTextSurface(props: {
   };
   const slashOptions = useMemo(
     () => [
-      { id: "h1", command: "/h1", label: "Heading 1", hint: "3 bricks tall", section: "text" as const },
-      { id: "h2", command: "/h2", label: "Heading 2", hint: "2 bricks tall", section: "text" as const },
-      { id: "text", command: "/text", label: "Text", hint: "1 brick tall", section: "text" as const },
-      { id: "bulleted-list", command: "/bulleted list", label: "Bulleted List", hint: "auto • on Enter", section: "text" as const },
-      { id: "numbered-list", command: "/numbered list", label: "Numbered List", hint: "auto 1. 2. on Enter", section: "text" as const },
-      { id: "checklist", command: "/checklist", label: "Checklist", hint: "auto [ ] on Enter", section: "text" as const },
-      { id: "table", command: "/table", label: "Table", hint: "spreadsheet grid", section: "block" as const },
-      { id: "calendar", command: "/calendar", label: "Calendar", hint: "mini calendar", section: "block" as const },
-      { id: "media", command: "/media", label: "Media", hint: "image, video, embed", section: "block" as const },
-      { id: "button", command: "/button", label: "Button", hint: "action button", section: "block" as const },
+      { id: "h1", command: "/h1", label: "Heading 1", hint: "3 bricks tall", section: "text" as const, icon: Heading1 },
+      { id: "h2", command: "/h2", label: "Heading 2", hint: "2 bricks tall", section: "text" as const, icon: Heading2 },
+      { id: "text", command: "/text", label: "Text", hint: "1 brick tall", section: "text" as const, icon: Type },
+      { id: "bulleted-list", command: "/bulleted list", label: "Bulleted List", hint: "auto • on Enter", section: "text" as const, icon: List },
+      { id: "numbered-list", command: "/numbered list", label: "Numbered List", hint: "auto 1. 2. on Enter", section: "text" as const, icon: ListOrdered },
+      { id: "checklist", command: "/checklist", label: "Checklist", hint: "auto [ ] on Enter", section: "text" as const, icon: ListChecks },
+      { id: "toggle-list", command: "/toggle list", label: "Toggle List", hint: "collapsible ▶ items", section: "text" as const, icon: ListCollapse },
+      { id: "quote", command: "/quote", label: "Callout Quote", hint: "| quote line", section: "text" as const, icon: TextQuote },
+      { id: "code", command: "/code", label: "Code", hint: "code block", section: "block" as const, icon: Code },
+      { id: "table", command: "/table", label: "Table", hint: "spreadsheet grid", section: "block" as const, icon: Table },
+      { id: "calendar", command: "/calendar", label: "Calendar", hint: "mini calendar", section: "block" as const, icon: Calendar },
+      { id: "media", command: "/media", label: "Media", hint: "image, video, embed", section: "block" as const, icon: Image },
+      { id: "button", command: "/button", label: "Button", hint: "action button", section: "block" as const, icon: MousePointerClick },
+      { id: "dictate", command: "/dictate", label: "Dictate", hint: "voice to text", section: "block" as const, icon: Mic },
+      { id: "page", command: "/page", label: "Page", hint: "full document editor", section: "block" as const, icon: FileText },
+      { id: "chart", command: "/chart", label: "Chart", hint: "bar, line, area, pie", section: "block" as const, icon: BarChart3 },
+      { id: "board", command: "/board", label: "Board", hint: "kanban columns", section: "block" as const, icon: Kanban },
+      { id: "form", command: "/form", label: "Form", hint: "form builder", section: "block" as const, icon: ClipboardList },
+      { id: "gallery", command: "/gallery", label: "Gallery", hint: "card grid view", section: "block" as const, icon: LayoutGrid },
     ],
     []
   );
@@ -331,6 +353,81 @@ function BrickTextSurface(props: {
     }
     return true;
   };
+  const tryToggleCollapseAtPointer = (el: HTMLDivElement, e: React.PointerEvent<HTMLDivElement>) => {
+    if (shell.listType !== "toggle") return false;
+    const native = e.nativeEvent as PointerEvent;
+    const d: any = document;
+    let absClick = -1;
+    if (typeof d.caretRangeFromPoint === "function") {
+      const r = d.caretRangeFromPoint(native.clientX, native.clientY);
+      if (r) {
+        const pre = document.createRange();
+        pre.selectNodeContents(el);
+        pre.setEnd(r.startContainer, r.startOffset);
+        absClick = pre.toString().length;
+      }
+    } else if (typeof d.caretPositionFromPoint === "function") {
+      const pos = d.caretPositionFromPoint(native.clientX, native.clientY);
+      if (pos) absClick = getAbsoluteOffset(el, pos.offsetNode, Number(pos.offset || 0));
+    }
+    if (absClick < 0) return false;
+    const text = getEditorText(el);
+    const allLines = text.split("\n");
+    const lineStart = Math.max(0, text.lastIndexOf("\n", Math.max(0, absClick - 1)) + 1);
+    const actualLineIdx = lineStart === 0 ? 0 : text.slice(0, lineStart - 1).split("\n").length;
+    const line = allLines[actualLineIdx] || "";
+    const match = line.match(/^(\s*)([▶▼])\s/);
+    if (!match) return false;
+    const markerStart = lineStart + (match[1]?.length || 0);
+    const markerEnd = markerStart + 1;
+    if (absClick < markerStart || absClick > markerEnd) return false;
+    e.preventDefault();
+    const isExpanded = match[2] === "▼";
+    const headerText = line.replace(/^(\s*)[▶▼]\s/, "").trim();
+    const tc: Record<string, string> = { ...(blockData._tc || {}) };
+
+    if (isExpanded) {
+      // Collapsing: find indented child lines below and store them
+      const childLines: string[] = [];
+      for (let i = actualLineIdx + 1; i < allLines.length; i++) {
+        if (/^\s+/.test(allLines[i]) && !/^[▶▼]\s/.test(allLines[i].trim())) {
+          childLines.push(allLines[i]);
+        } else {
+          break;
+        }
+      }
+      if (childLines.length > 0) {
+        tc[headerText] = childLines.join("\n");
+        const newLines = [...allLines];
+        newLines.splice(actualLineIdx + 1, childLines.length);
+        newLines[actualLineIdx] = newLines[actualLineIdx].replace(/^(\s*)▼/, "$1▶");
+        el.textContent = newLines.join("\n");
+        pushHistory();
+        const cur = useCanvasStore.getState().blocks[shell.id] as any;
+        const curData = cur?.data && typeof cur.data === "object" ? { ...cur.data } : {};
+        updateBlock(shell.id as any, { content: newLines.join("\n"), data: { ...curData, _tc: tc } } as any);
+      } else {
+        replaceTextByAbsoluteRange(el, markerStart, markerEnd, "▶");
+        onTypingChange?.(shell.id, getEditorText(el));
+      }
+    } else {
+      // Expanding: restore stored child lines
+      const stored = tc[headerText];
+      const newLines = [...allLines];
+      newLines[actualLineIdx] = newLines[actualLineIdx].replace(/^(\s*)▶/, "$1▼");
+      if (stored) {
+        const restoredLines = stored.split("\n");
+        newLines.splice(actualLineIdx + 1, 0, ...restoredLines);
+        delete tc[headerText];
+      }
+      el.textContent = newLines.join("\n");
+      pushHistory();
+      const cur = useCanvasStore.getState().blocks[shell.id] as any;
+      const curData = cur?.data && typeof cur.data === "object" ? { ...cur.data } : {};
+      updateBlock(shell.id as any, { content: newLines.join("\n"), data: { ...curData, _tc: tc } } as any);
+    }
+    return true;
+  };
 
   // Match TextBlock behavior: only sync DOM from state when editor is not focused.
   useEffect(() => {
@@ -485,12 +582,13 @@ function BrickTextSurface(props: {
     return React.createElement(
       "div",
       {
-        className: "px-2 py-0 tracking-[-0.01em] text-black/80 whitespace-pre-wrap break-words select-text",
+        className: "px-2 py-0 tracking-[-0.01em] whitespace-pre-wrap break-words select-text",
         style: {
           overflowWrap: "anywhere",
           fontSize: `${fontSizePx}px`,
           lineHeight: `${lineHeightPx}px`,
           fontWeight,
+          color: shell.textColor || "rgba(0,0,0,0.80)",
           userSelect: "text",
           WebkitUserSelect: "text",
         },
@@ -546,6 +644,7 @@ function BrickTextSurface(props: {
       onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => {
         e.stopPropagation();
         if (!editorRef.current) return;
+        if (tryToggleCollapseAtPointer(editorRef.current, e)) return;
         tryToggleTodoAtPointer(editorRef.current, e);
       },
       onInput: (e: React.FormEvent<HTMLDivElement>) => {
@@ -596,21 +695,51 @@ function BrickTextSurface(props: {
             return;
           }
         }
-        if (e.key === "Enter" && !(e.metaKey || e.ctrlKey) && shell.listType !== "none") {
+        if (e.key === "Enter" && !(e.metaKey || e.ctrlKey) && shell.listType !== "none" && shell.listType !== "quote") {
           e.preventDefault();
           const current = getEditorText(editorRef.current);
           const lines = String(current || "").split("\n");
+
+          if (shell.listType === "toggle") {
+            // Determine if cursor is on a toggle header or indented child
+            const sel = window.getSelection();
+            let cursorAbs = 0;
+            if (sel && sel.rangeCount > 0 && editorRef.current) {
+              const r = sel.getRangeAt(0);
+              const pre = document.createRange();
+              pre.selectNodeContents(editorRef.current);
+              pre.setEnd(r.endContainer, r.endOffset);
+              cursorAbs = pre.toString().length;
+            }
+            const textBefore = current.slice(0, cursorAbs);
+            const currentLineIdx = textBefore.split("\n").length - 1;
+            const currentLine = lines[currentLineIdx] || "";
+            const isOnHeader = /^[▶▼]\s/.test(currentLine);
+            const isOnChild = /^\s+/.test(currentLine);
+            const isExpandedHeader = /^▼\s/.test(currentLine);
+
+            if (isOnHeader && isExpandedHeader) {
+              insertTextAtCursor("\n  ");
+            } else if (isOnChild) {
+              insertTextAtCursor("\n  ");
+            } else {
+              insertTextAtCursor("\n▶ ");
+            }
+            onTypingChange?.(shell.id, getEditorText(editorRef.current));
+            return;
+          }
+
           const nextMarker =
             shell.listType === "bullet"
               ? "• "
               : shell.listType === "todo"
                 ? `${TODO_DISPLAY_EMPTY} `
                 : (() => {
-                    const currentLine = String(lines[lines.length - 1] || "");
-                    const m = currentLine.match(/^\s*(\d+)\.\s/);
-                    const nextNum = m ? Number(m[1]) + 1 : lines.filter((l) => /^\s*\d+\.\s/.test(l)).length + 1;
-                    return `${Math.max(1, nextNum)}. `;
-                  })();
+                        const currentLine = String(lines[lines.length - 1] || "");
+                        const m = currentLine.match(/^\s*(\d+)\.\s/);
+                        const nextNum = m ? Number(m[1]) + 1 : lines.filter((l) => /^\s*\d+\.\s/.test(l)).length + 1;
+                        return `${Math.max(1, nextNum)}. `;
+                      })();
           insertTextAtCursor(`\n${nextMarker}`);
           const nextRaw = getEditorText(editorRef.current);
           const next = shell.listType === "todo" ? toStorageTodoMarkers(nextRaw) : nextRaw;
@@ -681,7 +810,12 @@ function BrickTextSurface(props: {
                       applySlashCommand(opt.command);
                     },
                   },
-                  React.createElement("span", null, `${opt.command} ${opt.label}`),
+                  React.createElement(
+                    "span",
+                    { className: "flex items-center gap-2" },
+                    React.createElement(opt.icon, { size: 14, className: "text-black/50 shrink-0" }),
+                    React.createElement("span", null, opt.label)
+                  ),
                   React.createElement("span", { className: "text-[0.625rem] text-black/55 ml-2" }, opt.hint)
                 )
               );
@@ -748,6 +882,7 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
       key,
       "data-canvas-block": true,
       "data-block-id": shell.id,
+      "data-brick-shell": true,
       className: "absolute group cursor-pointer select-none",
       onPointerDown: handlePointerDown,
       onClick: handleClick,
@@ -767,7 +902,7 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
       "div",
       {
         className:
-          `w-full rounded border border-white/45 bg-[linear-gradient(145deg,rgba(255,255,255,0.34),rgba(255,255,255,0.18))] backdrop-blur-[2px]${opts?.extraContent ? " min-h-full" : " h-full"}`,
+          `w-full rounded border border-white/45 ${shell.brickColor ? "" : "bg-[linear-gradient(145deg,rgba(255,255,255,0.34),rgba(255,255,255,0.18))]"} backdrop-blur-[2px]${opts?.extraContent ? " min-h-full" : " h-full"} relative`,
         style: {
           transform: isRaised ? "translateY(-8px) scale(1.02)" : "translateY(0px) scale(1)",
           boxShadow: isRaised
@@ -776,9 +911,23 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
               ? "inset 0 1px 0 rgba(255,255,255,0.55), 0 6px 18px rgba(0,0,0,0.14)"
               : "0 2px 8px rgba(0,0,0,0.10)",
           borderColor: isRaised ? "rgba(59,130,246,0.78)" : isActivated ? "rgba(59,130,246,0.45)" : "rgba(255,255,255,0.45)",
-          transition: "transform 150ms, box-shadow 150ms, border-color 150ms",
+          transition: "transform 150ms, box-shadow 150ms, border-color 150ms, background 150ms, color 150ms",
+          paddingLeft: shell.listType === "quote" ? "6px" : undefined,
+          ...(shell.brickColor ? { background: shell.brickColor } : {}),
+          ...(shell.textColor ? { color: shell.textColor } : {}),
         },
       },
+      shell.listType === "quote"
+        ? React.createElement("div", {
+            key: "quote-bar",
+            className: "absolute top-0 left-0 bottom-0 pointer-events-none",
+            style: {
+              width: "3px",
+              borderRadius: "2px",
+              background: "rgba(0,0,0,0.35)",
+            },
+          })
+        : null,
       React.createElement(BrickTextSurface, {
         shell,
         isTyping,
@@ -798,6 +947,28 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
           })
         : null,
       labelEl
-    )
+    ),
+    shell.content.trim()
+      ? React.createElement(
+          "button",
+          {
+            key: "brick-menu-btn",
+            className:
+              "absolute opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center w-6 h-6 rounded-md hover:bg-black/8 dark:hover:bg-white/12",
+            style: {
+              top: "2px",
+              right: `calc(100% + 4px)`,
+            },
+            title: "Options",
+            onClick: (e: any) => {
+              e.stopPropagation();
+              const btn = e.currentTarget as HTMLElement;
+              if (btn && opts?.onBrickMenu) opts.onBrickMenu(shell.id, btn.getBoundingClientRect());
+            },
+            onPointerDown: (e: any) => e.stopPropagation(),
+          },
+          React.createElement(MoreHorizontal, { className: "w-3.5 h-3.5 text-black/50 dark:text-white/50" })
+        )
+      : null
   );
 }

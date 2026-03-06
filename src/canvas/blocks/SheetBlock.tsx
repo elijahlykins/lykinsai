@@ -1,5 +1,4 @@
 import React, { memo, useEffect, useMemo, useRef } from "react";
-import { X } from "lucide-react";
 import { useCanvasStore } from "@/store/canvasStore";
 import { snapToGrid } from "@/canvas/utils/snap";
 
@@ -142,9 +141,6 @@ export const SheetBlock = memo(function SheetBlock({ id }: { id: string }) {
   const updateBlock = useCanvasStore((s) => s.updateBlock);
   const addSheetBlockAt = useCanvasStore((s) => s.addSheetBlockAt);
   const moveBlocksFromSnapshot = useCanvasStore((s) => s.moveBlocksFromSnapshot);
-  const pushHistory = useCanvasStore((s) => s.pushHistory);
-  const deleteBlock = useCanvasStore((s) => s.deleteBlock);
-
   const editorRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const paginatingRef = useRef(false);
@@ -388,31 +384,12 @@ export const SheetBlock = memo(function SheetBlock({ id }: { id: string }) {
       onPointerDownCapture={(e) => {
         if (e.button !== 0) return;
         const t = e.target as Element | null;
-        if (t?.closest?.("[data-delete-button]")) return;
         if (t?.closest?.("[data-drag-handle]")) return;
         if (e.shiftKey) toggleSelect(id);
         else if (!isSelected) selectBlocks([id]);
       }}
     >
       <div className={`glass-block overflow-hidden relative ${isSelected ? "omnia-selected-glass" : ""}`} style={{ width: "100%", height: "100%" }}>
-        <button
-          data-delete-button
-          type="button"
-          className="absolute top-2 right-2 z-30 w-7 h-7 rounded-full glass-control hover:opacity-90 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity text-black/70 dark:text-white/70 hover:text-red-500 hover:ring-2 hover:ring-red-400/35 hover:shadow-[0_0_16px_rgba(248,113,113,0.35)]"
-          onPointerDown={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-          }}
-          onClick={(e) => {
-            e.stopPropagation();
-            pushHistory();
-            deleteBlock(id);
-          }}
-          title="Delete"
-        >
-          <X className="w-3.5 h-3.5" />
-        </button>
-
         {/* Top grab bar (drag-only) */}
         <div
           data-drag-handle

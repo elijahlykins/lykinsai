@@ -198,6 +198,8 @@ export type CodeLanguage =
   | "plaintext"
   | "javascript"
   | "typescript"
+  | "jsx"
+  | "tsx"
   | "python"
   | "java"
   | "html"
@@ -205,7 +207,19 @@ export type CodeLanguage =
   | "json"
   | "sql"
   | "bash"
-  | "markdown";
+  | "markdown"
+  | "go"
+  | "rust"
+  | "cpp"
+  | "c"
+  | "csharp"
+  | "ruby"
+  | "php"
+  | "swift"
+  | "kotlin"
+  | "yaml"
+  | "xml"
+  | "graphql";
 
 export interface LegacyCodeBlock extends LegacyBaseBlock {
   type: "code";
