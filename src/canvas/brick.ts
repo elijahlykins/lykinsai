@@ -2,7 +2,7 @@ import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "re
 import ReactDOM from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Heading1, Heading2, Type, List, ListOrdered, ListChecks, ListCollapse, TextQuote, Image, Mic, MoreHorizontal, Minimize2, Maximize2, Table } from "lucide-react";
+import { Heading1, Heading2, Type, List, ListOrdered, ListChecks, ChevronRight, TextQuote, Image, Mic, MoreHorizontal, Minimize2, Maximize2, Table } from "lucide-react";
 import { useCanvasStore } from "@/store/canvasStore";
 import { getStructuredPasteFromEvent } from "@/lib/pasteFromClipboard";
 import type { Block } from "@/canvas/types";
@@ -64,7 +64,8 @@ export type BrickShellRenderOptions = {
   resizeMinWidth?: number;
   resizeMaxWidth?: number;
   onResizeWidth?: (id: string, width: number) => void;
-  onCornerScale?: (id: string, scale: number) => void;
+  onResizeHeight?: (id: string, height: number) => void;
+  onCornerScale?: (id: string, scale: number, width: number, height: number) => void;
   canvasZoom?: number;
   extraContent?: React.ReactNode;
   onBrickMenu?: (id: string, rect: DOMRect) => void;
@@ -153,7 +154,7 @@ function BrickTextSurface(props: {
       { id: "bulleted-list", command: "/bulleted list", label: "Bulleted List", hint: "auto • on Enter", section: "text" as const, icon: List },
       { id: "numbered-list", command: "/numbered list", label: "Numbered List", hint: "auto 1. 2. on Enter", section: "text" as const, icon: ListOrdered },
       { id: "checklist", command: "/checklist", label: "Checklist", hint: "auto [ ] on Enter", section: "text" as const, icon: ListChecks },
-      { id: "toggle-list", command: "/toggle list", label: "Toggle List", hint: "collapsible ▶ items", section: "text" as const, icon: ListCollapse },
+      { id: "toggle-list", command: "/toggle list", label: "Toggle List", hint: "collapsible sections", section: "text" as const, icon: ChevronRight },
       { id: "quote", command: "/quote", label: "Callout Quote", hint: "| quote line", section: "text" as const, icon: TextQuote },
       { id: "table", command: "/table", label: "Table", hint: "rows and columns", section: "block" as const, icon: Table },
       { id: "media", command: "/media", label: "Media", hint: "image, video, embed", section: "block" as const, icon: Image },
@@ -413,21 +414,21 @@ function BrickTextSurface(props: {
     const lineStart = Math.max(0, text.lastIndexOf("\n", Math.max(0, absClick - 1)) + 1);
     const actualLineIdx = lineStart === 0 ? 0 : text.slice(0, lineStart - 1).split("\n").length;
     const line = allLines[actualLineIdx] || "";
-    const match = line.match(/^(\s*)([▶▼])\s/);
+    const match = line.match(/^(\s*)([▶▼])(?:\uFE0E|\uFE0F)?\s/);
     if (!match) return false;
     const markerStart = lineStart + (match[1]?.length || 0);
     const markerEnd = markerStart + 1;
     if (absClick < markerStart || absClick > markerEnd) return false;
     e.preventDefault();
     const isExpanded = match[2] === "▼";
-    const headerText = line.replace(/^(\s*)[▶▼]\s/, "").trim();
+    const headerText = line.replace(/^(\s*)[▶▼](?:\uFE0E|\uFE0F)?\s/, "").trim();
     const tc: Record<string, string> = { ...(blockData._tc || {}) };
 
     if (isExpanded) {
       // Collapsing: find indented child lines below and store them
       const childLines: string[] = [];
       for (let i = actualLineIdx + 1; i < allLines.length; i++) {
-        if (/^\s+/.test(allLines[i]) && !/^[▶▼]\s/.test(allLines[i].trim())) {
+        if (/^\s+/.test(allLines[i]) && !/^[▶▼](?:\uFE0E|\uFE0F)?\s/.test(allLines[i].trim())) {
           childLines.push(allLines[i]);
         } else {
           break;
@@ -437,21 +438,21 @@ function BrickTextSurface(props: {
         tc[headerText] = childLines.join("\n");
         const newLines = [...allLines];
         newLines.splice(actualLineIdx + 1, childLines.length);
-        newLines[actualLineIdx] = newLines[actualLineIdx].replace(/^(\s*)▼/, "$1▶");
+        newLines[actualLineIdx] = newLines[actualLineIdx].replace(/^(\s*)▼(?:\uFE0E|\uFE0F)?/, "$1▶\uFE0E");
         el.textContent = newLines.join("\n");
         pushHistory();
         const cur = useCanvasStore.getState().blocks[shell.id] as any;
         const curData = cur?.data && typeof cur.data === "object" ? { ...cur.data } : {};
         updateBlock(shell.id as any, { content: newLines.join("\n"), data: { ...curData, _tc: tc } } as any);
       } else {
-        replaceTextByAbsoluteRange(el, markerStart, markerEnd, "▶");
+        replaceTextByAbsoluteRange(el, markerStart, markerEnd, "▶\uFE0E");
         onTypingChange?.(shell.id, getEditorText(el));
       }
     } else {
       // Expanding: restore stored child lines
       const stored = tc[headerText];
       const newLines = [...allLines];
-      newLines[actualLineIdx] = newLines[actualLineIdx].replace(/^(\s*)▶/, "$1▼");
+      newLines[actualLineIdx] = newLines[actualLineIdx].replace(/^(\s*)▶(?:\uFE0E|\uFE0F)?/, "$1▼\uFE0E");
       if (stored) {
         const restoredLines = stored.split("\n");
         newLines.splice(actualLineIdx + 1, 0, ...restoredLines);
@@ -466,22 +467,22 @@ function BrickTextSurface(props: {
     return true;
   };
 
-  // Match TextBlock behavior: only sync DOM from state when editor is not focused.
-  // Skip direct DOM writes when ReactMarkdown owns the render (AI bubbles or
-  // non-typing markdown bricks) — otherwise React crashes with removeChild errors
-  // because textContent destroys nodes that React still tracks.
+  const justEnteredTyping = isTyping && !wasTypingRef.current;
+  useLayoutEffect(() => {
+    const next = String(shell.content ?? "");
+    if (!isTyping) return;
+    const el = editorRef.current;
+    if (!el) return;
+    if (document.activeElement === el && !justEnteredTyping) return;
+    const display = shell.listType === "todo" ? toDisplayTodoMarkers(next) : next;
+    if ((el.textContent ?? "") !== display) el.textContent = display;
+  }, [shell.content, isTyping]);
   useEffect(() => {
     const next = String(shell.content ?? "");
     const state = readSlashState(next);
     setShowSlashMenu(state.open);
     setSlashQuery(state.query);
-    if (!isTyping) return;
-    const el = editorRef.current;
-    if (!el) return;
-    if (document.activeElement === el) return;
-    const display = shell.listType === "todo" ? toDisplayTodoMarkers(next) : next;
-    if ((el.textContent ?? "") !== display) el.textContent = display;
-  }, [shell.content, isTyping]);
+  }, [shell.content]);
   const lines = String(shell.content || "").split("\n");
   const parsedTodoLines = lines.map((line) => parseTodoLine(line));
   const hasTodoLines = parsedTodoLines.some(Boolean);
@@ -644,7 +645,64 @@ function BrickTextSurface(props: {
       })
     );
   }
-  if (shell.isAiResponseBubble && !isTyping) {
+  if (shell.isAiResponseBubble) {
+    const isThinkingPlaceholder = !isTyping && /^AI is thinking/i.test(String(shell.content || "").trim());
+    const aiBaseFontSize = 13 * scale;
+    const aiLineHeight = 1.5;
+    const aiFontStyle = {
+      fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"',
+      fontSize: `${aiBaseFontSize}px`,
+      lineHeight: `${aiLineHeight}`,
+      color: isThinkingPlaceholder ? "transparent" : "inherit",
+      paddingLeft: "8px",
+      paddingRight: "8px",
+      paddingTop: "4px",
+      paddingBottom: "4px",
+      wordBreak: "break-word" as const,
+      overflowWrap: "anywhere" as const,
+    };
+    if (isTyping) {
+      return React.createElement(
+        "div",
+        { className: "relative h-full w-full" },
+        React.createElement("div", {
+          ref: editorRef,
+          tabIndex: 0,
+          contentEditable: true,
+          suppressContentEditableWarning: true,
+          spellCheck: false,
+          "data-canvas-brick-editor-id": shell.id,
+          className: "h-full w-full outline-none text-foreground overflow-auto scrollbar-hide whitespace-pre-wrap",
+          style: {
+            ...aiFontStyle,
+            userSelect: "text",
+            WebkitUserSelect: "text",
+          },
+          onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => { e.stopPropagation(); },
+          onInput: (e: React.FormEvent<HTMLDivElement>) => {
+            const nextRaw = getEditorText(e.currentTarget);
+            const nativeInput = e.nativeEvent as InputEvent | undefined;
+            const isPaste = nativeInput?.inputType === "insertFromPaste";
+            onTypingChange?.(shell.id, nextRaw, { isPaste });
+          },
+          onPaste: (e: React.ClipboardEvent<HTMLDivElement>) => {
+            e.preventDefault();
+            const txt = getStructuredPasteFromEvent(e);
+            insertTextAtCursor(txt);
+            const nextRaw = getEditorText(editorRef.current);
+            onTypingChange?.(shell.id, nextRaw, { isPaste: true });
+          },
+          onKeyDown: (e: React.KeyboardEvent<HTMLDivElement>) => {
+            onTypingKeyDown?.(shell.id, e);
+          },
+          onBlur: (e: React.FocusEvent<HTMLDivElement>) => {
+            const raw = getEditorText(e.currentTarget);
+            onTypingChange?.(shell.id, raw);
+            onTypingBlur?.(shell.id);
+          },
+        })
+      );
+    }
     return React.createElement(
       "div",
       { className: "relative h-full w-full" },
@@ -654,19 +712,8 @@ function BrickTextSurface(props: {
           ref: editorRef,
           tabIndex: 0,
           "data-canvas-brick-editor-id": shell.id,
-          className: "h-full w-full outline-none text-foreground overflow-auto",
-          style: {
-            fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"',
-            fontSize: "13px",
-            lineHeight: "1.5",
-            color: "inherit",
-            paddingLeft: "8px",
-            paddingRight: "8px",
-            paddingTop: "4px",
-            paddingBottom: "4px",
-            wordBreak: "break-word",
-            overflowWrap: "anywhere",
-          },
+          className: `h-full w-full outline-none text-foreground ${isThinkingPlaceholder ? "overflow-hidden" : "overflow-auto scrollbar-hide"}`,
+          style: aiFontStyle,
         },
         React.createElement(ReactMarkdown as any, { remarkPlugins: [remarkGfm], components: aiMarkdownComponents }, String(shell.content || ""))
       )
@@ -846,16 +893,16 @@ function BrickTextSurface(props: {
             const textBefore = current.slice(0, cursorAbs);
             const currentLineIdx = textBefore.split("\n").length - 1;
             const currentLine = lines[currentLineIdx] || "";
-            const isOnHeader = /^[▶▼]\s/.test(currentLine);
+            const isOnHeader = /^[▶▼](?:\uFE0E|\uFE0F)?\s/.test(currentLine);
             const isOnChild = /^\s+/.test(currentLine);
-            const isExpandedHeader = /^▼\s/.test(currentLine);
+            const isExpandedHeader = /^▼(?:\uFE0E|\uFE0F)?\s/.test(currentLine);
 
             if (isOnHeader && isExpandedHeader) {
               insertTextAtCursor("\n  ");
             } else if (isOnChild) {
               insertTextAtCursor("\n  ");
             } else {
-              insertTextAtCursor("\n▶ ");
+              insertTextAtCursor("\n▶\uFE0E ");
             }
             onTypingChange?.(shell.id, getEditorText(editorRef.current));
             return;
@@ -1007,6 +1054,35 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
     window.addEventListener("pointerup", onEnd);
     window.addEventListener("pointercancel", onEnd);
   };
+  const canResizeHeight = Boolean(opts?.enableWidthResize && typeof opts?.onResizeHeight === "function");
+  const startHeightResize = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!canResizeHeight) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const pointerId = e.pointerId;
+    const startY = Number(e.clientY || 0);
+    const startHeight = Math.max(1, Number(shell.height || BRICK_BEHAVIOR.gridSize));
+    const grid = Math.max(1, Math.floor(Number(opts?.resizeGridSize || BRICK_BEHAVIOR.gridSize)));
+    const minHeight = grid;
+    const z = Math.max(0.1, Number(opts?.canvasZoom) || 1);
+    const onMove = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
+      const deltaY = (Number(ev.clientY || 0) - startY) / z;
+      const rawHeight = startHeight + deltaY;
+      const snapped = Math.round(rawHeight / grid) * grid;
+      const nextHeight = Math.max(minHeight, snapped);
+      opts?.onResizeHeight?.(shell.id, nextHeight);
+    };
+    const onEnd = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onEnd);
+      window.removeEventListener("pointercancel", onEnd);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onEnd);
+    window.addEventListener("pointercancel", onEnd);
+  };
   const canCornerScale = typeof opts?.onCornerScale === "function";
   const startCornerScale = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!canCornerScale) return;
@@ -1014,15 +1090,21 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
     e.stopPropagation();
     const pointerId = e.pointerId;
     const startX = Number(e.clientX || 0);
+    const startY = Number(e.clientY || 0);
     const startWidth = Math.max(1, Number(shell.width || BRICK_BEHAVIOR.gridSize));
+    const startHeight = Math.max(1, Number(shell.height || BRICK_BEHAVIOR.gridSize));
     const currentScale = Math.max(0.25, Number(shell.brickScale || 1));
+    const grid = Math.max(1, Math.floor(Number(opts?.resizeGridSize || BRICK_BEHAVIOR.gridSize)));
     const z = Math.max(0.1, Number(opts?.canvasZoom) || 1);
     const onMove = (ev: PointerEvent) => {
       if (ev.pointerId !== pointerId) return;
       const deltaX = (Number(ev.clientX || 0) - startX) / z;
-      const ratio = Math.max(0.5, (startWidth + deltaX) / startWidth);
-      const nextScale = Math.max(0.5, Math.min(4, currentScale * ratio));
-      opts?.onCornerScale?.(shell.id, nextScale);
+      const deltaY = (Number(ev.clientY || 0) - startY) / z;
+      const nextWidth = Math.max(grid * 4, Math.round((startWidth + deltaX) / grid) * grid);
+      const nextHeight = Math.max(grid, Math.round((startHeight + deltaY) / grid) * grid);
+      const widthRatio = nextWidth / startWidth;
+      const nextScale = Math.max(0.5, Math.min(4, currentScale * widthRatio));
+      opts?.onCornerScale?.(shell.id, nextScale, nextWidth, nextHeight);
     };
     const onEnd = (ev: PointerEvent) => {
       if (ev.pointerId !== pointerId) return;
@@ -1045,8 +1127,7 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
     : null;
 
   const columnCount = getColumnCount(shell);
-  const isScaled = (shell.brickScale ?? 1) > 1;
-  const useFlexHeight = isScaled || Boolean(opts?.extraContent) || columnCount > 1;
+  const useFlexHeight = Boolean(opts?.extraContent) || columnCount > 1;
 
   return React.createElement(
     "div",
@@ -1083,7 +1164,7 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
               ? "inset 0 1px 0 rgba(255,255,255,0.55), 0 6px 18px rgba(0,0,0,0.14)"
               : "0 2px 8px rgba(0,0,0,0.10)",
           borderColor: isRaised ? "rgba(59,130,246,0.78)" : isActivated ? "rgba(59,130,246,0.45)" : "rgba(255,255,255,0.45)",
-          transition: "transform 150ms, box-shadow 150ms, border-color 150ms, background 150ms, color 150ms",
+          transition: "transform 150ms, box-shadow 150ms, border-color 150ms, background 150ms",
           paddingLeft: shell.listType === "quote" ? "6px" : undefined,
           ...(shell.brickColor ? { background: shell.brickColor } : {}),
           ...(shell.textColor ? { color: shell.textColor } : {}),
@@ -1112,24 +1193,36 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
         ? React.createElement("div", {
             "data-resize-handle": true,
             className:
-              "absolute top-0 right-0 h-full w-3 cursor-ew-resize rounded-r hover:bg-black/10 transition-colors",
+              "absolute top-0 right-0 h-full w-3 cursor-ew-resize rounded-r hover:bg-black/10 transition-colors z-20",
             title: "Drag to resize width",
             onPointerDown: startWidthResize,
             onClick: (e: any) => e.stopPropagation(),
           })
         : null,
-      canCornerScale
+      canResizeHeight
         ? React.createElement("div", {
             "data-resize-handle": true,
-            className: "absolute bottom-0 right-0 w-5 h-5 cursor-nwse-resize opacity-0 group-hover:opacity-100 transition-opacity z-10",
-            onPointerDown: startCornerScale,
+            className:
+              "absolute bottom-0 left-0 w-full h-3 cursor-ns-resize rounded-b hover:bg-black/10 transition-colors z-20",
+            title: "Drag to resize height",
+            onPointerDown: startHeightResize,
             onClick: (e: any) => e.stopPropagation(),
-          }, React.createElement("svg", { viewBox: "0 0 16 16", className: "w-full h-full text-black/30" },
-            React.createElement("path", { d: "M14 14L6 14M14 14L14 6M14 14L8 8", stroke: "currentColor", strokeWidth: "1.5", fill: "none", strokeLinecap: "round" })
-          ))
+          })
         : null,
       labelEl
     ),
+    canCornerScale
+      ? React.createElement("div", {
+          key: "corner-resize-grip",
+          "data-resize-handle": true,
+          className: "absolute bottom-0 right-0 cursor-nwse-resize z-30 group-hover:opacity-100 opacity-40 transition-opacity flex items-center justify-center",
+          style: { width: "20px", height: "20px" },
+          onPointerDown: startCornerScale,
+          onClick: (e: any) => e.stopPropagation(),
+        }, React.createElement("svg", { viewBox: "0 0 16 16", width: "14", height: "14", style: { filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.2))" } },
+          React.createElement("path", { d: "M14 14L6 14M14 14L14 6M14 14L8 8", stroke: "rgba(0,0,0,0.45)", strokeWidth: "2", fill: "none", strokeLinecap: "round" })
+        ))
+      : null,
     shell.content.trim()
       ? React.createElement(
           "div",

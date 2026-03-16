@@ -1932,7 +1932,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         .join("\n");
     const ensureListSeed = (content: string, listType: "bullet" | "numbered" | "todo" | "toggle" | "quote") => {
       const s = String(content || "");
-      const marker = listType === "bullet" ? "• " : listType === "todo" ? `${TODO_EMPTY} ` : listType === "toggle" ? "▶ " : listType === "quote" ? "" : "1. ";
+      const marker = listType === "bullet" ? "• " : listType === "todo" ? `${TODO_EMPTY} ` : listType === "toggle" ? "▶\uFE0E " : listType === "quote" ? "" : "1. ";
       if (!s.trim()) return marker;
       const firstLine = s.split("\n")[0] || "";
       if (listType === "bullet" && /^\s*(?:•|-)\s/.test(firstLine)) return s;
@@ -1942,7 +1942,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       )
         return normalizeTodoMarkers(s);
       if (listType === "numbered" && /^\s*\d+\.\s/.test(firstLine)) return s;
-      if (listType === "toggle" && /^\s*[▶▼]\s/.test(firstLine)) return s;
+      if (listType === "toggle" && /^\s*[▶▼](?:\uFE0E|\uFE0F)?\s/.test(firstLine)) return s;
       if (listType === "quote") return s;
       return `${marker}${s}`;
     };
@@ -5118,7 +5118,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
                 ),
               ),
             );
-            const audioBrick = renderBrickShell(b as any, id, { extraContent: audioExtra, resizeGridSize: gridSize, canvasZoom: canvasZoomRef.current, onCornerScale: (bid, nextScale) => { const cur: any = (blocks as any)[bid]; if (!cur) return; const data = cur?.data && typeof cur.data === "object" ? { ...cur.data } : {}; const oldScale = Math.max(0.5, Number(data.brickScale || 1)); const ratio = nextScale / oldScale; updateBlock(bid as any, { width: Math.max(gridSize * 10, Math.round((cur.width * ratio) / gridSize) * gridSize), height: Math.max(gridSize, Math.round((cur.height * ratio) / gridSize) * gridSize), data: { ...data, brickScale: nextScale } } as any); }, onMinimize: toggleMinimized, onBrickMenu: handleBlockMenu });
+            const audioBrick = renderBrickShell(b as any, id, { extraContent: audioExtra, resizeGridSize: gridSize, canvasZoom: canvasZoomRef.current, onCornerScale: (bid, _nextScale, newWidth, newHeight) => { const cur: any = (blocks as any)[bid]; if (!cur) return; const data = cur?.data && typeof cur.data === "object" ? { ...cur.data } : {}; updateBlock(bid as any, { width: Math.max(gridSize * 10, newWidth), height: Math.max(gridSize, newHeight), data: { ...data, userResized: true } } as any); }, onMinimize: toggleMinimized, onBrickMenu: handleBlockMenu });
             return React.cloneElement(audioBrick as React.ReactElement, { key: id });
           }
           if (isCreateEmbedPdf) {
@@ -5139,7 +5139,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
                 style: { minHeight: "200px" },
               }),
             );
-            const pdfBrick = renderBrickShell(b as any, id, { extraContent: pdfExtra, resizeGridSize: gridSize, canvasZoom: canvasZoomRef.current, onCornerScale: (bid, nextScale) => { const cur: any = (blocks as any)[bid]; if (!cur) return; const data = cur?.data && typeof cur.data === "object" ? { ...cur.data } : {}; const oldScale = Math.max(0.5, Number(data.brickScale || 1)); const ratio = nextScale / oldScale; updateBlock(bid as any, { width: Math.max(gridSize * 10, Math.round((cur.width * ratio) / gridSize) * gridSize), height: Math.max(gridSize * 4, Math.round((cur.height * ratio) / gridSize) * gridSize), data: { ...data, brickScale: nextScale } } as any); }, onMinimize: toggleMinimized, onBrickMenu: handleBlockMenu });
+            const pdfBrick = renderBrickShell(b as any, id, { extraContent: pdfExtra, resizeGridSize: gridSize, canvasZoom: canvasZoomRef.current, onCornerScale: (bid, _nextScale, newWidth, newHeight) => { const cur: any = (blocks as any)[bid]; if (!cur) return; const data = cur?.data && typeof cur.data === "object" ? { ...cur.data } : {}; updateBlock(bid as any, { width: Math.max(gridSize * 10, newWidth), height: Math.max(gridSize * 4, newHeight), data: { ...data, userResized: true } } as any); }, onMinimize: toggleMinimized, onBrickMenu: handleBlockMenu });
             return React.cloneElement(pdfBrick as React.ReactElement, { key: id });
           }
           if (isCreateEmbedLink) {
@@ -5255,10 +5255,10 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
             isActivated: typingBlockId === id ? false : activatedBrickIds.includes(id),
             isRaised: typingBlockId === id ? false : raisedBrickIds.includes(id),
             isTyping: typingBlockId === id,
-            enableWidthResize: isAiResponseBubble || isTextBrick,
+            enableWidthResize: isTextBrick || isAiResponseBubble,
             extraContent: sourcesExtraContent,
             resizeGridSize: gridSize,
-            resizeMinWidth: gridSize * 10,
+            resizeMinWidth: gridSize * 4,
             resizeMaxWidth:
               Math.max(
                 gridSize * 10,
@@ -5272,45 +5272,32 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
             onResizeWidth: (bid, width) => {
               if (!(blocks as any)[bid]) return;
               const cur: any = (blocks as any)[bid];
-              const data = cur?.data && typeof cur.data === "object" ? cur.data : {};
-              if (!data.userResized) {
-                updateBlock(bid as any, { data: { ...data, userResized: true } } as any);
-              }
-              const variant = (String(data.textVariant || "body").toLowerCase() as "body" | "h2" | "h1") || "body";
-              const content = String(cur?.content || "");
-              const nextWidth = Math.max(gridSize * 10, Math.floor(width || gridSize * 10));
-              const cols = computeColumnCount(nextWidth, content);
-              if (cols > 1) {
-                const colWidth = Math.floor((nextWidth - (cols - 1) * COLUMN_GAP_PX) / cols);
-                const wrappedLineCount = getWrappedLineCountForWidth(content, variant, colWidth);
-                const perCol = Math.ceil(wrappedLineCount / cols);
-                const targetRows = Math.max(minRowsForVariant(variant), perCol * lineRowsForVariant(variant));
-                const nextHeight = Math.max(gridSize * 2, targetRows * gridSize);
-                updateBlock(bid as any, { width: nextWidth, height: nextHeight } as any);
-              } else {
-                const wrappedLineCount = getWrappedLineCountForWidth(content, variant, nextWidth);
-                const targetRows = Math.max(minRowsForVariant(variant), wrappedLineCount * lineRowsForVariant(variant));
-                const nextHeight = Math.max(gridSize, targetRows * gridSize);
-                updateBlock(bid as any, { width: nextWidth, height: nextHeight } as any);
-              }
+              const data = cur?.data && typeof cur.data === "object" ? { ...cur.data } : {};
+              suppressBrickClickRef.current = true;
+              window.setTimeout(() => { suppressBrickClickRef.current = false; }, 50);
+              const nextWidth = Math.max(gridSize * 4, Math.floor(width || gridSize * 4));
+              data.userResized = true;
+              updateBlock(bid as any, { width: nextWidth, data } as any);
             },
-            onCornerScale: (bid, nextScale) => {
+            onResizeHeight: (bid, height) => {
               if (!(blocks as any)[bid]) return;
               const cur: any = (blocks as any)[bid];
               const data = cur?.data && typeof cur.data === "object" ? { ...cur.data } : {};
-              const oldScale = Math.max(0.5, Number(data.brickScale || 1));
-              const ratio = nextScale / oldScale;
-              const nextWidth = Math.max(gridSize * 10, Math.round((cur.width * ratio) / gridSize) * gridSize);
-              const variant = (String(data.textVariant || "body").toLowerCase() as "body" | "h2" | "h1") || "body";
-              const content = String(cur?.content || "");
-              const baseWidthForWrap = Math.max(gridSize * 4, Math.floor(nextWidth / nextScale));
-              const wrappedLines = getWrappedLineCountForWidth(content, variant, baseWidthForWrap);
-              const scaledLineHeight = lineRowsForVariant(variant) * gridSize * nextScale;
-              const nextHeight = Math.max(
-                gridSize,
-                Math.ceil((wrappedLines * scaledLineHeight) / gridSize) * gridSize
-              );
-              updateBlock(bid as any, { width: nextWidth, height: nextHeight, data: { ...data, brickScale: nextScale } } as any);
+              suppressBrickClickRef.current = true;
+              window.setTimeout(() => { suppressBrickClickRef.current = false; }, 50);
+              const nextHeight = Math.max(gridSize, Math.floor(height || gridSize));
+              data.userResized = true;
+              updateBlock(bid as any, { height: nextHeight, data } as any);
+            },
+            onCornerScale: (bid, nextScale, newWidth, newHeight) => {
+              if (!(blocks as any)[bid]) return;
+              const cur: any = (blocks as any)[bid];
+              const data = cur?.data && typeof cur.data === "object" ? { ...cur.data } : {};
+              suppressBrickClickRef.current = true;
+              window.setTimeout(() => { suppressBrickClickRef.current = false; }, 50);
+              const nextWidth = Math.max(gridSize * 10, newWidth);
+              const nextHeight = Math.max(gridSize, newHeight);
+              updateBlock(bid as any, { width: nextWidth, height: nextHeight, data: { ...data, brickScale: nextScale, userResized: true } } as any);
             },
             onTypingChange: (bid, raw, meta) => {
               if (!(blocks as any)[bid]) return;
@@ -5351,60 +5338,74 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
               const textValue = parsed.content;
               const nextVariant = parsed.variant;
               const nextListType = parsed.listType;
-              const brickScale = Math.max(0.5, Number(data.brickScale || 1));
-              const scaledGrid = gridSize * brickScale;
-              const currentHeightRows = Math.max(1, Math.round(Number(cur.height || scaledGrid) / scaledGrid));
-              const currentWidthCells = Math.max(1, Math.round(Number(cur.width || gridSize) / gridSize));
-              const targetCells = Math.ceil(getRequiredHorizontalCells(textValue, nextVariant) * brickScale);
-              const neededCells = targetCells;
-              const leadCells = nextListType === "todo" ? 1 : 0;
-              const desiredCells = neededCells + leadCells;
-              const widthCells = Math.max(currentWidthCells, desiredCells);
-              const newWidth = Math.max(gridSize, widthCells * gridSize);
-              const effectiveBaseWidth = Math.max(gridSize * 4, newWidth / brickScale);
-              const wrappedLines = getWrappedLineCountForWidth(textValue, nextVariant, effectiveBaseWidth);
-              const targetRows = Math.max(
-                minRowsForVariant(nextVariant),
-                Math.max(
-                  getRequiredVerticalCells(textValue) * lineRowsForVariant(nextVariant),
-                  wrappedLines * lineRowsForVariant(nextVariant)
-                )
-              );
-              const neededRows =
-                meta?.isPaste
-                  ? targetRows
-                  : targetRows > currentHeightRows
-                    ? Math.min(targetRows, currentHeightRows + 3)
-                    : targetRows;
-              const calcHeight = Math.max(gridSize, Math.ceil((neededRows * scaledGrid) / gridSize) * gridSize);
-              const newHeight = brickScale > 1
-                ? Math.max(Number(cur.height || 0), calcHeight)
-                : calcHeight;
-
-              const contentSame = cur.content === textValue;
-              const sizeSame = cur.width === newWidth && cur.height === newHeight;
               const variantSame = currentVariant === nextVariant && currentListType === nextListType;
-              if (contentSame && sizeSame && variantSame) {
-                if (parsed.consumed) syncBrickEditorText(bid, textValue);
-                return;
-              }
-              if (contentSame && variantSame) {
-                if (parsed.consumed) syncBrickEditorText(bid, textValue);
-                return;
-              }
+              const contentSame = cur.content === textValue;
 
-              const patch: any = { content: textValue };
-              if (!sizeSame) {
-                patch.width = newWidth;
-                patch.height = newHeight;
+              if (data.userResized) {
+                if (contentSame && variantSame) {
+                  if (parsed.consumed) syncBrickEditorText(bid, textValue);
+                  return;
+                }
+                const patch: any = { content: textValue };
+                if (!variantSame) {
+                  patch.data = { ...data, textVariant: nextVariant, listType: nextListType };
+                }
+                updateBlock(bid as any, patch);
+                if (parsed.consumed) syncBrickEditorText(bid, textValue);
+              } else {
+                const brickScale = Math.max(0.5, Number(data.brickScale || 1));
+                const scaledGrid = gridSize * brickScale;
+                const currentHeightRows = Math.max(1, Math.round(Number(cur.height || scaledGrid) / scaledGrid));
+                const currentWidthCells = Math.max(1, Math.round(Number(cur.width || gridSize) / gridSize));
+                const targetCells = Math.ceil(getRequiredHorizontalCells(textValue, nextVariant) * brickScale);
+                const neededCells = targetCells;
+                const leadCells = nextListType === "todo" ? 1 : 0;
+                const desiredCells = neededCells + leadCells;
+                const widthCells = Math.max(currentWidthCells, desiredCells);
+                const newWidth = Math.max(gridSize, widthCells * gridSize);
+                const effectiveBaseWidth = Math.max(gridSize * 4, newWidth / brickScale);
+                const wrappedLines = getWrappedLineCountForWidth(textValue, nextVariant, effectiveBaseWidth);
+                const targetRows = Math.max(
+                  minRowsForVariant(nextVariant),
+                  Math.max(
+                    getRequiredVerticalCells(textValue) * lineRowsForVariant(nextVariant),
+                    wrappedLines * lineRowsForVariant(nextVariant)
+                  )
+                );
+                const neededRows =
+                  meta?.isPaste
+                    ? targetRows
+                    : targetRows > currentHeightRows
+                      ? Math.min(targetRows, currentHeightRows + 3)
+                      : targetRows;
+                const calcHeight = Math.max(gridSize, Math.ceil((neededRows * scaledGrid) / gridSize) * gridSize);
+                const newHeight = brickScale > 1
+                  ? Math.max(Number(cur.height || 0), calcHeight)
+                  : calcHeight;
+
+                const sizeSame = cur.width === newWidth && cur.height === newHeight;
+                if (contentSame && sizeSame && variantSame) {
+                  if (parsed.consumed) syncBrickEditorText(bid, textValue);
+                  return;
+                }
+                if (contentSame && variantSame) {
+                  if (parsed.consumed) syncBrickEditorText(bid, textValue);
+                  return;
+                }
+
+                const patch: any = { content: textValue };
+                if (!sizeSame) {
+                  patch.width = newWidth;
+                  patch.height = newHeight;
+                }
+                if (!variantSame) {
+                  patch.data = { ...data, textVariant: nextVariant, listType: nextListType };
+                } else if (!sizeSame || !contentSame) {
+                  patch.data = data;
+                }
+                updateBlock(bid as any, patch);
+                if (parsed.consumed) syncBrickEditorText(bid, textValue);
               }
-              if (!variantSame) {
-                patch.data = { ...data, textVariant: nextVariant, listType: nextListType };
-              } else if (!sizeSame || !contentSame) {
-                patch.data = data;
-              }
-              updateBlock(bid as any, patch);
-              if (parsed.consumed) syncBrickEditorText(bid, textValue);
             },
             onTypingKeyDown: (bid, e) => {
               if (e.key === "Escape") {
@@ -5548,11 +5549,24 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
               setShiftLinkedGridSelection(false);
               setActivatedBrickIds([]);
               setRaisedBrickIds([]);
+              if (isAiResponseBubble) {
+                if (typingBlockId && typingBlockId !== bid) {
+                  dropEmptyTypingBlockIfNeeded(bid);
+                  setTypingBlockId(null);
+                }
+                setActivatedBrickIds([bid]);
+                setShiftAnchor(target);
+                return;
+              }
               dropEmptyTypingBlockIfNeeded(bid);
               setTypingBlockId(bid);
               focusBrickInputById(bid);
               setShiftAnchor(target);
             },
+            onDoubleClick: isAiResponseBubble ? (bid) => {
+              setActivatedBrickIds([bid]);
+              setRaisedBrickIds([bid]);
+            } : undefined,
             onBrickMenu: (bid, rect) => {
               setBrickMenuSub(null);
               setBrickMenu((prev) => prev?.id === bid ? null : { id: bid, x: rect.left, y: rect.bottom + 4 });
@@ -5610,6 +5624,9 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
           }
 
           if (isAiResponseBubble && isAiThinking) {
+            const brickContent = String((b as any)?.data?.content ?? (b as any)?.content ?? "").trim();
+            const isStillPlaceholder = !brickContent || /^AI is thinking/i.test(brickContent);
+
             const bx = Number((b as any).x || 0);
             const by = Number((b as any).y || 0);
             const bw = Number((b as any).width || gridSize);
@@ -5617,19 +5634,29 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
             return (
               <React.Fragment key={id}>
                 {brickEl}
-                <div
-                  className="absolute pointer-events-none flex items-center justify-center"
-                  style={{
-                    left: `${bx}px`,
-                    top: `${by}px`,
-                    width: `${bw}px`,
-                    height: `${bh}px`,
-                    zIndex: 11,
-                  }}
-                  aria-hidden
-                >
-                  <div className="brick-spinner" />
-                </div>
+                {isStillPlaceholder && (
+                  <div
+                    className="absolute pointer-events-none flex items-center justify-center"
+                    style={{
+                      left: `${bx}px`,
+                      top: `${by}px`,
+                      width: `${bw}px`,
+                      height: `${bh}px`,
+                      zIndex: 11,
+                      background: "rgba(255,255,255,0.85)",
+                      backdropFilter: "blur(4px)",
+                      borderRadius: "6px",
+                    }}
+                    aria-hidden
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <div className="brick-spinner" style={{ width: 20, height: 20 }} />
+                      <span className="text-[0.75rem] text-black/55 whitespace-nowrap" style={{ lineHeight: 1.3 }}>
+                        {thinkingStatusText || "AI is thinking…"}
+                      </span>
+                    </div>
+                  </div>
+                )}
               </React.Fragment>
             );
           }
