@@ -25,7 +25,7 @@ export default function TagManagementPage() {
 
   // ✅ Fetch from Supabase - only if user is signed in
   const { data: notes = [] } = useQuery({
-    queryKey: ['notes', user?.id],
+    queryKey: ['notes-tags', user?.id],
     queryFn: async () => {
       // Don't fetch if user is not signed in
       if (!user?.id) {
@@ -37,17 +37,19 @@ export default function TagManagementPage() {
         // ✅ Filter by user_id to show only current user's notes
         let { data, error } = await supabase
           .from('notes')
-          .select('id, title, content, tags, created_at')
+          .select('id, title, tags, created_at')
           .eq('user_id', user.id)
-          .order('created_at', { ascending: false });
+          .order('created_at', { ascending: false })
+          .limit(50);
         
         if (error && (error.code === 'PGRST204' || error.message?.includes('Could not find'))) {
           // Fallback to minimal columns
           ({ data, error } = await supabase
             .from('notes')
-            .select('id, title, content')
+            .select('id, title')
             .eq('user_id', user.id)
-            .order('id', { ascending: false }));
+            .order('id', { ascending: false })
+            .limit(50));
         }
         
         if (error) {
@@ -62,8 +64,6 @@ export default function TagManagementPage() {
     },
     retry: 2,
     refetchOnWindowFocus: false,
-    staleTime: 5 * 60 * 1000,
-    cacheTime: 10 * 60 * 1000,
   });
 
   // Get all unique tags with their usage counts
@@ -148,11 +148,9 @@ export default function TagManagementPage() {
             navigate('/memory');
           } else {
             navigate(createPageUrl(
-              view === 'short_term' ? 'ShortTerm' : 
-              view === 'long_term' ? 'LongTerm' : 
-              view === 'tags' ? 'TagManagement' : 
-              view === 'reminders' ? 'Reminders' : 
-              view === 'trash' ? 'Trash' :
+              view === 'short_term' ? 'ShortTerm' :
+              view === 'long_term' ? 'LongTerm' :
+              view === 'tags' ? 'TagManagement' :
               'Create'
             ));
           }

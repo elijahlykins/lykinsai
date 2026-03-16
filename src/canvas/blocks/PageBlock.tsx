@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { useCanvasStore } from "@/store/canvasStore";
 import { snapToGrid } from "@/canvas/utils/snap";
+import { BlockHoverToolbar } from "./BlockHoverToolbar";
 
 type PageData = {
   html: string;
@@ -71,11 +72,10 @@ const ToolbarButton = memo(function ToolbarButton({
 
 const ToolbarSep = () => <div className="w-px h-4 bg-black/10 mx-0.5 shrink-0" />;
 
-export const PageBlock = memo(function PageBlock({ id }: { id: string }) {
+export const PageBlock = memo(function PageBlock({ id, onMinimize, onMenu }: { id: string; onMinimize?: (id: string) => void; onMenu?: (id: string, rect: DOMRect) => void }) {
   const block = useCanvasStore((s) => s.blocks[id]) as any;
   const updateBlock = useCanvasStore((s) => s.updateBlock);
   const pushHistory = useCanvasStore((s) => s.pushHistory);
-  const bringToFront = useCanvasStore((s) => s.bringToFront);
   const gridSize = 24;
 
   const editorRef = useRef<HTMLDivElement | null>(null);
@@ -214,7 +214,7 @@ export const PageBlock = memo(function PageBlock({ id }: { id: string }) {
   };
 
   const beginResize = (e: React.PointerEvent, mode: "right" | "bottom" | "corner") => {
-    e.stopPropagation(); e.preventDefault(); bringToFront(id);
+    e.stopPropagation(); e.preventDefault();
     const el = e.currentTarget as HTMLElement;
     el.setPointerCapture(e.pointerId);
     resizeRef.current = {
@@ -271,10 +271,10 @@ export const PageBlock = memo(function PageBlock({ id }: { id: string }) {
       style={style}
       onPointerDown={(e) => {
         if ((e.target as Element)?.closest?.("[data-resize-handle]")) return;
-        bringToFront(id);
       }}
       className="group"
     >
+      <BlockHoverToolbar blockId={id} onMinimize={onMinimize} onMenu={onMenu} />
       <div
         className="w-full h-full rounded-lg border border-black/12 bg-white shadow-lg flex flex-col overflow-hidden"
         style={{ boxShadow: "0 4px 24px rgba(0,0,0,0.10), 0 1px 3px rgba(0,0,0,0.06)" }}

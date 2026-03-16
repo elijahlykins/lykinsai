@@ -2,6 +2,13 @@ import fetch from "node-fetch";
 import { YoutubeTranscript } from "youtube-transcript";
 import ytdl from "@distube/ytdl-core";
 import { Readable } from "stream";
+import { execFile } from "child_process";
+import { promisify } from "util";
+import { tmpdir } from "os";
+import { join } from "path";
+import { readFile, unlink } from "fs/promises";
+
+const execFileAsync = promisify(execFile);
 
 const CACHE_TTL_MS = 30 * 60 * 1000;
 const RETRANSCRIBE_TTL_MS = 6 * 60 * 60 * 1000;
@@ -13,6 +20,7 @@ const MAX_RETRANSCRIBE_WINDOWS = 2;
 const transcriptCache = new Map();
 const localizedCache = new Map();
 const retranscribeCache = new Map();
+const whisperFailCache = new Map();
 const testAdapters = {
   fetchImpl: null,
   fetchTranscriptImpl: null,
@@ -208,46 +216,108 @@ async function streamToBuffer(stream) {
   return Buffer.concat(chunks);
 }
 
+async function downloadAudioYtDlp(videoId) {
+  const outPath = join(tmpdir(), `lykn-audio-${videoId}-${Date.now()}.webm`);
+  const url = `https://www.youtube.com/watch?v=${videoId}`;
+  try {
+    await execFileAsync("yt-dlp", [
+      "-f", "worstaudio[ext=webm]/worstaudio/bestaudio",
+      "--no-playlist",
+      "--no-warnings",
+      "-o", outPath,
+      url,
+    ], { timeout: 90000 });
+    const buf = await readFile(outPath);
+    await unlink(outPath).catch(() => {});
+    return buf;
+  } catch (err) {
+    await unlink(outPath).catch(() => {});
+    throw err;
+  }
+}
+
+async function downloadAudioYtdlCore(videoId) {
+  const url = `https://www.youtube.com/watch?v=${videoId}`;
+  if (!ytdl.validateURL(url)) return null;
+  const audioStream = ytdl(url, { filter: "audioonly", quality: "lowestaudio" });
+  const audioBuffer = await Promise.race([
+    streamToBuffer(audioStream),
+    new Promise((_, reject) => setTimeout(() => {
+      try { audioStream.destroy(); } catch {}
+      reject(new Error("ytdl-core download timed out after 15s"));
+    }, 15000)),
+  ]);
+  return audioBuffer;
+}
+
+async function sendToWhisperAPI(audioBuffer, apiKey) {
+  const boundary = `----WhisperBoundary${Date.now()}`;
+  const fieldParts = [];
+  fieldParts.push(`--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nwhisper-1\r\n`);
+  fieldParts.push(`--${boundary}\r\nContent-Disposition: form-data; name="response_format"\r\n\r\nverbose_json\r\n`);
+  fieldParts.push(`--${boundary}\r\nContent-Disposition: form-data; name="language"\r\n\r\nen\r\n`);
+  const fileHeader = `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="audio.webm"\r\nContent-Type: audio/webm\r\n\r\n`;
+  const tail = `\r\n--${boundary}--\r\n`;
+  const preFile = Buffer.from(fieldParts.join("") + fileHeader, "utf-8");
+  const postFile = Buffer.from(tail, "utf-8");
+  const body = Buffer.concat([preFile, audioBuffer, postFile]);
+
+  const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": `multipart/form-data; boundary=${boundary}`,
+      "Content-Length": String(body.length),
+    },
+    body,
+  });
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    throw new Error(`OpenAI returned ${res.status}: ${errText.slice(0, 200)}`);
+  }
+  return await res.json().catch(() => ({}));
+}
+
 async function tryOpenAIWhisper(videoId) {
   const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
   if (!apiKey || !videoId) return null;
+  const failEntry = whisperFailCache.get(videoId);
+  if (failEntry && Date.now() - failEntry < 10 * 60 * 1000) {
+    console.log(`[Whisper] Skipping ${videoId} — failed recently, cached for 10 min`);
+    return null;
+  }
   try {
-    const url = `https://www.youtube.com/watch?v=${videoId}`;
-    if (!ytdl.validateURL(url)) return null;
-    console.log(`[Whisper] Downloading audio for ${videoId}...`);
-    const audioStream = ytdl(url, { filter: "audioonly", quality: "lowestaudio" });
-    const audioBuffer = await streamToBuffer(audioStream);
-    if (!audioBuffer.length) { console.warn("[Whisper] Empty audio buffer"); return null; }
-    const sizeMB = audioBuffer.length / 1024 / 1024;
-    console.log(`[Whisper] Downloaded ${sizeMB.toFixed(1)}MB, sending to OpenAI...`);
-    if (sizeMB > 24.5) { console.warn(`[Whisper] Audio too large (${sizeMB.toFixed(1)}MB > 25MB limit), skipping`); return null; }
+    let audioBuffer = null;
 
-    const boundary = `----WhisperBoundary${Date.now()}`;
-    const fieldParts = [];
-    fieldParts.push(`--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nwhisper-1\r\n`);
-    fieldParts.push(`--${boundary}\r\nContent-Disposition: form-data; name="response_format"\r\n\r\nverbose_json\r\n`);
-    fieldParts.push(`--${boundary}\r\nContent-Disposition: form-data; name="language"\r\n\r\nen\r\n`);
-    const fileHeader = `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="audio.webm"\r\nContent-Type: audio/webm\r\n\r\n`;
-    const tail = `\r\n--${boundary}--\r\n`;
-    const preFile = Buffer.from(fieldParts.join("") + fileHeader, "utf-8");
-    const postFile = Buffer.from(tail, "utf-8");
-    const body = Buffer.concat([preFile, audioBuffer, postFile]);
+    // Try yt-dlp first (most reliable)
+    try {
+      console.log(`[Whisper] Downloading audio via yt-dlp for ${videoId}...`);
+      audioBuffer = await downloadAudioYtDlp(videoId);
+    } catch (err) {
+      console.warn(`[Whisper] yt-dlp failed for ${videoId}:`, err?.message || err);
+    }
 
-    const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": `multipart/form-data; boundary=${boundary}`,
-        "Content-Length": String(body.length),
-      },
-      body,
-    });
-    if (!res.ok) {
-      const errText = await res.text().catch(() => "");
-      console.warn(`[Whisper] OpenAI returned ${res.status}: ${errText.slice(0, 200)}`);
+    // Fall back to ytdl-core
+    if (!audioBuffer || !audioBuffer.length) {
+      try {
+        console.log(`[Whisper] Trying ytdl-core fallback for ${videoId}...`);
+        audioBuffer = await downloadAudioYtdlCore(videoId);
+      } catch (err) {
+        console.warn(`[Whisper] ytdl-core failed for ${videoId}:`, err?.message || err);
+      }
+    }
+
+    if (!audioBuffer || !audioBuffer.length) {
+      console.warn(`[Whisper] No audio downloaded for ${videoId}`);
+      whisperFailCache.set(videoId, Date.now());
       return null;
     }
-    const data = await res.json().catch(() => ({}));
+
+    const sizeMB = audioBuffer.length / 1024 / 1024;
+    console.log(`[Whisper] Downloaded ${sizeMB.toFixed(1)}MB, sending to OpenAI Whisper...`);
+    if (sizeMB > 24.5) { console.warn(`[Whisper] Audio too large (${sizeMB.toFixed(1)}MB > 25MB limit), skipping`); return null; }
+
+    const data = await sendToWhisperAPI(audioBuffer, apiKey);
     const segments = Array.isArray(data.segments) ? data.segments.map((s) => ({
       startSec: Number(s.start || 0),
       endSec: Number(s.end || 0),
@@ -268,6 +338,7 @@ async function tryOpenAIWhisper(videoId) {
     return { segments, model: "whisper-1", provider: "openai" };
   } catch (err) {
     console.warn(`[Whisper] OpenAI Whisper failed for ${videoId}:`, err?.message || err);
+    whisperFailCache.set(videoId, Date.now());
     return null;
   }
 }
@@ -339,6 +410,7 @@ function transcriptToText(segments) {
 export async function getTranscriptPriority(videoId, options = {}) {
   const id = String(videoId || "").trim();
   if (!id) throw new Error("Missing videoId");
+  const skipWhisper = Boolean(options.skipWhisper);
   const cacheKey = `priority:${id}`;
   const cached = getFromCache(transcriptCache, cacheKey);
   if (cached) return cached;
@@ -366,22 +438,24 @@ export async function getTranscriptPriority(videoId, options = {}) {
     // fall through to whisper/description
   }
 
-  const whisperResult = await whisperHybridTranscribe({ videoId: id, quality: "standard" });
-  if (whisperResult?.segments?.length) {
-    const segs = whisperResult.segments.map((s) => ({ ...s, source: "whisper_full", confidence: Math.max(0.62, Number(s.confidence || 0.72)) }));
-    const value = {
-      videoId: id,
-      source: "whisper_full",
-      transcript: transcriptToText(segs),
-      segments: segs,
-      captionTracks: tracks,
-      whisper: {
-        strategy: whisperResult.strategy,
-        model: whisperResult.model,
-      },
-    };
-    setCache(transcriptCache, cacheKey, value, CACHE_TTL_MS);
-    return value;
+  if (!skipWhisper) {
+    const whisperResult = await whisperHybridTranscribe({ videoId: id, quality: "standard" });
+    if (whisperResult?.segments?.length) {
+      const segs = whisperResult.segments.map((s) => ({ ...s, source: "whisper_full", confidence: Math.max(0.62, Number(s.confidence || 0.72)) }));
+      const value = {
+        videoId: id,
+        source: "whisper_full",
+        transcript: transcriptToText(segs),
+        segments: segs,
+        captionTracks: tracks,
+        whisper: {
+          strategy: whisperResult.strategy,
+          model: whisperResult.model,
+        },
+      };
+      setCache(transcriptCache, cacheKey, value, CACHE_TTL_MS);
+      return value;
+    }
   }
 
   const description = await fetchDescription(id, youtubeApiKey);

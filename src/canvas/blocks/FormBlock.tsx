@@ -3,6 +3,7 @@ import ReactDOM from "react-dom";
 import { Plus, Trash2, ChevronDown, X, ClipboardList, GripVertical, Pencil } from "lucide-react";
 import { useCanvasStore } from "@/store/canvasStore";
 import { snapToGrid } from "@/canvas/utils/snap";
+import { BlockHoverToolbar } from "./BlockHoverToolbar";
 
 type FieldType = "text" | "textarea" | "number" | "email" | "select" | "checkbox" | "date";
 type Field = { id: string; type: FieldType; label: string; placeholder?: string; required?: boolean; options?: string[] };
@@ -40,11 +41,10 @@ const FIELD_TYPES: { id: FieldType; label: string; icon: string }[] = [
   { id: "date", label: "Date", icon: "\uD83D\uDCC5" },
 ];
 
-export const FormBlock = memo(function FormBlock({ id }: { id: string }) {
+export const FormBlock = memo(function FormBlock({ id, onMinimize, onMenu }: { id: string; onMinimize?: (id: string) => void; onMenu?: (id: string, rect: DOMRect) => void }) {
   const block = useCanvasStore((s) => s.blocks[id]) as any;
   const updateBlock = useCanvasStore((s) => s.updateBlock);
   const pushHistory = useCanvasStore((s) => s.pushHistory);
-  const bringToFront = useCanvasStore((s) => s.bringToFront);
   const gridSize = 24;
 
   const resizeRef = useRef<any>(null);
@@ -78,7 +78,7 @@ export const FormBlock = memo(function FormBlock({ id }: { id: string }) {
   };
 
   const beginResize = (e: React.PointerEvent, mode: "right" | "bottom" | "corner") => {
-    e.stopPropagation(); e.preventDefault(); bringToFront(id);
+    e.stopPropagation(); e.preventDefault();
     const el = e.currentTarget as HTMLElement;
     el.setPointerCapture(e.pointerId);
     const onUp = (ev: PointerEvent) => { if (ev.pointerId === e.pointerId) endResize(e.pointerId); };
@@ -131,7 +131,8 @@ export const FormBlock = memo(function FormBlock({ id }: { id: string }) {
   };
 
   return (
-    <div data-canvas-block data-block-id={id} style={style} className="group" onPointerDown={() => bringToFront(id)}>
+    <div data-canvas-block data-block-id={id} style={style} className="group">
+      <BlockHoverToolbar blockId={id} onMinimize={onMinimize} onMenu={onMenu} />
       <div className="w-full h-full rounded-lg border border-black/10 bg-white shadow-md flex flex-col overflow-hidden">
         {/* Header */}
         <div className="flex items-center gap-2 px-3 py-1.5 border-b border-black/5 shrink-0" style={{ background: "rgba(0,0,0,0.015)" }} onPointerDown={(e) => e.stopPropagation()}>

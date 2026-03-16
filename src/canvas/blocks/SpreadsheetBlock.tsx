@@ -1,7 +1,9 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Table2, Plus } from "lucide-react";
 
 import { useCanvasStore } from "@/store/canvasStore";
 import { snapToGrid } from "@/canvas/utils/snap";
+import { BlockHoverToolbar } from "./BlockHoverToolbar";
 
 function colToLetters(colIdx: number) {
   let n = colIdx + 1;
@@ -265,9 +267,8 @@ function computeGrid(args: { rows: number; cols: number; cells: Record<string, s
   return display;
 }
 
-export const SpreadsheetBlock = memo(function SpreadsheetBlock({ id }: { id: string }) {
+export const SpreadsheetBlock = memo(function SpreadsheetBlock({ id, onMinimize, onMenu }: { id: string; onMinimize?: (id: string) => void; onMenu?: (id: string, rect: DOMRect) => void }) {
   const block = useCanvasStore((s) => s.blocks[id]);
-  const bringToFront = useCanvasStore((s) => s.bringToFront);
   const selectBlocks = useCanvasStore((s) => s.selectBlocks);
   const toggleSelect = useCanvasStore((s) => s.toggleSelect);
   const isSelected = useCanvasStore((s) => s.selectedIds.includes(id));
@@ -631,10 +632,32 @@ export const SpreadsheetBlock = memo(function SpreadsheetBlock({ id }: { id: str
     [cells, colWidths, commitEdit, copyText, editing, isSelected, moveDownOrGrow, moveSel, pasteText, rows, cols, scheduleEmit, selected, sheet, startEdit, updateCellRaw, scrollSelectedIntoView]
   );
 
+  const isFileImport = Boolean((block as any).data?.sourceFileName);
+  const isTableMode = Boolean((block as any).data?.tableMode);
+
+  const addRow = useCallback(() => {
+    if (rows >= MAX_ROWS) return;
+    const nextRows = rows + 1;
+    const g = Math.max(1, Math.floor(gridSize || 24));
+    const nextSheet = { ...sheet, rows: nextRows, cols, colWidths, cells };
+    updateBlock(id, { content: JSON.stringify(nextSheet), height: Math.max(block.height, (nextRows + 1) * g) } as any);
+  }, [block.height, cells, colWidths, cols, gridSize, id, rows, sheet, updateBlock]);
+
+  const addCol = useCallback(() => {
+    const nextCols = cols + 1;
+    const nextColWidths = [...colWidths, 96];
+    const g = Math.max(1, Math.floor(gridSize || 24));
+    const nextSheet = { ...sheet, rows, cols: nextCols, colWidths: nextColWidths, cells };
+    updateBlock(id, { content: JSON.stringify(nextSheet), width: Math.max(block.width, nextCols * 96 + g) } as any);
+  }, [block.width, cells, colWidths, cols, gridSize, id, rows, sheet, updateBlock]);
+
+  const hideHeaders = isFileImport || isTableMode;
+
   const gridTemplateColumns = useMemo(() => {
+    if (isTableMode) return `repeat(${cols}, 1fr)`;
     const widths = (colWidths || []).slice(0, cols).map((w) => `${Math.max(40, Math.floor(w))}px`);
-    return `44px ${widths.join(" ")}`;
-  }, [colWidths, cols]);
+    return hideHeaders ? widths.join(" ") : `44px ${widths.join(" ")}`;
+  }, [colWidths, cols, hideHeaders, isTableMode]);
 
   const onColResizeMove = useCallback(
     (e: PointerEvent) => {
@@ -718,7 +741,6 @@ export const SpreadsheetBlock = memo(function SpreadsheetBlock({ id }: { id: str
   const beginResize = (e: React.PointerEvent, mode: "right" | "top" | "bottom" | "corner") => {
     e.stopPropagation();
     e.preventDefault();
-    bringToFront(id);
     if (!isSelected) selectBlocks([id]);
     pushHistory();
 
@@ -746,7 +768,6 @@ export const SpreadsheetBlock = memo(function SpreadsheetBlock({ id }: { id: str
   const startDragStrip = (e: React.PointerEvent) => {
     e.stopPropagation();
     e.preventDefault();
-    bringToFront(id);
     if (e.shiftKey) toggleSelect(id);
     else if (!isSelected) selectBlocks([id]);
     pushHistory();
@@ -785,8 +806,9 @@ export const SpreadsheetBlock = memo(function SpreadsheetBlock({ id }: { id: str
       dragRef.current = null;
       return;
     }
-    const dx = e.clientX - d.startClientX;
-    const dy = e.clientY - d.startClientY;
+    const z = (useCanvasStore.getState() as any).camera?.zoom || 1;
+    const dx = (e.clientX - d.startClientX) / z;
+    const dy = (e.clientY - d.startClientY) / z;
     d.lastX = d.originX + dx;
     d.lastY = d.originY + dy;
     if (d.raf != null) return;
@@ -814,6 +836,7 @@ export const SpreadsheetBlock = memo(function SpreadsheetBlock({ id }: { id: str
   return (
     <div
       data-canvas-block
+      data-self-drag
       data-block-id={id}
       className="absolute group"
       style={style}
@@ -835,8 +858,9 @@ export const SpreadsheetBlock = memo(function SpreadsheetBlock({ id }: { id: str
           return;
         }
 
-        const dx = e.clientX - r.startClientX;
-        const dy = e.clientY - r.startClientY;
+        const rz = (useCanvasStore.getState() as any).camera?.zoom || 1;
+        const dx = (e.clientX - r.startClientX) / rz;
+        const dy = (e.clientY - r.startClientY) / rz;
         if (r.raf != null) return;
         r.raf = window.requestAnimationFrame(() => {
           const rr = resizeRef.current;
@@ -874,121 +898,261 @@ export const SpreadsheetBlock = memo(function SpreadsheetBlock({ id }: { id: str
       onPointerCancel={(e) => endResize(e.pointerId)}
       onLostPointerCapture={(e) => endResize(e.pointerId)}
     >
+      <BlockHoverToolbar blockId={id} onMinimize={onMinimize} onMenu={onMenu} />
       <div className={`glass-block overflow-hidden relative ${isSelected ? "omnia-selected-glass" : ""}`} style={{ width: "100%", height: "100%" }}>
-        {/* tiny drag strip */}
-        <div
-          data-drag-handle
-          className="relative z-20 w-full cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 transition-opacity"
-          style={{ height: "8px" }}
-          onPointerDown={startDragStrip}
-          onPointerMove={onDragMove}
-          onPointerUp={onDragEnd}
-          onPointerCancel={onDragEnd}
-          onLostPointerCapture={onDragEnd}
-          title="Drag to move"
-        />
-
-        <div className="w-full" style={{ height: "calc(100% - 8px)" }}>
-          <div
-            ref={rootRef}
-            data-canvas-spreadsheet-root-id={id}
-            tabIndex={0}
-            className="w-full h-full outline-none"
-            onKeyDown={handleKeyDown as any}
-            onPointerDown={(e) => {
-              e.stopPropagation();
-              bringToFront(id);
-              // Don't steal focus from the cell editor input.
-              if (editing) return;
-              requestAnimationFrame(() => rootRef.current?.focus?.({ preventScroll: true }));
-            }}
-          >
+        {/* file header when imported from file */}
+        {(() => {
+          const d = (block as any).data;
+          const srcFile = d && typeof d === "object" ? String(d.sourceFileName || "").trim() : "";
+          if (!srcFile) return null;
+          return (
             <div
-              ref={viewportRef}
-              className="w-full h-full overflow-auto"
-              style={{
-                fontSize: 12,
-                lineHeight: `${rowHeight}px`,
-                userSelect: editing ? "text" : "none",
-              }}
+              data-drag-handle
+              className="flex items-center gap-2 px-3 py-2 border-b border-black/8 dark:border-white/10 bg-white/40 dark:bg-white/6 cursor-grab active:cursor-grabbing shrink-0"
+              onPointerDown={startDragStrip}
+              onPointerMove={onDragMove}
+              onPointerUp={onDragEnd}
+              onPointerCancel={onDragEnd}
+              onLostPointerCapture={onDragEnd}
             >
-              <div className="grid" style={{ gridTemplateColumns, gridAutoRows: `${rowHeight}px` }}>
-                {/* top-left corner */}
-                <div className="sticky top-0 left-0 z-20 bg-white/30 dark:bg-white/8 backdrop-blur-xl border-b border-r border-black/15 dark:border-white/18" />
+              <Table2 className="w-4 h-4 text-green-600 shrink-0" />
+              <span className="text-sm font-medium text-gray-800 dark:text-gray-200 truncate">{srcFile}</span>
+              <span className="ml-auto text-[0.6rem] text-gray-400 dark:text-gray-500 shrink-0">{rows} × {cols}</span>
+            </div>
+          );
+        })()}
+        {/* tiny drag strip (only when no file header) */}
+        {!((block as any).data?.sourceFileName) && !isTableMode && (
+          <div
+            data-drag-handle
+            className="relative z-20 w-full cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 transition-opacity"
+            style={{ height: "8px" }}
+            onPointerDown={startDragStrip}
+            onPointerMove={onDragMove}
+            onPointerUp={onDragEnd}
+            onPointerCancel={onDragEnd}
+            onLostPointerCapture={onDragEnd}
+            title="Drag to move"
+          />
+        )}
 
-                {/* column headers */}
-                {Array.from({ length: cols }).map((_, c) => (
+        {isTableMode ? (
+          /* ── TABLE MODE: flex layout that fills the brick exactly ── */
+          <div className="flex flex-col w-full h-full">
+            {/* Drag strip */}
+            <div
+              data-drag-handle
+              className="shrink-0 w-full cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 transition-opacity"
+              style={{ height: 6 }}
+              onPointerDown={startDragStrip}
+              onPointerMove={onDragMove}
+              onPointerUp={onDragEnd}
+              onPointerCancel={onDragEnd}
+              onLostPointerCapture={onDragEnd}
+              title="Drag to move"
+            />
+            <div className="flex flex-1 min-h-0">
+              {/* Grid area */}
+              <div
+                ref={rootRef}
+                data-canvas-spreadsheet-root-id={id}
+                tabIndex={0}
+                className="flex-1 min-w-0 outline-none flex flex-col"
+                onKeyDown={handleKeyDown as any}
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  if (editing) return;
+                  requestAnimationFrame(() => rootRef.current?.focus?.({ preventScroll: true }));
+                }}
+              >
+                <div
+                  ref={viewportRef}
+                  className="flex-1 min-h-0 overflow-hidden scrollbar-hide"
+                  style={{ fontSize: 12, userSelect: editing ? "text" : "none" }}
+                >
                   <div
-                    key={`h-${c}`}
-                    className="sticky top-0 z-10 bg-white/30 dark:bg-white/8 backdrop-blur-xl border-b border-black/15 dark:border-white/18 flex items-center justify-center text-xs text-gray-800 dark:text-gray-100 relative"
+                    className="grid w-full h-full"
+                    style={{
+                      gridTemplateColumns,
+                      gridTemplateRows: `repeat(${rows}, 1fr)`,
+                    }}
                   >
-                    {colToLetters(c)}
-                    <div className="absolute right-0 top-0 h-full w-1 cursor-col-resize" onPointerDown={(e) => startColResize(e, c)} />
-                  </div>
-                ))}
-
-                {/* rows */}
-                {Array.from({ length: rows }).map((_, r) => (
-                  <React.Fragment key={`r-${r}`}>
-                    <div className="sticky left-0 z-10 bg-white/30 dark:bg-white/8 backdrop-blur-xl border-r border-black/15 dark:border-white/18 flex items-center justify-center text-xs text-gray-800 dark:text-gray-100">
-                      {r + 1}
-                    </div>
-                    {Array.from({ length: cols }).map((__, c) => {
-                      const isSel = selected.r === r && selected.c === c;
-                      const isEdit = editing?.r === r && editing?.c === c;
-                      const raw = String(cells?.[`${r},${c}`] ?? "");
-                      const shown = display[r]?.[c] ?? "";
-                      const cellSelStyle: React.CSSProperties | undefined = isSel
-                        ? {
-                            boxShadow:
-                              "inset 0 0 0 1px rgba(170,215,255,0.55), inset 0 0 18px rgba(120,195,255,0.22), inset 0 1px 0 rgba(255,255,255,0.18)",
-                          }
-                        : undefined;
-                      return (
-                        <div
-                          key={`c-${r}-${c}`}
-                          data-sheet-cell={`${r},${c}`}
-                          className={`border-b border-black/15 dark:border-white/18 ${
-                            c !== cols - 1 ? "border-r border-black/15 dark:border-white/18" : ""
-                          } bg-white/22 dark:bg-white/6 backdrop-blur-xl px-1 overflow-hidden`}
-                          style={{ cursor: "default", boxShadow: "inset 0 -1px 0 rgba(0,0,0,0.12)", ...(cellSelStyle || {}) }}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setSelected({ r, c });
-                            setEditing(null);
-                            setDraft("");
-                            bringToFront(id);
-                            scrollSelectedIntoView();
-                          }}
-                          onDoubleClick={(e) => {
-                            e.stopPropagation();
-                            startEdit(r, c);
-                          }}
-                        >
-                          {isEdit ? (
-                            <input
-                              ref={editInputRef}
-                              autoFocus
-                              className="w-full h-full bg-transparent outline-none text-xs text-gray-900 dark:text-gray-100"
-                              value={draft}
-                              onChange={(e) => setDraft(e.target.value)}
-                              onBlur={() => commitEdit()}
-                              onKeyDown={(e) => e.stopPropagation()}
-                            />
-                          ) : (
-                            <div className="w-full h-full flex items-center text-xs text-gray-900 dark:text-gray-100">
-                              {raw.startsWith("=") ? shown : raw}
+                    {Array.from({ length: rows }).map((_, r) => (
+                      <React.Fragment key={`r-${r}`}>
+                        {Array.from({ length: cols }).map((__, c) => {
+                          const isSel = selected.r === r && selected.c === c;
+                          const isEdit = editing?.r === r && editing?.c === c;
+                          const raw = String(cells?.[`${r},${c}`] ?? "");
+                          const shown = display[r]?.[c] ?? "";
+                          const isHeaderRow = r === 0;
+                          const cellSelStyle: React.CSSProperties | undefined = isSel
+                            ? { boxShadow: "inset 0 0 0 1.5px rgba(100,180,255,0.6)" }
+                            : undefined;
+                          return (
+                            <div
+                              key={`c-${r}-${c}`}
+                              data-sheet-cell={`${r},${c}`}
+                              className={`border-b border-black/12 dark:border-white/15 ${
+                                c !== cols - 1 ? "border-r border-black/12 dark:border-white/15" : ""
+                              } ${isHeaderRow ? "bg-black/5 dark:bg-white/10" : "bg-white/22 dark:bg-white/6"} px-2 flex items-center overflow-hidden`}
+                              style={{ cursor: "default", minHeight: 0, ...(cellSelStyle || {}) }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelected({ r, c });
+                                setEditing(null);
+                                setDraft("");
+                              }}
+                              onDoubleClick={(e) => {
+                                e.stopPropagation();
+                                startEdit(r, c);
+                              }}
+                            >
+                              {isEdit ? (
+                                <input
+                                  ref={editInputRef}
+                                  autoFocus
+                                  className="w-full bg-transparent outline-none text-xs text-gray-900 dark:text-gray-100"
+                                  value={draft}
+                                  onChange={(e) => setDraft(e.target.value)}
+                                  onBlur={() => commitEdit()}
+                                  onKeyDown={(e) => e.stopPropagation()}
+                                />
+                              ) : (
+                                <span className={`text-xs text-gray-900 dark:text-gray-100 truncate ${isHeaderRow ? "font-semibold" : ""}`}>
+                                  {raw.startsWith("=") ? shown : raw}
+                                </span>
+                              )}
                             </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </React.Fragment>
-                ))}
+                          );
+                        })}
+                      </React.Fragment>
+                    ))}
+                  </div>
+                </div>
+                {/* + add row */}
+                <div
+                  className="shrink-0 flex items-center justify-center cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity hover:bg-blue-500/10 border-t border-black/10 dark:border-white/10"
+                  style={{ height: 22 }}
+                  onClick={(e) => { e.stopPropagation(); addRow(); }}
+                  title="Add row"
+                >
+                  <Plus className="w-3 h-3 text-gray-400 dark:text-gray-500" />
+                </div>
+              </div>
+              {/* + add column */}
+              <div
+                className="shrink-0 flex items-center justify-center cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity hover:bg-blue-500/10 border-l border-black/10 dark:border-white/10"
+                style={{ width: 22 }}
+                onClick={(e) => { e.stopPropagation(); addCol(); }}
+                title="Add column"
+              >
+                <Plus className="w-3 h-3 text-gray-400 dark:text-gray-500" />
               </div>
             </div>
           </div>
-        </div>
+        ) : (
+          /* ── SPREADSHEET MODE (original) ── */
+          <div className="w-full" style={{ height: (block as any).data?.sourceFileName ? "calc(100% - 36px)" : "calc(100% - 8px)" }}>
+            <div
+              ref={rootRef}
+              data-canvas-spreadsheet-root-id={id}
+              tabIndex={0}
+              className="w-full h-full outline-none"
+              onKeyDown={handleKeyDown as any}
+              onPointerDown={(e) => {
+                e.stopPropagation();
+                if (editing) return;
+                requestAnimationFrame(() => rootRef.current?.focus?.({ preventScroll: true }));
+              }}
+            >
+              <div
+                ref={viewportRef}
+                className={`w-full h-full overflow-auto ${isFileImport ? "scrollbar-hide" : ""}`}
+                style={{
+                  fontSize: 12,
+                  lineHeight: `${rowHeight}px`,
+                  userSelect: editing ? "text" : "none",
+                }}
+              >
+                <div className="grid" style={{ gridTemplateColumns, gridAutoRows: `${rowHeight}px` }}>
+                  {!hideHeaders && (
+                    <>
+                      <div className="sticky top-0 left-0 z-20 bg-white/30 dark:bg-white/8 backdrop-blur-xl border-b border-r border-black/15 dark:border-white/18" />
+                      {Array.from({ length: cols }).map((_, c) => (
+                        <div
+                          key={`h-${c}`}
+                          className="sticky top-0 z-10 bg-white/30 dark:bg-white/8 backdrop-blur-xl border-b border-black/15 dark:border-white/18 flex items-center justify-center text-xs text-gray-800 dark:text-gray-100 relative"
+                        >
+                          {colToLetters(c)}
+                          <div className="absolute right-0 top-0 h-full w-1 cursor-col-resize" onPointerDown={(e) => startColResize(e, c)} />
+                        </div>
+                      ))}
+                    </>
+                  )}
+                  {Array.from({ length: rows }).map((_, r) => (
+                    <React.Fragment key={`r-${r}`}>
+                      {!hideHeaders && (
+                        <div className="sticky left-0 z-10 bg-white/30 dark:bg-white/8 backdrop-blur-xl border-r border-black/15 dark:border-white/18 flex items-center justify-center text-xs text-gray-800 dark:text-gray-100">
+                          {r + 1}
+                        </div>
+                      )}
+                      {Array.from({ length: cols }).map((__, c) => {
+                        const isSel = selected.r === r && selected.c === c;
+                        const isEdit = editing?.r === r && editing?.c === c;
+                        const raw = String(cells?.[`${r},${c}`] ?? "");
+                        const shown = display[r]?.[c] ?? "";
+                        const isHeaderRow = isFileImport && r === 0;
+                        const cellSelStyle: React.CSSProperties | undefined = isSel
+                          ? {
+                              boxShadow:
+                                "inset 0 0 0 1px rgba(170,215,255,0.55), inset 0 0 18px rgba(120,195,255,0.22), inset 0 1px 0 rgba(255,255,255,0.18)",
+                            }
+                          : undefined;
+                        return (
+                          <div
+                            key={`c-${r}-${c}`}
+                            data-sheet-cell={`${r},${c}`}
+                            className={`border-b border-black/15 dark:border-white/18 ${
+                              c !== cols - 1 ? "border-r border-black/15 dark:border-white/18" : ""
+                            } ${isHeaderRow ? "bg-black/5 dark:bg-white/10" : "bg-white/22 dark:bg-white/6"} backdrop-blur-xl px-1 overflow-hidden`}
+                            style={{ cursor: "default", boxShadow: "inset 0 -1px 0 rgba(0,0,0,0.12)", ...(cellSelStyle || {}) }}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelected({ r, c });
+                              setEditing(null);
+                              setDraft("");
+                              scrollSelectedIntoView();
+                            }}
+                            onDoubleClick={(e) => {
+                              e.stopPropagation();
+                              startEdit(r, c);
+                            }}
+                          >
+                            {isEdit ? (
+                              <input
+                                ref={editInputRef}
+                                autoFocus
+                                className="w-full h-full bg-transparent outline-none text-xs text-gray-900 dark:text-gray-100"
+                                value={draft}
+                                onChange={(e) => setDraft(e.target.value)}
+                                onBlur={() => commitEdit()}
+                                onKeyDown={(e) => e.stopPropagation()}
+                              />
+                            ) : (
+                              <div className={`w-full h-full flex items-center text-xs text-gray-900 dark:text-gray-100 truncate ${isHeaderRow ? "font-semibold" : ""}`}>
+                                {raw.startsWith("=") ? shown : raw}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </React.Fragment>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Resize handles (match ImageBlock UX) */}

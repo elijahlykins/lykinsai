@@ -8,6 +8,7 @@ import {
 } from "recharts";
 import { useCanvasStore } from "@/store/canvasStore";
 import { snapToGrid } from "@/canvas/utils/snap";
+import { BlockHoverToolbar } from "./BlockHoverToolbar";
 
 const CHART_COLORS = [
   "#3B82F6", "#16A34A", "#D97706", "#DC2626", "#7C3AED",
@@ -51,11 +52,10 @@ function parseChart(content: string): ChartData {
   }
 }
 
-export const ChartBlock = memo(function ChartBlock({ id }: { id: string }) {
+export const ChartBlock = memo(function ChartBlock({ id, onMinimize, onMenu }: { id: string; onMinimize?: (id: string) => void; onMenu?: (id: string, rect: DOMRect) => void }) {
   const block = useCanvasStore((s) => s.blocks[id]) as any;
   const updateBlock = useCanvasStore((s) => s.updateBlock);
   const pushHistory = useCanvasStore((s) => s.pushHistory);
-  const bringToFront = useCanvasStore((s) => s.bringToFront);
   const gridSize = 24;
 
   const resizeRef = useRef<any>(null);
@@ -97,7 +97,7 @@ export const ChartBlock = memo(function ChartBlock({ id }: { id: string }) {
   };
 
   const beginResize = (e: React.PointerEvent, mode: "right" | "bottom" | "corner") => {
-    e.stopPropagation(); e.preventDefault(); bringToFront(id);
+    e.stopPropagation(); e.preventDefault();
     const el = e.currentTarget as HTMLElement;
     el.setPointerCapture(e.pointerId);
     const onUp = (ev: PointerEvent) => { if (ev.pointerId === e.pointerId) endResize(e.pointerId); };
@@ -183,7 +183,8 @@ export const ChartBlock = memo(function ChartBlock({ id }: { id: string }) {
   };
 
   return (
-    <div data-canvas-block data-block-id={id} style={style} className="group" onPointerDown={() => bringToFront(id)}>
+    <div data-canvas-block data-block-id={id} style={style} className="group">
+      <BlockHoverToolbar blockId={id} onMinimize={onMinimize} onMenu={onMenu} />
       <div className="w-full h-full rounded-lg border border-black/10 bg-white shadow-md flex flex-col overflow-hidden">
         {/* Header */}
         <div className="flex items-center gap-2 px-3 py-1.5 border-b border-black/5 shrink-0" style={{ background: "rgba(0,0,0,0.015)" }} onPointerDown={(e) => e.stopPropagation()}>

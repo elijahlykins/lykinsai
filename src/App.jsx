@@ -1,3 +1,4 @@
+import '@/lib/installAuthFetch';
 import React, { Suspense, useEffect } from "react";
 import { Toaster } from "@/components/ui/toaster";
 import { QueryClientProvider } from '@tanstack/react-query';
@@ -17,19 +18,13 @@ import AppSidebar from "./components/AppSidebar";
 import MemoryNew from "./pages/new/MemoryNew";
 import MemoryChatNew from "./pages/new/MemoryChatNew";
 import TagManagementNew from "./pages/new/TagManagementNew";
-import TrashNew from "./pages/new/TrashNew";
 import BillingNew from "./pages/new/BillingNew";
-import RemindersNew from "./pages/new/RemindersNew";
 
-import CalendarPage from "./pages/CalendarPage";
-import TeamSpaces from "./pages/TeamSpaces";
 
 const legacyEnabled = String(import.meta.env.VITE_ENABLE_LEGACY_NOTES || "").toLowerCase() === "true";
 const LegacyMemoryChat = React.lazy(() => import("./pages/MemoryChat"));
 const LegacyTagManagement = React.lazy(() => import("./pages/TagManagement"));
-const LegacyTrash = React.lazy(() => import("./pages/Trash"));
 const LegacyBilling = React.lazy(() => import("./pages/Billing"));
-const LegacyReminders = React.lazy(() => import("./pages/Reminders"));
 const loadingFallback = <LoadingScreen isLoading={true} />;
 
 function ProtectedRoute({ children }) {
@@ -92,20 +87,6 @@ function AppShell() {
             }
           />
           <Route
-            path="/trash"
-            element={
-              <ProtectedRoute>
-                {legacyEnabled ? (
-                  <Suspense fallback={loadingFallback}>
-                    <LegacyTrash />
-                  </Suspense>
-                ) : (
-                  <TrashNew />
-                )}
-              </ProtectedRoute>
-            }
-          />
-          <Route
             path="/memorychat"
             element={
               <ProtectedRoute>
@@ -134,22 +115,6 @@ function AppShell() {
             }
           />
           {/* Chat is now an inline mode on the canvas — no separate route */}
-          <Route path="/calendar" element={<ProtectedRoute><CalendarPage /></ProtectedRoute>} />
-          <Route path="/teamspaces" element={<ProtectedRoute><TeamSpaces /></ProtectedRoute>} />
-          <Route
-            path="/reminders"
-            element={
-              <ProtectedRoute>
-                {legacyEnabled ? (
-                  <Suspense fallback={loadingFallback}>
-                    <LegacyReminders />
-                  </Suspense>
-                ) : (
-                  <RemindersNew />
-                )}
-              </ProtectedRoute>
-            }
-          />
           <Route
             path="/billing"
             element={

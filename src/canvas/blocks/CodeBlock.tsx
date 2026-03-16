@@ -3,6 +3,7 @@ import { ChevronDown, Copy, Check, Play, Square, ChevronUp, Trash2 } from "lucid
 import { Highlight, themes } from "prism-react-renderer";
 import { useCanvasStore } from "@/store/canvasStore";
 import { snapToGrid } from "@/canvas/utils/snap";
+import { BlockHoverToolbar } from "./BlockHoverToolbar";
 
 const LANGUAGES = [
   { id: "plaintext", label: "Plain Text" },
@@ -108,9 +109,8 @@ function runCodeInSandbox(
   return cleanup;
 }
 
-export const CodeBlock = memo(function CodeBlock({ id }: { id: string }) {
+export const CodeBlock = memo(function CodeBlock({ id, onMinimize, onMenu }: { id: string; onMinimize?: (id: string) => void; onMenu?: (id: string, rect: DOMRect) => void }) {
   const block = useCanvasStore((s) => s.blocks[id]);
-  const bringToFront = useCanvasStore((s) => s.bringToFront);
   const selectBlocks = useCanvasStore((s) => s.selectBlocks);
   const toggleSelect = useCanvasStore((s) => s.toggleSelect);
   const isSelected = useCanvasStore((s) => s.selectedIds.includes(id));
@@ -285,7 +285,7 @@ export const CodeBlock = memo(function CodeBlock({ id }: { id: string }) {
   };
 
   const beginResize = (e: React.PointerEvent, mode: "right" | "bottom" | "corner") => {
-    e.stopPropagation(); e.preventDefault(); bringToFront(id);
+    e.stopPropagation(); e.preventDefault();
     if (!isSelected) selectBlocks([id]);
     pushHistory();
     const capturer = e.currentTarget as HTMLElement;
@@ -298,7 +298,7 @@ export const CodeBlock = memo(function CodeBlock({ id }: { id: string }) {
   };
 
   const startDrag = (e: React.PointerEvent) => {
-    e.stopPropagation(); e.preventDefault(); bringToFront(id);
+    e.stopPropagation(); e.preventDefault();
     if (e.shiftKey) toggleSelect(id); else if (!isSelected) selectBlocks([id]);
     pushHistory();
     const state = useCanvasStore.getState();
@@ -320,8 +320,9 @@ export const CodeBlock = memo(function CodeBlock({ id }: { id: string }) {
     const d = dragRef.current;
     if (!d || d.pointerId !== e.pointerId) return;
     if (e.pointerType === "mouse" && e.buttons === 0) { dragRef.current = null; return; }
-    d.lastX = d.originX + (e.clientX - d.startClientX);
-    d.lastY = d.originY + (e.clientY - d.startClientY);
+    const z = (useCanvasStore.getState() as any).camera?.zoom || 1;
+    d.lastX = d.originX + (e.clientX - d.startClientX) / z;
+    d.lastY = d.originY + (e.clientY - d.startClientY) / z;
     if (d.raf != null) return;
     d.raf = window.requestAnimationFrame(() => {
       const d2 = dragRef.current;
@@ -345,7 +346,7 @@ export const CodeBlock = memo(function CodeBlock({ id }: { id: string }) {
 
   return (
     <div
-      data-canvas-block data-block-id={id}
+      data-canvas-block data-self-drag data-block-id={id}
       className="absolute group" style={style}
       onPointerDownCapture={(e) => {
         if (e.button !== 0) return;
@@ -357,8 +358,9 @@ export const CodeBlock = memo(function CodeBlock({ id }: { id: string }) {
         const r = resizeRef.current;
         if (!r || r.pointerId !== e.pointerId) return;
         if (e.pointerType === "mouse" && e.buttons === 0) { endResize(e.pointerId); return; }
-        const dx = e.clientX - r.startClientX;
-        const dy = e.clientY - r.startClientY;
+        const rz = (useCanvasStore.getState() as any).camera?.zoom || 1;
+        const dx = (e.clientX - r.startClientX) / rz;
+        const dy = (e.clientY - r.startClientY) / rz;
         if (r.raf != null) return;
         r.raf = window.requestAnimationFrame(() => {
           const rr = resizeRef.current;
@@ -376,6 +378,7 @@ export const CodeBlock = memo(function CodeBlock({ id }: { id: string }) {
       onPointerCancel={(e) => endResize(e.pointerId)}
       onLostPointerCapture={(e) => endResize(e.pointerId)}
     >
+      <BlockHoverToolbar blockId={id} onMinimize={onMinimize} onMenu={onMenu} />
       <div
         className={`overflow-hidden relative rounded-lg border ${
           isSelected

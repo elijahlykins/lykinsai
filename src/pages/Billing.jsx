@@ -120,11 +120,9 @@ export default function BillingPage() {
             navigate('/memory');
           } else {
             navigate(createPageUrl(
-            view === 'short_term' ? 'ShortTerm' : 
-            view === 'long_term' ? 'LongTerm' : 
-            view === 'tags' ? 'TagManagement' : 
-            view === 'reminders' ? 'Reminders' : 
-            view === 'trash' ? 'Trash' :
+            view === 'short_term' ? 'ShortTerm' :
+            view === 'long_term' ? 'LongTerm' :
+            view === 'tags' ? 'TagManagement' :
             'Create'
             ));
           }

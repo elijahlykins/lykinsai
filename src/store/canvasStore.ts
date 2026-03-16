@@ -7,6 +7,8 @@ import { extractYouTubeVideoId } from "@/canvas/utils/youtube";
 import type { UniversalBlockConnection, UniversalBlockRuntime } from "@/canvas/blockSystem/types";
 import type { BrickTrait } from "@/canvas/blockSystem/types";
 
+const MAX_UNDO_HISTORY = 30;
+
 type CanvasState = {
   blocks: Record<BlockId, Block>;
   blockOrder: BlockId[];
@@ -42,6 +44,9 @@ type CanvasState = {
   deleteBlock: (id: BlockId) => void;
   deleteBlocks: (ids: BlockId[]) => void;
   bringToFront: (id: BlockId) => void;
+  bringForward: (id: BlockId) => void;
+  sendBackward: (id: BlockId) => void;
+  sendToBack: (id: BlockId) => void;
   loadBlocks: (blocks: Block[], opts?: { camera?: Camera; gridSize?: number }) => void;
   reset: () => void;
 
@@ -136,7 +141,10 @@ function clampWithinContainer(args: { state: CanvasState; block: Block; x: numbe
   if (!containerId) return { x: nextX, y: nextY };
 
   const container: any = (state.blocks as any)?.[containerId];
-  if (!container || container.type !== "create") return { x: nextX, y: nextY };
+  if (!container || container.type !== "create") {
+    delete (block as any).containerId;
+    return { x: nextX, y: nextY };
+  }
 
   const cX = Math.floor(container.x || 0);
   const cY = Math.floor(container.y || 0);
@@ -144,6 +152,17 @@ function clampWithinContainer(args: { state: CanvasState; block: Block; x: numbe
   const cH = Math.max(1, Math.floor(container.height || state.gridSize || 24));
   const bW = Math.max(1, Math.floor((block as any).width || state.gridSize || 24));
   const bH = Math.max(1, Math.floor((block as any).height || state.gridSize || 24));
+
+  const blockCenterX = nextX + bW / 2;
+  const blockCenterY = nextY + bH / 2;
+  const outsideContainer =
+    blockCenterX < cX || blockCenterX > cX + cW ||
+    blockCenterY < cY || blockCenterY > cY + cH;
+
+  if (outsideContainer) {
+    delete (block as any).containerId;
+    return { x: nextX, y: nextY };
+  }
 
   const minX = cX;
   const maxX = Math.max(minX, cX + cW - bW);
@@ -274,36 +293,8 @@ export const useCanvasStore = create<CanvasState>()(
       set((state) => {
         const g = Math.max(1, Math.floor(state.gridSize || 24));
         const raw = Number.isFinite(width as any) ? Math.max(g, Math.floor(width as number)) : null;
-        // Use the real visible pixel width so the walls go as far as possible.
-        const next = raw != null ? raw : null;
-        state.canvasWidth = next;
-
-        // Clamp existing blocks so split-screen / resizing can't strand blocks off-screen.
-        // Strategy: relocate blocks left first to preserve their width, then only
-        // shrink width if the block is wider than the entire canvas.
-        if (next != null) {
-          const minBlockWidth = g * 4;
-          for (const id of state.blockOrder) {
-            const b = state.blocks[id];
-            if (!b) continue;
-            if ((b as any).type === "create") continue;
-            const bw = Math.max(1, Math.floor((b as any).width || g));
-            let bx = Math.floor((b as any).x || 0);
-
-            // 1. If block overflows right, slide it left to fit at its current width.
-            if (bx + bw > next) {
-              bx = Math.max(0, next - bw);
-            }
-            // 2. Only shrink width if wider than the full canvas; enforce minimum.
-            let finalW = bw;
-            if (bw > next) {
-              finalW = Math.max(minBlockWidth, next);
-              bx = 0;
-            }
-            (b as any).x = bx;
-            (b as any).width = finalW;
-          }
-        }
+        state.canvasWidth = raw != null ? raw : null;
+        // Blocks keep their stored size/position — the canvas scrolls to fit.
       });
     },
 
@@ -518,8 +509,8 @@ export const useCanvasStore = create<CanvasState>()(
     deleteBlock: (id) => {
       set((state) => {
         if (!state.blocks[id]) return;
-        // keep undo history for deletes too
         state.history.push(JSON.stringify({ blocks: state.blocks, blockOrder: state.blockOrder, camera: state.camera, gridSize: state.gridSize }));
+        if (state.history.length > MAX_UNDO_HISTORY) state.history.splice(0, state.history.length - MAX_UNDO_HISTORY);
         state.future = [];
         delete state.blocks[id];
         state.blockOrder = state.blockOrder.filter((x) => x !== id);
@@ -533,8 +524,8 @@ export const useCanvasStore = create<CanvasState>()(
       set((state) => {
         const toDelete = list.filter((id) => state.blocks[id]);
         if (!toDelete.length) return;
-        // single undo step for multi-delete
         state.history.push(JSON.stringify({ blocks: state.blocks, blockOrder: state.blockOrder, camera: state.camera, gridSize: state.gridSize }));
+        if (state.history.length > MAX_UNDO_HISTORY) state.history.splice(0, state.history.length - MAX_UNDO_HISTORY);
         state.future = [];
         for (const id of toDelete) delete state.blocks[id];
         const delSet = new Set(toDelete);
@@ -546,10 +537,36 @@ export const useCanvasStore = create<CanvasState>()(
     bringToFront: (id) => {
       set((state) => {
         if (!state.blockOrder.includes(id)) return;
-        const b = state.blocks[id];
-        if (b && (b as any).type === "create") return;
         state.blockOrder = state.blockOrder.filter((x) => x !== id);
         state.blockOrder.push(id);
+      });
+    },
+
+    bringForward: (id) => {
+      set((state) => {
+        const idx = state.blockOrder.indexOf(id);
+        if (idx === -1 || idx >= state.blockOrder.length - 1) return;
+        const order = [...state.blockOrder];
+        [order[idx], order[idx + 1]] = [order[idx + 1], order[idx]];
+        state.blockOrder = order;
+      });
+    },
+
+    sendBackward: (id) => {
+      set((state) => {
+        const idx = state.blockOrder.indexOf(id);
+        if (idx <= 0) return;
+        const order = [...state.blockOrder];
+        [order[idx - 1], order[idx]] = [order[idx], order[idx - 1]];
+        state.blockOrder = order;
+      });
+    },
+
+    sendToBack: (id) => {
+      set((state) => {
+        if (!state.blockOrder.includes(id)) return;
+        state.blockOrder = state.blockOrder.filter((x) => x !== id);
+        state.blockOrder.unshift(id);
       });
     },
 
@@ -732,14 +749,7 @@ export const useCanvasStore = create<CanvasState>()(
           const nx = s.x + dx;
           const ny = s.y + dy;
           const rawX = snap ? snapToGrid(nx, grid) : nx;
-          const nextX =
-            (b as any).type === "create"
-              ? rawX
-              : clampXWithinCanvas({
-                  x: rawX,
-                  width: Math.max(1, Math.floor((b as any).width || grid)),
-                  canvasWidth: state.canvasWidth,
-                });
+          const nextX = Math.max(0, (b as any).type === "create" ? rawX : Math.floor(rawX));
           const nextY = snap ? snapToGrid(ny, grid) : ny;
           const bounded = clampWithinContainer({ state, block: b, x: nextX, y: nextY });
           const prevX = Math.floor((b as any).x || 0);
@@ -873,6 +883,7 @@ export const useCanvasStore = create<CanvasState>()(
         const b = state.blocks[id] as any;
         if (!b) return;
         state.history.push(JSON.stringify({ blocks: state.blocks, blockOrder: state.blockOrder, camera: state.camera, gridSize: state.gridSize }));
+        if (state.history.length > MAX_UNDO_HISTORY) state.history.splice(0, state.history.length - MAX_UNDO_HISTORY);
         state.future = [];
         applyBrickTraitToBlock(b, trait);
         upsertBrickConnections(state, [id]);
@@ -884,6 +895,7 @@ export const useCanvasStore = create<CanvasState>()(
         const ids = (state.selectedIds || []).filter((id) => state.blocks[id]);
         if (!ids.length) return;
         state.history.push(JSON.stringify({ blocks: state.blocks, blockOrder: state.blockOrder, camera: state.camera, gridSize: state.gridSize }));
+        if (state.history.length > MAX_UNDO_HISTORY) state.history.splice(0, state.history.length - MAX_UNDO_HISTORY);
         state.future = [];
         for (const id of ids) {
           const b = state.blocks[id] as any;
@@ -897,7 +909,7 @@ export const useCanvasStore = create<CanvasState>()(
     pushHistory: () => {
       set((state) => {
         state.history.push(JSON.stringify({ blocks: state.blocks, blockOrder: state.blockOrder, camera: state.camera, gridSize: state.gridSize }));
-        // clear redo stack on new action
+        if (state.history.length > MAX_UNDO_HISTORY) state.history.splice(0, state.history.length - MAX_UNDO_HISTORY);
         state.future = [];
       });
     },
@@ -908,6 +920,7 @@ export const useCanvasStore = create<CanvasState>()(
         const prev = state.history.pop();
         if (!prev) return;
         state.future.push(JSON.stringify({ blocks: state.blocks, blockOrder: state.blockOrder, camera: state.camera, gridSize: state.gridSize }));
+        if (state.future.length > MAX_UNDO_HISTORY) state.future.splice(0, state.future.length - MAX_UNDO_HISTORY);
         const parsed = JSON.parse(prev) as { blocks: Record<BlockId, Block>; blockOrder: BlockId[]; camera: Camera; gridSize: number };
         state.blocks = parsed.blocks || {};
         state.blockOrder = Array.isArray(parsed.blockOrder) ? parsed.blockOrder : [];
@@ -923,6 +936,7 @@ export const useCanvasStore = create<CanvasState>()(
         const next = state.future.pop();
         if (!next) return;
         state.history.push(JSON.stringify({ blocks: state.blocks, blockOrder: state.blockOrder, camera: state.camera, gridSize: state.gridSize }));
+        if (state.history.length > MAX_UNDO_HISTORY) state.history.splice(0, state.history.length - MAX_UNDO_HISTORY);
         const parsed = JSON.parse(next) as { blocks: Record<BlockId, Block>; blockOrder: BlockId[]; camera: Camera; gridSize: number };
         state.blocks = parsed.blocks || {};
         state.blockOrder = Array.isArray(parsed.blockOrder) ? parsed.blockOrder : [];

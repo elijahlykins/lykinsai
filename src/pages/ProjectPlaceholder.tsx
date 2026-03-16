@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 import {
   Search as SearchIcon,
   StickyNote,
@@ -26,6 +26,7 @@ import {
   Pencil,
   BrickWall,
   LayoutGrid,
+  Table,
 } from "lucide-react";
 import DraggableChat from "@/components/notes/DraggableChat";
 import DraggableQuickNote from "@/components/notes/DraggableQuickNote";
@@ -35,7 +36,6 @@ import { useQuery } from "@tanstack/react-query";
 import { normalizeValueToV2, getBlockPlainText } from "@/components/notes/blockModel";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { useMindmapStore } from "@/store/mindmapStore";
 import { extractYouTubeVideoId, getYouTubeEmbedUrl } from "@/canvas/utils/youtube";
 import { getAiPrefs } from "@/lib/ai-prefs";
 
@@ -53,16 +53,23 @@ type BoardEntry = {
   folderId: string | null;
 };
 
+type SpreadsheetData = {
+  rows: number;
+  cols: number;
+  cells: Record<string, string>;
+};
+
 type FileEntry = {
   id: string;
   name: string;
   path: string;
   folderId: string | null;
-  kind: "image" | "video" | "audio" | "pdf" | "doc" | "link" | "file";
+  kind: "image" | "video" | "audio" | "pdf" | "doc" | "spreadsheet" | "link" | "file";
   url: string;
   storagePath?: string;
   storageBucket?: string;
   content?: string;
+  spreadsheetData?: SpreadsheetData;
 };
 
 function decodeBrickTextFromContent(contentHtml) {
@@ -121,9 +128,7 @@ function storeValue<T>(key: string, value: T) {
 export default function ProjectPlaceholder() {
   const { projectId } = useParams();
   const nav = useNavigate();
-  const [searchParams, setSearchParams] = useSearchParams();
   const { user } = useAuth();
-  const teamMembersRef = useRef<HTMLDivElement | null>(null);
   const [projectName, setProjectName] = useState("Project");
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [draftTitle, setDraftTitle] = useState("Project");
@@ -154,30 +159,13 @@ export default function ProjectPlaceholder() {
   const [quickNoteTitle, setQuickNoteTitle] = useState("");
   const [quickNoteContent, setQuickNoteContent] = useState("");
   const [isQuickNoteSaving, setIsQuickNoteSaving] = useState(false);
-  const [linkedTeams, setLinkedTeams] = useState<{ id: string; name: string; color: string }[]>([]);
   const [openBoardMenuId, setOpenBoardMenuId] = useState<string | null>(null);
   const boardMenuRef = useRef<HTMLDivElement | null>(null);
   const [moveBoardId, setMoveBoardId] = useState<string | null>(null);
-  const [linkFromId, setLinkFromId] = useState<string | null>(null);
-  const [dragNodeId, setDragNodeId] = useState<string | null>(null);
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
   const [tilt, setTilt] = useState({ x: 0, y: 0 });
   const mapRef = useRef<HTMLDivElement | null>(null);
   const lastPanRef = useRef<{ x: number; y: number } | null>(null);
-  const dragMovedRef = useRef(false);
-  const dragOffsetRef = useRef<{ x: number; y: number } | null>(null);
-  const mindmapNodes = useMindmapStore((s) => s.nodes);
-  const mindmapId = useMindmapStore((s) => s.mindmapId);
-  const rootNodeId = useMindmapStore((s) => s.rootNodeId);
-  const mindmapLoading = useMindmapStore((s) => s.isLoading);
-  const mindmapSaving = useMindmapStore((s) => s.isSaving);
-  const mindmapError = useMindmapStore((s) => s.lastError);
-  const mindmapLinks = useMindmapStore((s) => s.links);
-  const loadMindmapForProject = useMindmapStore((s) => s.loadMindmapForProject);
-  const syncExternalNodes = useMindmapStore((s) => s.syncExternalNodes);
-  const updateMindmapNode = useMindmapStore((s) => s.updateNode);
-  const moveMindmapNode = useMindmapStore((s) => s.moveNode);
-  const toggleMindmapLink = useMindmapStore((s) => s.toggleLink);
   const [selectedModel, setSelectedModel] = useState(() => {
     try {
       const saved = localStorage.getItem("lykinsai_settings");
@@ -203,16 +191,6 @@ export default function ProjectPlaceholder() {
     } catch { /* ignore */ }
     return { visits: 0, totalSeconds: 0, lastVisit: null as string | null };
   });
-
-  useEffect(() => {
-    if (searchParams.get("team") === "1") {
-      searchParams.delete("team");
-      setSearchParams(searchParams, { replace: true });
-      setTimeout(() => {
-        teamMembersRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
-      }, 400);
-    }
-  }, [searchParams, setSearchParams]);
 
   useEffect(() => {
     setHealthData((prev: typeof healthData) => {
@@ -245,7 +223,7 @@ export default function ProjectPlaceholder() {
 
     // Recency: recent edits = healthier (max 35 pts)
     if (lastVisit) {
-      const daysSince = (Date.now() - new Date(lastVisit).getTime()) / (1000 * 60 * 60 * 24);
+      const daysSince = (Date.now() - new Date(lastVisit).getTime()) / (1000 * 60 * 60 * 24 * 7);
       if (daysSince < 1) score += 35;
       else if (daysSince < 3) score += 25;
       else if (daysSince < 7) score += 15;
@@ -359,55 +337,6 @@ export default function ProjectPlaceholder() {
     setActiveFolderId(stored.activeFolderId);
   }, [projectId]);
 
-  const TEAM_ACCENT_COLORS = [
-    "#3B82F6", "#16A34A", "#D97706", "#DC2626", "#7C3AED", "#DB2777", "#0F766E",
-  ];
-
-  useEffect(() => {
-    if (!projectId) return;
-    let active = true;
-
-    const resolveTeams = (teams: any[]) => {
-      return teams
-        .filter((t: any) => (t.projects || []).some((p: any) => p.id === projectId))
-        .map((t: any, i: number) => ({
-          id: t.id,
-          name: t.name,
-          color: TEAM_ACCENT_COLORS[(t.id?.charCodeAt?.(0) ?? i) % TEAM_ACCENT_COLORS.length],
-        }));
-    };
-
-    const loadFromLocal = () => {
-      try {
-        const raw = localStorage.getItem("lykinsai_teamspaces");
-        const teams = raw ? JSON.parse(raw) : [];
-        if (active) setLinkedTeams(resolveTeams(teams));
-      } catch {}
-    };
-
-    (async () => {
-      if (!user?.id) {
-        loadFromLocal();
-        return;
-      }
-      try {
-        const { data, error } = await supabase
-          .from("team_spaces")
-          .select("id, name, projects")
-          .eq("owner_id", user.id);
-        if (!active) return;
-        if (error || !data || data.length === 0) {
-          loadFromLocal();
-          return;
-        }
-        setLinkedTeams(resolveTeams(data));
-      } catch {
-        if (active) loadFromLocal();
-      }
-    })();
-    return () => { active = false; };
-  }, [projectId, user?.id]);
-
   useEffect(() => {
     if (!projectId) return;
     const filesToStore = files.map((f) => {
@@ -419,31 +348,59 @@ export default function ProjectPlaceholder() {
     storeValue(`project:${projectId}`, { folders, files: filesToStore, activeFolderId });
   }, [activeFolderId, files, folders, projectId]);
 
+  const unresolvedFiles = useMemo(
+    () => files.filter((f) => f.storagePath && f.storageBucket && !signedUrlCacheRef.current.has(`${f.storageBucket}:${f.storagePath}`)),
+    [files]
+  );
+
   useEffect(() => {
     if (!user?.id || files.length === 0) return;
+
+    // Populate from cache first
+    const cached: Record<string, string> = {};
+    for (const f of files) {
+      if (!f.storagePath || !f.storageBucket) continue;
+      const cacheKey = `${f.storageBucket}:${f.storagePath}`;
+      const hit = signedUrlCacheRef.current.get(cacheKey);
+      if (hit) cached[f.id] = hit;
+    }
+    if (Object.keys(cached).length > 0) {
+      setResolvedUrls((prev) => ({ ...prev, ...cached }));
+    }
+
+    if (unresolvedFiles.length === 0) return;
     let active = true;
+
     const resolveSignedUrls = async () => {
-      const next: Record<string, string> = {};
-      for (const file of files) {
-        if (!file.storagePath || !file.storageBucket) continue;
-        const cacheKey = `${file.storageBucket}:${file.storagePath}`;
-        if (signedUrlCacheRef.current.has(cacheKey)) {
-          next[file.id] = signedUrlCacheRef.current.get(cacheKey)!;
-          continue;
+      const CONCURRENCY = 5;
+      for (let i = 0; i < unresolvedFiles.length; i += CONCURRENCY) {
+        if (!active) return;
+        const batch = unresolvedFiles.slice(i, i + CONCURRENCY);
+        const results = await Promise.allSettled(
+          batch.map(async (file) => {
+            const { data } = await supabase.storage
+              .from(file.storageBucket!)
+              .createSignedUrl(file.storagePath!, 60 * 60 * 24 * 7);
+            return { fileId: file.id, bucket: file.storageBucket!, path: file.storagePath!, url: data?.signedUrl };
+          })
+        );
+        if (!active) return;
+        const next: Record<string, string> = {};
+        for (const r of results) {
+          if (r.status === "fulfilled" && r.value.url) {
+            signedUrlCacheRef.current.set(`${r.value.bucket}:${r.value.path}`, r.value.url);
+            next[r.value.fileId] = r.value.url;
+          }
         }
-        const { data, error } = await supabase.storage
-          .from(file.storageBucket)
-          .createSignedUrl(file.storagePath, 60 * 60 * 24);
-        if (error || !data?.signedUrl) continue;
-        signedUrlCacheRef.current.set(cacheKey, data.signedUrl);
-        next[file.id] = data.signedUrl;
+        if (Object.keys(next).length > 0) {
+          setResolvedUrls((prev) => ({ ...prev, ...next }));
+        }
       }
-      if (!active || Object.keys(next).length === 0) return;
-      setResolvedUrls((prev) => ({ ...prev, ...next }));
     };
+
     void resolveSignedUrls();
     return () => { active = false; };
-  }, [files, user?.id]);
+  }, [files, unresolvedFiles, user?.id]);
 
   useEffect(() => {
     if (!projectId) return;
@@ -474,7 +431,8 @@ export default function ProjectPlaceholder() {
         .select("id, title")
         .eq("user_id", user.id)
         .eq("project_id", projectId)
-        .order("created_at", { ascending: false });
+        .order("created_at", { ascending: false })
+        .limit(100);
       if (cancelled) return;
       const folderMap = readStored<Record<string, string | null>>(
         `project:${projectId}:boardFolders`,
@@ -493,44 +451,24 @@ export default function ProjectPlaceholder() {
     };
   }, [projectId, user?.id]);
 
-  useEffect(() => {
-    if (!projectId) return;
-    loadMindmapForProject(projectId);
-  }, [loadMindmapForProject, projectId]);
-
-  useEffect(() => {
-    if (!projectId || !mindmapId || !rootNodeId) return;
-    const items = [
-      ...files.map((file) => ({
-        sourceType: "file" as const,
-        sourceId: file.id,
-        title: file.name,
-      })),
-      ...boards.map((board) => ({
-        sourceType: "board" as const,
-        sourceId: board.id,
-        title: board.title,
-      })),
-    ];
-    syncExternalNodes(items);
-  }, [boards, files, mindmapId, projectId, rootNodeId, syncExternalNodes]);
-
   const { data: allNotes = [] } = useQuery({
-    queryKey: ["notes", user?.id],
+    queryKey: ["notes-list", user?.id],
     queryFn: async () => {
       if (!user?.id) return [];
       try {
         let { data, error } = await supabase
           .from("notes")
-          .select("id, title, content, created_at, updated_at")
+          .select("id, title, created_at, updated_at")
           .eq("user_id", user?.id || "")
-          .order("created_at", { ascending: false });
+          .order("created_at", { ascending: false })
+          .limit(50);
         if (error && (error.code === "PGRST204" || error.message?.includes("Could not find"))) {
           ({ data, error } = await supabase
             .from("notes")
-            .select("id, title, content")
+            .select("id, title")
             .eq("user_id", user?.id || "")
-            .order("id", { ascending: false }));
+            .order("id", { ascending: false })
+            .limit(50));
         }
         if (error) return [];
         return data || [];
@@ -540,8 +478,6 @@ export default function ProjectPlaceholder() {
     },
     retry: 2,
     refetchOnWindowFocus: false,
-    staleTime: 5 * 60 * 1000,
-    cacheTime: 10 * 60 * 1000,
   });
 
   const { data: allProjects = [] } = useQuery({
@@ -552,13 +488,12 @@ export default function ProjectPlaceholder() {
         .from("omnia_projects")
         .select("id, name")
         .eq("user_id", user.id)
-        .order("updated_at", { ascending: false });
+        .order("updated_at", { ascending: false })
+        .limit(100);
       return data || [];
     },
     retry: 2,
     refetchOnWindowFocus: false,
-    staleTime: 5 * 60 * 1000,
-    cacheTime: 10 * 60 * 1000,
   });
 
   const filteredBoards = useMemo(() => {
@@ -572,10 +507,6 @@ export default function ProjectPlaceholder() {
   }, [activeFolderId, files]);
 
   const allFilesForCollage = useMemo(() => files, [files]);
-
-  const connectionsNodes = useMemo(() => Object.values(mindmapNodes), [mindmapNodes]);
-
-  const connectionsLinks = useMemo(() => Object.values(mindmapLinks), [mindmapLinks]);
 
   const projectSummary = useMemo(() => {
     const lastFile = files[0];
@@ -626,8 +557,8 @@ export default function ProjectPlaceholder() {
   const handleRenameBoard = async (board: BoardEntry) => {
     if (!user?.id) return;
     const next = window.prompt("Rename board", board.title);
-    if (!next || !next.trim()) return;
-    const name = next.trim();
+    if (next === null) return;
+    const name = next.trim() || "New Board";
     await supabase
       .from("omnia_boards")
       .update({ title: name })
@@ -665,62 +596,6 @@ export default function ProjectPlaceholder() {
       x: Math.max(2, Math.min(98, x)),
       y: Math.max(2, Math.min(98, y)),
     };
-  };
-
-  const handleNodePointerDown = (
-    event: React.PointerEvent<HTMLButtonElement>,
-    nodeId: string
-  ) => {
-    event.stopPropagation();
-    const node = mindmapNodes[nodeId];
-    const pos = getPointerPercent(event);
-    if (node && pos) {
-      dragOffsetRef.current = {
-        x: pos.x - node.positionX,
-        y: pos.y - node.positionY,
-      };
-    }
-    setDragNodeId(nodeId);
-    dragMovedRef.current = false;
-    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
-  };
-
-  const handleNodePointerMove = (event: React.PointerEvent<HTMLButtonElement>) => {
-    if (!dragNodeId) return;
-    event.stopPropagation();
-    dragMovedRef.current = true;
-    const pos = getPointerPercent(event);
-    if (!pos) return;
-    const offset = dragOffsetRef.current || { x: 0, y: 0 };
-    updateMindmapNode(dragNodeId, {
-      positionX: Math.max(2, Math.min(98, pos.x - offset.x)),
-      positionY: Math.max(2, Math.min(98, pos.y - offset.y)),
-    });
-  };
-
-  const handleNodePointerUp = (event: React.PointerEvent<HTMLButtonElement>, nodeId: string) => {
-    event.stopPropagation();
-    setDragNodeId(null);
-    dragOffsetRef.current = null;
-    (event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
-    if (dragMovedRef.current) {
-      dragMovedRef.current = false;
-      return;
-    }
-    if (nodeId === rootNodeId) {
-      setLinkFromId(null);
-      return;
-    }
-    if (!linkFromId) {
-      setLinkFromId(nodeId);
-      return;
-    }
-    if (linkFromId === nodeId) {
-      setLinkFromId(null);
-      return;
-    }
-    toggleMindmapLink(linkFromId, nodeId);
-    setLinkFromId(null);
   };
 
   const handleMapPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -793,8 +668,9 @@ export default function ProjectPlaceholder() {
     if (file.type.startsWith("audio/")) return "audio";
     if (name.match(/\.docx?$/)) return "doc";
     if (name.match(/\.pptx?$/)) return "doc";
-    if (name.match(/\.xlsx?$/)) return "doc";
-    if (name.match(/\.(csv|tsv)$/)) return "doc";
+    if (name.match(/\.xlsx?$/)) return "spreadsheet";
+    if (name.match(/\.xls$/)) return "spreadsheet";
+    if (name.match(/\.(csv|tsv)$/)) return "spreadsheet";
     if (name.match(/\.(txt|rtf|md|json|xml|html|css|js|ts|py|rb|java|c|cpp|h|rs|go|sh)$/)) return "doc";
     return "file";
   };
@@ -802,24 +678,54 @@ export default function ProjectPlaceholder() {
   const uploadFileToStorage = async (file: File, targetFolderId: string | null): Promise<FileEntry | null> => {
     if (!user?.id) return null;
     const kind = classifyFile(file);
+
+    // Convert HEIF to JPEG before upload so images render in all browsers
+    let fileToUpload = file;
+    if (kind === "image") {
+      try {
+        const { fileToDisplayableFile } = await import("@/lib/heifToJpeg");
+        fileToUpload = await fileToDisplayableFile(file);
+      } catch (e) {
+        console.warn("[ProjectPlaceholder] HEIF conversion skipped:", e);
+      }
+    }
+
     const fileId = crypto.randomUUID();
-    const fileExt = file.name.split(".").pop() || "bin";
+    const fileExt = fileToUpload.name.split(".").pop() || "bin";
     const storagePath = `${user.id}/${fileId}/original.${fileExt}`;
     const storageBucket = "user-files";
 
     const { error: uploadError } = await supabase.storage
       .from(storageBucket)
-      .upload(storagePath, file, { cacheControl: "3600", upsert: false });
+      .upload(storagePath, fileToUpload, { cacheControl: "3600", upsert: false });
 
     if (uploadError) {
       console.error("Upload error:", uploadError);
       return null;
     }
 
+    let spreadsheetData: SpreadsheetData | undefined;
+    if (kind === "spreadsheet") {
+      try {
+        const { API_BASE_URL } = await import("@/lib/api-config");
+        const formData = new FormData();
+        formData.append("file", file);
+        const res = await fetch(`${API_BASE_URL}/api/files/parse-spreadsheet`, { method: "POST", body: formData });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.rows != null && data.cols != null && data.cells) {
+            spreadsheetData = { rows: data.rows, cols: data.cols, cells: data.cells };
+          }
+        }
+      } catch {
+        // leave spreadsheetData undefined; card will show fallback
+      }
+    }
+
     let fileUrl = "";
     const { data: signedData } = await supabase.storage
       .from(storageBucket)
-      .createSignedUrl(storagePath, 60 * 60 * 24);
+      .createSignedUrl(storagePath, 60 * 60 * 24 * 7);
     if (signedData?.signedUrl) {
       fileUrl = signedData.signedUrl;
       signedUrlCacheRef.current.set(`${storageBucket}:${storagePath}`, fileUrl);
@@ -837,6 +743,7 @@ export default function ProjectPlaceholder() {
       url: fileUrl,
       storagePath,
       storageBucket,
+      ...(spreadsheetData ? { spreadsheetData } : {}),
     };
   };
 
@@ -924,8 +831,9 @@ export default function ProjectPlaceholder() {
         else if (["audio", "mp3", "wav"].includes(attType)) kind = "audio";
         else if (attType === "pdf") kind = "pdf";
         else if (["doc", "document"].includes(attType)) kind = "doc";
+        else if (attType === "spreadsheet" || (att.rows != null && att.cols != null && att.cells)) kind = "spreadsheet";
         else if (url && /youtube\.com|youtu\.be/i.test(url)) kind = "link";
-        else if (url && /\.(png|jpe?g|webp|gif|svg)$/i.test(url)) kind = "image";
+        else if (url && /\.(png|jpe?g|webp|gif|svg|heic|heif)$/i.test(url)) kind = "image";
         else if (url && /\.(mp4|mov|webm)$/i.test(url)) kind = "video";
         else if (url && /\.pdf$/i.test(url)) kind = "pdf";
 
@@ -937,6 +845,9 @@ export default function ProjectPlaceholder() {
           kind,
           url,
           ...(att?.storagePath ? { storagePath: att.storagePath, storageBucket: att.storageBucket || "user-files" } : {}),
+          ...(kind === "spreadsheet" && att?.rows != null && att?.cols != null && att?.cells
+            ? { spreadsheetData: { rows: att.rows, cols: att.cols, cells: att.cells } }
+            : {}),
         });
       }
     } else if (payload.content) {
@@ -1551,6 +1462,45 @@ If the user asks about old memories or references past ideas, refer to the memor
                     );
                   }
 
+                  if (file.kind === "spreadsheet" && file.spreadsheetData) {
+                    const { rows, cols, cells } = file.spreadsheetData;
+                    return (
+                      <div className="glass-control rounded-2xl overflow-hidden" draggable={false}>
+                        <div className="flex items-center gap-2 text-black/70 px-3 py-2 border-b border-black/10">
+                          <Table className="w-4 h-4" />
+                          <span className="text-xs font-medium truncate">{file.name}</span>
+                        </div>
+                        <div className="max-h-[28rem] overflow-auto scrollbar-thin">
+                          <table className="w-full border-collapse text-[0.6875rem]">
+                            <tbody>
+                              {Array.from({ length: rows }, (_, r) => (
+                                <tr key={r}>
+                                  {Array.from({ length: cols }, (_, c) => (
+                                    <td
+                                      key={c}
+                                      className="border border-black/15 px-2 py-1.5 align-top bg-white/50 min-w-[4rem] max-w-[14rem] break-words"
+                                      title={cells[`${r},${c}`]}
+                                    >
+                                      {cells[`${r},${c}`] ?? "\u00A0"}
+                                    </td>
+                                  ))}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  if (file.kind === "spreadsheet") {
+                    return fallbackCard(
+                      <Table className="w-5 h-5 text-blue-400/70" />,
+                      file.name,
+                      "Spreadsheet (loading…)"
+                    );
+                  }
+
                   return fallbackCard(
                     <FileIcon className="w-5 h-5 text-black/40" />,
                     file.name,
@@ -1870,6 +1820,7 @@ If the user asks about old memories or references past ideas, refer to the memor
                            f.kind === "audio" ? <Music className="w-3 h-3 text-black/40" /> :
                            f.kind === "pdf" ? <FileText className="w-3 h-3 text-black/40" /> :
                            f.kind === "doc" ? <StickyNote className="w-3 h-3 text-black/40" /> :
+                           f.kind === "spreadsheet" ? <Table className="w-3 h-3 text-black/40" /> :
                            f.kind === "link" ? <Link2 className="w-3 h-3 text-black/40" /> :
                            <FileIcon className="w-3 h-3 text-black/40" />}
                           <span className="truncate max-w-[7.5rem]">{f.name}</span>
@@ -1904,6 +1855,7 @@ If the user asks about old memories or references past ideas, refer to the memor
                                f.kind === "audio" ? <Music className="w-3 h-3 text-black/40" /> :
                                f.kind === "pdf" ? <FileText className="w-3 h-3 text-black/40" /> :
                                f.kind === "doc" ? <StickyNote className="w-3 h-3 text-black/40" /> :
+                               f.kind === "spreadsheet" ? <Table className="w-3 h-3 text-black/40" /> :
                                f.kind === "link" ? <Link2 className="w-3 h-3 text-black/40" /> :
                                <FileIcon className="w-3 h-3 text-black/40" />}
                               <span className="truncate max-w-[7.5rem]">{f.name}</span>
@@ -1929,7 +1881,7 @@ If the user asks about old memories or references past ideas, refer to the memor
                     { label: "Boards", value: boards.length, color: "#1d4ed8" },
                     { label: "Files", value: files.length, color: "#3b82f6" },
                     { label: "Chats", value: chatMessages.filter((m) => m.role === "user").length, color: "#60a5fa" },
-                    { label: "Connections", value: connectionsLinks.length, color: "#93c5fd" },
+                    { label: "Connections", value: 0, color: "#93c5fd" },
                   ].map((stat) => (
                     <div key={stat.label} className="rounded-xl border border-white/50 bg-white/40 backdrop-blur-md p-3 text-center">
                       <div className="text-xl font-bold" style={{ color: stat.color }}>{stat.value}</div>
@@ -1945,7 +1897,7 @@ If the user asks about old memories or references past ideas, refer to the memor
                     {[
                       { label: "Images", value: files.filter((f) => f.kind === "image").length, max: Math.max(files.length, 1), color: "#1d4ed8" },
                       { label: "Videos", value: files.filter((f) => f.kind === "video").length, max: Math.max(files.length, 1), color: "#2563eb" },
-                      { label: "Documents", value: files.filter((f) => f.kind === "pdf" || f.kind === "doc").length, max: Math.max(files.length, 1), color: "#3b82f6" },
+                      { label: "Documents", value: files.filter((f) => f.kind === "pdf" || f.kind === "doc" || f.kind === "spreadsheet").length, max: Math.max(files.length, 1), color: "#3b82f6" },
                       { label: "Audio", value: files.filter((f) => f.kind === "audio").length, max: Math.max(files.length, 1), color: "#60a5fa" },
                       { label: "Links", value: files.filter((f) => f.kind === "link").length, max: Math.max(files.length, 1), color: "#93c5fd" },
                       { label: "Other", value: files.filter((f) => f.kind === "file").length, max: Math.max(files.length, 1), color: "#bfdbfe" },
@@ -1988,8 +1940,8 @@ If the user asks about old memories or references past ideas, refer to the memor
 
                 {/* Collaboration & storage (filler) */}
                 <div className="grid grid-cols-2 gap-3">
-                  <div ref={teamMembersRef} className="rounded-xl border border-white/50 bg-white/30 backdrop-blur-md p-4">
-                    <div className="text-xs font-semibold mb-2">Team Members</div>
+                  <div className="rounded-xl border border-white/50 bg-white/30 backdrop-blur-md p-4">
+                    <div className="text-xs font-semibold mb-2">Owner</div>
                     <div className="flex -space-x-2">
                       {user?.user_metadata?.avatar_url ? (
                         <img
@@ -2003,27 +1955,9 @@ If the user asks about old memories or references past ideas, refer to the memor
                           {(user?.email?.[0] || "?").toUpperCase()}
                         </div>
                       )}
-                      {linkedTeams.map((team) => (
-                        <div
-                          key={team.id}
-                          className="w-8 h-8 rounded-full border-2 border-white flex items-center justify-center text-[0.625rem] font-bold text-white cursor-default"
-                          style={{ background: team.color }}
-                          title={team.name}
-                        >
-                          {team.name.split(/\s+/).slice(0, 2).map((w) => w.charAt(0).toUpperCase()).join("")}
-                        </div>
-                      ))}
-                      <button
-                        type="button"
-                        className="w-8 h-8 rounded-full border-2 border-dashed border-blue-300 bg-blue-50 flex items-center justify-center text-blue-400 hover:bg-blue-100 transition-colors"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
-                      </button>
                     </div>
                     <div className="text-[0.6875rem] text-black/50 mt-2">
-                      {linkedTeams.length > 0
-                        ? `${user?.user_metadata?.full_name || user?.email || "You"} · ${linkedTeams.map((t) => t.name).join(", ")}`
-                        : (user?.user_metadata?.full_name || user?.email || "1 member")}
+                      {user?.user_metadata?.full_name || user?.email || "1 member"}
                     </div>
                   </div>
                   <div className="rounded-xl border border-white/50 bg-white/30 backdrop-blur-md p-4">

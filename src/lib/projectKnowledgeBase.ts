@@ -43,26 +43,12 @@ export type KnowledgeBaseBoard = {
   blocks: KnowledgeBaseBlock[];
 };
 
-export type KnowledgeBaseMindmap = {
-  id: string;
-  rootNodeId: string | null;
-  nodes: Array<{
-    id: string;
-    parentId: string | null;
-    title: string;
-    description: string | null;
-    type: string;
-  }>;
-  links: Array<{ id: string; fromId: string; toId: string }>;
-};
-
 export type ProjectKnowledgeBase = {
   projectId: string;
   projectName: string | null;
   files: KnowledgeBaseFile[];
   folders: KnowledgeBaseFolder[];
   boards: KnowledgeBaseBoard[];
-  mindmap: KnowledgeBaseMindmap | null;
 };
 
 const truncateText = (value: string, max = 500) => {
@@ -165,18 +151,19 @@ export const getProjectKnowledgeBase = async (projectId: string): Promise<Projec
     .from("omnia_boards")
     .select("id, title, created_at, updated_at")
     .eq("project_id", projectId)
-    .order("updated_at", { ascending: false });
+    .order("updated_at", { ascending: false })
+    .limit(50);
 
   const boardIds = boards.map((b: any) => b.id);
   let latestSnapshots: Record<string, any> = {};
   if (boardIds.length) {
-    const { data: states = [] } = await supabase
+    // Single batch query — each board has at most 1 row after migration 016.
+    const { data: stateRows } = await supabase
       .from("omnia_board_states")
-      .select("board_id, state, created_at")
-      .in("board_id", boardIds)
-      .order("created_at", { ascending: false });
-    for (const row of states) {
-      if (!latestSnapshots[row.board_id]) {
+      .select("board_id, state")
+      .in("board_id", boardIds.slice(0, 20));
+    for (const row of stateRows || []) {
+      if (row.board_id && row.state) {
         latestSnapshots[row.board_id] = row.state;
       }
     }
@@ -202,49 +189,12 @@ export const getProjectKnowledgeBase = async (projectId: string): Promise<Projec
     summary: truncateText(f.path || f.name),
   }));
 
-  let mindmap: KnowledgeBaseMindmap | null = null;
-  const { data: mindmapRow } = await supabase
-    .from("omnia_project_mindmaps")
-    .select("id")
-    .eq("project_id", projectId)
-    .maybeSingle();
-  if (mindmapRow?.id) {
-    const { data: nodeRows = [] } = await supabase
-      .from("omnia_mindmap_nodes")
-      .select("id, parent_id, title, description, type")
-      .eq("mindmap_id", mindmapRow.id);
-    let linkRows: Array<{ id: string; from_id: string; to_id: string }> = [];
-    try {
-      const { data: linksData = [] } = await supabase
-        .from("omnia_mindmap_links")
-        .select("id, from_id, to_id")
-        .eq("mindmap_id", mindmapRow.id);
-      linkRows = linksData as Array<{ id: string; from_id: string; to_id: string }>;
-    } catch {
-      // ignore if links table not present
-    }
-    const root = (nodeRows || []).find((n: any) => n.parent_id == null);
-    mindmap = {
-      id: mindmapRow.id,
-      rootNodeId: root?.id ?? null,
-      nodes: (nodeRows || []).map((n: any) => ({
-        id: n.id,
-        parentId: n.parent_id ?? null,
-        title: n.title,
-        description: n.description ?? null,
-        type: n.type || "topic",
-      })),
-      links: (linkRows || []).map((l) => ({ id: l.id, fromId: l.from_id, toId: l.to_id })),
-    };
-  }
-
   return {
     projectId,
     projectName: project?.name || null,
     files: filesOut,
     folders: foldersOut,
     boards: boardsOut,
-    mindmap,
   };
 };
 
@@ -273,21 +223,49 @@ export const projectKnowledgeBaseToText = (kb: ProjectKnowledgeBase, maxChars = 
     });
     parts.push(boardLines.join("\n\n"));
   }
-  if (kb.mindmap) {
-    const nodes = kb.mindmap.nodes
-      .slice(0, 80)
-      .map((n) => `- ${n.title} (${n.type}) parent=${n.parentId || "root"}`);
-    const links = kb.mindmap.links
-      .slice(0, 80)
-      .map((l) => `- ${l.fromId} -> ${l.toId}`);
-    parts.push(
-      `Mindmap:\nRoot: ${kb.mindmap.rootNodeId || "none"}\nNodes:\n${nodes.join(
-        "\n"
-      )}\nLinks:\n${links.join("\n")}`
-    );
-  }
-
   const full = parts.filter(Boolean).join("\n\n");
   if (full.length <= maxChars) return full;
   return `${full.slice(0, maxChars)}…`;
+};
+
+/**
+ * Lightweight project summary for AI context.
+ * Returns only board titles with block counts, folder names, and file names.
+ * No block-level content is serialized — eliminates duplication with canvas context.
+ */
+export const projectSummaryForAI = (
+  kb: ProjectKnowledgeBase,
+  opts?: { maxChars?: number; excludeBoardId?: string },
+): string => {
+  const maxChars = opts?.maxChars ?? 2000;
+  const parts: string[] = [];
+  parts.push(`Project: ${kb.projectName || kb.projectId}`);
+
+  const boards = opts?.excludeBoardId
+    ? kb.boards.filter((b) => b.id !== opts.excludeBoardId)
+    : kb.boards;
+
+  if (boards.length) {
+    const boardLines = boards
+      .slice(0, 20)
+      .map((b) => `- ${b.title} (${b.blocks.length} blocks)`);
+    parts.push(`Boards (${boards.length}):\n${boardLines.join("\n")}`);
+  }
+
+  if (kb.folders.length) {
+    parts.push(
+      `Folders (${kb.folders.length}): ${kb.folders.map((f) => f.name).slice(0, 20).join(", ")}`,
+    );
+  }
+
+  if (kb.files.length) {
+    const fileNames = kb.files
+      .slice(0, 20)
+      .map((f) => `${f.name} (${f.kind})`)
+      .join(", ");
+    parts.push(`Files (${kb.files.length}): ${fileNames}`);
+  }
+
+  const full = parts.filter(Boolean).join("\n\n");
+  return full.length <= maxChars ? full : `${full.slice(0, maxChars)}…`;
 };

@@ -3,6 +3,7 @@ import ReactDOM from "react-dom";
 import { Plus, Trash2, ImageIcon, X, LayoutGrid, MoreHorizontal, Copy, Palette, CopyPlus, Link } from "lucide-react";
 import { useCanvasStore } from "@/store/canvasStore";
 import { snapToGrid } from "@/canvas/utils/snap";
+import { BlockHoverToolbar } from "./BlockHoverToolbar";
 
 const CARD_BG_COLORS = [
   { label: "Default", value: "" },
@@ -40,11 +41,10 @@ function parseGallery(content: string): GalleryData {
   }
 }
 
-export const GalleryBlock = memo(function GalleryBlock({ id }: { id: string }) {
+export const GalleryBlock = memo(function GalleryBlock({ id, onMinimize, onMenu }: { id: string; onMinimize?: (id: string) => void; onMenu?: (id: string, rect: DOMRect) => void }) {
   const block = useCanvasStore((s) => s.blocks[id]) as any;
   const updateBlock = useCanvasStore((s) => s.updateBlock);
   const pushHistory = useCanvasStore((s) => s.pushHistory);
-  const bringToFront = useCanvasStore((s) => s.bringToFront);
   const gridSize = 24;
 
   const resizeRef = useRef<any>(null);
@@ -82,7 +82,7 @@ export const GalleryBlock = memo(function GalleryBlock({ id }: { id: string }) {
   };
 
   const beginResize = (e: React.PointerEvent, mode: "right" | "bottom" | "corner") => {
-    e.stopPropagation(); e.preventDefault(); bringToFront(id);
+    e.stopPropagation(); e.preventDefault();
     const el = e.currentTarget as HTMLElement;
     el.setPointerCapture(e.pointerId);
     const onUp = (ev: PointerEvent) => { if (ev.pointerId === e.pointerId) endResize(e.pointerId); };
@@ -132,7 +132,8 @@ export const GalleryBlock = memo(function GalleryBlock({ id }: { id: string }) {
   };
 
   return (
-    <div data-canvas-block data-block-id={id} style={style} className="group" onPointerDown={() => bringToFront(id)}>
+    <div data-canvas-block data-block-id={id} style={style} className="group">
+      <BlockHoverToolbar blockId={id} onMinimize={onMinimize} onMenu={onMenu} />
       <div className="w-full h-full rounded-lg border border-black/10 bg-white shadow-md flex flex-col overflow-hidden">
         {/* Header */}
         <div className="flex items-center gap-2 px-3 py-1.5 border-b border-black/5 shrink-0" style={{ background: "rgba(0,0,0,0.015)" }} onPointerDown={(e) => e.stopPropagation()}>
@@ -212,11 +213,16 @@ function GalleryCardModal({ card, onUpdate, onDuplicate, onDelete, onClose }: {
     return () => window.removeEventListener("keydown", handler);
   }, [onClose]);
 
-  const handleLocalFile = (file: File) => {
-    if (!file.type.startsWith("image/")) return;
-    const reader = new FileReader();
-    reader.onload = () => { onUpdate({ imageUrl: reader.result as string }); };
-    reader.readAsDataURL(file);
+  const handleLocalFile = async (file: File) => {
+    if (!file.type.startsWith("image/") && !/\.(heic|heif)$/i.test(file.name || "")) return;
+    try {
+      const { fileToDisplayableDataUrl } = await import("@/lib/heifToJpeg");
+      const dataUrl = await fileToDisplayableDataUrl(file);
+      onUpdate({ imageUrl: dataUrl });
+      window.dispatchEvent(new CustomEvent("omnia_save_file_to_media", { detail: { file } }));
+    } catch (err) {
+      console.warn("[GalleryBlock] Failed to load image:", err);
+    }
   };
 
   const handleDrop = (e: React.DragEvent) => {
@@ -233,7 +239,7 @@ function GalleryCardModal({ card, onUpdate, onDuplicate, onDelete, onClose }: {
     }
 
     const files = e.dataTransfer.files;
-    if (files.length > 0 && files[0].type.startsWith("image/")) {
+    if (files.length > 0 && (files[0].type.startsWith("image/") || /\.(heic|heif)$/i.test(files[0].name || ""))) {
       handleLocalFile(files[0]);
       return;
     }
@@ -241,6 +247,7 @@ function GalleryCardModal({ card, onUpdate, onDuplicate, onDelete, onClose }: {
     const url = e.dataTransfer.getData("text/plain");
     if (url && /^https?:\/\/.+\.(jpg|jpeg|png|gif|webp|svg)/i.test(url)) {
       onUpdate({ imageUrl: url });
+      window.dispatchEvent(new CustomEvent("omnia_save_to_media", { detail: { url, name: "Image", fileType: "image" } }));
     }
   };
 
@@ -301,7 +308,7 @@ function GalleryCardModal({ card, onUpdate, onDuplicate, onDelete, onClose }: {
                 )}
               </div>
             )}
-            <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => { if (e.target.files?.[0]) handleLocalFile(e.target.files[0]); e.target.value = ""; }} />
+            <input ref={fileInputRef} type="file" accept="image/*,.heic,.heif" className="hidden" onChange={(e) => { if (e.target.files?.[0]) handleLocalFile(e.target.files[0]); e.target.value = ""; }} />
           </div>
 
           {/* Body */}

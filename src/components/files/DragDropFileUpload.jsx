@@ -83,16 +83,40 @@ export default function DragDropFileUpload({ onUploadComplete, triggerRef }) {
 
     const trimmedUrl = String(url).trim();
     const youtube = isYouTubeUrl(trimmedUrl);
-    const attachmentPayload = [{
-      type: youtube ? 'youtube' : 'link',
-      url: trimmedUrl,
-      name: youtube ? 'YouTube Video' : 'Saved Link'
-    }];
 
-    const noteTitle = youtube ? 'YouTube Video' : 'Saved Link';
-    const noteContent = `Link saved: ${trimmedUrl}
+    let attachmentPayload;
+    let noteTitle;
+    let noteContent;
 
-[ATTACHMENTS_JSON:${JSON.stringify(attachmentPayload)}]`;
+    if (youtube) {
+      attachmentPayload = [{ type: 'youtube', url: trimmedUrl, name: 'YouTube Video' }];
+      noteTitle = 'YouTube Video';
+      noteContent = `Link saved: ${trimmedUrl}\n\n[ATTACHMENTS_JSON:${JSON.stringify(attachmentPayload)}]`;
+    } else {
+      let meta = { url: trimmedUrl, title: trimmedUrl, description: '', image: '', favicon: '', siteName: '', articleText: '' };
+      try {
+        const { API_BASE_URL } = await import('@/lib/api-config');
+        const res = await fetch(`${API_BASE_URL}/api/unfurl?url=${encodeURIComponent(trimmedUrl)}`);
+        if (res.ok) meta = await res.json();
+      } catch { /* use defaults */ }
+      attachmentPayload = [{
+        type: 'bookmark',
+        url: meta.url || trimmedUrl,
+        name: meta.title || trimmedUrl,
+        title: meta.title || '',
+        description: meta.description || '',
+        image: meta.image || '',
+        favicon: meta.favicon || '',
+        siteName: meta.siteName || '',
+        articleText: meta.articleText || '',
+        oembedType: meta.oembedType || '',
+        oembedHtml: meta.oembedHtml || '',
+        authorName: meta.authorName || '',
+        authorHandle: meta.authorHandle || '',
+      }];
+      noteTitle = meta.title || trimmedUrl;
+      noteContent = `${noteTitle}\n\n[ATTACHMENTS_JSON:${JSON.stringify(attachmentPayload)}]`;
+    }
 
     const richInsert = {
       user_id: user.id,
@@ -171,6 +195,7 @@ export default function DragDropFileUpload({ onUploadComplete, triggerRef }) {
     mimeType,
     fileRecordId = null,
     extractedPdfText = '',
+    spreadsheetData = null,
   }) => {
     if (!user?.id) return false;
 
@@ -193,7 +218,8 @@ export default function DragDropFileUpload({ onUploadComplete, triggerRef }) {
         storageBucket: storageBucket || undefined,
         size: fileSize,
         mimeType: mimeType,
-        extractedText: safeExtractedText || undefined
+        extractedText: safeExtractedText || undefined,
+        ...(spreadsheetData ? { rows: spreadsheetData.rows, cols: spreadsheetData.cols, cells: spreadsheetData.cells } : {}),
       }];
 
       const noteContent = `File uploaded: ${filename}
@@ -256,8 +282,23 @@ Size: ${sizeDisplay}
 
   // Upload a single file (defined before handleFileUpload so it can be used)
   const uploadFileHandler = useCallback(async (fileData, index) => {
-    const { file, folderPath, filename } = fileData;
-    
+    let { file, folderPath, filename } = fileData;
+    const fileType = getFileType(file.type, filename);
+
+    // Convert HEIF to JPEG before upload so images render in all browsers
+    if (fileType === 'image') {
+      try {
+        const { fileToDisplayableFile } = await import('@/lib/heifToJpeg');
+        const displayable = await fileToDisplayableFile(file);
+        if (displayable !== file) {
+          file = displayable;
+          filename = displayable.name;
+        }
+      } catch (e) {
+        console.warn('[DragDropFileUpload] HEIF conversion skipped:', e);
+      }
+    }
+
     try {
       // Update status to uploading
       setUploads(prev => {
@@ -270,7 +311,6 @@ Size: ${sizeDisplay}
       const fileId = crypto.randomUUID();
       const fileExt = filename.split('.').pop() || 'bin';
       const storagePath = `${user.id}/${fileId}/original.${fileExt}`;
-      const fileType = getFileType(file.type, filename);
       let fileUrl = null;
 
       // Upload to Supabase Storage
@@ -296,7 +336,7 @@ Size: ${sizeDisplay}
       // Use signed URLs for private buckets so new uploads preview immediately.
       const { data: signedData, error: signedError } = await supabase.storage
         .from('user-files')
-        .createSignedUrl(storagePath, 60 * 60 * 24);
+        .createSignedUrl(storagePath, 60 * 60 * 24 * 7);
       if (!signedError && signedData?.signedUrl) {
         fileUrl = signedData.signedUrl;
       } else {
@@ -322,6 +362,17 @@ Size: ${sizeDisplay}
         return updated;
       });
 
+      let spreadsheetData = null;
+      if (fileType === 'spreadsheet') {
+        try {
+          const { API_BASE_URL } = await import('@/lib/api-config');
+          const formData = new FormData();
+          formData.append('file', file);
+          const ssRes = await fetch(`${API_BASE_URL}/api/files/parse-spreadsheet`, { method: 'POST', body: formData });
+          if (ssRes.ok) spreadsheetData = await ssRes.json();
+        } catch { /* parse is best-effort */ }
+      }
+
       const createdNote = await createMemoryNoteForAsset({
         filename,
         folderPath,
@@ -332,7 +383,8 @@ Size: ${sizeDisplay}
         fileSize: file.size,
         mimeType: file.type,
         fileRecordId: null,
-        extractedPdfText: fileType === 'pdf' ? await extractPdfText(file) : ''
+        extractedPdfText: fileType === 'pdf' ? await extractPdfText(file) : '',
+        spreadsheetData,
       });
 
       // Update to completed
@@ -355,7 +407,7 @@ Size: ${sizeDisplay}
         updated[index] = { 
           ...updated[index], 
           status: 'error', 
-          error: error.message || 'Upload failed' 
+          error: 'Upload failed. Please try again.' 
         };
         return updated;
       });
@@ -530,7 +582,7 @@ Size: ${sizeDisplay}
       }
 
       const droppedUrl = getDroppedUrl(event);
-      if (droppedUrl && isYouTubeUrl(droppedUrl)) {
+      if (droppedUrl) {
         const createdNote = await createDroppedLinkNote(droppedUrl);
         if (createdNote?.id && onUploadComplete) onUploadComplete({ createdNotes: [createdNote] });
       }
@@ -621,7 +673,7 @@ Size: ${sizeDisplay}
         ref={addMediaInputRef}
         onChange={handleFileInput}
         multiple
-        accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.txt,.md,.json,.html,.csv,.rtf,.png,.jpg,.jpeg,.gif,.webp,.mp3,.wav,.ogg,.flac,.mp4,.mov,.avi,.webm"
+        accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.txt,.md,.json,.html,.csv,.rtf,.png,.jpg,.jpeg,.gif,.webp,.heic,.heif,.mp3,.wav,.ogg,.flac,.mp4,.mov,.avi,.webm"
         style={{ display: 'none' }}
       />
 

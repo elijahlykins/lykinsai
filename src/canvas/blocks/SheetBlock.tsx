@@ -1,6 +1,7 @@
 import React, { memo, useEffect, useMemo, useRef } from "react";
 import { useCanvasStore } from "@/store/canvasStore";
 import { snapToGrid } from "@/canvas/utils/snap";
+import { BlockHoverToolbar } from "./BlockHoverToolbar";
 
 function normalizeNewlines(s: string) {
   return String(s ?? "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
@@ -131,10 +132,9 @@ type DragState = {
   snapshot: Array<{ id: string; x: number; y: number }>;
 };
 
-export const SheetBlock = memo(function SheetBlock({ id }: { id: string }) {
+export const SheetBlock = memo(function SheetBlock({ id, onMinimize, onMenu }: { id: string; onMinimize?: (id: string) => void; onMenu?: (id: string, rect: DOMRect) => void }) {
   const block = useCanvasStore((s) => s.blocks[id]);
   const gridSize = useCanvasStore((s) => s.gridSize);
-  const bringToFront = useCanvasStore((s) => s.bringToFront);
   const selectBlocks = useCanvasStore((s) => s.selectBlocks);
   const toggleSelect = useCanvasStore((s) => s.toggleSelect);
   const isSelected = useCanvasStore((s) => s.selectedIds.includes(id));
@@ -181,7 +181,6 @@ export const SheetBlock = memo(function SheetBlock({ id }: { id: string }) {
   const startDragStrip = (e: React.PointerEvent) => {
     e.stopPropagation();
     e.preventDefault();
-    bringToFront(id);
     if (e.shiftKey) toggleSelect(id);
     else if (!isSelected) selectBlocks([id]);
 
@@ -219,8 +218,9 @@ export const SheetBlock = memo(function SheetBlock({ id }: { id: string }) {
       dragRef.current = null;
       return;
     }
-    const dx = e.clientX - d.startClientX;
-    const dy = e.clientY - d.startClientY;
+    const z = (useCanvasStore.getState() as any).camera?.zoom || 1;
+    const dx = (e.clientX - d.startClientX) / z;
+    const dy = (e.clientY - d.startClientY) / z;
     d.lastX = d.originX + dx;
     d.lastY = d.originY + dy;
     if (d.raf != null) return;
@@ -378,6 +378,7 @@ export const SheetBlock = memo(function SheetBlock({ id }: { id: string }) {
   return (
     <div
       data-canvas-block
+      data-self-drag
       data-block-id={id}
       className="absolute group"
       style={style}
@@ -389,6 +390,7 @@ export const SheetBlock = memo(function SheetBlock({ id }: { id: string }) {
         else if (!isSelected) selectBlocks([id]);
       }}
     >
+      <BlockHoverToolbar blockId={id} onMinimize={onMinimize} onMenu={onMenu} />
       <div className={`glass-block overflow-hidden relative ${isSelected ? "omnia-selected-glass" : ""}`} style={{ width: "100%", height: "100%" }}>
         {/* Top grab bar (drag-only) */}
         <div
@@ -418,9 +420,6 @@ export const SheetBlock = memo(function SheetBlock({ id }: { id: string }) {
               padding: "18px 18px",
               overflowY: block.paginate === false ? "auto" : "hidden",
               overflowX: "hidden",
-            }}
-            onFocus={() => {
-              bringToFront(id);
             }}
             onKeyDown={(e) => {
               if (e.key === "Enter") {

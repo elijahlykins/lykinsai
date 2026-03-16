@@ -24,7 +24,7 @@ export type DatabasePropertyType =
   | "file"
   | "relation"
   | "formula";
-export type DatabaseViewType = "table" | "board" | "calendar" | "timeline" | "gallery" | "list";
+export type DatabaseViewType = "table" | "board" | "timeline" | "gallery" | "list";
 export type RelationType = "one-to-one" | "one-to-many" | "many-to-many";
 
 export type UniversalInputPort = {

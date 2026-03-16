@@ -1,5 +1,6 @@
 import React, { useRef, useEffect } from 'react';
 import { motion } from 'framer-motion';
+import ReactMarkdown from 'react-markdown';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -49,6 +50,13 @@ export default function DraggableChat({
       return <span key={i}>{part}</span>;
     });
   };
+
+  const withNoteLinks = (text) =>
+    String(text || '').replace(/\[\[(.*?)\]\]/g, (_match, noteTitle) => {
+      const safeTitle = String(noteTitle || '').trim();
+      if (!safeTitle) return '';
+      return `[${safeTitle}](note://${encodeURIComponent(safeTitle)})`;
+    });
 
   return (
     <div className="fixed inset-0 pointer-events-none z-50 flex items-center justify-center" ref={constraintsRef}>
@@ -106,7 +114,50 @@ export default function DraggableChat({
                     } ${msg.role === 'assistant' ? 'hover:bg-white/60 dark:hover:bg-black/60 transition-colors' : ''}`}
                     title={msg.role === 'assistant' ? 'Drag to insert into editor' : ''}
                   >
-                    {renderContent(msg.content, msg)}
+                    {msg.role === 'assistant' ? (
+                      <ReactMarkdown
+                        components={{
+                          h1: ({ children }) => <h1 className="text-xl font-semibold mt-3 mb-2">{children}</h1>,
+                          h2: ({ children }) => <h2 className="text-lg font-semibold mt-3 mb-2">{children}</h2>,
+                          h3: ({ children }) => <h3 className="text-base font-semibold mt-2.5 mb-1.5">{children}</h3>,
+                          p: ({ children }) => <p className="my-1.5 whitespace-pre-wrap">{children}</p>,
+                          ul: ({ children }) => <ul className="my-2 list-disc pl-5 space-y-1">{children}</ul>,
+                          ol: ({ children }) => <ol className="my-2 list-decimal pl-5 space-y-1">{children}</ol>,
+                          li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+                          strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
+                          code: ({ children }) => (
+                            <code className="rounded bg-black/10 dark:bg-white/10 px-1.5 py-0.5 text-[0.85em]">{children}</code>
+                          ),
+                          a: ({ href, children }) => {
+                            if (href?.startsWith('note://')) {
+                              const noteTitle = decodeURIComponent(href.replace('note://', ''));
+                              const note = msg.notes?.find((n) => n.title === noteTitle);
+                              if (note) {
+                                return (
+                                  <button
+                                    type="button"
+                                    onClick={() => onNoteClick(note)}
+                                    className="text-blue-600 dark:text-blue-400 hover:underline font-medium"
+                                  >
+                                    {children}
+                                  </button>
+                                );
+                              }
+                              return <span className="font-medium text-blue-500">{children}</span>;
+                            }
+                            return (
+                              <a href={href} target="_blank" rel="noopener noreferrer" className="text-blue-600 dark:text-blue-400 hover:underline font-medium">
+                                {children}
+                              </a>
+                            );
+                          },
+                        }}
+                      >
+                        {withNoteLinks(msg.content)}
+                      </ReactMarkdown>
+                    ) : (
+                      renderContent(msg.content, msg)
+                    )}
                   </div>
                 </div>
               ))}

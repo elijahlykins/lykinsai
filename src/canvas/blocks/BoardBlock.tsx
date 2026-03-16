@@ -3,6 +3,7 @@ import ReactDOM from "react-dom";
 import { Plus, MoreHorizontal, Copy, Trash2, Palette, CopyPlus, X, Tag, AlignLeft, CheckSquare, Square, Pencil, Eye } from "lucide-react";
 import { useCanvasStore } from "@/store/canvasStore";
 import { snapToGrid } from "@/canvas/utils/snap";
+import { BlockHoverToolbar } from "./BlockHoverToolbar";
 
 const CARD_COLORS = [
   { label: "Default", value: "" },
@@ -78,11 +79,10 @@ function parseBoard(content: string): BoardData {
 type CardMenuState = { colId: string; cardId: string; x: number; y: number; showColors: boolean } | null;
 type OpenCard = { colId: string; cardId: string } | null;
 
-export const BoardBlock = memo(function BoardBlock({ id }: { id: string }) {
+export const BoardBlock = memo(function BoardBlock({ id, onMinimize, onMenu }: { id: string; onMinimize?: (id: string) => void; onMenu?: (id: string, rect: DOMRect) => void }) {
   const block = useCanvasStore((s) => s.blocks[id]) as any;
   const updateBlock = useCanvasStore((s) => s.updateBlock);
   const pushHistory = useCanvasStore((s) => s.pushHistory);
-  const bringToFront = useCanvasStore((s) => s.bringToFront);
   const gridSize = 24;
 
   const resizeRef = useRef<any>(null);
@@ -179,7 +179,7 @@ export const BoardBlock = memo(function BoardBlock({ id }: { id: string }) {
   };
 
   const beginResize = (e: React.PointerEvent, mode: "right" | "bottom" | "corner") => {
-    e.stopPropagation(); e.preventDefault(); bringToFront(id);
+    e.stopPropagation(); e.preventDefault();
     const el = e.currentTarget as HTMLElement;
     el.setPointerCapture(e.pointerId);
     const onUp = (ev: PointerEvent) => { if (ev.pointerId === e.pointerId) endResize(e.pointerId); };
@@ -203,7 +203,8 @@ export const BoardBlock = memo(function BoardBlock({ id }: { id: string }) {
   const activeCard = openCard ? getCard(openCard.colId, openCard.cardId) : null;
 
   return (
-    <div data-canvas-block data-block-id={id} style={style} className="group" onPointerDown={() => bringToFront(id)}>
+    <div data-canvas-block data-block-id={id} style={style} className="group">
+      <BlockHoverToolbar blockId={id} onMinimize={onMinimize} onMenu={onMenu} />
       <div className="w-full h-full rounded-lg border border-black/10 bg-white/95 shadow-md flex flex-col overflow-hidden">
         <div className="flex-1 flex gap-0 overflow-x-auto min-h-0" onPointerDown={(e) => e.stopPropagation()}>
           {board.columns.map((col) => (

@@ -105,7 +105,7 @@ const YouTubeEmbed = React.memo(function YouTubeEmbed({ url, videoId, onRemove, 
         handleVideoDataLoaded(data);
       } catch (err) {
         console.error(`Error fetching YouTube video ${id}:`, err);
-        setError(err.message);
+        setError("Couldn't load video details. You can still watch it below.");
         // Still allow embedding even if metadata fetch fails
         setVideoData({ videoId: id, title: 'YouTube Video' });
       } finally {

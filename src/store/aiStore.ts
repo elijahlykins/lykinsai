@@ -1,7 +1,8 @@
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
-import { getProjectKnowledgeBase, projectKnowledgeBaseToText } from "@/lib/projectKnowledgeBase";
+import { getProjectKnowledgeBase, projectSummaryForAI } from "@/lib/projectKnowledgeBase";
 import { getSelectedAiModel } from "@/lib/ai-model";
+import type { WorkspaceSummary } from "@/lib/workspaceContext";
 
 export type AiSuggestion = {
   id: string;
@@ -9,12 +10,20 @@ export type AiSuggestion = {
   actions?: any[];
 };
 
+const KB_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
 type AiState = {
   projectKnowledgeBase: any | null;
   projectKnowledgeBaseText: string | null;
   knowledgeBaseProjectId: string | null;
   knowledgeBaseUpdatedAt: number | null;
   knowledgeBaseDirty: boolean;
+
+  workspaceSummary: WorkspaceSummary | null;
+  workspaceSummaryUserId: string | null;
+  workspaceSummaryExcludeBoardId: string | null;
+  workspaceSummaryUpdatedAt: number | null;
+
   aiSuggestions: AiSuggestion[];
   projectSummary: string | null;
   isOrganizing: boolean;
@@ -22,6 +31,9 @@ type AiState = {
   lastError: string | null;
 
   refreshKnowledgeBase: (projectId: string, opts?: { force?: boolean }) => Promise<string | null>;
+  getCachedKbText: () => string;
+  refreshWorkspaceSummary: (userId: string, excludeBoardId?: string, opts?: { force?: boolean }) => Promise<WorkspaceSummary | null>;
+  getCachedWorkspaceSummary: () => WorkspaceSummary | null;
   markProjectDirty: (projectId: string) => void;
   getAISuggestions: (projectId: string, prompt: string) => Promise<AiSuggestion[]>;
   organizeIdeas: (projectId: string, intent: string) => Promise<{ actions: any[]; response: string }>;
@@ -38,7 +50,12 @@ const makeId = () => {
 const getKbIsFresh = (state: AiState) => {
   if (!state.knowledgeBaseUpdatedAt) return false;
   const ageMs = Date.now() - state.knowledgeBaseUpdatedAt;
-  return ageMs < 60_000 && !state.knowledgeBaseDirty;
+  return ageMs < KB_TTL_MS && !state.knowledgeBaseDirty;
+};
+
+const getWsFresh = (state: AiState) => {
+  if (!state.workspaceSummaryUpdatedAt) return false;
+  return Date.now() - state.workspaceSummaryUpdatedAt < KB_TTL_MS;
 };
 
 export const useAiStore = create<AiState>()(
@@ -48,6 +65,12 @@ export const useAiStore = create<AiState>()(
     knowledgeBaseProjectId: null,
     knowledgeBaseUpdatedAt: null,
     knowledgeBaseDirty: false,
+
+    workspaceSummary: null,
+    workspaceSummaryUserId: null,
+    workspaceSummaryExcludeBoardId: null,
+    workspaceSummaryUpdatedAt: null,
+
     aiSuggestions: [],
     projectSummary: null,
     isOrganizing: false,
@@ -66,7 +89,7 @@ export const useAiStore = create<AiState>()(
       });
       try {
         const kb = await getProjectKnowledgeBase(projectId);
-        const kbText = projectKnowledgeBaseToText(kb);
+        const kbText = projectSummaryForAI(kb);
         set((s) => {
           s.projectKnowledgeBase = kb;
           s.projectKnowledgeBaseText = kbText;
@@ -86,6 +109,41 @@ export const useAiStore = create<AiState>()(
       }
     },
 
+    getCachedKbText: () => {
+      return get().projectKnowledgeBaseText || "";
+    },
+
+    refreshWorkspaceSummary: async (userId, excludeBoardId, opts) => {
+      if (!userId) return null;
+      const state = get();
+      if (
+        !opts?.force &&
+        state.workspaceSummaryUserId === userId &&
+        state.workspaceSummaryExcludeBoardId === (excludeBoardId ?? null) &&
+        getWsFresh(state)
+      ) {
+        return state.workspaceSummary;
+      }
+      try {
+        const { fetchWorkspaceSummaries } = await import("@/lib/workspaceContext");
+        const ws = await fetchWorkspaceSummaries(userId, excludeBoardId);
+        set((s) => {
+          s.workspaceSummary = ws;
+          s.workspaceSummaryUserId = userId;
+          s.workspaceSummaryExcludeBoardId = excludeBoardId ?? null;
+          s.workspaceSummaryUpdatedAt = Date.now();
+        });
+        return ws;
+      } catch (error: any) {
+        console.error("Workspace summary refresh failed:", error);
+        return null;
+      }
+    },
+
+    getCachedWorkspaceSummary: () => {
+      return get().workspaceSummary;
+    },
+
     markProjectDirty: (projectId) => {
       set((s) => {
         if (s.knowledgeBaseProjectId !== projectId) return;
@@ -94,7 +152,7 @@ export const useAiStore = create<AiState>()(
     },
 
     getAISuggestions: async (projectId, prompt) => {
-      const kbText = await get().refreshKnowledgeBase(projectId);
+      const kbText = get().getCachedKbText();
       const { API_BASE_URL } = await import("@/lib/api-config");
       const body = {
         model: getSelectedAiModel(),
@@ -129,7 +187,7 @@ export const useAiStore = create<AiState>()(
     },
 
     organizeIdeas: async (projectId, intent) => {
-      const kbText = await get().refreshKnowledgeBase(projectId);
+      const kbText = get().getCachedKbText();
       set((s) => {
         s.isOrganizing = true;
         s.lastError = null;
@@ -170,7 +228,7 @@ export const useAiStore = create<AiState>()(
     },
 
     generateProjectSummary: async (projectId) => {
-      const kbText = await get().refreshKnowledgeBase(projectId);
+      const kbText = get().getCachedKbText();
       const { API_BASE_URL } = await import("@/lib/api-config");
       const res = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: "POST",

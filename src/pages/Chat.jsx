@@ -11,6 +11,7 @@ import { supabase } from "@/lib/supabase";
 import RichTextRenderer from "@/components/notes/RichTextRenderer";
 import { useThinkingStatus } from "@/hooks/useThinkingStatus";
 import { getAiPrefs } from "@/lib/ai-prefs";
+import { useQuery } from "@tanstack/react-query";
 
 const DEFAULT_MODEL = "gemini-flash-latest";
 const TYPING_DELAY_MS = 14;
@@ -39,6 +40,7 @@ const FILE_ATTACHMENT_EXTS = new Set([
   "bmp",
   "avif",
   "heic",
+  "heif",
   "mp4",
   "mov",
   "webm",
@@ -98,7 +100,7 @@ const inferUrlAttachmentType = (url = "") => {
   if (!trimmed) return "link";
   if (isYouTubeUrl(trimmed)) return "youtube";
   const ext = getUrlExtension(trimmed);
-  if (["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif", "heic"].includes(ext)) return "image";
+  if (["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif", "heic", "heif"].includes(ext)) return "image";
   if (["mp4", "mov", "webm", "mkv", "avi"].includes(ext)) return "video";
   if (["mp3", "wav", "m4a", "ogg", "aac", "flac"].includes(ext)) return "audio";
   if (ext === "pdf") return "pdf";
@@ -305,9 +307,32 @@ export default function ChatPage() {
   const [quickNoteContent, setQuickNoteContent] = useState("");
   const [isQuickNoteSaving, setIsQuickNoteSaving] = useState(false);
   const [showMemorySidebar, setShowMemorySidebar] = useState(false);
-  const [memoryNotes, setMemoryNotes] = useState([]);
-  const [memoryLoading, setMemoryLoading] = useState(false);
-  const [memoryError, setMemoryError] = useState("");
+  const {
+    data: memoryNotes = [],
+    isLoading: memoryLoading,
+    error: memoryQueryError,
+  } = useQuery({
+    queryKey: ["memory-notes", user?.id],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("notes")
+        .select("id, title, created_at, updated_at")
+        .eq("user_id", user.id)
+        .order("updated_at", { ascending: false })
+        .limit(50);
+      if (error) throw error;
+      return Array.isArray(data)
+        ? data.map((note) => {
+            const directAttachments = Array.isArray(note?.attachments) ? note.attachments : [];
+            const parsedAttachments = parseAttachmentsFromContent(note?.content || "");
+            return { ...note, attachments: directAttachments.length ? directAttachments : parsedAttachments };
+          })
+        : [];
+    },
+    enabled: !!user?.id && showMemorySidebar,
+    staleTime: 30_000,
+  });
+  const memoryError = memoryQueryError ? String(memoryQueryError?.message || "Unable to load memories.") : "";
   const [memorySearch, setMemorySearch] = useState("");
   const [interactionNote, setInteractionNote] = useState(null);
   const DialogAny = /** @type {any} */ (Dialog);
@@ -749,51 +774,6 @@ export default function ChatPage() {
     fileInputRef.current?.click();
   };
 
-  const loadMemoryNotes = async () => {
-    if (!user?.id) {
-      setMemoryNotes([]);
-      setMemoryError("Sign in to access memories.");
-      return;
-    }
-    setMemoryLoading(true);
-    setMemoryError("");
-    try {
-      let data = null;
-      let error = null;
-      const fetchWithColumns = async (columns) =>
-        supabase.from("notes").select(columns).eq("user_id", user.id).order("updated_at", { ascending: false }).limit(500);
-      ({ data, error } = await supabase
-        .from("notes")
-        .select("id, title, content, attachments, folder, updated_at, created_at, tags, connected_notes, trashed")
-        .eq("user_id", user.id)
-        .order("updated_at", { ascending: false })
-        .limit(500));
-      if (error && /column .*notes\.folder/i.test(String(error?.message || ""))) {
-        ({ data, error } = await fetchWithColumns("id, title, content, attachments, updated_at, created_at, tags, connected_notes, trashed"));
-      }
-      if (error && /column .*notes\.attachments/i.test(String(error?.message || ""))) {
-        ({ data, error } = await fetchWithColumns("id, title, content, updated_at, created_at, tags, connected_notes, trashed"));
-      }
-      if (error && /column .*notes\.(tags|connected_notes|trashed)/i.test(String(error?.message || ""))) {
-        ({ data, error } = await fetchWithColumns("id, title, content, updated_at, created_at"));
-      }
-      if (error) throw error;
-      setMemoryNotes(
-        Array.isArray(data)
-          ? data.map((note) => {
-              const directAttachments = Array.isArray(note?.attachments) ? note.attachments : [];
-              const parsedAttachments = parseAttachmentsFromContent(note?.content || "");
-              return { ...note, attachments: directAttachments.length ? directAttachments : parsedAttachments };
-            })
-          : []
-      );
-    } catch (err) {
-      setMemoryError(String(err?.message || "Unable to load memories."));
-      setMemoryNotes([]);
-    } finally {
-      setMemoryLoading(false);
-    }
-  };
 
   const useMemoryInChat = (note) => {
     const titleText = String(note?.title || "Untitled memory").trim() || "Untitled memory";
@@ -870,7 +850,7 @@ export default function ChatPage() {
     const bucket = storageBucket || "user-files";
     if (!path) return rawUrl;
     try {
-      const { data } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 60 * 24);
+      const { data } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 60 * 24 * 7);
       if (data?.signedUrl) return data.signedUrl;
     } catch { /* ignore */ }
     return rawUrl;
@@ -1124,8 +1104,28 @@ export default function ChatPage() {
     const todoLists = extractTodoListsForBoardImport(messages);
 
     try {
-      const titleDate = new Date().toLocaleDateString();
-      const boardTitle = `Chat Board ${titleDate}`;
+      let boardTitle = `Chat Board ${new Date().toLocaleDateString()}`;
+      const userMsgs = messages
+        .filter((m) => m.role === "user" && String(m.content || "").trim())
+        .map((m) => String(m.content).trim().slice(0, 200))
+        .slice(0, 6)
+        .join("\n");
+      if (userMsgs) {
+        try {
+          const titleRes = await fetch("/api/ai/invoke", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ model: "gpt-4o-mini", intent: "board_title", text: userMsgs }),
+          });
+          if (titleRes.ok) {
+            const titleData = await titleRes.json();
+            const raw = String(titleData?.response || "").trim();
+            const cleaned = raw.replace(/^["']|["']$/g, "").replace(/\.+$/, "").trim();
+            const words = cleaned.split(/\s+/).slice(0, 5).join(" ");
+            if (words) boardTitle = words;
+          }
+        } catch { /* fall back to default title */ }
+      }
 
       const { data: board, error: boardError } = await supabase
         .from("omnia_boards")
@@ -1174,10 +1174,6 @@ export default function ChatPage() {
     }
   };
 
-  useEffect(() => {
-    if (!showMemorySidebar) return;
-    void loadMemoryNotes();
-  }, [showMemorySidebar]);
 
   const renderAttachmentPreview = (att) => {
     const t = String(att.type || "").toLowerCase();
@@ -1385,7 +1381,7 @@ export default function ChatPage() {
         ref={fileInputRef}
         type="file"
         multiple
-        accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.txt,.md,.json,.html,.csv,.rtf,.png,.jpg,.jpeg,.gif,.webp,.mp3,.wav,.ogg,.flac,.mp4,.mov,.avi,.webm,*/*"
+        accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.txt,.md,.json,.html,.csv,.rtf,.png,.jpg,.jpeg,.gif,.webp,.heic,.heif,.mp3,.wav,.ogg,.flac,.mp4,.mov,.avi,.webm,*/*"
         className="hidden"
         onChange={(e) => {
           const files = Array.from(e.target.files || []);

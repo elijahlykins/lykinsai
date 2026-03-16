@@ -40,7 +40,7 @@ export function SupabaseAuthProvider({ children }) {
         if (code) {
           const { error } = await supabase.auth.exchangeCodeForSession(code);
           if (error && isMounted) {
-            setAuthError(error.message);
+            setAuthError("Sign-in failed. Please try again.");
           }
           window.history.replaceState({}, '', window.location.pathname);
         }
@@ -76,7 +76,7 @@ export function SupabaseAuthProvider({ children }) {
       options: { redirectTo: window.location.origin },
     });
     if (error) {
-      setAuthError(error.message);
+      setAuthError("Sign-in failed. Please try again later.");
     }
     return { data, error };
   };

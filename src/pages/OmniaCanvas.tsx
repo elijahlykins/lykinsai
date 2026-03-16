@@ -3,7 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { Canvas } from "@/canvas/Canvas";
 import { useCanvasStore } from "@/store/canvasStore";
 import type { Block } from "@/canvas/types";
-import { ChevronDown, ChevronUp, ArrowLeft, Undo2, Redo2, Trash2, Plus, Link as LinkIcon, Image as ImageIcon, Zap, MessageSquare, Mic, BookOpen, X, Clock, Edit2, Folder as FolderIcon, Link2, MoreHorizontal, PanelRightClose, PanelRight, StickyNote, Brain, List, Infinity, Play, FileText, Music, Video } from "lucide-react";
+import { ChevronDown, ChevronUp, Plus, Link as LinkIcon, Image as ImageIcon, Zap, MessageSquare, Mic, BookOpen, X, Clock, Edit2, Folder as FolderIcon, Link2, MoreHorizontal, PanelRightClose, PanelRight, StickyNote, Play, FileText, Music, Video, Share2, Download, Copy, Check, RefreshCw, ThumbsUp, ThumbsDown, Square, Sparkles, Save, Globe } from "lucide-react";
 import DraggableQuickNote from "@/components/notes/DraggableQuickNote";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -11,19 +11,47 @@ import { supabase } from "@/lib/supabase";
 import { useAiStore } from "@/store/aiStore";
 import { useAuth } from "@/lib/SupabaseAuth";
 import RichTextRenderer from "@/components/notes/RichTextRenderer";
-import { getProjectKnowledgeBase, projectKnowledgeBaseToText } from "@/lib/projectKnowledgeBase";
 import { getBlockDefinition } from "@/canvas/blockSystem/definitions";
 import type { UniversalBlockType } from "@/canvas/blockSystem/types";
 import { createDatabaseBlockData } from "@/canvas/blockSystem/notionModel";
 import { extractYouTubeVideoId } from "@/canvas/utils/youtube";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { useThinkingStatus } from "@/hooks/useThinkingStatus";
+import { getStructuredPasteFromEvent } from "@/lib/pasteFromClipboard";
 import { getAiPrefs } from "@/lib/ai-prefs";
+import { buildTieredCanvasContext } from "@/lib/ai/buildCanvasContext";
+
+const TASK_LINE_RE = /^\s*(?:[-*]\s+)?\[([ xX])\]\s+(.+)$/;
+
+const flattenNodeText = (node: any): string => {
+  if (node == null || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(flattenNodeText).join("");
+  if (React.isValidElement(node)) return flattenNodeText((node.props as any)?.children);
+  return "";
+};
+
+const normalizeChecklistSyntax = (value: string) =>
+  String(value || "")
+    .split(/\r?\n/)
+    .map((line) => {
+      const match = String(line || "").match(TASK_LINE_RE);
+      if (!match) return line;
+      const marker = String(match[1] || "").toLowerCase() === "x" ? "x" : " ";
+      return `- [${marker}] ${String(match[2] || "").trim()}`;
+    })
+    .join("\n");
 
 type PromptMessage = {
   id: string;
   role: "user";
   content: string;
   aiResponse?: string;
+  aiImageUrl?: string;
+  aiVideoUrl?: string;
+  aiYouTubeUrls?: { url: string; videoId: string }[];
+  aiWebLinks?: string[];
   sources?: { title: string; url: string }[];
   kind?: "prompt";
   attachments?: FocusedChatAttachment[];
@@ -36,7 +64,9 @@ type CreateAction =
   | { type: "create_design_board"; board?: any; title?: string; seedText?: string }
   | { type: "create_code_block"; language?: string; content?: string }
   | { type: "create_universal_block"; universalType?: UniversalBlockType; name?: string; data?: Record<string, unknown> }
+  | { type: "create_youtube_block"; url?: string; title?: string }
   | { type: "create_database_relation"; fromDatabaseName?: string; toDatabaseName?: string; relationType?: "one-to-one" | "one-to-many" | "many-to-many"; rollup?: { property?: string; aggregation?: "sum" | "count" | "average" } }
+  | { type: "delete_block"; blockId?: string; blockIds?: string[] }
   | { type: string; [key: string]: any };
 
 type OrchestratorResult = {
@@ -45,14 +75,6 @@ type OrchestratorResult = {
   actions: CreateAction[];
   requiresClarification: boolean;
   groundingSummary?: string;
-};
-
-type AiMode = "think" | "plan" | "agent";
-
-const AI_MODE_META: Record<AiMode, { label: string; icon: typeof Brain; description: string }> = {
-  think: { label: "Think", icon: Brain,    description: "Brainstorm & ideate" },
-  plan:  { label: "Plan",  icon: List,     description: "Strategize & outline" },
-  agent: { label: "Agent", icon: Infinity, description: "Execute & automate" },
 };
 
 const CHAT_TO_BOARD_IMPORT_KEY = "omnia_chat_board_import_v1";
@@ -134,7 +156,7 @@ const inferUrlAttachmentType = (url = "") => {
   if (!trimmed) return "link";
   if (isYouTubeUrl(trimmed)) return "youtube";
   const ext = getUrlExtension(trimmed);
-  if (["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif", "heic"].includes(ext)) return "image";
+  if (["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif", "heic", "heif"].includes(ext)) return "image";
   if (["mp4", "mov", "webm", "mkv", "avi"].includes(ext)) return "video";
   if (["mp3", "wav", "m4a", "ogg", "aac", "flac"].includes(ext)) return "audio";
   if (ext === "pdf") return "pdf";
@@ -145,83 +167,6 @@ const inferUrlAttachmentType = (url = "") => {
 const makeAttId = () =>
   (typeof crypto !== "undefined" && crypto.randomUUID && crypto.randomUUID()) ||
   `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
-type MemorySidebarNote = {
-  id: string;
-  title: string | null;
-  content: string | null;
-  attachments?: any[] | null;
-  folder?: string | null;
-  updated_at?: string | null;
-  created_at?: string | null;
-  tags?: string[] | null;
-  connected_notes?: string[] | null;
-  trashed?: boolean | null;
-};
-
-const stripAttachmentMetadata = (content = "") => {
-  let text = String(content || "");
-  const marker = "\n\n---ATTACHMENTS---\n";
-  const idx = text.indexOf(marker);
-  if (idx !== -1) text = text.slice(0, idx).trim();
-
-  const startMarker = "[ATTACHMENTS_JSON:";
-  const startIndex = text.indexOf(startMarker);
-  if (startIndex !== -1) {
-    const jsonStart = startIndex + startMarker.length;
-    let bracketCount = 0;
-    let jsonEnd = jsonStart;
-    for (let i = jsonStart; i < text.length; i += 1) {
-      if (text[i] === "[") bracketCount += 1;
-      if (text[i] === "]") {
-        bracketCount -= 1;
-        if (bracketCount === 0) {
-          jsonEnd = i + 1;
-          break;
-        }
-      }
-    }
-    if (jsonEnd > jsonStart) {
-      text = `${text.substring(0, startIndex)}${text.substring(jsonEnd)}`.replace(/\n\n\n+/g, "\n\n").trim();
-    }
-  }
-  return text;
-};
-
-const parseAttachmentsFromContent = (content = "") => {
-  const text = String(content || "");
-  const startMarker = "[ATTACHMENTS_JSON:";
-  const startIndex = text.indexOf(startMarker);
-  if (startIndex === -1) return [];
-  const jsonStart = startIndex + startMarker.length;
-  let bracketCount = 0;
-  let jsonEnd = jsonStart;
-  for (let i = jsonStart; i < text.length; i += 1) {
-    if (text[i] === "[") bracketCount += 1;
-    if (text[i] === "]") {
-      bracketCount -= 1;
-      if (bracketCount === 0) {
-        jsonEnd = i + 1;
-        break;
-      }
-    }
-  }
-  if (jsonEnd <= jsonStart) return [];
-  try {
-    const parsed = JSON.parse(text.substring(jsonStart, jsonEnd));
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-};
-
-const formatMemoryCardDate = (note: MemorySidebarNote) => {
-  const raw = note?.created_at || note?.updated_at;
-  if (!raw) return "No date";
-  const d = new Date(raw);
-  if (Number.isNaN(d.getTime())) return "No date";
-  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
-};
 
 export default function OmniaCanvasPage() {
   const SNAPSHOT_VERSION = 2;
@@ -238,18 +183,9 @@ export default function OmniaCanvasPage() {
   const loadBlocks = useCanvasStore((s) => s.loadBlocks);
   const reset = useCanvasStore((s) => s.reset);
   const gridSize = useCanvasStore((s) => s.gridSize);
-  const undo = useCanvasStore((s) => s.undo);
-  const redo = useCanvasStore((s) => s.redo);
-  const canUndo = useCanvasStore((s) => s.history.length > 0);
-  const canRedo = useCanvasStore((s) => s.future.length > 0);
   const [topPanelOpen, setTopPanelOpen] = useState(true);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
   const [showMemorySidebar, setShowMemorySidebar] = useState(false);
-  const [memoryNotes, setMemoryNotes] = useState<MemorySidebarNote[]>([]);
-  const [memoryLoading, setMemoryLoading] = useState(false);
-  const [memoryError, setMemoryError] = useState("");
-  const [memorySearch, setMemorySearch] = useState("");
-  const [interactionNote, setInteractionNote] = useState<MemorySidebarNote | null>(null);
   const [memoryDragActive, setMemoryDragActive] = useState(false);
   const [showQuickNote, setShowQuickNote] = useState(false);
   const [quickNoteContent, setQuickNoteContent] = useState("");
@@ -267,6 +203,9 @@ export default function OmniaCanvasPage() {
     Array<{ id: string; name: string; path: string; folderId: string | null; kind: string; url: string }>
   >([]);
   const refreshKnowledgeBase = useAiStore((s) => s.refreshKnowledgeBase);
+  const getCachedKbText = useAiStore((s) => s.getCachedKbText);
+  const refreshWorkspaceSummary = useAiStore((s) => s.refreshWorkspaceSummary);
+  const getCachedWorkspaceSummary = useAiStore((s) => s.getCachedWorkspaceSummary);
   const markProjectDirty = useAiStore((s) => s.markProjectDirty);
   const getAISuggestions = useAiStore((s) => s.getAISuggestions);
   const organizeIdeas = useAiStore((s) => s.organizeIdeas);
@@ -352,17 +291,6 @@ export default function OmniaCanvasPage() {
     const type = blob.type || fallbackType;
     return new File([blob], file.name, { type });
   };
-  const [isEditingField, setIsEditingField] = useState(false);
-  const [aiMode, setAiMode] = useState<AiMode>(() => {
-    try {
-      const saved = localStorage.getItem("lykinsai_settings");
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed.aiMode && ["think", "plan", "agent"].includes(parsed.aiMode)) return parsed.aiMode;
-      }
-    } catch { /* ignore */ }
-    return "think";
-  });
   const [selectedModel, setSelectedModel] = useState(() => {
     try {
       const saved = localStorage.getItem("lykinsai_settings");
@@ -399,14 +327,22 @@ export default function OmniaCanvasPage() {
   const saveTimerRef = useRef<number | null>(null);
   const savingRef = useRef(false);
   const lastSavedTitleRef = useRef<string>("");
+  const titleFromSaveRef = useRef(false);
   const [chatMode, setChatMode] = useState(false);
   const [chatMessages, setChatMessages] = useState<PromptMessage[]>([]);
+  const chatMessagesRef = useRef<PromptMessage[]>([]);
+  const titleRef = useRef<string>("");
   const [chatInput, setChatInput] = useState("");
   const [chatRailOpen, setChatRailOpen] = useState(false);
   const [chatRailVisible, setChatRailVisible] = useState(false);
   const [centerChatLeaving, setCenterChatLeaving] = useState(false);
   const [focusedChatAttachments, setFocusedChatAttachments] = useState<FocusedChatAttachment[]>([]);
   const [isChatLoading, setIsChatLoading] = useState(false);
+  const [chatReactions, setChatReactions] = useState<Record<string, "like" | "dislike" | null>>({});
+  const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
+  const [assistantTaskChecks, setAssistantTaskChecks] = useState<Record<string, Record<string, boolean>>>({});
+  const [savedYouTubeIds, setSavedYouTubeIds] = useState<Set<string>>(new Set());
+  const [savedMediaUrls, setSavedMediaUrls] = useState<Set<string>>(new Set());
   const [isDictating, setIsDictating] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const updateBlock = useCanvasStore((s) => s.updateBlock);
@@ -421,8 +357,17 @@ export default function OmniaCanvasPage() {
   const chatTypingTimerRef = useRef<number | null>(null);
   const chatImportAppliedRef = useRef<string | null>(null);
   const isSendingRef = useRef(false);
+  const activeAiAbortRef = useRef<AbortController | null>(null);
   const lastAiResponseBlockRef = useRef<string | null>(null);
   const aiThreadRef = useRef<Array<{ role: "user" | "assistant"; content: string }>>([]);
+
+  useEffect(() => {
+    return () => { activeAiAbortRef.current?.abort(); };
+  }, []);
+  useEffect(() => {
+    activeAiAbortRef.current?.abort();
+    activeAiAbortRef.current = null;
+  }, [boardId]);
   const lastSendSigRef = useRef<{ text: string; at: number }>({ text: "", at: 0 });
   const clarificationSessionRef = useRef<{
     active: boolean;
@@ -439,13 +384,19 @@ export default function OmniaCanvasPage() {
     answers: [],
     askedCount: 0,
   });
-  const kbCacheRef = useRef<{ projectId: string; text: string; fetchedAt: number } | null>(null);
   const [chatFlowMode, setChatFlowMode] = useState<"idle" | "clarifying" | "generating">("idle");
   const [chatStatusText, setChatStatusText] = useState("");
   const thinkingStatus = useThinkingStatus(isChatLoading, chatStatusText);
   const [typedWelcome, setTypedWelcome] = useState("");
   const [showAiSuggestionToast, setShowAiSuggestionToast] = useState(false);
   const lastSuggestionKeyRef = useRef<string>("");
+  const [connectionCards, setConnectionCards] = useState<Array<{ title: string; sourceType: "board" | "media"; reason: string }>>([]);
+  const [showConnectionCard, setShowConnectionCard] = useState(false);
+  const connectionDismissTimerRef = useRef<number | null>(null);
+  const [mediaSuggestions, setMediaSuggestions] = useState<Array<{ title: string; reason: string; noteId: string }>>([]);
+  const [selectedMediaIds, setSelectedMediaIds] = useState<Set<string>>(new Set());
+  const [showMediaSuggestion, setShowMediaSuggestion] = useState(false);
+  const [importingMedia, setImportingMedia] = useState(false);
   const youtubeTranscriptCacheRef = useRef<
     Record<
       string,
@@ -458,33 +409,7 @@ export default function OmniaCanvasPage() {
       }
     >
   >({});
-
-  const filteredMemoryNotes = useMemo(() => {
-    const query = String(memorySearch || "").trim().toLowerCase();
-    const visibleNotes = memoryNotes.filter((note) => !note?.trashed);
-    if (!query) return visibleNotes;
-    return visibleNotes.filter((note) => {
-      const title = String(note.title || "").toLowerCase();
-      const content = String(note.content || "").toLowerCase();
-      const folder = String(note.folder || "").toLowerCase();
-      return title.includes(query) || content.includes(query) || folder.includes(query);
-    });
-  }, [memoryNotes, memorySearch]);
-
-  const memoryNotesByFolder = useMemo(() => {
-    const grouped = filteredMemoryNotes.reduce((acc, note) => {
-      const folderName = String(note.folder || "Uncategorized").trim() || "Uncategorized";
-      if (!acc[folderName]) acc[folderName] = [];
-      acc[folderName].push(note);
-      return acc;
-    }, {} as Record<string, MemorySidebarNote[]>);
-    const sortedFolders = Object.keys(grouped).sort((a, b) => {
-      if (a === "Uncategorized") return 1;
-      if (b === "Uncategorized") return -1;
-      return a.localeCompare(b);
-    });
-    return { grouped, sortedFolders };
-  }, [filteredMemoryNotes]);
+  const youtubeTranscriptFailRef = useRef<Record<string, number>>({});
 
   useEffect(() => {
     const onResize = () => setViewportWidth(window.innerWidth || 1280);
@@ -521,21 +446,25 @@ export default function OmniaCanvasPage() {
     } catch {
       // ignore
     }
+    titleRef.current = title;
   }, [title]);
+
+  useEffect(() => {
+    chatMessagesRef.current = chatMessages;
+  }, [chatMessages]);
 
   const buildSnapshot = useCallback(() => {
     const st = useCanvasStore.getState();
+    const resolvedTitle = (title && String(title).trim()) ? String(title).trim() : "New Board";
     return {
       blocks: st.blocks,
       blockOrder: st.blockOrder,
       camera: st.camera,
       gridSize: st.gridSize,
-      title: title || "Untitled board",
+      title: resolvedTitle,
       version: SNAPSHOT_VERSION,
-      chatMessages: chatMessages.length > 0 ? chatMessages : undefined,
-      aiThread: aiThreadRef.current.length > 0 ? aiThreadRef.current : undefined,
     };
-  }, [SNAPSHOT_VERSION, chatMessages, title]);
+  }, [SNAPSHOT_VERSION, title]);
 
   const applySnapshot = useCallback(
     (snapshot: any) => {
@@ -600,17 +529,64 @@ export default function OmniaCanvasPage() {
       loadBlocks(blocks, { camera, gridSize: g });
       if (snapshot.title) setTitle(String(snapshot.title));
 
-      if (Array.isArray(snapshot.chatMessages) && snapshot.chatMessages.length > 0) {
-        setChatMessages(snapshot.chatMessages);
-        setChatRailOpen(true);
-        setChatRailVisible(true);
-      }
-      if (Array.isArray(snapshot.aiThread) && snapshot.aiThread.length > 0) {
-        aiThreadRef.current = snapshot.aiThread;
+      // Re-resolve storage URLs for blocks whose base64 was stripped on save
+      (async () => {
+        const st = useCanvasStore.getState();
+        const pending: { id: string; blk: any; field: string }[] = [];
+        for (const id of st.blockOrder) {
+          const blk: any = st.blocks[id];
+          if (!blk?.data?.storagePath) continue;
+          const field = blk.type === "create" && blk.mode === "image" ? "src" : "url";
+          const current = String(blk.data[field] || "");
+          if (current && !current.startsWith("data:") && current !== "") continue;
+          pending.push({ id, blk, field });
+        }
+        if (pending.length === 0) return;
+        const results = await Promise.allSettled(
+          pending.map(({ id, blk, field }) =>
+            supabase.storage
+              .from(blk.data.storageBucket || "user-files")
+              .createSignedUrl(blk.data.storagePath, 60 * 60 * 24 * 7)
+              .then(({ data: signed }) => ({ id, blk, field, url: signed?.signedUrl }))
+          )
+        );
+        for (const r of results) {
+          if (r.status === "fulfilled" && r.value.url) {
+            const { id, blk, field, url } = r.value;
+            st.updateBlock(id, { data: { ...blk.data, [field]: url } } as any);
+          }
+        }
+      })();
+
+      // Backward compat: migrate chat from old DB snapshots into localStorage.
+      // New snapshots no longer include chat — it lives in localStorage only.
+      if (boardId) {
+        const boardChatKey = `omnia_chat_${boardId}`;
+        if (Array.isArray(snapshot.chatMessages) && snapshot.chatMessages.length > 0) {
+          try { localStorage.setItem(boardChatKey, JSON.stringify({ chatMessages: snapshot.chatMessages, aiThread: snapshot.aiThread || [] })); } catch { /* quota */ }
+        }
+
+        try {
+          const chatRaw = localStorage.getItem(boardChatKey);
+          if (chatRaw) {
+            const chatData = JSON.parse(chatRaw);
+            if (Array.isArray(chatData.chatMessages) && chatData.chatMessages.length > 0) {
+              setChatMessages(chatData.chatMessages);
+              setChatRailOpen(true);
+              setChatRailVisible(true);
+            }
+            if (Array.isArray(chatData.aiThread) && chatData.aiThread.length > 0) {
+              aiThreadRef.current = chatData.aiThread;
+            }
+          }
+        } catch { /* ignore corrupt localStorage */ }
       }
     },
-    [gridSize, loadBlocks]
+    [boardId, gridSize, loadBlocks]
   );
+
+  const applySnapshotRef = useRef(applySnapshot);
+  useEffect(() => { applySnapshotRef.current = applySnapshot; }, [applySnapshot]);
 
   const clampChatRailWidth = useCallback((raw: number, vw: number) => {
     const width = Math.max(0, Math.floor(vw || 0));
@@ -618,6 +594,56 @@ export default function OmniaCanvasPage() {
     const maxW = Math.max(minW + 20, Math.min(520, Math.floor(width * 0.55)));
     return Math.max(minW, Math.min(maxW, Math.floor(raw || minW)));
   }, []);
+
+  const updateTaskCheck = useCallback((msgId: string, taskKey: string, checked: boolean) => {
+    setAssistantTaskChecks((prev) => ({
+      ...prev,
+      [msgId]: { ...(prev[msgId] || {}), [taskKey]: checked },
+    }));
+  }, []);
+
+  const buildChatMarkdownComponents = useCallback((msgId: string) => ({
+    h1: ({ children }: any) => <h1 className="text-xl font-semibold mt-3 mb-2">{children}</h1>,
+    h2: ({ children }: any) => <h2 className="text-lg font-semibold mt-3 mb-2">{children}</h2>,
+    h3: ({ children }: any) => <h3 className="text-base font-semibold mt-2.5 mb-1.5">{children}</h3>,
+    p: ({ children }: any) => <p className="my-1.5 whitespace-pre-wrap">{children}</p>,
+    ul: ({ children }: any) => <ul className="my-2 list-disc pl-5 space-y-1">{children}</ul>,
+    ol: ({ children }: any) => <ol className="my-2 list-decimal pl-5 space-y-1">{children}</ol>,
+    li: ({ children }: any) => {
+      const raw = flattenNodeText(children).trim();
+      const match = raw.match(/^\[( |x|X)\]\s+(.+)$/);
+      if (!match) return <li className="leading-relaxed">{children}</li>;
+      const defaultChecked = String(match[1]).toLowerCase() === "x";
+      const taskText = match[2];
+      const taskKey = raw;
+      const checked = assistantTaskChecks[msgId]?.[taskKey] ?? defaultChecked;
+      return (
+        <li className={`list-none ml-[-1.25rem] flex items-start gap-2 leading-relaxed ${checked ? "opacity-60" : ""}`}>
+          <input
+            type="checkbox"
+            className="mt-[0.28rem] shrink-0 accent-blue-500"
+            checked={checked}
+            onChange={(e) => updateTaskCheck(msgId, taskKey, e.target.checked)}
+          />
+          <span className={checked ? "line-through" : ""}>{taskText}</span>
+        </li>
+      );
+    },
+    strong: ({ children }: any) => <strong className="font-semibold">{children}</strong>,
+    blockquote: ({ children }: any) => <blockquote className="border-l-2 border-black/20 pl-3 my-2 text-black/70 italic">{children}</blockquote>,
+    code: ({ children, className }: any) => {
+      const isBlock = className?.startsWith("language-");
+      if (isBlock) return <pre className="rounded-lg bg-black/5 p-3 my-2 overflow-x-auto text-[0.85em]"><code>{children}</code></pre>;
+      return <code className="rounded bg-black/10 px-1.5 py-0.5 text-[0.85em]">{children}</code>;
+    },
+    pre: ({ children }: any) => <>{children}</>,
+    table: ({ children }: any) => <div className="my-3 overflow-x-auto"><table className="w-full border-collapse text-sm">{children}</table></div>,
+    thead: ({ children }: any) => <thead className="border-b border-black/20">{children}</thead>,
+    tbody: ({ children }: any) => <tbody>{children}</tbody>,
+    tr: ({ children }: any) => <tr className="border-b border-black/10">{children}</tr>,
+    th: ({ children }: any) => <th className="text-left px-3 py-2 font-semibold">{children}</th>,
+    td: ({ children }: any) => <td className="px-3 py-2">{children}</td>,
+  }), [assistantTaskChecks, updateTaskCheck]);
 
   const getChatRailWidthPx = useCallback(
     (vw: number) => {
@@ -669,78 +695,47 @@ export default function OmniaCanvasPage() {
 
   const buildCanvasContext = useCallback(() => {
     const st = useCanvasStore.getState();
-    const ids = (Array.isArray(st.blockOrder) ? st.blockOrder : []).slice(-40);
-    const focused = new Set(st.focusedBrickIds || []);
-    const take = (v: any, n = 300) =>
-      String(v || "")
-        .replace(/\s+/g, " ")
-        .trim()
-        .slice(0, n);
-    const host = (u: string) => {
-      try {
-        return new URL(String(u || "")).hostname.replace(/^www\./, "");
-      } catch {
-        return "";
-      }
-    };
-    const describeBlock = (b: any, id: string) => {
-      const focusTag = focused.has(id) ? " [FOCUSED]" : "";
-      const base = `- id=${id} type=${b.type} x=${Math.floor(b.x || 0)} y=${Math.floor(b.y || 0)} w=${Math.floor(b.width || 0)} h=${Math.floor(
-        b.height || 0
-      )}${focusTag}`;
-      if (b?.type === "text") {
-        const format = String(b?.format || "plain");
-        const content = take(b?.content, focused.has(id) ? 2000 : 300);
-        return `${base} format=${format}${content ? ` content="${content}"` : ""}`;
-      }
-      if (b?.type === "youtube" || (b?.type === "create" && String(b?.mode || "").toLowerCase() === "video")) {
-        const videoId = String(b?.videoId || b?.data?.videoId || "");
-        const url = String(b?.url || b?.data?.url || "");
-        return `${base} kind=youtube videoId=${videoId || "unknown"}${url ? ` url="${take(url, 120)}"` : ""}`;
-      }
-      if (b?.type === "image" || (b?.type === "create" && ["image", "generated"].includes(String(b?.mode || "").toLowerCase()))) {
-        const src = String(b?.src || b?.data?.src || "");
-        return `${base} kind=image${src ? ` srcHost=${host(src) || "local"} src="${take(src, 120)}"` : ""}`;
-      }
-      if (b?.type === "file" || (b?.type === "create" && String(b?.mode || "").toLowerCase() === "embed")) {
-        const name = take(b?.name || b?.data?.name, 80);
-        const mime = take(b?.mime || b?.data?.mime, 60);
-        const dataUrl = String(b?.dataUrl || b?.data?.dataUrl || "");
-        const url = String(b?.url || b?.data?.url || "");
-        return `${base} kind=file${name ? ` name="${name}"` : ""}${mime ? ` mime=${mime}` : ""}${url ? ` url="${take(url, 120)}"` : ""}${
-          dataUrl ? ` dataUrl=true` : ""
-        }`;
-      }
-      if (b?.type === "link" || (b?.type === "create" && String(b?.mode || "").toLowerCase() === "embed")) {
-        const url = String(b?.url || b?.data?.url || "");
-        if (url) return `${base} kind=link host=${host(url) || "unknown"} url="${take(url, 140)}"`;
-      }
-      if (b?.type === "create" && String(b?.mode || "").toLowerCase() === "design") {
-        const elCount = Array.isArray(b?.data?.board?.elements) ? b.data.board.elements.length : 0;
-        const seedText = take(b?.data?.seedText || "", 120);
-        return `${base} kind=design elements=${elCount}${seedText ? ` seed="${seedText}"` : ""}`;
-      }
-      if (b?.type === "create" && String(b?.mode || "").toLowerCase() === "taskboard") {
-        const colCount = Array.isArray(b?.data?.columns) ? b.data.columns.length : 0;
-        const title = take(b?.data?.title || "", 80);
-        return `${base} kind=taskboard columns=${colCount}${title ? ` title="${title}"` : ""}`;
-      }
-      const content = take(b?.content || b?.data?.content || "", focused.has(id) ? 2000 : 300);
-      return `${base}${content ? ` content="${content}"` : ""}`;
-    };
-    const lines = ids
-      .map((id) => {
-        const b = (st.blocks as any)?.[id];
-        return b ? describeBlock(b, id) : null;
-      })
-      .filter(Boolean);
-    let result = lines.join("\n");
-    if (focused.size > 0) {
-      result = `[USER_FOCUS]\nThe user has focused on ${focused.size} brick(s) by double-clicking them. Blocks marked [FOCUSED] are what the user wants to discuss or work on. Prioritize these blocks in your response.\n\n` + result;
+    const cam = (st as any).camera || { x: 0, y: 0 };
+    const vw = window.innerWidth || 1280;
+    const vh = window.innerHeight || 800;
+    return buildTieredCanvasContext({
+      blocks: st.blocks as Record<string, any>,
+      blockOrder: Array.isArray(st.blockOrder) ? st.blockOrder : [],
+      focusedBrickIds: Array.isArray(st.focusedBrickIds) ? st.focusedBrickIds : [],
+      viewportCenter: {
+        x: (cam.x || 0) + vw / 2,
+        y: (cam.y || 0) + vh / 2,
+      },
+    });
+  }, []);
+  const getAllYouTubeBlocks = useCallback(() => {
+    const st = useCanvasStore.getState() as any;
+    const ids = Array.isArray(st.blockOrder) ? st.blockOrder : [];
+    const out: Array<{ videoId: string; url: string; title: string }> = [];
+    const seen = new Set<string>();
+    for (const id of ids) {
+      const b: any = st.blocks?.[id];
+      if (!b) continue;
+      const type = String(b.type || "").toLowerCase();
+      const mode = String(b.mode || b.data?.mode || "").toLowerCase();
+      const isYouTube = type === "youtube" || (type === "create" && mode === "video") || type === "link";
+      if (!isYouTube) continue;
+      const rawVideoId = String(b.videoId || b?.data?.videoId || "");
+      const rawUrl = String(b.url || b?.data?.url || "");
+      const videoId = rawVideoId || extractYouTubeVideoId(rawUrl) || "";
+      if (!videoId || seen.has(videoId)) continue;
+      seen.add(videoId);
+      out.push({
+        videoId,
+        url: rawUrl || `https://www.youtube.com/watch?v=${videoId}`,
+        title: String(b?.data?.title || b?.data?.name || "").trim(),
+      });
     }
-    return result;
+    return out.slice(0, 5);
   }, []);
   const getVisibleYouTubeBlocks = useCallback(() => {
+    const all = getAllYouTubeBlocks();
+    if (!all.length) return [];
     const st = useCanvasStore.getState() as any;
     const cam = st.camera || { x: 0, y: 0 };
     const vw = window.innerWidth || viewportWidth || 1280;
@@ -753,6 +748,7 @@ export default function OmniaCanvasPage() {
     const viewBottom = viewTop + vh;
     const ids = Array.isArray(st.blockOrder) ? st.blockOrder : [];
     const out: Array<{ videoId: string; url: string; title: string; visibleScore: number }> = [];
+    const seen = new Set<string>();
     for (const id of ids) {
       const b: any = st.blocks?.[id];
       if (!b) continue;
@@ -770,25 +766,13 @@ export default function OmniaCanvasPage() {
       const rawVideoId = String((type === "youtube" ? b.videoId : b?.data?.videoId) || "");
       const rawUrl = String((type === "youtube" ? b.url : b?.data?.url) || "");
       const videoId = rawVideoId || extractYouTubeVideoId(rawUrl) || "";
-      if (!videoId) continue;
-      const title = String((b?.data?.title || b?.data?.name || "").trim());
-      out.push({
-        videoId,
-        url: rawUrl || `https://www.youtube.com/watch?v=${videoId}`,
-        title,
-        visibleScore: overlapArea,
-      });
+      if (!videoId || seen.has(videoId)) continue;
+      seen.add(videoId);
+      out.push({ videoId, url: rawUrl || `https://www.youtube.com/watch?v=${videoId}`, title: String((b?.data?.title || b?.data?.name || "").trim()), visibleScore: overlapArea });
     }
     out.sort((a, b) => b.visibleScore - a.visibleScore);
-    const dedup: Array<{ videoId: string; url: string; title: string; visibleScore: number }> = [];
-    const seen = new Set<string>();
-    for (const item of out) {
-      if (seen.has(item.videoId)) continue;
-      seen.add(item.videoId);
-      dedup.push(item);
-    }
-    return dedup.slice(0, 2);
-  }, [getChatRailWidthPx, gridSize, viewportWidth]);
+    return out.slice(0, 2);
+  }, [getAllYouTubeBlocks, getChatRailWidthPx, gridSize, viewportWidth]);
   const formatSec = (n: number) => {
     const sec = Math.max(0, Math.floor(Number(n || 0)));
     const m = Math.floor(sec / 60);
@@ -796,7 +780,7 @@ export default function OmniaCanvasPage() {
     return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
   };
   const buildYouTubeGrounding = useCallback(
-    async (apiBaseUrl: string, userText: string) => {
+    async (apiBaseUrl: string, userText: string, parentSignal?: AbortSignal) => {
       const visible = getVisibleYouTubeBlocks();
       if (!visible.length) return "";
       const tokenSet = new Set(
@@ -808,15 +792,26 @@ export default function OmniaCanvasPage() {
       );
       const sections: string[] = [];
       for (const video of visible) {
+        const failedAt = youtubeTranscriptFailRef.current[video.videoId];
+        if (failedAt && Date.now() - failedAt < 10 * 60 * 1000) continue;
+
         const cached = youtubeTranscriptCacheRef.current[video.videoId];
         let data = cached;
         if (!data || Date.now() - data.fetchedAt > 30 * 60 * 1000) {
+          if (parentSignal?.aborted) continue;
+          const groundAbort = new AbortController();
+          const groundTimeout = setTimeout(() => groundAbort.abort(), 15000);
+          if (parentSignal) parentSignal.addEventListener("abort", () => groundAbort.abort(), { once: true });
           const [tRes, vRes] = await Promise.all([
-            fetch(`${apiBaseUrl}/api/youtube/transcript?id=${encodeURIComponent(video.videoId)}`).catch(() => null),
-            fetch(`${apiBaseUrl}/api/youtube/video?id=${encodeURIComponent(video.videoId)}`).catch(() => null),
+            fetch(`${apiBaseUrl}/api/youtube/transcript?id=${encodeURIComponent(video.videoId)}&fast=1`, { signal: groundAbort.signal }).catch(() => null),
+            fetch(`${apiBaseUrl}/api/youtube/video?id=${encodeURIComponent(video.videoId)}`, { signal: groundAbort.signal }).catch(() => null),
           ]);
+          clearTimeout(groundTimeout);
           const tJson = tRes && tRes.ok ? await tRes.json().catch(() => ({})) : {};
           const vJson = vRes && vRes.ok ? await vRes.json().catch(() => ({})) : {};
+          if (!tRes || !tRes.ok) {
+            youtubeTranscriptFailRef.current[video.videoId] = Date.now();
+          }
           const fallbackDescription = String((vJson as any)?.description || "").trim();
           const segRaw = Array.isArray((tJson as any)?.segments) ? (tJson as any).segments : [];
           const segments = segRaw
@@ -925,22 +920,9 @@ export default function OmniaCanvasPage() {
     return out.join("\n\n").trim();
   }, []);
 
-  const getKnowledgeBaseContext = useCallback(async () => {
-    if (!projectId) return "";
-    const now = Date.now();
-    const cached = kbCacheRef.current;
-    if (cached && cached.projectId === projectId && now - cached.fetchedAt < 90000) {
-      return cached.text;
-    }
-    try {
-      const kb = await getProjectKnowledgeBase(projectId);
-      const text = projectKnowledgeBaseToText(kb, 9000);
-      kbCacheRef.current = { projectId, text, fetchedAt: now };
-      return text;
-    } catch {
-      return "";
-    }
-  }, [projectId]);
+  const getKnowledgeBaseContext = useCallback(() => {
+    return getCachedKbText();
+  }, [getCachedKbText]);
 
   const parseOrchestratorResult = useCallback((raw: any): OrchestratorResult => {
     const response = String(raw?.response || raw?.assistant || "").trim();
@@ -952,6 +934,22 @@ export default function OmniaCanvasPage() {
           .slice(0, 3)
       : [];
     const actions = Array.isArray(raw?.actions) ? (raw.actions as CreateAction[]) : [];
+
+    // Fallback: detect YouTube URLs in the response text and auto-create embed blocks
+    const hasYouTubeAction = actions.some((a) => String(a?.type || "").toLowerCase() === "create_youtube_block");
+    if (!hasYouTubeAction && response) {
+      const ytUrlRegex = /https?:\/\/(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/shorts\/)([\w-]{11})/g;
+      const seen = new Set<string>();
+      let match: RegExpExecArray | null;
+      while ((match = ytUrlRegex.exec(response)) !== null) {
+        const videoId = match[1];
+        if (videoId && !seen.has(videoId)) {
+          seen.add(videoId);
+          actions.push({ type: "create_youtube_block", url: match[0], title: `YouTube ${videoId}` } as any);
+        }
+      }
+    }
+
     const requiresClarification = Boolean(raw?.requiresClarification) || (followUpQuestions.length > 0 && actions.length === 0);
     const groundingSummary = String(raw?.groundingSummary || raw?.grounding_summary || "").trim();
     return { response, followUpQuestions, actions, requiresClarification, groundingSummary: groundingSummary || undefined };
@@ -1049,6 +1047,238 @@ export default function OmniaCanvasPage() {
     } as any);
   }, [updateBlock]);
 
+  const extractAiConnections = useCallback((responseText: string): {
+    connections: Array<{ title: string; sourceType: "board" | "media"; reason: string }>;
+    cleanText: string;
+  } => {
+    const connectionRegex = /\[AI_CONNECTION:(.+?)\|(.+?)\|(.+?)\]/g;
+    const connections: Array<{ title: string; sourceType: "board" | "media"; reason: string }> = [];
+    let match: RegExpExecArray | null;
+    while ((match = connectionRegex.exec(responseText)) !== null) {
+      const title = match[1].trim();
+      const rawType = match[2].trim().toLowerCase();
+      const reason = match[3].trim();
+      const sourceType = rawType === "board" ? "board" : "media";
+      if (title && reason) {
+        connections.push({ title, sourceType, reason });
+      }
+    }
+    const cleanText = responseText.replace(/\s*\[AI_CONNECTION:[^\]]*\]/g, "").trimEnd();
+    return { connections: connections.slice(0, 3), cleanText };
+  }, []);
+
+  const extractAndEmbedYouTubeUrls = useCallback((
+    aiText: string,
+    promptId: string,
+    responseBlockId: string | null,
+  ): { urls: { url: string; videoId: string }[]; cleanText: string } => {
+    const ytUrlRegex = /https?:\/\/(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/shorts\/)([\w-]{11})/g;
+    const urls: { url: string; videoId: string }[] = [];
+    const seen = new Set<string>();
+    let match: RegExpExecArray | null;
+    while ((match = ytUrlRegex.exec(aiText)) !== null) {
+      const videoId = match[1];
+      if (videoId && !seen.has(videoId)) {
+        seen.add(videoId);
+        urls.push({ url: match[0], videoId });
+      }
+    }
+    if (!urls.length) return { urls: [], cleanText: aiText };
+
+    const st = useCanvasStore.getState() as any;
+    const g = Math.max(1, Math.floor(st.gridSize || 24));
+    const camera = st.camera || { x: 0, y: 0 };
+    let placeX: number;
+    let placeY: number;
+
+    if (responseBlockId && st.blocks?.[responseBlockId]) {
+      const rb = st.blocks[responseBlockId];
+      placeX = Number(rb.x || 0);
+      placeY = Number(rb.y || 0) + Number(rb.height || g * 6) + g;
+    } else {
+      placeX = Math.max(0, Math.floor(-camera.x + g * 2));
+      placeY = Math.max(0, Math.floor(-camera.y + g * 2));
+    }
+
+    const existingOrder: string[] = Array.isArray(st.blockOrder) ? st.blockOrder : [];
+    for (const ytEntry of urls) {
+      const alreadyExists = existingOrder.some((bid: string) => {
+        const blk = st.blocks?.[bid];
+        if (!blk) return false;
+        const bVid = String(blk.videoId || blk.data?.videoId || "");
+        return bVid === ytEntry.videoId;
+      });
+      if (alreadyExists) continue;
+      const createdId = st.addYouTubeBlockAt({ x: placeX, y: placeY }, { url: ytEntry.url, videoId: ytEntry.videoId });
+      const h = Number(st.blocks?.[createdId]?.height || g * 8);
+      placeY += h + g;
+    }
+
+    setChatMessages((prev) => prev.map((m) =>
+      m.id === promptId ? { ...m, aiYouTubeUrls: urls } : m
+    ));
+
+    return { urls, cleanText: aiText };
+  }, []);
+
+  const extractWebLinksFromText = useCallback((text: string): string[] => {
+    const urlRe = /https?:\/\/[^\s<>"')\]]+/gi;
+    const ytHosts = ["youtube.com", "youtu.be", "youtube-nocookie.com"];
+    const seen = new Set<string>();
+    const links: string[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = urlRe.exec(text)) !== null) {
+      const raw = m[0].replace(/[.,;:!?)]+$/, "");
+      try {
+        const host = new URL(raw).hostname.replace(/^www\./, "").toLowerCase();
+        if (ytHosts.some((h) => host.includes(h))) continue;
+        if (!seen.has(raw)) { seen.add(raw); links.push(raw); }
+      } catch { /* skip malformed */ }
+    }
+    return links.slice(0, 5);
+  }, []);
+
+  const extractAndEmbedMediaItems = useCallback(async (
+    aiText: string,
+    responseBlockId: string | null,
+  ): Promise<{ cleanText: string; pulled: number }> => {
+    const pullRegex = /\[PULL_MEDIA:([^\]|]+?)(?:\|(\d+))?\]/g;
+    const pulls: { noteId: string; attIndex: number }[] = [];
+    let match: RegExpExecArray | null;
+    while ((match = pullRegex.exec(aiText)) !== null) {
+      const noteId = match[1].trim();
+      const attIndex = match[2] !== undefined ? parseInt(match[2], 10) : 0;
+      if (noteId) pulls.push({ noteId, attIndex });
+    }
+    if (!pulls.length) return { cleanText: aiText, pulled: 0 };
+
+    const cleanText = aiText.replace(/\s*\[PULL_MEDIA:[^\]]*\]/g, "").trimEnd();
+
+    const st = useCanvasStore.getState() as any;
+    const g = Math.max(1, Math.floor(st.gridSize || 24));
+    const camera = st.camera || { x: 0, y: 0 };
+    let placeX: number;
+    let placeY: number;
+
+    if (responseBlockId && st.blocks?.[responseBlockId]) {
+      const rb = st.blocks[responseBlockId];
+      placeX = Number(rb.x || 0);
+      placeY = Number(rb.y || 0) + Number(rb.height || g * 6) + g;
+    } else {
+      placeX = Math.max(0, Math.floor(-camera.x + g * 2));
+      placeY = Math.max(0, Math.floor(-camera.y + g * 2));
+    }
+
+    const uniqueNoteIds = [...new Set(pulls.map(p => p.noteId))];
+    let notesData: Record<string, any> = {};
+    try {
+      const { data } = await supabase
+        .from("notes")
+        .select("id, title, content")
+        .in("id", uniqueNoteIds);
+      for (const n of (data || [])) notesData[n.id] = n;
+    } catch (err) {
+      console.warn("[LYKN] Failed to fetch notes for media pull:", err);
+      return { cleanText, pulled: 0 };
+    }
+
+    const parseNoteAttachments = (content: string): any[] => {
+      const marker = "[ATTACHMENTS_JSON:";
+      const start = (content || "").indexOf(marker);
+      if (start === -1) return [];
+      const jsonStart = start + marker.length;
+      let bc = 0, jsonEnd = jsonStart;
+      for (let i = jsonStart; i < content.length; i++) {
+        if (content[i] === "[") bc++;
+        if (content[i] === "]") { bc--; if (bc === 0) { jsonEnd = i + 1; break; } }
+      }
+      if (jsonEnd <= jsonStart) return [];
+      try { const p = JSON.parse(content.slice(jsonStart, jsonEnd)); return Array.isArray(p) ? p : []; }
+      catch { return []; }
+    };
+
+    const resolveType = (att: any): string => {
+      const url = String(att?.url || "");
+      const name = String(att?.name || "");
+      if (url.includes("youtube.com") || url.includes("youtu.be")) return "youtube";
+      const explicit = att?.type;
+      if (explicit && explicit !== "file") return explicit;
+      if (url.startsWith("data:image/")) return "image";
+      if (url.startsWith("data:video/")) return "video";
+      if (url.startsWith("data:audio/")) return "audio";
+      const extMatch = (url.split("/").pop() || name).match(/\.([^.]+)$/);
+      const ext = extMatch ? extMatch[1].toLowerCase() : "";
+      if (["jpg","jpeg","png","gif","webp","svg","bmp","heic","heif","tiff"].includes(ext)) return "image";
+      if (["mp4","mov","avi","mkv","webm","m4v","wmv"].includes(ext)) return "video";
+      if (["mp3","wav","ogg","m4a","aac","flac","wma"].includes(ext)) return "audio";
+      if (ext === "pdf") return "pdf";
+      if (["doc","docx","ppt","pptx","xls","xlsx","txt","md","csv"].includes(ext)) return "file";
+      return url ? "link" : "text";
+    };
+
+    let pulled = 0;
+    for (const pull of pulls) {
+      const note = notesData[pull.noteId];
+      if (!note) { console.warn("[LYKN] Media pull: note not found:", pull.noteId); continue; }
+      const attachments = parseNoteAttachments(note.content || "");
+
+      if (attachments.length === 0 && note.content) {
+        const ytMatch = (note.content || "").match(/https?:\/\/(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([\w-]{11})/);
+        if (ytMatch) {
+          const videoId = ytMatch[1];
+          st.addYouTubeBlockAt({ x: placeX, y: placeY }, { url: ytMatch[0], videoId });
+          placeY += g * 10 + g;
+          pulled++;
+          continue;
+        }
+        st.addBlock({
+          id: `create-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+          type: "text" as const,
+          x: placeX, y: placeY,
+          width: g * 10, height: g * 4,
+          content: note.content.replace(/\[ATTACHMENTS_JSON:[\s\S]*$/, "").trim(),
+          format: "rich",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        } as any);
+        placeY += g * 5;
+        pulled++;
+        continue;
+      }
+
+      const att = attachments[pull.attIndex] || attachments[0];
+      if (!att) continue;
+      const url = String(att.url || "").trim();
+      const type = resolveType(att);
+      const blockId = `create-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+      if (type === "youtube") {
+        const vid = att.videoId || extractYouTubeVideoId(url) || "";
+        st.addYouTubeBlockAt({ x: placeX, y: placeY }, { url, videoId: vid });
+        placeY += g * 10 + g;
+      } else if (type === "image") {
+        st.addBlock({ id: blockId, type: "create" as const, mode: "image", x: placeX, y: placeY, width: g * 12, height: g * 12, data: { src: url, name: att.name || "Image" }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
+        placeY += g * 13;
+      } else if (type === "video") {
+        st.addBlock({ id: blockId, type: "create" as const, mode: "video", x: placeX, y: placeY, width: g * 16, height: g * 10, data: { url, mime: att.mime || "video/mp4", name: att.name || "Video" }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
+        placeY += g * 11;
+      } else if (type === "audio") {
+        st.addBlock({ id: blockId, type: "create" as const, mode: "embed", x: placeX, y: placeY, width: g * 14, height: g * 4, data: { url, mime: att.mime || "audio/mpeg", name: att.name || "Audio", dataUrl: url }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
+        placeY += g * 5;
+      } else if (type === "pdf") {
+        st.addBlock({ id: blockId, type: "create" as const, mode: "embed", x: placeX, y: placeY, width: g * 16, height: g * 14, data: { url, mime: "application/pdf", name: att.name || "PDF", dataUrl: url }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
+        placeY += g * 15;
+      } else {
+        st.addBlock({ id: blockId, type: "create" as const, mode: "embed", x: placeX, y: placeY, width: g * 14, height: g * 6, data: { url, name: att.name || note.title || "File", dataUrl: url }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
+        placeY += g * 7;
+      }
+      pulled++;
+    }
+
+    console.log("[LYKN] Media pull: embedded", pulled, "items from", pulls.length, "markers");
+    return { cleanText, pulled };
+  }, []);
+
   const addAiResponseBlock = useCallback((initialContent = "") => {
     const st = useCanvasStore.getState();
     const g = Math.max(1, Math.floor(st.gridSize || 24));
@@ -1056,15 +1286,21 @@ export default function OmniaCanvasPage() {
     const rightRail = getChatRailWidthPx(vw);
     const boardViewportWidth = Math.max(g * 8, vw - rightRail);
 
-    // Always place AI response in the visible center of the board interface.
     const centerX = st.camera.x + Math.floor(boardViewportWidth * 0.5);
-    const centerY = st.camera.y + Math.floor(window.innerHeight * 0.5);
-
-    // Start small like a regular text block; TextBlock auto-grow expands as AI types.
     const initialW = g * 8;
     const initialH = g;
+
+    // Stack below the last AI response block if one exists, otherwise center vertically.
+    const lastId = lastAiResponseBlockRef.current;
+    const lastBlock = lastId ? (st.blocks as any)?.[lastId] : null;
+    let worldY: number;
+    if (lastBlock) {
+      worldY = Math.max(g, Number(lastBlock.y || 0) + Number(lastBlock.height || g) + g * 2);
+    } else {
+      const centerY = st.camera.y + Math.floor(window.innerHeight * 0.5);
+      worldY = Math.max(g, centerY - Math.floor(initialH / 2));
+    }
     const worldX = Math.max(g, centerX - Math.floor(initialW / 2));
-    const worldY = Math.max(g, centerY - Math.floor(initialH / 2));
 
     const id = addTextBlockAt(
       { x: worldX, y: worldY },
@@ -1073,6 +1309,23 @@ export default function OmniaCanvasPage() {
     st.updateBlock(id as any, { data: { ...((st.blocks as any)?.[id]?.data || {}), aiResponseBubble: true } } as any);
     return id;
   }, [addTextBlockAt, getChatRailWidthPx, viewportWidth]);
+
+  const retireExistingAiBlocks = useCallback(() => {
+    const st = useCanvasStore.getState() as any;
+    const order = Array.isArray(st.blockOrder) ? st.blockOrder : [];
+    const existingAiIds = order.filter((id: string) =>
+      Boolean(st.blocks?.[id]?.data?.aiResponseBubble)
+    );
+    if (!existingAiIds.length) return;
+
+    for (const id of existingAiIds) {
+      const block = st.blocks?.[id];
+      if (!block) continue;
+      const curData = (block as any).data && typeof (block as any).data === "object" ? { ...(block as any).data } : {};
+      delete curData.aiResponseBubble;
+      updateBlock(id as any, { data: curData } as any);
+    }
+  }, [updateBlock]);
 
   const normalizeAiTextForBlock = useCallback((text: string) => {
     return String(text || "").replace(/\r\n?/g, "\n");
@@ -1085,26 +1338,27 @@ export default function OmniaCanvasPage() {
       ? (st.canvasWidth as number)
       : (window.innerWidth || 1280);
     const maxWidthPx = Math.min(g * 28, Math.floor(availableWidth * 0.85));
-    const horizontalPad = 32;
+    const horizontalPad = 16;
     const charWidthPx = 7.8;
+    const lineHeightPx = g;
+    const verticalPad = 8;
 
     const lines = String(text || "").split("\n");
     const longest = lines.reduce((m, l) => Math.max(m, String(l || "").length), 0);
     const naturalWidth = Math.ceil(longest * charWidthPx + horizontalPad);
-    const widthPx = Math.max(g * 8, Math.min(maxWidthPx, naturalWidth));
+    const singleColWidth = Math.max(g * 8, Math.min(maxWidthPx, naturalWidth));
 
-    const usableWidth = Math.max(1, widthPx - horizontalPad);
+    const usableWidth = Math.max(1, singleColWidth - horizontalPad);
     const charsPerLine = Math.max(1, Math.floor(usableWidth / charWidthPx));
     let wrappedLines = 0;
     for (const line of lines) {
       wrappedLines += Math.max(1, Math.ceil((line.length || 1) / charsPerLine));
     }
-    const lineHeightPx = 24;
-    const verticalPad = 36;
-    const contentHeight = wrappedLines * lineHeightPx + verticalPad;
-    const heightPx = Math.max(g * 2, Math.ceil(contentHeight / g) * g + g);
 
-    return { width: widthPx, height: heightPx };
+    const contentHeight = wrappedLines * lineHeightPx + verticalPad;
+    const heightPx = Math.max(g * 2, Math.ceil(contentHeight / g) * g);
+
+    return { width: singleColWidth, height: heightPx };
   }, []);
 
   const typeIntoAiResponseBlock = useCallback(
@@ -1134,19 +1388,101 @@ export default function OmniaCanvasPage() {
 
   const replaySavedPromptResponse = useCallback(
     (msg: PromptMessage) => {
+      if ((msg as any).aiImageUrl) {
+        const imageUrl = String((msg as any).aiImageUrl);
+        const st = useCanvasStore.getState() as any;
+        const order: string[] = Array.isArray(st.blockOrder) ? st.blockOrder : [];
+        const existingImg = order.find((id: string) => {
+          const blk = st.blocks?.[id];
+          return blk?.type === "create" && (blk as any).mode === "image" && (blk as any).data?.src === imageUrl;
+        });
+        if (existingImg) {
+          window.dispatchEvent(new CustomEvent("omnia_expand_blocks", { detail: { ids: [existingImg] } }));
+          requestAnimationFrame(() => {
+            window.dispatchEvent(new CustomEvent("omnia_fit_block", { detail: { id: existingImg } }));
+          });
+          return;
+        }
+        const g = Math.max(1, Math.floor(st.gridSize || 24));
+        const cam = st.camera || { x: 0, y: 0 };
+        const cx = cam.x + Math.floor((window.innerWidth || 1280) * 0.35);
+        const cy = cam.y + Math.floor((window.innerHeight || 720) * 0.4);
+        st.addBlock({
+          id: `create-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+          type: "create",
+          mode: "image",
+          x: cx,
+          y: cy,
+          width: g * 12,
+          height: g * 12,
+          data: { src: imageUrl },
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        });
+        return;
+      }
+      if ((msg as any).aiVideoUrl) {
+        const videoUrl = String((msg as any).aiVideoUrl);
+        const st = useCanvasStore.getState() as any;
+        const order: string[] = Array.isArray(st.blockOrder) ? st.blockOrder : [];
+        const existingVid = order.find((id: string) => {
+          const blk = st.blocks?.[id];
+          return blk?.type === "create" && (blk as any).mode === "video" && (blk as any).data?.url === videoUrl;
+        });
+        if (existingVid) {
+          window.dispatchEvent(new CustomEvent("omnia_expand_blocks", { detail: { ids: [existingVid] } }));
+          requestAnimationFrame(() => {
+            window.dispatchEvent(new CustomEvent("omnia_fit_block", { detail: { id: existingVid } }));
+          });
+          return;
+        }
+        const g = Math.max(1, Math.floor(st.gridSize || 24));
+        const cam = st.camera || { x: 0, y: 0 };
+        const cx = cam.x + Math.floor((window.innerWidth || 1280) * 0.35);
+        const cy = cam.y + Math.floor((window.innerHeight || 720) * 0.4);
+        st.addBlock({
+          id: `create-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+          type: "create",
+          mode: "video",
+          x: cx,
+          y: cy,
+          width: g * 16,
+          height: g * 10,
+          data: { url: videoUrl, mime: "video/mp4" },
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        });
+        return;
+      }
+
       const saved = String(msg?.aiResponse || "").trim();
       if (!saved) return;
-      const existingAiIds = (Array.isArray(blockOrder) ? blockOrder : []).filter((id) =>
-        Boolean((blocks as any)?.[id]?.data?.aiResponseBubble)
-      );
-      for (const id of existingAiIds) {
-        try {
-          deleteBlock(id as any);
-        } catch {
-          // ignore
-        }
-      }
       const text = normalizeAiTextForBlock(saved);
+      const normalized = text.replace(/\s+/g, " ").trim();
+
+      const st = useCanvasStore.getState() as any;
+      const order: string[] = Array.isArray(st.blockOrder) ? st.blockOrder : [];
+      const existingMatch = order.find((id: string) => {
+        const blk = st.blocks?.[id];
+        if (!blk?.data?.aiResponseBubble) return false;
+        const blkText = String(blk.content || "").replace(/\s+/g, " ").trim();
+        return blkText === normalized;
+      });
+
+      if (existingMatch) {
+        window.dispatchEvent(new CustomEvent("omnia_expand_blocks", { detail: { ids: [existingMatch] } }));
+        const blk = st.blocks?.[existingMatch];
+        if (blk) {
+          const size = calcAiBubbleSize(text);
+          updateBlock(existingMatch as any, { width: size.width, height: size.height } as any);
+        }
+        requestAnimationFrame(() => {
+          window.dispatchEvent(new CustomEvent("omnia_fit_block", { detail: { id: existingMatch } }));
+        });
+        return;
+      }
+
+      retireExistingAiBlocks();
       const responseBlockId = addAiResponseBlock(text);
       if (!responseBlockId) return;
       lastAiResponseBlockRef.current = String(responseBlockId);
@@ -1156,7 +1492,7 @@ export default function OmniaCanvasPage() {
         attachSourcesToBlock(String(responseBlockId), msg.sources);
       }
     },
-    [addAiResponseBlock, attachSourcesToBlock, blockOrder, blocks, calcAiBubbleSize, deleteBlock, normalizeAiTextForBlock, updateBlock]
+    [addAiResponseBlock, attachSourcesToBlock, calcAiBubbleSize, normalizeAiTextForBlock, retireExistingAiBlocks, updateBlock]
   );
 
   useEffect(() => {
@@ -1257,17 +1593,7 @@ export default function OmniaCanvasPage() {
         .find(Boolean);
 
       if (latestAi) {
-        const st = useCanvasStore.getState() as any;
-        const existingAiIds = (Array.isArray(st.blockOrder) ? st.blockOrder : []).filter((id) =>
-          Boolean((st.blocks as any)?.[id]?.data?.aiResponseBubble)
-        );
-        for (const id of existingAiIds) {
-          try {
-            deleteBlock(id as any);
-          } catch {
-            // ignore
-          }
-        }
+        retireExistingAiBlocks();
         const responseBlockId = addAiResponseBlock("");
         if (responseBlockId) {
           lastAiResponseBlockRef.current = String(responseBlockId);
@@ -1377,7 +1703,7 @@ export default function OmniaCanvasPage() {
         }
       }
     }
-  }, [addAiResponseBlock, addListBlockAt, boardId, deleteBlock, setListItems, typeIntoAiResponseBlock, user?.id]);
+  }, [addAiResponseBlock, addListBlockAt, boardId, retireExistingAiBlocks, setListItems, typeIntoAiResponseBlock, user?.id]);
 
   const applyProjectActions = useCallback((actions: CreateAction[]) => {
     const list = Array.isArray(actions) ? actions : [];
@@ -1446,11 +1772,33 @@ export default function OmniaCanvasPage() {
 
         const createUniversalBlock = (rawAction: any) => {
           const definition = getBlockDefinition("brick");
-          const width = g * Math.max(1, Number(definition?.defaultSize?.w || 8));
-          const height = g * Math.max(1, Number(definition?.defaultSize?.h || 6));
           const extraData = rawAction?.data && typeof rawAction.data === "object" ? rawAction.data : {};
           const contentText = String((extraData as any)?.content || (extraData as any)?.body || "");
+          const textVariant = String((extraData as any)?.textVariant || "body").toLowerCase();
+          const listType = String((extraData as any)?.listType || "none").toLowerCase();
+          const isHeading = textVariant === "h1" || textVariant === "h2";
+          const isList = listType !== "none";
+          const lineCount = contentText.split("\n").filter(Boolean).length;
+
+          const defaultW = Number(definition?.defaultSize?.w || 8);
+          const width = g * Math.max(1, isHeading ? Math.max(defaultW, 12) : isList ? Math.max(defaultW, 10) : defaultW);
+          const defaultH = isHeading ? (textVariant === "h1" ? 3 : 2) : isList ? Math.max(4, lineCount + 2) : Number(definition?.defaultSize?.h || 4);
+          const height = g * Math.max(1, defaultH);
+
           const createdId = st.addTextBlockAt({ x, y }, { width, height, content: contentText, format: "plain" } as any);
+          if (textVariant !== "body" || listType !== "none" || (extraData as any)?.brickColor || (extraData as any)?.textColor) {
+            const block = st.blocks?.[createdId];
+            const curData = block && (block as any).data && typeof (block as any).data === "object" ? { ...(block as any).data } : {};
+            st.updateBlock(createdId, {
+              data: {
+                ...curData,
+                ...(textVariant !== "body" ? { textVariant } : {}),
+                ...(listType !== "none" ? { listType } : {}),
+                ...((extraData as any)?.brickColor ? { brickColor: (extraData as any).brickColor } : {}),
+                ...((extraData as any)?.textColor ? { textColor: (extraData as any).textColor } : {}),
+              },
+            } as any);
+          }
           nextId(createdId);
         };
 
@@ -1489,8 +1837,37 @@ export default function OmniaCanvasPage() {
           } as any);
         };
 
-        if (type !== "create_universal_block") {
+        if (type === "delete_block") {
+          const ids: string[] = [];
+          if ((raw as any)?.blockId) ids.push(String((raw as any).blockId));
+          if (Array.isArray((raw as any)?.blockIds)) {
+            for (const bid of (raw as any).blockIds) ids.push(String(bid));
+          }
+          const validIds = ids.filter((bid) => Boolean(st.blocks?.[bid]));
+          if (validIds.length) {
+            st.deleteBlocks(validIds as any);
+            created += validIds.length;
+          } else {
+            failures.push("delete_block: no matching block IDs found on the Grid");
+          }
+          continue;
+        }
+
+        if (type !== "create_universal_block" && type !== "create_youtube_block") {
           failures.push(`Skipped legacy action in brick mode: ${type}`);
+          continue;
+        }
+
+        if (type === "create_youtube_block") {
+          const rawUrl = String((raw as any)?.url || "").trim();
+          const videoId = extractYouTubeVideoId(rawUrl) || "";
+          if (rawUrl || videoId) {
+            const ytUrl = rawUrl || `https://www.youtube.com/watch?v=${videoId}`;
+            const createdId = st.addYouTubeBlockAt({ x, y }, { url: ytUrl, videoId });
+            nextId(createdId);
+          } else {
+            failures.push("create_youtube_block: missing url");
+          }
           continue;
         }
 
@@ -1703,45 +2080,92 @@ export default function OmniaCanvasPage() {
       const data = (b as any)?.data && typeof (b as any).data === "object" ? (b as any).data : {};
       const content = String(data.content ?? data.body ?? (b as any)?.content ?? "").trim();
       const fmt = String((b as any)?.format || data.format || "").toLowerCase();
-      if (fmt === "media" || fmt === "calendar" || fmt === "table" || fmt === "button") return true;
+      if (fmt === "media" || fmt === "table" || fmt === "button") return true;
       if (content.length > 0) return true;
       return false;
     });
     return meaningful.length === 0;
   }, [chatMessages.length]);
 
-  const deleteEmptyBoard = useCallback(async () => {
-    if (!boardId || !user?.id) return;
-    try {
-      await supabase.from("omnia_board_states").delete().eq("board_id", boardId);
-      await supabase.from("omnia_boards").delete().eq("id", boardId).eq("user_id", user.id);
-      localStorage.removeItem("omnia_board_id");
-    } catch {
-      // ignore
+  const sanitizeSnapshotForDb = useCallback((raw: any) => {
+    const BASE64_RE = /^data:[^;]+;base64,/;
+    const SIGNED_URL_RE = /supabase\.co\/storage\//;
+    const MAX_BLOCK_CONTENT_BYTES = 10_240;
+
+    const cleanBlocks: Record<string, any> = {};
+    const blocks = raw.blocks || {};
+    for (const [id, block] of Object.entries(blocks)) {
+      const b = { ...(block as any) };
+
+      if (b.data && typeof b.data === "object") {
+        const d = { ...b.data };
+        for (const key of ["src", "url", "dataUrl", "audioData", "pdfData"] as const) {
+          const val = d[key];
+          if (typeof val === "string" && (BASE64_RE.test(val) || (SIGNED_URL_RE.test(val) && d.storagePath))) {
+            d[key] = "";
+          }
+        }
+        if (typeof d.content === "string" && d.content.length > MAX_BLOCK_CONTENT_BYTES) {
+          d.content = d.content.slice(0, MAX_BLOCK_CONTENT_BYTES);
+        }
+        b.data = d;
+      }
+      if (typeof b.dataUrl === "string" && BASE64_RE.test(b.dataUrl)) b.dataUrl = "";
+
+      delete b.aiAnswers;
+      delete b.universal;
+
+      // Strip empty/default fields that waste bytes
+      if (b.zIndex === undefined || b.zIndex === 0) delete b.zIndex;
+      if (b.locked === false) delete b.locked;
+      if (b.collapsed === false) delete b.collapsed;
+
+      cleanBlocks[id] = b;
     }
-  }, [boardId, user?.id]);
+
+    // Chat is now stored in localStorage — strip from DB snapshot entirely
+    const { chatMessages: _cm, aiThread: _at, history: _h, future: _f, ...rest } = raw;
+
+    return {
+      ...rest,
+      blocks: cleanBlocks,
+    };
+  }, []);
 
   const saveSnapshot = useCallback(async () => {
     if (!user?.id || !boardId || savingRef.current || !hydratedRef.current) return;
     savingRef.current = true;
     try {
-      if (isBoardEmpty()) {
-        await deleteEmptyBoard();
-        return;
-      }
-      const snapshot = buildSnapshot();
-      await supabase.from("omnia_board_states").insert({ board_id: boardId, state: snapshot, version: snapshot.version || SNAPSHOT_VERSION });
-      await supabase
+      const raw = buildSnapshot();
+      const savedTitle = (raw.title && String(raw.title).trim()) ? String(raw.title).trim() : "New Board";
+      raw.title = savedTitle;
+      const snapshot = sanitizeSnapshotForDb(raw);
+      const now = new Date().toISOString();
+
+      const updatePromise = supabase
         .from("omnia_boards")
-        .update({ title: snapshot.title || "Untitled board", updated_at: new Date().toISOString() })
+        .update({ title: savedTitle, updated_at: now })
         .eq("id", boardId);
-      lastSavedTitleRef.current = snapshot.title || "Untitled board";
+
+      const upsertPromise = supabase
+        .from("omnia_board_states")
+        .upsert(
+          { board_id: boardId, state: snapshot, version: raw.version || SNAPSHOT_VERSION, user_id: user.id, updated_at: now },
+          { onConflict: "board_id" }
+        );
+
+      await Promise.all([updatePromise, upsertPromise]);
+
+      lastSavedTitleRef.current = savedTitle;
+      titleFromSaveRef.current = true;
+      try { localStorage.removeItem(`omnia_draft_${boardId}`); } catch { /* ignore */ }
+      window.dispatchEvent(new Event("lykinsai_boards_changed"));
     } catch {
       // ignore
     } finally {
       savingRef.current = false;
     }
-  }, [boardId, buildSnapshot, deleteEmptyBoard, isBoardEmpty, user?.id]);
+  }, [boardId, buildSnapshot, isBoardEmpty, user?.id]);
 
   const commitBoardTitle = useCallback(async () => {
     if (!boardId || !user?.id) return;
@@ -1754,16 +2178,8 @@ export default function OmniaCanvasPage() {
       .update({ title: next, updated_at: new Date().toISOString() })
       .eq("id", boardId)
       .eq("user_id", user.id);
+    window.dispatchEvent(new Event("lykinsai_boards_changed"));
   }, [boardId, title, user?.id]);
-
-  const scheduleSave = useCallback(() => {
-    if (!user?.id || !boardId || !hydratedRef.current) return;
-    if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = window.setTimeout(() => {
-      saveTimerRef.current = null;
-      saveSnapshot();
-    }, 5000);
-  }, [boardId, saveSnapshot, user?.id]);
 
   useEffect(() => {
     if (!user?.id) return;
@@ -1807,25 +2223,54 @@ export default function OmniaCanvasPage() {
         return;
       }
       reset();
+      setChatMessages([]);
+      aiThreadRef.current = [];
       try {
-        const { data } = await supabase
-          .from("omnia_board_states")
-          .select("state, version")
-          .eq("board_id", id)
-          .order("created_at", { ascending: false })
-          .limit(1)
-          .maybeSingle();
-        if (data?.state) applySnapshot({ ...(data.state || {}), version: (data as any)?.version || (data.state as any)?.version || 1 });
+        // Check for unsaved localStorage draft (crash recovery)
+        let draft: any = null;
+        try {
+          const raw = localStorage.getItem(`omnia_draft_${id}`);
+          if (raw) draft = JSON.parse(raw);
+        } catch { /* ignore */ }
+
+        if (draft && draft.blocks && Object.keys(draft.blocks).length > 0) {
+          applySnapshotRef.current(draft);
+        } else {
+          const { data } = await supabase
+            .from("omnia_board_states")
+            .select("state, version")
+            .eq("board_id", id)
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          if (data?.state) {
+            const snap = { ...(data.state || {}), version: (data as any)?.version || (data.state as any)?.version || 1 };
+            try {
+              const lsCam = localStorage.getItem(`omnia_camera_${id}`);
+              if (lsCam) {
+                const parsed = JSON.parse(lsCam);
+                if (parsed && typeof parsed === "object" && Number.isFinite(parsed.zoom)) {
+                  snap.camera = { ...(snap.camera || {}), ...parsed };
+                }
+              }
+            } catch { /* ignore */ }
+            applySnapshotRef.current(snap);
+          }
+        }
       } catch {
         // ignore
       }
       hydratedRef.current = true;
+
+      // updated_at is set during saveSnapshot — no need to bump it on open
+      if (id) window.dispatchEvent(new Event("lykinsai_boards_changed"));
     };
     loadBoard();
     return () => {
       cancelled = true;
     };
-  }, [applySnapshot, routeBoardId, user?.id]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeBoardId, user?.id]);
 
   useEffect(() => {
     if (!boardId || !user?.id) return;
@@ -1868,33 +2313,64 @@ export default function OmniaCanvasPage() {
 
   useEffect(() => {
     if (!boardId || !user?.id) return;
+    let draftTimer: ReturnType<typeof setTimeout> | null = null;
     const unsubscribe = useCanvasStore.subscribe(() => {
-      scheduleSave();
       if (projectId) markProjectDirty(projectId);
+      if (draftTimer) return;
+      draftTimer = setTimeout(() => {
+        draftTimer = null;
+        try {
+          const st = useCanvasStore.getState();
+          localStorage.setItem(`omnia_camera_${boardId}`, JSON.stringify(st.camera));
+          const snapshot = buildSnapshot();
+          localStorage.setItem(`omnia_draft_${boardId}`, JSON.stringify(snapshot));
+        } catch { /* quota */ }
+      }, 2000);
     });
     return () => {
       unsubscribe();
+      if (draftTimer) clearTimeout(draftTimer);
       if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
       saveTimerRef.current = null;
       if (chatTypingTimerRef.current) window.clearInterval(chatTypingTimerRef.current);
       chatTypingTimerRef.current = null;
     };
-  }, [boardId, markProjectDirty, projectId, scheduleSave, user?.id]);
+  }, [boardId, buildSnapshot, markProjectDirty, projectId, user?.id]);
 
+  // Persist chat to localStorage whenever messages change (debounced).
+  // Chat no longer lives in the DB snapshot — localStorage is the single source.
   useEffect(() => {
-    if (!boardId || !user?.id || !hydratedRef.current) return;
-    scheduleSave();
-  }, [boardId, scheduleSave, title, user?.id]);
-
-  useEffect(() => {
-    if (!boardId || !user?.id || !hydratedRef.current) return;
-    if (chatMessages.length > 0) scheduleSave();
-  }, [boardId, chatMessages, scheduleSave, user?.id]);
+    if (!boardId) return;
+    const timer = setTimeout(() => {
+      try {
+        const MAX_LOCAL_CHAT = 30;
+        const SIGNED_URL_RE = /supabase\.co\/storage\//;
+        const trimmed = chatMessages.slice(-MAX_LOCAL_CHAT).map((m: any) => {
+          const cleaned = { ...m };
+          if (Array.isArray(cleaned.attachments)) {
+            cleaned.attachments = cleaned.attachments.map((a: any) => {
+              const c = { ...a };
+              if (typeof c.url === "string" && SIGNED_URL_RE.test(c.url)) c.url = "";
+              delete c.transcript;
+              return c;
+            });
+          }
+          return cleaned;
+        });
+        const thread = (aiThreadRef.current || []).slice(-MAX_LOCAL_CHAT);
+        localStorage.setItem(`omnia_chat_${boardId}`, JSON.stringify({ chatMessages: trimmed, aiThread: thread }));
+      } catch { /* quota */ }
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [boardId, chatMessages]);
 
   useEffect(() => {
     if (!projectId) return;
     refreshKnowledgeBase(projectId);
-  }, [projectId, refreshKnowledgeBase]);
+    if (user?.id) {
+      refreshWorkspaceSummary(user.id, boardId || undefined);
+    }
+  }, [projectId, boardId, user?.id, refreshKnowledgeBase, refreshWorkspaceSummary]);
 
   useEffect(() => {
     if (!aiSuggestions.length) return;
@@ -1907,27 +2383,43 @@ export default function OmniaCanvasPage() {
   }, [aiSuggestions]);
 
   useEffect(() => {
-    if (!boardId || !user?.id) return;
-    const onBlur = () => saveSnapshot();
-    const onVis = () => {
-      if (document.visibilityState === "hidden") saveSnapshot();
-    };
-    const onBeforeUnload = () => {
-      savingRef.current = false;
-      saveSnapshot();
-    };
-    window.addEventListener("blur", onBlur);
-    document.addEventListener("visibilitychange", onVis);
-    window.addEventListener("beforeunload", onBeforeUnload);
+    if (!showConnectionCard || connectionCards.length === 0) return;
+    if (connectionDismissTimerRef.current) window.clearTimeout(connectionDismissTimerRef.current);
+    connectionDismissTimerRef.current = window.setTimeout(() => {
+      setShowConnectionCard(false);
+      connectionDismissTimerRef.current = null;
+    }, 8000);
     return () => {
-      window.removeEventListener("blur", onBlur);
-      document.removeEventListener("visibilitychange", onVis);
-      window.removeEventListener("beforeunload", onBeforeUnload);
+      if (connectionDismissTimerRef.current) window.clearTimeout(connectionDismissTimerRef.current);
     };
-  }, [boardId, saveSnapshot, user?.id]);
+  }, [showConnectionCard, connectionCards]);
 
   useEffect(() => {
     if (!boardId || !user?.id) return;
+    const onBeforeUnload = () => {
+      try {
+        const snapshot = buildSnapshot();
+        localStorage.setItem(`omnia_draft_${boardId}`, JSON.stringify(snapshot));
+      } catch { /* quota */ }
+      savingRef.current = false;
+      saveSnapshot();
+    };
+    const onFlushSave = () => {
+      savingRef.current = false;
+      saveSnapshot();
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    window.addEventListener("omnia_flush_save", onFlushSave);
+    return () => {
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      window.removeEventListener("omnia_flush_save", onFlushSave);
+    };
+  }, [boardId, buildSnapshot, saveSnapshot, user?.id]);
+
+  useEffect(() => {
+    if (!boardId || !user?.id) return;
+    const currentBoardId = boardId;
+    const currentUserId = user.id;
     return () => {
       savingRef.current = false;
       saveSnapshot();
@@ -1943,28 +2435,6 @@ export default function OmniaCanvasPage() {
     }
   }, []);
 
-  useEffect(() => {
-    const compute = () => {
-      const el = document.activeElement as HTMLElement | null;
-      const isEditable =
-        !!el &&
-        (el.isContentEditable ||
-          el.tagName === "INPUT" ||
-          el.tagName === "TEXTAREA" ||
-          Boolean(el.closest?.("[contenteditable='true']")));
-      setIsEditingField(isEditable);
-    };
-    compute();
-    window.addEventListener("focusin", compute, true);
-    window.addEventListener("focusout", compute, true);
-    window.addEventListener("blur", compute, true);
-    return () => {
-      window.removeEventListener("focusin", compute, true);
-      window.removeEventListener("focusout", compute, true);
-      window.removeEventListener("blur", compute, true);
-    };
-  }, []);
-
   // Sync model picker with settings changes (same-tab + cross-tab), like the old Create panel.
   useEffect(() => {
     const sync = () => {
@@ -1974,7 +2444,6 @@ export default function OmniaCanvasPage() {
         const parsed = JSON.parse(saved);
         if (parsed.aiModel) setSelectedModel(parsed.aiModel);
         if (typeof parsed.liveAIMode !== "undefined") setLiveAIMode(Boolean(parsed.liveAIMode));
-        if (parsed.aiMode && ["think", "plan", "agent"].includes(parsed.aiMode)) setAiMode(parsed.aiMode);
       } catch {
         // ignore
       }
@@ -1986,24 +2455,6 @@ export default function OmniaCanvasPage() {
       window.removeEventListener("storage", sync as any);
     };
   }, []);
-
-  const runNativeUndoRedo = (kind: "undo" | "redo") => {
-    const el = document.activeElement as HTMLElement | null;
-    const isEditable =
-      !!el &&
-      (el.isContentEditable ||
-        el.tagName === "INPUT" ||
-        el.tagName === "TEXTAREA" ||
-        Boolean(el.closest?.("[contenteditable='true']")));
-    if (!isEditable) return false;
-    try {
-      // Prefer native editor history (letter-level) when typing inside a block.
-      const ok = document.execCommand(kind);
-      return Boolean(ok);
-    } catch {
-      return false;
-    }
-  };
 
   const handleSaveQuickNote = useCallback(async () => {
     if (!user?.id || isQuickNoteSaving) return;
@@ -2040,106 +2491,54 @@ export default function OmniaCanvasPage() {
     await handleSaveQuickNote();
   }, [handleSaveQuickNote, isQuickNoteSaving, quickNoteContent]);
 
-  const clearCanvasAndPrompts = useCallback(() => {
-    reset();
-    setChatMessages([]);
-    setChatInput("");
-    setFocusedChatAttachments([]);
-    setChatStatusText("");
-    setChatFlowMode("idle");
-    aiThreadRef.current = [];
-    clarificationSessionRef.current = {
-      active: false,
-      basePromptId: "",
-      baseRequest: "",
-      questions: [],
-      answers: [],
-      askedCount: 0,
-    };
-    lastAiResponseBlockRef.current = null;
-    lastSendSigRef.current = { text: "", at: 0 };
-    kbCacheRef.current = null;
-    aiTypingRunRef.current += 1;
-    isSendingRef.current = false;
-  }, [reset]);
-
-  const loadMemoryNotes = useCallback(async () => {
-    if (!user?.id) {
-      setMemoryNotes([]);
-      setMemoryError("Sign in to access memories.");
-      return;
-    }
-    setMemoryLoading(true);
-    setMemoryError("");
-    try {
-      let data: MemorySidebarNote[] | null = null;
-      let error: any = null;
-      const fetchWithColumns = async (columns: string) =>
-        supabase.from("notes").select(columns).eq("user_id", user.id).order("updated_at", { ascending: false }).limit(500);
-      ({ data, error } = await supabase
-        .from("notes")
-        .select("id, title, content, attachments, folder, updated_at, created_at, tags, connected_notes, trashed")
-        .eq("user_id", user.id)
-        .order("updated_at", { ascending: false })
-        .limit(500));
-      if (error && /column .*notes\.folder/i.test(String(error?.message || ""))) {
-        ({ data, error } = (await fetchWithColumns("id, title, content, attachments, updated_at, created_at, tags, connected_notes, trashed")) as any);
-      }
-      if (error && /column .*notes\.attachments/i.test(String(error?.message || ""))) {
-        ({ data, error } = (await fetchWithColumns("id, title, content, updated_at, created_at, tags, connected_notes, trashed")) as any);
-      }
-      if (error && /column .*notes\.(tags|connected_notes|trashed)/i.test(String(error?.message || ""))) {
-        ({ data, error } = (await fetchWithColumns("id, title, content, updated_at, created_at")) as any);
-      }
-      if (error) throw error;
-      setMemoryNotes(
-        Array.isArray(data)
-          ? data.map((note: any) => {
-              const directAttachments = Array.isArray(note?.attachments) ? note.attachments : [];
-              const parsedAttachments = parseAttachmentsFromContent(note?.content || "");
-              return { ...note, attachments: directAttachments.length ? directAttachments : parsedAttachments } as MemorySidebarNote;
-            })
-          : []
-      );
-    } catch (err: any) {
-      setMemoryError(String(err?.message || "Unable to load memories."));
-      setMemoryNotes([]);
-    } finally {
-      setMemoryLoading(false);
-    }
-  }, [user?.id]);
-
-  const insertMemoryNoteToCanvas = useCallback(
-    (note: MemorySidebarNote) => {
-      const st = useCanvasStore.getState();
-      const g = Math.max(1, Math.floor(st.gridSize || 24));
-      const cameraY = Number(st.camera?.y || 0);
-      const worldX = g * 2;
-      const worldY = Math.max(g, cameraY + Math.floor((window.innerHeight || 900) * 0.3));
-      const titleText = String(note.title || "Untitled memory").trim();
-      const bodyText = String(note.content || "").trim();
-      const combined = bodyText ? `# ${titleText}\n\n${bodyText}` : `# ${titleText}`;
-      const width = g * 12;
-      const roughLines = combined.split("\n").length + Math.ceil(combined.length / 90);
-      const height = Math.max(g * 4, Math.min(g * 30, roughLines * g));
-      addTextBlockAt({ x: worldX, y: worldY }, { width, height, content: combined, format: "rich" });
-      setShowMemorySidebar(false);
-    },
-    [addTextBlockAt]
-  );
-
-  // handleGoToChatPage removed — chat is now an inline mode on the canvas.
-
-  useEffect(() => {
-    if (!showMemorySidebar) return;
-    void loadMemoryNotes();
-  }, [showMemorySidebar, loadMemoryNotes]);
-
   useEffect(() => {
     const openSidebar = () => setShowMemorySidebar(true);
     window.addEventListener("omnia_open_memory_sidebar", openSidebar);
     return () => window.removeEventListener("omnia_open_memory_sidebar", openSidebar);
   }, []);
+
+  useEffect(() => {
+    const handleDropAttachments = (e: Event) => {
+      const ce = e as CustomEvent<{ attachments: FocusedChatAttachment[] }>;
+      const atts = Array.isArray(ce.detail?.attachments) ? ce.detail.attachments : [];
+      if (!atts.length) return;
+      const msgId = `drop-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      const dropMsg: PromptMessage = {
+        id: msgId,
+        role: "user",
+        content: atts.length === 1 ? `Dropped ${atts[0].name || "file"}` : `Dropped ${atts.length} files`,
+        attachments: atts,
+      };
+      setChatMessages((prev) => [...prev, dropMsg]);
+      if (!chatRailVisible && !chatMode) {
+        setChatRailVisible(true);
+        setChatRailOpen(true);
+      }
+    };
+    window.addEventListener("omnia_chat_drop_attachments", handleDropAttachments);
+    return () => window.removeEventListener("omnia_chat_drop_attachments", handleDropAttachments);
+  }, [chatRailVisible, chatMode]);
+
+  const pendingAiBrickActionRef = useRef(false);
+  const pendingBrickActionDataRef = useRef<{ imageUrl?: string; videoId?: string } | null>(null);
+  useEffect(() => {
+    const handleAiBrickAction = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (!detail?.prompt) return;
+      setChatInput(detail.prompt);
+      pendingBrickActionDataRef.current = {
+        imageUrl: detail.imageUrl || undefined,
+        videoId: detail.videoId || undefined,
+      };
+      if (!chatMode && !chatRailVisible) {
+        setChatRailVisible(true);
+        setChatRailOpen(true);
+      }
+      pendingAiBrickActionRef.current = true;
+    };
+    window.addEventListener("omnia_ai_brick_action", handleAiBrickAction);
+    return () => window.removeEventListener("omnia_ai_brick_action", handleAiBrickAction);
+  }, [chatMode, chatRailVisible]);
 
   useEffect(() => {
     const handler = (e: MessageEvent) => {
@@ -2185,18 +2584,261 @@ export default function OmniaCanvasPage() {
     });
   }, []);
 
+  const saveAiImageToMedia = useCallback(async (imageUrl: string, promptText?: string) => {
+    if (!user?.id || !imageUrl) return;
+
+    let ext = "jpg";
+    let fileUrl = imageUrl;
+    let fileId = crypto.randomUUID();
+    let storagePath = "";
+    let fileSize = 0;
+    let mimeType = "image/jpeg";
+    let uploaded = false;
+
+    try {
+      const res = await fetch(imageUrl);
+      if (res.ok) {
+        const blob = await res.blob();
+        ext = blob.type.includes("png") ? "png" : "jpg";
+        mimeType = blob.type || `image/${ext}`;
+        storagePath = `${user.id}/${fileId}/original.${ext}`;
+        const { error: uploadError } = await supabase.storage
+          .from("user-files")
+          .upload(storagePath, blob, { cacheControl: "3600", upsert: false });
+        if (!uploadError) {
+          fileSize = blob.size;
+          const { data: signedData } = await supabase.storage
+            .from("user-files")
+            .createSignedUrl(storagePath, 60 * 60 * 24 * 7);
+          fileUrl = signedData?.signedUrl || imageUrl;
+          uploaded = true;
+        } else {
+          console.warn("[LYKN] Failed to upload AI image to storage:", uploadError.message);
+        }
+      }
+    } catch (err) {
+      console.warn("[LYKN] Could not download AI image for re-upload, saving with direct URL:", err);
+    }
+
+    try {
+      const filename = `AI Generated ${new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}.${ext}`;
+      const attachment = [{
+        type: "image",
+        url: fileUrl,
+        name: filename,
+        fileId,
+        ...(uploaded ? { storagePath, storageBucket: "user-files", size: fileSize } : {}),
+        mimeType,
+      }];
+      const noteContent = `AI-generated image${promptText ? ` — "${promptText.slice(0, 100)}"` : ""}\n\n[View Image](${fileUrl})\n\n[ATTACHMENTS_JSON:${JSON.stringify(attachment)}]`;
+
+      const { error } = await supabase.from("notes").insert({
+        user_id: user.id,
+        title: filename,
+        content: noteContent,
+      });
+      if (error) console.warn("[LYKN] Failed to save AI image note:", error.message);
+      else console.log(`[LYKN] AI image saved to media: ${filename} (${uploaded ? "uploaded to storage" : "direct URL"})`);
+    } catch (err) {
+      console.warn("[LYKN] Error saving AI image note to media:", err);
+    }
+  }, [user?.id]);
+
+  const saveAiVideoToMedia = useCallback(async (videoUrl: string, promptText?: string) => {
+    if (!user?.id || !videoUrl) return;
+    const filename = `AI Generated Video ${new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}.mp4`;
+
+    let fileUrl = videoUrl;
+    let fileId = crypto.randomUUID();
+    let storagePath = "";
+    let fileSize = 0;
+    let uploaded = false;
+
+    try {
+      const res = await fetch(videoUrl);
+      if (res.ok) {
+        const blob = await res.blob();
+        storagePath = `${user.id}/${fileId}/original.mp4`;
+        const { error: uploadError } = await supabase.storage
+          .from("user-files")
+          .upload(storagePath, blob, { cacheControl: "3600", upsert: false, contentType: "video/mp4" });
+        if (!uploadError) {
+          fileSize = blob.size;
+          const { data: signedData } = await supabase.storage
+            .from("user-files")
+            .createSignedUrl(storagePath, 60 * 60 * 24 * 7);
+          fileUrl = signedData?.signedUrl || videoUrl;
+          uploaded = true;
+        } else {
+          console.warn("[LYKN] Failed to upload AI video to storage:", uploadError.message);
+        }
+      }
+    } catch (err) {
+      console.warn("[LYKN] Could not download AI video for re-upload, saving with direct URL:", err);
+    }
+
+    try {
+      const attachment = [{
+        type: "video",
+        url: fileUrl,
+        name: filename,
+        fileId,
+        ...(uploaded ? { storagePath, storageBucket: "user-files", size: fileSize } : {}),
+        mimeType: "video/mp4",
+      }];
+      const noteContent = `AI-generated video${promptText ? ` — "${promptText.slice(0, 100)}"` : ""}\n\n[View Video](${fileUrl})\n\n[ATTACHMENTS_JSON:${JSON.stringify(attachment)}]`;
+
+      const { error } = await supabase.from("notes").insert({
+        user_id: user.id,
+        title: filename,
+        content: noteContent,
+      });
+      if (error) console.warn("[LYKN] Failed to save AI video note:", error.message);
+      else console.log(`[LYKN] AI video saved to media: ${filename} (${uploaded ? "uploaded to storage" : "direct URL"})`);
+    } catch (err) {
+      console.warn("[LYKN] Error saving AI video note to media:", err);
+    }
+  }, [user?.id]);
+
+  const saveYouTubeToMedia = useCallback(async (videoId: string, url: string) => {
+    if (!user?.id || !videoId) return;
+    const title = `YouTube Video — ${videoId}`;
+    const watchUrl = url || `https://www.youtube.com/watch?v=${videoId}`;
+    const thumbnail = `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`;
+    try {
+      const attachment = [{
+        type: "youtube",
+        url: watchUrl,
+        videoId,
+        name: title,
+        thumbnail,
+      }];
+      const noteContent = `${title}\n\n[Watch on YouTube](${watchUrl})\n\n[ATTACHMENTS_JSON:${JSON.stringify(attachment)}]`;
+      const { error } = await supabase.from("notes").insert({
+        user_id: user.id,
+        title,
+        content: noteContent,
+      });
+      if (error) console.warn("[LYKN] Failed to save YouTube note:", error.message);
+    } catch (err) {
+      console.warn("[LYKN] Error saving YouTube to media:", err);
+    }
+  }, [user?.id]);
+
+  const saveLinkToMedia = useCallback(async (linkUrl: string) => {
+    if (!user?.id || !linkUrl) return;
+    try {
+      const { API_BASE_URL } = await import("@/lib/api-config");
+      const res = await fetch(`${API_BASE_URL}/api/unfurl?url=${encodeURIComponent(linkUrl)}`);
+      const meta = res.ok ? await res.json() : { url: linkUrl, title: linkUrl, description: "", image: "", siteName: "", favicon: "", articleText: "" };
+      const attachment = [{
+        type: "bookmark",
+        url: meta.url || linkUrl,
+        name: meta.title || linkUrl,
+        title: meta.title || "",
+        description: meta.description || "",
+        image: meta.image || "",
+        favicon: meta.favicon || "",
+        siteName: meta.siteName || "",
+        articleText: meta.articleText || "",
+        oembedType: meta.oembedType || "",
+        oembedHtml: meta.oembedHtml || "",
+        authorName: meta.authorName || "",
+        authorHandle: meta.authorHandle || "",
+      }];
+      const noteContent = `${meta.title || linkUrl}\n\n[ATTACHMENTS_JSON:${JSON.stringify(attachment)}]`;
+      const { error } = await supabase.from("notes").insert({
+        user_id: user.id,
+        title: meta.title || linkUrl,
+        content: noteContent,
+      });
+      if (error) console.warn("[LYKN] Failed to save link note:", error.message);
+      else console.log(`[LYKN] Link saved to media: ${meta.title || linkUrl}`);
+    } catch (err) {
+      console.warn("[LYKN] Error saving link to media:", err);
+    }
+  }, [user?.id]);
+
+  const saveAttachmentToMedia = useCallback(async (url: string, name: string, mediaType: "image" | "video" | "audio" | "file") => {
+    if (!user?.id || !url) return;
+    const fileId = crypto.randomUUID();
+    let fileUrl = url;
+    let storagePath = "";
+    let fileSize = 0;
+    let uploaded = false;
+    const ext = mediaType === "image" ? "jpg" : mediaType === "video" ? "mp4" : mediaType === "audio" ? "mp3" : "bin";
+    const mimeMap: Record<string, string> = { image: "image/jpeg", video: "video/mp4", audio: "audio/mpeg", file: "application/octet-stream" };
+    let mimeType = mimeMap[mediaType] || "application/octet-stream";
+
+    try {
+      const res = await fetch(url);
+      if (res.ok) {
+        const blob = await res.blob();
+        if (blob.type) mimeType = blob.type;
+        const blobExt = blob.type?.split("/")?.[1]?.replace("jpeg", "jpg") || ext;
+        storagePath = `${user.id}/${fileId}/original.${blobExt}`;
+        const { error: uploadError } = await supabase.storage
+          .from("user-files")
+          .upload(storagePath, blob, { cacheControl: "3600", upsert: false, contentType: mimeType });
+        if (!uploadError) {
+          fileSize = blob.size;
+          const { data: signedData } = await supabase.storage
+            .from("user-files")
+            .createSignedUrl(storagePath, 60 * 60 * 24 * 7);
+          fileUrl = signedData?.signedUrl || url;
+          uploaded = true;
+        }
+      }
+    } catch { /* save with direct URL */ }
+
+    try {
+      const filename = name || `Saved ${mediaType} ${new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}.${ext}`;
+      const attachment = [{
+        type: mediaType,
+        url: fileUrl,
+        name: filename,
+        fileId,
+        ...(uploaded ? { storagePath, storageBucket: "user-files", size: fileSize } : {}),
+        mimeType,
+      }];
+      const noteContent = `${filename}\n\n[View](${fileUrl})\n\n[ATTACHMENTS_JSON:${JSON.stringify(attachment)}]`;
+      await supabase.from("notes").insert({
+        user_id: user.id,
+        title: filename,
+        content: noteContent,
+      });
+    } catch { /* ignore */ }
+  }, [user?.id]);
+
   const handleChatSend = async () => {
     const text = chatInput.trim();
     if (!text || isChatLoading || isSendingRef.current) return;
-    // Keep typing flow uninterrupted after send.
     window.setTimeout(() => chatPanelInputRef.current?.focus(), 0);
 
     const now = Date.now();
-    if (lastSendSigRef.current.text === text && now - lastSendSigRef.current.at < 900) return;
-    lastSendSigRef.current = { text, at: now };
+    const sig = text.length > 100 ? text.slice(0, 100) : text;
+    if (lastSendSigRef.current.text === sig && now - lastSendSigRef.current.at < 900) return;
+    lastSendSigRef.current = { text: sig, at: now };
+
+    activeAiAbortRef.current?.abort();
+    activeAiAbortRef.current = new AbortController();
+    const sendAbort = activeAiAbortRef.current;
 
     isSendingRef.current = true;
     const sentAttachments = [...focusedChatAttachments];
+    const brickActionData = pendingBrickActionDataRef.current;
+    pendingBrickActionDataRef.current = null;
+    const isBrickAction = Boolean(brickActionData);
+
+    if (brickActionData?.videoId && !sentAttachments.some((a: any) => a.videoId === brickActionData.videoId)) {
+      sentAttachments.push({
+        type: "youtube",
+        videoId: brickActionData.videoId,
+        url: `https://www.youtube.com/watch?v=${brickActionData.videoId}`,
+        name: `YouTube ${brickActionData.videoId}`,
+      } as any);
+    }
+
     setChatInput("");
     setFocusedChatAttachments([]);
     setIsChatLoading(true);
@@ -2210,11 +2852,14 @@ export default function OmniaCanvasPage() {
       if (att.transcript) continue;
       const attType = (att.type || "").toLowerCase();
 
-      // YouTube attachments: use the transcript endpoint (server has Whisper fallback)
+      // YouTube attachments: fetch transcript (captions first, then Whisper via yt-dlp)
       if (attType === "youtube" && att.videoId) {
         try {
-          setChatStatusText("Fetching video transcript...");
-          const tRes = await fetch(`${apiBase}/api/youtube/transcript?id=${encodeURIComponent(att.videoId)}`);
+          if (sendAbort.signal.aborted) break;
+          setChatStatusText(isBrickAction ? "Transcribing video..." : "Fetching video transcript...");
+          const attTimeout = setTimeout(() => { if (!sendAbort.signal.aborted) sendAbort.abort(); }, 120000);
+          const tRes = await fetch(`${apiBase}/api/youtube/transcript?id=${encodeURIComponent(att.videoId)}`, { signal: sendAbort.signal });
+          clearTimeout(attTimeout);
           if (tRes.ok) {
             const tData = await tRes.json();
             const t = String(tData?.transcript || "").trim();
@@ -2242,8 +2887,8 @@ export default function OmniaCanvasPage() {
               formData.append("file", new Blob([bytes], { type: mimeType }), att.name || `upload.${ext}`);
             }
           }
-          if (formData.has("file")) {
-            const wRes = await fetch(`${apiBase}/api/whisper/transcribe`, { method: "POST", body: formData });
+          if (formData.has("file") && !sendAbort.signal.aborted) {
+            const wRes = await fetch(`${apiBase}/api/whisper/transcribe`, { method: "POST", body: formData, signal: sendAbort.signal });
             if (wRes.ok) {
               const wData = await wRes.json();
               const t = String(wData?.transcript || "").trim();
@@ -2260,10 +2905,10 @@ export default function OmniaCanvasPage() {
           const t = (a.type || "").toLowerCase();
           const label = a.name || a.memoryTitle || "Untitled";
           const parts: string[] = [];
-          if (a.memoryContent) parts.push(a.memoryContent);
-          if (a.pdfText) parts.push(a.pdfText);
-          if (a.extractedText) parts.push(a.extractedText);
-          if (a.transcript) parts.push(a.transcript);
+          if (a.memoryContent) parts.push(String(a.memoryContent).slice(0, 1500));
+          if (a.pdfText) parts.push(String(a.pdfText).slice(0, 1500));
+          if (a.extractedText) parts.push(String(a.extractedText).slice(0, 1500));
+          if (a.transcript) parts.push(String(a.transcript).slice(0, 8000));
           if (t === "memory" || t === "note") {
             return `${t === "note" ? "Note" : "Memory"} "${label}": ${parts.join("\n") || "(empty)"}`;
           }
@@ -2287,7 +2932,7 @@ export default function OmniaCanvasPage() {
         }).join("\n\n")
       : "";
 
-    const displayText = text;
+    const displayText = text.length > 500 ? text.slice(0, 500) + "…" : text;
     setChatMessages((prev) => [...prev, {
       id: promptId, role: "user", content: displayText, kind: "prompt",
       ...(sentAttachments.length ? { attachments: sentAttachments } : {}),
@@ -2296,146 +2941,193 @@ export default function OmniaCanvasPage() {
     // In focused chat mode, skip canvas brick — responses go inline in the chat.
     let responseBlockId: string | null = null;
     if (!chatMode) {
-      const existingAiIds = (Array.isArray(blockOrder) ? blockOrder : []).filter((id) =>
-        Boolean((blocks as any)?.[id]?.data?.aiResponseBubble)
-      );
-      for (const id of existingAiIds) {
-        try { deleteBlock(id as any); } catch { /* ignore */ }
-      }
-      lastAiResponseBlockRef.current = null;
+      retireExistingAiBlocks();
       responseBlockId = addAiResponseBlock("AI is thinking...") as string | null;
       lastAiResponseBlockRef.current = responseBlockId ? String(responseBlockId) : null;
     }
 
     try {
-      aiThreadRef.current.push({ role: "user", content: text + attachmentContext });
+      const cappedText = text.length > 3000 ? text.slice(0, 3000) : text;
+      aiThreadRef.current.push({ role: "user", content: cappedText + (attachmentContext ? attachmentContext.slice(0, 1000) : "") });
       if (aiThreadRef.current.length > 40) aiThreadRef.current = aiThreadRef.current.slice(-40);
 
-      const recentThread = aiThreadRef.current.slice(-10);
+      const recentThread = aiThreadRef.current.slice(-16);
       const history = recentThread
         .map((m) => {
           const label = m.role === "user" ? "User" : "Assistant";
-          const trimmed = m.content.length > 400 ? m.content.slice(0, 400) + "…" : m.content;
+          const trimmed = m.content.length > 1200 ? m.content.slice(0, 1200) + "…" : m.content;
           return `${label}: ${trimmed}`;
         })
         .join("\n");
 
+      // Build a proper conversation array from chatMessages so the server
+      // can include the full thread in [CONVERSATION] for the system prompt.
+      const conversationArray: Array<{ role: string; content: string }> = [];
+      for (const cm of chatMessages) {
+        if (cm.role === "user" && cm.content) {
+          conversationArray.push({ role: "user", content: cm.content });
+          if (cm.aiResponse) {
+            conversationArray.push({ role: "assistant", content: cm.aiResponse });
+          }
+        } else if (cm.role !== "user" && cm.content) {
+          conversationArray.push({ role: "assistant", content: cm.content });
+        }
+      }
+      conversationArray.push({ role: "user", content: cappedText });
+
       const canvasContext = buildCanvasContext();
-      const kbText = await getKnowledgeBaseContext();
+      const kbText = getKnowledgeBaseContext();
+
+      const wantsMediaPull = /\b(pull\s*in|bring\s*in|fetch|grab|get|show\s*me|add)\b.*\b(from\s*(my\s*)?(media|saved|library|files)|that\s*(image|photo|video|pdf|file|doc|link|note)\s*(i|I)\s*saved|saved\s*(content|files|media|stuff)|from\s*media)\b/i.test(text)
+        || /\b(my\s*saved|my\s*media|from\s*media\s*page|media\s*page)\b/i.test(text);
+      let mediaContext = "";
+      if (wantsMediaPull) {
+        const ws = getCachedWorkspaceSummary();
+        mediaContext = ws?.media || "";
+        console.log("[LYKN] Media pull requested — using cached", mediaContext.length, "chars");
+      }
+      console.log("[LYKN] Context sizes — canvas:", canvasContext.length, "kb:", kbText.length, "mediaPull:", mediaContext.length);
       const API_BASE_URL = apiBase;
-      const asksAboutVideo = isVideoQuestion(text);
-      const visibleVideos = getVisibleYouTubeBlocks();
-      // Also consider YouTube attachments sent alongside the message
+      const asksAboutVideo = !isBrickAction && isVideoQuestion(text);
+      // Find ALL YouTube videos on the board (not just visible ones) + chat attachments
+      const boardVideos = getAllYouTubeBlocks();
       const attachedYouTubeVideos = sentAttachments
         .filter((a) => a.type?.toLowerCase() === "youtube" && a.videoId)
         .map((a) => ({ videoId: a.videoId!, url: a.url, title: a.name || `YouTube ${a.videoId}` }));
-      const allYouTubeVideos = [
-        ...visibleVideos,
-        ...attachedYouTubeVideos.filter((av) => !visibleVideos.some((vv) => vv.videoId === av.videoId)),
-      ];
-      let youtubeGrounding = "";
-      if (!asksAboutVideo) {
-        setChatStatusText("Analyzing visible YouTube videos...");
-        youtubeGrounding = await buildYouTubeGrounding(API_BASE_URL, text);
+      const seen = new Set<string>();
+      const allYouTubeVideos: Array<{ videoId: string; url: string; title: string }> = [];
+      for (const v of [...attachedYouTubeVideos, ...boardVideos]) {
+        if (seen.has(v.videoId)) continue;
+        seen.add(v.videoId);
+        allYouTubeVideos.push(v);
       }
-      if (asksAboutVideo && allYouTubeVideos.length) {
-        setChatStatusText("Answering from YouTube transcript...");
+      // YouTube transcript fetching
+      let youtubeGrounding = "";
+      const needsFullTranscript = asksAboutVideo || isBrickAction;
+      console.log("[LYKN] Video detection:", { asksAboutVideo, isBrickAction, needsFullTranscript, boardVideos: boardVideos.length, attachedYT: attachedYouTubeVideos.length, allYT: allYouTubeVideos.length, videoIds: allYouTubeVideos.map(v => v.videoId) });
+      if (needsFullTranscript && allYouTubeVideos.length > 0 && !sendAbort.signal.aborted) {
         const targetVideo = allYouTubeVideos[0];
-        const answerRes = await fetch(`${API_BASE_URL}/api/youtube/answer`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            videoId: targetVideo.videoId,
-            question: text,
-            allowOcr: false,
-          }),
-        });
-        const answerData = await answerRes.json().catch(() => ({}));
-        if (!answerRes.ok) {
-          setChatStatusText("No captions found — transcribing with Whisper...");
-          const whisperTRes = await fetch(`${API_BASE_URL}/api/youtube/transcript?id=${encodeURIComponent(targetVideo.videoId)}`).catch(() => null);
-          const whisperTJson = whisperTRes && whisperTRes.ok ? await whisperTRes.json().catch(() => ({})) : {};
-          const whisperTranscript = String((whisperTJson as any)?.transcript || "").trim();
-          if (whisperTranscript) {
+        setChatStatusText("Fetching video transcript...");
+        try {
+          const tTimeout = setTimeout(() => { if (!sendAbort.signal.aborted) sendAbort.abort(); }, 120000);
+          const tRes = await fetch(
+            `${API_BASE_URL}/api/youtube/transcript?id=${encodeURIComponent(targetVideo.videoId)}`,
+            { signal: sendAbort.signal }
+          ).catch(() => null);
+          clearTimeout(tTimeout);
+          const tJson = tRes && tRes.ok ? await tRes.json().catch(() => ({})) : {};
+          const fullTranscript = String((tJson as any)?.transcript || "").trim();
+          if (fullTranscript) {
             youtubeTranscriptCacheRef.current[targetVideo.videoId] = {
               fetchedAt: Date.now(),
               title: targetVideo.title || `YouTube ${targetVideo.videoId}`,
               url: targetVideo.url,
-              transcript: whisperTranscript,
-              segments: Array.isArray((whisperTJson as any)?.segments) ? (whisperTJson as any).segments : [],
+              transcript: fullTranscript,
+              segments: Array.isArray((tJson as any)?.segments) ? (tJson as any).segments : [],
             };
-            setChatStatusText("Whisper transcript ready — answering...");
-            const retryRes = await fetch(`${API_BASE_URL}/api/youtube/answer`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ videoId: targetVideo.videoId, question: text, allowOcr: false }),
-            });
-            const retryData = await retryRes.json().catch(() => ({}));
-            if (retryRes.ok) {
-              const finalText = formatGroundedVideoAnswer(retryData);
-              await typeResponseIntoChat(promptId, finalText);
-              aiThreadRef.current.push({ role: "assistant", content: finalText });
-              if (aiThreadRef.current.length > 40) aiThreadRef.current = aiThreadRef.current.slice(-40);
-              if (responseBlockId) await typeIntoAiResponseBlock(String(responseBlockId), finalText);
-              setChatStatusText("Answered");
-              return;
-            }
+            const safeTranscript =
+              fullTranscript.length > 3000
+                ? fullTranscript.slice(0, 1000) + "...[truncated transcript]"
+                : fullTranscript;
+            youtubeGrounding = `Video: ${targetVideo.title || targetVideo.videoId}\nFull transcript:\n${safeTranscript}`;
+            setChatStatusText("Transcript ready — generating response...");
+          } else {
+            setChatStatusText("No transcript available — answering from metadata...");
+            youtubeGrounding = `Video: ${targetVideo.title || targetVideo.videoId} (${targetVideo.url})\n(No transcript available)`;
           }
-          setChatStatusText("Falling back to available YouTube context...");
-          youtubeGrounding = await buildYouTubeGrounding(API_BASE_URL, text);
-          const fallback = buildDirectVideoAnswerFromGrounding(youtubeGrounding);
-          const apiReason = String((answerData as any)?.reason || (answerData as any)?.error || "").trim();
-          const finalText =
-            fallback ||
-            apiReason ||
-            "I can see the video, but I couldn't fetch enough transcript data right now. I can still answer once captions/transcript become available.";
-          await typeResponseIntoChat(promptId, finalText);
-          aiThreadRef.current.push({ role: "assistant", content: finalText });
-          if (aiThreadRef.current.length > 40) aiThreadRef.current = aiThreadRef.current.slice(-40);
-          if (responseBlockId) await typeIntoAiResponseBlock(String(responseBlockId), finalText);
-          setChatStatusText("Answered");
-          return;
+        } catch {
+          if (!sendAbort.signal.aborted) {
+            setChatStatusText("Transcript fetch failed — answering from metadata...");
+            youtubeGrounding = `Video: ${targetVideo.title || targetVideo.videoId} (${targetVideo.url})\n(Transcript fetch failed)`;
+          }
         }
-        const finalText = formatGroundedVideoAnswer(answerData);
-        await typeResponseIntoChat(promptId, finalText);
-        aiThreadRef.current.push({ role: "assistant", content: finalText });
-        if (aiThreadRef.current.length > 40) aiThreadRef.current = aiThreadRef.current.slice(-40);
-        if (responseBlockId) await typeIntoAiResponseBlock(String(responseBlockId), finalText);
-        setChatStatusText("Answered");
-        return;
+      } else if (!isBrickAction && allYouTubeVideos.length > 0 && !sendAbort.signal.aborted) {
+        setChatStatusText("Analyzing visible YouTube videos...");
+        youtubeGrounding = await buildYouTubeGrounding(API_BASE_URL, text, sendAbort.signal);
       }
-      if (asksAboutVideo && !allYouTubeVideos.length) {
-        const finalText = "I can't find a YouTube video on the board or in your attachments. Add a YouTube video and ask again.";
-        await typeResponseIntoChat(promptId, finalText);
-        aiThreadRef.current.push({ role: "assistant", content: finalText });
-        if (aiThreadRef.current.length > 40) aiThreadRef.current = aiThreadRef.current.slice(-40);
-        if (responseBlockId) await typeIntoAiResponseBlock(String(responseBlockId), finalText);
-        setChatStatusText("Answered");
-        return;
-      }
+      const userTextCapped = text.length > 3000 ? text.slice(0, 3000) + "…" : text;
+      const videoTranscriptBlock = youtubeGrounding
+        ? (youtubeGrounding.includes("Full transcript:")
+            ? `[VIDEO TRANSCRIPT — Use this to answer the user's question about the video. Do NOT say you cannot access the video. The transcript below IS the video's content.]\n${youtubeGrounding}`
+            : `YouTube transcript context:\n${youtubeGrounding}`)
+        : "";
       const prompt = [
         history ? `Conversation so far:\n${history}` : "",
-        youtubeGrounding ? `YouTube transcript context:\n${youtubeGrounding}` : "",
-        `Latest user message:\n${text}${attachmentContext}`,
+        videoTranscriptBlock,
+        `Latest user message:\n${userTextCapped}${attachmentContext}`,
       ].filter(Boolean).join("\n\n");
       const attachedImageUrls = sentAttachments
         .filter((a) => a.type?.toLowerCase() === "image" && a.url)
         .map((a) => a.url);
+      if (brickActionData?.imageUrl && !attachedImageUrls.includes(brickActionData.imageUrl)) {
+        attachedImageUrls.push(brickActionData.imageUrl);
+      }
 
+      if (sendAbort.signal.aborted) return;
       setChatStatusText("");
       setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: "" } : m)));
 
       const st = useCanvasStore.getState();
       const hasFocusedBricks = (st.focusedBrickIds || []).length > 0;
+
+      let editImageUrl = "";
+      const focusedIds: string[] = Array.isArray(st.focusedBrickIds) ? st.focusedBrickIds : [];
+      for (const fid of focusedIds) {
+        const blk = (st.blocks as any)?.[fid];
+        if (blk?.type === "create" && (blk.mode === "image" || blk.mode === "generated")) {
+          const src = String(blk.data?.src || "").trim();
+          if (src && (src.startsWith("http") || src.startsWith("data:image/"))) {
+            editImageUrl = src;
+            break;
+          }
+        }
+      }
+
+      if (editImageUrl) {
+        console.log("[OmniaCanvas] Found image for editing:", editImageUrl.slice(0, 80) + "...");
+      }
+
+      let editVideoUrl = "";
+      for (const fid of focusedIds) {
+        const blk = (st.blocks as any)?.[fid];
+        if (blk?.type === "create" && String(blk.mode || "").toLowerCase() === "video") {
+          const src = String(blk.data?.url || blk.data?.src || "").trim();
+          if (src && src.startsWith("http")) {
+            editVideoUrl = src;
+            break;
+          }
+        }
+      }
+      if (editVideoUrl) {
+        console.log("[OmniaCanvas] Found video for editing/regeneration:", editVideoUrl.slice(0, 80) + "...");
+      }
+
+      const hasVideoTranscript = Boolean(youtubeGrounding && youtubeGrounding.includes("Full transcript:"));
+      console.log("[LYKN] Prompt being sent:", { promptLen: prompt.length, hasVideoTranscript, youtubeGroundingLen: youtubeGrounding.length, videoTranscriptBlockLen: videoTranscriptBlock.length, promptPreview: prompt.slice(0, 300) });
+      // Send the full prompt (with transcript) as BOTH `prompt` and `text` when we have video context.
+      // The server's buildLyknStreamPrompt uses `text` for the user message — if we only send
+      // the raw question as `text`, the server throws away the transcript.
+      const textForServer = hasVideoTranscript ? prompt.slice(0, 16000) : cappedText;
+      const truncatedConversation = conversationArray.slice(-8).map((m) => ({
+        ...m,
+        content: m.content.length > 1500 ? m.content.slice(0, 1500) + "…" : m.content,
+      }));
+      const wsContext = getCachedWorkspaceSummary();
       const requestBody = {
         model: selectedModel,
-        prompt,
-        text,
+        prompt: prompt.slice(0, 16000),
+        text: textForServer,
         intent: "ask",
-        context: `${canvasContext || ""}\n\nYouTube transcript context:\n${youtubeGrounding || "(none)"}`.trim(),
-        knowledgeBase: kbText,
+        context: (canvasContext || "").slice(0, 14000),
+        knowledgeBase: (kbText || "").slice(0, 2000),
+        conversation: truncatedConversation,
+        workspaceContext: (wsContext?.full || "").slice(0, 2000),
         projectId,
         hasFocusedBricks,
+        skipWebSearch: hasVideoTranscript,
+        ...(mediaContext ? { mediaContext: mediaContext.slice(0, 8000) } : {}),
+        ...(editImageUrl ? { editImageUrl } : {}),
+        ...(editVideoUrl ? { editVideoUrl } : {}),
         ...(attachedImageUrls.length ? { imageUrls: attachedImageUrls } : {}),
         ...getAiPrefs(),
       };
@@ -2443,11 +3135,14 @@ export default function OmniaCanvasPage() {
       let streamRes: Response | null = null;
       let useStreaming = false;
       try {
+        const timeout = setTimeout(() => sendAbort.abort(), 120000);
         streamRes = await fetch(`${API_BASE_URL}/api/ai/stream`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(requestBody),
+          signal: sendAbort.signal,
         });
+        clearTimeout(timeout);
         if (streamRes.ok && streamRes.headers.get("content-type")?.includes("text/event-stream")) {
           useStreaming = true;
         }
@@ -2461,43 +3156,115 @@ export default function OmniaCanvasPage() {
         let accumulated = "";
         let firstToken = true;
         let sseBuffer = "";
+        const isVideoReq = /\b(?:generate|create|make|produce|render)\b.{0,20}\b(?:video|clip|animation|footage|cinematic)\b/i.test(text) || /\b(?:animate|film)\b.{0,30}\b(?:me|a|an|the|of|for)\b/i.test(text);
+        const STREAM_INACTIVITY_MS = isVideoReq ? 11 * 60 * 1000 : 60000;
 
         if (reader) {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            sseBuffer += decoder.decode(value, { stream: true });
-            const lines = sseBuffer.split("\n");
-            sseBuffer = lines.pop() || "";
-            for (const line of lines) {
-              const trimmed = line.trim();
-              if (!trimmed.startsWith("data: ")) continue;
-              const payload = trimmed.slice(6);
-              if (payload === "[DONE]") break;
-              try {
-                const parsed = JSON.parse(payload);
-                if (parsed.error) {
-                  accumulated = String(parsed.error);
-                  break;
-                }
-                if (parsed.t) {
-                  if (firstToken) {
-                    setChatStatusText("Responding...");
-                    firstToken = false;
+          let inactivityTimer = setTimeout(() => { reader.cancel(); sendAbort.abort(); }, STREAM_INACTIVITY_MS);
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              clearTimeout(inactivityTimer);
+              inactivityTimer = setTimeout(() => { reader.cancel(); sendAbort.abort(); }, STREAM_INACTIVITY_MS);
+              sseBuffer += decoder.decode(value, { stream: true });
+              const lines = sseBuffer.split("\n");
+              sseBuffer = lines.pop() || "";
+              for (const line of lines) {
+                const trimmed = line.trim();
+                if (!trimmed.startsWith("data: ")) continue;
+                const payload = trimmed.slice(6);
+                if (payload === "[DONE]") break;
+                try {
+                  const parsed = JSON.parse(payload);
+                  if (parsed.error) {
+                    accumulated = String(parsed.error);
+                    break;
                   }
-                  accumulated += parsed.t;
-                  const visibleText = accumulated.replace(/\n*(?:Sources?|References?):?\s*\n[\s\S]*$/i, "").trimEnd();
-                  setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: visibleText } : m)));
-                  if (responseBlockId && typeof updateBlock === "function") {
-                    const normalized = normalizeAiTextForBlock(visibleText);
-                    const size = calcAiBubbleSize(normalized);
-                    updateBlock(String(responseBlockId), { content: normalized, width: size.width, height: size.height } as any);
+                  if (parsed.status) {
+                    setChatStatusText(String(parsed.status));
+                    continue;
                   }
-                  const el = chatScrollRef.current;
-                  if (el) el.scrollTop = el.scrollHeight;
-                }
-              } catch {}
+                  if (parsed.image) {
+                    setChatStatusText("Image generated");
+                    const imageUrl = String(parsed.image);
+                    setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: `[Generated Image]`, aiImageUrl: imageUrl } : m)));
+                    if (responseBlockId) {
+                      const st = useCanvasStore.getState() as any;
+                      const placeholderBlock = st.blocks?.[responseBlockId];
+                      const imgX = placeholderBlock?.x ?? 100;
+                      const imgY = placeholderBlock?.y ?? 100;
+                      const g = Math.max(1, Math.floor(st.gridSize || 24));
+                      try { deleteBlock(responseBlockId as any); } catch {}
+                      const imgBlock = {
+                        id: `create-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+                        type: "create" as const,
+                        mode: "image",
+                        x: imgX,
+                        y: imgY,
+                        width: g * 12,
+                        height: g * 12,
+                        data: { src: imageUrl },
+                        createdAt: new Date().toISOString(),
+                        updatedAt: new Date().toISOString(),
+                      };
+                      st.addBlock(imgBlock);
+                      responseBlockId = null;
+                    }
+                    accumulated = `[Generated Image](${imageUrl})`;
+                    break;
+                  }
+                  if (parsed.video) {
+                    setChatStatusText("Video generated");
+                    const videoUrl = String(parsed.video);
+                    setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: `[Generated Video]`, aiVideoUrl: videoUrl } : m)));
+                    if (responseBlockId) {
+                      const st = useCanvasStore.getState() as any;
+                      const placeholderBlock = st.blocks?.[responseBlockId];
+                      const vidX = placeholderBlock?.x ?? 100;
+                      const vidY = placeholderBlock?.y ?? 100;
+                      const g = Math.max(1, Math.floor(st.gridSize || 24));
+                      try { deleteBlock(responseBlockId as any); } catch {}
+                      st.addBlock({
+                        id: `create-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+                        type: "create" as const,
+                        mode: "video",
+                        x: vidX,
+                        y: vidY,
+                        width: g * 16,
+                        height: g * 10,
+                        data: { url: videoUrl, mime: "video/mp4" },
+                        createdAt: new Date().toISOString(),
+                        updatedAt: new Date().toISOString(),
+                      });
+                      responseBlockId = null;
+                    }
+                    accumulated = `[Generated Video](${videoUrl})`;
+                    break;
+                  }
+                  if (parsed.t) {
+                    if (firstToken) {
+                      setChatStatusText("Responding...");
+                      firstToken = false;
+                    }
+                    accumulated += parsed.t;
+                    const visibleText = accumulated.replace(/\n*(?:Sources?|References?):?\s*\n[\s\S]*$/i, "").trimEnd();
+                    setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: visibleText } : m)));
+                    if (responseBlockId && typeof updateBlock === "function") {
+                      const normalized = normalizeAiTextForBlock(visibleText);
+                      const size = calcAiBubbleSize(normalized);
+                      updateBlock(String(responseBlockId), { content: normalized, width: size.width, height: size.height } as any);
+                    }
+                    const el = chatScrollRef.current;
+                    if (el) el.scrollTop = el.scrollHeight;
+                  }
+                } catch {}
+              }
             }
+          } catch {
+            if (!accumulated.trim()) accumulated = "The AI took too long to respond. Try a shorter prompt or a faster model.";
+          } finally {
+            clearTimeout(inactivityTimer);
           }
         }
 
@@ -2508,23 +3275,51 @@ export default function OmniaCanvasPage() {
           if (fallback && (!aiText || looksLikeDeflectingQuestion(aiText))) aiText = fallback;
         }
         const finalText = aiText || "I'm not sure how to answer that. Could you rephrase?";
-        const { cleanText: displayText, sources } = extractSourceLinks(finalText);
-        setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: displayText, sources } : m)));
-        aiThreadRef.current.push({ role: "assistant", content: finalText });
+        const { connections: aiConnections, cleanText: textWithoutConnections } = extractAiConnections(finalText);
+        if (aiConnections.length > 0) {
+          const boardConns = aiConnections.filter((c) => c.sourceType === "board");
+          const mediaConns = aiConnections.filter((c) => c.sourceType === "media");
+          if (boardConns.length > 0) {
+            setConnectionCards(boardConns);
+            setShowConnectionCard(true);
+          }
+          if (mediaConns.length > 0) {
+            const cached = getCachedWorkspaceSummary()?.full || "";
+            const resolved = mediaConns.map((mc) => {
+              const m = cached.match(new RegExp(`"${mc.title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"\\s*\\(id=([^)]+)\\)`));
+              return m?.[1] ? { title: mc.title, reason: mc.reason, noteId: m[1] } : null;
+            }).filter(Boolean) as Array<{ title: string; reason: string; noteId: string }>;
+            if (resolved.length > 0) {
+              setMediaSuggestions(resolved);
+              setSelectedMediaIds(new Set());
+              setShowMediaSuggestion(true);
+            }
+          }
+        }
+        const { cleanText: displayText, sources } = extractSourceLinks(textWithoutConnections);
+        const ytResult = extractAndEmbedYouTubeUrls(displayText, promptId, responseBlockId);
+        const mediaResult = await extractAndEmbedMediaItems(displayText, responseBlockId);
+        const finalDisplayText = mediaResult.pulled > 0 ? mediaResult.cleanText : displayText;
+        const webLinks1 = extractWebLinksFromText(finalDisplayText);
+        setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: finalDisplayText, sources, aiYouTubeUrls: ytResult.urls.length ? ytResult.urls : undefined, aiWebLinks: webLinks1.length ? webLinks1 : undefined } : m)));
+        aiThreadRef.current.push({ role: "assistant", content: textWithoutConnections });
         if (aiThreadRef.current.length > 40) aiThreadRef.current = aiThreadRef.current.slice(-40);
         if (responseBlockId && typeof updateBlock === "function") {
-          const normalized = normalizeAiTextForBlock(displayText);
+          const normalized = normalizeAiTextForBlock(finalDisplayText);
           const size = calcAiBubbleSize(normalized);
           updateBlock(String(responseBlockId), { content: normalized, width: size.width, height: size.height } as any);
           if (sources.length > 0) attachSourcesToBlock(String(responseBlockId), sources);
         }
-        setChatStatusText("Answered");
+        setChatStatusText(mediaResult.pulled > 0 ? "Media added to board" : ytResult.urls.length ? "Video embedded" : aiConnections.length > 0 ? "Connection found" : "Answered");
       } else {
+        const invokeTimeout = setTimeout(() => sendAbort.abort(), 120000);
         const res = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ...requestBody, aiMode, returnActions: false }),
+          body: JSON.stringify({ ...requestBody, returnActions: false }),
+          signal: sendAbort.signal,
         });
+        clearTimeout(invokeTimeout);
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
           const apiError = String((data as any)?.error || "").trim();
@@ -2536,6 +3331,62 @@ export default function OmniaCanvasPage() {
           setChatStatusText("Answered");
           return;
         }
+        if ((data as any)?.type === "image" && (data as any)?.url) {
+          const imageUrl = String((data as any).url);
+          setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: "[Generated Image]", aiImageUrl: imageUrl } : m)));
+          aiThreadRef.current.push({ role: "assistant", content: `[Generated Image](${imageUrl})` });
+          if (aiThreadRef.current.length > 40) aiThreadRef.current = aiThreadRef.current.slice(-40);
+          if (responseBlockId) {
+            const st = useCanvasStore.getState() as any;
+            const placeholderBlock = st.blocks?.[responseBlockId];
+            const imgX = placeholderBlock?.x ?? 100;
+            const imgY = placeholderBlock?.y ?? 100;
+            const g = Math.max(1, Math.floor(st.gridSize || 24));
+            try { deleteBlock(responseBlockId as any); } catch {}
+            st.addBlock({
+              id: `create-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+              type: "create",
+              mode: "image",
+              x: imgX,
+              y: imgY,
+              width: g * 12,
+              height: g * 12,
+              data: { src: imageUrl },
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            });
+          }
+          setChatStatusText("Image generated");
+          return;
+        }
+        if ((data as any)?.type === "video" && (data as any)?.url) {
+          const videoUrl = String((data as any).url);
+          setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: "[Generated Video]", aiVideoUrl: videoUrl } : m)));
+          aiThreadRef.current.push({ role: "assistant", content: `[Generated Video](${videoUrl})` });
+          if (aiThreadRef.current.length > 40) aiThreadRef.current = aiThreadRef.current.slice(-40);
+          if (responseBlockId) {
+            const st = useCanvasStore.getState() as any;
+            const placeholderBlock = st.blocks?.[responseBlockId];
+            const vidX = placeholderBlock?.x ?? 100;
+            const vidY = placeholderBlock?.y ?? 100;
+            const g = Math.max(1, Math.floor(st.gridSize || 24));
+            try { deleteBlock(responseBlockId as any); } catch {}
+            st.addBlock({
+              id: `create-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+              type: "create",
+              mode: "video",
+              x: vidX,
+              y: vidY,
+              width: g * 16,
+              height: g * 10,
+              data: { url: videoUrl, mime: "video/mp4" },
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            });
+          }
+          setChatStatusText("Video generated");
+          return;
+        }
         let aiText = String(data?.response || data?.answer || data?.text || "").trim();
         const hasYTG = Boolean(String(youtubeGrounding || "").trim() && String(youtubeGrounding || "").trim() !== "(none)");
         aiText = sanitizeAssistantResponse(aiText);
@@ -2544,22 +3395,55 @@ export default function OmniaCanvasPage() {
           if (fallback && (!aiText || looksLikeDeflectingQuestion(aiText))) aiText = fallback;
         }
         const finalText = aiText || "I'm not sure how to answer that. Could you rephrase?";
-        const { cleanText: displayText2, sources: sources2 } = extractSourceLinks(finalText);
-        await typeResponseIntoChat(promptId, displayText2);
-        setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, sources: sources2 } : m)));
-        aiThreadRef.current.push({ role: "assistant", content: finalText });
+        const { connections: aiConnections2, cleanText: textWithoutConnections2 } = extractAiConnections(finalText);
+        if (aiConnections2.length > 0) {
+          const boardConns2 = aiConnections2.filter((c) => c.sourceType === "board");
+          const mediaConns2 = aiConnections2.filter((c) => c.sourceType === "media");
+          if (boardConns2.length > 0) {
+            setConnectionCards(boardConns2);
+            setShowConnectionCard(true);
+          }
+          if (mediaConns2.length > 0) {
+            const cached2 = getCachedWorkspaceSummary()?.full || "";
+            const resolved2 = mediaConns2.map((mc) => {
+              const m = cached2.match(new RegExp(`"${mc.title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"\\s*\\(id=([^)]+)\\)`));
+              return m?.[1] ? { title: mc.title, reason: mc.reason, noteId: m[1] } : null;
+            }).filter(Boolean) as Array<{ title: string; reason: string; noteId: string }>;
+            if (resolved2.length > 0) {
+              setMediaSuggestions(resolved2);
+              setSelectedMediaIds(new Set());
+              setShowMediaSuggestion(true);
+            }
+          }
+        }
+        const { cleanText: displayText2, sources: sources2 } = extractSourceLinks(textWithoutConnections2);
+        const ytResult2 = extractAndEmbedYouTubeUrls(displayText2, promptId, responseBlockId);
+        const mediaResult2 = await extractAndEmbedMediaItems(displayText2, responseBlockId);
+        const finalDisplayText2 = mediaResult2.pulled > 0 ? mediaResult2.cleanText : displayText2;
+        await typeResponseIntoChat(promptId, finalDisplayText2);
+        const webLinks2 = extractWebLinksFromText(finalDisplayText2);
+        setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, sources: sources2, aiYouTubeUrls: ytResult2.urls.length ? ytResult2.urls : undefined, aiWebLinks: webLinks2.length ? webLinks2 : undefined } : m)));
+        aiThreadRef.current.push({ role: "assistant", content: textWithoutConnections2 });
         if (aiThreadRef.current.length > 40) aiThreadRef.current = aiThreadRef.current.slice(-40);
         if (responseBlockId) {
-          await typeIntoAiResponseBlock(String(responseBlockId), displayText2);
+          await typeIntoAiResponseBlock(String(responseBlockId), finalDisplayText2);
           if (sources2.length > 0) attachSourcesToBlock(String(responseBlockId), sources2);
         }
-        setChatStatusText("Answered");
+        setChatStatusText(mediaResult2.pulled > 0 ? "Media added to board" : ytResult2.urls.length ? "Video embedded" : aiConnections2.length > 0 ? "Connection found" : "Answered");
       }
-    } catch {
+    } catch (err: any) {
+      if (err?.name === "AbortError" && sendAbort !== activeAiAbortRef.current) {
+        setChatStatusText("");
+        return;
+      }
+      console.error("[LYKN] handleChatSend error:", err);
       setChatFlowMode("idle");
-      setChatStatusText("Generation failed. Please retry.");
+      const errMsg = err?.name === "AbortError" ? "Request timed out. Try a shorter prompt or a faster model." : "Generation failed. Please retry.";
+      setChatStatusText(errMsg);
+      const chatErr = err?.name === "AbortError" ? "Timed out — try a shorter prompt or switch to a faster model (e.g. Gemini Flash)." : "I couldn't process that request. Please try again.";
+      setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: chatErr } : m)));
       if (responseBlockId) {
-        updateBlock(String(responseBlockId) as any, { content: "I couldn't process that request. Please try again." } as any);
+        updateBlock(String(responseBlockId) as any, { content: chatErr } as any);
       }
     } finally {
       setIsChatLoading(false);
@@ -2569,6 +3453,15 @@ export default function OmniaCanvasPage() {
     }
   };
 
+  const handleStopAi = useCallback(() => {
+    activeAiAbortRef.current?.abort();
+    activeAiAbortRef.current = null;
+    setIsChatLoading(false);
+    isSendingRef.current = false;
+    setChatFlowMode("idle");
+    setChatStatusText("Stopped");
+  }, []);
+
   const handleCenterAskSend = useCallback(async () => {
     if (!chatInput.trim() || isChatLoading || isSendingRef.current) return;
     setChatRailOpen(true);
@@ -2576,6 +3469,29 @@ export default function OmniaCanvasPage() {
     setCenterChatLeaving(false);
     await handleChatSend();
   }, [chatInput, handleChatSend, isChatLoading]);
+
+  const handleChatPaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const html = e.clipboardData.getData("text/html");
+    if (!html.trim()) return;
+    e.preventDefault();
+    const ta = e.currentTarget;
+    const start = ta.selectionStart;
+    const end = ta.selectionEnd;
+    const text = getStructuredPasteFromEvent(e);
+    setChatInput((prev) => prev.slice(0, start) + text + prev.slice(end));
+    const newCaret = start + text.length;
+    setTimeout(() => {
+      ta.selectionStart = ta.selectionEnd = newCaret;
+      ta.focus();
+    }, 0);
+  }, []);
+
+  useEffect(() => {
+    if (pendingAiBrickActionRef.current && chatInput.trim()) {
+      pendingAiBrickActionRef.current = false;
+      handleChatSend();
+    }
+  }, [chatInput, handleChatSend]);
 
   useEffect(() => {
     if (!chatMode && !chatRailVisible) return;
@@ -2805,7 +3721,7 @@ export default function OmniaCanvasPage() {
           try {
             const path = att?.storagePath || url;
             const bucket = att?.storageBucket || "user-files";
-            const { data } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 60 * 24);
+            const { data } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 60 * 24 * 7);
             if (data?.signedUrl) url = data.signedUrl;
           } catch { /* ignore */ }
         }
@@ -3144,7 +4060,20 @@ export default function OmniaCanvasPage() {
     <div className="w-full h-[100svh] relative overflow-hidden bg-transparent">
       {/* Match BrickEditor layout: minimal chrome + floating controls */}
       {/* Heading panel (matches Create view top pill) */}
-      <div className="fixed top-3 left-0 right-0 z-[70] px-3 flex items-center justify-end pointer-events-none">
+      {/* Board title — fixed next to Signed-in pill; does not move when sidebar expands */}
+      <div className="fixed top-[1.1rem] z-[75] pointer-events-auto" style={{ left: "11.5rem" }}>
+        <input
+          type="text"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          onBlur={() => void commitBoardTitle()}
+          onKeyDown={(e) => { if (e.key === "Enter") { e.currentTarget.blur(); } }}
+          placeholder="New Board"
+          className="bg-transparent text-[0.8125rem] font-medium text-black/80 placeholder:text-black/30 outline-none border-none w-[14rem] truncate px-1.5 py-0.5 rounded-md hover:bg-black/5 focus:bg-black/5 transition-colors"
+        />
+      </div>
+
+      <div className="fixed top-3 right-0 z-[70] px-3 flex items-center justify-end pointer-events-none" style={{ left: "var(--sidebar-offset, 0px)", transition: "left 200ms ease" }}>
         <div className="pointer-events-auto flex items-center gap-2">
           <button
             type="button"
@@ -3158,56 +4087,7 @@ export default function OmniaCanvasPage() {
 
           {topPanelOpen && (
             <div className="flex items-center gap-1 p-1 rounded-full glass-control flex-wrap">
-              <button
-                type="button"
-                onClick={() => nav(-1)}
-                className="rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center"
-                title="Back"
-              >
-                <ArrowLeft className="w-4 h-4" />
-              </button>
-
-              <div className="w-px h-4 bg-black/10 dark:bg-white/10 mx-1" />
-
-              {/* AI mode selector (Think / Plan / Agent) */}
-              <Select
-                value={aiMode}
-                onValueChange={(value: string) => {
-                  const mode = value as AiMode;
-                  setAiMode(mode);
-                  try {
-                    const saved = localStorage.getItem("lykinsai_settings");
-                    const settings = saved ? JSON.parse(saved) : {};
-                    settings.aiMode = mode;
-                    localStorage.setItem("lykinsai_settings", JSON.stringify(settings));
-                    window.dispatchEvent(new CustomEvent("lykinsai_settings_changed"));
-                  } catch { /* ignore */ }
-                }}
-              >
-                <SelectTrigger className="w-[8.125rem] h-9 rounded-full glass-control hover:opacity-90 text-xs font-medium gap-1.5 px-3 [&>span]:flex [&>span]:items-center [&>span]:justify-center [&>span]:w-full">
-                  <SelectValue placeholder="Mode" />
-                </SelectTrigger>
-                <SelectContent
-                  align="end"
-                  className="glass-control border border-white/25 dark:border-white/10 bg-white/35 dark:bg-white/10 backdrop-blur-xl shadow-lg overflow-hidden min-w-[8.125rem]"
-                >
-                  {(Object.entries(AI_MODE_META) as [AiMode, typeof AI_MODE_META["think"]][]).map(([key, meta]) => {
-                    const Icon = meta.icon;
-                    return (
-                      <SelectItem key={key} value={key} className="flex items-center justify-center pl-3 pr-8 text-xs">
-                        <span className="inline-flex items-center gap-1.5">
-                          <Icon className="w-3.5 h-3.5 shrink-0" />
-                          {meta.label}
-                        </span>
-                      </SelectItem>
-                    );
-                  })}
-                </SelectContent>
-              </Select>
-
-              <div className="w-px h-4 bg-black/10 dark:bg-white/10 mx-1" />
-
-              {/* AI model selector (matches old Create panel) */}
+              {/* AI model selector */}
               <Select
                 value={selectedModel}
                 onValueChange={(value) => {
@@ -3273,50 +4153,6 @@ export default function OmniaCanvasPage() {
 
               <button
                 type="button"
-                onPointerDown={(e) => {
-                  // Keep focus in the active editor so native undo works.
-                  e.preventDefault();
-                }}
-                onClick={() => {
-                  if (!runNativeUndoRedo("undo")) undo();
-                }}
-                disabled={!isEditingField && !canUndo}
-                className="rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed"
-                title="Undo (Ctrl/Cmd+Z)"
-              >
-                <Undo2 className="w-4 h-4" />
-              </button>
-              <button
-                type="button"
-                onPointerDown={(e) => {
-                  // Keep focus in the active editor so native redo works.
-                  e.preventDefault();
-                }}
-                onClick={() => {
-                  if (!runNativeUndoRedo("redo")) redo();
-                }}
-                disabled={!isEditingField && !canRedo}
-                className="rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed"
-                title="Redo (Ctrl/Cmd+Shift+Z / Ctrl+Y)"
-              >
-                <Redo2 className="w-4 h-4" />
-              </button>
-
-              <div className="w-px h-4 bg-black/10 dark:bg-white/10 mx-1" />
-
-              <button
-                type="button"
-                onClick={clearCanvasAndPrompts}
-                className="rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center"
-                title="Clear canvas"
-              >
-                <Trash2 className="w-4 h-4" />
-              </button>
-
-              <div className="w-px h-4 bg-black/10 dark:bg-white/10 mx-1" />
-
-              <button
-                type="button"
                 onClick={() => {
                   setChatMode((v) => {
                     if (!v) setChatRailVisible(false);
@@ -3355,20 +4191,9 @@ export default function OmniaCanvasPage() {
                 type="button"
                 onClick={() => setShowMemorySidebar((v) => !v)}
                 className="rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center"
-                title={showMemorySidebar ? "Hide memory sidebar" : "Open memory sidebar"}
+                title={showMemorySidebar ? "Hide vault sidebar" : "Open vault sidebar"}
               >
-                {showMemorySidebar ? <PanelRightClose className="w-4 h-4" /> : <BookOpen className="w-4 h-4" />}
-              </button>
-
-              <div className="w-px h-4 bg-black/10 dark:bg-white/10 mx-1" />
-
-              <button
-                type="button"
-                onClick={() => setShowAttachMenu(true)}
-                className="rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center"
-                title="Attachments"
-              >
-                <Plus className="w-4 h-4" />
+                {showMemorySidebar ? <PanelRightClose className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
               </button>
             </div>
           )}
@@ -3418,7 +4243,7 @@ export default function OmniaCanvasPage() {
             );
             console.log("[MEMORY-DROP] youtubeAttach:", youtubeAttach ? { type: youtubeAttach.type, url: youtubeAttach.url?.substring(0, 80), videoId: youtubeAttach.videoId } : null);
             const imageAttach = attachments.find((a: any) =>
-              a.type === "image" || (a.url && /\.(jpg|jpeg|png|gif|webp|svg)(\?|$)/i.test(a.url)) || (a.url && a.url.startsWith("data:image/"))
+              a.type === "image" || (a.url && /\.(jpg|jpeg|png|gif|webp|svg|heic|heif)(\?|$)/i.test(a.url)) || (a.url && a.url.startsWith("data:image/"))
             );
             const videoAttach = attachments.find((a: any) =>
               a.type === "video" || (a.url && /\.(mp4|mov|webm|avi)(\?|$)/i.test(a.url)) || (a.url && a.url.startsWith("data:video/"))
@@ -3569,69 +4394,35 @@ export default function OmniaCanvasPage() {
         <div className="h-full flex flex-col">
           <div className="px-4 py-3 border-b border-black/10 dark:border-white/10 flex items-center justify-between gap-3">
             <div>
-              <h2 className="text-sm font-semibold text-black dark:text-white">Memory</h2>
-              <p className="text-xs opacity-70">Full memory view</p>
+              <h2 className="text-sm font-semibold text-black dark:text-white">The Vault</h2>
+              <p className="text-xs opacity-70">Files, images & media</p>
             </div>
             <button
               type="button"
               onClick={() => setShowMemorySidebar(false)}
               className="h-8 w-8 rounded-full hover:bg-black/10 dark:hover:bg-white/15 transition-colors flex items-center justify-center"
-              title="Close memory sidebar"
+              title="Close vault sidebar"
             >
               <PanelRightClose className="w-4 h-4" />
             </button>
           </div>
-          <div className="flex-1 min-h-0">
-            <iframe
-              src="/memory?embedded=1"
-              title="Memory"
-              className="w-full h-full border-0 bg-transparent"
-            />
+          <div className="flex-1 min-h-0 relative">
+            {showMemorySidebar && (
+              <iframe
+                src="/memory?embedded=1"
+                title="The Vault"
+                className="absolute inset-0 w-full h-full border-0 bg-transparent"
+              />
+            )}
           </div>
         </div>
       </aside>
 
-      <DialogAny open={!!interactionNote} onOpenChange={() => setInteractionNote(null)}>
-        <DialogContentAny className="bg-white dark:bg-[#171515] border-gray-200 dark:border-gray-700 text-black dark:text-white">
-          <DialogHeaderAny>
-            <DialogTitleAny>Open Memory</DialogTitleAny>
-            <DialogDescriptionAny className="text-gray-500 dark:text-gray-400">
-              How would you like to view this memory?
-            </DialogDescriptionAny>
-          </DialogHeaderAny>
-          <div className="grid gap-4 py-4">
-            <button
-              type="button"
-              onClick={() => {
-                nav("/memory");
-                setInteractionNote(null);
-              }}
-              className="bg-white hover:bg-gray-100 text-black border border-gray-200 dark:bg-white dark:text-black dark:hover:bg-gray-200 w-full h-12 text-lg text-left justify-start px-6 flex items-center"
-            >
-              <Clock className="w-5 h-5 mr-3" />
-              View as Memory Card
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                if (!interactionNote?.id) return;
-                nav(`/create?id=${interactionNote.id}`);
-                setInteractionNote(null);
-              }}
-              className="border border-gray-200 dark:border-gray-700 w-full h-12 text-lg text-left justify-start px-6 hover:bg-gray-50 dark:hover:bg-white/5 text-black dark:text-white flex items-center"
-            >
-              <Edit2 className="w-5 h-5 mr-3" />
-              Open in Create Studio
-            </button>
-          </div>
-        </DialogContentAny>
-      </DialogAny>
-
       {/* Center welcome prompt (no messages yet, not in chat mode) */}
       {!chatMode && chatMessages.length === 0 && (!chatRailOpen || centerChatLeaving) && (
         <div
-          className={`fixed inset-0 z-[85] pointer-events-none flex items-center justify-center px-4 ease-out ${centerChatLeaving ? "opacity-0 translate-x-[40vw] scale-[0.85]" : "opacity-100 translate-x-0 scale-100"}`}
-          style={{ transition: "all 400ms cubic-bezier(0.22,1,0.36,1)" }}
+          className={`fixed top-0 bottom-0 right-0 z-[85] pointer-events-none flex items-center justify-center px-4 ease-out ${centerChatLeaving ? "opacity-0 translate-x-[40vw] scale-[0.85]" : "opacity-100 translate-x-0 scale-100"}`}
+          style={{ left: "var(--sidebar-offset, 0px)", transition: "all 400ms cubic-bezier(0.22,1,0.36,1)" }}
         >
           <div className="w-full max-w-2xl space-y-6">
             <p
@@ -3654,6 +4445,7 @@ export default function OmniaCanvasPage() {
                     ref={centerChatInputRef}
                     value={chatInput}
                     onChange={(e) => setChatInput(e.target.value)}
+                    onPaste={handleChatPaste}
                     onInput={(e) => resizeChatInput(e.currentTarget)}
                     onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void handleCenterAskSend(); } }}
                     placeholder="Ask me anything..."
@@ -3688,22 +4480,104 @@ export default function OmniaCanvasPage() {
                   <div className="max-w-[94%] flex flex-wrap gap-1.5 justify-end mb-1.5">
                     {msg.attachments.map((att) => {
                       const at = (att.type || "").toLowerCase();
+                      const attUrl = att.url || "";
+                      const attKey = att.videoId || attUrl;
+                      const isSaved = att.videoId ? savedYouTubeIds.has(att.videoId) : savedMediaUrls.has(attUrl);
+                      const saveBtn = attKey ? (
+                        <button type="button" className={`mt-1 inline-flex items-center gap-1 px-2 py-0.5 text-[0.5625rem] rounded-md border transition-all ${isSaved ? "border-blue-400/40 bg-blue-500/10 text-blue-600" : "border-white/40 bg-white/50 text-black/50 hover:text-black/70 hover:border-black/20"}`} disabled={isSaved} onClick={(e) => { e.stopPropagation(); if (att.videoId) { void saveYouTubeToMedia(att.videoId, attUrl); setSavedYouTubeIds((p) => new Set(p).add(att.videoId!)); } else { void saveAttachmentToMedia(attUrl, att.name || "File", at === "image" ? "image" : at === "video" ? "video" : at === "audio" ? "audio" : "file"); setSavedMediaUrls((p) => new Set(p).add(attUrl)); } }}>
+                          {isSaved ? <><Check className="w-2.5 h-2.5" /> Saved</> : <><Save className="w-2.5 h-2.5" /> Save to Vault</>}
+                        </button>
+                      ) : null;
                       if (at === "youtube" && att.videoId) {
-                        return <div key={att.id} className="w-full max-w-[15rem] rounded-lg overflow-hidden border border-white/30"><iframe src={`https://www.youtube.com/embed/${att.videoId}`} className="w-full aspect-video" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowFullScreen title={att.name || "YouTube"} /></div>;
+                        return <div key={att.id}><div className="w-full max-w-[15rem] rounded-lg overflow-hidden border border-white/30"><iframe src={`https://www.youtube.com/embed/${att.videoId}`} className="w-full aspect-video" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowFullScreen title={att.name || "YouTube"} /></div>{saveBtn}</div>;
                       }
-                      if (at === "image" && att.url) return <img key={att.id} src={att.url} alt={att.name || "Image"} className="max-w-[11.25rem] max-h-[120px] rounded-lg border border-white/30 object-cover" />;
-                      if (at === "video" && att.url) return <div key={att.id} className="w-full max-w-[15rem] rounded-lg overflow-hidden border border-white/30"><video src={att.url} controls className="w-full" preload="metadata" /></div>;
-                      return <div key={att.id} className="flex items-center gap-1 rounded-lg border border-white/30 bg-white/20 px-2 py-1 text-[0.625rem]"><FileText className="w-3 h-3 opacity-60" /><span className="truncate max-w-[7.5rem]">{att.name || "File"}</span></div>;
+                      if (at === "image" && att.url) return <div key={att.id}><img src={att.url} alt={att.name || "Image"} className="max-w-[11.25rem] max-h-[120px] rounded-lg border border-white/30 object-cover" />{saveBtn}</div>;
+                      if (at === "video" && att.url) return <div key={att.id}><div className="w-full max-w-[15rem] rounded-lg overflow-hidden border border-white/30"><video src={att.url} controls className="w-full" preload="metadata" /></div>{saveBtn}</div>;
+                      return <div key={att.id}><div className="flex items-center gap-1 rounded-lg border border-white/30 bg-white/20 px-2 py-1 text-[0.625rem]"><FileText className="w-3 h-3 opacity-60" /><span className="truncate max-w-[7.5rem]">{att.name || "File"}</span></div>{saveBtn}</div>;
                     })}
                   </div>
                 )}
                 {msg.role === "user" ? (
                   <button type="button" onClick={() => { void replaySavedPromptResponse(msg); }} disabled={!msg.aiResponse} className="group relative text-left max-w-[94%] disabled:cursor-default" title={msg.aiResponse ? "Show saved AI response" : "Waiting for AI response"}>
-                    {msg.aiResponse ? (<span className="pointer-events-none absolute -top-6 right-0 rounded-md bg-black/70 px-2 py-1 text-[0.625rem] text-white opacity-0 transition-opacity duration-150 group-hover:opacity-100 whitespace-nowrap">Tap to view AI response</span>) : null}
-                    <div className="w-full rounded-2xl rounded-br-md px-3 py-2 text-xs leading-relaxed text-black/90 whitespace-pre-wrap break-words border border-white/55 bg-[linear-gradient(135deg,rgba(255,255,255,0.32),rgba(255,255,255,0.16))] backdrop-blur-xl shadow-[0_10px_28px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.35)]">{msg.content}</div>
+                    {msg.aiResponse ? (<span className="pointer-events-none absolute -top-6 right-0 rounded-md bg-black/70 px-2 py-1 text-[0.625rem] text-white opacity-0 transition-opacity duration-150 group-hover:opacity-100 whitespace-nowrap">{(msg as any).aiImageUrl ? "Tap to view generated image" : (msg as any).aiVideoUrl ? "Tap to view generated video" : "Tap to view AI response"}</span>) : null}
+                    <div className="w-full rounded-2xl rounded-br-md px-3 py-2 text-xs leading-relaxed text-black/90 border border-white/55 bg-[linear-gradient(135deg,rgba(255,255,255,0.32),rgba(255,255,255,0.16))] backdrop-blur-xl shadow-[0_10px_28px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.35)] [&_table]:text-[0.6875rem] [&_td]:py-1 [&_th]:py-1">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={buildChatMarkdownComponents(msg.id)}>{normalizeChecklistSyntax(msg.content || "")}</ReactMarkdown>
+                    </div>
+                    {(msg as any).aiImageUrl && (
+                      <div className="mt-1">
+                        <img src={(msg as any).aiImageUrl} alt="Generated image" className="max-w-full rounded-lg shadow-md" style={{ maxHeight: "160px" }} />
+                        <button type="button" className={`mt-1 inline-flex items-center gap-1 px-2 py-0.5 text-[0.5625rem] rounded-md border transition-all ${savedMediaUrls.has((msg as any).aiImageUrl) ? "border-blue-400/40 bg-blue-500/10 text-blue-600" : "border-white/40 bg-white/50 text-black/50 hover:text-black/70 hover:border-black/20"}`} disabled={savedMediaUrls.has((msg as any).aiImageUrl)} onClick={(e) => { e.stopPropagation(); void saveAiImageToMedia((msg as any).aiImageUrl, msg.content); setSavedMediaUrls((p) => new Set(p).add((msg as any).aiImageUrl)); }}>
+                          {savedMediaUrls.has((msg as any).aiImageUrl) ? <><Check className="w-2.5 h-2.5" /> Saved</> : <><Save className="w-2.5 h-2.5" /> Save to Vault</>}
+                        </button>
+                      </div>
+                    )}
+                    {(msg as any).aiVideoUrl && (
+                      <div className="mt-1">
+                        <video src={(msg as any).aiVideoUrl} controls preload="metadata" className="max-w-full rounded-lg shadow-md" style={{ maxHeight: "160px" }} />
+                        <button type="button" className={`mt-1 inline-flex items-center gap-1 px-2 py-0.5 text-[0.5625rem] rounded-md border transition-all ${savedMediaUrls.has((msg as any).aiVideoUrl) ? "border-blue-400/40 bg-blue-500/10 text-blue-600" : "border-white/40 bg-white/50 text-black/50 hover:text-black/70 hover:border-black/20"}`} disabled={savedMediaUrls.has((msg as any).aiVideoUrl)} onClick={(e) => { e.stopPropagation(); void saveAiVideoToMedia((msg as any).aiVideoUrl, msg.content); setSavedMediaUrls((p) => new Set(p).add((msg as any).aiVideoUrl)); }}>
+                          {savedMediaUrls.has((msg as any).aiVideoUrl) ? <><Check className="w-2.5 h-2.5" /> Saved</> : <><Save className="w-2.5 h-2.5" /> Save to Vault</>}
+                        </button>
+                      </div>
+                    )}
+                    {(msg as any).aiYouTubeUrls && (msg as any).aiYouTubeUrls.length > 0 && (
+                      <div className="mt-1.5 space-y-1.5">
+                        {(msg as any).aiYouTubeUrls.map((yt: { url: string; videoId: string }) => (
+                          <div key={yt.videoId}>
+                            <div className="rounded-lg overflow-hidden border border-white/30 shadow-md">
+                              <iframe
+                                src={`https://www.youtube-nocookie.com/embed/${yt.videoId}`}
+                                className="w-full aspect-video"
+                                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                                allowFullScreen
+                                title={`YouTube ${yt.videoId}`}
+                              />
+                            </div>
+                            <button
+                              type="button"
+                              className={`mt-1 inline-flex items-center gap-1 px-2 py-0.5 text-[0.5625rem] rounded-md border transition-all ${savedYouTubeIds.has(yt.videoId) ? "border-blue-400/40 bg-blue-500/10 text-blue-600" : "border-white/40 bg-white/50 text-black/50 hover:text-black/70 hover:border-black/20"}`}
+                              disabled={savedYouTubeIds.has(yt.videoId)}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void saveYouTubeToMedia(yt.videoId, yt.url);
+                                setSavedYouTubeIds((prev) => new Set(prev).add(yt.videoId));
+                              }}
+                            >
+                              {savedYouTubeIds.has(yt.videoId) ? <><Check className="w-2.5 h-2.5" /> Saved</> : <><Save className="w-2.5 h-2.5" /> Save to Vault</>}
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {(msg as any).aiWebLinks && (msg as any).aiWebLinks.length > 0 && (
+                      <div className="mt-1.5 flex flex-wrap gap-1">
+                        {(msg as any).aiWebLinks.map((link: string) => {
+                          const isSaved = savedMediaUrls.has(link);
+                          let domain = "";
+                          try { domain = new URL(link).hostname.replace(/^www\./, ""); } catch { domain = link; }
+                          return (
+                            <div key={link} className="inline-flex items-center gap-1 rounded-md border border-white/40 bg-white/50 px-1.5 py-0.5">
+                              <Globe className="w-2.5 h-2.5 text-black/40 flex-shrink-0" />
+                              <span className="text-[0.5625rem] text-black/60 truncate max-w-[5rem]">{domain}</span>
+                              <button
+                                type="button"
+                                disabled={isSaved}
+                                className={`inline-flex items-center gap-0.5 px-1 py-0.5 text-[0.5rem] rounded border transition-all ${isSaved ? "border-blue-400/40 bg-blue-500/10 text-blue-600" : "border-white/40 bg-white/50 text-black/50 hover:text-black/70"}`}
+                                onClick={(e) => { e.stopPropagation(); void saveLinkToMedia(link); setSavedMediaUrls((p) => new Set(p).add(link)); }}
+                              >
+                                {isSaved ? <Check className="w-2 h-2" /> : <Save className="w-2 h-2" />}
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </button>
                 ) : (
-                  <div className="max-w-[94%] rounded-2xl rounded-bl-md px-3 py-2 text-xs leading-relaxed whitespace-pre-wrap break-words border bg-white/70 border-white/70 text-black/85">{msg.content}</div>
+                  <div className="max-w-[94%] rounded-2xl rounded-bl-md px-3 py-2 text-xs leading-relaxed break-words border bg-white/70 border-white/70 text-black/85">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={buildChatMarkdownComponents(msg.id)}>
+                      {normalizeChecklistSyntax(msg.content || "")}
+                    </ReactMarkdown>
+                  </div>
                 )}
               </div>
             ))}
@@ -3724,6 +4598,7 @@ export default function OmniaCanvasPage() {
                     data-min-h="32"
                     value={chatInput}
                     onChange={(e) => setChatInput(e.target.value)}
+                    onPaste={handleChatPaste}
                     onInput={(e) => resizeChatInput(e.currentTarget)}
                     onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void handleChatSend(); } }}
                     placeholder="Ask me anything..."
@@ -3731,9 +4606,15 @@ export default function OmniaCanvasPage() {
                     className="w-full min-h-[32px] max-h-[220px] rounded-xl bg-white/12 border border-white/30 px-3 py-1.5 text-sm text-black placeholder:text-black/55 outline-none resize-none leading-5 scrollbar-hide"
                   />
                 )}
-                <button type="button" onClick={handleDictateToggle} className={`h-8 w-8 rounded-full flex items-center justify-center transition-colors ${isDictating ? "bg-blue-500/15" : "hover:bg-black/10"}`} title={isDictating ? "Stop recording" : "Dictate"}>
-                  <Mic className={`w-3.5 h-3.5 ${isDictating ? "text-blue-500" : ""}`} />
-                </button>
+                {isChatLoading ? (
+                  <button type="button" onClick={handleStopAi} className="h-8 w-8 rounded-full flex items-center justify-center transition-colors bg-red-500/15 hover:bg-red-500/25" title="Stop generating">
+                    <Square className="w-3 h-3 text-red-500" fill="currentColor" />
+                  </button>
+                ) : (
+                  <button type="button" onClick={handleDictateToggle} className={`h-8 w-8 rounded-full flex items-center justify-center transition-colors ${isDictating ? "bg-blue-500/15" : "hover:bg-black/10"}`} title={isDictating ? "Stop recording" : "Dictate"}>
+                    <Mic className={`w-3.5 h-3.5 ${isDictating ? "text-blue-500" : ""}`} />
+                  </button>
+                )}
               </div>
             </div>
           </div>
@@ -3745,7 +4626,7 @@ export default function OmniaCanvasPage() {
         <>
           {/* Left collage panel — canvas files */}
           {canvasFileBlocks.length > 0 && (
-            <div className="fixed top-[4.2rem] bottom-0 left-0 z-[66] w-[13.75rem] overflow-y-auto scrollbar-hide p-3 space-y-2 bg-white/20 backdrop-blur-sm border-r border-black/5 transition-all duration-300">
+            <div className="fixed top-[4.2rem] bottom-0 z-[66] w-[13.75rem] overflow-y-auto scrollbar-hide p-3 space-y-2 bg-white/20 backdrop-blur-sm border-r border-black/5 transition-all duration-300" style={{ left: "var(--sidebar-offset, 0px)" }}>
               <p className="text-[0.625rem] font-semibold uppercase tracking-wider text-black/40 px-1 mb-1">Canvas Files</p>
               <div className="flex flex-col gap-2">
                 {canvasFileBlocks.map((item) => (
@@ -3812,7 +4693,8 @@ export default function OmniaCanvasPage() {
           {chatMessages.length === 0 ? (
             /* Empty state: identical to the canvas first-render welcome */
             <div
-              className={`fixed inset-0 z-[65] flex items-center justify-center px-4 transition-all duration-300 ${canvasFileBlocks.length > 0 ? "pl-[232px]" : ""}`}
+              className={`fixed top-0 bottom-0 right-0 z-[65] flex items-center justify-center px-4 transition-all duration-300 ${canvasFileBlocks.length > 0 ? "pl-[232px]" : ""}`}
+              style={{ left: "var(--sidebar-offset, 0px)" }}
               onDragOver={handleFocusedChatDragOver}
               onDrop={handleFocusedChatDrop}
             >
@@ -3841,6 +4723,7 @@ export default function OmniaCanvasPage() {
                         ref={chatPanelInputRef}
                         value={chatInput}
                         onChange={(e) => setChatInput(e.target.value)}
+                        onPaste={handleChatPaste}
                         onInput={(e) => resizeChatInput(e.currentTarget)}
                         onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void handleChatSend(); } }}
                         placeholder="Ask me anything..."
@@ -3848,9 +4731,15 @@ export default function OmniaCanvasPage() {
                         className="w-full min-h-[44px] max-h-[220px] rounded-xl bg-transparent border border-white/30 px-4 py-3 text-sm text-black placeholder:text-black/55 outline-none resize-none leading-5 scrollbar-hide"
                       />
                     )}
-                    <button type="button" onClick={handleDictateToggle} className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors ${isDictating ? "bg-blue-500/15" : "hover:bg-black/10"}`} title={isDictating ? "Stop recording" : "Dictate"}>
-                      <Mic className={`w-4 h-4 ${isDictating ? "text-blue-500" : ""}`} />
-                    </button>
+                    {isChatLoading ? (
+                      <button type="button" onClick={handleStopAi} className="h-10 w-10 rounded-full flex items-center justify-center transition-colors bg-red-500/15 hover:bg-red-500/25" title="Stop generating">
+                        <Square className="w-3.5 h-3.5 text-red-500" fill="currentColor" />
+                      </button>
+                    ) : (
+                      <button type="button" onClick={handleDictateToggle} className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors ${isDictating ? "bg-blue-500/15" : "hover:bg-black/10"}`} title={isDictating ? "Stop recording" : "Dictate"}>
+                        <Mic className={`w-4 h-4 ${isDictating ? "text-blue-500" : ""}`} />
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
@@ -3858,7 +4747,8 @@ export default function OmniaCanvasPage() {
           ) : (
             /* Active conversation: messages scrollable, input pinned to bottom */
             <div
-              className={`fixed top-[4.2rem] bottom-0 right-0 z-[65] flex flex-col items-center bg-transparent transition-all duration-300 ${canvasFileBlocks.length > 0 ? "left-[220px]" : "left-0"}`}
+              className="fixed top-[4.2rem] bottom-0 right-0 z-[65] flex flex-col items-center bg-transparent transition-all duration-300"
+              style={{ left: canvasFileBlocks.length > 0 ? `calc(220px + var(--sidebar-offset, 0px))` : "var(--sidebar-offset, 0px)" }}
               onDragOver={handleFocusedChatDragOver}
               onDrop={handleFocusedChatDrop}
             >
@@ -3871,43 +4761,48 @@ export default function OmniaCanvasPage() {
                           <div className="max-w-[80%] flex flex-wrap gap-2 justify-end">
                             {msg.attachments.map((att) => {
                               const at = (att.type || "").toLowerCase();
+                              const attUrl = att.url || "";
+                              const attKey = att.videoId || attUrl;
+                              const isSaved = att.videoId ? savedYouTubeIds.has(att.videoId) : savedMediaUrls.has(attUrl);
+                              const saveBtn = attKey ? (
+                                <button type="button" className={`mt-1.5 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border transition-all ${isSaved ? "border-blue-400/40 bg-blue-500/10 text-blue-600" : "border-white/40 bg-white/60 backdrop-blur-md text-black/60 hover:text-black/80 hover:border-black/30 hover:shadow-sm"}`} disabled={isSaved} onClick={() => { if (att.videoId) { void saveYouTubeToMedia(att.videoId, attUrl); setSavedYouTubeIds((p) => new Set(p).add(att.videoId!)); } else { void saveAttachmentToMedia(attUrl, att.name || "File", at === "image" ? "image" : at === "video" ? "video" : at === "audio" ? "audio" : "file"); setSavedMediaUrls((p) => new Set(p).add(attUrl)); } }}>
+                                  {isSaved ? <><Check className="w-3 h-3" /> Saved</> : <><Save className="w-3 h-3" /> Save to Vault</>}
+                                </button>
+                              ) : null;
                               if (at === "youtube" && att.videoId) {
                                 return (
-                                  <div key={att.id} className="w-full max-w-[20rem] rounded-xl overflow-hidden border border-white/30 shadow-sm">
-                                    <iframe
-                                      src={`https://www.youtube.com/embed/${att.videoId}`}
-                                      className="w-full aspect-video"
-                                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                                      allowFullScreen
-                                      title={att.name || "YouTube"}
-                                    />
+                                  <div key={att.id}>
+                                    <div className="w-full max-w-[20rem] rounded-xl overflow-hidden border border-white/30 shadow-sm">
+                                      <iframe src={`https://www.youtube.com/embed/${att.videoId}`} className="w-full aspect-video" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowFullScreen title={att.name || "YouTube"} />
+                                    </div>
+                                    {saveBtn}
                                   </div>
                                 );
                               }
                               if (at === "image" && att.url) {
-                                return <img key={att.id} src={att.url} alt={att.name || "Image"} className="max-w-[16.25rem] max-h-[200px] rounded-xl border border-white/30 object-cover shadow-sm" />;
+                                return <div key={att.id}><img src={att.url} alt={att.name || "Image"} className="max-w-[16.25rem] max-h-[200px] rounded-xl border border-white/30 object-cover shadow-sm" />{saveBtn}</div>;
                               }
                               if (at === "video" && att.url) {
                                 return (
-                                  <div key={att.id} className="w-full max-w-[20rem] rounded-xl overflow-hidden border border-white/30 shadow-sm">
-                                    <video src={att.url} controls className="w-full" preload="metadata" />
+                                  <div key={att.id}>
+                                    <div className="w-full max-w-[20rem] rounded-xl overflow-hidden border border-white/30 shadow-sm"><video src={att.url} controls className="w-full" preload="metadata" /></div>
+                                    {saveBtn}
                                   </div>
                                 );
                               }
                               if (at === "audio" && att.url) {
                                 return (
-                                  <div key={att.id} className="flex items-center gap-2 rounded-xl border border-white/30 bg-white/20 px-3 py-2">
-                                    <Music className="w-4 h-4 opacity-60" />
-                                    <audio src={att.url} controls className="h-8" preload="metadata" />
-                                    <span className="text-[0.625rem] truncate max-w-[7.5rem]">{att.name || "Audio"}</span>
+                                  <div key={att.id}>
+                                    <div className="flex items-center gap-2 rounded-xl border border-white/30 bg-white/20 px-3 py-2"><Music className="w-4 h-4 opacity-60" /><audio src={att.url} controls className="h-8" preload="metadata" /><span className="text-[0.625rem] truncate max-w-[7.5rem]">{att.name || "Audio"}</span></div>
+                                    {saveBtn}
                                   </div>
                                 );
                               }
                               if (at === "pdf") {
                                 return (
-                                  <div key={att.id} className="flex items-center gap-2 rounded-xl border border-white/30 bg-white/20 px-3 py-2">
-                                    <FileText className="w-4 h-4 opacity-60" />
-                                    <span className="text-xs truncate max-w-[12.5rem]">{att.name || "PDF"}</span>
+                                  <div key={att.id}>
+                                    <div className="flex items-center gap-2 rounded-xl border border-white/30 bg-white/20 px-3 py-2"><FileText className="w-4 h-4 opacity-60" /><span className="text-xs truncate max-w-[12.5rem]">{att.name || "PDF"}</span></div>
+                                    {saveBtn}
                                   </div>
                                 );
                               }
@@ -3920,21 +4815,77 @@ export default function OmniaCanvasPage() {
                                 );
                               }
                               return (
-                                <div key={att.id} className="flex items-center gap-2 rounded-xl border border-white/30 bg-white/20 px-3 py-2">
-                                  <FileText className="w-4 h-4 opacity-60" />
-                                  <span className="text-xs truncate max-w-[12.5rem]">{att.name || att.url || "File"}</span>
+                                <div key={att.id}>
+                                  <div className="flex items-center gap-2 rounded-xl border border-white/30 bg-white/20 px-3 py-2"><FileText className="w-4 h-4 opacity-60" /><span className="text-xs truncate max-w-[12.5rem]">{att.name || att.url || "File"}</span></div>
+                                  {saveBtn}
                                 </div>
                               );
                             })}
                           </div>
                         )}
-                        <div className="max-w-[80%] rounded-2xl rounded-br-md px-4 py-3 text-sm leading-relaxed text-black/90 whitespace-pre-wrap break-words border border-white/55 bg-[linear-gradient(135deg,rgba(255,255,255,0.32),rgba(255,255,255,0.16))] backdrop-blur-xl shadow-[0_10px_28px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.35)]">{msg.content}</div>
+                        <div className="max-w-[80%] rounded-2xl rounded-br-md px-4 py-3 text-sm leading-relaxed text-black/90 border border-white/55 bg-[linear-gradient(135deg,rgba(255,255,255,0.32),rgba(255,255,255,0.16))] backdrop-blur-xl shadow-[0_10px_28px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.35)] [&_table]:my-2 [&_td]:px-2 [&_th]:px-2">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]} components={buildChatMarkdownComponents(msg.id)}>{normalizeChecklistSyntax(msg.content || "")}</ReactMarkdown>
+                        </div>
                       </div>
                     )}
                     {msg.role === "user" && msg.aiResponse && (
                       <div className="flex justify-start">
                         <div className="max-w-[80%]">
-                          <div className="px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap break-words text-black/85">{msg.aiResponse}</div>
+                          {(msg as any).aiImageUrl ? (
+                            <div className="px-4 py-3">
+                              <img src={(msg as any).aiImageUrl} alt="Generated image" className="max-w-full rounded-xl shadow-lg" style={{ maxHeight: "320px" }} />
+                              <button type="button" className={`mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border transition-all ${savedMediaUrls.has((msg as any).aiImageUrl) ? "border-blue-400/40 bg-blue-500/10 text-blue-600" : "border-white/40 bg-white/60 backdrop-blur-md text-black/60 hover:text-black/80 hover:border-black/30 hover:shadow-sm"}`} disabled={savedMediaUrls.has((msg as any).aiImageUrl)} onClick={() => { void saveAiImageToMedia((msg as any).aiImageUrl, msg.content); setSavedMediaUrls((p) => new Set(p).add((msg as any).aiImageUrl)); }}>
+                                {savedMediaUrls.has((msg as any).aiImageUrl) ? <><Check className="w-3 h-3" /> Saved</> : <><Save className="w-3 h-3" /> Save to Vault</>}
+                              </button>
+                            </div>
+                          ) : (msg as any).aiVideoUrl ? (
+                            <div className="px-4 py-3">
+                              <video src={(msg as any).aiVideoUrl} controls preload="metadata" className="max-w-full rounded-xl shadow-lg" style={{ maxHeight: "320px" }} />
+                              <button type="button" className={`mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border transition-all ${savedMediaUrls.has((msg as any).aiVideoUrl) ? "border-blue-400/40 bg-blue-500/10 text-blue-600" : "border-white/40 bg-white/60 backdrop-blur-md text-black/60 hover:text-black/80 hover:border-black/30 hover:shadow-sm"}`} disabled={savedMediaUrls.has((msg as any).aiVideoUrl)} onClick={() => { void saveAiVideoToMedia((msg as any).aiVideoUrl, msg.content); setSavedMediaUrls((p) => new Set(p).add((msg as any).aiVideoUrl)); }}>
+                                {savedMediaUrls.has((msg as any).aiVideoUrl) ? <><Check className="w-3 h-3" /> Saved</> : <><Save className="w-3 h-3" /> Save to Vault</>}
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="px-4 py-3 text-sm leading-relaxed break-words text-black/85">
+                              <ReactMarkdown remarkPlugins={[remarkGfm]} components={buildChatMarkdownComponents(msg.id)}>
+                                {normalizeChecklistSyntax(msg.aiResponse || "")}
+                              </ReactMarkdown>
+                            </div>
+                          )}
+                          {(msg as any).aiYouTubeUrls && (msg as any).aiYouTubeUrls.length > 0 && (
+                            <div className="px-4 pb-3 space-y-3">
+                              {(msg as any).aiYouTubeUrls.map((yt: { url: string; videoId: string }) => (
+                                <div key={yt.videoId}>
+                                  <div className="rounded-xl overflow-hidden border border-white/30 shadow-lg">
+                                    <iframe
+                                      src={`https://www.youtube-nocookie.com/embed/${yt.videoId}`}
+                                      className="w-full aspect-video"
+                                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                                      allowFullScreen
+                                      referrerPolicy="strict-origin-when-cross-origin"
+                                      title={`YouTube ${yt.videoId}`}
+                                    />
+                                  </div>
+                                  <div className="flex items-center gap-2 mt-1.5">
+                                    <button
+                                      type="button"
+                                      className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border transition-all ${savedYouTubeIds.has(yt.videoId) ? "border-blue-400/40 bg-blue-500/10 text-blue-600" : "border-white/40 bg-white/60 backdrop-blur-md text-black/60 hover:text-black/80 hover:border-black/30 hover:shadow-sm"}`}
+                                      disabled={savedYouTubeIds.has(yt.videoId)}
+                                      onClick={() => {
+                                        void saveYouTubeToMedia(yt.videoId, yt.url);
+                                        setSavedYouTubeIds((prev) => new Set(prev).add(yt.videoId));
+                                      }}
+                                    >
+                                      {savedYouTubeIds.has(yt.videoId) ? <><Check className="w-3 h-3" /> Saved</> : <><Save className="w-3 h-3" /> Save to Vault</>}
+                                    </button>
+                                    <a href={yt.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-white/40 bg-white/60 backdrop-blur-md text-black/70 hover:border-black/30 hover:shadow-sm transition-all">
+                                      <Play className="w-3 h-3" /> Open on YouTube
+                                    </a>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
                           {Array.isArray((msg as any).sources) && (msg as any).sources.length > 0 && (
                             <div className="flex flex-wrap gap-1.5 px-4 pb-3">
                               {(msg as any).sources.map((src: { title: string; url: string }, i: number) => (
@@ -3945,13 +4896,61 @@ export default function OmniaCanvasPage() {
                               ))}
                             </div>
                           )}
+                          {(msg as any).aiWebLinks && (msg as any).aiWebLinks.length > 0 && (
+                            <div className="flex flex-wrap gap-1.5 px-4 pb-3">
+                              {(msg as any).aiWebLinks.map((link: string) => {
+                                const isSaved = savedMediaUrls.has(link);
+                                let domain = "";
+                                try { domain = new URL(link).hostname.replace(/^www\./, ""); } catch { domain = link; }
+                                return (
+                                  <div key={link} className="inline-flex items-center gap-1 rounded-lg border border-white/40 bg-white/50 backdrop-blur-md px-2 py-1">
+                                    <Globe className="w-3 h-3 text-black/40 flex-shrink-0" />
+                                    <a href={link} target="_blank" rel="noopener noreferrer" className="text-xs text-black/70 hover:text-black truncate max-w-[8rem]">{domain}</a>
+                                    <button
+                                      type="button"
+                                      disabled={isSaved}
+                                      className={`ml-1 inline-flex items-center gap-1 px-1.5 py-0.5 text-[0.5625rem] rounded-md border transition-all ${isSaved ? "border-blue-400/40 bg-blue-500/10 text-blue-600" : "border-white/40 bg-white/50 text-black/50 hover:text-black/70 hover:border-black/20"}`}
+                                      onClick={() => { void saveLinkToMedia(link); setSavedMediaUrls((p) => new Set(p).add(link)); }}
+                                    >
+                                      {isSaved ? <><Check className="w-2.5 h-2.5" /> Saved</> : <><Save className="w-2.5 h-2.5" /> Save</>}
+                                    </button>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                          <div className="flex items-center gap-0.5 px-3 pb-2 pt-0.5">
+                            <button type="button" title="Share" className="p-1.5 rounded-md text-black/40 hover:text-black/70 hover:bg-black/5 transition-colors" onClick={() => { const text = msg.aiResponse || ""; if (navigator.share) { navigator.share({ text }).catch(() => {}); } else { void navigator.clipboard.writeText(text); } }}>
+                              <Share2 className="w-3.5 h-3.5" />
+                            </button>
+                            <button type="button" title="Download" className="p-1.5 rounded-md text-black/40 hover:text-black/70 hover:bg-black/5 transition-colors" onClick={() => { const text = msg.aiResponse || ""; const blob = new Blob([text], { type: "text/plain" }); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = "response.txt"; a.click(); URL.revokeObjectURL(url); }}>
+                              <Download className="w-3.5 h-3.5" />
+                            </button>
+                            <button type="button" title="Copy" className={`p-1.5 rounded-md transition-colors ${copiedMsgId === msg.id ? "text-blue-500 bg-blue-500/10" : "text-black/40 hover:text-black/70 hover:bg-black/5"}`} onClick={() => { void navigator.clipboard.writeText(msg.aiResponse || ""); setCopiedMsgId(msg.id); setTimeout(() => setCopiedMsgId((cur) => cur === msg.id ? null : cur), 2000); }}>
+                              {copiedMsgId === msg.id ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                            </button>
+                            <button type="button" title="Regenerate" className="p-1.5 rounded-md text-black/40 hover:text-black/70 hover:bg-black/5 transition-colors" onClick={() => { setChatMessages((prev) => prev.map((m) => m.id === msg.id ? { ...m, aiResponse: undefined, aiImageUrl: undefined, aiVideoUrl: undefined, sources: undefined } : m)); pendingAiBrickActionRef.current = true; setChatInput(msg.content); }}>
+                              <RefreshCw className="w-3.5 h-3.5" />
+                            </button>
+                            <div className="w-px h-3.5 bg-black/10 mx-1" />
+                            <button type="button" title="Like" className={`p-1.5 rounded-md transition-colors ${chatReactions[msg.id] === "like" ? "text-green-600 bg-green-500/10" : "text-black/40 hover:text-black/70 hover:bg-black/5"}`} onClick={() => setChatReactions((prev) => ({ ...prev, [msg.id]: prev[msg.id] === "like" ? null : "like" }))}>
+                              <ThumbsUp className="w-3.5 h-3.5" />
+                            </button>
+                            <button type="button" title="Dislike" className={`p-1.5 rounded-md transition-colors ${chatReactions[msg.id] === "dislike" ? "text-red-500 bg-red-500/10" : "text-black/40 hover:text-black/70 hover:bg-black/5"}`} onClick={() => setChatReactions((prev) => ({ ...prev, [msg.id]: prev[msg.id] === "dislike" ? null : "dislike" }))}>
+                              <ThumbsDown className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
                         </div>
                       </div>
                     )}
                     {msg.role !== "user" && (
                       <div className="flex justify-start">
                         <div className="max-w-[80%]">
-                          <div className="px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap break-words text-black/85">{msg.content}</div>
+                          <div className="px-4 py-3 text-sm leading-relaxed break-words text-black/85">
+                            <ReactMarkdown remarkPlugins={[remarkGfm]} components={buildChatMarkdownComponents(msg.id)}>
+                              {normalizeChecklistSyntax(msg.content || "")}
+                            </ReactMarkdown>
+                          </div>
                           {Array.isArray((msg as any).sources) && (msg as any).sources.length > 0 && (
                             <div className="flex flex-wrap gap-1.5 px-4 pb-3">
                               {(msg as any).sources.map((src: { title: string; url: string }, i: number) => (
@@ -3962,6 +4961,50 @@ export default function OmniaCanvasPage() {
                               ))}
                             </div>
                           )}
+                          {(msg as any).aiWebLinks && (msg as any).aiWebLinks.length > 0 && (
+                            <div className="flex flex-wrap gap-1.5 px-4 pb-3">
+                              {(msg as any).aiWebLinks.map((link: string) => {
+                                const isSaved = savedMediaUrls.has(link);
+                                let domain = "";
+                                try { domain = new URL(link).hostname.replace(/^www\./, ""); } catch { domain = link; }
+                                return (
+                                  <div key={link} className="inline-flex items-center gap-1 rounded-lg border border-white/40 bg-white/50 backdrop-blur-md px-2 py-1">
+                                    <Globe className="w-3 h-3 text-black/40 flex-shrink-0" />
+                                    <a href={link} target="_blank" rel="noopener noreferrer" className="text-xs text-black/70 hover:text-black truncate max-w-[8rem]">{domain}</a>
+                                    <button
+                                      type="button"
+                                      disabled={isSaved}
+                                      className={`ml-1 inline-flex items-center gap-1 px-1.5 py-0.5 text-[0.5625rem] rounded-md border transition-all ${isSaved ? "border-blue-400/40 bg-blue-500/10 text-blue-600" : "border-white/40 bg-white/50 text-black/50 hover:text-black/70 hover:border-black/20"}`}
+                                      onClick={() => { void saveLinkToMedia(link); setSavedMediaUrls((p) => new Set(p).add(link)); }}
+                                    >
+                                      {isSaved ? <><Check className="w-2.5 h-2.5" /> Saved</> : <><Save className="w-2.5 h-2.5" /> Save</>}
+                                    </button>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                          <div className="flex items-center gap-0.5 px-3 pb-2 pt-0.5">
+                            <button type="button" title="Share" className="p-1.5 rounded-md text-black/40 hover:text-black/70 hover:bg-black/5 transition-colors" onClick={() => { const text = (msg as any).content || ""; if (navigator.share) { navigator.share({ text }).catch(() => {}); } else { void navigator.clipboard.writeText(text); } }}>
+                              <Share2 className="w-3.5 h-3.5" />
+                            </button>
+                            <button type="button" title="Download" className="p-1.5 rounded-md text-black/40 hover:text-black/70 hover:bg-black/5 transition-colors" onClick={() => { const text = (msg as any).content || ""; const blob = new Blob([text], { type: "text/plain" }); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = "response.txt"; a.click(); URL.revokeObjectURL(url); }}>
+                              <Download className="w-3.5 h-3.5" />
+                            </button>
+                            <button type="button" title="Copy" className={`p-1.5 rounded-md transition-colors ${copiedMsgId === msg.id ? "text-blue-500 bg-blue-500/10" : "text-black/40 hover:text-black/70 hover:bg-black/5"}`} onClick={() => { void navigator.clipboard.writeText((msg as any).content || ""); setCopiedMsgId(msg.id); setTimeout(() => setCopiedMsgId((cur) => cur === msg.id ? null : cur), 2000); }}>
+                              {copiedMsgId === msg.id ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                            </button>
+                            <button type="button" title="Regenerate" className="p-1.5 rounded-md text-black/40 hover:text-black/70 hover:bg-black/5 transition-colors" onClick={() => { const prevUserMsg = chatMessages.slice(0, idx).reverse().find((m) => m.role === "user"); if (prevUserMsg) { setChatMessages((prev) => prev.filter((m) => m.id !== msg.id)); pendingAiBrickActionRef.current = true; setChatInput(prevUserMsg.content); } }}>
+                              <RefreshCw className="w-3.5 h-3.5" />
+                            </button>
+                            <div className="w-px h-3.5 bg-black/10 mx-1" />
+                            <button type="button" title="Like" className={`p-1.5 rounded-md transition-colors ${chatReactions[msg.id] === "like" ? "text-green-600 bg-green-500/10" : "text-black/40 hover:text-black/70 hover:bg-black/5"}`} onClick={() => setChatReactions((prev) => ({ ...prev, [msg.id]: prev[msg.id] === "like" ? null : "like" }))}>
+                              <ThumbsUp className="w-3.5 h-3.5" />
+                            </button>
+                            <button type="button" title="Dislike" className={`p-1.5 rounded-md transition-colors ${chatReactions[msg.id] === "dislike" ? "text-red-500 bg-red-500/10" : "text-black/40 hover:text-black/70 hover:bg-black/5"}`} onClick={() => setChatReactions((prev) => ({ ...prev, [msg.id]: prev[msg.id] === "dislike" ? null : "dislike" }))}>
+                              <ThumbsDown className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
                         </div>
                       </div>
                     )}
@@ -3998,6 +5041,7 @@ export default function OmniaCanvasPage() {
                         ref={chatPanelInputRef}
                         value={chatInput}
                         onChange={(e) => setChatInput(e.target.value)}
+                        onPaste={handleChatPaste}
                         onInput={(e) => resizeChatInput(e.currentTarget)}
                         onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void handleChatSend(); } }}
                         placeholder="Ask me anything..."
@@ -4005,9 +5049,15 @@ export default function OmniaCanvasPage() {
                         className="w-full min-h-[44px] max-h-[220px] rounded-xl bg-transparent border border-white/30 px-4 py-3 text-sm text-black placeholder:text-black/55 outline-none resize-none leading-5 scrollbar-hide"
                       />
                     )}
-                    <button type="button" onClick={handleDictateToggle} className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors ${isDictating ? "bg-blue-500/15" : "hover:bg-black/10"}`} title={isDictating ? "Stop recording" : "Dictate"}>
-                      <Mic className={`w-4 h-4 ${isDictating ? "text-blue-500" : ""}`} />
-                    </button>
+                    {isChatLoading ? (
+                      <button type="button" onClick={handleStopAi} className="h-10 w-10 rounded-full flex items-center justify-center transition-colors bg-red-500/15 hover:bg-red-500/25" title="Stop generating">
+                        <Square className="w-3.5 h-3.5 text-red-500" fill="currentColor" />
+                      </button>
+                    ) : (
+                      <button type="button" onClick={handleDictateToggle} className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors ${isDictating ? "bg-blue-500/15" : "hover:bg-black/10"}`} title={isDictating ? "Stop recording" : "Dictate"}>
+                        <Mic className={`w-4 h-4 ${isDictating ? "text-blue-500" : ""}`} />
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
@@ -4143,7 +5193,7 @@ export default function OmniaCanvasPage() {
           <input
             ref={fileInputRef}
             type="file"
-            accept="*/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.txt,.md,.json,.html,.csv,.rtf,.png,.jpg,.jpeg,.gif,.webp,.mp3,.wav,.ogg,.flac,.mp4,.mov,.avi,.webm,.m4a,.aac,.wma"
+            accept="*/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.txt,.md,.json,.html,.csv,.rtf,.png,.jpg,.jpeg,.gif,.webp,.heic,.heif,.mp3,.wav,.ogg,.flac,.mp4,.mov,.avi,.webm,.m4a,.aac,.wma"
             multiple
             className="hidden"
             onChange={(e) => {
@@ -4212,6 +5262,256 @@ export default function OmniaCanvasPage() {
               </li>
             ))}
           </ul>
+        </div>
+      )}
+
+      {connectionCards.length > 0 && (
+        <div
+          className={`fixed right-6 z-[86] w-[22rem] rounded-2xl border border-blue-200/60 bg-white/95 backdrop-blur-lg shadow-2xl shadow-blue-500/10 p-4 text-black transition-all duration-300 ${
+            showConnectionCard ? "translate-x-0 opacity-100" : "translate-x-8 opacity-0 pointer-events-none"
+          }`}
+          style={{ bottom: aiSuggestions.length > 0 && showAiSuggestionToast ? "calc(1.5rem + 12rem)" : "1.5rem" }}
+        >
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-blue-500" />
+              <span className="text-xs font-semibold text-blue-600">AI Connection Found</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowConnectionCard(false)}
+              className="rounded-full w-5 h-5 flex items-center justify-center hover:bg-black/8 transition-colors"
+            >
+              <X className="w-3 h-3 text-black/40" />
+            </button>
+          </div>
+          <ul className="space-y-2">
+            {connectionCards.map((conn, i) => (
+              <li
+                key={`${conn.title}-${i}`}
+                className="rounded-xl border border-blue-100 bg-white px-3 py-2.5 cursor-pointer hover:bg-blue-50/60 transition-colors"
+                onClick={async () => {
+                  if (conn.sourceType === "board") {
+                    const cached = getCachedWorkspaceSummary()?.full || "";
+                    const boardMatch = cached.match(new RegExp(`"${conn.title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"\\s*\\(id=([^)]+)\\)`));
+                    const connBoardId = boardMatch?.[1];
+                    if (connBoardId) {
+                      try {
+                        const { data } = await supabase
+                          .from("omnia_board_states")
+                          .select("state")
+                          .eq("board_id", connBoardId)
+                          .order("created_at", { ascending: false })
+                          .limit(1)
+                          .maybeSingle();
+                        const snapshot = data?.state as any;
+                        if (snapshot?.blocks && snapshot?.blockOrder) {
+                          const st = useCanvasStore.getState();
+                          const g = Math.max(1, Math.floor(st.gridSize || 24));
+                          const existingIds = st.blockOrder || [];
+                          let maxY = 0;
+                          for (const eid of existingIds) {
+                            const eb = (st.blocks || {})[eid] as any;
+                            if (eb) maxY = Math.max(maxY, (eb.y || 0) + (eb.height || g));
+                          }
+                          const startY = maxY + g * 2;
+                          const sourceBlocks = snapshot.blocks;
+                          const sourceOrder: string[] = snapshot.blockOrder;
+                          let minSourceY = Infinity;
+                          for (const sid of sourceOrder) {
+                            const sb = sourceBlocks[sid] as any;
+                            if (sb) minSourceY = Math.min(minSourceY, sb.y || 0);
+                          }
+                          if (!isFinite(minSourceY)) minSourceY = 0;
+                          for (const sid of sourceOrder) {
+                            const sb = sourceBlocks[sid] as any;
+                            if (!sb) continue;
+                            const newId = `b-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+                            const imported = { ...sb, id: newId, y: startY + ((sb.y || 0) - minSourceY) };
+                            st.addBlock(imported as any);
+                          }
+                        }
+                      } catch { /* ignore fetch errors */ }
+                    }
+                  } else {
+                    savingRef.current = false;
+                    saveSnapshot().then(() => nav("/memory"));
+                  }
+                  setShowConnectionCard(false);
+                }}
+              >
+                <div className="flex items-center gap-2 mb-1">
+                  <span className={`text-[10px] font-bold uppercase px-1.5 py-0.5 rounded ${
+                    conn.sourceType === "board"
+                      ? "bg-blue-100 text-blue-600"
+                      : "bg-green-100 text-green-600"
+                  }`}>
+                    {conn.sourceType}
+                  </span>
+                  <span className="text-xs font-medium text-black/80 truncate">{conn.title}</span>
+                </div>
+                <p className="text-[11px] text-black/55 leading-snug">{conn.reason}</p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {mediaSuggestions.length > 0 && (
+        <div
+          className={`fixed right-6 z-[87] w-[22rem] rounded-2xl border border-blue-200/60 bg-white/95 backdrop-blur-lg shadow-2xl shadow-blue-500/10 p-4 text-black transition-all duration-300 ${
+            showMediaSuggestion ? "translate-x-0 opacity-100" : "translate-x-8 opacity-0 pointer-events-none"
+          }`}
+          style={{ bottom: showConnectionCard && connectionCards.length > 0 ? "calc(1.5rem + 14rem)" : aiSuggestions.length > 0 && showAiSuggestionToast ? "calc(1.5rem + 12rem)" : "1.5rem" }}
+        >
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <FileText className="w-4 h-4 text-blue-500" />
+              <span className="text-xs font-semibold text-blue-600">Related Media Found</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => { setShowMediaSuggestion(false); setMediaSuggestions([]); }}
+              className="rounded-full w-5 h-5 flex items-center justify-center hover:bg-black/8 transition-colors"
+            >
+              <X className="w-3 h-3 text-black/40" />
+            </button>
+          </div>
+          <p className="text-[11px] text-black/45 mb-2">Select media to import onto this board</p>
+          <ul className="space-y-1.5 max-h-[200px] overflow-y-auto scrollbar-hide">
+            {mediaSuggestions.map((item) => {
+              const isSelected = selectedMediaIds.has(item.noteId);
+              return (
+                <li
+                  key={item.noteId}
+                  className={`rounded-xl border px-3 py-2.5 cursor-pointer transition-colors ${
+                    isSelected
+                      ? "border-blue-400 bg-blue-50/80"
+                      : "border-blue-100 bg-white hover:bg-blue-50/40"
+                  }`}
+                  onClick={() => {
+                    setSelectedMediaIds((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(item.noteId)) next.delete(item.noteId);
+                      else next.add(item.noteId);
+                      return next;
+                    });
+                  }}
+                >
+                  <div className="flex items-center gap-2 mb-0.5">
+                    <div className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 transition-colors ${
+                      isSelected ? "bg-blue-500 border-blue-500" : "border-black/20 bg-white"
+                    }`}>
+                      {isSelected && <Check className="w-2.5 h-2.5 text-white" />}
+                    </div>
+                    <span className="text-xs font-medium text-black/80 truncate">{item.title}</span>
+                  </div>
+                  <p className="text-[11px] text-black/50 leading-snug pl-6">{item.reason}</p>
+                </li>
+              );
+            })}
+          </ul>
+          <button
+            type="button"
+            disabled={selectedMediaIds.size === 0 || importingMedia}
+            className="mt-3 w-full py-2 rounded-xl text-xs font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed bg-blue-500 text-white hover:bg-blue-600"
+            onClick={async () => {
+              if (selectedMediaIds.size === 0) return;
+              setImportingMedia(true);
+              try {
+                const noteIds = [...selectedMediaIds];
+                const { data: notes } = await supabase
+                  .from("notes")
+                  .select("id, title, content")
+                  .in("id", noteIds);
+                if (!notes || notes.length === 0) return;
+
+                const parseNoteAtts = (content: string): any[] => {
+                  const marker = "[ATTACHMENTS_JSON:";
+                  const start = (content || "").indexOf(marker);
+                  if (start === -1) return [];
+                  const jsonStart = start + marker.length;
+                  let bc = 0, jsonEnd = jsonStart;
+                  for (let i = jsonStart; i < content.length; i++) {
+                    if (content[i] === "[") bc++;
+                    if (content[i] === "]") { bc--; if (bc === 0) { jsonEnd = i + 1; break; } }
+                  }
+                  if (jsonEnd <= jsonStart) return [];
+                  try { return Array.isArray(JSON.parse(content.slice(jsonStart, jsonEnd))) ? JSON.parse(content.slice(jsonStart, jsonEnd)) : []; }
+                  catch { return []; }
+                };
+                const resolveType = (att: any): string => {
+                  const url = String(att?.url || "");
+                  const name = String(att?.name || "");
+                  if (url.includes("youtube.com") || url.includes("youtu.be")) return "youtube";
+                  const explicit = att?.type;
+                  if (explicit && explicit !== "file") return explicit;
+                  const extMatch = (url.split("/").pop() || name).match(/\.([^.]+)$/);
+                  const ext = extMatch ? extMatch[1].toLowerCase() : "";
+                  if (["jpg","jpeg","png","gif","webp","svg","heic","heif"].includes(ext)) return "image";
+                  if (["mp4","mov","webm"].includes(ext)) return "video";
+                  if (["mp3","wav","ogg","m4a"].includes(ext)) return "audio";
+                  if (ext === "pdf") return "pdf";
+                  return url ? "link" : "text";
+                };
+
+                const st = useCanvasStore.getState() as any;
+                const g = Math.max(1, Math.floor(st.gridSize || 24));
+                const cam = st.camera || { x: 0, y: 0 };
+                let placeX = Math.max(0, Math.floor(-cam.x + g * 2));
+                let placeY = Math.max(0, Math.floor(-cam.y + g * 2));
+
+                for (const note of notes) {
+                  const atts = parseNoteAtts(note.content || "");
+                  if (atts.length === 0) {
+                    const ytMatch = (note.content || "").match(/https?:\/\/(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([\w-]{11})/);
+                    if (ytMatch) {
+                      st.addYouTubeBlockAt({ x: placeX, y: placeY }, { url: ytMatch[0], videoId: ytMatch[1] });
+                      placeY += g * 10 + g;
+                    } else {
+                      const blockId = `b-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+                      st.addBlock({ id: blockId, type: "text" as const, x: placeX, y: placeY, width: g * 10, height: g * 4, content: (note.content || "").replace(/\[ATTACHMENTS_JSON:[\s\S]*$/, "").trim(), format: "rich", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
+                      placeY += g * 5;
+                    }
+                    continue;
+                  }
+                  for (const att of atts) {
+                    const url = String(att.url || "").trim();
+                    if (!url) continue;
+                    const type = resolveType(att);
+                    const blockId = `b-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+                    if (type === "youtube") {
+                      const vid = att.videoId || (url.match(/(?:v=|youtu\.be\/)([\w-]{11})/) || [])[1] || "";
+                      st.addYouTubeBlockAt({ x: placeX, y: placeY }, { url, videoId: vid });
+                      placeY += g * 10 + g;
+                    } else if (type === "image") {
+                      st.addBlock({ id: blockId, type: "create" as const, mode: "image", x: placeX, y: placeY, width: g * 12, height: g * 12, data: { src: url, name: att.name || "Image" }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
+                      placeY += g * 13;
+                    } else if (type === "video") {
+                      st.addBlock({ id: blockId, type: "create" as const, mode: "video", x: placeX, y: placeY, width: g * 16, height: g * 10, data: { url, mime: att.mime || "video/mp4", name: att.name || "Video" }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
+                      placeY += g * 11;
+                    } else if (type === "audio") {
+                      st.addBlock({ id: blockId, type: "create" as const, mode: "embed", x: placeX, y: placeY, width: g * 14, height: g * 4, data: { url, mime: att.mime || "audio/mpeg", name: att.name || "Audio", dataUrl: url }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
+                      placeY += g * 5;
+                    } else if (type === "pdf") {
+                      st.addBlock({ id: blockId, type: "create" as const, mode: "embed", x: placeX, y: placeY, width: g * 16, height: g * 14, data: { url, mime: "application/pdf", name: att.name || "PDF", dataUrl: url }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
+                      placeY += g * 15;
+                    } else {
+                      st.addBlock({ id: blockId, type: "create" as const, mode: "embed", x: placeX, y: placeY, width: g * 14, height: g * 6, data: { url, name: att.name || note.title || "File", dataUrl: url }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
+                      placeY += g * 7;
+                    }
+                  }
+                }
+              } catch { /* ignore */ }
+              finally {
+                setImportingMedia(false);
+                setShowMediaSuggestion(false);
+                setMediaSuggestions([]);
+              }
+            }}
+          >
+            {importingMedia ? "Importing…" : `Import ${selectedMediaIds.size > 0 ? selectedMediaIds.size : ""} Selected`}
+          </button>
         </div>
       )}
 

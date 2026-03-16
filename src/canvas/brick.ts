@@ -1,6 +1,10 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Heading1, Heading2, Type, List, ListOrdered, ListChecks, ListCollapse, TextQuote, Table, Calendar, Image, MousePointerClick, Code, Mic, FileText, BarChart3, Kanban, ClipboardList, LayoutGrid, MoreHorizontal } from "lucide-react";
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import ReactDOM from "react-dom";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { Heading1, Heading2, Type, List, ListOrdered, ListChecks, ListCollapse, TextQuote, Image, Mic, MoreHorizontal, Minimize2, Maximize2, Table } from "lucide-react";
 import { useCanvasStore } from "@/store/canvasStore";
+import { getStructuredPasteFromEvent } from "@/lib/pasteFromClipboard";
 import type { Block } from "@/canvas/types";
 
 export const BRICK_BEHAVIOR = {
@@ -25,7 +29,26 @@ export type BrickShellModel = {
   listType: "none" | "bullet" | "numbered" | "todo" | "toggle" | "quote";
   brickColor?: string;
   textColor?: string;
+  isAiResponseBubble?: boolean;
+  userResized?: boolean;
+  brickScale?: number;
 };
+
+const MIN_COLUMN_WIDTH_PX = 250;
+const COLUMN_GAP_PX = 32;
+const MAX_COLUMNS = 4;
+
+export function computeColumnCount(widthPx: number, _content?: string): number {
+  return Math.min(MAX_COLUMNS, Math.max(1, Math.floor((widthPx + COLUMN_GAP_PX) / (MIN_COLUMN_WIDTH_PX + COLUMN_GAP_PX))));
+}
+
+export function getColumnCount(shell: BrickShellModel): number {
+  if (!shell.userResized) return 1;
+  const effectiveWidth = shell.width / Math.max(0.5, shell.brickScale ?? 1);
+  return computeColumnCount(effectiveWidth, shell.content);
+}
+
+export { COLUMN_GAP_PX };
 
 export type BrickShellRenderOptions = {
   isRaised?: boolean;
@@ -41,8 +64,11 @@ export type BrickShellRenderOptions = {
   resizeMinWidth?: number;
   resizeMaxWidth?: number;
   onResizeWidth?: (id: string, width: number) => void;
+  onCornerScale?: (id: string, scale: number) => void;
+  canvasZoom?: number;
   extraContent?: React.ReactNode;
   onBrickMenu?: (id: string, rect: DOMRect) => void;
+  onMinimize?: (id: string) => void;
 };
 
 export function toBrickShellModel(block: Block | any): BrickShellModel {
@@ -67,6 +93,9 @@ export function toBrickShellModel(block: Block | any): BrickShellModel {
     listType,
     brickColor: data.brickColor || undefined,
     textColor: data.textColor || undefined,
+    isAiResponseBubble: Boolean(data.aiResponseBubble),
+    userResized: Boolean(data.userResized),
+    brickScale: Number(data.brickScale || 1) || 1,
   };
 }
 
@@ -101,14 +130,20 @@ function BrickTextSurface(props: {
   const [slashQuery, setSlashQuery] = useState("");
   const [showSlashMenu, setShowSlashMenu] = useState(false);
   const [activeSlashIndex, setActiveSlashIndex] = useState(0);
+  const [slashMenuRect, setSlashMenuRect] = useState<{ left: number; top: number } | null>(null);
+  const scale = Math.max(0.5, Number(shell.brickScale || 1));
   const lineRows = shell.textVariant === "h1" ? 3 : shell.textVariant === "h2" ? 2 : 1;
-  const lineHeightPx = BRICK_BEHAVIOR.gridSize * lineRows;
-  const fontSizePx = shell.textVariant === "h1" ? 42 : shell.textVariant === "h2" ? 28 : 14;
+  const lineHeightPx = BRICK_BEHAVIOR.gridSize * lineRows * scale;
+  const fontSizePx = (shell.textVariant === "h1" ? 42 : shell.textVariant === "h2" ? 28 : 14) * scale;
   const fontWeight = shell.textVariant === "body" ? 400 : 500;
   const readSlashState = (text: string) => {
-    const trimmed = String(text || "").replace(/^\s+/, "");
-    if (!/^\/[^\n]*$/.test(trimmed)) return { open: false, query: "" };
-    return { open: true, query: trimmed.slice(1).toLowerCase() };
+    const full = String(text || "");
+    const lines = full.split("\n");
+    const lastLine = lines[lines.length - 1] ?? "";
+    // Match `/` at the start of the line or after a space
+    const m = lastLine.match(/(^|(?<=\s))\/([^\n]*)$/);
+    if (!m) return { open: false, query: "" };
+    return { open: true, query: (m[2] || "").toLowerCase() };
   };
   const slashOptions = useMemo(
     () => [
@@ -120,17 +155,9 @@ function BrickTextSurface(props: {
       { id: "checklist", command: "/checklist", label: "Checklist", hint: "auto [ ] on Enter", section: "text" as const, icon: ListChecks },
       { id: "toggle-list", command: "/toggle list", label: "Toggle List", hint: "collapsible ▶ items", section: "text" as const, icon: ListCollapse },
       { id: "quote", command: "/quote", label: "Callout Quote", hint: "| quote line", section: "text" as const, icon: TextQuote },
-      { id: "code", command: "/code", label: "Code", hint: "code block", section: "block" as const, icon: Code },
-      { id: "table", command: "/table", label: "Table", hint: "spreadsheet grid", section: "block" as const, icon: Table },
-      { id: "calendar", command: "/calendar", label: "Calendar", hint: "mini calendar", section: "block" as const, icon: Calendar },
+      { id: "table", command: "/table", label: "Table", hint: "rows and columns", section: "block" as const, icon: Table },
       { id: "media", command: "/media", label: "Media", hint: "image, video, embed", section: "block" as const, icon: Image },
-      { id: "button", command: "/button", label: "Button", hint: "action button", section: "block" as const, icon: MousePointerClick },
       { id: "dictate", command: "/dictate", label: "Dictate", hint: "voice to text", section: "block" as const, icon: Mic },
-      { id: "page", command: "/page", label: "Page", hint: "full document editor", section: "block" as const, icon: FileText },
-      { id: "chart", command: "/chart", label: "Chart", hint: "bar, line, area, pie", section: "block" as const, icon: BarChart3 },
-      { id: "board", command: "/board", label: "Board", hint: "kanban columns", section: "block" as const, icon: Kanban },
-      { id: "form", command: "/form", label: "Form", hint: "form builder", section: "block" as const, icon: ClipboardList },
-      { id: "gallery", command: "/gallery", label: "Gallery", hint: "card grid view", section: "block" as const, icon: LayoutGrid },
     ],
     []
   );
@@ -150,6 +177,16 @@ function BrickTextSurface(props: {
     setActiveSlashIndex(Math.max(0, filteredSlashOptions.length - 1));
   }, [activeSlashIndex, filteredSlashOptions.length]);
 
+  useLayoutEffect(() => {
+    if (!showSlashMenu || !filteredSlashOptions.length || !editorRef.current) {
+      setSlashMenuRect(null);
+      return;
+    }
+    const el = editorRef.current;
+    const rect = el.getBoundingClientRect();
+    setSlashMenuRect({ left: rect.left + 8, top: rect.bottom + 4 });
+  }, [showSlashMenu, filteredSlashOptions.length]);
+
   const getEditorText = (el: HTMLDivElement | null) => {
     if (!el) return "";
     // innerText preserves line breaks; normalize contentEditable's doubled Enter newlines.
@@ -161,11 +198,11 @@ function BrickTextSurface(props: {
     String(text || "")
       .split("\n")
       .map((line) => {
-        if (/^\s*(?:[-*]\s+)?\[x\]\s+/i.test(line)) {
-          return line.replace(/^(\s*)(?:[-*]\s+)?\[x\]\s+/i, `$1${TODO_DISPLAY_FILLED} `);
+        if (/^\s*(?:[-*]\s+)?\[x\]\s*/i.test(line)) {
+          return line.replace(/^(\s*)(?:[-*]\s+)?\[x\]\s*/i, `$1${TODO_DISPLAY_FILLED} `);
         }
-        if (/^\s*(?:[-*]\s+)?\[\s?\]\s+/i.test(line)) {
-          return line.replace(/^(\s*)(?:[-*]\s+)?\[\s?\]\s+/i, `$1${TODO_DISPLAY_EMPTY} `);
+        if (/^\s*(?:[-*]\s+)?\[\s?\]\s*/i.test(line)) {
+          return line.replace(/^(\s*)(?:[-*]\s+)?\[\s?\]\s*/i, `$1${TODO_DISPLAY_EMPTY} `);
         }
         return line;
       })
@@ -430,16 +467,20 @@ function BrickTextSurface(props: {
   };
 
   // Match TextBlock behavior: only sync DOM from state when editor is not focused.
+  // Skip direct DOM writes when ReactMarkdown owns the render (AI bubbles or
+  // non-typing markdown bricks) — otherwise React crashes with removeChild errors
+  // because textContent destroys nodes that React still tracks.
   useEffect(() => {
-    const el = editorRef.current;
-    if (!el) return;
-    if (document.activeElement === el) return;
     const next = String(shell.content ?? "");
-    const display = shell.listType === "todo" ? toDisplayTodoMarkers(next) : next;
-    if ((el.textContent ?? "") !== display) el.textContent = display;
     const state = readSlashState(next);
     setShowSlashMenu(state.open);
     setSlashQuery(state.query);
+    if (!isTyping) return;
+    const el = editorRef.current;
+    if (!el) return;
+    if (document.activeElement === el) return;
+    const display = shell.listType === "todo" ? toDisplayTodoMarkers(next) : next;
+    if ((el.textContent ?? "") !== display) el.textContent = display;
   }, [shell.content, isTyping]);
   const lines = String(shell.content || "").split("\n");
   const parsedTodoLines = lines.map((line) => parseTodoLine(line));
@@ -492,6 +533,31 @@ function BrickTextSurface(props: {
   useEffect(() => {
     hadTodoLinesRef.current = hasTodoLines;
   }, [hasTodoLines]);
+
+  const aiMarkdownComponents = useMemo(() => ({
+    h1: ({ children }: any) => React.createElement("h1", { className: "text-xl font-semibold mt-2 mb-1" }, children),
+    h2: ({ children }: any) => React.createElement("h2", { className: "text-lg font-semibold mt-2 mb-1" }, children),
+    h3: ({ children }: any) => React.createElement("h3", { className: "text-base font-semibold mt-1.5 mb-1" }, children),
+    p: ({ children }: any) => React.createElement("p", { className: "my-1 whitespace-pre-wrap" }, children),
+    ul: ({ children }: any) => React.createElement("ul", { className: "my-1 list-disc pl-5 space-y-0.5" }, children),
+    ol: ({ children }: any) => React.createElement("ol", { className: "my-1 list-decimal pl-5 space-y-0.5" }, children),
+    li: ({ children }: any) => React.createElement("li", { className: "leading-relaxed" }, children),
+    strong: ({ children }: any) => React.createElement("strong", { className: "font-semibold" }, children),
+    blockquote: ({ children }: any) => React.createElement("blockquote", { className: "border-l-2 border-black/20 pl-3 my-1 text-black/70 italic" }, children),
+    code: ({ children, className }: any) => {
+      const isBlock = className?.startsWith("language-");
+      if (isBlock) return React.createElement("pre", { className: "rounded-lg bg-black/5 p-2 my-1 overflow-x-auto text-[0.85em]" }, React.createElement("code", null, children));
+      return React.createElement("code", { className: "rounded bg-black/10 px-1 py-0.5 text-[0.85em]" }, children);
+    },
+    pre: ({ children }: any) => React.createElement(React.Fragment, null, children),
+    table: ({ children }: any) => React.createElement("div", { className: "my-2 overflow-x-auto" }, React.createElement("table", { className: "w-full border-collapse text-xs" }, children)),
+    thead: ({ children }: any) => React.createElement("thead", { className: "border-b border-black/20" }, children),
+    tbody: ({ children }: any) => React.createElement("tbody", null, children),
+    tr: ({ children }: any) => React.createElement("tr", { className: "border-b border-black/10" }, children),
+    th: ({ children }: any) => React.createElement("th", { className: "text-left px-2 py-1 font-semibold" }, children),
+    td: ({ children }: any) => React.createElement("td", { className: "px-2 py-1" }, children),
+  }), []);
+
   if (hasTodoLines) {
     return React.createElement(
       "div",
@@ -578,31 +644,84 @@ function BrickTextSurface(props: {
       })
     );
   }
+  if (shell.isAiResponseBubble && !isTyping) {
+    return React.createElement(
+      "div",
+      { className: "relative h-full w-full" },
+      React.createElement(
+        "div",
+        {
+          ref: editorRef,
+          tabIndex: 0,
+          "data-canvas-brick-editor-id": shell.id,
+          className: "h-full w-full outline-none text-foreground overflow-auto",
+          style: {
+            fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"',
+            fontSize: "13px",
+            lineHeight: "1.5",
+            color: "inherit",
+            paddingLeft: "8px",
+            paddingRight: "8px",
+            paddingTop: "4px",
+            paddingBottom: "4px",
+            wordBreak: "break-word",
+            overflowWrap: "anywhere",
+          },
+        },
+        React.createElement(ReactMarkdown as any, { remarkPlugins: [remarkGfm], components: aiMarkdownComponents }, String(shell.content || ""))
+      )
+    );
+  }
+
   if (!isTyping) {
+    const cols = getColumnCount(shell);
+    const isMultiCol = cols > 1;
+    const contentStr = String(shell.content || "");
+    const hasMarkdown = /(?:^|\n)\s*#{1,6}\s|(?:\*\*|__).+(?:\*\*|__)|```|^\s*[-*]\s/m.test(contentStr);
     return React.createElement(
       "div",
       {
-        className: "px-2 py-0 tracking-[-0.01em] whitespace-pre-wrap break-words select-text",
+        className: `px-2 py-0 tracking-[-0.01em] ${hasMarkdown ? "" : "whitespace-pre-wrap "}break-words select-text${isMultiCol ? " pt-1 pb-2" : ""}`,
         style: {
           overflowWrap: "anywhere",
           fontSize: `${fontSizePx}px`,
-          lineHeight: `${lineHeightPx}px`,
+          lineHeight: hasMarkdown ? "1.5" : `${lineHeightPx}px`,
           fontWeight,
           color: shell.textColor || "rgba(0,0,0,0.80)",
           userSelect: "text",
           WebkitUserSelect: "text",
+          ...(isMultiCol ? {
+            columnCount: cols,
+            columnGap: `${COLUMN_GAP_PX}px`,
+            columnRule: "1px solid rgba(0,0,0,0.07)",
+            columnFill: "balance" as const,
+          } : {}),
         },
       },
-      shell.content
+      hasMarkdown
+        ? React.createElement(ReactMarkdown as any, { remarkPlugins: [remarkGfm], components: aiMarkdownComponents }, contentStr)
+        : shell.content
     );
   }
 
   const applySlashCommand = (command: string) => {
     applyingSlashRef.current = true;
     const current = getEditorText(editorRef.current);
-    const normalized = String(current || "").replace(/^\s+/, "");
-    const rest = normalized.replace(/^\/[^\n]*(?:\n|$)/i, "");
-    onTypingChange?.(shell.id, `${command} ${rest}`);
+    const lines = String(current || "").split("\n");
+    const lastLine = lines[lines.length - 1] ?? "";
+    // Find the slash token (at start of line or after a space)
+    const slashIdx = (() => {
+      const m = lastLine.match(/(^|\s)(\/[^\n]*)$/);
+      if (!m) return -1;
+      return lastLine.length - (m[2] || "").length;
+    })();
+    const beforeSlash = slashIdx > 0 ? lastLine.slice(0, slashIdx) : "";
+    const slashPart = slashIdx >= 0 ? lastLine.slice(slashIdx) : lastLine;
+    const afterSlash = /^\/\s*\S+/.test(slashPart) ? slashPart.replace(/^\/\s*\S+\s*/i, "") : slashPart.replace(/^\/\s*/, "");
+    const prefix = lines.length > 1 ? lines.slice(0, -1).join("\n") + "\n" : "";
+    const rebuiltLine = beforeSlash ? beforeSlash + command + " " + afterSlash : command + " " + afterSlash;
+    const newContent = (prefix + rebuiltLine).trim();
+    onTypingChange?.(shell.id, newContent);
     setShowSlashMenu(false);
     setSlashQuery("");
     setActiveSlashIndex(0);
@@ -656,11 +775,14 @@ function BrickTextSurface(props: {
         const state = readSlashState(next);
         setShowSlashMenu(state.open);
         setSlashQuery(state.query);
+        if (state.open && editorRef.current) {
+          const rect = editorRef.current.getBoundingClientRect();
+          setSlashMenuRect({ left: rect.left + 8, top: rect.bottom + 4 });
+        } else if (!state.open) setSlashMenuRect(null);
       },
       onPaste: (e: React.ClipboardEvent<HTMLDivElement>) => {
-        // Keep paste behavior deterministic and style-safe.
         e.preventDefault();
-        const txt = String(e.clipboardData.getData("text/plain") || "");
+        const txt = getStructuredPasteFromEvent(e);
         insertTextAtCursor(txt);
         const nextRaw = getEditorText(editorRef.current);
         const next = shell.listType === "todo" ? toStorageTodoMarkers(nextRaw) : nextRaw;
@@ -670,6 +792,16 @@ function BrickTextSurface(props: {
         setSlashQuery(state.query);
       },
       onKeyDown: (e: React.KeyboardEvent<HTMLDivElement>) => {
+        if (e.key === "/" && !showSlashMenu) {
+          const current = getEditorText(editorRef.current);
+          const state = readSlashState(current + "/");
+          if (state.open && editorRef.current) {
+            setShowSlashMenu(true);
+            setSlashQuery(state.query);
+            const rect = editorRef.current.getBoundingClientRect();
+            setSlashMenuRect({ left: rect.left + 8, top: rect.bottom + 4 });
+          }
+        }
         if (showSlashMenu && filteredSlashOptions.length) {
           if (e.key === "ArrowDown") {
             e.preventDefault();
@@ -757,73 +889,81 @@ function BrickTextSurface(props: {
         onTypingBlur?.(shell.id);
       },
     }),
-    isTyping && showSlashMenu && filteredSlashOptions.length
-      ? React.createElement(
-          "div",
-          {
-            className:
-              "absolute left-2 top-full mt-1 min-w-[180px] rounded-md border border-white/45 bg-[linear-gradient(145deg,rgba(255,255,255,0.95),rgba(245,247,255,0.90))] shadow-[0_10px_28px_rgba(0,0,0,0.20)] backdrop-blur-md z-[70] p-1",
-            onPointerDown: (e: any) => {
-              e.preventDefault();
-              e.stopPropagation();
-            },
+    (() => {
+      const menuContent = (() => {
+        const items: React.ReactNode[] = [];
+        let lastSection = "";
+        filteredSlashOptions.forEach((opt) => {
+          if ((opt as any).section && (opt as any).section !== lastSection && lastSection !== "") {
+            items.push(
+              React.createElement("div", {
+                key: `sep-${(opt as any).section}`,
+                className: "my-1 border-t border-black/10",
+              })
+            );
+          }
+          lastSection = (opt as any).section || lastSection;
+          items.push(
+            React.createElement(
+              "button",
+              {
+                key: opt.id,
+                type: "button",
+                className: `w-full text-left px-2 py-1 rounded text-[0.75rem] text-black/85 transition-colors flex items-center justify-between ${
+                  filteredSlashOptions[activeSlashIndex]?.id === opt.id ? "bg-black/10" : "hover:bg-black/10"
+                }`,
+                onPointerDown: (e: any) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  applySlashCommand(opt.command);
+                },
+                onMouseEnter: () => {
+                  const idx = filteredSlashOptions.findIndex((x) => x.id === opt.id);
+                  if (idx >= 0) setActiveSlashIndex(idx);
+                },
+                onMouseDown: (e: any) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  applySlashCommand(opt.command);
+                },
+                onClick: (e: any) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  applySlashCommand(opt.command);
+                },
+              },
+              React.createElement(
+                "span",
+                { className: "flex items-center gap-2" },
+                React.createElement(opt.icon, { size: 14, className: "text-black/50 shrink-0" }),
+                React.createElement("span", null, opt.label)
+              ),
+              React.createElement("span", { className: "text-[0.625rem] text-black/55 ml-2" }, opt.hint)
+            )
+          );
+        });
+        return items;
+      })();
+      const menuEl = React.createElement(
+        "div",
+        {
+          className:
+            "min-w-[180px] rounded-md border border-white/45 bg-[linear-gradient(145deg,rgba(255,255,255,0.95),rgba(245,247,255,0.90))] shadow-[0_10px_28px_rgba(0,0,0,0.20)] backdrop-blur-md z-[9999] p-1",
+          onPointerDown: (e: any) => {
+            e.preventDefault();
+            e.stopPropagation();
           },
-          (() => {
-            const items: React.ReactNode[] = [];
-            let lastSection = "";
-            filteredSlashOptions.forEach((opt) => {
-              if ((opt as any).section && (opt as any).section !== lastSection && lastSection !== "") {
-                items.push(
-                  React.createElement("div", {
-                    key: `sep-${(opt as any).section}`,
-                    className: "my-1 border-t border-black/10",
-                  })
-                );
-              }
-              lastSection = (opt as any).section || lastSection;
-              items.push(
-                React.createElement(
-                  "button",
-                  {
-                    key: opt.id,
-                    type: "button",
-                    className: `w-full text-left px-2 py-1 rounded text-[0.75rem] text-black/85 transition-colors flex items-center justify-between ${
-                      filteredSlashOptions[activeSlashIndex]?.id === opt.id ? "bg-black/10" : "hover:bg-black/10"
-                    }`,
-                    onPointerDown: (e: any) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      applySlashCommand(opt.command);
-                    },
-                    onMouseEnter: () => {
-                      const idx = filteredSlashOptions.findIndex((x) => x.id === opt.id);
-                      if (idx >= 0) setActiveSlashIndex(idx);
-                    },
-                    onMouseDown: (e: any) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      applySlashCommand(opt.command);
-                    },
-                    onClick: (e: any) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      applySlashCommand(opt.command);
-                    },
-                  },
-                  React.createElement(
-                    "span",
-                    { className: "flex items-center gap-2" },
-                    React.createElement(opt.icon, { size: 14, className: "text-black/50 shrink-0" }),
-                    React.createElement("span", null, opt.label)
-                  ),
-                  React.createElement("span", { className: "text-[0.625rem] text-black/55 ml-2" }, opt.hint)
-                )
-              );
-            });
-            return items;
-          })()
-        )
-      : null
+          style: slashMenuRect
+            ? { position: "fixed" as const, left: slashMenuRect.left, top: slashMenuRect.top }
+            : undefined,
+        },
+        menuContent
+      );
+      if (isTyping && showSlashMenu && filteredSlashOptions.length && slashMenuRect && typeof document !== "undefined") {
+        return ReactDOM.createPortal(menuEl, document.body);
+      }
+      return null;
+    })()
   );
 }
 
@@ -847,9 +987,10 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
     const minWidth = Math.max(grid, Math.floor(Number(opts?.resizeMinWidth || grid * 8)));
     const maxWidth = Math.max(minWidth, Math.floor(Number(opts?.resizeMaxWidth || grid * 60)));
 
+    const z = Math.max(0.1, Number(opts?.canvasZoom) || 1);
     const onMove = (ev: PointerEvent) => {
       if (ev.pointerId !== pointerId) return;
-      const deltaX = Number(ev.clientX || 0) - startX;
+      const deltaX = (Number(ev.clientX || 0) - startX) / z;
       const rawWidth = startWidth + deltaX;
       const snapped = Math.round(rawWidth / grid) * grid;
       const nextWidth = Math.max(minWidth, Math.min(maxWidth, snapped));
@@ -866,6 +1007,33 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
     window.addEventListener("pointerup", onEnd);
     window.addEventListener("pointercancel", onEnd);
   };
+  const canCornerScale = typeof opts?.onCornerScale === "function";
+  const startCornerScale = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!canCornerScale) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const pointerId = e.pointerId;
+    const startX = Number(e.clientX || 0);
+    const startWidth = Math.max(1, Number(shell.width || BRICK_BEHAVIOR.gridSize));
+    const currentScale = Math.max(0.25, Number(shell.brickScale || 1));
+    const z = Math.max(0.1, Number(opts?.canvasZoom) || 1);
+    const onMove = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
+      const deltaX = (Number(ev.clientX || 0) - startX) / z;
+      const ratio = Math.max(0.5, (startWidth + deltaX) / startWidth);
+      const nextScale = Math.max(0.5, Math.min(4, currentScale * ratio));
+      opts?.onCornerScale?.(shell.id, nextScale);
+    };
+    const onEnd = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onEnd);
+      window.removeEventListener("pointercancel", onEnd);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onEnd);
+    window.addEventListener("pointercancel", onEnd);
+  };
   const labelEl = BRICK_BEHAVIOR.showHoverLabel
     ? React.createElement(
         "div",
@@ -875,6 +1043,10 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
         shell.label
       )
     : null;
+
+  const columnCount = getColumnCount(shell);
+  const isScaled = (shell.brickScale ?? 1) > 1;
+  const useFlexHeight = isScaled || Boolean(opts?.extraContent) || columnCount > 1;
 
   return React.createElement(
     "div",
@@ -891,10 +1063,10 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
         left: `${shell.x}px`,
         top: `${shell.y}px`,
         width: `${shell.width}px`,
-        ...(opts?.extraContent
+        ...(useFlexHeight
           ? { minHeight: `${shell.height}px`, height: "auto" }
           : { height: `${shell.height}px` }),
-        zIndex: isRaised ? 40 : 10,
+        ...(isRaised ? { zIndex: 40 } : {}),
         willChange: "transform",
       },
     },
@@ -902,7 +1074,7 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
       "div",
       {
         className:
-          `w-full rounded border border-white/45 ${shell.brickColor ? "" : "bg-[linear-gradient(145deg,rgba(255,255,255,0.34),rgba(255,255,255,0.18))]"} backdrop-blur-[2px]${opts?.extraContent ? " min-h-full" : " h-full"} relative`,
+          `w-full rounded border border-white/45 ${shell.brickColor ? "" : "bg-[linear-gradient(145deg,rgba(255,255,255,0.34),rgba(255,255,255,0.18))]"} backdrop-blur-[2px]${useFlexHeight ? " min-h-full" : " h-full"} relative overflow-hidden`,
         style: {
           transform: isRaised ? "translateY(-8px) scale(1.02)" : "translateY(0px) scale(1)",
           boxShadow: isRaised
@@ -946,28 +1118,64 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
             onClick: (e: any) => e.stopPropagation(),
           })
         : null,
+      canCornerScale
+        ? React.createElement("div", {
+            "data-resize-handle": true,
+            className: "absolute bottom-0 right-0 w-5 h-5 cursor-nwse-resize opacity-0 group-hover:opacity-100 transition-opacity z-10",
+            onPointerDown: startCornerScale,
+            onClick: (e: any) => e.stopPropagation(),
+          }, React.createElement("svg", { viewBox: "0 0 16 16", className: "w-full h-full text-black/30" },
+            React.createElement("path", { d: "M14 14L6 14M14 14L14 6M14 14L8 8", stroke: "currentColor", strokeWidth: "1.5", fill: "none", strokeLinecap: "round" })
+          ))
+        : null,
       labelEl
     ),
     shell.content.trim()
       ? React.createElement(
-          "button",
+          "div",
           {
-            key: "brick-menu-btn",
-            className:
-              "absolute opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center w-6 h-6 rounded-md hover:bg-black/8 dark:hover:bg-white/12",
+            key: "brick-toolbar",
+            className: "absolute opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5",
             style: {
               top: "2px",
               right: `calc(100% + 4px)`,
+              transform: (shell.brickScale ?? 1) > 1 ? `scale(${shell.brickScale})` : undefined,
+              transformOrigin: "top right",
             },
-            title: "Options",
-            onClick: (e: any) => {
-              e.stopPropagation();
-              const btn = e.currentTarget as HTMLElement;
-              if (btn && opts?.onBrickMenu) opts.onBrickMenu(shell.id, btn.getBoundingClientRect());
-            },
-            onPointerDown: (e: any) => e.stopPropagation(),
           },
-          React.createElement(MoreHorizontal, { className: "w-3.5 h-3.5 text-black/50 dark:text-white/50" })
+          typeof opts?.onMinimize === "function"
+            ? React.createElement(
+                "button",
+                {
+                  key: "brick-minimize-btn",
+                  className:
+                    "flex items-center justify-center w-6 h-6 rounded-md hover:bg-black/8 dark:hover:bg-white/12",
+                  title: "Minimize",
+                  onClick: (e: any) => {
+                    e.stopPropagation();
+                    opts!.onMinimize!(shell.id);
+                  },
+                  onPointerDown: (e: any) => e.stopPropagation(),
+                },
+                React.createElement(Minimize2, { className: "w-3.5 h-3.5 text-black/50 dark:text-white/50" })
+              )
+            : null,
+          React.createElement(
+            "button",
+            {
+              key: "brick-menu-btn",
+              className:
+                "flex items-center justify-center w-6 h-6 rounded-md hover:bg-black/8 dark:hover:bg-white/12",
+              title: "Options",
+              onClick: (e: any) => {
+                e.stopPropagation();
+                const btn = e.currentTarget as HTMLElement;
+                if (btn && opts?.onBrickMenu) opts.onBrickMenu(shell.id, btn.getBoundingClientRect());
+              },
+              onPointerDown: (e: any) => e.stopPropagation(),
+            },
+            React.createElement(MoreHorizontal, { className: "w-3.5 h-3.5 text-black/50 dark:text-white/50" })
+          )
         )
       : null
   );

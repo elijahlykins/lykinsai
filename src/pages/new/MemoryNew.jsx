@@ -4,20 +4,26 @@ import {
   ChevronDown,
   ChevronUp,
   Clock,
+  ExternalLink,
   FileText,
+  Globe,
+  Link as LinkIcon,
+  Loader2,
   MessageSquare,
   MoreHorizontal,
   Music,
   Plus,
   StickyNote,
-  LayoutGrid,
   Trash2,
+  Table2,
+  Upload,
   Video,
   X,
   Zap,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/SupabaseAuth";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import DraggableChat from "@/components/notes/DraggableChat";
 import DraggableQuickNote from "@/components/notes/DraggableQuickNote";
@@ -46,7 +52,9 @@ function stripAttachmentJsonMarker(content) {
     }
   }
   if (jsonEnd <= jsonStart) return content;
-  return `${content.slice(0, start)}${content.slice(jsonEnd)}`.replace(/\n{3,}/g, "\n\n").trim();
+  let stripEnd = jsonEnd;
+  if (content[stripEnd] === "]") stripEnd += 1;
+  return `${content.slice(0, start)}${content.slice(stripEnd)}`.replace(/\n{3,}/g, "\n\n").trim();
 }
 
 function parseAttachmentsFromNote(note) {
@@ -95,12 +103,14 @@ function parseAttachmentsFromNote(note) {
 }
 
 function resolveAttachmentType(attachment = {}) {
-  const explicit = attachment.type;
-  if (explicit && explicit !== "file") return explicit;
-
   const url = String(attachment.url || "");
   const name = String(attachment.name || "");
+
+  if (attachment.type === "bookmark" || attachment.type === "link" || attachment.siteName || attachment.articleText) return "bookmark";
   if (url.includes("youtube.com") || url.includes("youtu.be")) return "youtube";
+
+  const explicit = attachment.type;
+  if (explicit && explicit !== "file") return explicit;
   if (url.startsWith("data:image/")) return "image";
   if (url.startsWith("data:video/")) return "video";
   if (url.startsWith("data:audio/")) return "audio";
@@ -108,11 +118,12 @@ function resolveAttachmentType(attachment = {}) {
   const extMatch = (url.split("/").pop() || name).match(/\.([^.]+)$/);
   const ext = extMatch ? extMatch[1].toLowerCase() : "";
 
-  if (["jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "heic", "tiff"].includes(ext)) return "image";
+  if (["jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "heic", "heif", "tiff"].includes(ext)) return "image";
   if (["mp4", "mov", "avi", "mkv", "webm", "m4v", "wmv"].includes(ext)) return "video";
   if (["mp3", "wav", "ogg", "m4a", "aac", "flac", "wma"].includes(ext)) return "audio";
   if (ext === "pdf") return "pdf";
-  if (["doc", "docx", "ppt", "pptx", "xls", "xlsx", "txt", "md", "csv"].includes(ext)) return "file";
+  if (["xls", "xlsx", "csv"].includes(ext) || attachment.type === "spreadsheet") return "spreadsheet";
+  if (["doc", "docx", "ppt", "pptx", "txt", "md"].includes(ext)) return "file";
 
   return "file";
 }
@@ -381,6 +392,8 @@ function getAttachmentHeightClass(card) {
   if (type === "image") return "h-auto";
   if (type === "video" || type === "youtube") return "h-auto";
   if (type === "pdf") return "h-80 md:h-[30rem] xl:h-[36rem]";
+  if (type === "bookmark") return "h-auto";
+  if (type === "spreadsheet") return "h-auto";
   if (type === "doc" || type === "word" || type === "file") return "h-56 md:h-64 xl:h-72";
   if (type === "audio") return "h-40 md:h-44 xl:h-52";
   return "h-56 md:h-64 xl:h-72";
@@ -411,6 +424,7 @@ export default function MemoryNew() {
   }, [isEmbeddedMode]);
 
   const [embeddedSearch, setEmbeddedSearch] = useState("");
+  const memoryQueryClient = useQueryClient();
   const [notes, setNotes] = useState([]);
   const [isLoadingNotes, setIsLoadingNotes] = useState(true);
   const [notesError, setNotesError] = useState("");
@@ -420,15 +434,13 @@ export default function MemoryNew() {
   const [chatInput, setChatInput] = useState("");
   const [isChatLoading, setIsChatLoading] = useState(false);
   const [showQuickNote, setShowQuickNote] = useState(false);
-  const [activeMemoryPage, setActiveMemoryPage] = useState("everything");
-  const [orderByPage, setOrderByPage] = useState({ everything: [], boards: [] });
-  const [boardCards, setBoardCards] = useState([]);
+  const [orderByPage, setOrderByPage] = useState({ everything: [] });
   const [draggedCardId, setDraggedCardId] = useState(null);
   const [dropTargetCardId, setDropTargetCardId] = useState(null);
   const [hasMoreNotes, setHasMoreNotes] = useState(true);
   const [isLoadingMoreNotes, setIsLoadingMoreNotes] = useState(false);
   const [resolvedAttachmentUrls, setResolvedAttachmentUrls] = useState({});
-  const [projects, setProjects] = useState([]);
+  // projects fetched via React Query above
   const [openCardMenuId, setOpenCardMenuId] = useState(null);
   const [openCardMenuPlacement, setOpenCardMenuPlacement] = useState("down");
   const [openAttachmentNotesCardId, setOpenAttachmentNotesCardId] = useState(null);
@@ -439,6 +451,11 @@ export default function MemoryNew() {
   const [isCardActionBusy, setIsCardActionBusy] = useState(false);
   const [quickNoteContent, setQuickNoteContent] = useState("");
   const [isQuickNoteSaving, setIsQuickNoteSaving] = useState(false);
+  const [showSaveLink, setShowSaveLink] = useState(false);
+  const [saveLinkUrl, setSaveLinkUrl] = useState("");
+  const [saveLinkPreview, setSaveLinkPreview] = useState(null);
+  const [isSaveLinkLoading, setIsSaveLinkLoading] = useState(false);
+  const [isSaveLinkSaving, setIsSaveLinkSaving] = useState(false);
   const lastHoverTargetRef = useRef(null);
   const loadMoreRef = useRef(null);
   const cardMenuRef = useRef(null);
@@ -494,31 +511,18 @@ export default function MemoryNew() {
     return false;
   });
 
+  const notesCursorRef = useRef(null);
+
   const fetchNotesBatch = useCallback(
-    async (from, to) => {
-      let { data, error } = await supabase
+    async (cursor) => {
+      let query = supabase
         .from("notes")
-        .select("id, title, content, source, created_at, updated_at")
+        .select("id, title, content, created_at, updated_at")
         .eq("user_id", user.id)
         .order("updated_at", { ascending: false })
-        .range(from, to);
-
-      const missingSourceColumn =
-        error &&
-        (
-          error.code === "PGRST204" ||
-          error.message?.toLowerCase().includes("does not exist") ||
-          error.message?.includes("Could not find")
-        );
-
-      if (missingSourceColumn) {
-        ({ data, error } = await supabase
-          .from("notes")
-          .select("id, title, content, created_at, updated_at")
-          .eq("user_id", user.id)
-          .order("updated_at", { ascending: false })
-          .range(from, to));
-      }
+        .limit(MEMORY_PAGE_SIZE);
+      if (cursor) query = query.lt("updated_at", cursor);
+      const { data, error } = await query;
       return { data, error };
     },
     [user?.id]
@@ -534,8 +538,9 @@ export default function MemoryNew() {
 
     setIsLoadingNotes(true);
     setNotesError("");
+    notesCursorRef.current = null;
     try {
-      const { data, error } = await fetchNotesBatch(0, MEMORY_PAGE_SIZE - 1);
+      const { data, error } = await fetchNotesBatch(null);
 
       if (error) {
         if (["PGRST116", "42P01"].includes(error.code) || error.message?.includes("placeholder")) {
@@ -548,61 +553,52 @@ export default function MemoryNew() {
         const list = Array.isArray(data) ? data : [];
         setNotes(list);
         setHasMoreNotes(list.length === MEMORY_PAGE_SIZE);
+        if (list.length > 0) notesCursorRef.current = list[list.length - 1].updated_at;
       }
     } catch (err) {
-      setNotesError(err?.message || "Unable to load memories.");
+      setNotesError("Couldn't load your memories right now. Please try again later.");
       setHasMoreNotes(false);
     } finally {
       setIsLoadingNotes(false);
     }
   }, [fetchNotesBatch, user?.id]);
 
-  const refreshProjects = useCallback(async () => {
-    if (!user?.id) {
-      setProjects([]);
-      return;
-    }
-    const { data } = await supabase
-      .from("omnia_projects")
-      .select("id, name, updated_at")
-      .eq("user_id", user.id)
-      .order("updated_at", { ascending: false });
-    setProjects(Array.isArray(data) ? data : []);
-  }, [user?.id]);
+  const { data: projects = [] } = useQuery({
+    queryKey: ["projects", user?.id],
+    queryFn: async () => {
+      if (!user?.id) return [];
+      const { data } = await supabase
+        .from("omnia_projects")
+        .select("id, name, updated_at")
+        .eq("user_id", user.id)
+        .order("updated_at", { ascending: false })
+        .limit(50);
+      return Array.isArray(data) ? data : [];
+    },
+    enabled: !!user?.id && !loading,
+  });
 
   const loadMoreNotes = useCallback(async () => {
     if (!user?.id || isLoadingNotes || isLoadingMoreNotes || !hasMoreNotes) return;
     setIsLoadingMoreNotes(true);
     try {
-      const from = notes.length;
-      const to = from + MEMORY_PAGE_SIZE - 1;
-      const { data, error } = await fetchNotesBatch(from, to);
+      const { data, error } = await fetchNotesBatch(notesCursorRef.current);
       if (error) throw error;
       const list = Array.isArray(data) ? data : [];
       if (list.length === 0) {
         setHasMoreNotes(false);
         return;
       }
-      setNotes((prev) => {
-        const merged = [...prev, ...list];
-        const deduped = [];
-        const seen = new Set();
-        for (const item of merged) {
-          const id = String(item?.id || "");
-          if (!id || seen.has(id)) continue;
-          seen.add(id);
-          deduped.push(item);
-        }
-        return deduped;
-      });
+      setNotes((prev) => [...prev, ...list]);
       setHasMoreNotes(list.length === MEMORY_PAGE_SIZE);
+      if (list.length > 0) notesCursorRef.current = list[list.length - 1].updated_at;
     } catch {
       setHasMoreNotes(false);
       setNotesError((prev) => prev || "Some memories could not be loaded.");
     } finally {
       setIsLoadingMoreNotes(false);
     }
-  }, [fetchNotesBatch, hasMoreNotes, isLoadingMoreNotes, isLoadingNotes, notes.length, user?.id]);
+  }, [fetchNotesBatch, hasMoreNotes, isLoadingMoreNotes, isLoadingNotes, user?.id]);
 
   useEffect(() => {
     const handleSettingsChange = () => {
@@ -630,76 +626,6 @@ export default function MemoryNew() {
     void refreshNotes();
   }, [loading, refreshNotes]);
 
-  useEffect(() => {
-    if (loading) return;
-    void refreshProjects();
-  }, [loading, refreshProjects]);
-
-  useEffect(() => {
-    if (loading || !user?.id) return;
-    let cancelled = false;
-    const loadBoards = async () => {
-      const { data: boards } = await supabase
-        .from("omnia_boards")
-        .select("id, title, project_id, created_at, updated_at")
-        .eq("user_id", user.id)
-        .order("updated_at", { ascending: false });
-      if (cancelled || !boards?.length) {
-        if (!cancelled) setBoardCards([]);
-        return;
-      }
-
-      const boardIds = boards.map((b) => b.id);
-      const { data: states } = await supabase
-        .from("omnia_board_states")
-        .select("board_id, state")
-        .in("board_id", boardIds)
-        .order("created_at", { ascending: false });
-
-      const latestStateByBoard = {};
-      for (const row of (states || [])) {
-        if (!latestStateByBoard[row.board_id]) {
-          latestStateByBoard[row.board_id] = row.state;
-        }
-      }
-
-      const hasContent = (state) => {
-        if (!state) return false;
-        const blocksMap = state.blocks || {};
-        const order = Array.isArray(state.blockOrder) ? state.blockOrder : Object.keys(blocksMap);
-        return order.some((id) => {
-          const b = blocksMap[id];
-          if (!b) return false;
-          const data = b?.data && typeof b.data === "object" ? b.data : {};
-          const content = String(data.content ?? data.body ?? b?.content ?? "").trim();
-          const fmt = String(b?.format || data.format || "").toLowerCase();
-          if (["media", "calendar", "table", "button"].includes(fmt)) return true;
-          return content.length > 0;
-        });
-      };
-
-      const filtered = boards.filter((b) => {
-        const state = latestStateByBoard[b.id];
-        return hasContent(state);
-      });
-
-      if (cancelled) return;
-      setBoardCards(
-        filtered.map((b) => ({
-          id: `board-${b.id}`,
-          boardId: b.id,
-          kind: "board",
-          title: b.title || "Untitled Board",
-          projectId: b.project_id,
-          dateLabel: b.updated_at
-            ? new Date(b.updated_at).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })
-            : "",
-        }))
-      );
-    };
-    loadBoards();
-    return () => { cancelled = true; };
-  }, [loading, user?.id]);
 
   useEffect(() => {
     const onPointerDown = (event) => {
@@ -809,49 +735,108 @@ export default function MemoryNew() {
       }
     });
 
-    return cards;
+    const seen = new Set();
+    return cards.filter((card) => {
+      if (card.kind === "attachment") {
+        const att = card.attachment || {};
+        const url = String(att.url || "").trim();
+        const videoId = String(att.videoId || "").trim();
+        const storagePath = String(att.storagePath || att.fileId || "").trim();
+        const key =
+          (videoId && `yt:${videoId}`) ||
+          (storagePath && `path:${storagePath}`) ||
+          (url && !url.startsWith("data:") && `url:${url}`) ||
+          null;
+        if (key) {
+          if (seen.has(key)) return false;
+          seen.add(key);
+        }
+      } else if (card.kind === "quick-note") {
+        const text = String(card.excerpt || "").trim().slice(0, 200);
+        if (text) {
+          const key = `qn:${text}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+        }
+      }
+      return true;
+    });
   }, [notes]);
 
-  useEffect(() => {
-    if (!user?.id || memoryCards.length === 0) return;
-    let isActive = true;
+  const visibleCardIdsRef = useRef(new Set());
+  const urlResolveObserverRef = useRef(null);
 
-    const resolvePrivateAttachmentUrls = async () => {
-      const nextResolved = {};
-      const attachmentCards = memoryCards.filter((card) => card?.kind === "attachment");
-
-      for (const card of attachmentCards) {
-        const target = parseStorageTarget(card.attachment || {});
-        if (!target?.path || !target?.bucket) continue;
-        const cacheKey = `${target.bucket}:${target.path}`;
-        if (signedUrlCacheRef.current.has(cacheKey)) {
-          nextResolved[card.id] = signedUrlCacheRef.current.get(cacheKey);
-          continue;
-        }
-        const { data, error } = await supabase.storage
-          .from(target.bucket)
-          .createSignedUrl(target.path, 60 * 60 * 24);
-        if (error || !data?.signedUrl) continue;
-        signedUrlCacheRef.current.set(cacheKey, data.signedUrl);
-        nextResolved[card.id] = data.signedUrl;
+  const resolveSignedUrlForCard = useCallback(async (card) => {
+    if (!card || card.kind !== "attachment") return;
+    const target = parseStorageTarget(card.attachment || {});
+    if (!target?.path || !target?.bucket) return;
+    const cacheKey = `${target.bucket}:${target.path}`;
+    if (signedUrlCacheRef.current.has(cacheKey)) {
+      setResolvedAttachmentUrls((prev) => {
+        if (prev[card.id]) return prev;
+        return { ...prev, [card.id]: signedUrlCacheRef.current.get(cacheKey) };
+      });
+      return;
+    }
+    const { data } = await supabase.storage
+      .from(target.bucket)
+      .createSignedUrl(target.path, 60 * 60 * 24 * 7);
+    if (data?.signedUrl) {
+      signedUrlCacheRef.current.set(cacheKey, data.signedUrl);
+      setResolvedAttachmentUrls((prev) => ({ ...prev, [card.id]: data.signedUrl }));
+    } else {
+      const { data: pubData } = supabase.storage.from(target.bucket).getPublicUrl(target.path);
+      if (pubData?.publicUrl) {
+        signedUrlCacheRef.current.set(cacheKey, pubData.publicUrl);
+        setResolvedAttachmentUrls((prev) => ({ ...prev, [card.id]: pubData.publicUrl }));
       }
+    }
+  }, []);
 
-      if (!isActive || Object.keys(nextResolved).length === 0) return;
-      setResolvedAttachmentUrls((prev) => ({ ...prev, ...nextResolved }));
-    };
+  const cardElementsRef = useRef(new Map());
 
-    void resolvePrivateAttachmentUrls();
+  const registerCardRef = useCallback((cardId, element) => {
+    if (element) {
+      cardElementsRef.current.set(cardId, element);
+      urlResolveObserverRef.current?.observe(element);
+    } else {
+      const prev = cardElementsRef.current.get(cardId);
+      if (prev) urlResolveObserverRef.current?.unobserve(prev);
+      cardElementsRef.current.delete(cardId);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!user?.id) return;
+    const cardLookup = new Map(memoryCards.map((c) => [c.id, c]));
+
+    urlResolveObserverRef.current = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          const cardId = entry.target.dataset?.cardId;
+          if (!cardId || visibleCardIdsRef.current.has(cardId)) continue;
+          visibleCardIdsRef.current.add(cardId);
+          const card = cardLookup.get(cardId);
+          if (card) resolveSignedUrlForCard(card);
+        }
+      },
+      { rootMargin: "200px" }
+    );
+
+    for (const [cardId, el] of cardElementsRef.current) {
+      urlResolveObserverRef.current.observe(el);
+    }
+
     return () => {
-      isActive = false;
+      urlResolveObserverRef.current?.disconnect();
+      urlResolveObserverRef.current = null;
     };
-  }, [memoryCards, user?.id]);
+  }, [memoryCards, user?.id, resolveSignedUrlForCard]);
 
   const visibleCards = useMemo(() => {
-    if (activeMemoryPage === "boards") {
-      return boardCards;
-    }
     return memoryCards.filter((card) => card.kind !== "chat-preview");
-  }, [activeMemoryPage, memoryCards, boardCards]);
+  }, [memoryCards]);
 
   const filteredVisibleCards = useMemo(() => {
     const query = String(embeddedSearch || "").trim().toLowerCase();
@@ -903,19 +888,18 @@ export default function MemoryNew() {
   }, [orderByPage, orderStorageKey]);
 
   const orderedVisibleCards = useMemo(() => {
-    const currentOrder = orderByPage[activeMemoryPage] || [];
+    const currentOrder = orderByPage.everything || [];
     const visibleMap = new Map(filteredVisibleCards.map((card) => [card.id, card]));
     const ordered = currentOrder.map((id) => visibleMap.get(id)).filter(Boolean);
     const remaining = filteredVisibleCards.filter((card) => !currentOrder.includes(card.id));
     return [...ordered, ...remaining];
-  }, [activeMemoryPage, filteredVisibleCards, orderByPage]);
+  }, [filteredVisibleCards, orderByPage]);
 
   const reorderActivePage = useCallback(
     (dragId, overId) => {
       if (!dragId || !overId || dragId === overId) return;
       setOrderByPage((prev) => {
-        const pageKey = activeMemoryPage;
-        const pageOrder = prev[pageKey] || [];
+        const pageOrder = prev.everything || [];
         const baseline = [
           ...pageOrder.filter((id) => orderedVisibleCards.some((card) => card.id === id)),
           ...orderedVisibleCards.map((card) => card.id).filter((id) => !pageOrder.includes(id)),
@@ -926,10 +910,10 @@ export default function MemoryNew() {
         const next = baseline.slice();
         const [moved] = next.splice(from, 1);
         next.splice(to, 0, moved);
-        return { ...prev, [pageKey]: next };
+        return { ...prev, everything: next };
       });
     },
-    [activeMemoryPage, orderedVisibleCards]
+    [orderedVisibleCards]
   );
 
   const handleSaveQuickNote = async () => {
@@ -948,30 +932,9 @@ export default function MemoryNew() {
           user_id: user.id,
           title: "Quick Note",
           content,
-          source: "quick_note",
         })
-        .select("id, title, content, source, created_at, updated_at")
+        .select("id, title, content, created_at, updated_at")
         .single());
-
-      const missingColumnError =
-        noteError &&
-        (
-          noteError.code === "PGRST204" ||
-          noteError.message?.includes("Could not find") ||
-          noteError.message?.toLowerCase().includes("does not exist")
-        );
-
-      if (missingColumnError) {
-        ({ data: insertedNote, error: noteError } = await supabase
-          .from("notes")
-          .insert({
-            user_id: user.id,
-            title: "Quick Note",
-            content,
-          })
-          .select("id, title, content, created_at, updated_at")
-          .single());
-      }
 
       if (noteError || !insertedNote?.id) {
         throw noteError || new Error("Unable to save quick note.");
@@ -981,7 +944,7 @@ export default function MemoryNew() {
       setShowQuickNote(false);
       setNotes((prev) => [insertedNote, ...prev]);
     } catch (error) {
-      setNotesError(error?.message || "Unable to save quick note.");
+      setNotesError("Couldn't save your note. Please try again.");
     } finally {
       setIsQuickNoteSaving(false);
     }
@@ -997,6 +960,65 @@ export default function MemoryNew() {
     }
     await handleSaveQuickNote();
   }, [handleSaveQuickNote, isQuickNoteSaving, quickNoteContent]);
+
+  const handleUnfurlLink = useCallback(async (rawUrl) => {
+    const url = String(rawUrl || "").trim();
+    if (!url) return;
+    setIsSaveLinkLoading(true);
+    setSaveLinkPreview(null);
+    try {
+      const { API_BASE_URL } = await import("@/lib/api-config");
+      const res = await fetch(`${API_BASE_URL}/api/unfurl?url=${encodeURIComponent(url)}`);
+      if (!res.ok) throw new Error("Unfurl failed");
+      const data = await res.json();
+      setSaveLinkPreview(data);
+    } catch {
+      setSaveLinkPreview({ url, title: url, description: "", image: "", siteName: "", favicon: "", articleText: "", _error: true });
+    } finally {
+      setIsSaveLinkLoading(false);
+    }
+  }, []);
+
+  const handleSaveLink = useCallback(async () => {
+    if (!user?.id || isSaveLinkSaving || !saveLinkPreview) return;
+    setIsSaveLinkSaving(true);
+    try {
+      const attachment = [{
+        type: "bookmark",
+        url: saveLinkPreview.url || saveLinkUrl,
+        name: saveLinkPreview.title || saveLinkPreview.url || "Saved Link",
+        title: saveLinkPreview.title || "",
+        description: saveLinkPreview.description || "",
+        image: saveLinkPreview.image || "",
+        favicon: saveLinkPreview.favicon || "",
+        siteName: saveLinkPreview.siteName || "",
+        articleText: saveLinkPreview.articleText || "",
+        oembedType: saveLinkPreview.oembedType || "",
+        oembedHtml: saveLinkPreview.oembedHtml || "",
+        authorName: saveLinkPreview.authorName || "",
+        authorHandle: saveLinkPreview.authorHandle || "",
+      }];
+      const noteContent = `${saveLinkPreview.title || saveLinkUrl}\n\n[ATTACHMENTS_JSON:${JSON.stringify(attachment)}]`;
+      const { data: insertedNote, error } = await supabase
+        .from("notes")
+        .insert({
+          user_id: user.id,
+          title: saveLinkPreview.title || saveLinkUrl,
+          content: noteContent,
+        })
+        .select("id, title, content, created_at, updated_at")
+        .single();
+      if (error) throw error;
+      if (insertedNote) setNotes((prev) => [insertedNote, ...prev]);
+      setShowSaveLink(false);
+      setSaveLinkUrl("");
+      setSaveLinkPreview(null);
+    } catch (err) {
+      setNotesError("Couldn't save the link. Please try again.");
+    } finally {
+      setIsSaveLinkSaving(false);
+    }
+  }, [user?.id, isSaveLinkSaving, saveLinkPreview, saveLinkUrl]);
 
   const handleChatSend = async () => {
     const text = chatInput.trim();
@@ -1093,19 +1115,35 @@ User: ${text}`;
           className="w-full h-auto max-h-[42rem] rounded-2xl"
           loading="lazy"
           draggable={false}
+          onError={(e) => {
+            const img = e.currentTarget;
+            if (img && !img.dataset.retried && attachment?.storagePath && attachment?.storageBucket) {
+              img.dataset.retried = "1";
+              supabase.storage
+                .from(attachment.storageBucket)
+                .createSignedUrl(attachment.storagePath, 60 * 60 * 24 * 7)
+                .then(({ data }) => {
+                  if (data?.signedUrl) img.src = data.signedUrl;
+                });
+            }
+          }}
         />
       );
     }
 
     if (type === "video") {
+      const videoMime = attachment.mimeType || "video/mp4";
       return (
         <video
-          src={resolvedUrl}
-          className="w-full h-auto max-h-[42rem] rounded-2xl"
+          key={resolvedUrl}
+          className="w-full h-auto max-h-[42rem] rounded-2xl bg-black/10"
           controls
+          playsInline
           preload="metadata"
           draggable={false}
-        />
+        >
+          <source src={resolvedUrl} type={videoMime} />
+        </video>
       );
     }
 
@@ -1135,7 +1173,7 @@ User: ${text}`;
     }
 
     if (type === "youtube") {
-      const videoId = extractYouTubeVideoId(String(attachment.url || ""));
+      const videoId = extractYouTubeVideoId(String(attachment.url || "")) || String(attachment.videoId || "").trim() || null;
       const embedUrl = videoId ? getYouTubeEmbedUrl(videoId) : "";
 
       if (isEmbeddedMode && videoId) {
@@ -1187,6 +1225,123 @@ User: ${text}`;
             allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
             allowFullScreen
           />
+        </div>
+      );
+    }
+
+    if (type === "bookmark") {
+      const linkUrl = attachment.url || resolvedUrl || "";
+      const domain = attachment.siteName || (() => { try { return new URL(linkUrl).hostname.replace(/^www\./, ""); } catch { return ""; } })();
+      const displayTitle = attachment.title || title || linkUrl;
+      const desc = String(attachment.description || "").slice(0, 200);
+      const hasImage = Boolean(attachment.image);
+      const isTweet = attachment.oembedType === "twitter" && desc;
+
+      if (isTweet) {
+        return (
+          <a
+            href={linkUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="block rounded-2xl overflow-hidden glass-control hover:shadow-lg transition-shadow group/bm"
+            draggable={false}
+          >
+            <div className="p-4 flex flex-col gap-2.5">
+              <div className="flex items-center gap-2">
+                <svg viewBox="0 0 24 24" className="w-4 h-4 shrink-0 fill-current text-black/70" aria-hidden="true">
+                  <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
+                </svg>
+                <div className="min-w-0 flex-1">
+                  <span className="text-sm font-semibold text-black/85 truncate block leading-tight">{attachment.authorName || displayTitle}</span>
+                  {attachment.authorHandle && <span className="text-[0.625rem] text-black/45 truncate block leading-tight">{attachment.authorHandle}</span>}
+                </div>
+                <ExternalLink className="w-3 h-3 opacity-0 group-hover/bm:opacity-60 transition-opacity shrink-0" />
+              </div>
+              <p className="text-[13px] text-black/75 leading-relaxed whitespace-pre-line line-clamp-6">{desc}</p>
+              <div className="flex items-center gap-1.5 text-black/35 pt-1.5 border-t border-black/8">
+                <span className="text-[0.6rem]">X (Twitter)</span>
+              </div>
+            </div>
+          </a>
+        );
+      }
+
+      return (
+        <a
+          href={linkUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="block rounded-2xl overflow-hidden glass-control hover:shadow-lg transition-shadow group/bm"
+          draggable={false}
+        >
+          {hasImage && (
+            <div className="w-full h-36 overflow-hidden bg-black/5">
+              <img
+                src={attachment.image}
+                alt=""
+                className="w-full h-full object-cover group-hover/bm:scale-[1.03] transition-transform duration-300"
+                loading="lazy"
+                draggable={false}
+                onError={(e) => { e.currentTarget.parentElement.style.display = "none"; }}
+              />
+            </div>
+          )}
+          <div className="p-3.5 space-y-1.5">
+            <div className="flex items-center gap-1.5 text-black/50">
+              {attachment.favicon ? (
+                <img src={attachment.favicon} alt="" className="w-3.5 h-3.5 rounded-sm" onError={(e) => { e.currentTarget.style.display = "none"; }} />
+              ) : (
+                <Globe className="w-3.5 h-3.5" />
+              )}
+              <span className="text-[0.625rem] font-medium truncate">{domain}</span>
+              <ExternalLink className="w-2.5 h-2.5 ml-auto opacity-0 group-hover/bm:opacity-100 transition-opacity" />
+            </div>
+            <p className="text-sm font-semibold text-black/85 leading-snug line-clamp-2">{displayTitle}</p>
+            {desc && <p className="text-xs text-black/55 leading-relaxed line-clamp-3">{desc}</p>}
+            {!hasImage && !desc && linkUrl && (
+              <p className="text-xs text-black/40 truncate">{linkUrl}</p>
+            )}
+          </div>
+        </a>
+      );
+    }
+
+    if (type === "spreadsheet") {
+      const cells = attachment.cells || {};
+      const totalRows = Math.min(Number(attachment.rows) || 0, 8);
+      const totalCols = Math.min(Number(attachment.cols) || 0, 6);
+      const hasData = totalRows > 0 && totalCols > 0 && Object.keys(cells).length > 0;
+      const fileName = attachment.name || title || "Spreadsheet";
+      return (
+        <div className="rounded-2xl overflow-hidden glass-control">
+          <div className="flex items-center gap-2 px-3.5 py-2.5 border-b border-black/8">
+            <Table2 className="w-4 h-4 text-green-600 shrink-0" />
+            <span className="text-sm font-medium text-black/80 truncate">{fileName}</span>
+          </div>
+          {hasData ? (
+            <div className="overflow-hidden">
+              <table className="w-full border-collapse text-[11px]">
+                <tbody>
+                  {Array.from({ length: totalRows }, (_, r) => (
+                    <tr key={r} className={r === 0 ? "bg-black/5 font-semibold" : ""}>
+                      {Array.from({ length: totalCols }, (_, c) => (
+                        <td key={c} className="px-2 py-1 border-b border-r border-black/6 text-black/70 truncate max-w-[120px]">
+                          {cells[`${r},${c}`] || ""}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {(Number(attachment.rows) > 8 || Number(attachment.cols) > 6) && (
+                <div className="px-3 py-1.5 text-[0.6rem] text-black/35 text-center">
+                  {attachment.rows} rows × {attachment.cols} cols
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="px-3.5 py-4 text-center text-xs text-black/40">Spreadsheet file</div>
+          )}
         </div>
       );
     }
@@ -1437,7 +1592,7 @@ User: ${text}`;
         })
       );
 
-      setProjects((prev) => [project, ...prev]);
+      memoryQueryClient.invalidateQueries({ queryKey: ["projects", user?.id] });
       setOpenCardMenuId(null);
       alert(`Created project "${project.name}" and added this file.`);
     } finally {
@@ -1738,39 +1893,17 @@ User: ${text}`;
             />
           ) : (
             <>
-              <h1 className="text-3xl font-semibold">Media</h1>
+              <h1 className="text-3xl font-semibold">The Vault</h1>
               <p className="text-black/60 mt-1">
                 Your digital collage of media files, videos, images, and quick notes. Drag and drop files or folders anywhere on this page.
               </p>
             </>
           )}
-          <div className="mt-4 flex items-center gap-3 flex-wrap">
-            <div className="inline-flex items-center gap-1 p-1 rounded-full glass-control">
-              <button
-                type="button"
-                onClick={() => setActiveMemoryPage("everything")}
-                className={`rounded-full px-3 py-1.5 text-xs font-medium transition ${
-                  activeMemoryPage === "everything" ? "bg-white/50 text-black" : "text-black/65 hover:text-black"
-                }`}
-              >
-                Media
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveMemoryPage("boards")}
-                className={`rounded-full px-3 py-1.5 text-xs font-medium transition ${
-                  activeMemoryPage === "boards" ? "bg-white/50 text-black" : "text-black/65 hover:text-black"
-                }`}
-              >
-                Boards
-              </button>
-            </div>
-          </div>
         </section>
 
         {!user && !loading && (
           <div className="glass-control rounded-2xl px-5 py-4 inline-block">
-            <p className="text-sm text-black/70">Sign in to view your memory board.</p>
+            <p className="text-sm text-black/70">Sign in to view your vault.</p>
           </div>
         )}
 
@@ -1784,46 +1917,70 @@ User: ${text}`;
           <>
             {orderedVisibleCards.length === 0 ? (
               <div className="flex flex-col items-start gap-4">
-                <button
-                  type="button"
-                  onClick={() => addMediaTriggerRef.current?.()}
-                  className="group/add break-inside-avoid mb-5 rounded-2xl border-2 border-dashed border-blue-500/30 hover:border-blue-500/50 p-6 flex flex-col items-center justify-center text-center transition-all hover:bg-blue-500/[0.04] dark:hover:bg-blue-400/[0.04] w-full sm:w-64 min-h-[160px]"
-                >
-                  <div className="w-12 h-12 rounded-full bg-blue-500/10 flex items-center justify-center mb-3 group-hover/add:bg-blue-500/20 transition-colors">
-                    <Plus className="w-6 h-6 text-blue-500" />
+                <div className="break-inside-avoid mb-5 rounded-2xl border-2 border-dashed border-blue-500/30 p-6 flex flex-col items-center justify-center text-center w-full sm:w-64 min-h-[160px] gap-3">
+                  <div className="text-sm font-medium text-black/40 dark:text-white/40 mb-1">Add to Vault</div>
+                  <div className="flex gap-3">
+                    <button
+                      type="button"
+                      onClick={() => addMediaTriggerRef.current?.()}
+                      className="group/opt flex flex-col items-center gap-1.5 rounded-xl px-4 py-3 hover:bg-blue-500/[0.06] transition-colors"
+                    >
+                      <div className="w-10 h-10 rounded-full bg-blue-500/10 flex items-center justify-center group-hover/opt:bg-blue-500/20 transition-colors">
+                        <Upload className="w-5 h-5 text-blue-500" />
+                      </div>
+                      <span className="text-xs font-medium text-black/50 group-hover/opt:text-blue-500 transition-colors">Upload Files</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowSaveLink(true)}
+                      className="group/opt flex flex-col items-center gap-1.5 rounded-xl px-4 py-3 hover:bg-blue-500/[0.06] transition-colors"
+                    >
+                      <div className="w-10 h-10 rounded-full bg-blue-500/10 flex items-center justify-center group-hover/opt:bg-blue-500/20 transition-colors">
+                        <Globe className="w-5 h-5 text-blue-500" />
+                      </div>
+                      <span className="text-xs font-medium text-black/50 group-hover/opt:text-blue-500 transition-colors">Save Link</span>
+                    </button>
                   </div>
-                  <span className="text-sm font-medium text-black/40 dark:text-white/40 group-hover/add:text-blue-500 transition-colors">
-                    Add Media
-                  </span>
-                </button>
-                {(embeddedSearch.trim() || activeMemoryPage === "boards") && (
+                </div>
+                {embeddedSearch.trim() && (
                   <div className="glass-control rounded-2xl px-5 py-4 inline-block">
-                    <p className="text-sm text-black/70">
-                      {embeddedSearch.trim()
-                        ? "No results match your search."
-                        : "No boards yet. Create a board inside a project to get started."}
-                    </p>
+                    <p className="text-sm text-black/70">No results match your search.</p>
                   </div>
                 )}
               </div>
             ) : (
               <div className={isEmbeddedMode ? "columns-2 gap-3" : "columns-1 sm:columns-2 md:columns-3 xl:columns-4 2xl:columns-5 gap-4 md:gap-5"}>
-                <button
-                  type="button"
-                  onClick={() => addMediaTriggerRef.current?.()}
-                  className="group/add break-inside-avoid mb-5 rounded-2xl border-2 border-dashed border-blue-500/30 hover:border-blue-500/50 p-6 flex flex-col items-center justify-center text-center transition-all hover:bg-blue-500/[0.04] dark:hover:bg-blue-400/[0.04] min-h-[160px]"
-                >
-                  <div className="w-12 h-12 rounded-full bg-blue-500/10 flex items-center justify-center mb-3 group-hover/add:bg-blue-500/20 transition-colors">
-                    <Plus className="w-6 h-6 text-blue-500" />
+                <div className="break-inside-avoid mb-5 rounded-2xl border-2 border-dashed border-blue-500/30 p-4 flex flex-col items-center justify-center text-center min-h-[130px] gap-2">
+                  <div className="text-xs font-medium text-black/40 dark:text-white/40">Add to Vault</div>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => addMediaTriggerRef.current?.()}
+                      className="group/opt flex flex-col items-center gap-1 rounded-xl px-3 py-2 hover:bg-blue-500/[0.06] transition-colors"
+                    >
+                      <div className="w-9 h-9 rounded-full bg-blue-500/10 flex items-center justify-center group-hover/opt:bg-blue-500/20 transition-colors">
+                        <Upload className="w-4 h-4 text-blue-500" />
+                      </div>
+                      <span className="text-[0.625rem] font-medium text-black/50 group-hover/opt:text-blue-500 transition-colors">Files</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowSaveLink(true)}
+                      className="group/opt flex flex-col items-center gap-1 rounded-xl px-3 py-2 hover:bg-blue-500/[0.06] transition-colors"
+                    >
+                      <div className="w-9 h-9 rounded-full bg-blue-500/10 flex items-center justify-center group-hover/opt:bg-blue-500/20 transition-colors">
+                        <Globe className="w-4 h-4 text-blue-500" />
+                      </div>
+                      <span className="text-[0.625rem] font-medium text-black/50 group-hover/opt:text-blue-500 transition-colors">Link</span>
+                    </button>
                   </div>
-                  <span className="text-sm font-medium text-black/40 dark:text-white/40 group-hover/add:text-blue-500 transition-colors">
-                    Add Media
-                  </span>
-                </button>
+                </div>
                 {orderedVisibleCards.map((card) => (
                   <article
                     key={card.id}
                     data-memory-card-id={card.id}
+                    data-card-id={card.id}
+                    ref={(el) => { if (card.kind === "attachment") registerCardRef(card.id, el); }}
                     draggable
                     onDragStart={(e) => {
                       if (e.target instanceof Element && e.target.closest("[data-no-drag='true']")) {
@@ -1927,7 +2084,7 @@ User: ${text}`;
                       }
                     }}
                     className={`break-inside-avoid ${isEmbeddedMode ? "mb-0" : "mb-5"} rounded-2xl relative ${
-                      card.kind === "chat-preview" || card.kind === "board" ? "overflow-hidden" : "overflow-visible"
+                      card.kind === "chat-preview" ? "overflow-hidden" : "overflow-visible"
                     } ${
                       card.kind === "attachment" || card.kind === "quick-note"
                         ? "bg-transparent border-0 shadow-none backdrop-blur-0"
@@ -2010,7 +2167,7 @@ User: ${text}`;
                                 openCardMenuForAnchor(card.id, e.currentTarget);
                               }}
                               className="px-1 py-0.5 text-black/75 hover:text-black leading-none text-base font-semibold"
-                              title="Media actions"
+                              title="Actions"
                             >
                               <MoreHorizontal className="w-4 h-4" />
                             </button>
@@ -2104,23 +2261,6 @@ User: ${text}`;
                           </div>
                         </div>
                       </>
-                    ) : card.kind === "board" ? (
-                      <button
-                        type="button"
-                        onClick={() => nav(`/canvas/${card.boardId}`)}
-                        className="w-full text-left p-4 space-y-3"
-                      >
-                        <div className="flex items-center gap-2">
-                          <LayoutGrid className="w-4 h-4 text-blue-500 shrink-0" />
-                          <h2 className="text-sm font-semibold text-black/90 dark:text-white/90 truncate">{card.title}</h2>
-                        </div>
-                        {card.dateLabel && (
-                          <div className="text-[0.6875rem] text-black/55 dark:text-white/55 flex items-center gap-1">
-                            <Clock className="w-3 h-3" />
-                            <span>{card.dateLabel}</span>
-                          </div>
-                        )}
-                      </button>
                     ) : card.kind === "chat-preview" ? (
                       <div className="p-4 space-y-3">
                         <div className="flex items-center justify-between">
@@ -2327,6 +2467,94 @@ User: ${text}`;
                 <div>Write your quick note...</div>
                 <div className="mt-2 text-[0.6875rem] text-black/50">Auto-saves as you type (empty notes are not saved).</div>
               </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {showSaveLink && (
+        <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/20 backdrop-blur-sm" onClick={() => { setShowSaveLink(false); setSaveLinkUrl(""); setSaveLinkPreview(null); }}>
+          <div
+            className="w-[420px] max-w-[92vw] glass-control rounded-2xl shadow-2xl p-5 space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-black/85 flex items-center gap-2">
+                <Globe className="w-4 h-4" />
+                Save Link to Vault
+              </h2>
+              <button type="button" onClick={() => { setShowSaveLink(false); setSaveLinkUrl(""); setSaveLinkPreview(null); }} className="text-black/50 hover:text-black/80">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="flex gap-2">
+              <input
+                type="url"
+                value={saveLinkUrl}
+                onChange={(e) => setSaveLinkUrl(e.target.value)}
+                onPaste={(e) => {
+                  const pasted = e.clipboardData.getData("text").trim();
+                  if (pasted && /^https?:\/\//i.test(pasted)) {
+                    setSaveLinkUrl(pasted);
+                    void handleUnfurlLink(pasted);
+                  }
+                }}
+                onKeyDown={(e) => { if (e.key === "Enter" && saveLinkUrl.trim()) void handleUnfurlLink(saveLinkUrl); }}
+                placeholder="Paste or type a URL..."
+                className="flex-1 rounded-xl border border-white/40 bg-white/30 px-3 py-2 text-sm outline-none placeholder:text-black/40 focus:border-blue-400/50"
+                autoFocus
+              />
+              <button
+                type="button"
+                disabled={!saveLinkUrl.trim() || isSaveLinkLoading}
+                onClick={() => void handleUnfurlLink(saveLinkUrl)}
+                className="rounded-xl px-3 py-2 text-xs font-medium bg-blue-500/15 text-blue-600 hover:bg-blue-500/25 disabled:opacity-40 transition-colors"
+              >
+                {isSaveLinkLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : "Preview"}
+              </button>
+            </div>
+
+            {isSaveLinkLoading && (
+              <div className="flex items-center justify-center py-6 text-black/50">
+                <Loader2 className="w-5 h-5 animate-spin mr-2" />
+                <span className="text-xs">Fetching link preview...</span>
+              </div>
+            )}
+
+            {saveLinkPreview && !isSaveLinkLoading && (
+              <div className="rounded-xl border border-white/40 overflow-hidden bg-white/20">
+                {saveLinkPreview.image && (
+                  <div className="w-full h-40 overflow-hidden bg-black/5">
+                    <img src={saveLinkPreview.image} alt="" className="w-full h-full object-cover" loading="lazy" onError={(e) => { e.currentTarget.style.display = "none"; }} />
+                  </div>
+                )}
+                <div className="p-3 space-y-1.5">
+                  <div className="flex items-center gap-1.5 text-black/50">
+                    <Globe className="w-3 h-3" />
+                    <span className="text-[0.625rem] font-medium">{saveLinkPreview.siteName || (() => { try { return new URL(saveLinkPreview.url).hostname.replace(/^www\./, ""); } catch { return ""; } })()}</span>
+                  </div>
+                  <p className="text-sm font-semibold text-black/85 leading-snug">{saveLinkPreview.title}</p>
+                  {saveLinkPreview.description && (
+                    <p className="text-xs text-black/55 leading-relaxed line-clamp-3">{saveLinkPreview.description}</p>
+                  )}
+                  {saveLinkPreview.articleText && (
+                    <p className="text-[0.625rem] text-black/40 mt-1">Article text captured ({saveLinkPreview.articleText.length.toLocaleString()} chars)</p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {saveLinkPreview && !isSaveLinkLoading && (
+              <button
+                type="button"
+                disabled={isSaveLinkSaving}
+                onClick={() => void handleSaveLink()}
+                className="w-full rounded-xl py-2.5 text-sm font-medium bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-60 transition-colors flex items-center justify-center gap-2"
+              >
+                {isSaveLinkSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <LinkIcon className="w-4 h-4" />}
+                {isSaveLinkSaving ? "Saving..." : "Save to Vault"}
+              </button>
             )}
           </div>
         </div>

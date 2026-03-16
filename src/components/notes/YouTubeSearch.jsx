@@ -29,7 +29,7 @@ export default function YouTubeSearch({ isOpen, onClose, onSelectVideo }) {
       setVideos(data.videos || []);
     } catch (err) {
       console.error('Error searching YouTube:', err);
-      setError(err.message);
+      setError("YouTube search is unavailable right now. Please try again later.");
       setVideos([]);
     } finally {
       setLoading(false);

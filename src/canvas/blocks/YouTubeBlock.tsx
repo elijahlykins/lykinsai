@@ -2,6 +2,7 @@ import React, { memo, useEffect, useMemo, useRef, useState } from "react";
 import { ExternalLink, Youtube, AlertCircle } from "lucide-react";
 import { useCanvasStore } from "@/store/canvasStore";
 import { extractYouTubeVideoId, getYouTubeEmbedUrl } from "@/canvas/utils/youtube";
+import { BlockHoverToolbar } from "./BlockHoverToolbar";
 import { snapToGrid } from "@/canvas/utils/snap";
 
 type DragState = {
@@ -33,9 +34,8 @@ type ResizeState = {
   capturer: HTMLElement | null;
 };
 
-export const YouTubeBlock = memo(function YouTubeBlock({ id }: { id: string }) {
+export const YouTubeBlock = memo(function YouTubeBlock({ id, onMinimize, onMenu }: { id: string; onMinimize?: (id: string) => void; onMenu?: (id: string, rect: DOMRect) => void }) {
   const block = useCanvasStore((s) => s.blocks[id]);
-  const bringToFront = useCanvasStore((s) => s.bringToFront);
   const selectBlocks = useCanvasStore((s) => s.selectBlocks);
   const toggleSelect = useCanvasStore((s) => s.toggleSelect);
   const isSelected = useCanvasStore((s) => s.selectedIds.includes(id));
@@ -139,7 +139,6 @@ export const YouTubeBlock = memo(function YouTubeBlock({ id }: { id: string }) {
   const beginResize = (e: React.PointerEvent, mode: ResizeMode) => {
     e.stopPropagation();
     e.preventDefault();
-    bringToFront(id);
     pushHistory();
 
     const capturer = e.currentTarget as HTMLElement;
@@ -170,7 +169,6 @@ export const YouTubeBlock = memo(function YouTubeBlock({ id }: { id: string }) {
     e.stopPropagation();
     e.preventDefault();
     if (resizeRef.current) return;
-    bringToFront(id);
     if (e.shiftKey) toggleSelect(id);
     else if (!isSelected) selectBlocks([id]);
     pushHistory();
@@ -210,8 +208,9 @@ export const YouTubeBlock = memo(function YouTubeBlock({ id }: { id: string }) {
       dragRef.current = null;
       return;
     }
-    const dx = e.clientX - d.startClientX;
-    const dy = e.clientY - d.startClientY;
+    const z = (useCanvasStore.getState() as any).camera?.zoom || 1;
+    const dx = (e.clientX - d.startClientX) / z;
+    const dy = (e.clientY - d.startClientY) / z;
     d.lastX = d.originX + dx;
     d.lastY = d.originY + dy;
     if (d.raf != null) return;
@@ -247,6 +246,7 @@ export const YouTubeBlock = memo(function YouTubeBlock({ id }: { id: string }) {
   return (
     <div
       data-canvas-block
+      data-self-drag
       data-block-id={id}
       className="absolute group"
       style={style}
@@ -260,7 +260,6 @@ export const YouTubeBlock = memo(function YouTubeBlock({ id }: { id: string }) {
       }}
       onPointerDown={(e) => {
         e.stopPropagation();
-        bringToFront(id);
       }}
       onPointerMove={(e) => {
         const r = resizeRef.current;
@@ -270,8 +269,9 @@ export const YouTubeBlock = memo(function YouTubeBlock({ id }: { id: string }) {
             endResize(e.pointerId);
             return;
           }
-          const dx = e.clientX - r.startClientX;
-          const dy = e.clientY - r.startClientY;
+          const rz = (useCanvasStore.getState() as any).camera?.zoom || 1;
+          const dx = (e.clientX - r.startClientX) / rz;
+          const dy = (e.clientY - r.startClientY) / rz;
           if (r.raf != null) return;
           r.raf = window.requestAnimationFrame(() => {
             const rr = resizeRef.current;
@@ -279,9 +279,7 @@ export const YouTubeBlock = memo(function YouTubeBlock({ id }: { id: string }) {
             rr.raf = null;
 
             const min = Math.max(1, Math.floor(gridSize || 24));
-            const bottom = rr.startY + rr.startH;
 
-            // Corner-only scaling: keep top-left corner pinned, resize by pull direction.
             const byX = dx;
             const byY = dy * rr.aspect;
             const deltaW = Math.abs(byX) >= Math.abs(byY) ? byX : byY;
@@ -307,6 +305,7 @@ export const YouTubeBlock = memo(function YouTubeBlock({ id }: { id: string }) {
         endResize(e.pointerId);
       }}
     >
+      <BlockHoverToolbar blockId={id} onMinimize={onMinimize} onMenu={onMenu} />
       {/* top grab strip (like ImageBlock) */}
       <div
         data-drag-handle

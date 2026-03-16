@@ -1,25 +1,26 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
+import ReactDOM from "react-dom";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
-  Calendar,
   ChevronLeft,
   ChevronRight,
   CreditCard,
+  Edit2,
+  FolderPlus,
   Home,
-  LifeBuoy,
-  Link as LinkIcon,
-  Image as ImageIcon,
+  Bug,
+  Lock,
   LogIn,
   LogOut,
-  MessageSquare,
+  MoreHorizontal,
   Plus,
   Search as SearchIcon,
   Settings as SettingsIcon,
   Trash2,
-  Users,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/SupabaseAuth";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 const PROJECTS_CHANGED_EVENT = "lykinsai_projects_changed";
 
@@ -32,37 +33,65 @@ const projectColors = [
   "rgba(240,253,250,0.55)",
 ];
 
+const flushAndNavigate = (nav, path) => {
+  window.dispatchEvent(new Event("omnia_flush_save"));
+  // Small delay to let the async save start its network requests
+  setTimeout(() => nav(path), 80);
+};
+
 export default function AppSidebar() {
   const nav = useNavigate();
   const location = useLocation();
   const { user, signInWithOAuth, signOut } = useAuth();
   const [open, setOpen] = useState(false);
-  const [projects, setProjects] = useState([]);
+  const queryClient = useQueryClient();
+  const [menuBoardId, setMenuBoardId] = useState(null);
+  const [menuPos, setMenuPos] = useState({ top: 0, left: 0 });
+  const [showProjectPicker, setShowProjectPicker] = useState(false);
+  const [pickerPos, setPickerPos] = useState({ top: 0, left: 0 });
+  const menuRef = useRef(null);
+  const addToProjectRef = useRef(null);
 
-  useEffect(() => {
-    let active = true;
-    const load = async () => {
-      if (!user?.id) {
-        setProjects([]);
-        return;
-      }
+  const { data: projects = [] } = useQuery({
+    queryKey: ["projects", user?.id],
+    queryFn: async () => {
+      if (!user?.id) return [];
       const { data } = await supabase
         .from("omnia_projects")
-        .select("id, name, created_at, updated_at")
+        .select("id, name, updated_at")
         .eq("user_id", user.id)
-        .order("updated_at", { ascending: false });
-      if (active) setProjects(data || []);
-    };
-    load();
-    const onProjectsChanged = () => {
-      load();
-    };
+        .order("updated_at", { ascending: false })
+        .limit(50);
+      return data || [];
+    },
+    enabled: !!user?.id,
+  });
+
+  const { data: boards = [] } = useQuery({
+    queryKey: ["boards", user?.id],
+    queryFn: async () => {
+      if (!user?.id) return [];
+      const { data } = await supabase
+        .from("omnia_boards")
+        .select("id, title, updated_at")
+        .eq("user_id", user.id)
+        .order("updated_at", { ascending: false })
+        .limit(50);
+      return data || [];
+    },
+    enabled: !!user?.id,
+  });
+
+  useEffect(() => {
+    const onProjectsChanged = () => queryClient.invalidateQueries({ queryKey: ["projects", user?.id] });
+    const onBoardsChanged = () => queryClient.invalidateQueries({ queryKey: ["boards", user?.id] });
     window.addEventListener(PROJECTS_CHANGED_EVENT, onProjectsChanged);
+    window.addEventListener("lykinsai_boards_changed", onBoardsChanged);
     return () => {
-      active = false;
       window.removeEventListener(PROJECTS_CHANGED_EVENT, onProjectsChanged);
+      window.removeEventListener("lykinsai_boards_changed", onBoardsChanged);
     };
-  }, [user?.id]);
+  }, [queryClient, user?.id]);
 
   useEffect(() => {
     if (!open) {
@@ -83,13 +112,60 @@ export default function AppSidebar() {
     };
   }, [open]);
 
+  useEffect(() => {
+    if (!menuBoardId) return;
+    const onClick = (e) => {
+      if (menuRef.current && !menuRef.current.contains(e.target)) {
+        setMenuBoardId(null);
+        setShowProjectPicker(false);
+      }
+    };
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, [menuBoardId]);
+
+  const deleteBoard = async (boardId) => {
+    if (!user?.id) return;
+    if (!window.confirm("Delete this board? This cannot be undone.")) return;
+    await supabase.from("omnia_board_states").delete().eq("board_id", boardId);
+    await supabase.from("omnia_boards").delete().eq("id", boardId).eq("user_id", user.id);
+    setMenuBoardId(null);
+    if (localStorage.getItem("omnia_board_id") === boardId) localStorage.removeItem("omnia_board_id");
+    window.dispatchEvent(new Event("lykinsai_boards_changed"));
+    if (location.pathname === `/canvas/${boardId}`) nav("/");
+  };
+
+  const addBoardToProject = async (boardId, projectId) => {
+    if (!user?.id) return;
+    await supabase.from("omnia_boards").update({ project_id: projectId }).eq("id", boardId);
+    setMenuBoardId(null);
+    setShowProjectPicker(false);
+    window.dispatchEvent(new Event("lykinsai_boards_changed"));
+  };
+
+  const renameBoard = async (boardId) => {
+    if (!user?.id) return;
+    const board = boards.find((b) => b.id === boardId);
+    const currentTitle = board?.title || "New Board";
+    const next = window.prompt("Rename board", currentTitle);
+    if (next === null) return;
+    const name = next.trim() || "New Board";
+    await supabase
+      .from("omnia_boards")
+      .update({ title: name, updated_at: new Date().toISOString() })
+      .eq("id", boardId)
+      .eq("user_id", user.id);
+    setMenuBoardId(null);
+    window.dispatchEvent(new Event("lykinsai_boards_changed"));
+  };
+
   return (
     <>
       <div className="fixed left-4 top-4 z-[80] flex items-center gap-3">
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
-          className="rounded-full w-8 h-8 hover:bg-black/10 dark:hover:bg-white/15 transition-colors flex items-center justify-center"
+          className="rounded-full w-8 h-8 hover:bg-blue-500/15 dark:hover:bg-blue-400/20 transition-colors flex items-center justify-center"
           title={open ? "Hide panel" : "Show panel"}
         >
           {open ? <ChevronLeft className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
@@ -104,7 +180,7 @@ export default function AppSidebar() {
               signInWithOAuth("google");
             }
           }}
-          className="flex items-center gap-2 rounded-full glass-text-card px-2 py-1 text-[0.6875rem] text-black/70 hover:opacity-90"
+          className="flex items-center gap-2 rounded-full glass-text-card px-2 py-1 text-[0.6875rem] text-black/70 hover:bg-blue-500/15 transition-colors"
           title={user ? "Sign out" : "Sign in"}
         >
           <div className="h-6 w-6 rounded-full glass-text-card text-[0.6875rem] font-semibold text-black/70 flex items-center justify-center">
@@ -137,8 +213,8 @@ export default function AppSidebar() {
         <div className="mt-2 flex flex-col gap-1">
           <button
             type="button"
-            onClick={() => nav("/")}
-            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
+            onClick={() => flushAndNavigate(nav, "/")}
+            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
           >
             <Home className="w-3.5 h-3.5 text-black/60" />
             Home
@@ -150,6 +226,7 @@ export default function AppSidebar() {
                 signInWithOAuth("google");
                 return;
               }
+              window.dispatchEvent(new Event("omnia_flush_save"));
               const { data } = await supabase
                 .from("omnia_boards")
                 .insert({ user_id: user.id, title: "New Board" })
@@ -161,23 +238,23 @@ export default function AppSidebar() {
                 nav(`/canvas/${id}`);
               }
             }}
-            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
+            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
           >
             <Plus className="w-3.5 h-3.5 text-black/60" />
-            Create
+            Grid
           </button>
           <button
             type="button"
-            onClick={() => nav("/memory")}
-            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
+            onClick={() => flushAndNavigate(nav, "/memory")}
+            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
           >
-            <ImageIcon className="w-3.5 h-3.5 text-black/60" />
-            Media
+            <Lock className="w-3.5 h-3.5 text-black/60" />
+            Vault
           </button>
         </div>
 
         <div className="mt-3 text-[0.6875rem] font-semibold text-black/70 px-2 py-1">Projects</div>
-        <div className="flex flex-col gap-1 max-h-[28vh] overflow-y-auto pr-1">
+        <div className="flex flex-col gap-1 max-h-[28vh] overflow-y-auto scrollbar-hide pr-1">
           {projects.length === 0 ? (
             <div className="text-[0.6875rem] text-black/50 px-2.5 py-1.5">No projects yet.</div>
           ) : (
@@ -185,8 +262,8 @@ export default function AppSidebar() {
               <button
                 key={project.id}
                 type="button"
-                onClick={() => nav(`/project/${project.id}`)}
-                className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
+                onClick={() => flushAndNavigate(nav, `/project/${project.id}`)}
+                className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
               >
                 <span className="inline-block h-1 w-1 rounded-full bg-black/70" />
                 <span className="truncate">{project.name}</span>
@@ -195,56 +272,63 @@ export default function AppSidebar() {
           )}
         </div>
 
-        <div className="mt-3 text-[0.6875rem] font-semibold text-black/70 px-2 py-1">Workspace</div>
-        <div className="flex flex-col gap-1">
-          <button
-            type="button"
-            onClick={() => nav("/teamspaces")}
-            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
-          >
-            <Users className="w-3.5 h-3.5 text-black/60" />
-            Teamspaces
-          </button>
-          <button
-            type="button"
-            onClick={() => nav("/calendar")}
-            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
-          >
-            <Calendar className="w-3.5 h-3.5 text-black/60" />
-            Calendar
-          </button>
+        <div className="mt-3 text-[0.6875rem] font-semibold text-black/70 px-2 py-1">Boards</div>
+        <div className="flex flex-col gap-0.5 max-h-[28vh] overflow-y-auto scrollbar-hide pr-1">
+          {boards.length === 0 ? (
+            <div className="text-[0.6875rem] text-black/50 px-2.5 py-1.5">No boards yet.</div>
+          ) : (
+            boards.map((board) => {
+              const isActive = location.pathname === `/canvas/${board.id}`;
+              return (
+                <div key={board.id} className="group relative flex items-center">
+                  <button
+                    type="button"
+                    onClick={() => flushAndNavigate(nav, `/canvas/${board.id}`)}
+                    className={`flex-1 min-w-0 text-left text-[0.6875rem] pl-2.5 pr-7 py-1.5 rounded-md flex items-center gap-2 transition-colors ${
+                      isActive ? "bg-blue-500/15" : "hover:bg-blue-500/15"
+                    }`}
+                  >
+                    <span className={`inline-block h-1.5 w-1.5 rounded-full flex-shrink-0 ${isActive ? "bg-blue-500" : "bg-black/30"}`} />
+                    <span className="truncate">{board.title || "Untitled Board"}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (menuBoardId === board.id) {
+                        setMenuBoardId(null);
+                        setShowProjectPicker(false);
+                      } else {
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        setMenuPos({ top: rect.bottom + 4, left: rect.right });
+                        setMenuBoardId(board.id);
+                        setShowProjectPicker(false);
+                      }
+                    }}
+                    className="absolute right-1 top-1/2 -translate-y-1/2 w-5 h-5 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-blue-500/15 transition-opacity"
+                  >
+                    <MoreHorizontal className="w-3 h-3 text-black/50" />
+                  </button>
+                </div>
+              );
+            })
+          )}
         </div>
 
         <div className="mt-3 text-[0.6875rem] font-semibold text-black/70 px-2 py-1">Account</div>
         <div className="flex flex-col gap-1">
           <button
             type="button"
-            onClick={() => nav("/settings")}
-            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
+            onClick={() => flushAndNavigate(nav, "/settings")}
+            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
           >
             <SettingsIcon className="w-3.5 h-3.5 text-black/60" />
             Settings
           </button>
           <button
             type="button"
-            onClick={() => nav("/connections")}
-            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
-          >
-            <LinkIcon className="w-3.5 h-3.5 text-black/60" />
-            Connections
-          </button>
-          <button
-            type="button"
-            onClick={() => nav("/trash")}
-            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
-          >
-            <Trash2 className="w-3.5 h-3.5 text-black/60" />
-            Trash
-          </button>
-          <button
-            type="button"
-            onClick={() => nav("/billing")}
-            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
+            onClick={() => flushAndNavigate(nav, "/billing")}
+            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
           >
             <CreditCard className="w-3.5 h-3.5 text-black/60" />
             Billing
@@ -255,17 +339,17 @@ export default function AppSidebar() {
           <button
             type="button"
             onClick={() => nav("/support")}
-            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
+            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
           >
-            <LifeBuoy className="w-3.5 h-3.5 text-black/60" />
-            Get support
+            <Bug className="w-3.5 h-3.5 text-black/60" />
+            Report Bug
           </button>
 
           {user && (
             <button
               type="button"
               onClick={() => signOut()}
-              className="mt-2 w-full text-left text-[0.6875rem] px-2.5 py-1.5 hover:opacity-80 flex items-center gap-2"
+              className="mt-2 w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
             >
               <LogOut className="w-3.5 h-3.5 text-black/60" />
               Log out
@@ -273,6 +357,98 @@ export default function AppSidebar() {
           )}
         </div>
       </div>
+
+      {menuBoardId && ReactDOM.createPortal(
+        <div
+          ref={menuRef}
+          className="fixed z-[9999] w-44 rounded-lg border border-black/10 bg-white/95 backdrop-blur-xl shadow-lg py-1 text-[0.6875rem]"
+          style={{ top: menuPos.top, left: menuPos.left }}
+        >
+          <button
+            type="button"
+            className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-blue-500/15 transition-colors"
+            onClick={() => renameBoard(menuBoardId)}
+          >
+            <Edit2 className="w-3 h-3 text-black/50" />
+            Rename
+          </button>
+          <div
+            ref={addToProjectRef}
+            className="relative"
+            onMouseEnter={() => {
+              if (addToProjectRef.current) {
+                const r = addToProjectRef.current.getBoundingClientRect();
+                setPickerPos({ top: r.top, left: r.right + 4 });
+              }
+              setShowProjectPicker(true);
+            }}
+            onMouseLeave={() => setShowProjectPicker(false)}
+          >
+            <button
+              type="button"
+              className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-blue-500/15 transition-colors"
+            >
+              <FolderPlus className="w-3 h-3 text-black/50" />
+              Add to project
+              <ChevronRight className="w-3 h-3 text-black/30 ml-auto" />
+            </button>
+            {showProjectPicker && ReactDOM.createPortal(
+              <div
+                className="fixed z-[10000] w-44 rounded-lg border border-black/10 bg-white/95 backdrop-blur-xl shadow-lg py-1 text-[0.6875rem]"
+                style={{ top: pickerPos.top, left: pickerPos.left }}
+                onMouseEnter={() => setShowProjectPicker(true)}
+                onMouseLeave={() => setShowProjectPicker(false)}
+              >
+                <button
+                  type="button"
+                  className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-blue-500/15 transition-colors font-medium"
+                  onClick={async () => {
+                    const name = window.prompt("Project name:");
+                    if (!name?.trim() || !user?.id) return;
+                    const { data } = await supabase
+                      .from("omnia_projects")
+                      .insert({ user_id: user.id, name: name.trim() })
+                      .select("id")
+                      .single();
+                    if (data?.id) {
+                      await addBoardToProject(menuBoardId, data.id);
+                      window.dispatchEvent(new Event(PROJECTS_CHANGED_EVENT));
+                    }
+                  }}
+                >
+                  <Plus className="w-3 h-3 text-black/50" />
+                  Create new project
+                </button>
+                {projects.length > 0 && (
+                  <div className="border-t border-black/5 mt-1 pt-1">
+                    {projects.map((p) => (
+                      <button
+                        key={p.id}
+                        type="button"
+                        className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-blue-500/15 transition-colors"
+                        onClick={() => addBoardToProject(menuBoardId, p.id)}
+                      >
+                        <span className="inline-block h-1.5 w-1.5 rounded-full bg-black/30 flex-shrink-0" />
+                        <span className="truncate">{p.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>,
+              document.body
+            )}
+          </div>
+          <button
+            type="button"
+            className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-red-50 text-red-600 transition-colors"
+            onClick={() => deleteBoard(menuBoardId)}
+          >
+            <Trash2 className="w-3 h-3" />
+            Delete board
+          </button>
+        </div>,
+        document.body
+      )}
     </>
   );
 }

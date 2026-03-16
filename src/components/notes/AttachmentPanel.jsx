@@ -49,7 +49,7 @@ const resolveAttachmentType = (attachment) => {
   const extMatch = (url.split('/').pop() || name).match(/\.([^.]+)$/);
   const ext = extMatch ? extMatch[1].toLowerCase() : '';
   
-  const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'heic', 'tiff', 'ico'];
+  const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'heic', 'heif', 'tiff', 'ico'];
   const videoExts = ['mp4', 'mov', 'avi', 'mkv', 'webm', 'ogg', 'm4v', 'wmv', 'flv'];
   const audioExts = ['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac', 'wma'];
   const pdfExts = ['pdf'];
@@ -261,7 +261,7 @@ const AudioPlayerComponent = ({ attachment, audioMimeType }) => {
           setAudioUrl(blobUrl);
         } catch (err) {
           console.error('❌ Failed to convert data URL to blob:', err);
-          setError(err.message);
+          setError("Couldn't load this audio file. Please try again.");
           // Keep using the original data URL as fallback
         }
       };

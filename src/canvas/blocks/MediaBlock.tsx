@@ -1,5 +1,6 @@
-import React, { memo, useMemo, useRef, useState } from "react";
+import React, { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Image, Film, Link2, FileUp, Globe } from "lucide-react";
+import { BlockHoverToolbar } from "./BlockHoverToolbar";
 import { useCanvasStore } from "@/store/canvasStore";
 import { snapToGrid } from "@/canvas/utils/snap";
 
@@ -30,9 +31,8 @@ const MEDIA_OPTIONS = [
   { mode: "file" as const, icon: FileUp, label: "File", hint: "Upload file" },
 ];
 
-export const MediaBlock = memo(function MediaBlock({ id }: { id: string }) {
+export const MediaBlock = memo(function MediaBlock({ id, onMinimize, onMenu }: { id: string; onMinimize?: (id: string) => void; onMenu?: (id: string, rect: DOMRect) => void }) {
   const block = useCanvasStore((s) => s.blocks[id]);
-  const bringToFront = useCanvasStore((s) => s.bringToFront);
   const selectBlocks = useCanvasStore((s) => s.selectBlocks);
   const toggleSelect = useCanvasStore((s) => s.toggleSelect);
   const isSelected = useCanvasStore((s) => s.selectedIds.includes(id));
@@ -49,6 +49,50 @@ export const MediaBlock = memo(function MediaBlock({ id }: { id: string }) {
   const [showUrlInput, setShowUrlInput] = useState(false);
   const [urlMode, setUrlMode] = useState<"video" | "link" | "embed">("link");
 
+  const media = parseMediaData(String((block as any)?.content || ""));
+
+  const otherBlocksBoundsKey = useCanvasStore((s) => {
+    const order = Array.isArray(s.blockOrder) ? s.blockOrder : [];
+    if (order.length <= 1) return "";
+    let minY = Infinity, minX = Infinity, maxX = -Infinity;
+    for (const bid of order) {
+      if (bid === id) continue;
+      const b = s.blocks[bid];
+      if (!b) continue;
+      const bx = Number((b as any).x || 0);
+      const by = Number((b as any).y || 0);
+      const bw = Number((b as any).width || 0);
+      if (by < minY) minY = by;
+      if (bx < minX) minX = bx;
+      if (bx + bw > maxX) maxX = bx + bw;
+    }
+    if (minY === Infinity) return "";
+    return `${minY},${minX},${maxX}`;
+  });
+
+  const otherBlocksBounds = useMemo(() => {
+    if (!otherBlocksBoundsKey) return null;
+    const [minY, minX, maxX] = otherBlocksBoundsKey.split(",").map(Number);
+    return { minY, minX, maxX };
+  }, [otherBlocksBoundsKey]);
+
+  // Auto-reposition picker above other content blocks
+  useEffect(() => {
+    if (!block || media.mode !== "picker" || !otherBlocksBounds) return;
+    if (dragRef.current) return;
+
+    const g = gridSize || 24;
+    const gap = g * 2;
+    const targetY = snapToGrid(otherBlocksBounds.minY - block.height - gap, g);
+    const contentCenterX = otherBlocksBounds.minX + (otherBlocksBounds.maxX - otherBlocksBounds.minX) / 2;
+    const targetX = snapToGrid(contentCenterX - block.width / 2, g);
+
+    const blockBottom = block.y + block.height;
+    if (blockBottom > otherBlocksBounds.minY - gap / 2) {
+      updateBlock(id, { x: targetX, y: targetY } as any);
+    }
+  }, [block, media.mode, otherBlocksBounds, gridSize, id, updateBlock]);
+
   const style = useMemo(() => {
     if (!block || block.type !== "text" || (block as any).format !== "media") return null;
     return {
@@ -63,29 +107,45 @@ export const MediaBlock = memo(function MediaBlock({ id }: { id: string }) {
 
   if (!block || block.type !== "text" || (block as any).format !== "media" || !style) return null;
 
-  const media = parseMediaData(String((block as any).content || ""));
-
   const saveMedia = (data: Partial<MediaData>) => {
     const next = { ...media, ...data };
     pushHistory();
     updateBlock(id, { content: JSON.stringify(next) } as any);
   };
 
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const dataUrl = reader.result as string;
-      if (file.type.startsWith("image/")) {
-        saveMedia({ mode: "image", src: dataUrl, fileName: file.name, mimeType: file.type });
-        const g = gridSize || 24;
-        updateBlock(id, { width: Math.max(g * 10, block.width), height: Math.max(g * 10, block.height) } as any);
-      } else {
-        saveMedia({ mode: "file", src: dataUrl, fileName: file.name, mimeType: file.type });
+    let dataUrl = "";
+    if (file.type.startsWith("image/") || /\.(heic|heif)$/i.test(file.name || "")) {
+      try {
+        const { fileToDisplayableDataUrl } = await import("@/lib/heifToJpeg");
+        dataUrl = await fileToDisplayableDataUrl(file);
+      } catch {
+        const reader = new FileReader();
+        dataUrl = await new Promise<string>((resolve, reject) => {
+          reader.onload = () => resolve(String(reader.result || ""));
+          reader.onerror = () => reject(new Error("Failed to read file"));
+          reader.readAsDataURL(file);
+        });
       }
-    };
-    reader.readAsDataURL(file);
+    } else {
+      dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.onerror = () => reject(new Error("Failed to read file"));
+        reader.readAsDataURL(file);
+      });
+    }
+    if (!dataUrl) return;
+    if (file.type.startsWith("image/") || /\.(heic|heif)$/i.test(file.name || "")) {
+      saveMedia({ mode: "image", src: dataUrl, fileName: file.name, mimeType: file.type });
+      const g = gridSize || 24;
+      updateBlock(id, { width: Math.max(g * 10, block.width), height: Math.max(g * 10, block.height) } as any);
+    } else {
+      saveMedia({ mode: "file", src: dataUrl, fileName: file.name, mimeType: file.type });
+    }
+    window.dispatchEvent(new CustomEvent("omnia_save_file_to_media", { detail: { file } }));
   };
 
   const handleUrlSubmit = () => {
@@ -102,12 +162,15 @@ export const MediaBlock = memo(function MediaBlock({ id }: { id: string }) {
       } else {
         saveMedia({ mode: "video", url, src: url });
       }
+      window.dispatchEvent(new CustomEvent("omnia_save_to_media", { detail: { url, name: "Video", fileType: "youtube" } }));
     } else if (urlMode === "embed") {
       saveMedia({ mode: "embed", url, src: url });
       const g = gridSize || 24;
       updateBlock(id, { width: Math.max(g * 16, block.width), height: Math.max(g * 12, block.height) } as any);
+      window.dispatchEvent(new CustomEvent("omnia_save_to_media", { detail: { url, name: "Embed", fileType: "embed" } }));
     } else {
       saveMedia({ mode: "link", url, src: url });
+      window.dispatchEvent(new CustomEvent("omnia_save_to_media", { detail: { url, name: "Link", fileType: "link" } }));
     }
 
     setUrlDraft("");
@@ -145,7 +208,6 @@ export const MediaBlock = memo(function MediaBlock({ id }: { id: string }) {
   const beginResize = (e: React.PointerEvent, mode: "right" | "bottom" | "corner") => {
     e.stopPropagation();
     e.preventDefault();
-    bringToFront(id);
     if (!isSelected) selectBlocks([id]);
     pushHistory();
     const capturer = e.currentTarget as HTMLElement;
@@ -162,7 +224,6 @@ export const MediaBlock = memo(function MediaBlock({ id }: { id: string }) {
   const startDrag = (e: React.PointerEvent) => {
     e.stopPropagation();
     e.preventDefault();
-    bringToFront(id);
     if (e.shiftKey) toggleSelect(id);
     else if (!isSelected) selectBlocks([id]);
     pushHistory();
@@ -185,8 +246,9 @@ export const MediaBlock = memo(function MediaBlock({ id }: { id: string }) {
     const d = dragRef.current;
     if (!d || d.pointerId !== e.pointerId) return;
     if (e.pointerType === "mouse" && e.buttons === 0) { dragRef.current = null; return; }
-    d.lastX = d.originX + (e.clientX - d.startClientX);
-    d.lastY = d.originY + (e.clientY - d.startClientY);
+    const z = (useCanvasStore.getState() as any).camera?.zoom || 1;
+    d.lastX = d.originX + (e.clientX - d.startClientX) / z;
+    d.lastY = d.originY + (e.clientY - d.startClientY) / z;
     if (d.raf != null) return;
     d.raf = window.requestAnimationFrame(() => {
       const d2 = dragRef.current;
@@ -330,6 +392,7 @@ export const MediaBlock = memo(function MediaBlock({ id }: { id: string }) {
   return (
     <div
       data-canvas-block
+      data-self-drag
       data-block-id={id}
       className="absolute group"
       style={style}
@@ -344,8 +407,9 @@ export const MediaBlock = memo(function MediaBlock({ id }: { id: string }) {
         const r = resizeRef.current;
         if (!r || r.pointerId !== e.pointerId) return;
         if (e.pointerType === "mouse" && e.buttons === 0) { endResize(e.pointerId); return; }
-        const dx = e.clientX - r.startClientX;
-        const dy = e.clientY - r.startClientY;
+        const rz = (useCanvasStore.getState() as any).camera?.zoom || 1;
+        const dx = (e.clientX - r.startClientX) / rz;
+        const dy = (e.clientY - r.startClientY) / rz;
         if (r.raf != null) return;
         r.raf = window.requestAnimationFrame(() => {
           const rr = resizeRef.current;
@@ -363,6 +427,7 @@ export const MediaBlock = memo(function MediaBlock({ id }: { id: string }) {
       onPointerCancel={(e) => endResize(e.pointerId)}
       onLostPointerCapture={(e) => endResize(e.pointerId)}
     >
+      <BlockHoverToolbar blockId={id} onMinimize={onMinimize} onMenu={onMenu} />
       <div className={`glass-block overflow-hidden relative ${isSelected ? "omnia-selected-glass" : ""}`} style={{ width: "100%", height: "100%" }}>
         <div
           data-drag-handle

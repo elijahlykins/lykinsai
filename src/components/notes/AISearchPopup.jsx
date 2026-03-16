@@ -42,7 +42,7 @@ export default function AISearchPopup({
       const result = await onSearch?.(selectedText);
       setDefinition(result || 'No definition found.');
     } catch (err) {
-      setError(err.message || 'Failed to fetch definition.');
+      setError("Couldn't fetch that definition right now. Please try again.");
       setDefinition('');
     } finally {
       setIsLoading(false);

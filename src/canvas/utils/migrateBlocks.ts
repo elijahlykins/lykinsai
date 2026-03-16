@@ -91,6 +91,10 @@ export const migrateLegacyBlocks = (blocks: LegacyBlock[]): Block[] => {
         );
         break;
       }
+      case "create": {
+        out.push(block as unknown as Block);
+        break;
+      }
       case "list": {
         const b = block as LegacyListBlock;
         const format: TextFormat =
@@ -138,7 +142,8 @@ export const migrateLegacyBlocks = (blocks: LegacyBlock[]): Block[] => {
         break;
       }
       case "image": {
-        out.push(toCreateBlock(block, { mode: "image", data: { src: (block as any).src } }));
+        const b = block as any;
+        out.push(toCreateBlock(block, { mode: "image", data: { src: b.src, storagePath: b.storagePath, storageBucket: b.storageBucket } }));
         break;
       }
       case "design": {
@@ -148,7 +153,7 @@ export const migrateLegacyBlocks = (blocks: LegacyBlock[]): Block[] => {
       case "youtube": {
         out.push(
           toCreateBlock(block, {
-            mode: "embed",
+            mode: "video",
             data: { url: (block as any).url, videoId: (block as any).videoId },
           })
         );
@@ -163,7 +168,7 @@ export const migrateLegacyBlocks = (blocks: LegacyBlock[]): Block[] => {
         out.push(
           toCreateBlock(block, {
             mode: "embed",
-            data: { name: b.name, mime: b.mime, dataUrl: b.dataUrl },
+            data: { name: b.name, mime: b.mime, dataUrl: b.dataUrl, url: b.url, storagePath: b.storagePath, storageBucket: b.storageBucket },
           })
         );
         break;

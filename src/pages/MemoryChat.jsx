@@ -39,9 +39,11 @@ export default function MemoryChatPage() {
   const messagesRef = useRef([]);
   const [currentChatNoteId, setCurrentChatNoteId] = useState(null);
   const queryClient = useQueryClient();
+  const pendingSaveRef = useRef(null);
+  const saveTimerRef = useRef(null);
 
   const {  notes = [], isError } = useQuery({
-    queryKey: ['notes', user?.id],
+    queryKey: ['notes-list', user?.id],
     queryFn: async () => {
       // Don't fetch if user is not signed in
       if (!user?.id) {
@@ -57,9 +59,10 @@ export default function MemoryChatPage() {
         // ✅ Filter by user_id to show only current user's notes
         ({ data, error } = await supabase
           .from('notes')
-          .select('id, title, content, created_at, updated_at, attachments')
+          .select('id, title, created_at, updated_at, attachments')
           .eq('user_id', user.id)
-          .order('created_at', { ascending: false }));
+          .order('created_at', { ascending: false })
+          .limit(50));
         
         if (error) {
           // If that fails, try without attachments column
@@ -67,9 +70,10 @@ export default function MemoryChatPage() {
             console.warn('⚠️ Some columns not found, trying without attachments:', error.message);
             ({ data, error } = await supabase
               .from('notes')
-              .select('id, title, content, created_at, updated_at')
+              .select('id, title, created_at, updated_at')
               .eq('user_id', user.id)
-              .order('created_at', { ascending: false }));
+              .order('created_at', { ascending: false })
+              .limit(50));
           }
           
           if (error && (error.code === 'PGRST204' || error.message?.includes('Could not find'))) {
@@ -77,9 +81,10 @@ export default function MemoryChatPage() {
             console.warn('⚠️ Trying with minimal columns:', error.message);
             ({ data, error } = await supabase
               .from('notes')
-              .select('id, title, content')
+              .select('id, title')
               .eq('user_id', user.id)
-              .order('id', { ascending: false }));
+              .order('id', { ascending: false })
+              .limit(50));
           }
           
           if (error) {
@@ -101,8 +106,6 @@ export default function MemoryChatPage() {
     retry: 1,
     retryDelay: (attemptIndex) => Math.min(2000 * 2 ** attemptIndex, 30000),
     refetchOnWindowFocus: false,
-    staleTime: 5 * 60 * 1000,
-    cacheTime: 10 * 60 * 1000,
   });
 
   useEffect(() => {
@@ -171,138 +174,80 @@ export default function MemoryChatPage() {
     messagesRef.current = messages;
   }, [messages]);
 
-  const saveChatToNote = async (title, content, allAttachments) => {
-    // Start with absolute minimum: only title and content
-    // These should always exist in any notes table
-    const minimalData = {
-      title,
-      content
-    };
+  const flushSave = async () => {
+    const pending = pendingSaveRef.current;
+    if (!pending) return;
+    pendingSaveRef.current = null;
+    const { title, content, allAttachments, noteId } = pending;
 
-    // Add optional fields that might not exist in schema
+    const minimalData = { title, content };
     const optionalFields = {
       tags: ['chat', 'conversation'],
       storage_type: 'short_term',
       source: 'ai'
     };
-
-    // Add attachments if provided
     if (allAttachments && allAttachments.length > 0) {
       optionalFields.attachments = allAttachments;
     }
-
-    // Try with optional fields first, then fall back to minimal only
     const noteDataWithOptional = { ...minimalData, ...optionalFields };
-    
-    // Helper to create safe data with only minimal columns (title, content)
+
     const createMinimalData = () => {
-      const safe = { ...minimalData }; // Only title and content
-      // Add all metadata to content if optional columns don't exist
+      const safe = { ...minimalData };
       let metadataParts = [];
-      if (optionalFields.tags?.length > 0) {
-        metadataParts.push(`Tags: ${optionalFields.tags.join(', ')}`);
-      }
-      if (optionalFields.source) {
-        metadataParts.push(`Source: ${optionalFields.source}`);
-      }
-      if (allAttachments?.length > 0) {
-        metadataParts.push(`Attachments: ${allAttachments.map(a => a.name || a.url || 'file').join(', ')}`);
-      }
-      if (metadataParts.length > 0) {
-        safe.content = `${content}\n\n[${metadataParts.join(' | ')}]`;
-      }
+      if (optionalFields.tags?.length > 0) metadataParts.push(`Tags: ${optionalFields.tags.join(', ')}`);
+      if (optionalFields.source) metadataParts.push(`Source: ${optionalFields.source}`);
+      if (allAttachments?.length > 0) metadataParts.push(`Attachments: ${allAttachments.map(a => a.name || a.url || 'file').join(', ')}`);
+      if (metadataParts.length > 0) safe.content = `${content}\n\n[${metadataParts.join(' | ')}]`;
       return safe;
     };
 
-    if (currentChatNoteId) {
+    if (noteId) {
       try {
-        // Try with optional fields first
-        let { error } = await supabase
-          .from('notes')
-          .update(noteDataWithOptional)
-          .eq('id', currentChatNoteId)
-          .eq('user_id', user?.id || ''); // ✅ Ensure user can only update their own notes
-        
+        let { error } = await supabase.from('notes').update(noteDataWithOptional).eq('id', noteId).eq('user_id', user?.id || '');
         if (error) {
-          // If error is about missing columns, retry with only minimal columns (title, content)
           if (error.code === 'PGRST204' || error.code === '42703' || error.message?.includes('Could not find') || error.message?.includes('does not exist')) {
-            console.warn('⚠️ Some columns not found, retrying with minimal columns only (title, content):', error.message);
-            const safeData = createMinimalData();
-            
-            ({ error } = await supabase
-              .from('notes')
-              .update(safeData)
-              .eq('id', currentChatNoteId)
-              .eq('user_id', user?.id || '')); // ✅ Ensure user can only update their own notes
-            
-            if (error) {
-              // If even minimal columns fail, log but don't crash - the note might still be saved
-              if (error.code !== 'PGRST204' && error.code !== '42703') {
-                console.error('Error updating note even with minimal columns (title, content):', error);
-              }
-              // Don't throw - allow the chat to continue even if note saving fails
-              return;
-            }
-          } else {
-            // Only log non-column errors
-            if (error.code !== 'PGRST204' && error.code !== '42703') {
-              console.warn('Error updating note:', error);
-            }
+            ({ error } = await supabase.from('notes').update(createMinimalData()).eq('id', noteId).eq('user_id', user?.id || ''));
           }
         }
       } catch (error) {
-        // Silently handle update errors - don't break chat
-        if (error.code !== 'PGRST204' && error.code !== '42703') {
-          console.warn('Note update error (non-critical):', error.message);
-        }
+        if (error.code !== 'PGRST204' && error.code !== '42703') console.warn('Note update error (non-critical):', error.message);
       }
     } else {
       try {
-        // Try with optional fields first
-        // ✅ Add user_id to new notes
-        const noteDataWithUserId = {
-          ...noteDataWithOptional,
-          user_id: user?.id
-        };
-        const { data, error } = await supabase
-          .from('notes')
-          .insert(noteDataWithUserId)
-          .select();
-        
+        const noteDataWithUserId = { ...noteDataWithOptional, user_id: user?.id };
+        const { data, error } = await supabase.from('notes').insert(noteDataWithUserId).select('id');
         if (error) {
-          // If error is about missing columns, retry with only minimal columns (title, content)
           if (error.code === 'PGRST204' || error.message?.includes('Could not find')) {
-            console.warn('⚠️ Some columns not found, retrying with minimal columns only (title, content):', error.message);
-            const safeData = createMinimalData();
-            
-            // ✅ Add user_id to new notes
-            const safeDataWithUserId = {
-              ...safeData,
-              user_id: user?.id
-            };
-            const { data: retryData, error: retryError } = await supabase
-              .from('notes')
-              .insert(safeDataWithUserId)
-              .select();
-            
-            if (retryError) {
-              // If even minimal columns fail, log but don't crash
-              console.error('Error creating note even with minimal columns (title, content):', retryError);
-              // Don't throw - allow the chat to continue even if note saving fails
-              return;
-            }
-            setCurrentChatNoteId(retryData[0].id);
-          } else {
-            throw error;
+            const { data: retryData, error: retryError } = await supabase.from('notes').insert({ ...createMinimalData(), user_id: user?.id }).select('id');
+            if (!retryError && retryData?.[0]) setCurrentChatNoteId(retryData[0].id);
+            return;
           }
-        } else {
-          setCurrentChatNoteId(data[0].id);
+          throw error;
         }
+        if (data?.[0]) setCurrentChatNoteId(data[0].id);
       } catch (error) {
-        console.error('Error creating note:', error);
-        // Don't throw - allow chat to continue even if saving fails
         console.warn('⚠️ Note saving failed, but chat will continue');
       }
+    }
+  };
+
+  useEffect(() => {
+    const onUnload = () => flushSave();
+    window.addEventListener('beforeunload', onUnload);
+    return () => {
+      window.removeEventListener('beforeunload', onUnload);
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      flushSave();
+    };
+  }, []);
+
+  const saveChatToNote = async (title, content, allAttachments) => {
+    pendingSaveRef.current = { title, content, allAttachments, noteId: currentChatNoteId };
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    if (!currentChatNoteId) {
+      await flushSave();
+    } else {
+      saveTimerRef.current = setTimeout(flushSave, 3000);
     }
   };
 
@@ -336,68 +281,6 @@ export default function MemoryChatPage() {
         medium: 'Provide clear responses with moderate detail.',
         detailed: 'Give comprehensive, detailed responses with examples and explanations.'
       };
-
-      // Fetch user's social data for AI context
-      let socialDataContext = '';
-      try {
-        // First try to get from Supabase if user is authenticated
-        let socialData = [];
-        if (user?.id) {
-          try {
-            const { data, error } = await supabase
-              .from('social_data')
-              .select('*')
-              .eq('user_id', user.id)
-              .order('synced_at', { ascending: false })
-              .limit(50); // Get recent 50 items
-            
-            if (!error && data) {
-              socialData = data;
-            }
-          } catch (supabaseError) {
-            console.warn('Could not fetch social data from Supabase:', supabaseError);
-          }
-        }
-        
-        // Fallback to localStorage if Supabase didn't work
-        if (socialData.length === 0) {
-          try {
-            const saved = localStorage.getItem('lykinsai_social_data');
-            if (saved) {
-              socialData = JSON.parse(saved);
-            }
-          } catch (e) {
-            console.warn('Could not load social data from localStorage:', e);
-          }
-        }
-        
-        if (socialData.length > 0) {
-          // Group by platform and summarize
-          const platformGroups = {};
-          socialData.forEach(item => {
-            if (!platformGroups[item.platform]) {
-              platformGroups[item.platform] = [];
-            }
-            platformGroups[item.platform].push(item);
-          });
-          
-          const platformSummaries = Object.entries(platformGroups).map(([platform, items]) => {
-            const recentItems = items.slice(0, 10); // Limit to recent items
-            const summaries = recentItems.map(item => {
-              const desc = item.description || item.title || '';
-              return `- ${desc.substring(0, 100)}${desc.length > 100 ? '...' : ''}`;
-            }).join('\n');
-            return `\n${platform.charAt(0).toUpperCase() + platform.slice(1)} Interests:\n${summaries}`;
-          });
-          
-          if (platformSummaries.length > 0) {
-            socialDataContext = '\n\n---\n\n**User Social Media Interests:**' + platformSummaries.join('\n') + '\n\n---\n\n';
-            console.log(`📱 Including social data from ${Object.keys(platformGroups).length} platform(s) in AI context`);
-          }
-        }
-      } catch (error) {
-        console.warn('Could not fetch social data for AI context:', error);
-      }
 
       const notesContext = notes.slice(0, 20).map(n => {
         // Parse attachments if it's a string (JSON)
@@ -497,7 +380,6 @@ export default function MemoryChatPage() {
 
 User's memories (including YouTube video transcripts if available):
 ${notesContext}
-${socialDataContext}
 
 Conversation history:
 ${conversationHistory}
@@ -506,10 +388,9 @@ User: ${input}
 
 IMPORTANT: 
 - If the user's memories include YouTube video transcripts, you MUST read and understand the actual content of those videos. Base your responses on what is actually discussed in the video transcripts, not on assumptions.
-- If social media interests are provided, use them to understand the user's preferences and provide personalized recommendations. Reference their interests from Pinterest, Instagram, etc. when making suggestions.
-- Reference specific video content or social interests when relevant. If the user asks about a video, use the transcript to provide accurate information about what was discussed.
+- Reference specific video content when relevant. If the user asks about a video, use the transcript to provide accurate information about what was discussed.
 
-Provide thoughtful, insightful responses based on their memories and interests. Reference specific memories, video content, or social interests when relevant. Do not use emojis in your responses unless the user explicitly asks for them.`;
+Provide thoughtful, insightful responses based on their memories. Reference specific memories or video content when relevant. Do not use emojis in your responses unless the user explicitly asks for them.`;
 
       const { API_BASE_URL } = await import('@/lib/api-config');
       const aiResponse = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
@@ -714,11 +595,9 @@ Provide thoughtful, insightful responses based on their memories and interests. 
             navigate('/memory');
           } else {
             navigate(createPageUrl(
-            view === 'short_term' ? 'ShortTerm' : 
-            view === 'long_term' ? 'LongTerm' : 
-            view === 'tags' ? 'TagManagement' : 
-            view === 'reminders' ? 'Reminders' : 
-            view === 'trash' ? 'Trash' :
+            view === 'short_term' ? 'ShortTerm' :
+            view === 'long_term' ? 'LongTerm' :
+            view === 'tags' ? 'TagManagement' :
             'Create'
             ));
           }
@@ -1003,7 +882,7 @@ Provide thoughtful, insightful responses based on their memories and interests. 
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/*,video/*,*/*"
+            accept="image/*,.heic,.heif,video/*,*/*"
             onChange={(e) => {
               const file = e.target.files?.[0];
               if (file) handleFileUpload(file);

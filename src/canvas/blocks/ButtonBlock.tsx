@@ -15,6 +15,7 @@ import { useCanvasStore } from "@/store/canvasStore";
 import { getAiPrefs } from "@/lib/ai-prefs";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/SupabaseAuth";
+import { BlockHoverToolbar } from "./BlockHoverToolbar";
 
 /* ── Icon registry ─────────────────────────────────────────────────── */
 
@@ -90,13 +91,9 @@ const APP_PAGES = [
   { path: "/", label: "Home", icon: "home" },
   { path: "/omnia", label: "Chat", icon: "message" },
   { path: "/memory", label: "Memory", icon: "image" },
-  { path: "/calendar", label: "Calendar", icon: "calendar" },
-  { path: "/teamspaces", label: "Teamspaces", icon: "users" },
-  { path: "/reminders", label: "Reminders", icon: "bell" },
   { path: "/settings", label: "Settings", icon: "settings" },
   { path: "/connections", label: "Connections", icon: "link" },
   { path: "/billing", label: "Billing", icon: "credit-card" },
-  { path: "/trash", label: "Trash", icon: "trash" },
 ] as const;
 
 /* ── Style + action maps ──────────────────────────────────────────── */
@@ -131,7 +128,6 @@ function blockPreview(b: any): string {
   if (!b) return "Unknown";
   const fmt = String(b.format || "plain");
   if (fmt === "table") return "Table";
-  if (fmt === "calendar") return "Calendar";
   if (fmt === "media") return "Media";
   if (fmt === "button") {
     try { return `Button: ${JSON.parse(b.content).label || "Button"}`; } catch {}
@@ -183,7 +179,7 @@ function buildButtonPrompt(
     "",
     "The onClickCode runs inside an async function and has access to a `ctx` object with these APIs:",
     "",
-    "  ctx.navigate(path)        — SPA navigate to any route (e.g. ctx.navigate('/calendar'))",
+    "  ctx.navigate(path)        — SPA navigate to any route (e.g. ctx.navigate('/memory'))",
     "  ctx.showFeedback(msg)     — show a brief toast message on the button",
     "  ctx.clipboard.writeText(t) — copy text to clipboard",
     "  ctx.fetch(url, opts)      — make HTTP requests",
@@ -225,11 +221,10 @@ function buildButtonPrompt(
 
 /* ── Component ─────────────────────────────────────────────────────── */
 
-export const ButtonBlock = memo(function ButtonBlock({ id }: { id: string }) {
+export const ButtonBlock = memo(function ButtonBlock({ id, onMinimize, onMenu }: { id: string; onMinimize?: (id: string) => void; onMenu?: (id: string, rect: DOMRect) => void }) {
   const nav = useNavigate();
   const { user } = useAuth();
   const block = useCanvasStore((s) => s.blocks[id]);
-  const bringToFront = useCanvasStore((s) => s.bringToFront);
   const selectBlocks = useCanvasStore((s) => s.selectBlocks);
   const toggleSelect = useCanvasStore((s) => s.toggleSelect);
   const isSelected = useCanvasStore((s) => s.selectedIds.includes(id));
@@ -262,8 +257,8 @@ export const ButtonBlock = memo(function ButtonBlock({ id }: { id: string }) {
     let cancelled = false;
     (async () => {
       const [bRes, pRes] = await Promise.all([
-        supabase.from("omnia_boards").select("id, title").eq("user_id", user.id).order("created_at", { ascending: false }),
-        supabase.from("omnia_projects").select("id, name").eq("user_id", user.id).order("updated_at", { ascending: false }),
+        supabase.from("omnia_boards").select("id, title").eq("user_id", user.id).order("created_at", { ascending: false }).limit(50),
+        supabase.from("omnia_projects").select("id, name").eq("user_id", user.id).order("updated_at", { ascending: false }).limit(50),
       ]);
       if (cancelled) return;
       setBoards((bRes.data || []) as any);
@@ -344,7 +339,7 @@ export const ButtonBlock = memo(function ButtonBlock({ id }: { id: string }) {
       updateBlock(id, { content: JSON.stringify(newConfig) } as any);
       setConfigOpen(false);
     } catch (err: any) {
-      setAiError(err.message || "Generation failed");
+      setAiError("Generation failed. Please try again.");
     } finally {
       setGenerating(false);
     }
@@ -391,7 +386,7 @@ export const ButtonBlock = memo(function ButtonBlock({ id }: { id: string }) {
           try {
             await fetch(config.webhookUrl, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ blockId: id, label: config.label, timestamp: Date.now() }) });
             showFeedback("Done!");
-          } catch { showFeedback("Error"); }
+          } catch { showFeedback("Not working right now. Try again later."); }
           finally { setLoading(false); }
         }
         break;
@@ -458,7 +453,7 @@ export const ButtonBlock = memo(function ButtonBlock({ id }: { id: string }) {
           const fn = new Function("ctx", `return (async () => { ${config.onClickCode} })()`);
           await fn(ctx);
         } catch (err: any) {
-          showFeedback(`Error: ${(err.message || "Failed").slice(0, 40)}`, 3000);
+          showFeedback("Something went wrong. Please try again.", 3000);
         } finally {
           setLoading(false);
         }
@@ -471,7 +466,7 @@ export const ButtonBlock = memo(function ButtonBlock({ id }: { id: string }) {
 
   /* ── Drag ─────────────────────────────────────────────────────────── */
   const startDrag = (e: React.PointerEvent) => {
-    e.stopPropagation(); e.preventDefault(); bringToFront(id);
+    e.stopPropagation(); e.preventDefault();
     if (e.shiftKey) toggleSelect(id); else if (!isSelected) selectBlocks([id]); pushHistory();
     const st = useCanvasStore.getState(); const sel = st.selectedIds;
     const ids = sel.includes(id) && sel.length > 1 ? sel : [id];
@@ -482,7 +477,8 @@ export const ButtonBlock = memo(function ButtonBlock({ id }: { id: string }) {
   const onDragMove = (e: React.PointerEvent) => {
     const d = dragRef.current; if (!d || d.pointerId !== e.pointerId) return;
     if (e.pointerType === "mouse" && e.buttons === 0) { dragRef.current = null; return; }
-    d.lastX = d.originX + (e.clientX - d.startClientX); d.lastY = d.originY + (e.clientY - d.startClientY);
+    const z = (useCanvasStore.getState() as any).camera?.zoom || 1;
+    d.lastX = d.originX + (e.clientX - d.startClientX) / z; d.lastY = d.originY + (e.clientY - d.startClientY) / z;
     if (d.raf != null) return;
     d.raf = window.requestAnimationFrame(() => { const d2 = dragRef.current; if (!d2) return; d2.raf = null; moveBlocksFromSnapshot(d2.snapshot, d2.lastX - d2.originX, d2.lastY - d2.originY, { snap: true }); });
   };
@@ -505,7 +501,7 @@ export const ButtonBlock = memo(function ButtonBlock({ id }: { id: string }) {
   /* ── Render ──────────────────────────────────────────────────────── */
   return (
     <div
-      data-canvas-block data-block-id={id}
+      data-canvas-block data-self-drag data-block-id={id}
       className="absolute group" style={style}
       onPointerDownCapture={(e) => {
         if (e.button !== 0) return;
@@ -514,7 +510,8 @@ export const ButtonBlock = memo(function ButtonBlock({ id }: { id: string }) {
         if (e.shiftKey) toggleSelect(id); else if (!isSelected) selectBlocks([id]);
       }}
     >
-      <div className={`h-full w-full relative ${isSelected ? "omnia-selected-glass" : ""}`}>
+      <BlockHoverToolbar blockId={id} onMinimize={onMinimize} onMenu={onMenu} />
+      <div className={`h-full w-full relative overflow-hidden ${isSelected ? "omnia-selected-glass" : ""}`}>
         {/* Settings gear (hidden during initial setup) */}
         {!needsSetup && (
           <button type="button"
@@ -799,7 +796,7 @@ export const ButtonBlock = memo(function ButtonBlock({ id }: { id: string }) {
                     <textarea
                       className="w-full px-2 py-1 rounded border border-black/15 bg-white text-[0.6875rem] font-mono outline-none focus:border-blue-400 resize-none"
                       rows={4}
-                      placeholder={`ctx.showFeedback("Hello!");\nctx.navigate("/calendar");`}
+                      placeholder={`ctx.showFeedback("Hello!");\nctx.navigate("/memory");`}
                       value={config.onClickCode || ""}
                       onChange={(e) => save({ onClickCode: e.target.value })}
                     />

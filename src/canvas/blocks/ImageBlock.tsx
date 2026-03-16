@@ -1,6 +1,7 @@
 import React, { memo, useMemo, useRef } from "react";
 import { useCanvasStore } from "@/store/canvasStore";
 import { snapToGrid } from "@/canvas/utils/snap";
+import { BlockHoverToolbar } from "./BlockHoverToolbar";
 
 type DragState = {
   pointerId: number;
@@ -44,11 +45,10 @@ type ResizeState = {
   capturer: HTMLElement | null;
 };
 
-export const ImageBlock = memo(function ImageBlock({ id }: { id: string }) {
+export const ImageBlock = memo(function ImageBlock({ id, onMinimize, onMenu }: { id: string; onMinimize?: (id: string) => void; onMenu?: (id: string, rect: DOMRect) => void }) {
   const block = useCanvasStore((s) => s.blocks[id]);
   const allBlocks = useCanvasStore((s) => s.blocks);
   const canvasWidth = useCanvasStore((s) => s.canvasWidth);
-  const bringToFront = useCanvasStore((s) => s.bringToFront);
   const selectBlocks = useCanvasStore((s) => s.selectBlocks);
   const toggleSelect = useCanvasStore((s) => s.toggleSelect);
   const isSelected = useCanvasStore((s) => s.selectedIds.includes(id));
@@ -177,7 +177,6 @@ export const ImageBlock = memo(function ImageBlock({ id }: { id: string }) {
     pendingDragRef.current = null;
     dragRef.current = null;
 
-    bringToFront(id);
     pushHistory();
 
     const capturer = e.currentTarget as HTMLElement;
@@ -249,7 +248,6 @@ export const ImageBlock = memo(function ImageBlock({ id }: { id: string }) {
     const p = pendingDragRef.current;
     if (!p || p.pointerId !== pointerId) return;
 
-    bringToFront(id);
     pushHistory();
 
     activeDragPointerIdRef.current = pointerId;
@@ -277,6 +275,7 @@ export const ImageBlock = memo(function ImageBlock({ id }: { id: string }) {
   return (
     <div
       data-canvas-block
+      data-self-drag
       data-block-id={id}
       className="absolute group"
       style={style}
@@ -285,6 +284,7 @@ export const ImageBlock = memo(function ImageBlock({ id }: { id: string }) {
         if (e.button !== 0) return;
         const t = e.target as Element | null;
         if (t?.closest?.("[data-drag-handle]")) return;
+        if (t?.closest?.("[data-resize-handle]")) return;
 
         if (e.shiftKey) toggleSelect(id);
         else if (!isSelected) selectBlocks([id]);
@@ -309,7 +309,6 @@ export const ImageBlock = memo(function ImageBlock({ id }: { id: string }) {
       }}
       onPointerDown={(e) => {
         e.stopPropagation();
-        bringToFront(id);
         // Selection is handled in onPointerDownCapture to avoid double-toggling.
       }}
       onPointerMove={(e) => {
@@ -320,8 +319,9 @@ export const ImageBlock = memo(function ImageBlock({ id }: { id: string }) {
             endResize(e.pointerId);
             return;
           }
-          const dx = e.clientX - r.startClientX;
-          const dy = e.clientY - r.startClientY;
+          const rz = (useCanvasStore.getState() as any).camera?.zoom || 1;
+          const dx = (e.clientX - r.startClientX) / rz;
+          const dy = (e.clientY - r.startClientY) / rz;
           if (r.raf != null) return;
           r.raf = window.requestAnimationFrame(() => {
             const rr = resizeRef.current;
@@ -362,15 +362,9 @@ export const ImageBlock = memo(function ImageBlock({ id }: { id: string }) {
               return;
             }
 
-            // corner scale: keep aspect ratio (simple + modern)
-            // Avoid "glitch" when dragging diagonally by latching the dominant axis
-            // once the user has moved a bit (prevents x/y flip-flopping).
-            if (!rr.cornerAxis && (Math.abs(dx) > 4 || Math.abs(dy) > 4)) {
-              rr.cornerAxis = Math.abs(dx) >= Math.abs(dy) ? "x" : "y";
-            }
-            const axis = rr.cornerAxis ?? (Math.abs(dx) >= Math.abs(dy) ? "x" : "y");
-            const rawW = axis === "x" ? rr.startW + dx : (rr.startH + dy) * rr.aspect;
-            let nextW = snapSize(rawW);
+            const rawW = rr.startW + dx;
+            const rawH = rr.startH + dy;
+            let nextW = snapSize(Math.abs(rawW) >= Math.abs(rawH * rr.aspect) ? rawW : rawH * rr.aspect);
             if (Number.isFinite(maxW)) nextW = Math.min(nextW, maxW);
             let nextH = snapSize(nextW / rr.aspect);
             if (Number.isFinite(maxH) && nextH > maxH) {
@@ -404,8 +398,9 @@ export const ImageBlock = memo(function ImageBlock({ id }: { id: string }) {
           endDrag(e.pointerId);
           return;
         }
-        const dx = e.clientX - d.startClientX;
-        const dy = e.clientY - d.startClientY;
+        const z = (useCanvasStore.getState() as any).camera?.zoom || 1;
+        const dx = (e.clientX - d.startClientX) / z;
+        const dy = (e.clientY - d.startClientY) / z;
         d.lastX = d.originX + dx;
         d.lastY = d.originY + dy;
         if (d.raf != null) return;
@@ -434,6 +429,7 @@ export const ImageBlock = memo(function ImageBlock({ id }: { id: string }) {
         endDrag(e.pointerId);
       }}
     >
+      <BlockHoverToolbar blockId={id} onMinimize={onMinimize} onMenu={onMenu} />
       {/* Optional tiny drag strip for parity */}
       <div
         data-drag-handle
@@ -445,7 +441,6 @@ export const ImageBlock = memo(function ImageBlock({ id }: { id: string }) {
           // If a resize is in progress, ignore.
           if (resizeRef.current) return;
 
-          bringToFront(id);
           if (e.shiftKey) toggleSelect(id);
           else if (!isSelected) selectBlocks([id]);
           pushHistory();
@@ -512,6 +507,7 @@ export const ImageBlock = memo(function ImageBlock({ id }: { id: string }) {
       <div className="absolute inset-0 pointer-events-none">
         {/* Right edge stretch */}
         <div
+          data-resize-handle
           className="absolute top-0 bottom-0 right-0 w-2 pointer-events-auto opacity-0 group-hover:opacity-100 transition-opacity"
           style={{ cursor: "ew-resize" }}
           onPointerDown={(e) => beginResize(e, "right")}
@@ -519,6 +515,7 @@ export const ImageBlock = memo(function ImageBlock({ id }: { id: string }) {
         />
         {/* Top edge stretch */}
         <div
+          data-resize-handle
           className="absolute left-0 right-0 top-0 h-2 pointer-events-auto opacity-0 group-hover:opacity-100 transition-opacity"
           style={{ cursor: "ns-resize" }}
           onPointerDown={(e) => beginResize(e, "top")}
@@ -526,6 +523,7 @@ export const ImageBlock = memo(function ImageBlock({ id }: { id: string }) {
         />
         {/* Bottom edge stretch */}
         <div
+          data-resize-handle
           className="absolute left-0 right-0 bottom-0 h-2 pointer-events-auto opacity-0 group-hover:opacity-100 transition-opacity"
           style={{ cursor: "ns-resize" }}
           onPointerDown={(e) => beginResize(e, "bottom")}
@@ -533,6 +531,7 @@ export const ImageBlock = memo(function ImageBlock({ id }: { id: string }) {
         />
         {/* Bottom-right corner scale */}
         <div
+          data-resize-handle
           className="absolute right-0 bottom-0 w-4 h-4 pointer-events-auto opacity-0 group-hover:opacity-100 transition-opacity"
           style={{ cursor: "nwse-resize" }}
           onPointerDown={(e) => beginResize(e, "corner")}

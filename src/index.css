@@ -390,6 +390,16 @@ html.embedded-transparent #root {
 }
 
 /* Sidebar layout shift */
+body {
+  --sidebar-offset: 0px;
+  --sidebar-width: 0px;
+}
+
+body.sidebar-push {
+  --sidebar-offset: 12rem;
+  --sidebar-width: 12rem;
+}
+
 .app-content {
   transition: padding-left 200ms ease;
 }
@@ -796,6 +806,11 @@ body.embedded-memory-mode .app-content {
 @media (min-width: 1025px) and (max-width: 1440px) {
   .clay-card {
     padding: calc(1.25rem * var(--layout-density, 1));
+  }
+
+  body.sidebar-push {
+    --sidebar-offset: 11rem;
+    --sidebar-width: 11rem;
   }
 
   body.sidebar-push .app-content {

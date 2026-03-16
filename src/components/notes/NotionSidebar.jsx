@@ -1,5 +1,5 @@
 import React from 'react';
-import { Settings, ChevronLeft, ChevronRight, Plus, Clock, Archive, Search, MessageCircle, Tags, Bell, Trash2, Crown, Folder } from 'lucide-react';
+import { Settings, ChevronLeft, ChevronRight, Plus, Clock, Archive, Search, MessageCircle, Tags, Bell, Crown, Folder } from 'lucide-react';
 // ❌ Removed base44 import and useQuery
 import {
   Tooltip,
@@ -25,8 +25,6 @@ export default function NotionSidebar({
     { id: 'create', icon: Plus, label: 'Create', tooltip: 'Create new memories' },
     { id: 'memory', icon: Clock, label: 'Memory', tooltip: 'View all your memories' },
     { id: 'chat', icon: MessageCircle, label: 'Memory Chat', tooltip: 'Chat with AI about your memories', onClick: onOpenChat },
-    { id: 'reminders', icon: Bell, label: 'Reminders', tooltip: 'View and manage reminders' },
-    { id: 'trash', icon: Trash2, label: 'Trash', tooltip: 'View deleted items (auto-delete after 7 days)' },
   ];
 
   const handleBillingClick = () => {

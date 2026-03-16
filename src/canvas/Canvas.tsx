@@ -1,5 +1,8 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Trash2, ZoomIn, ZoomOut, Maximize, ChevronUp, ChevronDown, Copy, CopyPlus, Send, Palette, Type as TypeIcon, CalendarPlus, Square, Mic, MoreHorizontal } from "lucide-react";
+import { createPortal } from "react-dom";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { Trash2, ZoomIn, ZoomOut, Maximize, ChevronUp, ChevronDown, Copy, CopyPlus, Send, Palette, Type as TypeIcon, Square, Mic, MoreHorizontal, Sparkles, FileText, Maximize2, ArrowUpToLine, ArrowDownToLine, Archive, Check } from "lucide-react";
 import { useCanvasStore } from "@/store/canvasStore";
 import { isInViewport } from "@/canvas/utils/isInViewport";
 import { snapToGrid } from "@/canvas/utils/snap";
@@ -7,21 +10,15 @@ import { extractYouTubeVideoId } from "@/canvas/utils/youtube";
 import { YouTubeBlock } from "@/canvas/blocks/YouTubeBlock";
 import { ImageBlock } from "@/canvas/blocks/ImageBlock";
 import { LinkBlock } from "@/canvas/blocks/LinkBlock";
-import { SpreadsheetBlock } from "@/canvas/blocks/SpreadsheetBlock";
-import { CalendarBlock } from "@/canvas/blocks/CalendarBlock";
-import { ButtonBlock } from "@/canvas/blocks/ButtonBlock";
 import { MediaBlock } from "@/canvas/blocks/MediaBlock";
-import { CodeBlock } from "@/canvas/blocks/CodeBlock";
-import { PageBlock } from "@/canvas/blocks/PageBlock";
-import { ChartBlock } from "@/canvas/blocks/ChartBlock";
-import { BoardBlock } from "@/canvas/blocks/BoardBlock";
-import { FormBlock } from "@/canvas/blocks/FormBlock";
-import { GalleryBlock, GalleryModalPortal } from "@/canvas/blocks/GalleryBlock";
+import { SpreadsheetBlock } from "@/canvas/blocks/SpreadsheetBlock";
 import type { AiAnswerEntry } from "@/canvas/types";
-import { canUseActiveBrickLogic, renderBrickShell } from "./brick";
+import { canUseActiveBrickLogic, renderBrickShell, computeColumnCount, COLUMN_GAP_PX } from "./brick";
 import { useThinkingStatus } from "@/hooks/useThinkingStatus";
 import { getAiPrefs } from "@/lib/ai-prefs";
 import { extractTextFromFile, isDocumentFile } from "@/lib/extract-text";
+import { supabase } from "@/lib/supabase";
+import { useAuth } from "@/lib/SupabaseAuth";
 
 type CanvasProps = {
   liveAIMode?: boolean;
@@ -32,7 +29,7 @@ type CanvasProps = {
 const ENABLE_CANVAS_HOTKEYS = false;
 const ENABLE_BRICK_LOGIC = canUseActiveBrickLogic();
 
-function consumePendingMemoryDrop(): { id: string; title: string; content: string; attachments: any[]; timestamp: number } | null {
+function consumePendingMemoryDrop(dataTransfer?: DataTransfer | null): { id: string; title: string; content: string; attachments: any[]; timestamp: number } | null {
   try {
     const pending = (window as any).__omnia_pending_memory;
     if (pending && typeof pending === "object" && Date.now() - (pending.timestamp || 0) < 30000) {
@@ -40,6 +37,17 @@ function consumePendingMemoryDrop(): { id: string; title: string; content: strin
       return pending;
     }
   } catch { /* ignore */ }
+  if (dataTransfer) {
+    try {
+      const raw = dataTransfer.getData("application/x-omnia-memory");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === "object" && Date.now() - (parsed.timestamp || 0) < 30000) {
+          return parsed;
+        }
+      }
+    } catch { /* ignore */ }
+  }
   return null;
 }
 
@@ -67,7 +75,7 @@ function processMemoryDrop(pending: { title: string; content: string; attachment
   );
   console.log("[MEMORY-DROP-CANVAS] youtubeAttach:", youtubeAttach ? { type: youtubeAttach.type, url: youtubeAttach.url?.substring(0, 80), videoId: youtubeAttach.videoId } : null);
   const imageAttach = attachments.find((a: any) =>
-    a.type === "image" || (a.url && /\.(jpg|jpeg|png|gif|webp|svg)(\?|$)/i.test(a.url)) || (a.url && a.url.startsWith("data:image/"))
+    a.type === "image" || (a.url && /\.(jpg|jpeg|png|gif|webp|svg|heic|heif)(\?|$)/i.test(a.url)) || (a.url && a.url.startsWith("data:image/"))
   );
   const videoAttach = attachments.find((a: any) =>
     a.type === "video" || (a.url && /\.(mp4|mov|webm|avi)(\?|$)/i.test(a.url)) || (a.url && a.url.startsWith("data:video/"))
@@ -96,6 +104,7 @@ function processMemoryDrop(pending: { title: string; content: string; attachment
       const wx = Math.round(localX / g) * g;
       const wy = Math.round((scrollTop + localY) / g) * g;
       st.addYouTubeBlockAt({ x: wx, y: wy }, { url: ytUrl, videoId: extractedVid });
+      window.dispatchEvent(new CustomEvent("omnia_save_to_media", { detail: { url: ytUrl, name: `YouTube — ${extractedVid}`, fileType: "youtube" } }));
     }
     return;
   }
@@ -148,6 +157,9 @@ function processMemoryDrop(pending: { title: string; content: string; attachment
       const wrappedLines = combined.split("\n").reduce((sum: number, line: string) => sum + Math.max(1, Math.ceil(line.length / charsPerLine)), 0);
       const height = Math.max(g * 6, Math.min(g * 30, wrappedLines * 22 + 32));
       st.addTextBlockAt({ x: wx, y: wy }, { width: g * 16, height, content: combined, format: "plain" });
+      if (pdfAttach.url) {
+        window.dispatchEvent(new CustomEvent("omnia_save_to_media", { detail: { url: pdfAttach.url, name: title, fileType: "pdf" } }));
+      }
       return;
     }
     if (pdfAttach.url) {
@@ -167,6 +179,51 @@ function processMemoryDrop(pending: { title: string; content: string; attachment
       })();
       return;
     }
+  }
+
+  // Spreadsheets → fetch the file, parse to cells, create SpreadsheetBlock
+  const spreadsheetAttach = attachments.find((a: any) => {
+    if (a.type === "spreadsheet") return true;
+    const n = String(a.name || "").toLowerCase();
+    return n.endsWith(".xlsx") || n.endsWith(".xls") || n.endsWith(".csv");
+  });
+  if (spreadsheetAttach?.url) {
+    const ssUrl = String(spreadsheetAttach.url);
+    const ssName = String(spreadsheetAttach.name || "Spreadsheet").trim();
+
+    if (spreadsheetAttach.cells && typeof spreadsheetAttach.cells === "object" && Object.keys(spreadsheetAttach.cells).length > 0) {
+      const st = useCanvasStore.getState();
+      const g = Math.max(1, Math.floor(st.gridSize || 24));
+      const canvasEl = document.querySelector<HTMLElement>(".overflow-auto.overscroll-contain");
+      const rect = canvasEl?.getBoundingClientRect();
+      const localX = rect ? clientX - rect.left : clientX;
+      const localY = rect ? clientY - rect.top : clientY;
+      const scrollTop = canvasEl?.scrollTop || 0;
+      const wx = Math.round(localX / g) * g;
+      const wy = Math.round((scrollTop + localY) / g) * g;
+      const rows = Math.max(Number(spreadsheetAttach.rows) || 10, 5);
+      const cols = Math.max(Number(spreadsheetAttach.cols) || 5, 3);
+      const ssId = st.addSpreadsheetBlockAt({ x: wx, y: wy }, { rows, cols });
+      const sheetData = { version: 1, rows, cols, colWidths: Array.from({ length: cols }, () => 96), cells: spreadsheetAttach.cells };
+      st.updateBlock(ssId, { content: JSON.stringify(sheetData), data: { sourceFileName: ssName } } as any);
+      return;
+    }
+
+    (async () => {
+      try {
+        const resp = await fetch(ssUrl);
+        if (!resp.ok) throw new Error("fetch failed");
+        const blob = await resp.blob();
+        const ext = ssName.split(".").pop()?.toLowerCase() || "xlsx";
+        const file = new File([blob], ssName.endsWith(`.${ext}`) ? ssName : `${ssName}.xlsx`, {
+          type: ext === "csv" ? "text/csv" : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        });
+        window.dispatchEvent(new CustomEvent("omnia_attach_files", { detail: { files: [file], clientX, clientY } }));
+      } catch {
+        window.dispatchEvent(new CustomEvent("omnia_attach_link", { detail: { url: ssUrl, clientX, clientY } }));
+      }
+    })();
+    return;
   }
 
   // Other links
@@ -441,6 +498,202 @@ function makeDuplicateId(prefix = "b") {
 }
 
 export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatusText = "" }: CanvasProps) {
+  const { user } = useAuth();
+
+  const mediaDedupCache = useRef<Set<string>>(new Set());
+
+  const insertNoteToMedia = useCallback(async (row: { user_id: string; title: string; content: string }) => {
+    const dedupKey = `${row.user_id}::${row.title}`;
+    if (mediaDedupCache.current.has(dedupKey)) {
+      console.log("[Canvas] Skipped duplicate media (cache):", row.title);
+      return;
+    }
+
+    const { data: existing } = await supabase
+      .from("notes")
+      .select("id")
+      .eq("user_id", row.user_id)
+      .eq("title", row.title)
+      .limit(1);
+    if (existing && existing.length > 0) {
+      mediaDedupCache.current.add(dedupKey);
+      console.log("[Canvas] Skipped duplicate media (db):", row.title);
+      return;
+    }
+
+    const { error } = await supabase.from("notes").insert(row);
+    if (error) console.warn("[Canvas] Failed to save to media:", error.message);
+    else {
+      mediaDedupCache.current.add(dedupKey);
+      console.log("[Canvas] Saved to media:", row.title);
+    }
+  }, []);
+
+  const saveCanvasFileToMedia = useCallback(async (file: File) => {
+    if (!user?.id) return;
+    try {
+      const fileName = file.name || "file";
+      const dedupKey = `${user.id}::${fileName}`;
+      if (mediaDedupCache.current.has(dedupKey)) {
+        console.log("[Canvas] Skipped duplicate file upload (cache):", fileName);
+        return;
+      }
+
+      const fileId = crypto.randomUUID();
+      const ext = (file.name || "file").split(".").pop()?.toLowerCase() || "bin";
+      const storagePath = `${user.id}/${fileId}/original.${ext}`;
+      const mime = file.type || "application/octet-stream";
+
+      const { error: uploadError } = await supabase.storage
+        .from("user-files")
+        .upload(storagePath, file, { cacheControl: "3600", upsert: false, contentType: mime });
+      if (uploadError) { console.warn("[Canvas] Storage upload failed:", uploadError.message); return; }
+
+      let fileUrl = "";
+      const { data: signedData } = await supabase.storage
+        .from("user-files")
+        .createSignedUrl(storagePath, 60 * 60 * 24 * 7);
+      fileUrl = signedData?.signedUrl || "";
+      if (!fileUrl) {
+        const { data: pubData } = supabase.storage.from("user-files").getPublicUrl(storagePath);
+        fileUrl = pubData?.publicUrl || "";
+      }
+      if (!fileUrl) return;
+
+      let fileType = "file";
+      if (mime.startsWith("image/")) fileType = "image";
+      else if (mime.startsWith("video/")) fileType = "video";
+      else if (mime.startsWith("audio/")) fileType = "audio";
+      else if (mime === "application/pdf" || ext === "pdf") fileType = "pdf";
+
+      const attachment = [{
+        type: fileType,
+        url: fileUrl,
+        name: file.name || `file.${ext}`,
+        fileId,
+        storagePath,
+        storageBucket: "user-files",
+        size: file.size,
+        mimeType: mime,
+      }];
+      const sizeDisplay = file.size > 1024 * 1024
+        ? `${(file.size / (1024 * 1024)).toFixed(1)} MB`
+        : `${(file.size / 1024).toFixed(1)} KB`;
+      const noteContent = `File: ${file.name}\nType: ${fileType}\nSize: ${sizeDisplay}\n\n[View File](${fileUrl})\n\n[ATTACHMENTS_JSON:${JSON.stringify(attachment)}]`;
+
+      await insertNoteToMedia({
+        user_id: user.id,
+        title: file.name || `file.${ext}`,
+        content: noteContent,
+      });
+    } catch (err) {
+      console.warn("[Canvas] Error saving to media:", err);
+    }
+  }, [user?.id, insertNoteToMedia]);
+
+  const urlDedupCache = useRef<Set<string>>(new Set());
+
+  const saveUrlToMedia = useCallback(async (url: string, name: string, fileType: string) => {
+    if (!user?.id || !url || url.startsWith("data:")) return;
+    try {
+      const urlKey = `${user.id}::${url}`;
+      if (urlDedupCache.current.has(urlKey)) {
+        console.log("[Canvas] Skipped duplicate URL media (cache):", url);
+        return;
+      }
+      const { data: urlMatch } = await supabase
+        .from("notes")
+        .select("id")
+        .eq("user_id", user.id)
+        .ilike("content", `%${url}%`)
+        .limit(1);
+      if (urlMatch && urlMatch.length > 0) {
+        urlDedupCache.current.add(urlKey);
+        console.log("[Canvas] Skipped duplicate URL media (db):", url);
+        return;
+      }
+
+      const extractedVid = extractYouTubeVideoId(url);
+      const isYouTube = Boolean(extractedVid);
+      const resolvedType = isYouTube ? "youtube" : fileType;
+      const fileId = crypto.randomUUID();
+      const ext = (name || "file").split(".").pop()?.toLowerCase() || "bin";
+      const videoId = extractedVid || "";
+      const watchUrl = isYouTube
+        ? (url.includes("youtube.com/watch") || url.includes("youtu.be/") ? url : `https://www.youtube.com/watch?v=${videoId}`)
+        : url;
+      const attachment = [{
+        type: resolvedType,
+        url: watchUrl,
+        name: name || `file.${ext}`,
+        fileId,
+        ...(videoId ? { videoId } : {}),
+        storageBucket: "external",
+        size: 0,
+        mimeType: isYouTube ? "text/html" : fileType === "image" ? `image/${ext}` : fileType === "video" ? `video/${ext}` : fileType === "audio" ? `audio/${ext}` : fileType === "pdf" ? "application/pdf" : "application/octet-stream",
+      }];
+      const noteContent = `${resolvedType.charAt(0).toUpperCase() + resolvedType.slice(1)}: ${name}\n\n[View](${watchUrl})\n\n[ATTACHMENTS_JSON:${JSON.stringify(attachment)}]`;
+
+      await insertNoteToMedia({
+        user_id: user.id,
+        title: name || `${resolvedType} file`,
+        content: noteContent,
+      });
+    } catch (err) {
+      console.warn("[Canvas] Error saving URL to media:", err);
+    }
+  }, [user?.id, insertNoteToMedia]);
+
+  const saveUrlToMediaRef = useRef(saveUrlToMedia);
+  saveUrlToMediaRef.current = saveUrlToMedia;
+  const saveCanvasFileToMediaRef = useRef(saveCanvasFileToMedia);
+  saveCanvasFileToMediaRef.current = saveCanvasFileToMedia;
+
+  useEffect(() => {
+    if (!user?.id) return;
+    const sessionKey = `canvas_dupe_cleanup_${user.id}`;
+    if (sessionStorage.getItem(sessionKey)) return;
+    sessionStorage.setItem(sessionKey, "1");
+    let cancelled = false;
+    // Defer cleanup so it doesn't compete with initial board load
+    const delay = setTimeout(async () => {
+      try {
+        const { data: allNotes, error } = await supabase
+          .from("notes")
+          .select("id, title, created_at")
+          .eq("user_id", user.id)
+          .order("created_at", { ascending: true })
+          .limit(500);
+        if (error || !allNotes || cancelled) return;
+
+        const seen = new Map<string, string>();
+        const dupeIds: string[] = [];
+        for (const note of allNotes) {
+          const key = String(note.title || "").trim();
+          if (!key) continue;
+          if (seen.has(key)) {
+            dupeIds.push(note.id);
+          } else {
+            seen.set(key, note.id);
+          }
+        }
+        if (dupeIds.length === 0 || cancelled) return;
+
+        console.log(`[Canvas] Cleaning up ${dupeIds.length} duplicate media entries`);
+        const BATCH = 50;
+        for (let i = 0; i < dupeIds.length; i += BATCH) {
+          if (cancelled) return;
+          const batch = dupeIds.slice(i, i + BATCH);
+          await supabase.from("notes").delete().in("id", batch).eq("user_id", user.id);
+        }
+        console.log("[Canvas] Duplicate media cleanup complete");
+      } catch (err) {
+        console.warn("[Canvas] Duplicate cleanup error:", err);
+      }
+    }, 15000);
+    return () => { cancelled = true; clearTimeout(delay); };
+  }, [user?.id]);
+
   type PressTarget = { kind: "cell" | "brick"; key: string };
   type GridRange = { minX: number; maxX: number; minY: number; maxY: number };
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -458,17 +711,37 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
   const [raisedBrickIds, setRaisedBrickIds] = useState<string[]>([]);
   const [shiftAnchor, setShiftAnchor] = useState<PressTarget | null>(null);
   const [scrollPos, setScrollPos] = useState({ left: 0, top: 0 });
+  const scrollPosRef = useRef(scrollPos);
+  useEffect(() => { scrollPosRef.current = scrollPos; }, [scrollPos]);
   const [canvasZoom, setCanvasZoom] = useState(1);
   const canvasZoomRef = useRef(1);
   const [zoomPanelOpen, setZoomPanelOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(() => document.body.classList.contains("sidebar-push"));
+  useEffect(() => {
+    const observer = new MutationObserver(() => {
+      setSidebarOpen(document.body.classList.contains("sidebar-push"));
+    });
+    observer.observe(document.body, { attributes: true, attributeFilter: ["class"] });
+    return () => observer.disconnect();
+  }, []);
+  const [minimizedIds, setMinimizedIds] = useState<Set<string>>(new Set());
+  const toggleMinimized = useCallback((id: string) => {
+    setMinimizedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
   const lastPointerClientRef = useRef<{ x: number; y: number } | null>(null);
   const [brickMenu, setBrickMenu] = useState<{ id: string; x: number; y: number } | null>(null);
-  const [brickMenuSub, setBrickMenuSub] = useState<"brick-color" | "text-color" | "calendar" | null>(null);
+  const [brickMenuSub, setBrickMenuSub] = useState<"brick-color" | "text-color" | null>(null);
+  const [vaultSavedId, setVaultSavedId] = useState<string | null>(null);
   const [hoveredSpecialBlockId, setHoveredSpecialBlockId] = useState<string | null>(null);
-  const [calPickerDate, setCalPickerDate] = useState("");
-  const [calPickerTime, setCalPickerTime] = useState("");
   const [deleteZoneOpen, setDeleteZoneOpen] = useState(false);
-  const [dropContainerId, setDropContainerId] = useState<string | null>(null);
+  const handleBlockMenu = useCallback((bid: string, rect: DOMRect) => {
+    setBrickMenuSub(null);
+    setBrickMenu((prev) => prev?.id === bid ? null : { id: bid, x: rect.left, y: rect.bottom + 4 });
+  }, []);
   const [shapePickerOpen, setShapePickerOpen] = useState(false);
   const [shapePickerAnchor, setShapePickerAnchor] = useState<{ clientX: number; clientY: number; worldX: number; worldY: number }>({
     clientX: 0,
@@ -528,8 +801,10 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
     pointerId: number | null;
     startWorldX: number;
     startWorldY: number;
+    startClientX: number;
+    startClientY: number;
     snapshot: Array<{ id: string; x: number; y: number }>;
-  }>({ active: false, moved: false, pointerId: null, startWorldX: 0, startWorldY: 0, snapshot: [] });
+  }>({ active: false, moved: false, pointerId: null, startWorldX: 0, startWorldY: 0, startClientX: 0, startClientY: 0, snapshot: [] });
   const heldShapeDeleteRef = useRef<{ active: boolean; pointerId: number | null; keys: string[] }>({
     active: false,
     pointerId: null,
@@ -723,7 +998,6 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
   const addSpreadsheetBlockAt = useCanvasStore((s) => s.addSpreadsheetBlockAt);
   const addSheetBlockAt = useCanvasStore((s) => s.addSheetBlockAt);
   const addYouTubeBlockAt = useCanvasStore((s: any) => s.addYouTubeBlockAt);
-  const addCodeBlockAt = useCanvasStore((s) => s.addCodeBlockAt);
   const addDesignBlockAt = useCanvasStore((s: any) => s.addDesignBlockAt);
   const createCreateBlock = useCanvasStore((s: any) => s.createCreateBlock);
   const addBlock = useCanvasStore((s) => s.addBlock);
@@ -769,7 +1043,9 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
     const clamped = Math.round(Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, next)) * 100) / 100;
     canvasZoomRef.current = clamped;
     setCanvasZoom(clamped);
-  }, []);
+    const vw = viewportWidthRef.current;
+    if (vw > 0) setCanvasWidth(Math.floor(vw / clamped));
+  }, [setCanvasWidth]);
 
   const makeCreateBlockLocal = (x: number, y: number, mode: string, data: Record<string, any>, width: number, height: number) => ({
     id: `create-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
@@ -805,6 +1081,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
   const aiLineHeightPx = Math.max(1, Math.floor(gridSize || 24) - aiPaddingY * 2);
 
   // Track viewport size for culling.
+  const viewportWidthRef = useRef(0);
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -813,9 +1090,10 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       if (!r) return;
       const w = Math.floor(r.width);
       const h = Math.floor(r.height);
+      viewportWidthRef.current = w;
       setViewport({ width: w, height: h });
-      // Keep canvas horizontally bounded to the visible area (split-screen friendly).
-      if (w > 0) setCanvasWidth(w);
+      const z = canvasZoomRef.current || 1;
+      if (w > 0) setCanvasWidth(Math.floor(w / z));
     });
     ro.observe(el);
     return () => ro.disconnect();
@@ -839,6 +1117,25 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
     return () => el.removeEventListener("scroll", onScroll as any);
   }, [setCamera]);
 
+  // Sync local zoom & scroll from store camera when it diverges (snapshot restore).
+  useEffect(() => {
+    const z = canvasZoomRef.current;
+    if (Math.abs(camera.zoom - z) > 0.01) {
+      const next = camera.zoom;
+      canvasZoomRef.current = next;
+      setCanvasZoom(next);
+      const vw = viewportWidthRef.current;
+      if (vw > 0) setCanvasWidth(Math.floor(vw / next));
+    }
+    const el = containerRef.current;
+    if (el) {
+      const currentY = z > 0 ? el.scrollTop / z : 0;
+      if (Math.abs(camera.y - currentY) > 5) {
+        el.scrollTop = camera.y * canvasZoomRef.current;
+      }
+    }
+  }, [camera.zoom, camera.y, setCanvasWidth]);
+
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -856,6 +1153,8 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
 
       canvasZoomRef.current = next;
       setCanvasZoom(next);
+      const vw = viewportWidthRef.current;
+      if (vw > 0) setCanvasWidth(Math.floor(vw / next));
 
       requestAnimationFrame(() => {
         el.scrollTop = pointerY * next - (e.clientY - rect.top);
@@ -914,11 +1213,6 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       if (held >= HOLD_MS) {
         if (!deleteZoneOpenRef.current) setDeleteZoneOpen(true);
       }
-
-      // Show a muted drop frame when hovering over a canvas block.
-      const world = clientToWorld(ev.clientX, ev.clientY);
-      const containerId = findCreateContainerAtWorld(world.x, world.y, d.ids || []);
-      setDropContainerId(containerId);
     };
 
     const shouldDeleteOnDrop = (ev: PointerEvent) => {
@@ -941,7 +1235,6 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
 
       dragDeleteRef.current = { active: false, pointerId: null, primaryId: null, ids: [], touchStartAt: null };
       if (deleteZoneOpenRef.current) setDeleteZoneOpen(false);
-      if (dropContainerId) setDropContainerId(null);
 
       if (doDelete && ids.length) {
         deleteBlocks(ids as any);
@@ -956,6 +1249,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
           for (const id of ids) {
             const b: any = st.blocks[id];
             if (!b) continue;
+            if (b.containerId) continue;
             if (b.type === "text") {
               // When text enters a canvas block, mark it as CanvasText and keep content intact.
               st.updateBlock(id as any, {
@@ -975,7 +1269,6 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
     const onBlur = () => {
       dragDeleteRef.current = { active: false, pointerId: null, primaryId: null, ids: [], touchStartAt: null };
       if (deleteZoneOpenRef.current) setDeleteZoneOpen(false);
-      if (dropContainerId) setDropContainerId(null);
     };
 
     window.addEventListener("pointermove", onMove, true);
@@ -1044,7 +1337,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
             ? clientToWorld(last.x, last.y)
             : rect
               ? clientToWorld(rect.left + rect.width / 2, rect.top + rect.height / 3)
-              : { x: scrollPos.left || 0, y: scrollPos.top || 0 };
+              : { x: scrollPosRef.current.left || 0, y: scrollPosRef.current.top || 0 };
         const x = snapToGrid(world.x, gridSize);
         const y = snapToGrid(world.y, gridSize);
         const mode = key === "d" ? "drawing" : key === "g" ? "generated" : key === "i" ? "image" : "empty";
@@ -1055,7 +1348,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
     };
     window.addEventListener("keydown", onKeyDown, { capture: true });
     return () => window.removeEventListener("keydown", onKeyDown, { capture: true } as any);
-  }, [addBlock, createCreateBlock, gridSize, redo, scrollPos.left, scrollPos.top, selectBlocks, undo]);
+  }, [addBlock, createCreateBlock, gridSize, redo, selectBlocks, undo]);
 
   // Ctrl/Cmd+G groups currently activated shapes so they move together.
   useEffect(() => {
@@ -1313,28 +1606,31 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
           ? clientToWorld(last.x, last.y)
           : rect
             ? clientToWorld(rect.left + rect.width / 2, rect.top + rect.height / 3)
-            : { x: scrollPos.left || 0, y: scrollPos.top || 0 };
+            : { x: scrollPosRef.current.left || 0, y: scrollPosRef.current.top || 0 };
       if (key === "r") createShapeBlockAt(world.x, world.y, "rectangle");
       if (key === "o") createShapeBlockAt(world.x, world.y, "ellipse");
       if (key === "l") createShapeBlockAt(world.x, world.y, e.shiftKey ? "arrow" : "line");
     };
     window.addEventListener("keydown", onKeyDown, { capture: true });
     return () => window.removeEventListener("keydown", onKeyDown, { capture: true } as any);
-  }, [createShapeBlockAt, scrollPos.left, scrollPos.top]);
+  }, [createShapeBlockAt]);
 
   // Expand the inner scroll surface to fit placed blocks (BrickEditor-like infinite down scroll).
   const surface = useMemo(() => {
     const z = canvasZoom || 1;
     const baseH = Math.max((viewport.height || 0) / z, 900);
     let maxBottom = 0;
+    let maxRight = 0;
     for (const id of blockOrder) {
       const b = blocks[id];
       if (!b) continue;
       maxBottom = Math.max(maxBottom, (b.y || 0) + (b.height || gridSize));
+      maxRight = Math.max(maxRight, (b.x || 0) + ((b as any).width || gridSize));
     }
     const padBottom = gridSize * 12;
+    const viewportW = Math.max(gridSize, Math.floor((canvasWidth || (viewport.width || 0) / z) as number) || gridSize);
     return {
-      width: Math.max(gridSize, Math.floor(((canvasWidth || viewport.width || 0) as number) / z) || gridSize),
+      width: Math.max(viewportW, maxRight + gridSize),
       height: Math.max(baseH, maxBottom + padBottom),
     };
   }, [blockOrder, blocks, canvasWidth, canvasZoom, gridSize, viewport.height, viewport.width]);
@@ -1356,10 +1652,10 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
     const rect = el.getBoundingClientRect();
     const localX = clientX - rect.left;
     const localY = clientY - rect.top;
-    const z = canvasZoomRef.current;
+    const z = canvasZoomRef.current || 1;
     return {
-      x: ((scrollPos.left || 0) + localX) / z,
-      y: ((scrollPos.top || 0) + localY) / z,
+      x: localX / z,
+      y: (el.scrollTop + localY) / z,
     };
   }
 
@@ -1482,30 +1778,16 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       const id = existingId || st.addTextBlockAt({ x: p.x, y: p.y }, { width: gridSize, height: gridSize, content: "", format: "plain" } as any);
       const cur: any = st.blocks[id] || {};
       const data = cur?.data && typeof cur.data === "object" ? { ...cur.data } : {};
-      if (transform === "table") {
-        const sheet = { version: 1, rows: 10, cols: 6, colWidths: Array.from({ length: 6 }, () => 96), cells: {} };
-        st.updateBlock(id as any, { content: JSON.stringify(sheet), format: "table", width: Math.max(gridSize * 18, cur.width || 0), height: Math.max(gridSize * 12, cur.height || 0), data: { ...data, textVariant: "body", listType: "none" } } as any);
-      } else if (transform === "calendar") {
-        st.updateBlock(id as any, { content: JSON.stringify({ events: [] }), format: "calendar", width: Math.max(gridSize * 12, cur.width || 0), height: Math.max(gridSize * 14, cur.height || 0), data: { ...data, textVariant: "body", listType: "none" } } as any);
-      } else if (transform === "media") {
+      if (transform === "media") {
         st.updateBlock(id as any, { content: JSON.stringify({ mode: "picker" }), format: "media", width: Math.max(gridSize * 10, cur.width || 0), height: Math.max(gridSize * 8, cur.height || 0), data: { ...data, textVariant: "body", listType: "none" } } as any);
-      } else if (transform === "button") {
-        const btnData = { label: "Button", icon: "zap", style: "filled", action: "url", url: "", navigateTarget: "page", navigateValue: "", navigateLabel: "", copyText: "", webhookUrl: "", aiPrompt: "", eventName: "", targetBlockId: "", blockAction: "scroll", onClickCode: "", description: "", _needsSetup: true, confirm: false, toggleState: false };
-        st.updateBlock(id as any, { content: JSON.stringify(btnData), format: "button", width: Math.max(gridSize * 8, Math.min(gridSize * 12, cur.width || gridSize * 8)), height: gridSize, data: { ...data, textVariant: "body", listType: "none" } } as any);
       } else if (transform === "dictate") {
         st.updateBlock(id as any, { content: "", width: Math.max(gridSize * 10, st.blocks[id]?.width || 0), data: { ...data, textVariant: "body", listType: "none" } } as any);
         startBrickDictation(id);
-      } else if (transform === "page") {
-        const pageData = { html: "<p><br></p>", title: "Untitled" };
-        st.updateBlock(id as any, { content: JSON.stringify(pageData), format: "page", width: Math.max(gridSize * 22, cur.width || 0), height: Math.max(gridSize * 30, cur.height || 0), data: { ...data, textVariant: "body", listType: "none" } } as any);
-      } else if (transform === "chart") {
-        st.updateBlock(id as any, { content: "", format: "chart", width: Math.max(gridSize * 20, cur.width || 0), height: Math.max(gridSize * 14, cur.height || 0), data: { ...data, textVariant: "body", listType: "none" } } as any);
-      } else if (transform === "board") {
-        st.updateBlock(id as any, { content: "", format: "board", width: Math.max(gridSize * 22, cur.width || 0), height: Math.max(gridSize * 14, cur.height || 0), data: { ...data, textVariant: "body", listType: "none" } } as any);
-      } else if (transform === "form") {
-        st.updateBlock(id as any, { content: "", format: "form", width: Math.max(gridSize * 14, cur.width || 0), height: Math.max(gridSize * 18, cur.height || 0), data: { ...data, textVariant: "body", listType: "none" } } as any);
-      } else if (transform === "gallery") {
-        st.updateBlock(id as any, { content: "", format: "gallery", width: Math.max(gridSize * 22, cur.width || 0), height: Math.max(gridSize * 16, cur.height || 0), data: { ...data, textVariant: "body", listType: "none" } } as any);
+      } else if (transform === "table") {
+        const pos = { x: cur.x, y: cur.y };
+        st.deleteBlock(id);
+        const tId = st.addSpreadsheetBlockAt(pos, { rows: 3, cols: 3 });
+        st.updateBlock(tId, { width: gridSize * 10, height: gridSize * 5, data: { tableMode: true } } as any);
       }
     } else {
       const id = existingId || st.addTextBlockAt({ x: p.x, y: p.y }, { width: gridSize, height: gridSize, content: "", format: "plain" } as any);
@@ -1665,96 +1947,87 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       return `${marker}${s}`;
     };
     const s = String(raw || "");
-    const trimmed = s.replace(/^\s+/, "");
-    if (/^\/h1(?:\s+|$)/i.test(trimmed)) {
-      const content = trimmed.replace(/^\/h1(?:\s+)?/i, "");
+    const lines = s.split("\n");
+    const lastLineRaw = lines[lines.length - 1] ?? "";
+    // Extract the slash token — at start of line or after a space
+    const slashMatch = lastLineRaw.match(/(^|\s)(\/[^\n]*)$/);
+    const slashToken = slashMatch ? (slashMatch[2] || "").replace(/^\s+/, "") : "";
+    const beforeSlash = slashMatch ? lastLineRaw.slice(0, lastLineRaw.length - (slashMatch[2] || "").length) : lastLineRaw;
+    const prefix = lines.length > 1 ? lines.slice(0, -1).join("\n") + "\n" : "";
+    const rebuildContent = (replacement: string) => {
+      const built = (prefix + beforeSlash + replacement).replace(/^\s+/, "");
+      return built.replace(/\s+$/, " ");
+    };
+    if (/^\/h1(?:\s+|$)/i.test(slashToken)) {
+      const content = rebuildContent(slashToken.replace(/^\/h1(?:\s+)?/i, ""));
       return { content, variant: "h1" as const, listType: "none" as const, consumed: true };
     }
-    if (/^\/h2(?:\s+|$)/i.test(trimmed)) {
-      const content = trimmed.replace(/^\/h2(?:\s+)?/i, "");
+    if (/^\/h2(?:\s+|$)/i.test(slashToken)) {
+      const content = rebuildContent(slashToken.replace(/^\/h2(?:\s+)?/i, ""));
       return { content, variant: "h2" as const, listType: "none" as const, consumed: true };
     }
-    if (/^\/(?:text|p|body)(?:\s+|$)/i.test(trimmed)) {
-      const content = trimmed.replace(/^\/(?:text|p|body)(?:\s+)?/i, "");
+    if (/^\/(?:text|p|body)(?:\s+|$)/i.test(slashToken)) {
+      const content = rebuildContent(slashToken.replace(/^\/(?:text|p|body)(?:\s+)?/i, ""));
       return { content, variant: "body" as const, listType: "none" as const, consumed: true };
     }
-    if (/^\/(?:bulleted\s*list|bullet(?:ed)?(?:\s*list)?|ul)(?:\s+|$)/i.test(trimmed)) {
-      const content = trimmed.replace(/^\/(?:bulleted\s*list|bullet(?:ed)?(?:\s*list)?|ul)(?:\s+)?/i, "");
+    if (/^\/(?:bulleted\s*list|bullet(?:ed)?(?:\s*list)?|ul)(?:\s+|$)/i.test(slashToken)) {
+      const after = slashToken.replace(/^\/(?:bulleted\s*list|bullet(?:ed)?(?:\s*list)?|ul)(?:\s+)?/i, "");
+      const seeded = ensureListSeed(after, "bullet");
       return {
-        content: ensureListSeed(content, "bullet"),
+        content: rebuildContent(seeded),
         variant: "body" as const,
         listType: "bullet" as const,
         consumed: true,
       };
     }
-    if (/^\/(?:numbered\s*list|number(?:ed)?(?:\s*list)?|ol)(?:\s+|$)/i.test(trimmed)) {
-      const content = trimmed.replace(/^\/(?:numbered\s*list|number(?:ed)?(?:\s*list)?|ol)(?:\s+)?/i, "");
+    if (/^\/(?:numbered\s*list|number(?:ed)?(?:\s*list)?|ol)(?:\s+|$)/i.test(slashToken)) {
+      const after = slashToken.replace(/^\/(?:numbered\s*list|number(?:ed)?(?:\s*list)?|ol)(?:\s+)?/i, "");
+      const seeded = ensureListSeed(after, "numbered");
       return {
-        content: ensureListSeed(content, "numbered"),
+        content: rebuildContent(seeded),
         variant: "body" as const,
         listType: "numbered" as const,
         consumed: true,
       };
     }
-    if (/^\/(?:checklist|to\s*do\s*list|todo(?:\s*list)?|task(?:\s*list)?)(?:\s+|$)/i.test(trimmed)) {
-      const content = trimmed.replace(/^\/(?:checklist|to\s*do\s*list|todo(?:\s*list)?|task(?:\s*list)?)(?:\s+)?/i, "");
+    if (/^\/(?:checklist|to\s*do\s*list|todo(?:\s*list)?|task(?:\s*list)?)(?:\s+|$)/i.test(slashToken)) {
+      const after = slashToken.replace(/^\/(?:checklist|to\s*do\s*list|todo(?:\s*list)?|task(?:\s*list)?)(?:\s+)?/i, "");
+      const seeded = ensureListSeed(after, "todo");
       return {
-        content: ensureListSeed(content, "todo"),
+        content: rebuildContent(seeded),
         variant: "body" as const,
         listType: "todo" as const,
         consumed: true,
       };
     }
-    if (/^\/(?:toggle\s*list|toggle|collapsible(?:\s*list)?)(?:\s+|$)/i.test(trimmed)) {
-      const content = trimmed.replace(/^\/(?:toggle\s*list|toggle|collapsible(?:\s*list)?)(?:\s+)?/i, "");
+    if (/^\/(?:toggle\s*list|toggle|collapsible(?:\s*list)?)(?:\s+|$)/i.test(slashToken)) {
+      const after = slashToken.replace(/^\/(?:toggle\s*list|toggle|collapsible(?:\s*list)?)(?:\s+)?/i, "");
+      const seeded = ensureListSeed(after, "toggle");
       return {
-        content: ensureListSeed(content, "toggle"),
+        content: rebuildContent(seeded),
         variant: "body" as const,
         listType: "toggle" as const,
         consumed: true,
       };
     }
-    if (/^\/(?:quote|callout|blockquote)(?:\s+|$)/i.test(trimmed)) {
-      const content = trimmed.replace(/^\/(?:quote|callout|blockquote)(?:\s+)?/i, "");
+    if (/^\/(?:quote|callout|blockquote)(?:\s+|$)/i.test(slashToken)) {
+      const after = slashToken.replace(/^\/(?:quote|callout|blockquote)(?:\s+)?/i, "");
+      const seeded = ensureListSeed(after, "quote");
       return {
-        content: ensureListSeed(content, "quote"),
+        content: rebuildContent(seeded),
         variant: "body" as const,
         listType: "quote" as const,
         consumed: true,
       };
     }
-    if (/^\/code(?:\s+|$)/i.test(trimmed)) {
-      return { content: "", variant: currentVariant, listType: currentListType, consumed: true, transform: "code" as const };
+    if (/^\/media(?:\s+|$)/i.test(slashToken)) {
+      return { content: s, variant: currentVariant, listType: currentListType, consumed: true, transform: "media" as const };
     }
-    if (/^\/table(?:\s+|$)/i.test(trimmed)) {
-      return { content: "", variant: currentVariant, listType: currentListType, consumed: true, transform: "table" as const };
+    if (/^\/dictate(?:\s+|$)/i.test(slashToken)) {
+      return { content: s, variant: currentVariant, listType: currentListType, consumed: true, transform: "dictate" as const };
     }
-    if (/^\/calendar(?:\s+|$)/i.test(trimmed)) {
-      return { content: "", variant: currentVariant, listType: currentListType, consumed: true, transform: "calendar" as const };
-    }
-    if (/^\/media(?:\s+|$)/i.test(trimmed)) {
-      return { content: "", variant: currentVariant, listType: currentListType, consumed: true, transform: "media" as const };
-    }
-    if (/^\/button(?:\s+|$)/i.test(trimmed)) {
-      return { content: "", variant: currentVariant, listType: currentListType, consumed: true, transform: "button" as const };
-    }
-    if (/^\/dictate(?:\s+|$)/i.test(trimmed)) {
-      return { content: "", variant: currentVariant, listType: currentListType, consumed: true, transform: "dictate" as const };
-    }
-    if (/^\/page(?:\s+|$)/i.test(trimmed)) {
-      return { content: "", variant: currentVariant, listType: currentListType, consumed: true, transform: "page" as const };
-    }
-    if (/^\/chart(?:\s+|$)/i.test(trimmed)) {
-      return { content: "", variant: currentVariant, listType: currentListType, consumed: true, transform: "chart" as const };
-    }
-    if (/^\/board(?:\s+|$)/i.test(trimmed)) {
-      return { content: "", variant: currentVariant, listType: currentListType, consumed: true, transform: "board" as const };
-    }
-    if (/^\/form(?:\s+|$)/i.test(trimmed)) {
-      return { content: "", variant: currentVariant, listType: currentListType, consumed: true, transform: "form" as const };
-    }
-    if (/^\/gallery(?:\s+|$)/i.test(trimmed)) {
-      return { content: "", variant: currentVariant, listType: currentListType, consumed: true, transform: "gallery" as const };
+    if (/^\/table(?:\s+|$)/i.test(slashToken)) {
+      return { content: s, variant: currentVariant, listType: currentListType, consumed: true, transform: "table" as const };
     }
     return {
       content: currentListType === "todo" ? normalizeTodoMarkers(s) : s,
@@ -1768,8 +2041,17 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
     requestAnimationFrame(() => {
       const el = document.querySelector(`[data-canvas-brick-editor-id="${id}"]`) as HTMLDivElement | null;
       if (!el) return;
-      if ((el.innerText || "") === text) return;
-      el.innerText = text;
+      const cur: any = useCanvasStore.getState().blocks[id];
+      const isTodo = cur?.data?.listType === "todo";
+      const display = isTodo
+        ? String(text || "").split("\n").map((line: string) => {
+            if (/^\s*(?:[-*]\s+)?\[x\]\s*/i.test(line)) return line.replace(/^(\s*)(?:[-*]\s+)?\[x\]\s*/i, "$1\u25FC\uFE0E ");
+            if (/^\s*(?:[-*]\s+)?\[\s?\]\s*/i.test(line)) return line.replace(/^(\s*)(?:[-*]\s+)?\[\s?\]\s*/i, "$1\u25FB\uFE0E ");
+            return line;
+          }).join("\n")
+        : text;
+      if ((el.innerText || "") === display) return;
+      el.innerText = display;
       const sel = window.getSelection();
       if (!sel) return;
       const range = document.createRange();
@@ -1952,8 +2234,8 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       const rawDy = world.y - d.startWorldY;
       if (!d.moved) {
         const manhattan = Math.abs(rawDx) + Math.abs(rawDy);
-        // Match brick drag intent threshold to avoid accidental shape moves.
-        if (manhattan < Math.max(2, Math.floor(gridSize / 5))) return;
+        const z = canvasZoomRef.current || 1;
+        if (manhattan < Math.max(2, Math.floor(gridSize / 5)) / z) return;
         d.moved = true;
       }
       const stepX = Math.round((world.x - d.startWorldX) / gridSize) * gridSize;
@@ -2086,12 +2368,12 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       const d = groupDragRef.current;
       if (!d.active) return;
       if (d.pointerId != null && e.pointerId !== d.pointerId) return;
-      const world = clientToWorld(e.clientX, e.clientY);
-      const dx = world.x - d.startWorldX;
-      const dy = world.y - d.startWorldY;
+      const z = canvasZoomRef.current || 1;
+      const dx = (e.clientX - d.startClientX) / z;
+      const dy = (e.clientY - d.startClientY) / z;
       if (!d.moved) {
-        const manhattan = Math.abs(dx) + Math.abs(dy);
-        if (manhattan < Math.max(2, Math.floor(gridSize / 5))) return;
+        const screenManhattan = Math.abs(e.clientX - d.startClientX) + Math.abs(e.clientY - d.startClientY);
+        if (screenManhattan < Math.max(3, Math.floor(gridSize / 5))) return;
         d.moved = true;
         window.getSelection()?.removeAllRanges();
         setHoveredSpecialBlockId(null);
@@ -2103,9 +2385,9 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         }
       }
       const grid = gridSize;
+      const snappedDx = Math.round(dx / grid) * grid;
+      const snappedDy = Math.round(dy / grid) * grid;
       for (const s of d.snapshot) {
-        const snappedDx = Math.round(dx / grid) * grid;
-        const snappedDy = Math.round(dy / grid) * grid;
         const el = document.querySelector(`[data-canvas-block][data-block-id="${s.id}"]`) as HTMLElement | null;
         if (el) el.style.transform = `translate(${snappedDx}px, ${snappedDy}px)`;
       }
@@ -2117,9 +2399,9 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       const moved = d.moved;
       const snapshot = d.snapshot;
       if (moved) {
-        const world = clientToWorld(e.clientX, e.clientY);
-        const dx = world.x - d.startWorldX;
-        const dy = world.y - d.startWorldY;
+        const z = canvasZoomRef.current || 1;
+        const dx = (e.clientX - d.startClientX) / z;
+        const dy = (e.clientY - d.startClientY) / z;
         const grid = gridSize;
         const snappedDx = Math.round(dx / grid) * grid;
         const snappedDy = Math.round(dy / grid) * grid;
@@ -2129,7 +2411,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         }
         moveBlocksFromSnapshot(snapshot as any, snappedDx, snappedDy, { snap: false } as any);
       }
-      groupDragRef.current = { active: false, moved: false, pointerId: null, startWorldX: 0, startWorldY: 0, snapshot: [] };
+      groupDragRef.current = { active: false, moved: false, pointerId: null, startWorldX: 0, startWorldY: 0, startClientX: 0, startClientY: 0, snapshot: [] };
       if (moved) {
         suppressBrickClickRef.current = true;
         window.setTimeout(() => {
@@ -2150,12 +2432,13 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       window.removeEventListener("pointerup", onUp, true);
       window.removeEventListener("pointercancel", onUp, true);
     };
-  }, [clientToWorld, gridSize, moveBlocksFromSnapshot, pushHistory]);
+  }, [gridSize, moveBlocksFromSnapshot, pushHistory]);
 
   // Floating brick: double-click lifts visually; click anywhere or Escape to drop.
   useEffect(() => {
     const dropFloating = () => {
       if (!floatingBrickRef.current.active) return;
+      if (groupDragRef.current.active) return;
       floatingBrickRef.current = { active: false, ids: [] };
       setActivatedBrickIds([]);
       setRaisedBrickIds([]);
@@ -2244,29 +2527,6 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
   }
 
 
-  // Track hover-into-canvas-block while dragging any block (not just drag-handle).
-  useEffect(() => {
-    const onMove = (ev: PointerEvent) => {
-      if (ev.buttons === 0) return;
-      const t = ev.target as Element | null;
-      if (!t?.closest?.("[data-canvas-block]")) return;
-      const st = useCanvasStore.getState();
-      if (!st.selectedIds?.length) return;
-      const world = clientToWorld(ev.clientX, ev.clientY);
-      const containerId = findCreateContainerAtWorld(world.x, world.y, st.selectedIds);
-      setDropContainerId(containerId);
-    };
-    const onUp = () => setDropContainerId(null);
-    window.addEventListener("pointermove", onMove, true);
-    window.addEventListener("pointerup", onUp, true);
-    window.addEventListener("pointercancel", onUp, true);
-    return () => {
-      window.removeEventListener("pointermove", onMove, true);
-      window.removeEventListener("pointerup", onUp, true);
-      window.removeEventListener("pointercancel", onUp, true);
-    };
-  }, []);
-
   // Shape picker (opened from /shape)
   useEffect(() => {
     const onOpen = (e: Event) => {
@@ -2310,6 +2570,33 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
     };
     window.addEventListener("omnia_fit_block", onFit as any);
     return () => window.removeEventListener("omnia_fit_block", onFit as any);
+  }, []);
+
+  useEffect(() => {
+    const onMinimize = (e: Event) => {
+      const ids: string[] = Array.isArray((e as CustomEvent).detail?.ids) ? (e as CustomEvent).detail.ids : [];
+      if (!ids.length) return;
+      setMinimizedIds((prev) => {
+        const next = new Set(prev);
+        for (const id of ids) next.add(id);
+        return next;
+      });
+    };
+    const onExpand = (e: Event) => {
+      const ids: string[] = Array.isArray((e as CustomEvent).detail?.ids) ? (e as CustomEvent).detail.ids : [];
+      if (!ids.length) return;
+      setMinimizedIds((prev) => {
+        const next = new Set(prev);
+        for (const id of ids) next.delete(id);
+        return next;
+      });
+    };
+    window.addEventListener("omnia_minimize_blocks", onMinimize as any);
+    window.addEventListener("omnia_expand_blocks", onExpand as any);
+    return () => {
+      window.removeEventListener("omnia_minimize_blocks", onMinimize as any);
+      window.removeEventListener("omnia_expand_blocks", onExpand as any);
+    };
   }, []);
 
   const findCreateContainerAtWorld = (x: number, y: number, ignoreIds: string[] = []) => {
@@ -2397,6 +2684,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         bmp: "image/bmp",
         avif: "image/avif",
         heic: "image/heic",
+        heif: "image/heif",
         mp4: "video/mp4",
         mov: "video/quicktime",
         webm: "video/webm",
@@ -2606,7 +2894,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       const last = lastPointerClientRef.current;
       if (last && rect) return clientToWorld(last.x, last.y);
       if (rect) return clientToWorld(rect.left + rect.width / 2, rect.top + rect.height / 3);
-      return { x: scrollPos.left || 0, y: scrollPos.top || 0 };
+      return { x: scrollPosRef.current.left || 0, y: scrollPosRef.current.top || 0 };
     };
 
     const isDuplicateOnCanvas = (check: { url?: string; videoId?: string; src?: string; name?: string; content?: string }): boolean => {
@@ -2638,6 +2926,42 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       const files = Array.isArray(ce.detail?.files) ? ce.detail.files : [];
       if (!files.length) return;
 
+      const uploadAndReplace = async (blockId: string, file: File, field: "src" | "url") => {
+        if (!user?.id) return;
+        try {
+          const ext = (file.name || "file").split(".").pop()?.toLowerCase() || "bin";
+          const storagePath = `${user.id}/${crypto.randomUUID()}/original.${ext}`;
+          const { error } = await supabase.storage
+            .from("user-files")
+            .upload(storagePath, file, { cacheControl: "3600", upsert: false, contentType: file.type || "application/octet-stream" });
+          if (error) return;
+          const { data: signed } = await supabase.storage
+            .from("user-files")
+            .createSignedUrl(storagePath, 60 * 60 * 24 * 7);
+          const storageUrl = signed?.signedUrl || "";
+          if (!storageUrl) return;
+          const st = useCanvasStore.getState();
+          const blk: any = st.blocks[blockId];
+          if (!blk) return;
+          const patch: any = { data: { ...(blk.data || {}), [field]: storageUrl, storagePath, storageBucket: "user-files" } };
+          st.updateBlock(blockId as any, patch);
+        } catch { /* background — don't block UI */ }
+      };
+
+      const chatAttachments = files.map((f) => {
+        const mime = String(f.type || "").toLowerCase();
+        let type = "file";
+        if (mime.startsWith("image/")) type = "image";
+        else if (mime.startsWith("video/")) type = "video";
+        else if (mime.startsWith("audio/")) type = "audio";
+        else if (mime === "application/pdf") type = "pdf";
+        const url = URL.createObjectURL(f);
+        return { id: crypto.randomUUID(), type, name: f.name || "File", url };
+      });
+      if (chatAttachments.length) {
+        window.dispatchEvent(new CustomEvent("omnia_chat_drop_attachments", { detail: { attachments: chatAttachments } }));
+      }
+
       const base = getInsertWorld(ce.detail?.clientX, ce.detail?.clientY);
       const baseX = snapToGrid(base.x, gridSize);
       const baseY = snapToGrid(base.y, gridSize);
@@ -2648,8 +2972,19 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         const x = baseX;
         const y = baseY + i * gridSize * 7;
         const containerId = findCreateContainerAtWorld(x, y);
+        const isImage = String(f.type || "").startsWith("image/") || /\.(heic|heif)$/i.test(f.name || "");
         let dataUrl = "";
         try {
+          if (isImage) {
+            const { fileToDisplayableDataUrl, fileToDisplayableFile } = await import("@/lib/heifToJpeg");
+            dataUrl = await fileToDisplayableDataUrl(f);
+            const displayableFile = await fileToDisplayableFile(f);
+            const b = createCreateBlockSafe(x, y, "image", { src: dataUrl }, gridSize * 10, gridSize * 6);
+            if (containerId) (b as any).containerId = containerId;
+            addBlock(b);
+            uploadAndReplace(b.id, displayableFile, "src");
+            continue;
+          }
           dataUrl = await readFileAsDataUrl(f);
         } catch {
           continue;
@@ -2658,6 +2993,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
           const b = createCreateBlockSafe(x, y, "image", { src: dataUrl }, gridSize * 10, gridSize * 6);
           if (containerId) (b as any).containerId = containerId;
           addBlock(b);
+          uploadAndReplace(b.id, f, "src");
           continue;
         }
         const mime = String(f.type || "");
@@ -2669,6 +3005,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
           const b = createCreateBlockSafe(x, y, "video", { url: dataUrl, mime: effectiveMime, name }, gridSize * 12, gridSize * 7);
           if (containerId) (b as any).containerId = containerId;
           addBlock(b);
+          uploadAndReplace(b.id, f, "url");
           continue;
         }
         const audioExts = new Set(["mp3", "wav", "m4a", "ogg", "aac", "flac", "wma"]);
@@ -2677,6 +3014,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
           const b = createCreateBlockSafe(x, y, "embed", { url: dataUrl, mime: effectiveMime, name }, gridSize * 12, gridSize * 4);
           if (containerId) (b as any).containerId = containerId;
           addBlock(b);
+          uploadAndReplace(b.id, f, "url");
           continue;
         }
         if (mime === "application/pdf" || /\.pdf$/i.test(name)) {
@@ -2709,7 +3047,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
               x,
               y,
               name,
-              `PDF parsing failed in browser runtime: ${String(error?.message || error || "Unknown error")}. Embedded the PDF instead.`,
+              `PDF couldn't be parsed directly — it's been embedded instead so you can still view it.`,
               containerId
             );
             const b = createCreateBlockSafe(
@@ -2725,7 +3063,30 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
           }
           continue;
         }
-        // Document files (TXT, MD, JSON, HTML, CSV, RTF, DOCX, XLSX, PPTX, ODT)
+        // Spreadsheet files → SpreadsheetBlock with real cell data
+        const spreadsheetExts = new Set(["xlsx", "xls", "csv"]);
+        if (spreadsheetExts.has(fileExt)) {
+          try {
+            const { API_BASE_URL } = await import("@/lib/api-config");
+            const formData = new FormData();
+            formData.append("file", f);
+            const ssRes = await fetch(`${API_BASE_URL}/api/files/parse-spreadsheet`, { method: "POST", body: formData });
+            if (ssRes.ok) {
+              const parsed = await ssRes.json();
+              const rows = Math.max(parsed.rows || 10, 5);
+              const cols = Math.max(parsed.cols || 5, 3);
+              const ssId = addSpreadsheetBlockAt({ x, y }, { rows, cols });
+              const colWidths = parsed.colWidths || Array.from({ length: cols }, () => 96);
+              const sheetData = { version: 1, rows, cols, colWidths, cells: parsed.cells || {} };
+              updateBlock(ssId, { content: JSON.stringify(sheetData), data: { sourceFileName: name } } as any);
+              if (containerId) updateBlock(ssId, { containerId } as any);
+              continue;
+            }
+          } catch (err: any) {
+            console.warn(`Spreadsheet parse failed for ${name}:`, err?.message);
+          }
+        }
+        // Document files (TXT, MD, JSON, HTML, RTF, DOCX, PPTX, ODT)
         if (isDocumentFile(f)) {
           try {
             const { API_BASE_URL } = await import("@/lib/api-config");
@@ -2753,6 +3114,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         const b = createCreateBlockSafe(x, y, "embed", { url: dataUrl, mime, name }, gridSize * 12, gridSize * 5);
         if (containerId) (b as any).containerId = containerId;
         addBlock(b);
+        uploadAndReplace(b.id, f, "url");
       }
     };
 
@@ -2770,6 +3132,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         if (isDuplicateOnCanvas({ videoId: vid || "" })) return;
         const id = addYouTubeBlockAt({ x: wx, y: wy }, { url: u, videoId: vid || "" });
         if (containerId) updateBlock(id, { containerId } as any);
+        window.dispatchEvent(new CustomEvent("omnia_chat_drop_attachments", { detail: { attachments: [{ id: crypto.randomUUID(), type: "youtube", name: `YouTube — ${vid || "video"}`, url: u, videoId: vid || "" }] } }));
         return;
       }
       if (kind === "image") {
@@ -2812,14 +3175,13 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
                 }
               );
               if (containerId) updateBlock(textId, { containerId } as any);
-              // Success path: no extra status card needed.
               return;
             } catch (error: any) {
               addPdfStatusBlock(
                 wx,
                 wy,
                 fileName,
-                `Could not fetch/parse URL PDF: ${String(error?.message || error || "Unknown error")}. Embedded the PDF instead.`,
+                `Couldn't parse this PDF directly — it's been embedded instead so you can still view it.`,
                 containerId
               );
               // Fall through to embed fallback when URL fetch/CORS blocks parsing.
@@ -2842,9 +3204,34 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         addBlock(b);
         return;
       }
-      const b = createCreateBlockSafe(wx, wy, "embed", { url: u, name: extractNameFromUrl(u) || "Link" }, gridSize * 12, gridSize * 5);
+      const b = createCreateBlockSafe(wx, wy, "embed", { url: u, name: extractNameFromUrl(u) || "Link" }, gridSize * 12, gridSize * 8);
       if (containerId) (b as any).containerId = containerId;
       addBlock(b);
+      // Async unfurl: fetch OG metadata and update the block data for rich preview
+      (async () => {
+        try {
+          const { API_BASE_URL } = await import("@/lib/api-config");
+          const res = await fetch(`${API_BASE_URL}/api/unfurl?url=${encodeURIComponent(u)}`);
+          if (!res.ok) return;
+          const meta = await res.json();
+          if (meta?.title) {
+            updateBlock(b.id, {
+              data: {
+                ...(b as any).data,
+                ogTitle: meta.title || "",
+                ogDescription: meta.description || "",
+                ogImage: meta.image || "",
+                ogSiteName: meta.siteName || "",
+                ogFavicon: meta.favicon || "",
+                oembedType: meta.oembedType || "",
+                oembedHtml: meta.oembedHtml || "",
+                authorName: meta.authorName || "",
+                authorHandle: meta.authorHandle || "",
+              },
+            } as any);
+          }
+        } catch { /* unfurl is best-effort */ }
+      })();
     };
 
     const onLink = (e: Event) => {
@@ -2871,16 +3258,30 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       addTextBlockAt({ x: wx, y: wy }, { width, height, content: combined, format: "rich" });
     };
 
+    const onSaveToMedia = (e: Event) => {
+      const ce = e as CustomEvent<{ url: string; name: string; fileType: string }>;
+      if (ce.detail?.url) void saveUrlToMediaRef.current(ce.detail.url, ce.detail.name, ce.detail.fileType);
+    };
+
+    const onSaveFileToMedia = (e: Event) => {
+      const ce = e as CustomEvent<{ file: File }>;
+      if (ce.detail?.file) void saveCanvasFileToMediaRef.current(ce.detail.file);
+    };
+
     window.addEventListener("omnia_attach_files", onFiles as any);
     window.addEventListener("omnia_attach_link", onLink as any);
     window.addEventListener("omnia_attach_memory_text", onMemoryText as any);
+    window.addEventListener("omnia_save_to_media", onSaveToMedia as any);
+    window.addEventListener("omnia_save_file_to_media", onSaveFileToMedia as any);
     return () => {
       window.removeEventListener("omnia_attach_files", onFiles as any);
       window.removeEventListener("omnia_attach_link", onLink as any);
       window.removeEventListener("omnia_attach_memory_text", onMemoryText as any);
+      window.removeEventListener("omnia_save_to_media", onSaveToMedia as any);
+      window.removeEventListener("omnia_save_file_to_media", onSaveFileToMedia as any);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [addBlock, addTextBlockAt, addYouTubeBlockAt, createCreateBlock, gridSize, scrollPos.left, scrollPos.top]);
+  }, [addBlock, addTextBlockAt, addYouTubeBlockAt, createCreateBlock, gridSize, saveCanvasFileToMedia]);
 
   // Global drop bridge: ensures files/links dropped over overlays/iframes
   // are still forwarded into the canvas attachment pipeline.
@@ -2920,7 +3321,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
     };
 
     const onWindowDrop = (event: DragEvent) => {
-      const pending = consumePendingMemoryDrop();
+      const pending = consumePendingMemoryDrop(event.dataTransfer);
       if (pending) {
         event.preventDefault();
         window.dispatchEvent(new CustomEvent("omnia_canvas_interact"));
@@ -3381,7 +3782,17 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         '- If you are unsure, set "shouldRespond": true with a short helpful clarification question.',
         '- IMPORTANT: respond ONLY to the LATEST user message (the last USER line in the conversation). Do NOT re-answer older questions unless the latest user message explicitly asks you to.',
         '- IMPORTANT: do NOT repeat or restate the user question/prompt. Answer directly (no "You asked...", no quoting the question).',
-        '- Response length: for simple/easy answers use 1-50 words. For more complex or detailed answers use 20-150 words. Always finish your thought completely — never cut off mid-sentence or mid-paragraph.',
+        '- Response length: match depth to the question — brief for simple questions, detailed for complex ones. Always finish your thought completely — never cut off mid-sentence or mid-paragraph.',
+        "",
+        "FORMATTING: The assistant field is rendered as Markdown. ALWAYS use proper Markdown in the assistant string:",
+        "- Use ## or ### headings to organize substantial answers.",
+        "- Use - bullet lists for 3+ related points.",
+        "- Use 1. numbered lists for steps or sequences.",
+        "- Use | Markdown tables | for comparisons, data, or structured info.",
+        "- Use **bold** for key terms and important labels.",
+        "- Use > blockquotes for key insights.",
+        "- Combine formats: heading + list + table + paragraph in one response is ideal.",
+        "- NEVER output a plain wall of text. Always structure the response.",
         "",
         "Supported actions (allowlist):",
         '- { "type": "create_spreadsheet", "rows": 30, "cols": 20, "cells2d": [["Header A","Header B"],["A2","B2"]] }',
@@ -3813,19 +4224,26 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
     <div
       ref={containerRef}
       data-omnia-canvas
-      className="relative w-full h-full overflow-x-hidden overflow-y-auto bg-transparent"
+      className="relative w-full h-full overflow-auto scrollbar-hide bg-transparent"
       style={{ touchAction: "none" }}
       tabIndex={0}
       onPointerDownCapture={(e) => {
         if (e.button === 0) {
           const t = e.target as Element | null;
           if (t?.closest?.("[data-resize-handle]")) return;
+          if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement) return;
           const blockEl = t?.closest?.("[data-canvas-block]") as HTMLElement | null;
+          if (blockEl?.hasAttribute?.("data-self-drag")) return;
           const blockId = blockEl?.getAttribute?.("data-block-id");
           if (blockId) {
             window.dispatchEvent(new CustomEvent("omnia_canvas_interact"));
             const gid = getMoveGroupId(blockId);
-            const ids = gid ? getMoveGroupMembers(gid) : [blockId];
+            let ids = gid ? getMoveGroupMembers(gid) : [blockId];
+            const floating = floatingBrickRef.current;
+            if (floating.active && floating.ids.includes(blockId)) {
+              const merged = new Set([...ids, ...floating.ids]);
+              ids = Array.from(merged);
+            }
             const snapshot = ids
               .map((id) => {
                 const b: any = blocks[id];
@@ -3840,6 +4258,8 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
               pointerId: e.pointerId,
               startWorldX: world.x,
               startWorldY: world.y,
+              startClientX: e.clientX,
+              startClientY: e.clientY,
               snapshot,
             };
           }
@@ -3867,6 +4287,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       }}
       onDoubleClickCapture={(e) => {
         const t = e.target as Element | null;
+        if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement) return;
         const blockEl = t?.closest?.("[data-canvas-block]") as HTMLElement | null;
         const blockId = blockEl?.getAttribute?.("data-block-id");
         if (!blockId) return;
@@ -3909,7 +4330,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         e.stopPropagation();
         window.dispatchEvent(new CustomEvent("omnia_canvas_interact"));
         if (shapePickerOpen) setShapePickerOpen(false);
-        const pendingMemory = consumePendingMemoryDrop();
+        const pendingMemory = consumePendingMemoryDrop(e.dataTransfer);
         if (pendingMemory) {
           processMemoryDrop(pendingMemory, e.clientX, e.clientY);
           return;
@@ -4070,7 +4491,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
 
             <div
               ref={aiAnswerContentRef}
-              className="whitespace-pre-wrap text-foreground break-words"
+              className="text-foreground break-words [&_h1]:text-xl [&_h1]:font-semibold [&_h1]:mt-2 [&_h1]:mb-1 [&_h2]:text-lg [&_h2]:font-semibold [&_h2]:mt-2 [&_h2]:mb-1 [&_h3]:text-base [&_h3]:font-semibold [&_h3]:mt-1.5 [&_h3]:mb-1 [&_p]:my-1 [&_p]:whitespace-pre-wrap [&_ul]:my-1 [&_ul]:list-disc [&_ul]:pl-5 [&_ul]:space-y-0.5 [&_ol]:my-1 [&_ol]:list-decimal [&_ol]:pl-5 [&_ol]:space-y-0.5 [&_li]:leading-relaxed [&_strong]:font-semibold [&_blockquote]:border-l-2 [&_blockquote]:border-black/20 [&_blockquote]:pl-3 [&_blockquote]:my-1 [&_blockquote]:italic [&_table]:w-full [&_table]:border-collapse [&_table]:text-xs [&_table]:my-2 [&_thead]:border-b [&_thead]:border-black/20 [&_tr]:border-b [&_tr]:border-black/10 [&_th]:text-left [&_th]:px-2 [&_th]:py-1 [&_th]:font-semibold [&_td]:px-2 [&_td]:py-1 [&_pre]:rounded-lg [&_pre]:bg-black/5 [&_pre]:p-2 [&_pre]:my-1 [&_pre]:overflow-x-auto [&_pre]:text-[0.85em] [&_code]:rounded [&_code]:bg-black/10 [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-[0.85em]"
               style={{
                 fontFamily: defaultFontFamily,
                 fontSize: `${aiFontSizePx}px`,
@@ -4085,7 +4506,10 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
                 overflowWrap: "anywhere",
               }}
             >
-              {String(aiPanel.loading ? aiThinkingStatus : aiPanel.answer || "")}
+              {aiPanel.loading
+                ? aiThinkingStatus
+                : React.createElement(ReactMarkdown as any, { remarkPlugins: [remarkGfm] }, String(aiPanel.answer || ""))
+              }
             </div>
 
             {/* offscreen measure node: keeps bubble width tight to text */}
@@ -4514,25 +4938,6 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
           });
         })()}
 
-        {/* Drop frame: mute canvas inside a canvas block while dragging */}
-        {dropContainerId && blocks[dropContainerId] && (
-          <div
-            className="absolute pointer-events-none flex items-center justify-center text-[0.6875rem] text-black/60"
-            style={{
-              left: `${(blocks as any)[dropContainerId].x}px`,
-              top: `${(blocks as any)[dropContainerId].y}px`,
-              width: `${(blocks as any)[dropContainerId].width}px`,
-              height: `${(blocks as any)[dropContainerId].height}px`,
-              background: "rgba(0,0,0,0.08)",
-              border: "1px solid rgba(255,255,255,0.35)",
-              boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.12)",
-              backdropFilter: "blur(6px)",
-            }}
-          >
-            Drop item here
-          </div>
-        )}
-
         {visibleIds.map((id) => {
           const b = blocks[id];
           if (!b) return null;
@@ -4560,8 +4965,133 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
             embedUrl &&
             !embedMime.startsWith("audio/") &&
             embedMime !== "application/pdf";
+
+          if (minimizedIds.has(id) && typingBlockId !== id) {
+            const bType = String((b as any).type || "text");
+            const bData = (b as any).data && typeof (b as any).data === "object" ? (b as any).data : {};
+            const content = String(bData.content ?? (b as any).content ?? "").trim();
+            const bName = String(bData.name || bData.title || "");
+            let icon: React.ReactNode;
+            let label: string;
+            if (bType === "youtube" || ((b as any).type === "create" && mode === "video")) {
+              icon = React.createElement("span", { className: "text-red-400 text-[11px] leading-none" }, "▶");
+              label = bName || String((b as any).url || "YouTube").split("/").pop()?.slice(0, 32) || "YouTube";
+            } else if (isCreateImage) {
+              icon = React.createElement("span", { className: "text-emerald-400 text-[11px] leading-none" }, "◻");
+              label = bName || "Image";
+            } else if (isCreateEmbedAudio) {
+              icon = React.createElement("span", { className: "text-blue-400 text-[11px] leading-none" }, "♫");
+              label = bName || "Audio";
+            } else if (isCreateEmbedPdf) {
+              icon = React.createElement("span", { className: "text-orange-400 text-[11px] leading-none" }, "▤");
+              label = bName || "PDF";
+            } else if (isCreateEmbedLink) {
+              icon = React.createElement("span", { className: "text-sky-400 text-[11px] leading-none" }, "🔗");
+              label = bName || embedUrl.replace(/^https?:\/\//, "").slice(0, 32) || "Link";
+            } else if (isAiResponseBubble) {
+              icon = React.createElement(Sparkles, { className: "w-3 h-3 text-blue-400 shrink-0" });
+              label = content.replace(/\s+/g, " ").slice(0, 48) || "AI Response";
+            } else if (bType === "text" && String((b as any).format || "").toLowerCase() === "media") {
+              icon = React.createElement("span", { className: "text-teal-400 text-[11px] leading-none" }, "◻");
+              label = bName || "Media";
+            } else {
+              const variant = String(bData.textVariant || "body").toLowerCase();
+              if (variant === "h1" || variant === "h2") {
+                icon = React.createElement(TypeIcon, { className: "w-3 h-3 text-white/50 shrink-0" });
+              } else {
+                icon = React.createElement(FileText, { className: "w-3 h-3 text-white/40 shrink-0" });
+              }
+              label = content.replace(/\s+/g, " ").slice(0, 48) || "Text";
+            }
+            if (label.length >= 36) label += "…";
+            const minH = gridSize;
+            const minW = Math.min(Number((b as any).width || gridSize * 8), gridSize * 8);
+            return (
+              <div
+                key={id}
+                data-canvas-block
+                data-block-id={id}
+                className="absolute group cursor-pointer select-none"
+                style={{
+                  left: `${Number((b as any).x || 0)}px`,
+                  top: `${Number((b as any).y || 0)}px`,
+                  width: `${minW}px`,
+                  height: `${minH}px`,
+                  willChange: "transform",
+                }}
+                onPointerDown={(e) => {
+                  const blockEl = e.currentTarget;
+                  const blockId = blockEl?.getAttribute?.("data-block-id");
+                  if (!blockId) return;
+                  window.dispatchEvent(new CustomEvent("omnia_canvas_interact"));
+                  const gid = getMoveGroupId(blockId);
+                  let gids = gid ? getMoveGroupMembers(gid) : [blockId];
+                  const floating = floatingBrickRef.current;
+                  if (floating.active && floating.ids.includes(blockId)) {
+                    const merged = new Set([...gids, ...floating.ids]);
+                    gids = Array.from(merged);
+                  }
+                  const snapshot = gids.map((sid) => {
+                    const sb: any = blocks[sid];
+                    if (!sb) return null;
+                    return { id: sid, x: Number(sb.x || 0), y: Number(sb.y || 0) };
+                  }).filter(Boolean) as Array<{ id: string; x: number; y: number }>;
+                  const world = clientToWorld(e.clientX, e.clientY);
+                  groupDragRef.current = {
+                    active: snapshot.length > 0,
+                    moved: false,
+                    pointerId: e.pointerId,
+                    startWorldX: world.x,
+                    startWorldY: world.y,
+                    startClientX: e.clientX,
+                    startClientY: e.clientY,
+                    snapshot,
+                  };
+                }}
+              >
+                {/* Left-side toolbar: expand + options */}
+                <div
+                  className="absolute opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5"
+                  style={{ top: "0px", right: `calc(100% + 4px)` }}
+                >
+                  <button
+                    className="flex items-center justify-center w-6 h-6 rounded-md hover:bg-black/8 dark:hover:bg-white/12"
+                    title="Expand"
+                    onClick={(e) => { e.stopPropagation(); toggleMinimized(id); }}
+                    onPointerDown={(e) => e.stopPropagation()}
+                  >
+                    <Maximize2 className="w-3.5 h-3.5 text-black/50 dark:text-white/50" />
+                  </button>
+                  <button
+                    className="flex items-center justify-center w-6 h-6 rounded-md hover:bg-black/8 dark:hover:bg-white/12"
+                    title="Options"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const btn = e.currentTarget as HTMLElement;
+                      setBrickMenuSub(null);
+                      setBrickMenu((prev) => prev?.id === id ? null : { id, x: btn.getBoundingClientRect().left, y: btn.getBoundingClientRect().bottom + 4 });
+                    }}
+                    onPointerDown={(e) => e.stopPropagation()}
+                  >
+                    <MoreHorizontal className="w-3.5 h-3.5 text-black/50 dark:text-white/50" />
+                  </button>
+                </div>
+                <div
+                  className="w-full h-full rounded border border-white/30 bg-[linear-gradient(145deg,rgba(255,255,255,0.22),rgba(255,255,255,0.10))] backdrop-blur-[2px] flex items-center gap-1.5 px-2 overflow-hidden"
+                  style={{
+                    boxShadow: "0 1px 4px rgba(0,0,0,0.10)",
+                    transition: "box-shadow 150ms, border-color 150ms",
+                  }}
+                >
+                  {icon}
+                  <span className="text-[10px] text-black/60 dark:text-white/55 truncate leading-none font-medium">{label}</span>
+                </div>
+              </div>
+            );
+          }
+
           if (isCreateImage) {
-            return <ImageBlock key={id} id={id} />;
+            return <ImageBlock key={id} id={id} onMinimize={toggleMinimized} onMenu={handleBlockMenu} />;
           }
           if (isCreateEmbedAudio) {
             const audioName = String(createData.name || "Audio");
@@ -4588,7 +5118,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
                 ),
               ),
             );
-            const audioBrick = renderBrickShell(b as any, id, { extraContent: audioExtra, resizeGridSize: gridSize });
+            const audioBrick = renderBrickShell(b as any, id, { extraContent: audioExtra, resizeGridSize: gridSize, canvasZoom: canvasZoomRef.current, onCornerScale: (bid, nextScale) => { const cur: any = (blocks as any)[bid]; if (!cur) return; const data = cur?.data && typeof cur.data === "object" ? { ...cur.data } : {}; const oldScale = Math.max(0.5, Number(data.brickScale || 1)); const ratio = nextScale / oldScale; updateBlock(bid as any, { width: Math.max(gridSize * 10, Math.round((cur.width * ratio) / gridSize) * gridSize), height: Math.max(gridSize, Math.round((cur.height * ratio) / gridSize) * gridSize), data: { ...data, brickScale: nextScale } } as any); }, onMinimize: toggleMinimized, onBrickMenu: handleBlockMenu });
             return React.cloneElement(audioBrick as React.ReactElement, { key: id });
           }
           if (isCreateEmbedPdf) {
@@ -4609,32 +5139,26 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
                 style: { minHeight: "200px" },
               }),
             );
-            const pdfBrick = renderBrickShell(b as any, id, { extraContent: pdfExtra, resizeGridSize: gridSize });
+            const pdfBrick = renderBrickShell(b as any, id, { extraContent: pdfExtra, resizeGridSize: gridSize, canvasZoom: canvasZoomRef.current, onCornerScale: (bid, nextScale) => { const cur: any = (blocks as any)[bid]; if (!cur) return; const data = cur?.data && typeof cur.data === "object" ? { ...cur.data } : {}; const oldScale = Math.max(0.5, Number(data.brickScale || 1)); const ratio = nextScale / oldScale; updateBlock(bid as any, { width: Math.max(gridSize * 10, Math.round((cur.width * ratio) / gridSize) * gridSize), height: Math.max(gridSize * 4, Math.round((cur.height * ratio) / gridSize) * gridSize), data: { ...data, brickScale: nextScale } } as any); }, onMinimize: toggleMinimized, onBrickMenu: handleBlockMenu });
             return React.cloneElement(pdfBrick as React.ReactElement, { key: id });
           }
           if (isCreateEmbedLink) {
-            return <LinkBlock key={id} id={id} />;
+            return <LinkBlock key={id} id={id} onMinimize={toggleMinimized} onMenu={handleBlockMenu} />;
           }
-          if ((b as any).type === "youtube" || ((b as any).type === "create" && (b as any).mode === "video")) {
-            return <YouTubeBlock key={id} id={id} />;
+          if ((b as any).type === "youtube" || ((b as any).type === "create" && ((b as any).mode === "video" || (b as any).data?.videoId))) {
+            return <YouTubeBlock key={id} id={id} onMinimize={toggleMinimized} onMenu={handleBlockMenu} />;
           }
           const blockFormat = String((b as any).format || "").toLowerCase();
-          const isSpecialBlock = (b as any).type === "text" && ["table", "calendar", "button", "media", "code", "page", "chart", "board", "form", "gallery"].includes(blockFormat);
+          if ((b as any).type === "text" && blockFormat === "table") {
+            return <SpreadsheetBlock key={id} id={id} onMinimize={toggleMinimized} onMenu={handleBlockMenu} />;
+          }
+          const isSpecialBlock = (b as any).type === "text" && ["media"].includes(blockFormat);
           if (isSpecialBlock) {
-            const Component = blockFormat === "table" ? SpreadsheetBlock
-              : blockFormat === "calendar" ? CalendarBlock
-              : blockFormat === "button" ? ButtonBlock
-              : blockFormat === "media" ? MediaBlock
-              : blockFormat === "code" ? CodeBlock
-              : blockFormat === "chart" ? ChartBlock
-              : blockFormat === "board" ? BoardBlock
-              : blockFormat === "form" ? FormBlock
-              : blockFormat === "gallery" ? GalleryBlock
-              : PageBlock;
+            const Component = MediaBlock;
             const sbh = Number((b as any).height || gridSize);
             return (
               <React.Fragment key={id}>
-                <Component id={id} />
+                <Component id={id} onMinimize={toggleMinimized} onMenu={handleBlockMenu} />
                 <div
                   data-block-menu-zone
                   className="absolute"
@@ -4744,16 +5268,49 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
                     gridSize
                 )
               ),
+            canvasZoom: canvasZoomRef.current,
             onResizeWidth: (bid, width) => {
               if (!(blocks as any)[bid]) return;
               const cur: any = (blocks as any)[bid];
               const data = cur?.data && typeof cur.data === "object" ? cur.data : {};
+              if (!data.userResized) {
+                updateBlock(bid as any, { data: { ...data, userResized: true } } as any);
+              }
               const variant = (String(data.textVariant || "body").toLowerCase() as "body" | "h2" | "h1") || "body";
+              const content = String(cur?.content || "");
               const nextWidth = Math.max(gridSize * 10, Math.floor(width || gridSize * 10));
-              const wrappedLineCount = getWrappedLineCountForWidth(String(cur?.content || ""), variant, nextWidth);
-              const targetRows = Math.max(minRowsForVariant(variant), wrappedLineCount * lineRowsForVariant(variant));
-              const nextHeight = Math.max(gridSize, targetRows * gridSize);
-              updateBlock(bid as any, { width: nextWidth, height: nextHeight } as any);
+              const cols = computeColumnCount(nextWidth, content);
+              if (cols > 1) {
+                const colWidth = Math.floor((nextWidth - (cols - 1) * COLUMN_GAP_PX) / cols);
+                const wrappedLineCount = getWrappedLineCountForWidth(content, variant, colWidth);
+                const perCol = Math.ceil(wrappedLineCount / cols);
+                const targetRows = Math.max(minRowsForVariant(variant), perCol * lineRowsForVariant(variant));
+                const nextHeight = Math.max(gridSize * 2, targetRows * gridSize);
+                updateBlock(bid as any, { width: nextWidth, height: nextHeight } as any);
+              } else {
+                const wrappedLineCount = getWrappedLineCountForWidth(content, variant, nextWidth);
+                const targetRows = Math.max(minRowsForVariant(variant), wrappedLineCount * lineRowsForVariant(variant));
+                const nextHeight = Math.max(gridSize, targetRows * gridSize);
+                updateBlock(bid as any, { width: nextWidth, height: nextHeight } as any);
+              }
+            },
+            onCornerScale: (bid, nextScale) => {
+              if (!(blocks as any)[bid]) return;
+              const cur: any = (blocks as any)[bid];
+              const data = cur?.data && typeof cur.data === "object" ? { ...cur.data } : {};
+              const oldScale = Math.max(0.5, Number(data.brickScale || 1));
+              const ratio = nextScale / oldScale;
+              const nextWidth = Math.max(gridSize * 10, Math.round((cur.width * ratio) / gridSize) * gridSize);
+              const variant = (String(data.textVariant || "body").toLowerCase() as "body" | "h2" | "h1") || "body";
+              const content = String(cur?.content || "");
+              const baseWidthForWrap = Math.max(gridSize * 4, Math.floor(nextWidth / nextScale));
+              const wrappedLines = getWrappedLineCountForWidth(content, variant, baseWidthForWrap);
+              const scaledLineHeight = lineRowsForVariant(variant) * gridSize * nextScale;
+              const nextHeight = Math.max(
+                gridSize,
+                Math.ceil((wrappedLines * scaledLineHeight) / gridSize) * gridSize
+              );
+              updateBlock(bid as any, { width: nextWidth, height: nextHeight, data: { ...data, brickScale: nextScale } } as any);
             },
             onTypingChange: (bid, raw, meta) => {
               if (!(blocks as any)[bid]) return;
@@ -4767,48 +5324,13 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
               if ((parsed as any).transform) {
                 const transform = (parsed as any).transform as string;
                 setTypingBlockId(null);
-                if (transform === "code") {
-                  const blockPos = { x: cur.x, y: cur.y };
-                  const bid_ = bid as string;
-                  deleteBlock(bid_ as any);
-                  addCodeBlockAt(blockPos, {
-                    width: Math.max(gridSize * 14, cur.width || 0),
-                    height: Math.max(gridSize * 7, cur.height || 0),
-                  });
-                } else if (transform === "table") {
-                  const sheet = { version: 1, rows: 10, cols: 6, colWidths: Array.from({ length: 6 }, () => 96), cells: {} };
-                  updateBlock(bid as any, {
-                    content: JSON.stringify(sheet),
-                    format: "table",
-                    width: Math.max(gridSize * 18, cur.width || 0),
-                    height: Math.max(gridSize * 12, cur.height || 0),
-                    data: { ...data, textVariant: "body", listType: "none" },
-                  } as any);
-                } else if (transform === "calendar") {
-                  const calData = { events: [] };
-                  updateBlock(bid as any, {
-                    content: JSON.stringify(calData),
-                    format: "calendar",
-                    width: Math.max(gridSize * 12, cur.width || 0),
-                    height: Math.max(gridSize * 14, cur.height || 0),
-                    data: { ...data, textVariant: "body", listType: "none" },
-                  } as any);
-                } else if (transform === "media") {
+                if (transform === "media") {
                   const mediaData = { mode: "picker" };
                   updateBlock(bid as any, {
                     content: JSON.stringify(mediaData),
                     format: "media",
                     width: Math.max(gridSize * 10, cur.width || 0),
                     height: Math.max(gridSize * 8, cur.height || 0),
-                    data: { ...data, textVariant: "body", listType: "none" },
-                  } as any);
-                } else if (transform === "button") {
-                  const btnData = { label: "Button", icon: "zap", style: "filled", action: "url", url: "", navigateTarget: "page", navigateValue: "", navigateLabel: "", copyText: "", webhookUrl: "", aiPrompt: "", eventName: "", targetBlockId: "", blockAction: "scroll", onClickCode: "", description: "", _needsSetup: true, confirm: false, toggleState: false };
-                  updateBlock(bid as any, {
-                    content: JSON.stringify(btnData),
-                    format: "button",
-                    width: Math.max(gridSize * 8, Math.min(gridSize * 12, cur.width || gridSize * 8)),
-                    height: gridSize,
                     data: { ...data, textVariant: "body", listType: "none" },
                   } as any);
                 } else if (transform === "dictate") {
@@ -4818,38 +5340,29 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
                     data: { ...data, textVariant: "body", listType: "none" },
                   } as any);
                   startBrickDictation(bid);
-                } else if (transform === "page") {
-                  const pageData = { html: "<p><br></p>", title: "Untitled" };
-                  updateBlock(bid as any, {
-                    content: JSON.stringify(pageData),
-                    format: "page",
-                    width: Math.max(gridSize * 22, cur.width || 0),
-                    height: Math.max(gridSize * 30, cur.height || 0),
-                    data: { ...data, textVariant: "body", listType: "none" },
-                  } as any);
-                } else if (transform === "chart") {
-                  updateBlock(bid as any, { content: "", format: "chart", width: Math.max(gridSize * 20, cur.width || 0), height: Math.max(gridSize * 14, cur.height || 0), data: { ...data, textVariant: "body", listType: "none" } } as any);
-                } else if (transform === "board") {
-                  updateBlock(bid as any, { content: "", format: "board", width: Math.max(gridSize * 22, cur.width || 0), height: Math.max(gridSize * 14, cur.height || 0), data: { ...data, textVariant: "body", listType: "none" } } as any);
-                } else if (transform === "form") {
-                  updateBlock(bid as any, { content: "", format: "form", width: Math.max(gridSize * 14, cur.width || 0), height: Math.max(gridSize * 18, cur.height || 0), data: { ...data, textVariant: "body", listType: "none" } } as any);
-                } else if (transform === "gallery") {
-                  updateBlock(bid as any, { content: "", format: "gallery", width: Math.max(gridSize * 22, cur.width || 0), height: Math.max(gridSize * 16, cur.height || 0), data: { ...data, textVariant: "body", listType: "none" } } as any);
+                } else if (transform === "table") {
+                  const pos = { x: cur.x, y: cur.y };
+                  deleteBlock(bid);
+                  const tId = addSpreadsheetBlockAt(pos, { rows: 3, cols: 3 });
+                  updateBlock(tId, { width: gridSize * 10, height: gridSize * 5, data: { tableMode: true } } as any);
                 }
                 return;
               }
               const textValue = parsed.content;
               const nextVariant = parsed.variant;
               const nextListType = parsed.listType;
-              const currentHeightRows = Math.max(1, Math.round(Number(cur.height || gridSize) / gridSize));
+              const brickScale = Math.max(0.5, Number(data.brickScale || 1));
+              const scaledGrid = gridSize * brickScale;
+              const currentHeightRows = Math.max(1, Math.round(Number(cur.height || scaledGrid) / scaledGrid));
               const currentWidthCells = Math.max(1, Math.round(Number(cur.width || gridSize) / gridSize));
-              const targetCells = getRequiredHorizontalCells(textValue, nextVariant);
+              const targetCells = Math.ceil(getRequiredHorizontalCells(textValue, nextVariant) * brickScale);
               const neededCells = targetCells;
               const leadCells = nextListType === "todo" ? 1 : 0;
               const desiredCells = neededCells + leadCells;
               const widthCells = Math.max(currentWidthCells, desiredCells);
               const newWidth = Math.max(gridSize, widthCells * gridSize);
-              const wrappedLines = getWrappedLineCountForWidth(textValue, nextVariant, newWidth);
+              const effectiveBaseWidth = Math.max(gridSize * 4, newWidth / brickScale);
+              const wrappedLines = getWrappedLineCountForWidth(textValue, nextVariant, effectiveBaseWidth);
               const targetRows = Math.max(
                 minRowsForVariant(nextVariant),
                 Math.max(
@@ -4863,7 +5376,10 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
                   : targetRows > currentHeightRows
                     ? Math.min(targetRows, currentHeightRows + 3)
                     : targetRows;
-              const newHeight = Math.max(gridSize, neededRows * gridSize);
+              const calcHeight = Math.max(gridSize, Math.ceil((neededRows * scaledGrid) / gridSize) * gridSize);
+              const newHeight = brickScale > 1
+                ? Math.max(Number(cur.height || 0), calcHeight)
+                : calcHeight;
 
               const contentSame = cur.content === textValue;
               const sizeSame = cur.width === newWidth && cur.height === newHeight;
@@ -4897,12 +5413,30 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
                 return;
               }
               if (e.key === "Enter") {
+                const cur: any = blocks[bid];
+                if (!cur) return;
+                const data = cur?.data && typeof cur.data === "object" ? cur.data : {};
+                const variant = String(data.textVariant || "body").toLowerCase();
+
+                // Heading blocks: plain Enter creates a new body text block below
+                if ((variant === "h1" || variant === "h2") && !(e.metaKey || e.ctrlKey)) {
+                  e.preventDefault();
+                  const nx = Math.floor(Number(cur.x || 0));
+                  const ny = Math.floor(Number(cur.y || 0)) + Math.max(gridSize, Number(cur.height || gridSize));
+                  const existing = findBlockAtCell(nx, ny);
+                  const nextId = existing || addTextBlockAt({ x: nx, y: ny }, { width: gridSize, height: gridSize, content: "", format: "plain" } as any);
+                  dropEmptyTypingBlockIfNeeded(nextId);
+                  setTypingBlockId(nextId);
+                  setActivatedBrickIds([]);
+                  setRaisedBrickIds([]);
+                  focusBrickInputById(nextId);
+                  return;
+                }
+
                 // TextBlock-like behavior: plain Enter creates a new line in-place.
                 // Keep vertical-jump available via Ctrl/Cmd+Enter.
                 if (!(e.metaKey || e.ctrlKey)) return;
                 e.preventDefault();
-                const cur: any = blocks[bid];
-                if (!cur) return;
                 const nx = Math.floor(Number(cur.x || 0));
                 const ny = Math.floor(Number(cur.y || 0)) + gridSize;
                 const existing = findBlockAtCell(nx, ny);
@@ -4928,6 +5462,57 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
               const txt = String(cur.content || "").trim();
               if (!txt) {
                 dropEmptyTypingBlockIfNeeded(null);
+                setTypingBlockId(null);
+                setActivatedBrickIds([]);
+                setRaisedBrickIds([]);
+                return;
+              }
+              // Detect if text is a bare URL and convert to rich link block
+              if (/^https?:\/\/[^\s]+$/i.test(txt) && cur.type === "text") {
+                const u = txt;
+                const vid = extractYouTubeVideoId(u);
+                if (vid) {
+                  deleteBlocks([bid] as any);
+                  const newId = addYouTubeBlockAt({ x: cur.x, y: cur.y }, { url: u, videoId: vid });
+                  selectBlocks([newId]);
+                } else {
+                  let linkName = "Link";
+                  try { linkName = new URL(u).hostname.replace(/^www\./, "") || "Link"; } catch {}
+                  updateBlock(bid as any, {
+                    type: "create",
+                    content: "",
+                    mode: "embed",
+                    data: { url: u, name: linkName },
+                    width: Math.max(cur.width || 0, gridSize * 12),
+                    height: Math.max(gridSize * 8, cur.height || 0),
+                  } as any);
+                  (async () => {
+                    try {
+                      const { API_BASE_URL } = await import("@/lib/api-config");
+                      const res = await fetch(`${API_BASE_URL}/api/unfurl?url=${encodeURIComponent(u)}`);
+                      if (!res.ok) return;
+                      const meta = await res.json();
+                      if (meta?.title) {
+                        const fresh: any = useCanvasStore.getState().blocks[bid];
+                        if (!fresh) return;
+                        updateBlock(bid as any, {
+                          data: {
+                            ...(fresh.data || {}),
+                            ogTitle: meta.title || "",
+                            ogDescription: meta.description || "",
+                            ogImage: meta.image || "",
+                            ogSiteName: meta.siteName || "",
+                            ogFavicon: meta.favicon || "",
+                            oembedType: meta.oembedType || "",
+                            oembedHtml: meta.oembedHtml || "",
+                            authorName: meta.authorName || "",
+                            authorHandle: meta.authorHandle || "",
+                          },
+                        } as any);
+                      }
+                    } catch { /* unfurl is best-effort */ }
+                  })();
+                }
                 setTypingBlockId(null);
                 setActivatedBrickIds([]);
                 setRaisedBrickIds([]);
@@ -4972,6 +5557,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
               setBrickMenuSub(null);
               setBrickMenu((prev) => prev?.id === bid ? null : { id: bid, x: rect.left, y: rect.bottom + 4 });
             },
+            onMinimize: toggleMinimized,
           });
 
           if (dictatingBlockId === id || dictateTranscribingBlockId === id) {
@@ -5026,19 +5612,24 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
           if (isAiResponseBubble && isAiThinking) {
             const bx = Number((b as any).x || 0);
             const by = Number((b as any).y || 0);
+            const bw = Number((b as any).width || gridSize);
+            const bh = Number((b as any).height || gridSize);
             return (
               <React.Fragment key={id}>
+                {brickEl}
                 <div
-                  className="absolute pointer-events-none"
+                  className="absolute pointer-events-none flex items-center justify-center"
                   style={{
-                    left: `${bx - 32}px`,
+                    left: `${bx}px`,
                     top: `${by}px`,
+                    width: `${bw}px`,
+                    height: `${bh}px`,
                     zIndex: 11,
                   }}
+                  aria-hidden
                 >
                   <div className="brick-spinner" />
                 </div>
-                {brickEl}
               </React.Fragment>
             );
           }
@@ -5078,65 +5669,6 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
           if (!cur) return;
           const data = cur?.data && typeof cur.data === "object" ? { ...cur.data, ...patch } : { ...patch };
           updateBlock(bid as any, { data } as any);
-        };
-        const addBrickToCalendar = (bid: string, dateStr?: string, timeStr?: string) => {
-          const st = useCanvasStore.getState();
-          const orig: any = (st.blocks as any)?.[bid];
-          if (!orig) return;
-          const text = String(orig.content || orig.data?.content || "").trim();
-          const title = text.split("\n")[0]?.slice(0, 60) || "Canvas Brick";
-          const description = text;
-          const dk = dateStr || (() => { const n = new Date(); return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}-${String(n.getDate()).padStart(2, "0")}`; })();
-          const startHour = timeStr ? parseInt(timeStr.split(":")[0], 10) + (parseInt(timeStr.split(":")[1] || "0", 10) >= 30 ? 0.5 : 0) : new Date().getHours();
-          const evt = {
-            id: `ev-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-            date_key: dk,
-            title,
-            description,
-            start_hour: startHour,
-            end_hour: Math.min(24, startHour + 1),
-            custom_color: "rgba(59,130,246,0.55)",
-          };
-          const KEY = "lykinsai_calendar_events";
-          try {
-            const existing = JSON.parse(localStorage.getItem(KEY) || "[]");
-            existing.push(evt);
-            localStorage.setItem(KEY, JSON.stringify(existing));
-          } catch {}
-          window.dispatchEvent(new CustomEvent("calendar_events_changed"));
-
-          const allIds = Array.isArray(st.blockOrder) ? st.blockOrder : [];
-          let calId = allIds.find((id) => {
-            const b: any = (st.blocks as any)?.[id];
-            return b?.type === "text" && String(b?.format || "").toLowerCase() === "calendar";
-          });
-
-          if (!calId) {
-            const brickX = Number(orig.x || 0);
-            const brickY = Number(orig.y || 0) + Number(orig.height || gridSize) + gridSize;
-            const calW = Math.max(gridSize * 12, 288);
-            const calH = Math.max(gridSize * 14, 336);
-            calId = `cal-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-            const calBlock = {
-              id: calId,
-              type: "text",
-              format: "calendar",
-              x: snapToGrid(brickX, gridSize),
-              y: snapToGrid(brickY, gridSize),
-              width: calW,
-              height: calH,
-              content: JSON.stringify({ events: [] }),
-              data: { textVariant: "body", listType: "none" },
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString(),
-            };
-            useCanvasStore.getState().addBlock(calBlock as any);
-          }
-
-          requestAnimationFrame(() => {
-            const el = containerRef.current?.querySelector(`[data-block-id="${calId}"]`) as HTMLElement | null;
-            if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
-          });
         };
         return (
           <>
@@ -5189,6 +5721,115 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
                       <span>{item.label}</span>
                     </button>
                   ))}
+                  <button
+                    disabled={vaultSavedId === brickMenu.id}
+                    className={`flex items-center gap-2.5 px-3 py-1.5 text-[12px] text-left transition-colors ${vaultSavedId === brickMenu.id ? "text-green-400" : "text-white/80 hover:bg-white/10"}`}
+                    onClick={async () => {
+                      const bid = brickMenu.id;
+                      if (!user?.id) return;
+                      const st = useCanvasStore.getState();
+                      const orig: any = (st.blocks as any)?.[bid];
+                      if (!orig) return;
+
+                      const bType = String(orig.type || "").toLowerCase();
+                      const bMode = String(orig.mode || "").toLowerCase();
+                      const data = orig.data && typeof orig.data === "object" ? orig.data : {};
+                      const textContent = String(orig.content || data.content || "").trim();
+                      const src = String(data.src || "").trim();
+                      const url = String(orig.url || data.url || data.dataUrl || "").trim();
+                      const videoId = String(orig.videoId || data.videoId || "").trim();
+                      const blockName = String(data.name || data.title || data.ogTitle || "").trim();
+
+                      let noteTitle = blockName || "Saved from Canvas";
+                      let attachments: any[] = [];
+                      let bodyText = "";
+
+                      if (bType === "youtube" || (bType === "create" && bMode === "video" && videoId)) {
+                        const ytUrl = url || (videoId ? `https://www.youtube.com/watch?v=${videoId}` : "");
+                        noteTitle = blockName || "YouTube Video";
+                        attachments = [{ type: "youtube", url: ytUrl, name: noteTitle }];
+                      } else if (bType === "create" && (bMode === "image" || bMode === "generated")) {
+                        noteTitle = blockName || "Image";
+                        attachments = [{ type: "image", url: src || url, name: noteTitle }];
+                      } else if (bType === "create" && (bMode === "embed" || bMode === "link")) {
+                        const ogTitle = String(data.ogTitle || "").trim();
+                        const ogDesc = String(data.ogDescription || "").trim();
+                        const ogImage = String(data.ogImage || "").trim();
+                        const ogSiteName = String(data.ogSiteName || "").trim();
+                        const ogFavicon = String(data.ogFavicon || "").trim();
+                        const oembedType = String(data.oembedType || "").trim();
+                        const authorName = String(data.authorName || "").trim();
+                        const authorHandle = String(data.authorHandle || "").trim();
+                        const mime = String(data.mime || "").toLowerCase();
+                        if (ogTitle) {
+                          noteTitle = ogTitle;
+                          attachments = [{ type: "bookmark", url, name: ogTitle, title: ogTitle, description: ogDesc, image: ogImage, siteName: ogSiteName, favicon: ogFavicon, oembedType, authorName, authorHandle }];
+                        } else if (mime.startsWith("audio/")) {
+                          noteTitle = blockName || "Audio";
+                          attachments = [{ type: "audio", url, name: noteTitle, mime }];
+                        } else if (mime === "application/pdf") {
+                          noteTitle = blockName || "PDF";
+                          attachments = [{ type: "pdf", url, name: noteTitle }];
+                        } else if (url) {
+                          noteTitle = blockName || url;
+                          attachments = [{ type: "bookmark", url, name: noteTitle, title: noteTitle }];
+                        }
+                      } else if (bType === "spreadsheet") {
+                        const sheet = orig.sheet || {};
+                        const sheetCells = sheet.cells && typeof sheet.cells === "object" ? sheet.cells : {};
+                        const rows = Number(sheet.rows) || 10;
+                        const cols = Number(sheet.cols) || 5;
+                        const srcName = String(data.sourceFileName || "").trim();
+                        noteTitle = srcName || blockName || "Spreadsheet";
+                        attachments = [{ type: "spreadsheet", name: noteTitle, rows, cols, cells: sheetCells }];
+                      } else if (textContent) {
+                        noteTitle = textContent.slice(0, 60) || "Note";
+                        bodyText = textContent;
+                      }
+
+                      if (!attachments.length && !bodyText) return;
+
+                      const content = attachments.length
+                        ? `${noteTitle}\n\n[ATTACHMENTS_JSON:${JSON.stringify(attachments)}]`
+                        : bodyText;
+
+                      const { error } = await supabase.from("notes").insert({
+                        user_id: user.id,
+                        title: noteTitle.slice(0, 200),
+                        content,
+                        is_pinned: false,
+                      });
+                      if (!error) {
+                        setVaultSavedId(bid);
+                        setTimeout(() => { setBrickMenu(null); setVaultSavedId(null); }, 1200);
+                      }
+                    }}
+                  >
+                    {vaultSavedId === brickMenu.id ? <Check className="w-3.5 h-3.5 shrink-0" /> : <Archive className="w-3.5 h-3.5 shrink-0" />}
+                    <span>{vaultSavedId === brickMenu.id ? "Saved" : "Save to Vault"}</span>
+                  </button>
+                  <div className="mx-2 my-1 h-px bg-white/8" />
+                  {[
+                    { icon: ArrowUpToLine, label: "Bring Forward", action: "bring-forward" },
+                    { icon: ArrowDownToLine, label: "Send Backward", action: "send-backward" },
+                  ].map((item) => (
+                    <button
+                      key={item.action}
+                      className="flex items-center gap-2.5 px-3 py-1.5 text-[12px] text-left text-white/80 hover:bg-white/10 transition-colors"
+                      onClick={() => {
+                        const bid = brickMenu.id;
+                        if (item.action === "bring-forward") {
+                          useCanvasStore.getState().bringToFront(bid);
+                        } else {
+                          useCanvasStore.getState().sendToBack(bid);
+                        }
+                        setBrickMenu(null);
+                      }}
+                    >
+                      <item.icon className="w-3.5 h-3.5 shrink-0" />
+                      <span>{item.label}</span>
+                    </button>
+                  ))}
                   <div className="mx-2 my-1 h-px bg-white/8" />
                   <button
                     className="flex items-center gap-2.5 px-3 py-1.5 text-[12px] text-left text-white/80 hover:bg-white/10 transition-colors"
@@ -5207,19 +5848,62 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
                     <ChevronDown className="w-3 h-3 ml-auto opacity-40 -rotate-90" />
                   </button>
                   <div className="mx-2 my-1 h-px bg-white/8" />
-                  <button
-                    className="flex items-center gap-2.5 px-3 py-1.5 text-[12px] text-left text-white/80 hover:bg-white/10 transition-colors"
-                    onClick={() => {
-                      const now = new Date();
-                      setCalPickerDate(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`);
-                      setCalPickerTime(`${String(now.getHours()).padStart(2, "0")}:00`);
-                      setBrickMenuSub("calendar");
-                    }}
-                  >
-                    <CalendarPlus className="w-3.5 h-3.5 shrink-0" />
-                    <span>Add Brick to Calendar</span>
-                    <ChevronDown className="w-3 h-3 ml-auto opacity-40 -rotate-90" />
-                  </button>
+                  {[
+                    { icon: FileText, label: "AI Summarize", action: "ai-summary", prompt: "Summarize this in 2-3 sentences max. Core concept, value prop, who it's for. Nothing else." },
+                    { icon: Sparkles, label: "AI Analyze", action: "ai-analyse", prompt: "Analyse this idea. Strengths, weaknesses, opportunities, risks — bullet points only, max 6 bullets. No fluff." },
+                  ].map((item) => (
+                    <button
+                      key={item.action}
+                      className="flex items-center gap-2.5 px-3 py-1.5 text-[12px] text-left text-blue-300 hover:bg-blue-500/15 transition-colors"
+                      onClick={() => {
+                        const bid = brickMenu.id;
+                        setBrickMenu(null);
+                        const st = useCanvasStore.getState();
+                        const orig: any = (st.blocks as any)?.[bid];
+                        if (!orig) return;
+
+                        const bType = String(orig.type || "").toLowerCase();
+                        const bMode = String(orig.mode || "").toLowerCase();
+                        const data = orig.data && typeof orig.data === "object" ? orig.data : {};
+                        const textContent = String(orig.content || data.content || "").trim();
+                        const src = String(data.src || "").trim();
+                        const url = String(orig.url || data.url || data.dataUrl || "").trim();
+                        const videoId = String(orig.videoId || "").trim();
+                        const name = String(data.name || data.title || "").trim();
+
+                        let subject = "";
+                        if (bType === "youtube" || (bType === "create" && bMode === "video")) {
+                          const ytUrl = url || (videoId ? `https://www.youtube.com/watch?v=${videoId}` : "");
+                          subject = `[YouTube Video]${name ? ` "${name}"` : ""}\nURL: ${ytUrl}`;
+                        } else if (bType === "create" && (bMode === "image" || bMode === "generated")) {
+                          subject = `[Image]${name ? ` "${name}"` : ""}${src ? `\nImage URL: ${src}` : ""}`;
+                        } else if (bType === "create" && (bMode === "embed" || bMode === "link")) {
+                          const mime = String(data.mime || "").toLowerCase();
+                          const kind = mime.startsWith("audio/") ? "Audio" : mime.startsWith("video/") ? "Video" : mime === "application/pdf" ? "PDF" : "Link";
+                          subject = `[${kind}]${name ? ` "${name}"` : ""}\nURL: ${url}`;
+                        } else if (textContent) {
+                          subject = textContent;
+                        }
+
+                        if (!subject) return;
+
+                        const imageUrl = (bType === "create" && (bMode === "image" || bMode === "generated") && src) ? src : "";
+                        const ytVideoId = (bType === "youtube" && videoId) ? videoId : "";
+                        window.dispatchEvent(new CustomEvent("omnia_ai_brick_action", {
+                          detail: {
+                            blockId: bid,
+                            action: item.action,
+                            prompt: `${item.prompt}\n\nContent:\n"${subject}"`,
+                            ...(imageUrl ? { imageUrl } : {}),
+                            ...(ytVideoId ? { videoId: ytVideoId } : {}),
+                          },
+                        }));
+                      }}
+                    >
+                      <item.icon className="w-3.5 h-3.5 shrink-0" />
+                      <span>{item.label}</span>
+                    </button>
+                  ))}
                   <div className="mx-2 my-1 h-px bg-white/8" />
                   <button
                     className="flex items-center gap-2.5 px-3 py-1.5 text-[12px] text-left text-red-400 hover:bg-red-500/15 transition-colors"
@@ -5292,104 +5976,66 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
                 </>
               )}
 
-              {brickMenuSub === "calendar" && (
-                <>
-                  <button
-                    className="flex items-center gap-2 px-3 py-1.5 text-[12px] text-white/60 hover:bg-white/10 transition-colors"
-                    onClick={() => setBrickMenuSub(null)}
-                  >
-                    <ChevronDown className="w-3 h-3 rotate-90" />
-                    <span>Add to Calendar</span>
-                  </button>
-                  <div className="mx-2 my-1 h-px bg-white/8" />
-                  <div className="flex flex-col gap-2 px-3 py-2">
-                    <label className="text-[11px] text-white/50">Date</label>
-                    <input
-                      type="date"
-                      value={calPickerDate}
-                      onChange={(e) => setCalPickerDate(e.target.value)}
-                      className="w-full rounded-lg bg-white/8 border border-white/10 text-white/90 text-[12px] px-2.5 py-1.5 outline-none focus:border-blue-400/50"
-                      style={{ colorScheme: "dark" }}
-                    />
-                    <label className="text-[11px] text-white/50">Time</label>
-                    <input
-                      type="time"
-                      value={calPickerTime}
-                      onChange={(e) => setCalPickerTime(e.target.value)}
-                      className="w-full rounded-lg bg-white/8 border border-white/10 text-white/90 text-[12px] px-2.5 py-1.5 outline-none focus:border-blue-400/50"
-                      style={{ colorScheme: "dark" }}
-                    />
-                    <button
-                      className="mt-1 w-full rounded-lg bg-blue-500/80 hover:bg-blue-500 text-white text-[12px] font-medium py-1.5 transition-colors"
-                      onClick={() => {
-                        addBrickToCalendar(brickMenu.id, calPickerDate, calPickerTime);
-                        setBrickMenu(null);
-                        setBrickMenuSub(null);
-                      }}
-                    >
-                      Add Event
-                    </button>
-                  </div>
-                </>
-              )}
             </div>
           </>
         );
       })()}
 
-      {/* Zoom toggle + panel */}
-      <div className="fixed z-[200] flex items-end gap-2" style={{ bottom: "16px", left: "16px" }} onPointerDown={(e) => e.stopPropagation()}>
-        <button
-          type="button"
-          onClick={() => setZoomPanelOpen((v) => !v)}
-          className="rounded-full w-9 h-9 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center"
-          title={zoomPanelOpen ? "Hide zoom" : "Show zoom"}
-        >
-          {zoomPanelOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronUp className="w-4 h-4" />}
-        </button>
-        {zoomPanelOpen && (
-          <div
-            className="flex items-center gap-1 rounded-xl px-1.5 py-1"
-            style={{
-              background: "rgba(30, 30, 30, 0.85)",
-              backdropFilter: "blur(12px)",
-              border: "1px solid rgba(255,255,255,0.10)",
-              boxShadow: "0 4px 20px rgba(0,0,0,0.35)",
-              animation: "zoomPanelSlideUp 0.15s ease-out",
-            }}
+      {/* Zoom toggle + panel — portaled to body so sidebar never covers it */}
+      {createPortal(
+        <div className="fixed z-[200] flex items-end gap-2" style={{ bottom: "16px", left: sidebarOpen ? "calc(16px + 12rem)" : "16px", transition: "left 200ms ease" }} onPointerDown={(e) => e.stopPropagation()}>
+          <button
+            type="button"
+            onClick={() => setZoomPanelOpen((v) => !v)}
+            className="rounded-full w-9 h-9 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center"
+            title={zoomPanelOpen ? "Hide zoom" : "Show zoom"}
           >
-            <button
-              className="flex items-center justify-center w-7 h-7 rounded-lg hover:bg-white/10 transition-colors text-white/70 hover:text-white"
-              onClick={() => applyZoom(canvasZoom - ZOOM_STEP)}
-              title="Zoom out"
+            {zoomPanelOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronUp className="w-4 h-4" />}
+          </button>
+          {zoomPanelOpen && (
+            <div
+              className="flex items-center gap-1 rounded-xl px-1.5 py-1"
+              style={{
+                background: "rgba(30, 30, 30, 0.85)",
+                backdropFilter: "blur(12px)",
+                border: "1px solid rgba(255,255,255,0.10)",
+                boxShadow: "0 4px 20px rgba(0,0,0,0.35)",
+                animation: "zoomPanelSlideUp 0.15s ease-out",
+              }}
             >
-              <ZoomOut className="w-3.5 h-3.5" />
-            </button>
-            <button
-              className="flex items-center justify-center min-w-[42px] h-7 rounded-lg hover:bg-white/10 transition-colors text-[11px] font-medium text-white/60 hover:text-white tabular-nums"
-              onClick={() => applyZoom(1)}
-              title="Reset zoom"
-            >
-              {Math.round(canvasZoom * 100)}%
-            </button>
-            <button
-              className="flex items-center justify-center w-7 h-7 rounded-lg hover:bg-white/10 transition-colors text-white/70 hover:text-white"
-              onClick={() => applyZoom(canvasZoom + ZOOM_STEP)}
-              title="Zoom in"
-            >
-              <ZoomIn className="w-3.5 h-3.5" />
-            </button>
-            <button
-              className="flex items-center justify-center w-7 h-7 rounded-lg hover:bg-white/10 transition-colors text-white/50 hover:text-white"
-              onClick={() => applyZoom(1)}
-              title="Fit to view"
-            >
-              <Maximize className="w-3 h-3" />
-            </button>
-          </div>
-        )}
-      </div>
-      <GalleryModalPortal />
+              <button
+                className="flex items-center justify-center w-7 h-7 rounded-lg hover:bg-white/10 transition-colors text-white/70 hover:text-white"
+                onClick={() => applyZoom(canvasZoom - ZOOM_STEP)}
+                title="Zoom out"
+              >
+                <ZoomOut className="w-3.5 h-3.5" />
+              </button>
+              <button
+                className="flex items-center justify-center min-w-[42px] h-7 rounded-lg hover:bg-white/10 transition-colors text-[11px] font-medium text-white/60 hover:text-white tabular-nums"
+                onClick={() => applyZoom(1)}
+                title="Reset zoom"
+              >
+                {Math.round(canvasZoom * 100)}%
+              </button>
+              <button
+                className="flex items-center justify-center w-7 h-7 rounded-lg hover:bg-white/10 transition-colors text-white/70 hover:text-white"
+                onClick={() => applyZoom(canvasZoom + ZOOM_STEP)}
+                title="Zoom in"
+              >
+                <ZoomIn className="w-3.5 h-3.5" />
+              </button>
+              <button
+                className="flex items-center justify-center w-7 h-7 rounded-lg hover:bg-white/10 transition-colors text-white/50 hover:text-white"
+                onClick={() => applyZoom(1)}
+                title="Fit to view"
+              >
+                <Maximize className="w-3 h-3" />
+              </button>
+            </div>
+          )}
+        </div>,
+        document.body
+      )}
     </div>
   );
 }

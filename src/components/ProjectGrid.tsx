@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { MoreHorizontal, Plus } from "lucide-react";
+import { fileToDisplayableDataUrl } from "@/lib/heifToJpeg";
 type Project = {
   id: string;
   name: string;
@@ -13,12 +14,6 @@ type Project = {
   thumbnail?: string | null;
 };
 
-type LinkedTeam = {
-  id: string;
-  name: string;
-  color: string;
-};
-
 type ProjectGridProps = {
   projects: Project[];
   onSelect?: (project: Project) => void;
@@ -26,9 +21,7 @@ type ProjectGridProps = {
   onDelete?: (project: Project) => void | Promise<void>;
   fallbackInitials?: string;
   onSetProjectImage?: (projectId: string, dataUrl: string) => void | Promise<void>;
-  teamsByProject?: Record<string, LinkedTeam[]>;
   onCreateNew?: () => void;
-  onAddTeamMembers?: (project: Project) => void;
 };
 
 const PROJECT_CARD_IMAGES_KEY = "omnia_project_card_images";
@@ -77,9 +70,7 @@ export default function ProjectGrid({
   onDelete,
   fallbackInitials = "?",
   onSetProjectImage,
-  teamsByProject = {},
   onCreateNew,
-  onAddTeamMembers,
 }: ProjectGridProps) {
   if (!projects.length) {
     return (
@@ -104,6 +95,26 @@ export default function ProjectGrid({
     return () => document.removeEventListener("mousedown", onClick);
   }, []);
 
+  const applyImageToProject = async (file: File, projectId: string) => {
+    if (!file?.type?.startsWith("image/") && !/\.(heic|heif)$/i.test(file?.name || "")) return;
+    try {
+      const dataUrl = await fileToDisplayableDataUrl(file);
+      if (!dataUrl) return;
+      await onSetProjectImage?.(projectId, dataUrl);
+      setLocalImageMap((prev) => {
+        const next = { ...prev, [projectId]: dataUrl };
+        try {
+          localStorage.setItem(PROJECT_CARD_IMAGES_KEY, JSON.stringify(next));
+        } catch {
+          /* ignore */
+        }
+        return next;
+      });
+    } catch {
+      /* ignore */
+    }
+  };
+
   const handleImageFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     const projectId = uploadProjectId;
@@ -111,12 +122,7 @@ export default function ProjectGrid({
     if (!file || !projectId) return;
 
     try {
-      const dataUrl = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onerror = () => reject(new Error("Failed to read image"));
-        reader.onload = () => resolve(String(reader.result || ""));
-        reader.readAsDataURL(file);
-      });
+      const dataUrl = await fileToDisplayableDataUrl(file);
       if (!dataUrl) return;
       await onSetProjectImage?.(projectId, dataUrl);
       setLocalImageMap((prev) => {
@@ -140,7 +146,7 @@ export default function ProjectGrid({
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/*"
+        accept="image/*,.heic,.heif"
         className="hidden"
         onChange={handleImageFileChange}
       />
@@ -163,6 +169,37 @@ export default function ProjectGrid({
         <div
           key={project.id}
           className="group relative min-h-[220px] rounded-2xl border border-white/30 bg-[rgba(160,160,170,0.25)] backdrop-blur-[30px] backdrop-saturate-[1.4] p-4 text-black shadow-[0_2px_8px_rgba(0,0,0,0.06)] transition-transform hover:scale-[1.02] hover:shadow-[0_4px_12px_rgba(0,0,0,0.1)] flex items-center justify-center text-center overflow-hidden"
+          onDragOver={(e) => {
+            if (e.dataTransfer?.types?.includes("Files")) {
+              e.preventDefault();
+              e.dataTransfer.dropEffect = "copy";
+            }
+          }}
+          onDrop={async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const file = e.dataTransfer?.files?.[0];
+            if (!file) return;
+            const isImage =
+              file.type.startsWith("image/") || /\.(heic|heif)$/i.test(file.name || "");
+            if (!isImage) return;
+            try {
+              const dataUrl = await fileToDisplayableDataUrl(file);
+              if (!dataUrl) return;
+              await onSetProjectImage?.(project.id, dataUrl);
+              setLocalImageMap((prev) => {
+                const next = { ...prev, [project.id]: dataUrl };
+                try {
+                  localStorage.setItem(PROJECT_CARD_IMAGES_KEY, JSON.stringify(next));
+                } catch {
+                  /* ignore */
+                }
+                return next;
+              });
+            } catch {
+              /* ignore */
+            }
+          }}
         >
           {(() => {
             const localImg = localImageMap[project.id];
@@ -194,25 +231,6 @@ export default function ProjectGrid({
                   <div className="mt-1 text-[0.6875rem] text-black/55 leading-tight">
                     Last modified: {formatDate(project.updated_at || project.created_at)}
                   </div>
-                  {(teamsByProject[project.id] ?? []).length > 0 && (
-                    <div className="mt-2 flex items-center gap-1.5">
-                      <div className="flex -space-x-1.5">
-                        {(teamsByProject[project.id] ?? []).map((team) => (
-                          <div
-                            key={team.id}
-                            className="w-6 h-6 rounded-full border-2 border-white flex items-center justify-center text-[8px] font-bold text-white shrink-0"
-                            style={{ background: team.color }}
-                            title={team.name}
-                          >
-                            {team.name.split(/\s+/).slice(0, 2).map((w: string) => w.charAt(0).toUpperCase()).join("")}
-                          </div>
-                        ))}
-                      </div>
-                      <span className="text-[9px] text-black/45 truncate">
-                        {(teamsByProject[project.id] ?? []).map((t) => t.name).join(", ")}
-                      </span>
-                    </div>
-                  )}
                 </div>
               </div>
             );
@@ -224,6 +242,36 @@ export default function ProjectGrid({
             onClick={() => onSelect?.(project)}
             className="absolute inset-0 z-10"
             aria-label={`Open ${project.name}`}
+            onDragOver={(e) => {
+              const hasFiles = e.dataTransfer?.types?.includes("Files");
+              if (hasFiles) {
+                e.preventDefault();
+                e.dataTransfer!.dropEffect = "copy";
+              }
+            }}
+            onDrop={async (e) => {
+              const file = e.dataTransfer?.files?.[0];
+              if (!file) return;
+              e.preventDefault();
+              e.stopPropagation();
+              const isImage = file.type.startsWith("image/") || /\.(heic|heif)$/i.test(file.name || "");
+              if (!isImage) return;
+              // Prevent opening project when dropping image
+              try {
+                const dataUrl = await fileToDisplayableDataUrl(file);
+                if (!dataUrl) return;
+                await onSetProjectImage?.(project.id, dataUrl);
+                setLocalImageMap((prev) => {
+                  const next = { ...prev, [project.id]: dataUrl };
+                  try {
+                    localStorage.setItem(PROJECT_CARD_IMAGES_KEY, JSON.stringify(next));
+                  } catch { /* ignore */ }
+                  return next;
+                });
+              } catch (err) {
+                console.warn("[ProjectGrid] Drop failed:", err);
+              }
+            }}
           />
           <div className="absolute top-2 right-2 z-30 opacity-0 group-hover:opacity-100 transition-opacity">
             <div className="relative" ref={openMenuId === project.id ? menuRef : null}>
@@ -251,16 +299,6 @@ export default function ProjectGrid({
                     }}
                   >
                     Rename project
-                  </button>
-                  <button
-                    type="button"
-                    className="w-full text-left text-xs px-2 py-2 rounded-lg hover:bg-black/5"
-                    onClick={() => {
-                      onAddTeamMembers?.(project);
-                      setOpenMenuId(null);
-                    }}
-                  >
-                    Add team members
                   </button>
                   {localImageMap[project.id] !== "__removed__" && (localImageMap[project.id] || getProjectImage(project)) && (
                     <button
