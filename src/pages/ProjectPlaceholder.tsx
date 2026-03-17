@@ -70,6 +70,7 @@ type FileEntry = {
   storageBucket?: string;
   content?: string;
   spreadsheetData?: SpreadsheetData;
+  size?: number;
 };
 
 function decodeBrickTextFromContent(contentHtml) {
@@ -133,7 +134,6 @@ export default function ProjectPlaceholder() {
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [draftTitle, setDraftTitle] = useState("Project");
   const [search, setSearch] = useState("");
-  const [centerTab, setCenterTab] = useState<"boards" | "chats">("boards");
   const [bottomTab, setBottomTab] = useState<"connections" | "graph">("graph");
   const [activeFolderId, setActiveFolderId] = useState<string | null>(null);
   const [folders, setFolders] = useState<FolderEntry[]>([]);
@@ -743,6 +743,7 @@ export default function ProjectPlaceholder() {
       url: fileUrl,
       storagePath,
       storageBucket,
+      size: fileToUpload.size,
       ...(spreadsheetData ? { spreadsheetData } : {}),
     };
   };
@@ -1157,8 +1158,8 @@ If the user asks about old memories or references past ideas, refer to the memor
       onDrop={handleDrop}
     >
       <header className="fixed top-0 left-0 right-0 z-30 bg-white/60 backdrop-blur-md">
-        <div className="mx-auto w-full max-w-[100rem] px-4 sm:px-6 py-3 sm:py-4 flex items-center">
-          <div className="w-[17.5rem] md:w-[17.5rem] xl:w-[21.25rem] shrink-0" />
+        <div className="mx-auto w-full max-w-[100rem] px-3 sm:px-6 py-3 sm:py-4 flex items-center">
+          <div className="hidden md:block w-[13rem] lg:w-[17.5rem] xl:w-[21.25rem] shrink-0" />
           <div className="text-base sm:text-lg font-semibold shrink-0">
             {isEditingTitle ? (
               <input
@@ -1296,10 +1297,10 @@ If the user asks about old memories or references past ideas, refer to the memor
         </div>
       </div>
 
-      <main className="mx-auto max-w-[100rem] px-4 sm:px-6 pt-28 pb-16 grid grid-cols-1 md:grid-cols-[17.5rem_1fr] xl:grid-cols-[21.25rem_1fr_17.5rem] gap-3">
+      <main className="mx-auto max-w-[100rem] px-3 sm:px-6 pt-28 pb-16 grid grid-cols-1 md:grid-cols-[13rem_1fr] lg:grid-cols-[17.5rem_1fr] xl:grid-cols-[21.25rem_1fr_17.5rem] gap-3">
         {/* Left: File Collage */}
         <div className="space-y-5">
-        <section className="rounded-2xl border border-white/60 bg-[#e9e9ef]/75 backdrop-blur-lg shadow-xl shadow-white/20 p-4">
+        <section className="rounded-2xl border border-white/60 bg-[#e9e9ef]/75 backdrop-blur-lg shadow-xl shadow-white/20 p-3 sm:p-4">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-sm font-semibold">All Files</h2>
             <span className="text-[0.6875rem] text-black/50">{allFilesForCollage.length} file{allFilesForCollage.length !== 1 ? "s" : ""}</span>
@@ -1313,7 +1314,7 @@ If the user asks about old memories or references past ideas, refer to the memor
               <p className="text-xs text-black/40 mt-1">Drop files anywhere to add them</p>
             </div>
           ) : (
-            <div className="columns-1 sm:columns-2 gap-4">
+            <div className="columns-1 lg:columns-2 gap-4">
               {allFilesForCollage.map((file) => {
                 const lower = file.name.toLowerCase();
                 const isImage = file.kind === "image" || /\.(png|jpe?g|webp|gif|svg|bmp|ico|tiff?|avif|heic|heif)$/i.test(lower);
@@ -1600,166 +1601,115 @@ If the user asks about old memories or references past ideas, refer to the memor
 
         {/* Center: Boards, Connections */}
         <div className="min-w-0 space-y-6">
-          <div className="w-full flex items-center gap-2 rounded-xl border border-white/60 bg-white/70 backdrop-blur-md px-4 py-2 text-[0.75rem] text-black/70">
+          <div className="w-full flex items-center gap-2 rounded-xl border border-white/60 bg-white/70 backdrop-blur-md px-3 sm:px-4 py-2 text-[0.75rem] text-black/70">
             <SearchIcon className="w-4 h-4" />
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder={centerTab === "boards" ? "Search boards" : "Search chats"}
+              placeholder="Search boards"
               className="w-full bg-transparent outline-none placeholder:text-black/40"
             />
           </div>
 
-          {/* Boards / Chats */}
-          <section className="rounded-2xl border border-white/60 bg-[#e9e9ef]/75 backdrop-blur-lg shadow-xl shadow-white/20 p-4 sm:p-6 overflow-visible relative z-10">
+          {/* Boards */}
+          <section className="rounded-2xl border border-white/60 bg-[#e9e9ef]/75 backdrop-blur-lg shadow-xl shadow-white/20 p-3 sm:p-4 lg:p-6 overflow-visible relative z-10">
             <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
               <div className="min-w-0">
-                <h2 className="text-base sm:text-lg font-semibold">{centerTab === "boards" ? "Boards" : "Chats"}</h2>
+                <h2 className="text-base sm:text-lg font-semibold">Boards</h2>
                 <p className="text-[0.6875rem] sm:text-xs text-black/60">
-                  {centerTab === "boards"
-                    ? "Create and organize boards inside this project."
-                    : "Conversations and AI chats in this project."}
+                  Create and organize boards inside this project.
                 </p>
-              </div>
-              <div className="inline-flex items-center gap-1 p-1 rounded-full glass-control">
-                <button
-                  type="button"
-                  onClick={() => setCenterTab("boards")}
-                  className={`rounded-full px-3 py-1.5 text-xs font-medium transition ${
-                    centerTab === "boards" ? "bg-white/50 text-black" : "text-black/55 hover:text-black"
-                  }`}
-                >
-                  Boards
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setCenterTab("chats")}
-                  className={`rounded-full px-3 py-1.5 text-xs font-medium transition ${
-                    centerTab === "chats" ? "bg-white/50 text-black" : "text-black/55 hover:text-black"
-                  }`}
-                >
-                  Chats
-                </button>
               </div>
             </div>
 
-            {centerTab === "boards" ? (
-              <div className="grid gap-4 sm:grid-cols-2 overflow-visible relative z-10">
-                <button
-                  type="button"
-                  onClick={handleCreateBoard}
-                  className="rounded-xl border-2 border-dashed border-black/15 bg-white/30 hover:bg-white/50 hover:border-black/25 backdrop-blur-md p-4 flex flex-col items-center justify-center gap-2 transition-all h-[88px]"
-                >
-                  <div className="w-9 h-9 rounded-lg bg-white/60 border border-white/70 flex items-center justify-center">
-                    <Plus className="w-5 h-5 text-black/50" />
-                  </div>
-                  <span className="text-xs font-medium text-black/60">Create new board</span>
-                </button>
+            <div className="grid gap-3 lg:grid-cols-2 overflow-visible relative z-10">
+              <button
+                type="button"
+                onClick={handleCreateBoard}
+                className="rounded-xl border-2 border-dashed border-black/15 bg-white/30 hover:bg-white/50 hover:border-black/25 backdrop-blur-md p-4 flex flex-col items-center justify-center gap-2 transition-all h-[88px]"
+              >
+                <div className="w-9 h-9 rounded-lg bg-white/60 border border-white/70 flex items-center justify-center">
+                  <Plus className="w-5 h-5 text-black/50" />
+                </div>
+                <span className="text-xs font-medium text-black/60">Create new board</span>
+              </button>
 
-                {filteredBoards.map((board) => (
-                  <div key={board.id} className={`relative group ${openBoardMenuId === board.id ? "z-50" : ""}`}>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        localStorage.setItem("omnia_board_id", board.id);
-                        nav(`/canvas/${board.id}`);
-                      }}
-                      className="w-full h-[88px] rounded-xl border border-white/60 bg-white/50 hover:bg-white/70 backdrop-blur-md p-4 shadow-lg text-left transition-all flex flex-col justify-center"
-                    >
-                      <div className="text-sm font-semibold truncate">{board.title}</div>
-                      <div className="mt-1 text-xs text-black/50">Board</div>
-                    </button>
-                    <div className="absolute top-2 right-2 z-20 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <div className="relative" ref={openBoardMenuId === board.id ? boardMenuRef : null}>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setOpenBoardMenuId((prev) => (prev === board.id ? null : board.id));
-                          }}
-                          className="px-1 py-0.5 text-black/60 hover:text-black transition-colors"
-                          aria-label="Board actions"
-                        >
-                          <MoreHorizontal className="w-4 h-4" />
-                        </button>
-                        {openBoardMenuId === board.id && (
-                          <div className="absolute right-0 mt-2 w-48 rounded-xl border border-white/60 bg-white/80 backdrop-blur-md shadow-xl p-2 z-50">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                handleRenameBoard(board);
-                                setOpenBoardMenuId(null);
-                              }}
-                              className="w-full text-left text-xs px-2 py-2 rounded-lg hover:bg-black/5"
-                            >
-                              Rename
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setMoveBoardId(board.id);
-                                setOpenBoardMenuId(null);
-                              }}
-                              className="w-full text-left text-xs px-2 py-2 rounded-lg hover:bg-black/5"
-                            >
-                              Move to project
-                            </button>
-                            <button
-                              type="button"
-                              className="w-full text-left text-xs px-2 py-2 rounded-lg hover:bg-black/5"
-                            >
-                              Add team members
-                            </button>
-                            <div className="my-1 h-px bg-black/10" />
-                            <button
-                              type="button"
-                              onClick={() => {
-                                handleDeleteBoard(board);
-                                setOpenBoardMenuId(null);
-                              }}
-                              className="w-full text-left text-xs px-2 py-2 rounded-lg hover:bg-black/5 text-red-600"
-                            >
-                              Delete
-                            </button>
-                          </div>
-                        )}
-                      </div>
+              {filteredBoards.map((board) => (
+                <div key={board.id} className={`relative group ${openBoardMenuId === board.id ? "z-50" : ""}`}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      localStorage.setItem("omnia_board_id", board.id);
+                      nav(`/canvas/${board.id}`);
+                    }}
+                    className="w-full h-[88px] rounded-xl border border-white/60 bg-white/50 hover:bg-white/70 backdrop-blur-md p-4 shadow-lg text-left transition-all flex flex-col justify-center"
+                  >
+                    <div className="text-sm font-semibold truncate">{board.title}</div>
+                    <div className="mt-1 text-xs text-black/50">Board</div>
+                  </button>
+                  <div className="absolute top-2 right-2 z-20 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <div className="relative" ref={openBoardMenuId === board.id ? boardMenuRef : null}>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setOpenBoardMenuId((prev) => (prev === board.id ? null : board.id));
+                        }}
+                        className="px-1 py-0.5 text-black/60 hover:text-black transition-colors"
+                        aria-label="Board actions"
+                      >
+                        <MoreHorizontal className="w-4 h-4" />
+                      </button>
+                      {openBoardMenuId === board.id && (
+                        <div className="absolute right-0 mt-2 w-48 rounded-xl border border-white/60 bg-white/80 backdrop-blur-md shadow-xl p-2 z-50">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              handleRenameBoard(board);
+                              setOpenBoardMenuId(null);
+                            }}
+                            className="w-full text-left text-xs px-2 py-2 rounded-lg hover:bg-black/5"
+                          >
+                            Rename
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMoveBoardId(board.id);
+                              setOpenBoardMenuId(null);
+                            }}
+                            className="w-full text-left text-xs px-2 py-2 rounded-lg hover:bg-black/5"
+                          >
+                            Move to project
+                          </button>
+                          <button
+                            type="button"
+                            className="w-full text-left text-xs px-2 py-2 rounded-lg hover:bg-black/5"
+                          >
+                            Add team members
+                          </button>
+                          <div className="my-1 h-px bg-black/10" />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              handleDeleteBoard(board);
+                              setOpenBoardMenuId(null);
+                            }}
+                            className="w-full text-left text-xs px-2 py-2 rounded-lg hover:bg-black/5 text-red-600"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </div>
-                ))}
-              </div>
-            ) : (
-              <div className="grid gap-4 sm:grid-cols-2">
-                <button
-                  type="button"
-                  onClick={() => nav("/omnia")}
-                  className="rounded-xl border-2 border-dashed border-black/15 bg-white/30 hover:bg-white/50 hover:border-black/25 backdrop-blur-md p-4 flex flex-col items-center justify-center gap-2 transition-all h-[88px]"
-                >
-                  <div className="w-9 h-9 rounded-lg bg-white/60 border border-white/70 flex items-center justify-center">
-                    <Plus className="w-5 h-5 text-black/50" />
-                  </div>
-                  <span className="text-xs font-medium text-black/60">Start new chat</span>
-                </button>
-
-                {chatMessages
-                  .filter((m) => m.role === "user")
-                  .map((m, i) => (
-                    <button
-                      key={i}
-                      type="button"
-                      onClick={() => setShowChat(true)}
-                      className="w-full h-[88px] rounded-xl border border-white/60 bg-white/50 hover:bg-white/70 backdrop-blur-md p-4 shadow-lg text-left transition-all flex flex-col justify-center"
-                    >
-                      <div className="text-sm font-semibold truncate">{m.content}</div>
-                      <div className="mt-1 text-xs text-black/50">Chat message</div>
-                    </button>
-                  ))}
-              </div>
-            )}
+                </div>
+              ))}
+            </div>
           </section>
 
           {/* Connections / Graph */}
-          <section className="rounded-2xl border border-white/60 bg-[#e9e9ef]/75 backdrop-blur-lg shadow-xl shadow-white/20 p-4 sm:p-6">
+          <section className="rounded-2xl border border-white/60 bg-[#e9e9ef]/75 backdrop-blur-lg shadow-xl shadow-white/20 p-3 sm:p-4 lg:p-6">
             <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
               <div className="min-w-0">
                 <h2 className="text-base sm:text-lg font-semibold">{bottomTab === "connections" ? "Connections" : "Graph"}</h2>
@@ -1876,7 +1826,7 @@ If the user asks about old memories or references past ideas, refer to the memor
             ) : (
               <div className="space-y-5">
                 {/* Stat cards row */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
                   {[
                     { label: "Boards", value: boards.length, color: "#1d4ed8" },
                     { label: "Files", value: files.length, color: "#3b82f6" },
@@ -1939,22 +1889,35 @@ If the user asks about old memories or references past ideas, refer to the memor
                 </div>
 
                 {/* Collaboration & storage (filler) */}
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
                   <div className="rounded-xl border border-white/50 bg-white/30 backdrop-blur-md p-4">
-                    <div className="text-xs font-semibold mb-2">Owner</div>
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="text-xs font-semibold">Team Space</div>
+                      <span className="text-[0.625rem] font-medium text-blue-500/70 bg-blue-500/10 px-2 py-0.5 rounded-full">Coming soon</span>
+                    </div>
                     <div className="flex -space-x-2">
                       {user?.user_metadata?.avatar_url ? (
                         <img
                           src={user.user_metadata.avatar_url}
                           alt={user.user_metadata?.full_name || "You"}
-                          className="w-8 h-8 rounded-full border-2 border-white object-cover"
+                          className="w-8 h-8 rounded-full border-2 border-white object-cover relative z-10"
                           referrerPolicy="no-referrer"
                         />
                       ) : (
-                        <div className="w-8 h-8 rounded-full border-2 border-white bg-blue-500 flex items-center justify-center text-[0.6875rem] font-bold text-white">
+                        <div className="w-8 h-8 rounded-full border-2 border-white bg-blue-500 flex items-center justify-center text-[0.6875rem] font-bold text-white relative z-10">
                           {(user?.email?.[0] || "?").toUpperCase()}
                         </div>
                       )}
+                      <button
+                        type="button"
+                        disabled
+                        className="w-8 h-8 rounded-full border-2 border-white bg-blue-500 flex items-center justify-center cursor-not-allowed opacity-70 relative z-0"
+                        title="Add team members (coming soon)"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4 text-white" viewBox="0 0 20 20" fill="currentColor">
+                          <path d="M10 5a1 1 0 011 1v3h3a1 1 0 110 2h-3v3a1 1 0 11-2 0v-3H6a1 1 0 110-2h3V6a1 1 0 011-1z" />
+                        </svg>
+                      </button>
                     </div>
                     <div className="text-[0.6875rem] text-black/50 mt-2">
                       {user?.user_metadata?.full_name || user?.email || "1 member"}
@@ -1962,13 +1925,28 @@ If the user asks about old memories or references past ideas, refer to the memor
                   </div>
                   <div className="rounded-xl border border-white/50 bg-white/30 backdrop-blur-md p-4">
                     <div className="text-xs font-semibold mb-2">Storage Used</div>
-                    <div className="relative h-2 rounded-full bg-black/5 overflow-hidden mt-3">
-                      <div className="h-full rounded-full bg-blue-500" style={{ width: "32%" }} />
-                    </div>
-                    <div className="flex items-center justify-between mt-2">
-                      <span className="text-[0.6875rem] text-black/50">3.2 GB</span>
-                      <span className="text-[0.6875rem] text-black/40">of 10 GB</span>
-                    </div>
+                    {(() => {
+                      const totalBytes = files.reduce((sum, f) => sum + (f.size || 0), 0);
+                      const maxBytes = 10 * 1024 * 1024 * 1024;
+                      const pct = Math.min((totalBytes / maxBytes) * 100, 100);
+                      const fmt = (bytes: number) => {
+                        if (bytes < 1024) return `${bytes} B`;
+                        if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+                        if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+                        return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+                      };
+                      return (
+                        <>
+                          <div className="relative h-2 rounded-full bg-black/5 overflow-hidden mt-3">
+                            <div className="h-full rounded-full bg-blue-500 transition-all" style={{ width: `${pct}%` }} />
+                          </div>
+                          <div className="flex items-center justify-between mt-2">
+                            <span className="text-[0.6875rem] text-black/50">{fmt(totalBytes)}</span>
+                            <span className="text-[0.6875rem] text-black/40">of 10 GB</span>
+                          </div>
+                        </>
+                      );
+                    })()}
                   </div>
                 </div>
               </div>
@@ -1977,8 +1955,8 @@ If the user asks about old memories or references past ideas, refer to the memor
         </div>
 
         {/* Right: AI Summary + AI Suggestions */}
-        <div className="space-y-5 md:col-span-2 xl:col-span-1">
-          <section className="rounded-2xl border border-white/60 bg-[#e9e9ef]/75 backdrop-blur-lg shadow-xl shadow-white/20 p-5">
+        <div className="md:col-span-2 xl:col-span-1 grid grid-cols-1 md:grid-cols-3 xl:grid-cols-1 gap-3 xl:gap-5">
+          <section className="rounded-2xl border border-white/60 bg-[#e9e9ef]/75 backdrop-blur-lg shadow-xl shadow-white/20 p-3 sm:p-5">
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-sm font-semibold">AI Summary</h2>
             </div>
@@ -1987,7 +1965,7 @@ If the user asks about old memories or references past ideas, refer to the memor
             </p>
           </section>
 
-          <section className="rounded-2xl border border-white/60 bg-[#e9e9ef]/75 backdrop-blur-lg shadow-xl shadow-white/20 p-5">
+          <section className="rounded-2xl border border-white/60 bg-[#e9e9ef]/75 backdrop-blur-lg shadow-xl shadow-white/20 p-3 sm:p-5">
             <div className="mb-3">
               <h2 className="text-sm font-semibold">AI Suggestions</h2>
             </div>
@@ -2024,7 +2002,7 @@ If the user asks about old memories or references past ideas, refer to the memor
                     type="button"
                     onClick={() => {
                       if (suggestion.action === "create-board") handleCreateBoard();
-                      else if (suggestion.action === "chat") setCenterTab("chats");
+                      else if (suggestion.action === "chat") setShowChat(true);
                       else if (suggestion.action === "graph") setBottomTab("graph");
                       else if (suggestion.action === "notes") setShowQuickNote(true);
                     }}
@@ -2042,7 +2020,7 @@ If the user asks about old memories or references past ideas, refer to the memor
           </section>
 
           {/* Project Health */}
-          <section className="rounded-2xl border border-white/60 bg-[#e9e9ef]/75 backdrop-blur-lg shadow-xl shadow-white/20 p-4">
+          <section className="rounded-2xl border border-white/60 bg-[#e9e9ef]/75 backdrop-blur-lg shadow-xl shadow-white/20 p-3 sm:p-4">
             <div className="flex items-center gap-2 mb-3">
               <Activity className="w-4 h-4 text-black/60" />
               <h2 className="text-sm font-semibold">Project Health</h2>
