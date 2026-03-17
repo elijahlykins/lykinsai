@@ -1031,3 +1031,13 @@ input[type="color"].color-circle::-moz-color-swatch {
   from { opacity: 0; transform: translateY(8px); }
   to   { opacity: 1; transform: translateY(0); }
 }
+
+@keyframes hintFlash {
+  0%   { opacity: 0; transform: translateX(-50%) scale(0.95); }
+  10%  { opacity: 1; transform: translateX(-50%) scale(1); }
+  60%  { opacity: 1; transform: translateX(-50%) scale(1); }
+  100% { opacity: 0; transform: translateX(-50%) scale(0.95); }
+}
+.group:hover > .brick-hover-hint {
+  animation: hintFlash 1.2s ease-in-out forwards;
+}

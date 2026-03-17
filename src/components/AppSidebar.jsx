@@ -9,6 +9,8 @@ import {
   FolderPlus,
   Home,
   Bug,
+  LayoutGrid,
+  Lightbulb,
   Lock,
   LogIn,
   LogOut,
@@ -18,6 +20,7 @@ import {
   Settings as SettingsIcon,
   Trash2,
 } from "lucide-react";
+import FeedbackModal from "@/components/FeedbackModal";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -49,6 +52,8 @@ export default function AppSidebar() {
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0 });
   const [showProjectPicker, setShowProjectPicker] = useState(false);
   const [pickerPos, setPickerPos] = useState({ top: 0, left: 0 });
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [feedbackType, setFeedbackType] = useState("bug");
   const menuRef = useRef(null);
   const addToProjectRef = useRef(null);
 
@@ -213,7 +218,7 @@ export default function AppSidebar() {
         <div className="mt-2 flex flex-col gap-1">
           <button
             type="button"
-            onClick={() => flushAndNavigate(nav, "/")}
+            onClick={() => flushAndNavigate(nav, "/dashboard")}
             className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
           >
             <Home className="w-3.5 h-3.5 text-black/60" />
@@ -221,26 +226,13 @@ export default function AppSidebar() {
           </button>
           <button
             type="button"
-            onClick={async () => {
-              if (!user?.id) {
-                signInWithOAuth("google");
-                return;
-              }
-              window.dispatchEvent(new Event("omnia_flush_save"));
-              const { data } = await supabase
-                .from("omnia_boards")
-                .insert({ user_id: user.id, title: "New Board" })
-                .select("id")
-                .single();
-              const id = data?.id;
-              if (id) {
-                localStorage.setItem("omnia_board_id", id);
-                nav(`/canvas/${id}`);
-              }
+            onClick={() => {
+              const newId = crypto.randomUUID();
+              flushAndNavigate(nav, `/canvas/${newId}`);
             }}
             className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
           >
-            <Plus className="w-3.5 h-3.5 text-black/60" />
+            <LayoutGrid className="w-3.5 h-3.5 text-black/60" />
             Grid
           </button>
           <button
@@ -338,11 +330,19 @@ export default function AppSidebar() {
         <div className="mt-auto pt-4">
           <button
             type="button"
-            onClick={() => nav("/support")}
+            onClick={() => { setFeedbackType("bug"); setFeedbackOpen(true); }}
             className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
           >
             <Bug className="w-3.5 h-3.5 text-black/60" />
             Report Bug
+          </button>
+          <button
+            type="button"
+            onClick={() => { setFeedbackType("suggestion"); setFeedbackOpen(true); }}
+            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
+          >
+            <Lightbulb className="w-3.5 h-3.5 text-black/60" />
+            Suggestion
           </button>
 
           {user && (
@@ -357,6 +357,12 @@ export default function AppSidebar() {
           )}
         </div>
       </div>
+
+      <FeedbackModal
+        open={feedbackOpen}
+        onOpenChange={setFeedbackOpen}
+        defaultType={feedbackType}
+      />
 
       {menuBoardId && ReactDOM.createPortal(
         <div

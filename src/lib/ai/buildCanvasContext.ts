@@ -33,7 +33,9 @@ function describeBlock(
   if (b?.type === "text") {
     const format = String(b?.format || "plain");
     const content = take(b?.content, cl);
-    return `${base} format=${format}${content ? ` content="${content}"` : ""}`;
+    const variant = b?.data?.textVariant && b.data.textVariant !== "body" ? ` variant=${b.data.textVariant}` : "";
+    const listType = b?.data?.listType && b.data.listType !== "none" ? ` listType=${b.data.listType}` : "";
+    return `${base} format=${format}${variant}${listType}${content ? ` content="${content}"` : ""}`;
   }
 
   if (
@@ -52,7 +54,10 @@ function describeBlock(
       ["image", "generated"].includes(String(b?.mode || "").toLowerCase()))
   ) {
     const src = String(b?.src || b?.data?.src || "");
-    return `${base} kind=image${src ? ` srcHost=${host(src) || "local"}` : ""}`;
+    const hasValidSrc = src && (src.startsWith("http") || src.startsWith("data:image/"));
+    const visionTag = hasValidSrc ? " [IMAGE ATTACHED — you can see this image]" : "";
+    const srcHost = src ? ` srcHost=${host(src) || "local"}` : "";
+    return `${base} kind=image${srcHost}${visionTag}`;
   }
 
   if (
@@ -169,9 +174,24 @@ export function buildTieredCanvasContext(params: {
 
   // ── Assemble ─────────────────────────────────────────────────────────
   if (focusedLines.length) {
+    const focusedBlocks = [...focusedSet].map((id) => blocks[id]).filter(Boolean);
+    const hasFocusedImage = focusedBlocks.some(
+      (b) =>
+        b?.type === "image" ||
+        (b?.type === "create" &&
+          ["image", "generated"].includes(String(b?.mode || "").toLowerCase()))
+    );
+    const focusInstruction =
+      focusedLines.length === 1
+        ? "The user has raised this brick (e.g. by double-pressing it). Their message refers specifically to this brick."
+        : `The user has raised ${focusedLines.length} bricks (e.g. by double-pressing them). Their message refers specifically to these brick(s).`;
+    const imageInstruction = hasFocusedImage
+      ? " One or more of these are images — the actual image pixels are attached to this message so you CAN see them. Analyze, describe, and reason about the visual content. Prioritize the focused brick(s) unless they clearly ask about something else."
+      : " Answer only in relation to these focused brick(s) unless they clearly ask about something else.";
     lines.push(
       "[USER_FOCUS]",
-      `The user has focused on ${focusedLines.length} brick(s) by double-clicking them. Blocks marked [FOCUSED] are what the user wants to discuss or work on. Prioritize these blocks in your response.`,
+      focusInstruction + imageInstruction,
+      "Blocks marked [FOCUSED] below are the sole context for the user's question — prioritize and restrict your response to them.",
       "",
       ...focusedLines,
     );

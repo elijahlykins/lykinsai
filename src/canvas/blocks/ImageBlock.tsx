@@ -430,7 +430,7 @@ export const ImageBlock = memo(function ImageBlock({ id, onMinimize, onMenu }: {
       }}
     >
       <BlockHoverToolbar blockId={id} onMinimize={onMinimize} onMenu={onMenu} />
-      {/* Optional tiny drag strip for parity */}
+      <div className="brick-hover-hint absolute pointer-events-none opacity-0 z-50" style={{ bottom: "calc(100% + 6px)", left: "50%", transform: "translateX(-50%)", background: "rgba(0,0,0,0.7)", color: "#fff", fontSize: "10px", fontWeight: 500, padding: "3px 8px", borderRadius: "6px", whiteSpace: "nowrap" }}>Double click to focus</div>
       <div
         data-drag-handle
         className="absolute inset-x-0 top-0 h-3 z-30 cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 transition-opacity"
