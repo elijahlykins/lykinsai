@@ -108,7 +108,7 @@ SelectLabel.displayName = SelectPrimitive.Label.displayName
  *  import("react").ComponentPropsWithoutRef<typeof SelectPrimitive.Item> &
  *  import("react").RefAttributes<import("react").ElementRef<typeof SelectPrimitive.Item>>
  * >} */
-const SelectItem = React.forwardRef(({ className, children, ...props }, ref) => (
+const SelectItem = React.forwardRef(({ className, children, hint, ...props }, ref) => (
   <SelectPrimitive.Item
     ref={ref}
     className={cn(
@@ -122,6 +122,7 @@ const SelectItem = React.forwardRef(({ className, children, ...props }, ref) => 
       </SelectPrimitive.ItemIndicator>
     </span>
     <SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>
+    {hint && <span className="ml-auto pl-2 text-[0.625rem] text-muted-foreground/60 truncate">{hint}</span>}
   </SelectPrimitive.Item>
 ))
 SelectItem.displayName = SelectPrimitive.Item.displayName

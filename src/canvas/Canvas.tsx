@@ -697,6 +697,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
   type PressTarget = { kind: "cell" | "brick"; key: string };
   type GridRange = { minX: number; maxX: number; minY: number; maxY: number };
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const middlePanRef = useRef<{ active: boolean; startX: number; startY: number; scrollLeft: number; scrollTop: number } | null>(null);
   const [viewport, setViewport] = useState({ width: 0, height: 0 });
   const [hoverCell, setHoverCell] = useState<{ x: number; y: number } | null>(null);
   const [activatedGridCellKeys, setActivatedGridCellKeys] = useState<string[]>([]);
@@ -1104,13 +1105,11 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
     const el = containerRef.current;
     if (!el) return;
     const onScroll = () => {
-      // Horizontal scrolling is intentionally disabled; keep left pinned.
-      const left = 0;
+      const left = el.scrollLeft || 0;
       const top = el.scrollTop || 0;
-      if (el.scrollLeft !== 0) el.scrollLeft = 0;
       setScrollPos((p) => (p.left === left && p.top === top ? p : { left, top }));
       const z = canvasZoomRef.current;
-      setCamera({ x: 0, y: top / z, zoom: z });
+      setCamera({ x: left / z, y: top / z, zoom: z });
     };
     onScroll();
     el.addEventListener("scroll", onScroll, { passive: true });
@@ -1129,12 +1128,17 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
     }
     const el = containerRef.current;
     if (el) {
-      const currentY = z > 0 ? el.scrollTop / z : 0;
+      const zNow = canvasZoomRef.current;
+      const currentY = zNow > 0 ? el.scrollTop / zNow : 0;
       if (Math.abs(camera.y - currentY) > 5) {
-        el.scrollTop = camera.y * canvasZoomRef.current;
+        el.scrollTop = camera.y * zNow;
+      }
+      const currentX = zNow > 0 ? el.scrollLeft / zNow : 0;
+      if (Math.abs(camera.x - currentX) > 5) {
+        el.scrollLeft = camera.x * zNow;
       }
     }
-  }, [camera.zoom, camera.y, setCanvasWidth]);
+  }, [camera.zoom, camera.x, camera.y, setCanvasWidth]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -1162,6 +1166,61 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+
+  // Middle mouse button panning: press scroll wheel to grab-pan the canvas.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    const onMouseDown = (e: MouseEvent) => {
+      if (e.button === 1) e.preventDefault();
+    };
+
+    const onDown = (e: PointerEvent) => {
+      if (e.button !== 1) return;
+      e.preventDefault();
+      middlePanRef.current = {
+        active: true,
+        startX: e.clientX,
+        startY: e.clientY,
+        scrollLeft: el.scrollLeft,
+        scrollTop: el.scrollTop,
+      };
+      el.style.cursor = "grabbing";
+      el.setPointerCapture(e.pointerId);
+    };
+
+    const onMove = (e: PointerEvent) => {
+      const pan = middlePanRef.current;
+      if (!pan?.active) return;
+      e.preventDefault();
+      const dx = e.clientX - pan.startX;
+      const dy = e.clientY - pan.startY;
+      el.scrollTop = pan.scrollTop - dy;
+      el.scrollLeft = pan.scrollLeft - dx;
+    };
+
+    const onUp = (e: PointerEvent) => {
+      if (!middlePanRef.current?.active) return;
+      middlePanRef.current = null;
+      el.style.cursor = "";
+      try { el.releasePointerCapture(e.pointerId); } catch {}
+    };
+
+    el.addEventListener("mousedown", onMouseDown);
+    el.addEventListener("pointerdown", onDown);
+    el.addEventListener("pointermove", onMove);
+    el.addEventListener("pointerup", onUp);
+    el.addEventListener("pointercancel", onUp);
+
+    return () => {
+      el.removeEventListener("mousedown", onMouseDown);
+      el.removeEventListener("pointerdown", onDown);
+      el.removeEventListener("pointermove", onMove);
+      el.removeEventListener("pointerup", onUp);
+      el.removeEventListener("pointercancel", onUp);
+    };
   }, []);
 
   // Drag-to-delete: hold a dragged block against the RIGHT wall for 2s to reveal a drop-to-delete zone.
@@ -3732,6 +3791,39 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
           y = snapToGrid(y + (Number((st.blocks as any)[idNew]?.height) || g) + g, g);
           continue;
         }
+
+        if (type === "update_text_block") {
+          const blockId = String(raw?.blockId || "");
+          const block = (st.blocks as any)[blockId];
+          if (!block || block.type !== "text") continue;
+          const patch: any = {};
+          if (raw?.content != null) {
+            patch.content = String(raw.content);
+          } else if (typeof raw?.append === "string") {
+            const cur = String(block?.content || "");
+            patch.content = cur + (cur.endsWith("\n") ? "" : "\n") + raw.append;
+          }
+          if (raw?.data && typeof raw.data === "object") {
+            patch.data = { ...(block?.data || {}), ...raw.data };
+          }
+          if (Object.keys(patch).length) {
+            st.updateBlock(blockId as any, patch as any);
+          }
+          continue;
+        }
+
+        if (type === "delete_block") {
+          const ids: string[] = [];
+          if (raw?.blockId) ids.push(String(raw.blockId));
+          if (Array.isArray(raw?.blockIds)) {
+            for (const bid of raw.blockIds) ids.push(String(bid));
+          }
+          const validIds = ids.filter((bid) => Boolean((st.blocks as any)[bid]));
+          if (validIds.length) {
+            st.deleteBlocks(validIds as any);
+          }
+          continue;
+        }
       }
     };
 
@@ -3803,7 +3895,14 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         '- { "type": "create_list", "listType": "todo", "items": [{ "text": "Task", "checked": false }] }',
         '- { "type": "create_list", "listType": "bulleted", "items": ["One","Two"] }',
         '- { "type": "create_list", "listType": "numbered", "items": ["First","Second"] }',
+        '- { "type": "update_text_block", "blockId": "id-from-context", "content": "new full content" }',
+        '- { "type": "update_text_block", "blockId": "id-from-context", "append": "\\nnew line to add" }',
+        '- { "type": "update_text_block", "blockId": "id-from-context", "content": "rewritten", "data": { "textVariant": "h1", "listType": "todo" } }',
+        '- { "type": "delete_block", "blockId": "block-id" }',
+        '- { "type": "delete_block", "blockIds": ["id1", "id2"] }',
         "",
+        "update_text_block: Edits an existing text brick in place. blockId is REQUIRED (from Canvas blocks id= field). content replaces all text; append adds to existing text. data.textVariant/listType/brickColor/textColor change formatting. Prefer update over delete+create.",
+        "delete_block: Removes blocks by ID. Only use when the user explicitly asks to remove or delete.",
         'Important: If the user is giving follow-up details after creating a spreadsheet (e.g., dimensions or values), update the last spreadsheet using "update_spreadsheet" instead of creating a new one. Only create a new spreadsheet when the user explicitly asks for a new/another spreadsheet.',
         "",
         "Canvas blocks:",
@@ -4366,6 +4465,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         }
       }}
       onPointerMove={(e) => {
+        if (middlePanRef.current?.active) return;
         const el = containerRef.current;
         if (!el) return;
         lastPointerClientRef.current = { x: e.clientX, y: e.clientY };
@@ -4392,6 +4492,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       }}
       onPointerLeave={() => { setHoverCell(null); setHoveredSpecialBlockId(null); }}
       onPointerDown={(e) => {
+        if (e.button === 1) return;
         const el = containerRef.current;
         if (!el) return;
         const t = e.target as Element | null;
@@ -5631,31 +5732,55 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
             const by = Number((b as any).y || 0);
             const bw = Number((b as any).width || gridSize);
             const bh = Number((b as any).height || gridSize);
+            const spinnerSize = Math.min(bh * 0.5, 24);
+            const spinnerX = bx - spinnerSize - gridSize;
+            const spinnerY = by + (bh - spinnerSize) / 2;
             return (
               <React.Fragment key={id}>
                 {brickEl}
                 {isStillPlaceholder && (
-                  <div
-                    className="absolute pointer-events-none flex items-center justify-center"
-                    style={{
-                      left: `${bx}px`,
-                      top: `${by}px`,
-                      width: `${bw}px`,
-                      height: `${bh}px`,
-                      zIndex: 11,
-                      background: "rgba(255,255,255,0.85)",
-                      backdropFilter: "blur(4px)",
-                      borderRadius: "6px",
-                    }}
-                    aria-hidden
-                  >
-                    <div className="flex items-center gap-2.5">
-                      <div className="brick-spinner" style={{ width: 20, height: 20 }} />
-                      <span className="text-[0.75rem] text-black/55 whitespace-nowrap" style={{ lineHeight: 1.3 }}>
+                  <>
+                    {/* Spinner to the left of the brick */}
+                    <div
+                      className="absolute pointer-events-none"
+                      style={{
+                        left: `${spinnerX}px`,
+                        top: `${spinnerY}px`,
+                        zIndex: 11,
+                      }}
+                      aria-hidden
+                    >
+                      <div className="brick-spinner" style={{ width: spinnerSize, height: spinnerSize }} />
+                    </div>
+                    {/* Status text inside the brick */}
+                    <div
+                      className="absolute pointer-events-none flex items-center justify-center overflow-hidden"
+                      style={{
+                        left: `${bx}px`,
+                        top: `${by}px`,
+                        width: `${bw}px`,
+                        height: `${bh}px`,
+                        padding: `${Math.max(4, gridSize * 0.25)}px`,
+                        zIndex: 11,
+                      }}
+                      aria-hidden
+                    >
+                      <span
+                        className="text-black/50 dark:text-white/50 text-center overflow-hidden text-ellipsis"
+                        style={{
+                          fontSize: `${Math.min(13, Math.max(10, bw * 0.06))}px`,
+                          lineHeight: 1.35,
+                          maxWidth: "100%",
+                          display: "-webkit-box",
+                          WebkitLineClamp: Math.max(1, Math.floor(bh / 20)),
+                          WebkitBoxOrient: "vertical" as const,
+                          wordBreak: "break-word",
+                        }}
+                      >
                         {thinkingStatusText || "AI is thinking…"}
                       </span>
                     </div>
-                  </div>
+                  </>
                 )}
               </React.Fragment>
             );

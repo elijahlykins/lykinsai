@@ -307,6 +307,7 @@ export const LinkBlock = memo(function LinkBlock({ id, onMinimize, onMenu }: { i
       }}
     >
       <BlockHoverToolbar blockId={id} onMinimize={onMinimize} onMenu={onMenu} />
+      <div className="brick-hover-hint absolute pointer-events-none opacity-0 z-50" style={{ bottom: "calc(100% + 6px)", left: "50%", transform: "translateX(-50%)", background: "rgba(0,0,0,0.7)", color: "#fff", fontSize: "10px", fontWeight: 500, padding: "3px 8px", borderRadius: "6px", whiteSpace: "nowrap" }}>Double click to focus</div>
       <div className={`glass-block overflow-hidden relative ${isSelected ? "omnia-selected-glass" : ""}`} style={{ width: "100%", height: "100%" }}>
         <div
           data-drag-handle

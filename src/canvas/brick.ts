@@ -34,18 +34,14 @@ export type BrickShellModel = {
   brickScale?: number;
 };
 
-const MIN_COLUMN_WIDTH_PX = 250;
 const COLUMN_GAP_PX = 32;
-const MAX_COLUMNS = 4;
 
-export function computeColumnCount(widthPx: number, _content?: string): number {
-  return Math.min(MAX_COLUMNS, Math.max(1, Math.floor((widthPx + COLUMN_GAP_PX) / (MIN_COLUMN_WIDTH_PX + COLUMN_GAP_PX))));
+export function computeColumnCount(_widthPx: number, _content?: string): number {
+  return 1;
 }
 
-export function getColumnCount(shell: BrickShellModel): number {
-  if (!shell.userResized) return 1;
-  const effectiveWidth = shell.width / Math.max(0.5, shell.brickScale ?? 1);
-  return computeColumnCount(effectiveWidth, shell.content);
+export function getColumnCount(_shell: BrickShellModel): number {
+  return 1;
 }
 
 export { COLUMN_GAP_PX };
@@ -721,14 +717,12 @@ function BrickTextSurface(props: {
   }
 
   if (!isTyping) {
-    const cols = getColumnCount(shell);
-    const isMultiCol = cols > 1;
     const contentStr = String(shell.content || "");
     const hasMarkdown = /(?:^|\n)\s*#{1,6}\s|(?:\*\*|__).+(?:\*\*|__)|```|^\s*[-*]\s/m.test(contentStr);
     return React.createElement(
       "div",
       {
-        className: `px-2 py-0 tracking-[-0.01em] ${hasMarkdown ? "" : "whitespace-pre-wrap "}break-words select-text${isMultiCol ? " pt-1 pb-2" : ""}`,
+        className: `px-2 py-0 tracking-[-0.01em] ${hasMarkdown ? "" : "whitespace-pre-wrap "}break-words select-text`,
         style: {
           overflowWrap: "anywhere",
           fontSize: `${fontSizePx}px`,
@@ -737,12 +731,6 @@ function BrickTextSurface(props: {
           color: shell.textColor || "rgba(0,0,0,0.80)",
           userSelect: "text",
           WebkitUserSelect: "text",
-          ...(isMultiCol ? {
-            columnCount: cols,
-            columnGap: `${COLUMN_GAP_PX}px`,
-            columnRule: "1px solid rgba(0,0,0,0.07)",
-            columnFill: "balance" as const,
-          } : {}),
         },
       },
       hasMarkdown
@@ -1126,8 +1114,7 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
       )
     : null;
 
-  const columnCount = getColumnCount(shell);
-  const useFlexHeight = Boolean(opts?.extraContent) || columnCount > 1;
+  const useFlexHeight = Boolean(opts?.extraContent);
 
   return React.createElement(
     "div",
@@ -1222,6 +1209,24 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
         }, React.createElement("svg", { viewBox: "0 0 16 16", width: "14", height: "14", style: { filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.2))" } },
           React.createElement("path", { d: "M14 14L6 14M14 14L14 6M14 14L8 8", stroke: "rgba(0,0,0,0.45)", strokeWidth: "2", fill: "none", strokeLinecap: "round" })
         ))
+      : null,
+    !isTyping && !isActivated && !isRaised
+      ? React.createElement("div", {
+          key: "brick-hover-hint",
+          className: "brick-hover-hint absolute pointer-events-none opacity-0 z-50",
+          style: {
+            bottom: "calc(100% + 6px)",
+            left: "50%",
+            transform: "translateX(-50%)",
+            background: "rgba(0,0,0,0.7)",
+            color: "#fff",
+            fontSize: "10px",
+            fontWeight: 500,
+            padding: "3px 8px",
+            borderRadius: "6px",
+            whiteSpace: "nowrap",
+          },
+        }, "Double click to focus")
       : null,
     shell.content.trim()
       ? React.createElement(
