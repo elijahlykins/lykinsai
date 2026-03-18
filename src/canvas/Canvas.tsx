@@ -1144,24 +1144,32 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
     const el = containerRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      const z = canvasZoomRef.current;
-      const factor = e.deltaY > 0 ? 1 / ZOOM_FACTOR : ZOOM_FACTOR;
-      const next = Math.round(Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z * factor)) * 100) / 100;
-      if (next === z) return;
+      // Trackpad pinch-to-zoom fires with ctrlKey; Ctrl+mouse-wheel also zooms.
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        const z = canvasZoomRef.current;
+        const zoomDelta = -e.deltaY * 0.01;
+        const next = Math.round(Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z * Math.exp(zoomDelta))) * 100) / 100;
+        if (next === z) return;
 
-      const rect = el.getBoundingClientRect();
-      const cx = rect.width / 2;
-      const cy = rect.height / 2;
-      const worldCenterX = (el.scrollLeft + cx) / z;
-      const worldCenterY = (el.scrollTop + cy) / z;
+        const rect = el.getBoundingClientRect();
+        const pointerX = e.clientX - rect.left;
+        const pointerY = e.clientY - rect.top;
+        const worldX = (el.scrollLeft + pointerX) / z;
+        const worldY = (el.scrollTop + pointerY) / z;
 
-      const targetLeft = worldCenterX * next - cx;
-      const targetTop = worldCenterY * next - cy;
+        const targetLeft = worldX * next - pointerX;
+        const targetTop = worldY * next - pointerY;
 
-      canvasZoomRef.current = next;
-      pendingZoomScrollRef.current = { left: targetLeft, top: targetTop, zoom: next };
-      setCanvasZoom(next);
+        canvasZoomRef.current = next;
+        pendingZoomScrollRef.current = { left: targetLeft, top: targetTop, zoom: next };
+        setCanvasZoom(next);
+        return;
+      }
+
+      // Two-finger trackpad scroll / regular mouse wheel → pan via native scroll.
+      // No preventDefault — let the browser scroll the container natively;
+      // the onScroll handler will sync the camera store automatically.
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
