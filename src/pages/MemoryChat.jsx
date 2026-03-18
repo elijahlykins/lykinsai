@@ -22,7 +22,7 @@ export default function MemoryChatPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [currentModel, setCurrentModel] = useState('gemini-flash-latest');
+  const [currentModel, setCurrentModel] = useState('claude-sonnet-4-6');
   const [inputMode, setInputMode] = useState('text');
   const [attachments, setAttachments] = useState([]);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
@@ -116,7 +116,7 @@ export default function MemoryChatPage() {
 
   useEffect(() => {
     const settings = JSON.parse(localStorage.getItem('lykinsai_settings') || '{}');
-    const savedModel = settings.aiModel || 'gemini-flash-latest';
+    const savedModel = settings.aiModel || 'claude-sonnet-4-6';
     setCurrentModel(savedModel);
     
     const storedQuestions = localStorage.getItem('chat_followup_questions');
@@ -463,7 +463,7 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
         const newMessages = [...prev];
         newMessages[assistantMessageIndex] = { 
           role: 'assistant', 
-          content: 'Sorry, I encountered an error. Please try again or check your AI proxy server.' 
+          content: 'This model isn\u2019t working properly right now \u2014 try another model.' 
         };
         return newMessages;
       });
@@ -623,7 +623,7 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
                 <SelectContent className="bg-white dark:bg-[#171515] border-gray-200 dark:border-gray-700">
                   <SelectGroup>
                     <SelectLabel>Latest</SelectLabel>
-                    <SelectItem value="claude-opus-4-6" hint="Anthropic flagship">Claude Opus 4.6</SelectItem>
+                    <SelectItem value="claude-sonnet-4-6" hint="Anthropic flagship">Claude Sonnet 4.6</SelectItem>
                     <SelectItem value="gpt-5.4" hint="OpenAI flagship">GPT-5.4</SelectItem>
                     <SelectItem value="gemini-3.1-pro-preview" hint="Google flagship">Gemini 3.1 Pro</SelectItem>
                     <SelectItem value="grok-4-1-fast-reasoning" hint="xAI flagship">Grok 4.1 Fast Reasoning</SelectItem>
@@ -674,7 +674,6 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
                   <SelectGroup>
                     <SelectLabel>Code</SelectLabel>
                     <SelectItem value="claude-opus-4-6-code" hint="Anthropic, top coder">Claude Opus 4.6</SelectItem>
-                    <SelectItem value="claude-sonnet-4-6" hint="Anthropic, fast coder">Claude Sonnet 4.6</SelectItem>
                     <SelectItem value="gpt-5.3-codex" hint="OpenAI, agentic code">Codex 5.3</SelectItem>
                     <SelectItem value="gpt-4.1" hint="OpenAI, 1M ctx code">GPT-4.1</SelectItem>
                     <SelectItem value="grok-code-fast-1" hint="xAI, code">Grok Code Fast 1</SelectItem>

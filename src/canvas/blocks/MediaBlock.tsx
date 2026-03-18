@@ -428,20 +428,53 @@ export const MediaBlock = memo(function MediaBlock({ id, onMinimize, onMenu }: {
       onLostPointerCapture={(e) => endResize(e.pointerId)}
     >
       <BlockHoverToolbar blockId={id} onMinimize={onMinimize} onMenu={onMenu} />
-      <div className={`glass-block overflow-hidden relative ${isSelected ? "omnia-selected-glass" : ""}`} style={{ width: "100%", height: "100%" }}>
+
+      {media.mode === "video" && (
         <div
           data-drag-handle
-          className="relative z-20 w-full cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 transition-opacity"
-          style={{ height: "8px" }}
+          className="absolute z-30 cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 transition-opacity"
+          style={{
+            left: "8px",
+            top: "-20px",
+            width: "72px",
+            height: "20px",
+            background: "linear-gradient(180deg, rgba(255,255,255,0.72), rgba(255,255,255,0.48))",
+            backdropFilter: "blur(8px)",
+            borderRadius: "8px 8px 0 0",
+            border: "1px solid rgba(255,255,255,0.55)",
+            borderBottom: "none",
+            boxShadow: "0 -2px 8px rgba(0,0,0,0.08)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
           onPointerDown={startDrag}
           onPointerMove={onDragMove}
           onPointerUp={onDragEnd}
           onPointerCancel={onDragEnd}
           onLostPointerCapture={onDragEnd}
           title="Drag to move"
-        />
+        >
+          <span style={{ width: 16, height: 2, borderRadius: 1, background: "rgba(0,0,0,0.25)" }} />
+        </div>
+      )}
 
-        <div className="w-full" style={{ height: "calc(100% - 8px)" }}>
+      <div className={`glass-block overflow-hidden relative ${isSelected ? "omnia-selected-glass" : ""}`} style={{ width: "100%", height: "100%" }}>
+        {media.mode !== "video" && (
+          <div
+            data-drag-handle
+            className="relative z-20 w-full cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 transition-opacity"
+            style={{ height: "8px" }}
+            onPointerDown={startDrag}
+            onPointerMove={onDragMove}
+            onPointerUp={onDragEnd}
+            onPointerCancel={onDragEnd}
+            onLostPointerCapture={onDragEnd}
+            title="Drag to move"
+          />
+        )}
+
+        <div className="w-full" style={{ height: media.mode === "video" ? "100%" : "calc(100% - 8px)" }}>
           {renderContent()}
         </div>
       </div>

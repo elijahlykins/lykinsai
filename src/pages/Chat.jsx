@@ -13,7 +13,7 @@ import { useThinkingStatus } from "@/hooks/useThinkingStatus";
 import { getAiPrefs } from "@/lib/ai-prefs";
 import { useQuery } from "@tanstack/react-query";
 
-const DEFAULT_MODEL = "gemini-flash-latest";
+const DEFAULT_MODEL = "claude-sonnet-4-6";
 const TYPING_DELAY_MS = 14;
 const BASE_ROTATING_PHRASES = [
   "Ask me anything.",
@@ -734,8 +734,7 @@ export default function ChatPage() {
 
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const errText =
-          String(data?.error || "").trim() || "The AI service returned an error.";
+        const errText = "This model isn\u2019t working properly right now \u2014 try another model.";
         setMessages((prev) => {
           const next = [...prev];
           next[assistantMessageIndex] = { role: "assistant", content: errText };
@@ -760,7 +759,7 @@ export default function ChatPage() {
         const next = [...prev];
         next[assistantMessageIndex] = {
           role: "assistant",
-          content: "I couldn't reach the AI service. Please try again.",
+          content: "This model isn\u2019t working properly right now \u2014 try another model.",
         };
         return next;
       });
@@ -1437,7 +1436,7 @@ export default function ChatPage() {
                 >
                   <SelectGroup>
                     <SelectLabel>Latest</SelectLabel>
-                    <SelectItem value="claude-opus-4-6" hint="Anthropic flagship">Claude Opus 4.6</SelectItem>
+                    <SelectItem value="claude-sonnet-4-6" hint="Anthropic flagship">Claude Sonnet 4.6</SelectItem>
                     <SelectItem value="gpt-5.4" hint="OpenAI flagship">GPT-5.4</SelectItem>
                     <SelectItem value="gemini-3.1-pro-preview" hint="Google flagship">Gemini 3.1 Pro</SelectItem>
                     <SelectItem value="grok-4-1-fast-reasoning" hint="xAI flagship">Grok 4.1 Fast Reasoning</SelectItem>
@@ -1488,7 +1487,6 @@ export default function ChatPage() {
                   <SelectGroup>
                     <SelectLabel>Code</SelectLabel>
                     <SelectItem value="claude-opus-4-6-code" hint="Anthropic, top coder">Claude Opus 4.6</SelectItem>
-                    <SelectItem value="claude-sonnet-4-6" hint="Anthropic, fast coder">Claude Sonnet 4.6</SelectItem>
                     <SelectItem value="gpt-5.3-codex" hint="OpenAI, agentic code">Codex 5.3</SelectItem>
                     <SelectItem value="gpt-4.1" hint="OpenAI, 1M ctx code">GPT-4.1</SelectItem>
                     <SelectItem value="grok-code-fast-1" hint="xAI, code">Grok Code Fast 1</SelectItem>

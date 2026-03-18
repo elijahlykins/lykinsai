@@ -3434,10 +3434,10 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
     const clamp = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n));
 
     const callAI = async (prompt: string): Promise<string> => {
-      let aiModel = "gemini-flash-latest";
+      let aiModel = "claude-sonnet-4-6";
       try {
         const settings = JSON.parse(localStorage.getItem("lykinsai_settings") || "{}");
-        aiModel = settings.aiModel || "gemini-flash-latest";
+        aiModel = settings.aiModel || "claude-sonnet-4-6";
       } catch {
         // ignore
       }

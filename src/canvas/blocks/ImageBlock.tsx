@@ -433,12 +433,26 @@ export const ImageBlock = memo(function ImageBlock({ id, onMinimize, onMenu }: {
       <div className="brick-hover-hint absolute pointer-events-none opacity-0 z-50" style={{ bottom: "calc(100% + 6px)", left: "50%", transform: "translateX(-50%)", background: "rgba(0,0,0,0.7)", color: "#fff", fontSize: "10px", fontWeight: 500, padding: "3px 8px", borderRadius: "6px", whiteSpace: "nowrap" }}>Double click to focus</div>
       <div
         data-drag-handle
-        className="absolute inset-x-0 top-0 h-3 z-30 cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 transition-opacity"
+        className="absolute z-30 cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 transition-opacity"
+        style={{
+          left: "8px",
+          top: "-20px",
+          width: "72px",
+          height: "20px",
+          background: "linear-gradient(180deg, rgba(255,255,255,0.72), rgba(255,255,255,0.48))",
+          backdropFilter: "blur(8px)",
+          borderRadius: "8px 8px 0 0",
+          border: "1px solid rgba(255,255,255,0.55)",
+          borderBottom: "none",
+          boxShadow: "0 -2px 8px rgba(0,0,0,0.08)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
         onPointerDown={(e) => {
           e.stopPropagation();
           e.preventDefault();
 
-          // If a resize is in progress, ignore.
           if (resizeRef.current) return;
 
           if (e.shiftKey) toggleSelect(id);
@@ -486,7 +500,9 @@ export const ImageBlock = memo(function ImageBlock({ id, onMinimize, onMenu }: {
           endDrag(e.pointerId);
         }}
         title="Drag to move"
-      />
+      >
+        <span style={{ width: 16, height: 2, borderRadius: 1, background: "rgba(0,0,0,0.25)" }} />
+      </div>
 
       <div className={`glass-block overflow-hidden ${isSelected ? "omnia-selected-glass" : ""}`} style={{ width: "100%", height: "100%" }}>
         <img

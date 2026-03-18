@@ -1675,8 +1675,7 @@ ${t}
     console.error('❌ AI Error:', error.message);
     console.error('❌ Full error:', error.stack);
     res.status(500).json({ 
-      error: `AI request failed: ${error.message}`,
-      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      error: 'This model isn\u2019t working properly right now \u2014 try another model.'
     });
   }
 });
@@ -1702,7 +1701,7 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, async (req, res) => {
     const streamEditVideoUrl = String(req.body?.editVideoUrl || '').trim();
 
     const sendImageSSE = (data) => {
-      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' }); res.flushHeaders(); if (req.socket) req.socket.setNoDelay(true);
       res.write(`data: ${JSON.stringify(data)}\n\n`);
       res.write('data: [DONE]\n\n');
       res.end();
@@ -1713,7 +1712,7 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, async (req, res) => {
 
     if (streamEditVideoUrl || (!streamEditImageUrl && isVideoEditOrRegenRequest(streamPureUserMessage))) {
       console.log('🎬 Video edit/regenerate detected in /api/ai/stream, routing to Grok Imagine Video');
-      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' }); res.flushHeaders(); if (req.socket) req.socket.setNoDelay(true);
 
       if (!process.env.XAI_API_KEY) {
         res.write(`data: ${JSON.stringify({ error: 'XAI_API_KEY not configured for video generation.' })}\n\n`);
@@ -1787,7 +1786,7 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, async (req, res) => {
       }
     } else if (streamWantsImageToVideo) {
       console.log('🎬 Image-to-video detected in /api/ai/stream (editImageUrl + explicit video intent), routing to Grok Imagine Video');
-      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' }); res.flushHeaders(); if (req.socket) req.socket.setNoDelay(true);
 
       if (!process.env.XAI_API_KEY) {
         res.write(`data: ${JSON.stringify({ error: 'XAI_API_KEY not configured for video generation.' })}\n\n`);
@@ -1881,7 +1880,7 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, async (req, res) => {
       }
     } else if (isVideoGenModel(model) || isVideoGenerationRequest(streamPureUserMessage)) {
       console.log(`🎬 Video generation detected in /api/ai/stream${isVideoGenModel(model) ? ` (model: ${model})` : ''}, generating with progress events`);
-      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' }); res.flushHeaders(); if (req.socket) req.socket.setNoDelay(true);
 
       if (!process.env.XAI_API_KEY) {
         res.write(`data: ${JSON.stringify({ error: 'XAI_API_KEY not configured for video generation.' })}\n\n`);
@@ -2115,24 +2114,27 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, async (req, res) => {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
     });
+    res.flushHeaders();
+    if (req.socket) req.socket.setNoDelay(true);
 
     let streamActivity = Date.now();
     let stallCheck, hardKill;
     const cleanup = () => { clearInterval(stallCheck); clearTimeout(hardKill); };
-    const sendChunk = (text) => { if (!res.writableEnded) { streamActivity = Date.now(); res.write(`data: ${JSON.stringify({ t: text })}\n\n`); } };
+    const sendChunk = (text) => { if (!res.writableEnded) { streamActivity = Date.now(); res.write(`data: ${JSON.stringify({ t: text })}\n\n`); if (typeof res.flush === 'function') res.flush(); } };
     const sendDone = () => { if (!res.writableEnded) { cleanup(); console.log('✅ Stream complete'); res.write('data: [DONE]\n\n'); res.end(); } };
     const sendError = (msg) => { if (!res.writableEnded) { cleanup(); console.error('❌ Stream error:', msg); res.write(`data: ${JSON.stringify({ error: msg })}\n\n`); res.end(); } };
     stallCheck = setInterval(() => {
       if (Date.now() - streamActivity > 60000) {
         console.error(`⏰ Stream stalled — no data for 60s+, aborting`);
-        sendError('AI stopped responding. Try again.');
+        sendError('This model isn\u2019t working properly right now \u2014 try another model.');
       }
     }, 5000);
     hardKill = setTimeout(() => {
       if (!res.writableEnded) {
         console.error('⏰ Hard timeout — SSE connection open > 5min, killing');
-        sendError('Request took too long. Connection closed.');
+        sendError('This model isn\u2019t working properly right now \u2014 try another model.');
       }
     }, 300000);
     res.on('close', cleanup);
@@ -2145,7 +2147,7 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, async (req, res) => {
     };
 
     if (isOpenAIModel(actualModel)) {
-      if (!process.env.OPENAI_API_KEY) return sendError('OpenAI API key not configured');
+      if (!process.env.OPENAI_API_KEY) return sendError('This model isn\u2019t working properly right now \u2014 try another model.');
       const ab = makeProviderAbort();
       let openaiRes;
       try {
@@ -2169,11 +2171,12 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, async (req, res) => {
         ab.clear();
       } catch (e) {
         console.error('❌ OpenAI stream fetch failed:', e.message);
-        return sendError(e.name === 'AbortError' ? 'AI provider timed out. Try a shorter prompt or different model.' : e.message);
+        return sendError('This model isn\u2019t working properly right now \u2014 try another model.');
       }
       if (!openaiRes.ok) {
         const err = await openaiRes.json().catch(() => ({}));
-        return sendError(err?.error?.message || openaiRes.statusText);
+        console.error('❌ OpenAI API error:', err?.error?.message || openaiRes.statusText);
+        return sendError('This model isn\u2019t working properly right now \u2014 try another model.');
       }
       streamActivity = Date.now();
       console.log('✅ OpenAI stream connected, reading tokens...');
@@ -2196,10 +2199,10 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, async (req, res) => {
         }
       });
       reader.on('end', () => sendDone());
-      reader.on('error', () => sendError('Stream interrupted'));
+      reader.on('error', () => sendError('This model isn\u2019t working properly right now \u2014 try another model.'));
 
     } else if (actualModel.includes('claude')) {
-      if (!process.env.ANTHROPIC_API_KEY) return sendError('Anthropic API key not configured');
+      if (!process.env.ANTHROPIC_API_KEY) return sendError('This model isn\u2019t working properly right now \u2014 try another model.');
       const anthropicModel = resolveAnthropicModel(actualModel);
       const ab = makeProviderAbort();
       let anthropicRes;
@@ -2235,11 +2238,12 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, async (req, res) => {
         ab.clear();
       } catch (e) {
         console.error('❌ Anthropic stream fetch failed:', e.message);
-        return sendError(e.name === 'AbortError' ? 'AI provider timed out. Try a shorter prompt or different model.' : e.message);
+        return sendError('This model isn\u2019t working properly right now \u2014 try another model.');
       }
       if (!anthropicRes.ok) {
         const err = await anthropicRes.json().catch(() => ({}));
-        return sendError(err?.error?.message || anthropicRes.statusText);
+        console.error('❌ Anthropic API error:', err?.error?.message || anthropicRes.statusText);
+        return sendError('This model isn\u2019t working properly right now \u2014 try another model.');
       }
       streamActivity = Date.now();
       console.log('✅ Anthropic stream connected, reading tokens...');
@@ -2260,10 +2264,10 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, async (req, res) => {
         }
       });
       reader.on('end', () => sendDone());
-      reader.on('error', () => sendError('Stream interrupted'));
+      reader.on('error', () => sendError('This model isn\u2019t working properly right now \u2014 try another model.'));
 
     } else if (actualModel.startsWith('gemini-') || actualModel.includes('gemini')) {
-      if (!process.env.GOOGLE_API_KEY) return sendError('Google API key not configured');
+      if (!process.env.GOOGLE_API_KEY) return sendError('This model isn\u2019t working properly right now \u2014 try another model.');
       let geminiModel = actualModel;
       if (actualModel === 'gemini-pro' || actualModel === 'gemini-1.5-flash') geminiModel = 'gemini-flash-latest';
       else if (actualModel === 'gemini-1.5-pro') geminiModel = 'gemini-pro-latest';
@@ -2303,11 +2307,12 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, async (req, res) => {
         ab.clear();
       } catch (e) {
         console.error('❌ Gemini stream fetch failed:', e.message);
-        return sendError(e.name === 'AbortError' ? 'AI provider timed out. Try a shorter prompt or different model.' : e.message);
+        return sendError('This model isn\u2019t working properly right now \u2014 try another model.');
       }
       if (!geminiRes.ok) {
         const err = await geminiRes.json().catch(() => ({}));
-        return sendError(err?.error?.message || geminiRes.statusText);
+        console.error('❌ Gemini API error:', err?.error?.message || geminiRes.statusText);
+        return sendError('This model isn\u2019t working properly right now \u2014 try another model.');
       }
       streamActivity = Date.now();
       console.log('✅ Gemini stream connected, reading tokens...');
@@ -2328,10 +2333,10 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, async (req, res) => {
         }
       });
       reader.on('end', () => sendDone());
-      reader.on('error', () => sendError('Stream interrupted'));
+      reader.on('error', () => sendError('This model isn\u2019t working properly right now \u2014 try another model.'));
 
     } else if (actualModel.includes('grok')) {
-      if (!process.env.XAI_API_KEY) return sendError('xAI API key not configured');
+      if (!process.env.XAI_API_KEY) return sendError('This model isn\u2019t working properly right now \u2014 try another model.');
       const ab = makeProviderAbort();
       let grokRes;
       try {
@@ -2357,12 +2362,12 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, async (req, res) => {
         console.log(`✅ Grok responded: ${grokRes.status}`);
       } catch (e) {
         console.error('❌ Grok stream fetch failed:', e.message);
-        return sendError(e.name === 'AbortError' ? 'AI provider timed out. Try a shorter prompt or different model.' : e.message);
+        return sendError('This model isn\u2019t working properly right now \u2014 try another model.');
       }
       if (!grokRes.ok) {
         const err = await grokRes.json().catch(() => ({}));
         console.error('❌ Grok API error:', err);
-        return sendError(err?.error?.message || grokRes.statusText);
+        return sendError('This model isn\u2019t working properly right now \u2014 try another model.');
       }
       streamActivity = Date.now();
       console.log('✅ Grok stream connected, reading tokens...');
@@ -2385,17 +2390,18 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, async (req, res) => {
         }
       });
       reader.on('end', () => sendDone());
-      reader.on('error', () => sendError('Stream interrupted'));
+      reader.on('error', () => sendError('This model isn\u2019t working properly right now \u2014 try another model.'));
 
     } else {
-      return sendError(`Unsupported model: ${actualModel}`);
+      return sendError('This model isn\u2019t working properly right now \u2014 try another model.');
     }
   } catch (error) {
     console.error('❌ Stream error:', error.message);
+    const userMsg = 'This model isn\u2019t working properly right now \u2014 try another model.';
     if (!res.headersSent) {
-      res.status(500).json({ error: `Stream failed: ${error.message}` });
+      res.status(500).json({ error: userMsg });
     } else {
-      try { res.write(`data: ${JSON.stringify({ error: error.message })}\n\n`); res.end(); } catch {}
+      try { res.write(`data: ${JSON.stringify({ error: userMsg })}\n\n`); res.end(); } catch {}
     }
   }
 });

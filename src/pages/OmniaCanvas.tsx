@@ -301,7 +301,7 @@ export default function OmniaCanvasPage() {
     } catch {
       // ignore
     }
-    return "gemini-flash-latest";
+    return "claude-sonnet-4-6";
   });
   const [liveAIMode, setLiveAIMode] = useState(() => {
     try {
@@ -3225,7 +3225,7 @@ export default function OmniaCanvasPage() {
             if (actions.length) {
               applyProjectActions(actions);
             }
-            setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: assistantText } : m)));
+            await typeResponseIntoChat(promptId, assistantText);
             aiThreadRef.current.push({ role: "assistant", content: assistantText });
             if (aiThreadRef.current.length > 40) aiThreadRef.current = aiThreadRef.current.slice(-40);
             if (responseBlockId && typeof updateBlock === "function") {
@@ -3235,14 +3235,14 @@ export default function OmniaCanvasPage() {
             }
             setChatStatusText(actions.length ? "Bricks updated" : "Answered");
           } else {
-            const errText = String((data as any)?.error || "AI service returned an error.").trim();
+            const errText = "This model isn\u2019t working properly right now \u2014 try another model.";
             setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: errText } : m)));
             aiThreadRef.current.push({ role: "assistant", content: errText });
             if (responseBlockId) await typeIntoAiResponseBlock(String(responseBlockId), errText);
             setChatStatusText("Error");
           }
         } catch (err: any) {
-          const errMsg = err?.name === "AbortError" ? "Request timed out." : "Generation failed. Please retry.";
+          const errMsg = "This model isn\u2019t working properly right now \u2014 try another model.";
           setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: errMsg } : m)));
           if (responseBlockId) await typeIntoAiResponseBlock(String(responseBlockId), errMsg);
           setChatStatusText("Error");
@@ -3382,7 +3382,7 @@ export default function OmniaCanvasPage() {
               }
             }
           } catch {
-            if (!accumulated.trim()) accumulated = "The AI took too long to respond. Try a shorter prompt or a faster model.";
+            if (!accumulated.trim()) accumulated = "This model isn\u2019t working properly right now \u2014 try another model.";
           } finally {
             clearTimeout(inactivityTimer);
           }
@@ -3442,8 +3442,7 @@ export default function OmniaCanvasPage() {
         clearTimeout(invokeTimeout);
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
-          const apiError = String((data as any)?.error || "").trim();
-          const finalText = apiError || "The AI service returned an error. Please try again.";
+          const finalText = "This model isn\u2019t working properly right now \u2014 try another model.";
           setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: finalText } : m)));
           aiThreadRef.current.push({ role: "assistant", content: finalText });
           if (aiThreadRef.current.length > 40) aiThreadRef.current = aiThreadRef.current.slice(-40);
@@ -3558,10 +3557,9 @@ export default function OmniaCanvasPage() {
       }
       console.error("[LYKN] handleChatSend error:", err);
       setChatFlowMode("idle");
-      const errMsg = err?.name === "AbortError" ? "Request timed out. Try a shorter prompt or a faster model." : "Generation failed. Please retry.";
+      const errMsg = "This model isn\u2019t working properly right now \u2014 try another model.";
       setChatStatusText(errMsg);
-      const chatErr = err?.name === "AbortError" ? "Timed out — try a shorter prompt or switch to a faster model (e.g. Gemini Flash)." : "I couldn't process that request. Please try again.";
-      setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: chatErr } : m)));
+      setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: errMsg } : m)));
       if (responseBlockId) {
         updateBlock(String(responseBlockId) as any, { content: chatErr } as any);
       }
@@ -4232,7 +4230,7 @@ export default function OmniaCanvasPage() {
                 >
                   <SelectGroup>
                     <SelectLabel>Latest</SelectLabel>
-                    <SelectItem value="claude-opus-4-6" hint="Anthropic flagship">Claude Opus 4.6</SelectItem>
+                    <SelectItem value="claude-sonnet-4-6" hint="Anthropic flagship">Claude Sonnet 4.6</SelectItem>
                     <SelectItem value="gpt-5.4" hint="OpenAI flagship">GPT-5.4</SelectItem>
                     <SelectItem value="gemini-3.1-pro-preview" hint="Google flagship">Gemini 3.1 Pro</SelectItem>
                     <SelectItem value="grok-4-1-fast-reasoning" hint="xAI flagship">Grok 4.1 Fast Reasoning</SelectItem>
@@ -4283,7 +4281,6 @@ export default function OmniaCanvasPage() {
                   <SelectGroup>
                     <SelectLabel>Code</SelectLabel>
                     <SelectItem value="claude-opus-4-6-code" hint="Anthropic, top coder">Claude Opus 4.6</SelectItem>
-                    <SelectItem value="claude-sonnet-4-6" hint="Anthropic, fast coder">Claude Sonnet 4.6</SelectItem>
                     <SelectItem value="gpt-5.3-codex" hint="OpenAI, agentic code">Codex 5.3</SelectItem>
                     <SelectItem value="gpt-4.1" hint="OpenAI, 1M ctx code">GPT-4.1</SelectItem>
                     <SelectItem value="grok-code-fast-1" hint="xAI, code">Grok Code Fast 1</SelectItem>

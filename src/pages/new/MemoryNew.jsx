@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   ChevronDown,
@@ -443,6 +444,7 @@ export default function MemoryNew() {
   // projects fetched via React Query above
   const [openCardMenuId, setOpenCardMenuId] = useState(null);
   const [openCardMenuPlacement, setOpenCardMenuPlacement] = useState("down");
+  const [openCardMenuRect, setOpenCardMenuRect] = useState(null);
   const [openAttachmentNotesCardId, setOpenAttachmentNotesCardId] = useState(null);
   const [openAttachmentNoteComposerCardId, setOpenAttachmentNoteComposerCardId] = useState(null);
   const [attachmentNoteComposerPosition, setAttachmentNoteComposerPosition] = useState(null);
@@ -496,7 +498,7 @@ export default function MemoryNew() {
     } catch {
       // ignore
     }
-    return "gemini-flash-latest";
+    return "claude-sonnet-4-6";
   });
   const [liveAIMode, setLiveAIMode] = useState(() => {
     try {
@@ -646,6 +648,17 @@ export default function MemoryNew() {
     window.addEventListener("mousedown", onPointerDown);
     return () => window.removeEventListener("mousedown", onPointerDown);
   }, []);
+
+  useEffect(() => {
+    if (!openCardMenuId) return;
+    const close = () => setOpenCardMenuId(null);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+    return () => {
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
+    };
+  }, [openCardMenuId]);
 
   useEffect(() => {
     if (!loadMoreRef.current || loading || !user?.id) return;
@@ -1094,7 +1107,7 @@ User: ${text}`;
       if (idx != null) {
         setChatMessages((prev) => {
           const next = prev.slice();
-          if (next[idx]) next[idx] = { ...next[idx], content: "Sorry - the AI request failed. Please try again." };
+          if (next[idx]) next[idx] = { ...next[idx], content: "This model isn\u2019t working properly right now \u2014 try another model." };
           return next;
         });
       }
@@ -1732,6 +1745,7 @@ User: ${text}`;
     const rect = anchorEl?.getBoundingClientRect?.();
     if (!rect) {
       setOpenCardMenuPlacement("down");
+      setOpenCardMenuRect(null);
       setOpenCardMenuId(cardId);
       return;
     }
@@ -1741,6 +1755,7 @@ User: ${text}`;
       spaceBelow < menuEstimatedHeight && spaceAbove > spaceBelow;
 
     setOpenCardMenuPlacement(shouldOpenUp ? "up" : "down");
+    setOpenCardMenuRect({ top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right, width: rect.width, height: rect.height });
     setOpenCardMenuId(cardId);
   }, []);
 
@@ -1801,7 +1816,7 @@ User: ${text}`;
                 >
                   <SelectGroup>
                     <SelectLabel>Latest</SelectLabel>
-                    <SelectItem value="claude-opus-4-6" hint="Anthropic flagship">Claude Opus 4.6</SelectItem>
+                    <SelectItem value="claude-sonnet-4-6" hint="Anthropic flagship">Claude Sonnet 4.6</SelectItem>
                     <SelectItem value="gpt-5.4" hint="OpenAI flagship">GPT-5.4</SelectItem>
                     <SelectItem value="gemini-3.1-pro-preview" hint="Google flagship">Gemini 3.1 Pro</SelectItem>
                     <SelectItem value="grok-4-1-fast-reasoning" hint="xAI flagship">Grok 4.1 Fast Reasoning</SelectItem>
@@ -1852,7 +1867,6 @@ User: ${text}`;
                   <SelectGroup>
                     <SelectLabel>Code</SelectLabel>
                     <SelectItem value="claude-opus-4-6-code" hint="Anthropic, top coder">Claude Opus 4.6</SelectItem>
-                    <SelectItem value="claude-sonnet-4-6" hint="Anthropic, fast coder">Claude Sonnet 4.6</SelectItem>
                     <SelectItem value="gpt-5.3-codex" hint="OpenAI, agentic code">Codex 5.3</SelectItem>
                     <SelectItem value="gpt-4.1" hint="OpenAI, 1M ctx code">GPT-4.1</SelectItem>
                     <SelectItem value="grok-code-fast-1" hint="xAI, code">Grok Code Fast 1</SelectItem>
@@ -2136,8 +2150,6 @@ User: ${text}`;
                     } ${
                       openAttachmentNoteComposerCardId === card.id
                         ? "z-[310]"
-                        : openCardMenuId === card.id
-                        ? "z-[120]"
                         : "z-0"
                     }`}
                   >
@@ -2184,117 +2196,26 @@ User: ${text}`;
                           </div>
                         )}
                         <div className="mt-2 flex justify-end px-1" data-no-drag="true">
-                          <div className="relative" ref={openCardMenuId === card.id ? cardMenuRef : null}>
-                            <button
-                              type="button"
-                              data-no-drag="true"
-                              draggable={false}
-                              onPointerDown={(e) => {
-                                e.stopPropagation();
-                              }}
-                              onMouseDown={(e) => e.stopPropagation()}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setOpenAttachmentNotesCardId(null);
-                                if (openCardMenuId === card.id) {
-                                  setOpenCardMenuId(null);
-                                  return;
-                                }
-                                openCardMenuForAnchor(card.id, e.currentTarget);
-                              }}
-                              className="px-1 py-0.5 text-black/75 hover:text-black leading-none text-base font-semibold"
-                              title="Actions"
-                            >
-                              <MoreHorizontal className="w-4 h-4" />
-                            </button>
-                            {openCardMenuId === card.id && (
-                              <div
-                                className={`absolute right-0 w-56 rounded-2xl border border-white/60 bg-white/85 dark:bg-[#171515]/85 backdrop-blur-xl shadow-2xl p-2 z-[130] ${
-                                  openCardMenuPlacement === "up" ? "bottom-full mb-2" : "top-full mt-2"
-                                }`}
-                                data-no-drag="true"
-                                draggable={false}
-                                onPointerDown={(e) => e.stopPropagation()}
-                                onMouseDown={(e) => e.stopPropagation()}
-                              >
-                                <div className="px-2 py-1 text-[0.6875rem] font-medium text-black/60">Add to project</div>
-                                <div className="space-y-1">
-                                  <button
-                                    type="button"
-                                    data-no-drag="true"
-                                    draggable={false}
-                                    disabled={isCardActionBusy}
-                                    onPointerDown={(e) => e.stopPropagation()}
-                                    onClick={() => {
-                                      void createProjectFromCard(card);
-                                    }}
-                                    className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 disabled:opacity-60 flex items-center gap-2"
-                                  >
-                                    <Plus className="w-3.5 h-3.5" />
-                                    New project
-                                  </button>
-                                  <div className="my-1 h-px bg-black/10" />
-                                  <div className="max-h-44 overflow-y-auto scrollbar-hide space-y-1">
-                                    {projects.length === 0 ? (
-                                      <div className="px-2 py-1.5 text-[0.6875rem] text-black/55">
-                                        No projects found.
-                                      </div>
-                                    ) : (
-                                      projects.map((project) => (
-                                        <button
-                                          key={project.id}
-                                          type="button"
-                                          data-no-drag="true"
-                                          draggable={false}
-                                          disabled={isCardActionBusy}
-                                          onPointerDown={(e) => e.stopPropagation()}
-                                          onClick={() => {
-                                            void addCardToProject(card, project.id);
-                                          }}
-                                          className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/10 disabled:opacity-60 truncate"
-                                          title={project.name}
-                                        >
-                                          {project.name}
-                                        </button>
-                                      ))
-                                    )}
-                                  </div>
-                                </div>
-                                <div className="my-1 h-px bg-black/10" />
-                                <button
-                                  type="button"
-                                  data-no-drag="true"
-                                  draggable={false}
-                                  disabled={isCardActionBusy}
-                                  onPointerDown={(e) => e.stopPropagation()}
-                                  onClick={(e) => {
-                                    const articleEl = e.currentTarget.closest("[data-memory-card-id]");
-                                    const rect = articleEl?.getBoundingClientRect() || null;
-                                    openAttachmentComposerForCard(card.id, rect);
-                                  }}
-                                  className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 disabled:opacity-60 flex items-center gap-2"
-                                >
-                                  <StickyNote className="w-3.5 h-3.5" />
-                                  Note
-                                </button>
-                                <div className="my-1 h-px bg-black/10" />
-                                <button
-                                  type="button"
-                                  data-no-drag="true"
-                                  draggable={false}
-                                  disabled={isCardActionBusy}
-                                  onPointerDown={(e) => e.stopPropagation()}
-                                  onClick={() => {
-                                    confirmAndDeleteAttachment(card);
-                                  }}
-                                  className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 disabled:opacity-60 flex items-center gap-2 text-red-600"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                  Delete
-                                </button>
-                              </div>
-                            )}
-                          </div>
+                          <button
+                            type="button"
+                            data-no-drag="true"
+                            draggable={false}
+                            onPointerDown={(e) => e.stopPropagation()}
+                            onMouseDown={(e) => e.stopPropagation()}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setOpenAttachmentNotesCardId(null);
+                              if (openCardMenuId === card.id) {
+                                setOpenCardMenuId(null);
+                                return;
+                              }
+                              openCardMenuForAnchor(card.id, e.currentTarget);
+                            }}
+                            className="px-1 py-0.5 text-black/75 hover:text-black leading-none text-base font-semibold"
+                            title="Actions"
+                          >
+                            <MoreHorizontal className="w-4 h-4" />
+                          </button>
                         </div>
                       </>
                     ) : card.kind === "chat-preview" ? (
@@ -2332,100 +2253,26 @@ User: ${text}`;
                           </div>
                         </div>
                         <div className="mt-2 flex justify-end px-1" data-no-drag="true">
-                          <div className="relative" ref={openCardMenuId === card.id ? cardMenuRef : null}>
-                            <button
-                              type="button"
-                              data-no-drag="true"
-                              draggable={false}
-                              onPointerDown={(e) => e.stopPropagation()}
-                              onMouseDown={(e) => e.stopPropagation()}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setOpenAttachmentNotesCardId(null);
-                                if (openCardMenuId === card.id) {
-                                  setOpenCardMenuId(null);
-                                  return;
-                                }
-                                openCardMenuForAnchor(card.id, e.currentTarget);
-                              }}
-                              className="px-1 py-0.5 text-black/75 hover:text-black leading-none text-base font-semibold"
-                              title="Quick note actions"
-                            >
-                              <MoreHorizontal className="w-4 h-4" />
-                            </button>
-                            {openCardMenuId === card.id && (
-                              <div
-                                className={`absolute right-0 w-56 rounded-2xl border border-white/60 bg-white/85 dark:bg-[#171515]/85 backdrop-blur-xl shadow-2xl p-2 z-[130] ${
-                                  openCardMenuPlacement === "up" ? "bottom-full mb-2" : "top-full mt-2"
-                                }`}
-                                data-no-drag="true"
-                                draggable={false}
-                                onPointerDown={(e) => e.stopPropagation()}
-                                onMouseDown={(e) => e.stopPropagation()}
-                              >
-                                <div className="px-2 py-1 text-[0.6875rem] font-medium text-black/60">Add to project</div>
-                                <div className="space-y-1">
-                                  <button
-                                    type="button"
-                                    data-no-drag="true"
-                                    draggable={false}
-                                    disabled={isCardActionBusy}
-                                    onPointerDown={(e) => e.stopPropagation()}
-                                    onClick={() => {
-                                      void createProjectFromCard(card);
-                                    }}
-                                    className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 disabled:opacity-60 flex items-center gap-2"
-                                  >
-                                    <Plus className="w-3.5 h-3.5" />
-                                    New project
-                                  </button>
-                                  <div className="my-1 h-px bg-black/10" />
-                                  <div className="max-h-44 overflow-y-auto scrollbar-hide space-y-1">
-                                    {projects.length === 0 ? (
-                                      <div className="px-2 py-1.5 text-[0.6875rem] text-black/55">
-                                        No projects found.
-                                      </div>
-                                    ) : (
-                                      projects.map((project) => (
-                                        <button
-                                          key={project.id}
-                                          type="button"
-                                          data-no-drag="true"
-                                          draggable={false}
-                                          disabled={isCardActionBusy}
-                                          onPointerDown={(e) => e.stopPropagation()}
-                                          onClick={() => {
-                                            void addCardToProject(card, project.id);
-                                          }}
-                                          className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/10 disabled:opacity-60 truncate"
-                                          title={project.name}
-                                        >
-                                          {project.name}
-                                        </button>
-                                      ))
-                                    )}
-                                  </div>
-                                </div>
-                                <div className="my-1 h-px bg-black/10" />
-                                <button
-                                  type="button"
-                                  data-no-drag="true"
-                                  draggable={false}
-                                  disabled={isCardActionBusy}
-                                  onPointerDown={(e) => e.stopPropagation()}
-                                  onClick={() => {
-                                    const ok = window.confirm(`Are you sure you want to delete "${card.title || "Quick Note"}"? This cannot be undone.`);
-                                    if (!ok) return;
-                                    void removeQuickNoteCard(card);
-                                  }}
-                                  className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 disabled:opacity-60 flex items-center gap-2 text-red-600"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                  Delete
-                                </button>
-                              </div>
-                            )}
-                          </div>
+                          <button
+                            type="button"
+                            data-no-drag="true"
+                            draggable={false}
+                            onPointerDown={(e) => e.stopPropagation()}
+                            onMouseDown={(e) => e.stopPropagation()}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setOpenAttachmentNotesCardId(null);
+                              if (openCardMenuId === card.id) {
+                                setOpenCardMenuId(null);
+                                return;
+                              }
+                              openCardMenuForAnchor(card.id, e.currentTarget);
+                            }}
+                            className="px-1 py-0.5 text-black/75 hover:text-black leading-none text-base font-semibold"
+                            title="Quick note actions"
+                          >
+                            <MoreHorizontal className="w-4 h-4" />
+                          </button>
                         </div>
                       </>
                     )}
@@ -2605,6 +2452,114 @@ User: ${text}`;
         >
           <StickyNote className="w-6 h-6" />
         </button>
+      )}
+
+      {openCardMenuId && openCardMenuRect && createPortal(
+        (() => {
+          const menuCard = orderedVisibleCards.find((c) => c.id === openCardMenuId);
+          if (!menuCard) return null;
+          const menuW = 224;
+          const pad = 8;
+          let top, maxH;
+          if (openCardMenuPlacement === "up") {
+            top = undefined;
+            maxH = openCardMenuRect.top - pad;
+          } else {
+            top = openCardMenuRect.bottom + pad;
+            maxH = window.innerHeight - top - pad;
+          }
+          let left = openCardMenuRect.right - menuW;
+          if (left < pad) left = pad;
+          if (left + menuW > window.innerWidth - pad) left = window.innerWidth - pad - menuW;
+
+          return (
+            <div
+              ref={cardMenuRef}
+              className="rounded-2xl border border-white/60 bg-white/85 dark:bg-[#171515]/85 backdrop-blur-xl shadow-2xl p-2 overflow-y-auto scrollbar-hide"
+              style={{
+                position: "fixed",
+                width: menuW,
+                left,
+                ...(openCardMenuPlacement === "up"
+                  ? { bottom: window.innerHeight - openCardMenuRect.top + pad }
+                  : { top }),
+                maxHeight: maxH,
+                zIndex: 9999,
+              }}
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              <div className="px-2 py-1 text-[0.6875rem] font-medium text-black/60">Add to project</div>
+              <div className="space-y-1">
+                <button
+                  type="button"
+                  disabled={isCardActionBusy}
+                  onClick={() => void createProjectFromCard(menuCard)}
+                  className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 disabled:opacity-60 flex items-center gap-2"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  New project
+                </button>
+                <div className="my-1 h-px bg-black/10" />
+                <div className="max-h-44 overflow-y-auto scrollbar-hide space-y-1">
+                  {projects.length === 0 ? (
+                    <div className="px-2 py-1.5 text-[0.6875rem] text-black/55">No projects found.</div>
+                  ) : (
+                    projects.map((project) => (
+                      <button
+                        key={project.id}
+                        type="button"
+                        disabled={isCardActionBusy}
+                        onClick={() => void addCardToProject(menuCard, project.id)}
+                        className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/10 disabled:opacity-60 truncate"
+                        title={project.name}
+                      >
+                        {project.name}
+                      </button>
+                    ))
+                  )}
+                </div>
+              </div>
+              {menuCard.kind === "attachment" && (
+                <>
+                  <div className="my-1 h-px bg-black/10" />
+                  <button
+                    type="button"
+                    disabled={isCardActionBusy}
+                    onClick={() => {
+                      const articleEl = document.querySelector(`[data-memory-card-id="${menuCard.id}"]`);
+                      const rect = articleEl?.getBoundingClientRect() || null;
+                      openAttachmentComposerForCard(menuCard.id, rect);
+                      setOpenCardMenuId(null);
+                    }}
+                    className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 disabled:opacity-60 flex items-center gap-2"
+                  >
+                    <StickyNote className="w-3.5 h-3.5" />
+                    Note
+                  </button>
+                </>
+              )}
+              <div className="my-1 h-px bg-black/10" />
+              <button
+                type="button"
+                disabled={isCardActionBusy}
+                onClick={() => {
+                  if (menuCard.kind === "attachment") {
+                    confirmAndDeleteAttachment(menuCard);
+                  } else {
+                    const ok = window.confirm(`Are you sure you want to delete "${menuCard.title || "Quick Note"}"? This cannot be undone.`);
+                    if (!ok) return;
+                    void removeQuickNoteCard(menuCard);
+                  }
+                }}
+                className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 disabled:opacity-60 flex items-center gap-2 text-red-600"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                Delete
+              </button>
+            </div>
+          );
+        })(),
+        document.body
       )}
     </div>
   );

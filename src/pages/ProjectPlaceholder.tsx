@@ -178,7 +178,7 @@ export default function ProjectPlaceholder() {
     } catch {
       // ignore
     }
-    return "gemini-flash-latest";
+    return "claude-sonnet-4-6";
   });
 
   // --- Project Health tracking ---
@@ -1131,7 +1131,7 @@ If the user asks about old memories or references past ideas, refer to the memor
     } catch (error: any) {
       setChatMessages((prev) => {
         const newMessages = [...prev];
-        newMessages[assistantMessageIndex] = { role: "assistant", content: "Sorry, I encountered an error." };
+        newMessages[assistantMessageIndex] = { role: "assistant", content: "This model isn\u2019t working properly right now \u2014 try another model." };
         return newMessages;
       });
     } finally {
@@ -1234,7 +1234,7 @@ If the user asks about old memories or references past ideas, refer to the memor
                 >
                   <SelectGroup>
                     <SelectLabel>Latest</SelectLabel>
-                    <SelectItem value="claude-opus-4-6" hint="Anthropic flagship">Claude Opus 4.6</SelectItem>
+                    <SelectItem value="claude-sonnet-4-6" hint="Anthropic flagship">Claude Sonnet 4.6</SelectItem>
                     <SelectItem value="gpt-5.4" hint="OpenAI flagship">GPT-5.4</SelectItem>
                     <SelectItem value="gemini-3.1-pro-preview" hint="Google flagship">Gemini 3.1 Pro</SelectItem>
                     <SelectItem value="grok-4-1-fast-reasoning" hint="xAI flagship">Grok 4.1 Fast Reasoning</SelectItem>
@@ -1285,7 +1285,6 @@ If the user asks about old memories or references past ideas, refer to the memor
                   <SelectGroup>
                     <SelectLabel>Code</SelectLabel>
                     <SelectItem value="claude-opus-4-6-code" hint="Anthropic, top coder">Claude Opus 4.6</SelectItem>
-                    <SelectItem value="claude-sonnet-4-6" hint="Anthropic, fast coder">Claude Sonnet 4.6</SelectItem>
                     <SelectItem value="gpt-5.3-codex" hint="OpenAI, agentic code">Codex 5.3</SelectItem>
                     <SelectItem value="gpt-4.1" hint="OpenAI, 1M ctx code">GPT-4.1</SelectItem>
                     <SelectItem value="grok-code-fast-1" hint="xAI, code">Grok Code Fast 1</SelectItem>
