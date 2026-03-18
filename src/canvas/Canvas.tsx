@@ -96,7 +96,7 @@ function processMemoryDrop(pending: { title: string; content: string; attachment
     if (ytUrl && extractedVid) {
       const st = useCanvasStore.getState();
       const g = Math.max(1, Math.floor(st.gridSize || 24));
-      const canvasEl = document.querySelector<HTMLElement>(".overflow-auto.overscroll-contain");
+      const canvasEl = document.querySelector<HTMLElement>("[data-omnia-canvas]");
       const rect = canvasEl?.getBoundingClientRect();
       const localX = rect ? clientX - rect.left : clientX;
       const localY = rect ? clientY - rect.top : clientY;
@@ -144,7 +144,7 @@ function processMemoryDrop(pending: { title: string; content: string; attachment
     if (pdfText) {
       const st = useCanvasStore.getState();
       const g = Math.max(1, Math.floor(st.gridSize || 24));
-      const canvasEl = document.querySelector<HTMLElement>(".overflow-auto.overscroll-contain");
+      const canvasEl = document.querySelector<HTMLElement>("[data-omnia-canvas]");
       const rect = canvasEl?.getBoundingClientRect();
       const localX = rect ? clientX - rect.left : clientX;
       const localY = rect ? clientY - rect.top : clientY;
@@ -194,7 +194,7 @@ function processMemoryDrop(pending: { title: string; content: string; attachment
     if (spreadsheetAttach.cells && typeof spreadsheetAttach.cells === "object" && Object.keys(spreadsheetAttach.cells).length > 0) {
       const st = useCanvasStore.getState();
       const g = Math.max(1, Math.floor(st.gridSize || 24));
-      const canvasEl = document.querySelector<HTMLElement>(".overflow-auto.overscroll-contain");
+      const canvasEl = document.querySelector<HTMLElement>("[data-omnia-canvas]");
       const rect = canvasEl?.getBoundingClientRect();
       const localX = rect ? clientX - rect.left : clientX;
       const localY = rect ? clientY - rect.top : clientY;
@@ -1037,16 +1037,18 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
     prevBlockCountRef.current = count;
   }, [blocks]);
 
-  const ZOOM_MIN = 0.25;
-  const ZOOM_MAX = 2;
-  const ZOOM_STEP = 0.15;
+  const ZOOM_MIN = 0.2;
+  const ZOOM_MAX = 3;
+  const ZOOM_FACTOR = 1.06;
   const applyZoom = useCallback((next: number) => {
     const clamped = Math.round(Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, next)) * 100) / 100;
     canvasZoomRef.current = clamped;
     setCanvasZoom(clamped);
-    const vw = viewportWidthRef.current;
-    if (vw > 0) setCanvasWidth(Math.floor(vw / clamped));
-  }, [setCanvasWidth]);
+    const el = containerRef.current;
+    const left = el ? el.scrollLeft : 0;
+    const top = el ? el.scrollTop : 0;
+    setCamera({ x: left / clamped, y: top / clamped, zoom: clamped });
+  }, [setCamera]);
 
   const makeCreateBlockLocal = (x: number, y: number, mode: string, data: Record<string, any>, width: number, height: number) => ({
     id: `create-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
@@ -1093,12 +1095,10 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       const h = Math.floor(r.height);
       viewportWidthRef.current = w;
       setViewport({ width: w, height: h });
-      const z = canvasZoomRef.current || 1;
-      if (w > 0) setCanvasWidth(Math.floor(w / z));
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, [setCanvasWidth]);
+  }, []);
 
   // Scrolling-as-camera (BrickEditor feel): keep store camera in sync with scroll.
   useEffect(() => {
@@ -1107,7 +1107,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
     const onScroll = () => {
       const left = el.scrollLeft || 0;
       const top = el.scrollTop || 0;
-      setScrollPos((p) => (p.left === left && p.top === top ? p : { left, top }));
+      scrollPosRef.current = { left, top };
       const z = canvasZoomRef.current;
       setCamera({ x: left / z, y: top / z, zoom: z });
     };
@@ -1123,8 +1123,6 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       const next = camera.zoom;
       canvasZoomRef.current = next;
       setCanvasZoom(next);
-      const vw = viewportWidthRef.current;
-      if (vw > 0) setCanvasWidth(Math.floor(vw / next));
     }
     const el = containerRef.current;
     if (el) {
@@ -1138,35 +1136,49 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         el.scrollLeft = camera.x * zNow;
       }
     }
-  }, [camera.zoom, camera.x, camera.y, setCanvasWidth]);
+  }, [camera.zoom, camera.x, camera.y]);
+
+  const pendingZoomScrollRef = useRef<{ left: number; top: number; zoom: number } | null>(null);
 
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
-      if (!(e.ctrlKey || e.metaKey)) return;
       e.preventDefault();
       const z = canvasZoomRef.current;
-      const delta = e.deltaY > 0 ? -ZOOM_STEP : ZOOM_STEP;
-      const next = Math.round(Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z + delta)) * 100) / 100;
+      const factor = e.deltaY > 0 ? 1 / ZOOM_FACTOR : ZOOM_FACTOR;
+      const next = Math.round(Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z * factor)) * 100) / 100;
       if (next === z) return;
 
-      const scrollTop = el.scrollTop;
       const rect = el.getBoundingClientRect();
-      const pointerY = (e.clientY - rect.top + scrollTop) / z;
+      const cx = rect.width / 2;
+      const cy = rect.height / 2;
+      const worldCenterX = (el.scrollLeft + cx) / z;
+      const worldCenterY = (el.scrollTop + cy) / z;
+
+      const targetLeft = worldCenterX * next - cx;
+      const targetTop = worldCenterY * next - cy;
 
       canvasZoomRef.current = next;
+      pendingZoomScrollRef.current = { left: targetLeft, top: targetTop, zoom: next };
       setCanvasZoom(next);
-      const vw = viewportWidthRef.current;
-      if (vw > 0) setCanvasWidth(Math.floor(vw / next));
-
-      requestAnimationFrame(() => {
-        el.scrollTop = pointerY * next - (e.clientY - rect.top);
-      });
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
   }, []);
+
+  useLayoutEffect(() => {
+    const pending = pendingZoomScrollRef.current;
+    if (!pending) return;
+    pendingZoomScrollRef.current = null;
+    const el = containerRef.current;
+    if (!el) return;
+    el.scrollLeft = pending.left;
+    el.scrollTop = pending.top;
+    const finalLeft = Math.max(0, el.scrollLeft);
+    const finalTop = Math.max(0, el.scrollTop);
+    setCamera({ x: finalLeft / pending.zoom, y: finalTop / pending.zoom, zoom: pending.zoom });
+  }, [canvasZoom, setCamera]);
 
   // Middle mouse button panning: press scroll wheel to grab-pan the canvas.
   useEffect(() => {
@@ -1348,10 +1360,10 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       const key = e.key;
       if (key === "=" || key === "+") {
         e.preventDefault();
-        applyZoom(canvasZoomRef.current + ZOOM_STEP);
+        applyZoom(canvasZoomRef.current * ZOOM_FACTOR);
       } else if (key === "-") {
         e.preventDefault();
-        applyZoom(canvasZoomRef.current - ZOOM_STEP);
+        applyZoom(canvasZoomRef.current / ZOOM_FACTOR);
       } else if (key === "0") {
         e.preventDefault();
         applyZoom(1);
@@ -1674,10 +1686,11 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
     return () => window.removeEventListener("keydown", onKeyDown, { capture: true } as any);
   }, [createShapeBlockAt]);
 
-  // Expand the inner scroll surface to fit placed blocks (BrickEditor-like infinite down scroll).
+  // Expand the inner scroll surface to fit placed blocks and provide room for panning.
+  // Surface is zoom-independent to avoid layout thrashing during zoom.
   const surface = useMemo(() => {
-    const z = canvasZoom || 1;
-    const baseH = Math.max((viewport.height || 0) / z, 900);
+    const vw = viewport.width || 1920;
+    const vh = viewport.height || 1080;
     let maxBottom = 0;
     let maxRight = 0;
     for (const id of blockOrder) {
@@ -1686,13 +1699,14 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       maxBottom = Math.max(maxBottom, (b.y || 0) + (b.height || gridSize));
       maxRight = Math.max(maxRight, (b.x || 0) + ((b as any).width || gridSize));
     }
-    const padBottom = gridSize * 12;
-    const viewportW = Math.max(gridSize, Math.floor((canvasWidth || (viewport.width || 0) / z) as number) || gridSize);
+    const zMin = ZOOM_MIN || 0.2;
+    const worldViewW = Math.ceil(vw / zMin);
+    const worldViewH = Math.ceil(vh / zMin);
     return {
-      width: Math.max(viewportW, maxRight + gridSize),
-      height: Math.max(baseH, maxBottom + padBottom),
+      width: Math.max(worldViewW * 2, maxRight + worldViewW),
+      height: Math.max(worldViewH * 2, maxBottom + worldViewH),
     };
-  }, [blockOrder, blocks, canvasWidth, canvasZoom, gridSize, viewport.height, viewport.width]);
+  }, [blockOrder, blocks, gridSize, viewport.width, viewport.height]);
 
   const visibleIds = useMemo(() => {
     const ids: string[] = [];
@@ -1713,7 +1727,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
     const localY = clientY - rect.top;
     const z = canvasZoomRef.current || 1;
     return {
-      x: localX / z,
+      x: (el.scrollLeft + localX) / z,
       y: (el.scrollTop + localY) / z,
     };
   }
@@ -4324,7 +4338,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       ref={containerRef}
       data-omnia-canvas
       className="relative w-full h-full overflow-auto scrollbar-hide bg-transparent"
-      style={{ touchAction: "none" }}
+      style={{ touchAction: "none", overscrollBehavior: "contain" }}
       tabIndex={0}
       onPointerDownCapture={(e) => {
         if (e.button === 0) {
@@ -4547,6 +4561,31 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
     >
       {isAiThinking && <div className="canvas-ai-thinking-overlay" aria-hidden="true" />}
 
+      {isAiThinking && (
+        <div
+          className="absolute inset-0 flex items-center justify-center pointer-events-none"
+          style={{ zIndex: 50 }}
+        >
+          <div
+            className="pointer-events-auto flex items-center gap-3 px-5 py-3 rounded-2xl"
+            style={{
+              background: "rgba(20, 20, 20, 0.85)",
+              backdropFilter: "blur(16px)",
+              border: "1px solid rgba(255,255,255,0.10)",
+              boxShadow: "0 8px 32px rgba(0,0,0,0.4)",
+            }}
+          >
+            <div className="brick-spinner" style={{ width: 18, height: 18 }} />
+            <span
+              className="text-white/80 text-sm font-medium"
+              style={{ letterSpacing: "-0.01em" }}
+            >
+              {thinkingStatusText || "AI is thinking\u2026"}
+            </span>
+          </div>
+        </div>
+      )}
+
       {aiPanel.open && (
         <div
           data-ai-answer-panel
@@ -4716,33 +4755,17 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
           height: `${surface.height}px`,
           transform: `scale(${canvasZoom})`,
           transformOrigin: "top left",
+          willChange: "transform",
+          backfaceVisibility: "hidden",
         }}
       >
-        {/* Canvas "walls" (left/right) */}
-        <div
-          className="absolute top-0 bottom-0 left-0 pointer-events-none"
-          style={{
-            width: "1px",
-            background: "rgba(255,255,255,0.14)",
-            boxShadow: "0 0 14px rgba(255,255,255,0.08)",
-          }}
-        />
-        <div
-          className="absolute top-0 bottom-0 pointer-events-none"
-          style={{
-            left: `${Math.max(0, surface.width - 1)}px`,
-            width: "1px",
-            background: "rgba(255,255,255,0.14)",
-            boxShadow: "0 0 14px rgba(255,255,255,0.08)",
-          }}
-        />
 
         {deleteZoneOpen && (
           <div
             className="absolute z-50"
             style={{
               left: `${Math.max(0, surface.width - Math.min(160, Math.max(96, Math.floor((viewport.width / (canvasZoom || 1) || surface.width) * 0.2))))}px`,
-              top: `${(scrollPos.top || 0) / (canvasZoom || 1)}px`,
+              top: `${(scrollPosRef.current.top || 0) / (canvasZoom || 1)}px`,
               width: `${Math.min(160, Math.max(96, Math.floor((viewport.width / (canvasZoom || 1) || surface.width) * 0.2)))}px`,
               height: `${(viewport.height || 0) / (canvasZoom || 1)}px`,
               pointerEvents: "none",
@@ -6157,7 +6180,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
             >
               <button
                 className="flex items-center justify-center w-7 h-7 rounded-lg hover:bg-white/10 transition-colors text-white/70 hover:text-white"
-                onClick={() => applyZoom(canvasZoom - ZOOM_STEP)}
+                onClick={() => applyZoom(canvasZoom / ZOOM_FACTOR)}
                 title="Zoom out"
               >
                 <ZoomOut className="w-3.5 h-3.5" />
@@ -6171,7 +6194,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
               </button>
               <button
                 className="flex items-center justify-center w-7 h-7 rounded-lg hover:bg-white/10 transition-colors text-white/70 hover:text-white"
-                onClick={() => applyZoom(canvasZoom + ZOOM_STEP)}
+                onClick={() => applyZoom(canvasZoom * ZOOM_FACTOR)}
                 title="Zoom in"
               >
                 <ZoomIn className="w-3.5 h-3.5" />

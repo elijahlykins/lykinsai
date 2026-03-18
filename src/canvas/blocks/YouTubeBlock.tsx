@@ -18,7 +18,7 @@ type DragState = {
   snapshot: Array<{ id: string; x: number; y: number }>;
 };
 
-type ResizeMode = "corner";
+type ResizeMode = "right" | "bottom" | "corner";
 type ResizeState = {
   pointerId: number;
   mode: ResizeMode;
@@ -280,6 +280,18 @@ export const YouTubeBlock = memo(function YouTubeBlock({ id, onMinimize, onMenu 
 
             const min = Math.max(1, Math.floor(gridSize || 24));
 
+            if (rr.mode === "right") {
+              const nextW = snapSize(rr.startW + dx);
+              updateBlock(id, { x: rr.startX, y: rr.startY, width: Math.max(min, nextW) });
+              return;
+            }
+
+            if (rr.mode === "bottom") {
+              const nextH = snapSize(rr.startH + dy);
+              updateBlock(id, { x: rr.startX, y: rr.startY, height: Math.max(min, nextH) });
+              return;
+            }
+
             const byX = dx;
             const byY = dy * rr.aspect;
             const deltaW = Math.abs(byX) >= Math.abs(byY) ? byX : byY;
@@ -387,18 +399,6 @@ export const YouTubeBlock = memo(function YouTubeBlock({ id, onMinimize, onMenu 
           </>
         )}
 
-        <button
-          type="button"
-          className="absolute top-2 right-12 z-20 w-9 h-9 rounded-lg glass-control hover:opacity-90 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-          onPointerDown={(e) => e.stopPropagation()}
-          onClick={(e) => {
-            e.stopPropagation();
-            open();
-          }}
-          title={isYouTubeVideo ? "Open on YouTube" : "Open video"}
-        >
-          <ExternalLink className="w-4 h-4" />
-        </button>
 
         <div className="absolute bottom-2 left-2 z-20 px-2 h-7 rounded-lg bg-white/22 dark:bg-white/10 border border-white/18 flex items-center gap-2 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity">
           <Youtube className="w-4 h-4" />
@@ -406,8 +406,24 @@ export const YouTubeBlock = memo(function YouTubeBlock({ id, onMinimize, onMenu 
         </div>
       </div>
 
-      {/* Resize handles (same as ImageBlock) */}
+      {/* Resize handles */}
       <div className="absolute inset-0 pointer-events-none">
+        {/* Right edge stretch */}
+        <div
+          data-resize-handle
+          className="absolute top-0 bottom-0 right-0 w-2 pointer-events-auto opacity-0 group-hover:opacity-100 transition-opacity"
+          style={{ cursor: "ew-resize" }}
+          onPointerDown={(e) => beginResize(e, "right")}
+          title="Resize width"
+        />
+        {/* Bottom edge stretch */}
+        <div
+          data-resize-handle
+          className="absolute left-0 right-0 bottom-0 h-2 pointer-events-auto opacity-0 group-hover:opacity-100 transition-opacity"
+          style={{ cursor: "ns-resize" }}
+          onPointerDown={(e) => beginResize(e, "bottom")}
+          title="Resize height"
+        />
         {/* Bottom-right corner scale */}
         <div
           data-resize-handle

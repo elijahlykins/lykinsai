@@ -17,8 +17,10 @@ type DragState = {
   snapshot: Array<{ id: string; x: number; y: number }>;
 };
 
+type ResizeMode = "right" | "bottom" | "corner";
 type ResizeState = {
   pointerId: number;
+  mode: ResizeMode;
   startClientX: number;
   startClientY: number;
   startX: number;
@@ -147,7 +149,7 @@ export const LinkBlock = memo(function LinkBlock({ id, onMinimize, onMenu }: { i
     }
   };
 
-  const beginResize = (e: React.PointerEvent) => {
+  const beginResize = (e: React.PointerEvent, mode: ResizeMode = "corner") => {
     e.stopPropagation();
     e.preventDefault();
     pushHistory();
@@ -169,6 +171,7 @@ export const LinkBlock = memo(function LinkBlock({ id, onMinimize, onMenu }: { i
     }
     resizeRef.current = {
       pointerId: e.pointerId,
+      mode,
       startClientX: e.clientX,
       startClientY: e.clientY,
       startX: Number(block.x || 0),
@@ -199,11 +202,27 @@ export const LinkBlock = memo(function LinkBlock({ id, onMinimize, onMenu }: { i
         const rr = resizeRef.current;
         if (!rr) return;
         rr.raf = null;
+        const min = Math.max(1, Math.floor(gridSize || 24));
+        const maxW = snapDownSize(rr.maxW);
+        const maxH = snapDownSize(rr.maxH);
+
+        if (rr.mode === "right") {
+          let nextW = snapSize(rr.startW + dx);
+          if (Number.isFinite(maxW)) nextW = Math.min(nextW, maxW);
+          updateBlock(id, { x: rr.startX, y: rr.startY, width: Math.max(min, nextW) } as any);
+          return;
+        }
+
+        if (rr.mode === "bottom") {
+          let nextH = snapSize(rr.startH + dy);
+          if (Number.isFinite(maxH)) nextH = Math.min(nextH, maxH);
+          updateBlock(id, { x: rr.startX, y: rr.startY, height: Math.max(min, nextH) } as any);
+          return;
+        }
+
         const byX = dx;
         const byY = dy * rr.aspect;
         const deltaW = Math.abs(byX) >= Math.abs(byY) ? byX : byY;
-        const maxW = snapDownSize(rr.maxW);
-        const maxH = snapDownSize(rr.maxH);
 
         let nextW = snapSize(rr.startW + deltaW);
         if (Number.isFinite(maxW)) nextW = Math.min(nextW, maxW);
@@ -223,8 +242,8 @@ export const LinkBlock = memo(function LinkBlock({ id, onMinimize, onMenu }: { i
         updateBlock(id, {
           x: rr.startX,
           y: rr.startY,
-          width: nextW,
-          height: nextH,
+          width: Math.max(min, nextW),
+          height: Math.max(min, nextH),
         } as any);
       });
       return;
@@ -308,19 +327,37 @@ export const LinkBlock = memo(function LinkBlock({ id, onMinimize, onMenu }: { i
     >
       <BlockHoverToolbar blockId={id} onMinimize={onMinimize} onMenu={onMenu} />
       <div className="brick-hover-hint absolute pointer-events-none opacity-0 z-50" style={{ bottom: "calc(100% + 6px)", left: "50%", transform: "translateX(-50%)", background: "rgba(0,0,0,0.7)", color: "#fff", fontSize: "10px", fontWeight: 500, padding: "3px 8px", borderRadius: "6px", whiteSpace: "nowrap" }}>Double click to focus</div>
+      {/* tab-shaped drag handle above the block */}
+      <div
+        data-drag-handle
+        className="absolute z-30 cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 transition-opacity"
+        style={{
+          left: "8px",
+          top: "-20px",
+          width: "72px",
+          height: "20px",
+          background: "linear-gradient(180deg, rgba(255,255,255,0.72), rgba(255,255,255,0.48))",
+          backdropFilter: "blur(8px)",
+          borderRadius: "8px 8px 0 0",
+          border: "1px solid rgba(255,255,255,0.55)",
+          borderBottom: "none",
+          boxShadow: "0 -2px 8px rgba(0,0,0,0.08)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+        onPointerDown={startDragStrip}
+        onPointerMove={onDragMove}
+        onPointerUp={onDragEnd}
+        onPointerCancel={onDragEnd}
+        onLostPointerCapture={onDragEnd}
+        title="Drag to move"
+      >
+        <span style={{ width: 16, height: 2, borderRadius: 1, background: "rgba(0,0,0,0.25)" }} />
+      </div>
+
       <div className={`glass-block overflow-hidden relative ${isSelected ? "omnia-selected-glass" : ""}`} style={{ width: "100%", height: "100%" }}>
-        <div
-          data-drag-handle
-          className="w-full cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 transition-opacity"
-          style={{ height: "8px" }}
-          onPointerDown={startDragStrip}
-          onPointerMove={onDragMove}
-          onPointerUp={onDragEnd}
-          onPointerCancel={onDragEnd}
-          onLostPointerCapture={onDragEnd}
-          title="Drag to move"
-        />
-        <div className="w-full relative" style={{ height: "calc(100% - 8px)" }}>
+        <div className="w-full relative" style={{ height: "100%" }}>
           {previewKind === "image" && (
             <img
               src={url}
@@ -456,31 +493,44 @@ export const LinkBlock = memo(function LinkBlock({ id, onMinimize, onMenu }: { i
             );
           })()}
 
-          <button
-            type="button"
-            className="absolute top-2 right-11 z-20 w-8 h-8 rounded-lg glass-control hover:opacity-90 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={(e) => {
-              e.stopPropagation();
-              open();
-            }}
-            title="Open"
-          >
-            {previewKind === "pdf" ? <FileText className="w-4 h-4" /> : previewKind === "video" ? <Video className="w-4 h-4" /> : <ExternalLink className="w-4 h-4" />}
-          </button>
         </div>
 
         <div className="absolute inset-0 pointer-events-none">
+          {/* Right edge stretch */}
           <div
             data-resize-handle
-            className="absolute right-0 bottom-0 w-5 h-5 pointer-events-auto opacity-0 group-hover:opacity-100 transition-opacity"
-            style={{ cursor: "nwse-resize" }}
-            onPointerDown={beginResize}
+            className="absolute top-0 bottom-0 right-0 w-2 pointer-events-auto opacity-0 group-hover:opacity-100 transition-opacity"
+            style={{ cursor: "ew-resize" }}
+            onPointerDown={(e) => beginResize(e, "right")}
             onPointerMove={onDragMove}
             onPointerUp={onDragEnd}
             onPointerCancel={onDragEnd}
             onLostPointerCapture={onDragEnd}
-            title="Resize"
+            title="Resize width"
+          />
+          {/* Bottom edge stretch */}
+          <div
+            data-resize-handle
+            className="absolute left-0 right-0 bottom-0 h-2 pointer-events-auto opacity-0 group-hover:opacity-100 transition-opacity"
+            style={{ cursor: "ns-resize" }}
+            onPointerDown={(e) => beginResize(e, "bottom")}
+            onPointerMove={onDragMove}
+            onPointerUp={onDragEnd}
+            onPointerCancel={onDragEnd}
+            onLostPointerCapture={onDragEnd}
+            title="Resize height"
+          />
+          {/* Bottom-right corner scale */}
+          <div
+            data-resize-handle
+            className="absolute right-0 bottom-0 w-5 h-5 pointer-events-auto opacity-0 group-hover:opacity-100 transition-opacity"
+            style={{ cursor: "nwse-resize" }}
+            onPointerDown={(e) => beginResize(e, "corner")}
+            onPointerMove={onDragMove}
+            onPointerUp={onDragEnd}
+            onPointerCancel={onDragEnd}
+            onLostPointerCapture={onDragEnd}
+            title="Scale"
           >
             <div
               className="w-full h-full rounded-sm"

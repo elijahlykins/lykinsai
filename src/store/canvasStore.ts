@@ -289,31 +289,14 @@ export const useCanvasStore = create<CanvasState>()(
 
     setFocusedBrickIds: (ids) => set((state) => { state.focusedBrickIds = ids; }),
 
-    setCanvasWidth: (width) => {
+    setCanvasWidth: (_width) => {
       set((state) => {
-        const g = Math.max(1, Math.floor(state.gridSize || 24));
-        const raw = Number.isFinite(width as any) ? Math.max(g, Math.floor(width as number)) : null;
-        state.canvasWidth = raw != null ? raw : null;
-        // Blocks keep their stored size/position — the canvas scrolls to fit.
+        state.canvasWidth = null;
       });
     },
 
     addBlock: (block) => {
       set((state) => {
-        // Keep blocks within the horizontal "walls" if canvasWidth is known.
-        const g = Math.max(1, Math.floor(state.gridSize || 24));
-        const canvasWidth = state.canvasWidth;
-        const bw = Math.max(1, Math.floor((block as any).width || g));
-        let bx = Math.floor((block as any).x || 0);
-        if (canvasWidth != null && (block as any).type !== "create") {
-          const cw = Math.floor(canvasWidth as number);
-          const minW = Math.max(1, g * 4);
-          if (bx + bw > cw) bx = Math.max(0, cw - bw);
-          let finalW = bw;
-          if (bw > cw) { finalW = Math.max(minW, cw); bx = 0; }
-          (block as any).width = finalW;
-          (block as any).x = bx;
-        }
         state.blocks[block.id] = block;
         if (!state.blockOrder.includes(block.id)) {
           if ((block as any).type === "create") state.blockOrder.unshift(block.id);
@@ -328,7 +311,7 @@ export const useCanvasStore = create<CanvasState>()(
       return {
         id: makeId("text"),
         type: "text",
-        x: clampXWithinCanvas({ x: snapToGrid(x, grid), width: grid, canvasWidth: get().canvasWidth }),
+        x: snapToGrid(x, grid),
         y: snapToGrid(y, grid),
         width: grid,
         height: grid,
@@ -430,7 +413,7 @@ export const useCanvasStore = create<CanvasState>()(
       const b: Block = {
         id: makeId("youtube"),
         type: "youtube",
-        x: clampXWithinCanvas({ x: snapToGrid(pos.x, grid), width: w, canvasWidth: get().canvasWidth }),
+        x: snapToGrid(pos.x, grid),
         y: snapToGrid(pos.y, grid),
         width: w,
         height: h,
@@ -447,35 +430,12 @@ export const useCanvasStore = create<CanvasState>()(
       set((state) => {
         const b = state.blocks[id];
         if (!b) return;
-        const canvasWidth = state.canvasWidth;
         const prevX = Math.floor((b as any).x || 0);
         const prevY = Math.floor((b as any).y || 0);
         const prevW = Math.max(1, Math.floor((b as any).width || state.gridSize || 24));
         const prevH = Math.max(1, Math.floor((b as any).height || state.gridSize || 24));
 
-        const nextXRaw = patch.x != null ? Math.floor(patch.x as any) : prevX;
-        const nextWRaw = patch.width != null ? Math.max(1, Math.floor(patch.width as any)) : prevW;
-
-        let nextX = nextXRaw;
-        let nextW = nextWRaw;
-        if (canvasWidth != null && (b as any).type !== "create") {
-          const cw = Math.floor(canvasWidth as number);
-          const minW = Math.max(1, state.gridSize * 4);
-          if (nextX + nextW > cw) {
-            nextX = Math.max(0, cw - nextW);
-          }
-          if (nextW > cw) {
-            nextW = Math.max(minW, cw);
-            nextX = 0;
-          }
-          nextX = Math.max(0, nextX);
-        }
-
         Object.assign(b, patch);
-        if (canvasWidth != null && (b as any).type !== "create") {
-          (b as any).x = nextX;
-          (b as any).width = nextW;
-        }
         const bounded = clampWithinContainer({ state, block: b, x: (b as any).x, y: (b as any).y });
         (b as any).x = bounded.x;
         (b as any).y = bounded.y;
@@ -665,7 +625,7 @@ export const useCanvasStore = create<CanvasState>()(
     setCamera: (patch) => {
       set((state) => {
         state.camera = { ...state.camera, ...patch };
-        state.camera.zoom = clamp(state.camera.zoom, 0.1, 5);
+        state.camera.zoom = clamp(state.camera.zoom, 0.2, 3);
       });
     },
 
@@ -680,7 +640,7 @@ export const useCanvasStore = create<CanvasState>()(
       set((state) => {
         const zoomDelta = delta * -0.001;
         const prevZoom = state.camera.zoom;
-        const nextZoom = clamp(prevZoom + zoomDelta, 0.1, 5);
+        const nextZoom = clamp(prevZoom + zoomDelta, 0.2, 3);
         if (nextZoom === prevZoom) return;
 
         // Zoom toward pointer (client -> local -> world)
@@ -719,14 +679,7 @@ export const useCanvasStore = create<CanvasState>()(
         const b = state.blocks[id];
         if (!b) return;
         const rawX = snap ? snapToGrid(nextX, grid) : nextX;
-        const nextX2 =
-          (b as any).type === "create"
-            ? rawX
-            : clampXWithinCanvas({
-                x: rawX,
-                width: Math.max(1, Math.floor((b as any).width || grid)),
-                canvasWidth: state.canvasWidth,
-              });
+        const nextX2 = (b as any).type === "create" ? rawX : Math.floor(rawX);
         const nextY2 = snap ? snapToGrid(nextY, grid) : nextY;
         const bounded = clampWithinContainer({ state, block: b, x: nextX2, y: nextY2 });
         b.x = bounded.x;
