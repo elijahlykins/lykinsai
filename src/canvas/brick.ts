@@ -46,6 +46,8 @@ export function getColumnCount(_shell: BrickShellModel): number {
 
 export { COLUMN_GAP_PX };
 
+export type ConnectionNodeSide = "top" | "right" | "bottom" | "left";
+
 export type BrickShellRenderOptions = {
   isRaised?: boolean;
   isActivated?: boolean;
@@ -66,6 +68,7 @@ export type BrickShellRenderOptions = {
   extraContent?: React.ReactNode;
   onBrickMenu?: (id: string, rect: DOMRect) => void;
   onMinimize?: (id: string) => void;
+  onConnectionDragStart?: (id: string, side: ConnectionNodeSide, e: React.PointerEvent<HTMLDivElement>) => void;
 };
 
 export function toBrickShellModel(block: Block | any): BrickShellModel {
@@ -1278,6 +1281,59 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
             React.createElement(MoreHorizontal, { className: "w-3.5 h-3.5 text-black/50 dark:text-white/50" })
           )
         )
+      : null,
+    typeof opts?.onConnectionDragStart === "function"
+      ? renderConnectionNodes(shell.id, opts.onConnectionDragStart)
       : null
+  );
+}
+
+function renderConnectionNodes(
+  id: string,
+  onDragStart: (id: string, side: ConnectionNodeSide, e: React.PointerEvent<HTMLDivElement>) => void
+) {
+  const nodeSize = 10;
+  const sides: Array<{ side: ConnectionNodeSide; style: React.CSSProperties }> = [
+    {
+      side: "top",
+      style: { top: `-${nodeSize / 2}px`, left: "50%", transform: "translateX(-50%)" },
+    },
+    {
+      side: "right",
+      style: { top: "50%", right: `-${nodeSize / 2}px`, transform: "translateY(-50%)" },
+    },
+    {
+      side: "bottom",
+      style: { bottom: `-${nodeSize / 2}px`, left: "50%", transform: "translateX(-50%)" },
+    },
+    {
+      side: "left",
+      style: { top: "50%", left: `-${nodeSize / 2}px`, transform: "translateY(-50%)" },
+    },
+  ];
+
+  return sides.map(({ side, style }) =>
+    React.createElement("div", {
+      key: `conn-node-${side}`,
+      "data-connection-node": side,
+      className:
+        "absolute opacity-0 group-hover:opacity-100 transition-all cursor-crosshair z-[35] hover:scale-150",
+      style: {
+        ...style,
+        width: `${nodeSize}px`,
+        height: `${nodeSize}px`,
+        borderRadius: "50%",
+        background: "rgba(59,130,246,0.55)",
+        border: "2px solid rgba(255,255,255,0.9)",
+        boxShadow: "0 1px 4px rgba(0,0,0,0.25)",
+        transition: "opacity 0.15s, transform 0.15s, background 0.15s",
+      },
+      onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => {
+        e.stopPropagation();
+        e.preventDefault();
+        onDragStart(id, side, e);
+      },
+      onClick: (e: any) => e.stopPropagation(),
+    })
   );
 }

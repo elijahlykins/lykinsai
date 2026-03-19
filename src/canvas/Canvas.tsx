@@ -14,6 +14,9 @@ import { MediaBlock } from "@/canvas/blocks/MediaBlock";
 import { SpreadsheetBlock } from "@/canvas/blocks/SpreadsheetBlock";
 import type { AiAnswerEntry } from "@/canvas/types";
 import { canUseActiveBrickLogic, renderBrickShell, computeColumnCount, COLUMN_GAP_PX } from "./brick";
+import type { ConnectionNodeSide } from "./brick";
+import ConnectionWires from "./ConnectionWires";
+import type { WireSide } from "@/store/canvasStore";
 import { useThinkingStatus } from "@/hooks/useThinkingStatus";
 import { getAiPrefs } from "@/lib/ai-prefs";
 import { extractTextFromFile, isDocumentFile } from "@/lib/extract-text";
@@ -744,6 +747,17 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
   const [vaultSavedId, setVaultSavedId] = useState<string | null>(null);
   const [hoveredSpecialBlockId, setHoveredSpecialBlockId] = useState<string | null>(null);
   const [deleteZoneOpen, setDeleteZoneOpen] = useState(false);
+  const [wireDrag, setWireDrag] = useState<{
+    fromId: string;
+    fromSide: WireSide;
+    startX: number;
+    startY: number;
+    currentX: number;
+    currentY: number;
+    nearTarget: { id: string; side: WireSide } | null;
+  } | null>(null);
+  const wireDragRef = useRef(wireDrag);
+  wireDragRef.current = wireDrag;
   const handleBlockMenu = useCallback((bid: string, rect: DOMRect) => {
     setBrickMenuSub(null);
     setBrickMenu((prev) => prev?.id === bid ? null : { id: bid, x: rect.left, y: rect.bottom + 4 });
@@ -1018,6 +1032,9 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
   const pushHistory = useCanvasStore((s) => s.pushHistory);
   const deleteBlock = useCanvasStore((s) => s.deleteBlock);
   const setFocusedBrickIds = useCanvasStore((s) => s.setFocusedBrickIds);
+  const wireConnections = useCanvasStore((s) => s.wireConnections);
+  const addWireConnection = useCanvasStore((s) => s.addWireConnection);
+  const removeWireConnection = useCanvasStore((s) => s.removeWireConnection);
 
   useEffect(() => {
     setFocusedBrickIds(raisedBrickIds);
@@ -1707,6 +1724,97 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
     window.addEventListener("keydown", onKeyDown, { capture: true });
     return () => window.removeEventListener("keydown", onKeyDown, { capture: true } as any);
   }, [createShapeBlockAt]);
+
+  // --- Wire connection drag handlers ---
+  const getNodeWorldPosition = useCallback(
+    (blockId: string, side: WireSide) => {
+      const b: any = blocks[blockId];
+      if (!b) return { x: 0, y: 0 };
+      const bx = Number(b.x || 0);
+      const by = Number(b.y || 0);
+      const bw = Number(b.width || gridSize);
+      const bh = Number(b.height || gridSize);
+      switch (side) {
+        case "top": return { x: bx + bw / 2, y: by };
+        case "right": return { x: bx + bw, y: by + bh / 2 };
+        case "bottom": return { x: bx + bw / 2, y: by + bh };
+        case "left": return { x: bx, y: by + bh / 2 };
+      }
+    },
+    [blocks, gridSize]
+  );
+
+  const findNearestConnectionTarget = useCallback(
+    (worldX: number, worldY: number, excludeId: string): { id: string; side: WireSide } | null => {
+      const snapDist = 24;
+      let best: { id: string; side: WireSide; dist: number } | null = null;
+      for (const id of blockOrder) {
+        if (id === excludeId) continue;
+        const b: any = blocks[id];
+        if (!b) continue;
+        const sides: WireSide[] = ["top", "right", "bottom", "left"];
+        for (const side of sides) {
+          const pt = getNodeWorldPosition(id, side);
+          const d = Math.hypot(worldX - pt.x, worldY - pt.y);
+          if (d < snapDist && (!best || d < best.dist)) {
+            best = { id, side, dist: d };
+          }
+        }
+      }
+      return best ? { id: best.id, side: best.side } : null;
+    },
+    [blockOrder, blocks, getNodeWorldPosition]
+  );
+
+  const handleConnectionDragStart = useCallback(
+    (id: string, side: ConnectionNodeSide, e: React.PointerEvent<HTMLDivElement>) => {
+      const pos = getNodeWorldPosition(id, side as WireSide);
+      setWireDrag({
+        fromId: id,
+        fromSide: side as WireSide,
+        startX: pos.x,
+        startY: pos.y,
+        currentX: pos.x,
+        currentY: pos.y,
+        nearTarget: null,
+      });
+    },
+    [getNodeWorldPosition]
+  );
+
+  useEffect(() => {
+    if (!wireDrag) return;
+
+    const onMove = (e: PointerEvent) => {
+      const world = clientToWorld(e.clientX, e.clientY);
+      const near = findNearestConnectionTarget(world.x, world.y, wireDragRef.current?.fromId || "");
+      setWireDrag((prev) =>
+        prev ? { ...prev, currentX: world.x, currentY: world.y, nearTarget: near } : null
+      );
+    };
+
+    const onUp = () => {
+      const drag = wireDragRef.current;
+      if (drag?.nearTarget) {
+        pushHistory();
+        addWireConnection({
+          fromId: drag.fromId,
+          toId: drag.nearTarget.id,
+          fromSide: drag.fromSide,
+          toSide: drag.nearTarget.side,
+        });
+        setTimeout(() => window.dispatchEvent(new Event("omnia_flush_save")), 300);
+      }
+      setWireDrag(null);
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, [!!wireDrag]);
 
   // Expand the inner scroll surface to fit placed blocks and provide room for panning.
   // Surface is zoom-independent to avoid layout thrashing during zoom.
@@ -4492,6 +4600,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
           if (dropId) {
             const st = useCanvasStore.getState() as any;
             updateBlock(dropId as any, { data: { ...((st.blocks as any)?.[dropId]?.data || {}), aiResponseBubble: true } } as any);
+            setTimeout(() => window.dispatchEvent(new Event("omnia_flush_save")), 500);
           }
           return;
         }
@@ -5739,6 +5848,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
               setBrickMenu((prev) => prev?.id === bid ? null : { id: bid, x: rect.left, y: rect.bottom + 4 });
             },
             onMinimize: toggleMinimized,
+            onConnectionDragStart: handleConnectionDragStart,
           });
 
           if (dictatingBlockId === id || dictateTranscribingBlockId === id) {
@@ -5855,7 +5965,19 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
           return brickEl;
         })}
 
-        
+        <ConnectionWires
+          blocks={blocks as any}
+          wireConnections={wireConnections}
+          activeDrag={wireDrag}
+          surfaceWidth={surface.width}
+          surfaceHeight={surface.height}
+          onRemoveWire={(id) => {
+            pushHistory();
+            removeWireConnection(id);
+            setTimeout(() => window.dispatchEvent(new Event("omnia_flush_save")), 300);
+          }}
+        />
+
       </div>
       </div>
 
@@ -5892,14 +6014,10 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
           <>
             <div className="fixed inset-0 z-[299]" onClick={() => { setBrickMenu(null); setBrickMenuSub(null); }} onContextMenu={(e) => { e.preventDefault(); setBrickMenu(null); setBrickMenuSub(null); }} />
             <div
-              className="fixed z-[300] min-w-[180px] rounded-xl py-1.5 flex flex-col"
+              className="glass-control fixed z-[300] min-w-[180px] rounded-xl py-1.5 flex flex-col"
               style={{
                 top: `${brickMenu.y}px`,
                 left: `${brickMenu.x}px`,
-                background: "rgba(30, 30, 30, 0.92)",
-                backdropFilter: "blur(16px)",
-                border: "1px solid rgba(255,255,255,0.10)",
-                boxShadow: "0 8px 32px rgba(0,0,0,0.45)",
                 animation: "zoomPanelSlideUp 0.12s ease-out",
               }}
               onPointerDown={(e) => e.stopPropagation()}
@@ -5913,7 +6031,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
                   ].map((item) => (
                     <button
                       key={item.action}
-                      className="flex items-center gap-2.5 px-3 py-1.5 text-[12px] text-left text-white/80 hover:bg-white/10 transition-colors"
+                      className="flex items-center gap-2.5 px-3 py-1.5 text-[12px] text-left text-black/70 dark:text-white/80 hover:bg-black/8 dark:hover:bg-white/10 transition-colors"
                       onClick={() => {
                         const bid = brickMenu.id;
                         setBrickMenu(null);
@@ -5941,7 +6059,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
                   ))}
                   <button
                     disabled={vaultSavedId === brickMenu.id}
-                    className={`flex items-center gap-2.5 px-3 py-1.5 text-[12px] text-left transition-colors ${vaultSavedId === brickMenu.id ? "text-green-400" : "text-white/80 hover:bg-white/10"}`}
+                    className={`flex items-center gap-2.5 px-3 py-1.5 text-[12px] text-left transition-colors ${vaultSavedId === brickMenu.id ? "text-green-600 dark:text-green-400" : "text-black/70 dark:text-white/80 hover:bg-black/8 dark:hover:bg-white/10"}`}
                     onClick={async () => {
                       const bid = brickMenu.id;
                       if (!user?.id) return;
@@ -6026,14 +6144,14 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
                     {vaultSavedId === brickMenu.id ? <Check className="w-3.5 h-3.5 shrink-0" /> : <Archive className="w-3.5 h-3.5 shrink-0" />}
                     <span>{vaultSavedId === brickMenu.id ? "Saved" : "Save to Vault"}</span>
                   </button>
-                  <div className="mx-2 my-1 h-px bg-white/8" />
+                  <div className="mx-2 my-1 h-px bg-black/8 dark:bg-white/8" />
                   {[
                     { icon: ArrowUpToLine, label: "Bring Forward", action: "bring-forward" },
                     { icon: ArrowDownToLine, label: "Send Backward", action: "send-backward" },
                   ].map((item) => (
                     <button
                       key={item.action}
-                      className="flex items-center gap-2.5 px-3 py-1.5 text-[12px] text-left text-white/80 hover:bg-white/10 transition-colors"
+                      className="flex items-center gap-2.5 px-3 py-1.5 text-[12px] text-left text-black/70 dark:text-white/80 hover:bg-black/8 dark:hover:bg-white/10 transition-colors"
                       onClick={() => {
                         const bid = brickMenu.id;
                         if (item.action === "bring-forward") {
@@ -6048,9 +6166,9 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
                       <span>{item.label}</span>
                     </button>
                   ))}
-                  <div className="mx-2 my-1 h-px bg-white/8" />
+                  <div className="mx-2 my-1 h-px bg-black/8 dark:bg-white/8" />
                   <button
-                    className="flex items-center gap-2.5 px-3 py-1.5 text-[12px] text-left text-white/80 hover:bg-white/10 transition-colors"
+                    className="flex items-center gap-2.5 px-3 py-1.5 text-[12px] text-left text-black/70 dark:text-white/80 hover:bg-black/8 dark:hover:bg-white/10 transition-colors"
                     onClick={() => setBrickMenuSub("brick-color")}
                   >
                     <Palette className="w-3.5 h-3.5 shrink-0" />
@@ -6058,21 +6176,21 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
                     <ChevronDown className="w-3 h-3 ml-auto opacity-40 -rotate-90" />
                   </button>
                   <button
-                    className="flex items-center gap-2.5 px-3 py-1.5 text-[12px] text-left text-white/80 hover:bg-white/10 transition-colors"
+                    className="flex items-center gap-2.5 px-3 py-1.5 text-[12px] text-left text-black/70 dark:text-white/80 hover:bg-black/8 dark:hover:bg-white/10 transition-colors"
                     onClick={() => setBrickMenuSub("text-color")}
                   >
                     <TypeIcon className="w-3.5 h-3.5 shrink-0" />
                     <span>Change Text Color</span>
                     <ChevronDown className="w-3 h-3 ml-auto opacity-40 -rotate-90" />
                   </button>
-                  <div className="mx-2 my-1 h-px bg-white/8" />
+                  <div className="mx-2 my-1 h-px bg-black/8 dark:bg-white/8" />
                   {[
                     { icon: FileText, label: "AI Summarize", action: "ai-summary", prompt: "Summarize this in 2-3 sentences max. Core concept, value prop, who it's for. Nothing else." },
                     { icon: Sparkles, label: "AI Analyze", action: "ai-analyse", prompt: "Analyse this idea. Strengths, weaknesses, opportunities, risks — bullet points only, max 6 bullets. No fluff." },
                   ].map((item) => (
                     <button
                       key={item.action}
-                      className="flex items-center gap-2.5 px-3 py-1.5 text-[12px] text-left text-blue-300 hover:bg-blue-500/15 transition-colors"
+                      className="flex items-center gap-2.5 px-3 py-1.5 text-[12px] text-left text-blue-600 dark:text-blue-300 hover:bg-blue-500/10 dark:hover:bg-blue-500/15 transition-colors"
                       onClick={() => {
                         const bid = brickMenu.id;
                         setBrickMenu(null);
@@ -6122,9 +6240,9 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
                       <span>{item.label}</span>
                     </button>
                   ))}
-                  <div className="mx-2 my-1 h-px bg-white/8" />
+                  <div className="mx-2 my-1 h-px bg-black/8 dark:bg-white/8" />
                   <button
-                    className="flex items-center gap-2.5 px-3 py-1.5 text-[12px] text-left text-red-400 hover:bg-red-500/15 transition-colors"
+                    className="flex items-center gap-2.5 px-3 py-1.5 text-[12px] text-left text-red-600 dark:text-red-400 hover:bg-red-500/10 dark:hover:bg-red-500/15 transition-colors"
                     onClick={() => { deleteBlock(brickMenu.id as any); setBrickMenu(null); }}
                   >
                     <Trash2 className="w-3.5 h-3.5 shrink-0" />
@@ -6136,18 +6254,18 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
               {brickMenuSub === "brick-color" && (
                 <>
                   <button
-                    className="flex items-center gap-2 px-3 py-1.5 text-[12px] text-white/60 hover:bg-white/10 transition-colors"
+                    className="flex items-center gap-2 px-3 py-1.5 text-[12px] text-black/50 dark:text-white/60 hover:bg-black/8 dark:hover:bg-white/10 transition-colors"
                     onClick={() => setBrickMenuSub(null)}
                   >
                     <ChevronDown className="w-3 h-3 rotate-90" />
                     <span>Brick Color</span>
                   </button>
-                  <div className="mx-2 my-1 h-px bg-white/8" />
+                  <div className="mx-2 my-1 h-px bg-black/8 dark:bg-white/8" />
                   <div className="grid grid-cols-5 gap-1.5 px-3 py-2">
                     {BRICK_COLORS.map((c) => (
                       <button
                         key={c.label}
-                        className="w-7 h-7 rounded-lg border border-white/15 hover:scale-110 transition-transform flex items-center justify-center"
+                        className="w-7 h-7 rounded-lg border border-black/15 dark:border-white/15 hover:scale-110 transition-transform flex items-center justify-center"
                         style={{ background: c.value || "linear-gradient(145deg, rgba(255,255,255,0.34), rgba(255,255,255,0.18))" }}
                         title={c.label}
                         onClick={() => {
@@ -6156,7 +6274,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
                           setBrickMenuSub(null);
                         }}
                       >
-                        {!c.value && <span className="text-[9px] text-white/40">∅</span>}
+                        {!c.value && <span className="text-[9px] text-black/40 dark:text-white/40">∅</span>}
                       </button>
                     ))}
                   </div>
@@ -6166,18 +6284,18 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
               {brickMenuSub === "text-color" && (
                 <>
                   <button
-                    className="flex items-center gap-2 px-3 py-1.5 text-[12px] text-white/60 hover:bg-white/10 transition-colors"
+                    className="flex items-center gap-2 px-3 py-1.5 text-[12px] text-black/50 dark:text-white/60 hover:bg-black/8 dark:hover:bg-white/10 transition-colors"
                     onClick={() => setBrickMenuSub(null)}
                   >
                     <ChevronDown className="w-3 h-3 rotate-90" />
                     <span>Text Color</span>
                   </button>
-                  <div className="mx-2 my-1 h-px bg-white/8" />
+                  <div className="mx-2 my-1 h-px bg-black/8 dark:bg-white/8" />
                   <div className="grid grid-cols-5 gap-1.5 px-3 py-2">
                     {TEXT_COLORS.map((c) => (
                       <button
                         key={c.label}
-                        className="w-7 h-7 rounded-lg border border-white/15 hover:scale-110 transition-transform flex items-center justify-center"
+                        className="w-7 h-7 rounded-lg border border-black/15 dark:border-white/15 hover:scale-110 transition-transform flex items-center justify-center"
                         style={{ background: c.value || "transparent" }}
                         title={c.label}
                         onClick={() => {
@@ -6186,8 +6304,8 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
                           setBrickMenuSub(null);
                         }}
                       >
-                        {!c.value && <span className="text-[9px] text-white/40">∅</span>}
-                        {c.value && <span className="text-[11px] font-bold" style={{ color: c.value, textShadow: "0 1px 2px rgba(0,0,0,0.5)" }}>A</span>}
+                        {!c.value && <span className="text-[9px] text-black/40 dark:text-white/40">∅</span>}
+                        {c.value && <span className="text-[11px] font-bold" style={{ color: c.value, textShadow: "0 1px 2px rgba(0,0,0,0.3)" }}>A</span>}
                       </button>
                     ))}
                   </div>
@@ -6205,53 +6323,47 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
           <button
             type="button"
             onClick={() => setZoomPanelOpen((v) => !v)}
-            className="rounded-full w-9 h-9 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center"
+            className="rounded-full w-9 h-9 glass-control hover:opacity-90 transition-colors touch-manipulation flex items-center justify-center text-black/60 dark:text-white/70"
             title={zoomPanelOpen ? "Hide zoom" : "Show zoom"}
           >
             {zoomPanelOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronUp className="w-4 h-4" />}
           </button>
           {zoomPanelOpen && (
             <div
-              className="flex items-center gap-1 rounded-xl px-1.5 py-1"
-              style={{
-                background: "rgba(30, 30, 30, 0.85)",
-                backdropFilter: "blur(12px)",
-                border: "1px solid rgba(255,255,255,0.10)",
-                boxShadow: "0 4px 20px rgba(0,0,0,0.35)",
-                animation: "zoomPanelSlideUp 0.15s ease-out",
-              }}
+              className="glass-control flex items-center gap-1 rounded-full px-1.5 py-1"
+              style={{ animation: "zoomPanelSlideUp 0.15s ease-out" }}
             >
               <button
-                className="flex items-center justify-center w-7 h-7 rounded-lg hover:bg-white/10 transition-colors text-white/70 hover:text-white"
+                className="flex items-center justify-center w-7 h-7 rounded-lg hover:bg-black/10 dark:hover:bg-white/15 transition-colors text-black/60 dark:text-white/70 hover:text-black/90 dark:hover:text-white"
                 onClick={() => applyZoom(canvasZoom / ZOOM_FACTOR)}
                 title="Zoom out"
               >
                 <ZoomOut className="w-3.5 h-3.5" />
               </button>
               <button
-                className="flex items-center justify-center min-w-[42px] h-7 rounded-lg hover:bg-white/10 transition-colors text-[11px] font-medium text-white/60 hover:text-white tabular-nums"
+                className="flex items-center justify-center min-w-[42px] h-7 rounded-lg hover:bg-black/10 dark:hover:bg-white/15 transition-colors text-[11px] font-medium text-black/50 dark:text-white/60 hover:text-black/90 dark:hover:text-white tabular-nums"
                 onClick={() => applyZoom(1)}
                 title="Reset zoom"
               >
                 {Math.round(canvasZoom * 100)}%
               </button>
               <button
-                className="flex items-center justify-center w-7 h-7 rounded-lg hover:bg-white/10 transition-colors text-white/70 hover:text-white"
+                className="flex items-center justify-center w-7 h-7 rounded-lg hover:bg-black/10 dark:hover:bg-white/15 transition-colors text-black/60 dark:text-white/70 hover:text-black/90 dark:hover:text-white"
                 onClick={() => applyZoom(canvasZoom * ZOOM_FACTOR)}
                 title="Zoom in"
               >
                 <ZoomIn className="w-3.5 h-3.5" />
               </button>
               <button
-                className="flex items-center justify-center w-7 h-7 rounded-lg hover:bg-white/10 transition-colors text-white/50 hover:text-white"
+                className="flex items-center justify-center w-7 h-7 rounded-lg hover:bg-black/10 dark:hover:bg-white/15 transition-colors text-black/50 dark:text-white/50 hover:text-black/90 dark:hover:text-white"
                 onClick={() => applyZoom(1)}
                 title="Fit to view"
               >
                 <Maximize className="w-3 h-3" />
               </button>
-              <div className="w-px h-4 bg-white/15 mx-0.5" />
+              <div className="w-px h-4 bg-black/10 dark:bg-white/10 mx-0.5" />
               <button
-                className={`flex items-center justify-center w-7 h-7 rounded-lg transition-colors ${wheelZoomMode ? "bg-blue-500/25 text-blue-400" : "hover:bg-white/10 text-white/50 hover:text-white"}`}
+                className={`flex items-center justify-center w-7 h-7 rounded-lg transition-colors ${wheelZoomMode ? "bg-blue-500/25 text-blue-500 dark:text-blue-400" : "hover:bg-black/10 dark:hover:bg-white/15 text-black/50 dark:text-white/50 hover:text-black/90 dark:hover:text-white"}`}
                 onClick={() => {
                   setWheelZoomMode((v) => {
                     const next = !v;

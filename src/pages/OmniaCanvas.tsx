@@ -571,6 +571,7 @@ export default function OmniaCanvasPage() {
   const [isTranscribing, setIsTranscribing] = useState(false);
   const updateBlock = useCanvasStore((s) => s.updateBlock);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
+  const chatUserScrolledUpRef = useRef(false);
   const chatPanelInputRef = useRef<HTMLTextAreaElement | null>(null);
   const centerChatInputRef = useRef<HTMLTextAreaElement | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -685,6 +686,7 @@ export default function OmniaCanvasPage() {
       blockOrder: st.blockOrder,
       camera: st.camera,
       gridSize: st.gridSize,
+      wireConnections: st.wireConnections,
       title: resolvedTitle,
       version: SNAPSHOT_VERSION,
     };
@@ -697,7 +699,6 @@ export default function OmniaCanvasPage() {
       const order: string[] = Array.isArray(snapshot.blockOrder) ? snapshot.blockOrder : [];
       const isTransientTextBrick = (b: any) => {
         const data = (b?.data && typeof b.data === "object" ? b.data : {}) as Record<string, any>;
-        if (Boolean(data.aiResponseBubble)) return true;
         const txt = String(data.content ?? data.body ?? b?.content ?? "")
           .trim()
           .toLowerCase();
@@ -750,7 +751,8 @@ export default function OmniaCanvasPage() {
         });
       const camera = snapshot.camera || { x: 0, y: 0, zoom: 1 };
       const g = Number.isFinite(snapshot.gridSize) ? Number(snapshot.gridSize) : gridSize;
-      loadBlocks(blocks, { camera, gridSize: g });
+      const wires = Array.isArray(snapshot.wireConnections) ? snapshot.wireConnections : [];
+      loadBlocks(blocks, { camera, gridSize: g, wireConnections: wires });
       if (snapshot.title) setTitle(String(snapshot.title));
 
       // Re-resolve storage URLs for blocks whose base64 was stripped on save
@@ -1618,6 +1620,7 @@ export default function OmniaCanvasPage() {
       requestAnimationFrame(() => {
         window.dispatchEvent(new CustomEvent("omnia_fit_block", { detail: { id } }));
       });
+      setTimeout(() => window.dispatchEvent(new Event("omnia_flush_save")), 500);
     }
   }, [addTextBlockAt, calcAiBubbleSize, getChatRailWidthPx]);
 
@@ -2856,8 +2859,10 @@ export default function OmniaCanvasPage() {
         idx += WORDS_PER_TICK;
         const partial = words.slice(0, idx).join("");
         setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: partial } : m)));
-        const el = chatScrollRef.current;
-        if (el) el.scrollTop = el.scrollHeight;
+        if (!chatUserScrolledUpRef.current) {
+          const el = chatScrollRef.current;
+          if (el) el.scrollTop = el.scrollHeight;
+        }
         if (idx >= words.length) {
           if (chatTypingTimerRef.current) window.clearInterval(chatTypingTimerRef.current);
           chatTypingTimerRef.current = null;
@@ -3097,6 +3102,7 @@ export default function OmniaCanvasPage() {
   const handleChatSend = async () => {
     const text = chatInput.trim();
     if (!text || isChatLoading || isSendingRef.current) return;
+    chatUserScrolledUpRef.current = false;
     window.setTimeout(() => chatPanelInputRef.current?.focus(), 0);
 
     const now = Date.now();
@@ -3643,8 +3649,10 @@ export default function OmniaCanvasPage() {
                         updateBlock(String(responseBlockId), { content: normalized, width: size.width, height: size.height } as any);
                       }
                     }
-                    const el = chatScrollRef.current;
-                    if (el) el.scrollTop = el.scrollHeight;
+                    if (!chatUserScrolledUpRef.current) {
+                      const el = chatScrollRef.current;
+                      if (el) el.scrollTop = el.scrollHeight;
+                    }
                   }
                 } catch {}
               }
@@ -3886,8 +3894,25 @@ export default function OmniaCanvasPage() {
     }
   }, [chatInput, handleChatSend]);
 
+  const chatIsNearBottom = useCallback((threshold = 80) => {
+    const el = chatScrollRef.current;
+    if (!el) return true;
+    return el.scrollHeight - el.scrollTop - el.clientHeight <= threshold;
+  }, []);
+
+  useEffect(() => {
+    const el = chatScrollRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      chatUserScrolledUpRef.current = !chatIsNearBottom();
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [chatMode, chatRailVisible, chatIsNearBottom]);
+
   useEffect(() => {
     if (!chatMode && !chatRailVisible) return;
+    if (chatUserScrolledUpRef.current) return;
     const el = chatScrollRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;

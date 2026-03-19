@@ -7,6 +7,16 @@ import { extractYouTubeVideoId } from "@/canvas/utils/youtube";
 import type { UniversalBlockConnection, UniversalBlockRuntime } from "@/canvas/blockSystem/types";
 import type { BrickTrait } from "@/canvas/blockSystem/types";
 
+export type WireSide = "top" | "right" | "bottom" | "left";
+
+export type WireConnection = {
+  id: string;
+  fromId: BlockId;
+  toId: BlockId;
+  fromSide: WireSide;
+  toSide: WireSide;
+};
+
 const MAX_UNDO_HISTORY = 30;
 
 type CanvasState = {
@@ -47,7 +57,7 @@ type CanvasState = {
   bringForward: (id: BlockId) => void;
   sendBackward: (id: BlockId) => void;
   sendToBack: (id: BlockId) => void;
-  loadBlocks: (blocks: Block[], opts?: { camera?: Camera; gridSize?: number }) => void;
+  loadBlocks: (blocks: Block[], opts?: { camera?: Camera; gridSize?: number; wireConnections?: WireConnection[] }) => void;
   reset: () => void;
 
   setCamera: (patch: Partial<Camera>) => void;
@@ -77,6 +87,11 @@ type CanvasState = {
 
   focusedBrickIds: BlockId[];
   setFocusedBrickIds: (ids: BlockId[]) => void;
+
+  wireConnections: WireConnection[];
+  addWireConnection: (conn: Omit<WireConnection, "id">) => void;
+  removeWireConnection: (id: string) => void;
+  clearWireConnectionsForBlock: (blockId: BlockId) => void;
 
   pushHistory: () => void;
   undo: () => void;
@@ -286,6 +301,7 @@ export const useCanvasStore = create<CanvasState>()(
     history: [],
     future: [],
     focusedBrickIds: [],
+    wireConnections: [],
 
     setFocusedBrickIds: (ids) => set((state) => { state.focusedBrickIds = ids; }),
 
@@ -469,12 +485,13 @@ export const useCanvasStore = create<CanvasState>()(
     deleteBlock: (id) => {
       set((state) => {
         if (!state.blocks[id]) return;
-        state.history.push(JSON.stringify({ blocks: state.blocks, blockOrder: state.blockOrder, camera: state.camera, gridSize: state.gridSize }));
+        state.history.push(JSON.stringify({ blocks: state.blocks, blockOrder: state.blockOrder, camera: state.camera, gridSize: state.gridSize, wireConnections: state.wireConnections }));
         if (state.history.length > MAX_UNDO_HISTORY) state.history.splice(0, state.history.length - MAX_UNDO_HISTORY);
         state.future = [];
         delete state.blocks[id];
         state.blockOrder = state.blockOrder.filter((x) => x !== id);
         state.selectedIds = state.selectedIds.filter((x) => x !== id);
+        state.wireConnections = state.wireConnections.filter((w) => w.fromId !== id && w.toId !== id);
       });
     },
 
@@ -484,13 +501,14 @@ export const useCanvasStore = create<CanvasState>()(
       set((state) => {
         const toDelete = list.filter((id) => state.blocks[id]);
         if (!toDelete.length) return;
-        state.history.push(JSON.stringify({ blocks: state.blocks, blockOrder: state.blockOrder, camera: state.camera, gridSize: state.gridSize }));
+        state.history.push(JSON.stringify({ blocks: state.blocks, blockOrder: state.blockOrder, camera: state.camera, gridSize: state.gridSize, wireConnections: state.wireConnections }));
         if (state.history.length > MAX_UNDO_HISTORY) state.history.splice(0, state.history.length - MAX_UNDO_HISTORY);
         state.future = [];
         for (const id of toDelete) delete state.blocks[id];
         const delSet = new Set(toDelete);
         state.blockOrder = state.blockOrder.filter((x) => !delSet.has(x));
         state.selectedIds = state.selectedIds.filter((x) => !delSet.has(x));
+        state.wireConnections = state.wireConnections.filter((w) => !delSet.has(w.fromId) && !delSet.has(w.toId));
       });
     },
 
@@ -607,6 +625,7 @@ export const useCanvasStore = create<CanvasState>()(
         state.selectedIds = [];
         if (opts?.camera) state.camera = { ...state.camera, ...opts.camera };
         if (Number.isFinite(opts?.gridSize)) state.gridSize = Math.max(1, Math.floor(opts.gridSize as number));
+        if (Array.isArray(opts?.wireConnections)) state.wireConnections = opts.wireConnections;
       });
     },
 
@@ -619,6 +638,7 @@ export const useCanvasStore = create<CanvasState>()(
         state.gridSize = 24;
         state.history = [];
         state.future = [];
+        state.wireConnections = [];
       });
     },
 
@@ -859,9 +879,34 @@ export const useCanvasStore = create<CanvasState>()(
       });
     },
 
+    addWireConnection: (conn) => {
+      set((state) => {
+        const exists = state.wireConnections.some(
+          (w) => w.fromId === conn.fromId && w.toId === conn.toId && w.fromSide === conn.fromSide && w.toSide === conn.toSide
+        );
+        if (exists) return;
+        const id = `wire-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+        state.wireConnections.push({ id, ...conn });
+      });
+    },
+
+    removeWireConnection: (id) => {
+      set((state) => {
+        state.wireConnections = state.wireConnections.filter((w) => w.id !== id);
+      });
+    },
+
+    clearWireConnectionsForBlock: (blockId) => {
+      set((state) => {
+        state.wireConnections = state.wireConnections.filter(
+          (w) => w.fromId !== blockId && w.toId !== blockId
+        );
+      });
+    },
+
     pushHistory: () => {
       set((state) => {
-        state.history.push(JSON.stringify({ blocks: state.blocks, blockOrder: state.blockOrder, camera: state.camera, gridSize: state.gridSize }));
+        state.history.push(JSON.stringify({ blocks: state.blocks, blockOrder: state.blockOrder, camera: state.camera, gridSize: state.gridSize, wireConnections: state.wireConnections }));
         if (state.history.length > MAX_UNDO_HISTORY) state.history.splice(0, state.history.length - MAX_UNDO_HISTORY);
         state.future = [];
       });
@@ -872,13 +917,14 @@ export const useCanvasStore = create<CanvasState>()(
         if (!state.history.length) return;
         const prev = state.history.pop();
         if (!prev) return;
-        state.future.push(JSON.stringify({ blocks: state.blocks, blockOrder: state.blockOrder, camera: state.camera, gridSize: state.gridSize }));
+        state.future.push(JSON.stringify({ blocks: state.blocks, blockOrder: state.blockOrder, camera: state.camera, gridSize: state.gridSize, wireConnections: state.wireConnections }));
         if (state.future.length > MAX_UNDO_HISTORY) state.future.splice(0, state.future.length - MAX_UNDO_HISTORY);
-        const parsed = JSON.parse(prev) as { blocks: Record<BlockId, Block>; blockOrder: BlockId[]; camera: Camera; gridSize: number };
+        const parsed = JSON.parse(prev) as any;
         state.blocks = parsed.blocks || {};
         state.blockOrder = Array.isArray(parsed.blockOrder) ? parsed.blockOrder : [];
         state.camera = parsed.camera || { x: 0, y: 0, zoom: 1 };
         state.gridSize = Number.isFinite(parsed.gridSize) ? Math.max(1, Math.floor(parsed.gridSize)) : state.gridSize;
+        state.wireConnections = Array.isArray(parsed.wireConnections) ? parsed.wireConnections : [];
         state.selectedIds = [];
       });
     },
@@ -888,13 +934,14 @@ export const useCanvasStore = create<CanvasState>()(
         if (!state.future.length) return;
         const next = state.future.pop();
         if (!next) return;
-        state.history.push(JSON.stringify({ blocks: state.blocks, blockOrder: state.blockOrder, camera: state.camera, gridSize: state.gridSize }));
+        state.history.push(JSON.stringify({ blocks: state.blocks, blockOrder: state.blockOrder, camera: state.camera, gridSize: state.gridSize, wireConnections: state.wireConnections }));
         if (state.history.length > MAX_UNDO_HISTORY) state.history.splice(0, state.history.length - MAX_UNDO_HISTORY);
-        const parsed = JSON.parse(next) as { blocks: Record<BlockId, Block>; blockOrder: BlockId[]; camera: Camera; gridSize: number };
+        const parsed = JSON.parse(next) as any;
         state.blocks = parsed.blocks || {};
         state.blockOrder = Array.isArray(parsed.blockOrder) ? parsed.blockOrder : [];
         state.camera = parsed.camera || { x: 0, y: 0, zoom: 1 };
         state.gridSize = Number.isFinite(parsed.gridSize) ? Math.max(1, Math.floor(parsed.gridSize)) : state.gridSize;
+        state.wireConnections = Array.isArray(parsed.wireConnections) ? parsed.wireConnections : [];
         state.selectedIds = [];
       });
     },

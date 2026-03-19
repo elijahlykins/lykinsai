@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { ArrowLeft, BookOpen, ChevronDown, ChevronUp, Clock, Edit2, FileText, Folder as FolderIcon, Image as ImageIcon, Link2, MessageSquare, Mic, MoreHorizontal, Music, Play, Plus, StickyNote, Trash2, Video, Volume2, X } from "lucide-react";
 import { extractYouTubeVideoId, getYouTubeEmbedUrl } from "@/canvas/utils/youtube";
 import DraggableQuickNote from "@/components/notes/DraggableQuickNote";
@@ -341,6 +342,8 @@ export default function ChatPage() {
   const DialogTitleAny = /** @type {any} */ (DialogTitle);
   const DialogDescriptionAny = /** @type {any} */ (DialogDescription);
   const scrollRef = useRef(null);
+  const scrollContainerRef = useRef(null);
+  const userScrolledUpRef = useRef(false);
   const composerInputRef = useRef(null);
   const fileInputRef = useRef(null);
   const mediaRecorderRef = useRef(null);
@@ -472,7 +475,18 @@ export default function ChatPage() {
   };
 
   useEffect(() => {
-    if (!scrollRef.current) return;
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 80;
+      userScrolledUpRef.current = !nearBottom;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
+
+  useEffect(() => {
+    if (!scrollRef.current || userScrolledUpRef.current) return;
     scrollRef.current.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages, isLoading]);
 
@@ -614,6 +628,7 @@ export default function ChatPage() {
   const sendMessage = async () => {
     const text = String(input || "").trim();
     if (!text || isLoading) return;
+    userScrolledUpRef.current = false;
 
     const userAttachments = attachments.slice();
 
@@ -1574,7 +1589,7 @@ export default function ChatPage() {
       ) : (
         <div className="h-screen flex flex-col">
           <div className="flex-1 min-h-0 px-4 pt-8 pb-2">
-            <div className="h-full overflow-y-auto">
+            <div ref={scrollContainerRef} className="h-full overflow-y-auto">
               <div className="mx-auto w-full max-w-3xl space-y-4 pb-6">
                 {messages.map((msg, idx) => (
                   <div key={`${msg.role}-${idx}`} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
@@ -1587,6 +1602,7 @@ export default function ChatPage() {
                     >
                       {msg.role === "assistant" ? (
                         <ReactMarkdown
+                          remarkPlugins={[remarkGfm]}
                           components={{
                             h1: ({ children }) => <h1 className="text-xl font-semibold mt-3 mb-2">{children}</h1>,
                             h2: ({ children }) => <h2 className="text-lg font-semibold mt-3 mb-2">{children}</h2>,
@@ -1616,6 +1632,16 @@ export default function ChatPage() {
                                 </li>
                               );
                             },
+                            a: ({ href, children }) => (
+                              <a
+                                href={href}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-blue-600 dark:text-blue-400 underline underline-offset-2 hover:text-blue-800 dark:hover:text-blue-300 transition-colors break-all"
+                              >
+                                {children}
+                              </a>
+                            ),
                             strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
                             code: ({ children }) => (
                               <code className="rounded bg-black/10 dark:bg-white/10 px-1.5 py-0.5 text-[0.85em]">{children}</code>
