@@ -660,7 +660,7 @@ function BrickTextSurface(props: {
     if (isTyping) {
       return React.createElement(
         "div",
-        { className: "relative h-full w-full" },
+        { className: "relative w-full min-h-full" },
         React.createElement("div", {
           ref: editorRef,
           tabIndex: 0,
@@ -668,7 +668,7 @@ function BrickTextSurface(props: {
           suppressContentEditableWarning: true,
           spellCheck: false,
           "data-canvas-brick-editor-id": shell.id,
-          className: "h-full w-full outline-none text-foreground overflow-auto scrollbar-hide whitespace-pre-wrap",
+          className: "w-full min-h-full outline-none text-foreground overflow-auto scrollbar-hide whitespace-pre-wrap",
           style: {
             ...aiFontStyle,
             userSelect: "text",
@@ -701,15 +701,14 @@ function BrickTextSurface(props: {
     }
     return React.createElement(
       "div",
-      { className: "relative h-full w-full" },
+      { className: "relative w-full", style: { pointerEvents: "none" as const } },
       React.createElement(
         "div",
         {
           ref: editorRef,
-          tabIndex: 0,
           "data-canvas-brick-editor-id": shell.id,
-          className: `h-full w-full outline-none text-foreground ${isThinkingPlaceholder ? "overflow-hidden" : "overflow-auto scrollbar-hide"}`,
-          style: aiFontStyle,
+          className: `w-full outline-none text-foreground ${isThinkingPlaceholder ? "overflow-hidden" : "overflow-auto scrollbar-hide"}`,
+          style: { ...aiFontStyle, pointerEvents: "auto" as const, userSelect: "none" as const, WebkitUserSelect: "none" as const },
         },
         React.createElement(ReactMarkdown as any, { remarkPlugins: [remarkGfm], components: aiMarkdownComponents }, String(shell.content || ""))
       )
@@ -1049,7 +1048,9 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
     e.stopPropagation();
     const pointerId = e.pointerId;
     const startY = Number(e.clientY || 0);
-    const startHeight = Math.max(1, Number(shell.height || BRICK_BEHAVIOR.gridSize));
+    const shellEl = document.querySelector(`[data-brick-shell][data-block-id="${shell.id}"]`) as HTMLElement | null;
+    const renderedH = shellEl?.offsetHeight ?? 0;
+    const startHeight = Math.max(1, renderedH || Number(shell.height || BRICK_BEHAVIOR.gridSize));
     const grid = Math.max(1, Math.floor(Number(opts?.resizeGridSize || BRICK_BEHAVIOR.gridSize)));
     const minHeight = grid;
     const z = Math.max(0.1, Number(opts?.canvasZoom) || 1);
@@ -1114,7 +1115,7 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
       )
     : null;
 
-  const useFlexHeight = Boolean(opts?.extraContent);
+  const useFlexHeight = Boolean(opts?.extraContent) || Boolean(shell.isAiResponseBubble);
 
   return React.createElement(
     "div",
@@ -1144,7 +1145,9 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
         className:
           `w-full rounded border border-white/45 ${shell.brickColor ? "" : "bg-[linear-gradient(145deg,rgba(255,255,255,0.34),rgba(255,255,255,0.18))]"} backdrop-blur-[2px]${useFlexHeight ? " min-h-full" : " h-full"} relative overflow-hidden`,
         style: {
-          transform: isRaised ? "translateY(-8px) scale(1.02)" : "translateY(0px) scale(1)",
+          transform: isRaised
+            ? (shell.isAiResponseBubble ? "translateY(-8px)" : "translateY(-8px) scale(1.02)")
+            : "translateY(0px)",
           boxShadow: isRaised
             ? "0 20px 36px rgba(0,0,0,0.30)"
             : isActivated
@@ -1196,20 +1199,20 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
             onClick: (e: any) => e.stopPropagation(),
           })
         : null,
+      canCornerScale
+        ? React.createElement("div", {
+            key: "corner-resize-grip",
+            "data-resize-handle": true,
+            className: "absolute bottom-0 right-0 cursor-nwse-resize z-30 group-hover:opacity-100 opacity-40 transition-opacity flex items-center justify-center",
+            style: { width: "20px", height: "20px" },
+            onPointerDown: startCornerScale,
+            onClick: (e: any) => e.stopPropagation(),
+          }, React.createElement("svg", { viewBox: "0 0 16 16", width: "14", height: "14", style: { filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.2))" } },
+            React.createElement("path", { d: "M14 14L6 14M14 14L14 6M14 14L8 8", stroke: "rgba(0,0,0,0.45)", strokeWidth: "2", fill: "none", strokeLinecap: "round" })
+          ))
+        : null,
       labelEl
     ),
-    canCornerScale
-      ? React.createElement("div", {
-          key: "corner-resize-grip",
-          "data-resize-handle": true,
-          className: "absolute bottom-0 right-0 cursor-nwse-resize z-30 group-hover:opacity-100 opacity-40 transition-opacity flex items-center justify-center",
-          style: { width: "20px", height: "20px" },
-          onPointerDown: startCornerScale,
-          onClick: (e: any) => e.stopPropagation(),
-        }, React.createElement("svg", { viewBox: "0 0 16 16", width: "14", height: "14", style: { filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.2))" } },
-          React.createElement("path", { d: "M14 14L6 14M14 14L14 6M14 14L8 8", stroke: "rgba(0,0,0,0.45)", strokeWidth: "2", fill: "none", strokeLinecap: "round" })
-        ))
-      : null,
     !isTyping && !isActivated && !isRaised
       ? React.createElement("div", {
           key: "brick-hover-hint",

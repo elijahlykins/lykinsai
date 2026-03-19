@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { createPortal } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Trash2, ZoomIn, ZoomOut, Maximize, ChevronUp, ChevronDown, Copy, CopyPlus, Send, Palette, Type as TypeIcon, Square, Mic, MoreHorizontal, Sparkles, FileText, Maximize2, ArrowUpToLine, ArrowDownToLine, Archive, Check } from "lucide-react";
+import { Trash2, ZoomIn, ZoomOut, Maximize, ChevronUp, ChevronDown, Copy, CopyPlus, Send, Palette, Type as TypeIcon, Square, Mic, MoreHorizontal, Sparkles, FileText, Maximize2, ArrowUpToLine, ArrowDownToLine, Archive, Check, Mouse } from "lucide-react";
 import { useCanvasStore } from "@/store/canvasStore";
 import { isInViewport } from "@/canvas/utils/isInViewport";
 import { snapToGrid } from "@/canvas/utils/snap";
@@ -697,6 +697,11 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
   type PressTarget = { kind: "cell" | "brick"; key: string };
   type GridRange = { minX: number; maxX: number; minY: number; maxY: number };
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const [wheelZoomMode, setWheelZoomMode] = useState(() => {
+    try { return localStorage.getItem("lykn_wheel_zoom_mode") === "true"; } catch { return false; }
+  });
+  const wheelZoomModeRef = useRef(wheelZoomMode);
+  useEffect(() => { wheelZoomModeRef.current = wheelZoomMode; }, [wheelZoomMode]);
   const middlePanRef = useRef<{ active: boolean; startX: number; startY: number; scrollLeft: number; scrollTop: number } | null>(null);
   const [viewport, setViewport] = useState({ width: 0, height: 0 });
   const [hoverCell, setHoverCell] = useState<{ x: number; y: number } | null>(null);
@@ -1144,11 +1149,18 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
     const el = containerRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
-      // Trackpad pinch-to-zoom fires with ctrlKey; Ctrl+mouse-wheel also zooms.
-      if (e.ctrlKey || e.metaKey) {
+      if (middlePanRef.current?.active) {
+        e.preventDefault();
+        return;
+      }
+
+      const inZoomMode = wheelZoomModeRef.current;
+
+      if (inZoomMode) {
+        // Zoom mode: ALL wheel/trackpad input zooms. No panning at all.
         e.preventDefault();
         const z = canvasZoomRef.current;
-        const zoomDelta = -e.deltaY * 0.01;
+        const zoomDelta = -e.deltaY * 0.0015;
         const next = Math.round(Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z * Math.exp(zoomDelta))) * 100) / 100;
         if (next === z) return;
 
@@ -1167,9 +1179,11 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         return;
       }
 
-      // Two-finger trackpad scroll / regular mouse wheel → pan via native scroll.
-      // No preventDefault — let the browser scroll the container natively;
-      // the onScroll handler will sync the camera store automatically.
+      // Scroll mode: ALL wheel/trackpad input pans. Block Ctrl/pinch zoom entirely.
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        return;
+      }
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
@@ -4412,6 +4426,8 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         const blockEl = t?.closest?.("[data-canvas-block]") as HTMLElement | null;
         const blockId = blockEl?.getAttribute?.("data-block-id");
         if (!blockId) return;
+        const dblBlock: any = blocks[blockId];
+        if (dblBlock?.data?.aiResponseBubble) return;
         const gid = getMoveGroupId(blockId);
         const ids = gid ? getMoveGroupMembers(gid) : [blockId];
         if (e.shiftKey && floatingBrickRef.current.active) {
@@ -4454,6 +4470,29 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         const pendingMemory = consumePendingMemoryDrop(e.dataTransfer);
         if (pendingMemory) {
           processMemoryDrop(pendingMemory, e.clientX, e.clientY);
+          return;
+        }
+        const chatResponse = String(e.dataTransfer?.getData("application/x-omnia-chat-response") || "").trim();
+        if (chatResponse) {
+          const world = clientToWorld(e.clientX, e.clientY);
+          const g = gridSize;
+          const charW = 7.8;
+          const lines = chatResponse.split("\n");
+          const longest = lines.reduce((m, l) => Math.max(m, l.length), 0);
+          const naturalW = Math.ceil(longest * charW + 16);
+          const w = Math.max(g * 8, Math.min(g * 24, Math.ceil(naturalW / g) * g));
+          const lineH = g;
+          const charsPerLine = Math.max(1, Math.floor((w - 16) / charW));
+          let wrappedLines = 0;
+          for (const line of lines) wrappedLines += Math.max(1, Math.ceil((line.length || 1) / charsPerLine));
+          const h = Math.max(g * 3, Math.ceil((wrappedLines * lineH + 8) / g) * g);
+          const sx = Math.round(world.x / g) * g;
+          const sy = Math.round(world.y / g) * g;
+          const dropId = addTextBlockAt({ x: sx, y: sy }, { width: w, height: h, content: chatResponse, format: "rich" });
+          if (dropId) {
+            const st = useCanvasStore.getState() as any;
+            updateBlock(dropId as any, { data: { ...((st.blocks as any)?.[dropId]?.data || {}), aiResponseBubble: true } } as any);
+          }
           return;
         }
         const shapeId = String(e.dataTransfer?.getData("omnia_shape") || "");
@@ -5075,6 +5114,9 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
           if (!b) return null;
 
           const isAiResponseBubble = Boolean((b as any)?.data?.aiResponseBubble);
+          const blockContent = String((b as any)?.content || "");
+          const hasRichMarkdown = !isAiResponseBubble && /(?:^|\n)\s*#{1,6}\s|(?:\*\*|__).+(?:\*\*|__)|```|(?:^|\n)\s*[-*]\s.+(?:\n\s*[-*]\s)/m.test(blockContent);
+          const preventTypingMode = isAiResponseBubble || hasRichMarkdown;
           const isTextBrick = String((b as any)?.type || "") === "text";
           const mode = String((b as any).mode || "").toLowerCase();
           const createData = (b as any).data || {};
@@ -5384,21 +5426,18 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
               )
             : null;
           const brickEl = renderBrickShell(b as any, id, {
-            isActivated: typingBlockId === id ? false : activatedBrickIds.includes(id),
-            isRaised: typingBlockId === id ? false : raisedBrickIds.includes(id),
-            isTyping: typingBlockId === id,
-            enableWidthResize: isTextBrick || isAiResponseBubble,
+            isActivated: isAiResponseBubble ? false : (typingBlockId === id ? false : activatedBrickIds.includes(id)),
+            isRaised: isAiResponseBubble ? false : (typingBlockId === id ? false : raisedBrickIds.includes(id)),
+            isTyping: preventTypingMode ? false : typingBlockId === id,
+            enableWidthResize: isTextBrick || isAiResponseBubble || hasRichMarkdown,
             extraContent: sourcesExtraContent,
             resizeGridSize: gridSize,
             resizeMinWidth: gridSize * 4,
             resizeMaxWidth:
               Math.max(
                 gridSize * 10,
-                Math.floor(
-                  (canvasWidth || viewport.width || window.innerWidth || 1280) -
-                    Math.max(0, Number((b as any)?.x || 0)) -
-                    gridSize
-                )
+                Math.floor(Number((b as any)?.width || 0)),
+                Math.floor(window.innerWidth || 1280) * 2
               ),
             canvasZoom: canvasZoomRef.current,
             onResizeWidth: (bid, width) => {
@@ -5681,12 +5720,11 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
               setShiftLinkedGridSelection(false);
               setActivatedBrickIds([]);
               setRaisedBrickIds([]);
-              if (isAiResponseBubble) {
-                if (typingBlockId && typingBlockId !== bid) {
+              if (preventTypingMode) {
+                if (typingBlockId) {
                   dropEmptyTypingBlockIfNeeded(bid);
                   setTypingBlockId(null);
                 }
-                setActivatedBrickIds([bid]);
                 setShiftAnchor(target);
                 return;
               }
@@ -5695,10 +5733,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
               focusBrickInputById(bid);
               setShiftAnchor(target);
             },
-            onDoubleClick: isAiResponseBubble ? (bid) => {
-              setActivatedBrickIds([bid]);
-              setRaisedBrickIds([bid]);
-            } : undefined,
+            onDoubleClick: undefined,
             onBrickMenu: (bid, rect) => {
               setBrickMenuSub(null);
               setBrickMenu((prev) => prev?.id === bid ? null : { id: bid, x: rect.left, y: rect.bottom + 4 });
@@ -6213,6 +6248,20 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
                 title="Fit to view"
               >
                 <Maximize className="w-3 h-3" />
+              </button>
+              <div className="w-px h-4 bg-white/15 mx-0.5" />
+              <button
+                className={`flex items-center justify-center w-7 h-7 rounded-lg transition-colors ${wheelZoomMode ? "bg-blue-500/25 text-blue-400" : "hover:bg-white/10 text-white/50 hover:text-white"}`}
+                onClick={() => {
+                  setWheelZoomMode((v) => {
+                    const next = !v;
+                    try { localStorage.setItem("lykn_wheel_zoom_mode", String(next)); } catch { /* ignore */ }
+                    return next;
+                  });
+                }}
+                title={wheelZoomMode ? "Scroll wheel: Zoom — click to switch to Scroll" : "Scroll wheel: Scroll — click to switch to Zoom"}
+              >
+                {wheelZoomMode ? <ZoomIn className="w-3.5 h-3.5" /> : <Mouse className="w-3.5 h-3.5" />}
               </button>
             </div>
           )}

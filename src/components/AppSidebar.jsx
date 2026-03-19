@@ -56,6 +56,7 @@ export default function AppSidebar() {
   const [feedbackType, setFeedbackType] = useState("bug");
   const menuRef = useRef(null);
   const addToProjectRef = useRef(null);
+  const pickerRef = useRef(null);
 
   const { data: projects = [] } = useQuery({
     queryKey: ["projects", user?.id],
@@ -120,7 +121,9 @@ export default function AppSidebar() {
   useEffect(() => {
     if (!menuBoardId) return;
     const onClick = (e) => {
-      if (menuRef.current && !menuRef.current.contains(e.target)) {
+      const inMenu = menuRef.current && menuRef.current.contains(e.target);
+      const inPicker = pickerRef.current && pickerRef.current.contains(e.target);
+      if (!inMenu && !inPicker) {
         setMenuBoardId(null);
         setShowProjectPicker(false);
       }
@@ -142,10 +145,15 @@ export default function AppSidebar() {
 
   const addBoardToProject = async (boardId, projectId) => {
     if (!user?.id) return;
-    await supabase.from("omnia_boards").update({ project_id: projectId }).eq("id", boardId);
+    await supabase
+      .from("omnia_boards")
+      .update({ project_id: projectId })
+      .eq("id", boardId)
+      .eq("user_id", user.id);
     setMenuBoardId(null);
     setShowProjectPicker(false);
     window.dispatchEvent(new Event("lykinsai_boards_changed"));
+    window.dispatchEvent(new Event(PROJECTS_CHANGED_EVENT));
   };
 
   const renameBoard = async (boardId) => {
@@ -400,6 +408,7 @@ export default function AppSidebar() {
             </button>
             {showProjectPicker && ReactDOM.createPortal(
               <div
+                ref={pickerRef}
                 className="fixed z-[10000] w-44 rounded-lg border border-black/10 bg-white/95 backdrop-blur-xl shadow-lg py-1 text-[0.6875rem]"
                 style={{ top: pickerPos.top, left: pickerPos.left }}
                 onMouseEnter={() => setShowProjectPicker(true)}
@@ -409,16 +418,25 @@ export default function AppSidebar() {
                   type="button"
                   className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-blue-500/15 transition-colors font-medium"
                   onClick={async () => {
+                    const boardToAdd = menuBoardId;
                     const name = window.prompt("Project name:");
-                    if (!name?.trim() || !user?.id) return;
+                    if (!name?.trim() || !user?.id || !boardToAdd) return;
                     const { data } = await supabase
                       .from("omnia_projects")
                       .insert({ user_id: user.id, name: name.trim() })
                       .select("id")
                       .single();
                     if (data?.id) {
-                      await addBoardToProject(menuBoardId, data.id);
+                      await supabase
+                        .from("omnia_boards")
+                        .update({ project_id: data.id })
+                        .eq("id", boardToAdd)
+                        .eq("user_id", user.id);
+                      setMenuBoardId(null);
+                      setShowProjectPicker(false);
+                      window.dispatchEvent(new Event("lykinsai_boards_changed"));
                       window.dispatchEvent(new Event(PROJECTS_CHANGED_EVENT));
+                      flushAndNavigate(nav, `/project/${data.id}`);
                     }
                   }}
                 >

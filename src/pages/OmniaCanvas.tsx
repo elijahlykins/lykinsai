@@ -3,7 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { Canvas } from "@/canvas/Canvas";
 import { useCanvasStore } from "@/store/canvasStore";
 import type { Block } from "@/canvas/types";
-import { ChevronDown, ChevronUp, Plus, Link as LinkIcon, Image as ImageIcon, Zap, MessageSquare, Mic, BookOpen, X, Clock, Edit2, Folder as FolderIcon, Link2, MoreHorizontal, PanelRightClose, PanelRight, StickyNote, Play, FileText, Music, Video, Share2, Download, Copy, Check, RefreshCw, ThumbsUp, ThumbsDown, Square, Sparkles, Save, Globe } from "lucide-react";
+import { ChevronDown, ChevronUp, Plus, Link as LinkIcon, Image as ImageIcon, Zap, MessageSquare, Mic, BookOpen, X, Clock, Edit2, Folder as FolderIcon, Link2, MoreHorizontal, PanelRightClose, PanelRight, StickyNote, Play, FileText, Music, Video, Share2, Download, Copy, Check, RefreshCw, ThumbsUp, ThumbsDown, Square, Sparkles, Save, Globe, GripVertical, LayoutGrid } from "lucide-react";
 import DraggableQuickNote from "@/components/notes/DraggableQuickNote";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -43,6 +43,64 @@ const normalizeChecklistSyntax = (value: string) =>
     })
     .join("\n");
 
+const splitResponseIntoChunks = (text: string): string[] => {
+  const raw = String(text || "").trim();
+  if (!raw) return [];
+  const lines = raw.split("\n");
+  const chunks: string[] = [];
+  let buf: string[] = [];
+  const flush = () => {
+    const t = buf.join("\n").trim();
+    if (t) chunks.push(t);
+    buf = [];
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const isHeading = /^\s*#{1,6}\s/.test(line);
+    const isListItem = /^\s*[-*]\s/.test(line);
+    const isNumbered = /^\s*\d+[.)]\s/.test(line);
+    const isCodeFence = /^\s*```/.test(line);
+    const isEmpty = !line.trim();
+    if (isCodeFence) {
+      if (buf.length && !buf.some((l) => /^\s*```/.test(l))) flush();
+      buf.push(line);
+      const alreadyClosed = buf.filter((l) => /^\s*```/.test(l)).length >= 2;
+      if (alreadyClosed) flush();
+      continue;
+    }
+    if (buf.some((l) => /^\s*```/.test(l)) && buf.filter((l) => /^\s*```/.test(l)).length < 2) {
+      buf.push(line);
+      continue;
+    }
+    if (isHeading) {
+      flush();
+      buf.push(line);
+      continue;
+    }
+    if (isEmpty && buf.length > 0) {
+      const lastIsListOrNum = buf.some((l) => /^\s*[-*]\s/.test(l) || /^\s*\d+[.)]\s/.test(l));
+      const nextIsListOrNum = (i + 1 < lines.length) && (/^\s*[-*]\s/.test(lines[i + 1]) || /^\s*\d+[.)]\s/.test(lines[i + 1]));
+      if (lastIsListOrNum && nextIsListOrNum) {
+        buf.push(line);
+        continue;
+      }
+      flush();
+      continue;
+    }
+    if ((isListItem || isNumbered) && buf.length > 0) {
+      const lastLine = buf[buf.length - 1];
+      const lastIsList = /^\s*[-*]\s/.test(lastLine) || /^\s*\d+[.)]\s/.test(lastLine);
+      const lastIsHeading = /^\s*#{1,6}\s/.test(lastLine);
+      const lastIsPlain = !lastIsList && !lastIsHeading && lastLine.trim();
+      if (lastIsPlain) flush();
+    }
+    buf.push(line);
+  }
+  flush();
+  if (chunks.length <= 1) return [raw];
+  return chunks;
+};
+
 type PromptMessage = {
   id: string;
   role: "user";
@@ -76,6 +134,172 @@ type OrchestratorResult = {
   requiresClarification: boolean;
   groundingSummary?: string;
 };
+
+/**
+ * Layout-aware placement: finds a non-overlapping position by analysing existing
+ * blocks, detecting gap spacing, spiralling outward from the viewport centre, and
+ * falling back to extending detected row/column patterns.
+ */
+function findSmartPlacement(opts: {
+  blockW: number;
+  blockH: number;
+  gridSize: number;
+  camera: { x: number; y: number; zoom: number };
+  viewportW: number;
+  viewportH: number;
+  railWidth: number;
+  existingBlocks: Array<{ x: number; y: number; width: number; height: number }>;
+}): { x: number; y: number } {
+  const { blockW, blockH, gridSize: g, camera, viewportW, viewportH, railWidth, existingBlocks } = opts;
+  const z = Math.max(0.1, camera.zoom || 1);
+  const boardVW = Math.max(g * 8, (viewportW - railWidth) / z);
+  const boardVH = Math.max(g * 8, viewportH / z);
+  const camX = camera.x;
+  const camY = camera.y;
+
+  const rects = existingBlocks.map((b) => ({
+    x: Number(b.x || 0),
+    y: Number(b.y || 0),
+    w: Number(b.width || g),
+    h: Number(b.height || g),
+  }));
+
+  const defaultGap = g * 2;
+  let gapX = defaultGap;
+  let gapY = defaultGap;
+
+  if (rects.length >= 2) {
+    const hGaps: number[] = [];
+    const vGaps: number[] = [];
+    const sorted = rects.slice().sort((a, b) => a.x - b.x || a.y - b.y);
+    for (let i = 0; i < sorted.length; i++) {
+      const a = sorted[i];
+      let bestRight = Infinity;
+      let bestBelow = Infinity;
+      for (let j = 0; j < sorted.length; j++) {
+        if (i === j) continue;
+        const b = sorted[j];
+        const hDist = b.x - (a.x + a.w);
+        if (hDist > 0 && hDist < g * 20 && Math.abs(b.y - a.y) < Math.max(a.h, b.h)) {
+          if (hDist < bestRight) bestRight = hDist;
+        }
+        const vDist = b.y - (a.y + a.h);
+        if (vDist > 0 && vDist < g * 20 && Math.abs(b.x - a.x) < Math.max(a.w, b.w)) {
+          if (vDist < bestBelow) bestBelow = vDist;
+        }
+      }
+      if (bestRight < Infinity) hGaps.push(bestRight);
+      if (bestBelow < Infinity) vGaps.push(bestBelow);
+    }
+    const median = (arr: number[]) => {
+      if (!arr.length) return defaultGap;
+      const s = arr.slice().sort((a, b) => a - b);
+      const mid = Math.floor(s.length / 2);
+      return s.length % 2 ? s[mid] : Math.round((s[mid - 1] + s[mid]) / 2);
+    };
+    if (hGaps.length) gapX = Math.max(g, Math.round(median(hGaps) / g) * g);
+    if (vGaps.length) gapY = Math.max(g, Math.round(median(vGaps) / g) * g);
+  }
+
+  const padX = Math.max(g, Math.floor(gapX / 2));
+  const padY = Math.max(g, Math.floor(gapY / 2));
+
+  const overlaps = (px: number, py: number, pw: number, ph: number) =>
+    rects.some(
+      (r) =>
+        px < r.x + r.w + padX &&
+        px + pw > r.x - padX &&
+        py < r.y + r.h + padY &&
+        py + ph > r.y - padY
+    );
+
+  const viewLeft = camX + g;
+  const viewTop = camY + g;
+  const viewRight = camX + boardVW - blockW - g;
+  const viewBottom = camY + boardVH - blockH - g * 4;
+  const cx = Math.round(((viewLeft + viewRight) / 2) / g) * g;
+  const cy = Math.round(((viewTop + viewBottom) / 2) / g) * g;
+
+  let placed = false;
+  let worldX = cx;
+  let worldY = cy;
+
+  const maxRadius = Math.max(boardVW, boardVH);
+  for (let radius = 0; radius <= maxRadius && !placed; radius += g) {
+    if (radius === 0) {
+      if (cx >= viewLeft && cx <= viewRight && cy >= viewTop && cy <= viewBottom && !overlaps(cx, cy, blockW, blockH)) {
+        worldX = cx; worldY = cy; placed = true;
+      }
+      continue;
+    }
+    for (let dx = -radius; dx <= radius && !placed; dx += g) {
+      for (const dy of [-radius, radius]) {
+        const px = Math.round((cx + dx) / g) * g;
+        const py = Math.round((cy + dy) / g) * g;
+        if (px >= viewLeft && px <= viewRight && py >= viewTop && py <= viewBottom && !overlaps(px, py, blockW, blockH)) {
+          worldX = px; worldY = py; placed = true; break;
+        }
+      }
+    }
+    if (placed) break;
+    for (let dy = -radius + g; dy <= radius - g && !placed; dy += g) {
+      for (const dx of [-radius, radius]) {
+        const px = Math.round((cx + dx) / g) * g;
+        const py = Math.round((cy + dy) / g) * g;
+        if (px >= viewLeft && px <= viewRight && py >= viewTop && py <= viewBottom && !overlaps(px, py, blockW, blockH)) {
+          worldX = px; worldY = py; placed = true; break;
+        }
+      }
+    }
+  }
+
+  if (!placed) {
+    const rowMap = new Map<number, typeof rects>();
+    const colMap = new Map<number, typeof rects>();
+    for (const r of rects) {
+      const ry = Math.round(r.y / g) * g;
+      const rx = Math.round(r.x / g) * g;
+      if (!rowMap.has(ry)) rowMap.set(ry, []);
+      rowMap.get(ry)!.push(r);
+      if (!colMap.has(rx)) colMap.set(rx, []);
+      colMap.get(rx)!.push(r);
+    }
+
+    let bestRowCount = 0;
+    for (const members of rowMap.values()) if (members.length > bestRowCount) bestRowCount = members.length;
+    let bestColCount = 0;
+    for (const members of colMap.values()) if (members.length > bestColCount) bestColCount = members.length;
+
+    if (bestRowCount >= 2 && bestRowCount >= bestColCount) {
+      let bestRow: typeof rects = [];
+      for (const members of rowMap.values()) if (members.length === bestRowCount) { bestRow = members; break; }
+      const rightmost = bestRow.reduce((m, r) => r.x + r.w > m.x + m.w ? r : m, bestRow[0]);
+      const cand = { x: Math.round((rightmost.x + rightmost.w + gapX) / g) * g, y: Math.round(rightmost.y / g) * g };
+      if (!overlaps(cand.x, cand.y, blockW, blockH)) {
+        worldX = cand.x; worldY = cand.y; placed = true;
+      }
+    }
+
+    if (!placed && bestColCount >= 2) {
+      let bestCol: typeof rects = [];
+      for (const members of colMap.values()) if (members.length === bestColCount) { bestCol = members; break; }
+      const bottommost = bestCol.reduce((m, r) => r.y + r.h > m.y + m.h ? r : m, bestCol[0]);
+      const cand = { x: Math.round(bottommost.x / g) * g, y: Math.round((bottommost.y + bottommost.h + gapY) / g) * g };
+      if (!overlaps(cand.x, cand.y, blockW, blockH)) {
+        worldX = cand.x; worldY = cand.y; placed = true;
+      }
+    }
+
+    if (!placed) {
+      let maxBottom = camY;
+      for (const r of rects) { const b = r.y + r.h; if (b > maxBottom) maxBottom = b; }
+      worldX = Math.max(g, Math.round((camX + boardVW * 0.5 - blockW / 2) / g) * g);
+      worldY = Math.max(g, Math.round((maxBottom + gapY) / g) * g);
+    }
+  }
+
+  return { x: Math.max(g, worldX), y: Math.max(g, worldY) };
+}
 
 const CHAT_TO_BOARD_IMPORT_KEY = "omnia_chat_board_import_v1";
 
@@ -591,7 +815,7 @@ export default function OmniaCanvasPage() {
   const clampChatRailWidth = useCallback((raw: number, vw: number) => {
     const width = Math.max(0, Math.floor(vw || 0));
     const minW = width <= 900 ? 200 : 220;
-    const maxW = Math.max(minW + 20, Math.min(520, Math.floor(width * 0.55)));
+    const maxW = Math.max(minW + 20, Math.floor(width * 0.9));
     return Math.max(minW, Math.min(maxW, Math.floor(raw || minW)));
   }, []);
 
@@ -1087,18 +1311,8 @@ export default function OmniaCanvasPage() {
 
     const st = useCanvasStore.getState() as any;
     const g = Math.max(1, Math.floor(st.gridSize || 24));
-    const camera = st.camera || { x: 0, y: 0 };
-    let placeX: number;
-    let placeY: number;
-
-    if (responseBlockId && st.blocks?.[responseBlockId]) {
-      const rb = st.blocks[responseBlockId];
-      placeX = Number(rb.x || 0);
-      placeY = Number(rb.y || 0) + Number(rb.height || g * 6) + g;
-    } else {
-      placeX = Math.max(0, Math.floor(-camera.x + g * 2));
-      placeY = Math.max(0, Math.floor(-camera.y + g * 2));
-    }
+    const ytVw = window.innerWidth || 1280;
+    const ytVh = window.innerHeight || 800;
 
     const existingOrder: string[] = Array.isArray(st.blockOrder) ? st.blockOrder : [];
     for (const ytEntry of urls) {
@@ -1109,9 +1323,18 @@ export default function OmniaCanvasPage() {
         return bVid === ytEntry.videoId;
       });
       if (alreadyExists) continue;
-      const createdId = st.addYouTubeBlockAt({ x: placeX, y: placeY }, { url: ytEntry.url, videoId: ytEntry.videoId });
-      const h = Number(st.blocks?.[createdId]?.height || g * 8);
-      placeY += h + g;
+      const cur = useCanvasStore.getState() as any;
+      const ytPos = findSmartPlacement({
+        blockW: g * 12,
+        blockH: g * 8,
+        gridSize: g,
+        camera: cur.camera || { x: 0, y: 0, zoom: 1 },
+        viewportW: ytVw,
+        viewportH: ytVh,
+        railWidth: 0,
+        existingBlocks: Object.values(cur.blocks || {}).filter(Boolean) as any[],
+      });
+      st.addYouTubeBlockAt({ x: ytPos.x, y: ytPos.y }, { url: ytEntry.url, videoId: ytEntry.videoId });
     }
 
     setChatMessages((prev) => prev.map((m) =>
@@ -1156,18 +1379,22 @@ export default function OmniaCanvasPage() {
 
     const st = useCanvasStore.getState() as any;
     const g = Math.max(1, Math.floor(st.gridSize || 24));
-    const camera = st.camera || { x: 0, y: 0 };
-    let placeX: number;
-    let placeY: number;
+    const mpVw = window.innerWidth || 1280;
+    const mpVh = window.innerHeight || 800;
 
-    if (responseBlockId && st.blocks?.[responseBlockId]) {
-      const rb = st.blocks[responseBlockId];
-      placeX = Number(rb.x || 0);
-      placeY = Number(rb.y || 0) + Number(rb.height || g * 6) + g;
-    } else {
-      placeX = Math.max(0, Math.floor(-camera.x + g * 2));
-      placeY = Math.max(0, Math.floor(-camera.y + g * 2));
-    }
+    const mediaPos = (bw: number, bh: number) => {
+      const cur = useCanvasStore.getState() as any;
+      return findSmartPlacement({
+        blockW: bw,
+        blockH: bh,
+        gridSize: g,
+        camera: cur.camera || { x: 0, y: 0, zoom: 1 },
+        viewportW: mpVw,
+        viewportH: mpVh,
+        railWidth: 0,
+        existingBlocks: Object.values(cur.blocks || {}).filter(Boolean) as any[],
+      });
+    };
 
     const uniqueNoteIds = [...new Set(pulls.map(p => p.noteId))];
     let notesData: Record<string, any> = {};
@@ -1226,22 +1453,22 @@ export default function OmniaCanvasPage() {
         const ytMatch = (note.content || "").match(/https?:\/\/(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([\w-]{11})/);
         if (ytMatch) {
           const videoId = ytMatch[1];
-          st.addYouTubeBlockAt({ x: placeX, y: placeY }, { url: ytMatch[0], videoId });
-          placeY += g * 10 + g;
+          const p = mediaPos(g * 12, g * 8);
+          st.addYouTubeBlockAt({ x: p.x, y: p.y }, { url: ytMatch[0], videoId });
           pulled++;
           continue;
         }
+        const p = mediaPos(g * 10, g * 4);
         st.addBlock({
           id: `create-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
           type: "text" as const,
-          x: placeX, y: placeY,
+          x: p.x, y: p.y,
           width: g * 10, height: g * 4,
           content: note.content.replace(/\[ATTACHMENTS_JSON:[\s\S]*$/, "").trim(),
           format: "rich",
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         } as any);
-        placeY += g * 5;
         pulled++;
         continue;
       }
@@ -1254,23 +1481,23 @@ export default function OmniaCanvasPage() {
 
       if (type === "youtube") {
         const vid = att.videoId || extractYouTubeVideoId(url) || "";
-        st.addYouTubeBlockAt({ x: placeX, y: placeY }, { url, videoId: vid });
-        placeY += g * 10 + g;
+        const p = mediaPos(g * 12, g * 8);
+        st.addYouTubeBlockAt({ x: p.x, y: p.y }, { url, videoId: vid });
       } else if (type === "image") {
-        st.addBlock({ id: blockId, type: "create" as const, mode: "image", x: placeX, y: placeY, width: g * 12, height: g * 12, data: { src: url, name: att.name || "Image" }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
-        placeY += g * 13;
+        const p = mediaPos(g * 12, g * 12);
+        st.addBlock({ id: blockId, type: "create" as const, mode: "image", x: p.x, y: p.y, width: g * 12, height: g * 12, data: { src: url, name: att.name || "Image" }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
       } else if (type === "video") {
-        st.addBlock({ id: blockId, type: "create" as const, mode: "video", x: placeX, y: placeY, width: g * 16, height: g * 10, data: { url, mime: att.mime || "video/mp4", name: att.name || "Video" }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
-        placeY += g * 11;
+        const p = mediaPos(g * 16, g * 10);
+        st.addBlock({ id: blockId, type: "create" as const, mode: "video", x: p.x, y: p.y, width: g * 16, height: g * 10, data: { url, mime: att.mime || "video/mp4", name: att.name || "Video" }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
       } else if (type === "audio") {
-        st.addBlock({ id: blockId, type: "create" as const, mode: "embed", x: placeX, y: placeY, width: g * 14, height: g * 4, data: { url, mime: att.mime || "audio/mpeg", name: att.name || "Audio", dataUrl: url }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
-        placeY += g * 5;
+        const p = mediaPos(g * 14, g * 4);
+        st.addBlock({ id: blockId, type: "create" as const, mode: "embed", x: p.x, y: p.y, width: g * 14, height: g * 4, data: { url, mime: att.mime || "audio/mpeg", name: att.name || "Audio", dataUrl: url }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
       } else if (type === "pdf") {
-        st.addBlock({ id: blockId, type: "create" as const, mode: "embed", x: placeX, y: placeY, width: g * 16, height: g * 14, data: { url, mime: "application/pdf", name: att.name || "PDF", dataUrl: url }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
-        placeY += g * 15;
+        const p = mediaPos(g * 16, g * 14);
+        st.addBlock({ id: blockId, type: "create" as const, mode: "embed", x: p.x, y: p.y, width: g * 16, height: g * 14, data: { url, mime: "application/pdf", name: att.name || "PDF", dataUrl: url }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
       } else {
-        st.addBlock({ id: blockId, type: "create" as const, mode: "embed", x: placeX, y: placeY, width: g * 14, height: g * 6, data: { url, name: att.name || note.title || "File", dataUrl: url }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
-        placeY += g * 7;
+        const p = mediaPos(g * 14, g * 6);
+        st.addBlock({ id: blockId, type: "create" as const, mode: "embed", x: p.x, y: p.y, width: g * 14, height: g * 6, data: { url, name: att.name || note.title || "File", dataUrl: url }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
       }
       pulled++;
     }
@@ -1283,27 +1510,25 @@ export default function OmniaCanvasPage() {
     const st = useCanvasStore.getState();
     const g = Math.max(1, Math.floor(st.gridSize || 24));
     const vw = window.innerWidth || viewportWidth || 1280;
-    const rightRail = getChatRailWidthPx(vw);
-    const boardViewportWidth = Math.max(g * 8, vw - rightRail);
+    const vh = window.innerHeight || 800;
 
-    const centerX = st.camera.x + Math.floor(boardViewportWidth * 0.5);
     const initialW = g * 8;
-    const initialH = g;
+    const initialH = g * 3;
 
-    // Stack below the last AI response block if one exists, otherwise center vertically.
-    const lastId = lastAiResponseBlockRef.current;
-    const lastBlock = lastId ? (st.blocks as any)?.[lastId] : null;
-    let worldY: number;
-    if (lastBlock) {
-      worldY = Math.max(g, Number(lastBlock.y || 0) + Number(lastBlock.height || g) + g * 2);
-    } else {
-      const centerY = st.camera.y + Math.floor(window.innerHeight * 0.5);
-      worldY = Math.max(g, centerY - Math.floor(initialH / 2));
-    }
-    const worldX = Math.max(g, centerX - Math.floor(initialW / 2));
+    const allBlocks = Object.values(st.blocks || {}).filter(Boolean) as any[];
+    const pos = findSmartPlacement({
+      blockW: initialW,
+      blockH: initialH,
+      gridSize: g,
+      camera: st.camera,
+      viewportW: vw,
+      viewportH: vh,
+      railWidth: getChatRailWidthPx(vw),
+      existingBlocks: allBlocks,
+    });
 
     const id = addTextBlockAt(
-      { x: worldX, y: worldY },
+      { x: pos.x, y: pos.y },
       { width: initialW, height: initialH, content: initialContent, format: "rich" }
     );
     st.updateBlock(id as any, { data: { ...((st.blocks as any)?.[id]?.data || {}), aiResponseBubble: true } } as any);
@@ -1334,10 +1559,8 @@ export default function OmniaCanvasPage() {
   const calcAiBubbleSize = useCallback((text: string) => {
     const st = useCanvasStore.getState() as any;
     const g = Math.max(1, Math.floor(st.gridSize || 24));
-    const availableWidth = Number.isFinite(st.canvasWidth) && (st.canvasWidth as number) > 0
-      ? (st.canvasWidth as number)
-      : (window.innerWidth || 1280);
-    const maxWidthPx = Math.min(g * 28, Math.floor(availableWidth * 0.85));
+    const screenW = window.innerWidth || 1280;
+    const maxWidthPx = Math.max(g * 10, Math.floor(screenW * 0.9));
     const horizontalPad = 16;
     const charWidthPx = 7.8;
     const lineHeightPx = g;
@@ -1361,6 +1584,43 @@ export default function OmniaCanvasPage() {
     return { width: singleColWidth, height: heightPx };
   }, []);
 
+  const addChatResponseToGrid = useCallback((text: string, dropClientX?: number, dropClientY?: number) => {
+    const content = String(text || "").trim();
+    if (!content) return;
+    const st = useCanvasStore.getState() as any;
+    const g = Math.max(1, Math.floor(st.gridSize || 24));
+    const vw = window.innerWidth || 1280;
+    const vh = window.innerHeight || 800;
+    const size = calcAiBubbleSize(content);
+    let posX: number, posY: number;
+    if (dropClientX != null && dropClientY != null) {
+      const cam = st.camera || { x: 0, y: 0, zoom: 1 };
+      const z = Math.max(0.1, cam.zoom || 1);
+      posX = Math.round(((dropClientX - (cam.x || 0)) / z) / g) * g;
+      posY = Math.round(((dropClientY - (cam.y || 0)) / z) / g) * g;
+    } else {
+      const pos = findSmartPlacement({
+        blockW: size.width, blockH: size.height, gridSize: g,
+        camera: st.camera || { x: 0, y: 0, zoom: 1 },
+        viewportW: vw, viewportH: vh,
+        railWidth: getChatRailWidthPx(vw),
+        existingBlocks: Object.values(st.blocks || {}).filter(Boolean) as any[],
+      });
+      posX = pos.x;
+      posY = pos.y;
+    }
+    const id = addTextBlockAt(
+      { x: posX, y: posY },
+      { width: size.width, height: size.height, content, format: "rich" }
+    );
+    if (id) {
+      st.updateBlock(id as any, { data: { ...((st.blocks as any)?.[id]?.data || {}), aiResponseBubble: true } } as any);
+      requestAnimationFrame(() => {
+        window.dispatchEvent(new CustomEvent("omnia_fit_block", { detail: { id } }));
+      });
+    }
+  }, [addTextBlockAt, calcAiBubbleSize, getChatRailWidthPx]);
+
   const typeIntoAiResponseBlock = useCallback(
     async (blockId: string, fullText: string) => {
       const runId = ++aiTypingRunRef.current;
@@ -1373,14 +1633,26 @@ export default function OmniaCanvasPage() {
         const delay = nextChar === "\n" ? 12 : /[.,!?]/.test(nextChar) ? 14 : 8;
         const nextLen = Math.min(text.length, shown.length + step);
         shown = text.slice(0, nextLen);
-        const size = calcAiBubbleSize(shown);
-        updateBlock(blockId as any, { content: shown, width: size.width, height: size.height } as any);
+        const cur: any = useCanvasStore.getState().blocks?.[blockId];
+        const userResized = cur?.data?.userResized;
+        if (userResized) {
+          updateBlock(blockId as any, { content: shown } as any);
+        } else {
+          const size = calcAiBubbleSize(shown);
+          updateBlock(blockId as any, { content: shown, width: size.width, height: size.height } as any);
+        }
         await new Promise<void>((resolve) => window.setTimeout(resolve, delay));
       }
 
       if (aiTypingRunRef.current === runId) {
-        const size = calcAiBubbleSize(text);
-        updateBlock(blockId as any, { content: text, width: size.width, height: size.height } as any);
+        const cur: any = useCanvasStore.getState().blocks?.[blockId];
+        const userResized = cur?.data?.userResized;
+        if (userResized) {
+          updateBlock(blockId as any, { content: text } as any);
+        } else {
+          const size = calcAiBubbleSize(text);
+          updateBlock(blockId as any, { content: text, width: size.width, height: size.height } as any);
+        }
       }
     },
     [calcAiBubbleSize, normalizeAiTextForBlock, updateBlock]
@@ -1457,42 +1729,9 @@ export default function OmniaCanvasPage() {
 
       const saved = String(msg?.aiResponse || "").trim();
       if (!saved) return;
-      const text = normalizeAiTextForBlock(saved);
-      const normalized = text.replace(/\s+/g, " ").trim();
-
-      const st = useCanvasStore.getState() as any;
-      const order: string[] = Array.isArray(st.blockOrder) ? st.blockOrder : [];
-      const existingMatch = order.find((id: string) => {
-        const blk = st.blocks?.[id];
-        if (!blk?.data?.aiResponseBubble) return false;
-        const blkText = String(blk.content || "").replace(/\s+/g, " ").trim();
-        return blkText === normalized;
-      });
-
-      if (existingMatch) {
-        window.dispatchEvent(new CustomEvent("omnia_expand_blocks", { detail: { ids: [existingMatch] } }));
-        const blk = st.blocks?.[existingMatch];
-        if (blk) {
-          const size = calcAiBubbleSize(text);
-          updateBlock(existingMatch as any, { width: size.width, height: size.height } as any);
-        }
-        requestAnimationFrame(() => {
-          window.dispatchEvent(new CustomEvent("omnia_fit_block", { detail: { id: existingMatch } }));
-        });
-        return;
-      }
-
-      retireExistingAiBlocks();
-      const responseBlockId = addAiResponseBlock(text);
-      if (!responseBlockId) return;
-      lastAiResponseBlockRef.current = String(responseBlockId);
-      const size = calcAiBubbleSize(text);
-      updateBlock(String(responseBlockId) as any, { content: text, width: size.width, height: size.height } as any);
-      if (Array.isArray(msg.sources) && msg.sources.length > 0) {
-        attachSourcesToBlock(String(responseBlockId), msg.sources);
-      }
+      addChatResponseToGrid(saved);
     },
-    [addAiResponseBlock, attachSourcesToBlock, calcAiBubbleSize, normalizeAiTextForBlock, retireExistingAiBlocks, updateBlock]
+    [addChatResponseToGrid, calcAiBubbleSize, normalizeAiTextForBlock, updateBlock]
   );
 
   useEffect(() => {
@@ -1592,34 +1831,31 @@ export default function OmniaCanvasPage() {
         .map((p) => String(p.aiResponse || "").trim())
         .find(Boolean);
 
-      if (latestAi) {
-        retireExistingAiBlocks();
-        const responseBlockId = addAiResponseBlock("");
-        if (responseBlockId) {
-          lastAiResponseBlockRef.current = String(responseBlockId);
-          void typeIntoAiResponseBlock(String(responseBlockId), latestAi);
-        }
-      }
+      // AI responses are shown in the chat rail; no grid blocks to retire.
     }
 
     if (importedTodoLists.length) {
       const st = useCanvasStore.getState() as any;
       const g = Math.max(1, Math.floor(st.gridSize || 24));
-      const camera = st.camera || { x: 0, y: 0 };
-      const startX = Math.max(g, Math.floor(-camera.x + g * 2));
-      const startY = Math.max(g, Math.floor(-camera.y + g * 2));
-      let x = startX;
-      let y = startY;
+      const iVw = window.innerWidth || 1280;
+      const iVh = window.innerHeight || 800;
 
-      importedTodoLists.forEach((todoList, idx) => {
-        const listId = addListBlockAt({ x, y }, { listType: "todo", width: g * 12 });
+      importedTodoLists.forEach((todoList) => {
+        const itemCount = Array.isArray(todoList.items) ? todoList.items.length : 0;
+        const estH = g * Math.max(3, itemCount + 2);
+        const cur = useCanvasStore.getState() as any;
+        const pos = findSmartPlacement({
+          blockW: g * 12,
+          blockH: estH,
+          gridSize: g,
+          camera: cur.camera || { x: 0, y: 0, zoom: 1 },
+          viewportW: iVw,
+          viewportH: iVh,
+          railWidth: 0,
+          existingBlocks: Object.values(cur.blocks || {}).filter(Boolean) as any[],
+        });
+        const listId = addListBlockAt({ x: pos.x, y: pos.y }, { listType: "todo", width: g * 12 });
         setListItems(listId as any, todoList.items as any, "todo");
-
-        y += Math.max(g * 3, (todoList.items.length + 2) * g);
-        if ((idx + 1) % 3 === 0) {
-          x += g * 14;
-          y = startY;
-        }
       });
     }
 
@@ -1627,9 +1863,22 @@ export default function OmniaCanvasPage() {
     if (importedAttachments.length) {
       const st = useCanvasStore.getState() as any;
       const g = Math.max(1, Math.floor(st.gridSize || 24));
-      const camera = st.camera || { x: 0, y: 0 };
-      let ax = Math.max(g, Math.floor(-camera.x + g * 16));
-      let ay = Math.max(g, Math.floor(-camera.y + g * 2));
+      const aVw = window.innerWidth || 1280;
+      const aVh = window.innerHeight || 800;
+
+      const attPos = (bw: number, bh: number) => {
+        const cur = useCanvasStore.getState() as any;
+        return findSmartPlacement({
+          blockW: bw,
+          blockH: bh,
+          gridSize: g,
+          camera: cur.camera || { x: 0, y: 0, zoom: 1 },
+          viewportW: aVw,
+          viewportH: aVh,
+          railWidth: 0,
+          existingBlocks: Object.values(cur.blocks || {}).filter(Boolean) as any[],
+        });
+      };
 
       for (const att of importedAttachments) {
         const url = String(att.url || "").trim();
@@ -1638,9 +1887,10 @@ export default function OmniaCanvasPage() {
 
         if (attType === "youtube" && (videoId || url)) {
           const ytUrl = url || `https://www.youtube.com/watch?v=${videoId}`;
-          st.addYouTubeBlockAt({ x: ax, y: ay }, { url: ytUrl, videoId });
-          ay += g * 10;
+          const p = attPos(g * 12, g * 8);
+          st.addYouTubeBlockAt({ x: p.x, y: p.y }, { url: ytUrl, videoId });
         } else if (attType === "image" && url) {
+          const p = attPos(g * 12, g * 12);
           if (url.startsWith("data:image/")) {
             const parts = url.split(",");
             const mm = parts[0]?.match(/:(.*?);/);
@@ -1650,16 +1900,15 @@ export default function OmniaCanvasPage() {
                 const u8 = new Uint8Array(bstr.length);
                 for (let i = 0; i < bstr.length; i++) u8[i] = bstr.charCodeAt(i);
                 const file = new File([u8], att.name || "image.png", { type: mm[1] });
-                window.dispatchEvent(new CustomEvent("omnia_attach_files", { detail: { files: [file], clientX: ax, clientY: ay } }));
+                window.dispatchEvent(new CustomEvent("omnia_attach_files", { detail: { files: [file], clientX: p.x, clientY: p.y } }));
               } catch { /* ignore */ }
             }
           } else {
-            window.dispatchEvent(new CustomEvent("omnia_attach_link", { detail: { url, clientX: ax, clientY: ay } }));
+            window.dispatchEvent(new CustomEvent("omnia_attach_link", { detail: { url, clientX: p.x, clientY: p.y } }));
           }
-          ay += g * 10;
         } else if (attType === "video" && url) {
-          window.dispatchEvent(new CustomEvent("omnia_attach_link", { detail: { url, clientX: ax, clientY: ay } }));
-          ay += g * 10;
+          const p = attPos(g * 16, g * 10);
+          window.dispatchEvent(new CustomEvent("omnia_attach_link", { detail: { url, clientX: p.x, clientY: p.y } }));
         } else if (attType === "pdf") {
           const pdfText = String(att.pdfText || att.extractedText || "").trim();
           if (pdfText) {
@@ -1668,61 +1917,66 @@ export default function OmniaCanvasPage() {
             const charsPerLine = Math.max(1, Math.floor((g * 16 * 0.85) / 8));
             const wrappedLines = combined.split("\n").reduce((sum: number, line: string) => sum + Math.max(1, Math.ceil(line.length / charsPerLine)), 0);
             const height = Math.max(g * 6, Math.min(g * 30, wrappedLines * 22 + 32));
-            st.addTextBlockAt({ x: ax, y: ay }, { width: g * 16, height, content: combined, format: "plain" });
+            const p = attPos(g * 16, height);
+            st.addTextBlockAt({ x: p.x, y: p.y }, { width: g * 16, height, content: combined, format: "plain" });
           } else if (url) {
             const pdfName = String(att.name || att.memoryTitle || "document.pdf").trim();
             const pdfUrl = url;
-            const px = ax;
-            const py = ay;
+            const p = attPos(g * 16, g * 10);
             (async () => {
               try {
                 const resp = await fetch(pdfUrl);
                 if (resp.ok) {
                   const blob = await resp.blob();
                   const file = new File([blob], pdfName.endsWith(".pdf") ? pdfName : `${pdfName}.pdf`, { type: "application/pdf" });
-                  window.dispatchEvent(new CustomEvent("omnia_attach_files", { detail: { files: [file], clientX: px, clientY: py } }));
+                  window.dispatchEvent(new CustomEvent("omnia_attach_files", { detail: { files: [file], clientX: p.x, clientY: p.y } }));
                   return;
                 }
               } catch { /* fetch failed, fall through */ }
-              window.dispatchEvent(new CustomEvent("omnia_attach_link", { detail: { url: pdfUrl, clientX: px, clientY: py } }));
+              window.dispatchEvent(new CustomEvent("omnia_attach_link", { detail: { url: pdfUrl, clientX: p.x, clientY: p.y } }));
             })();
           }
-          ay += g * 10;
         } else if (attType === "memory" && att.memoryContent) {
           const content = att.memoryTitle ? `# ${att.memoryTitle}\n\n${att.memoryContent}` : att.memoryContent;
-          st.addTextBlockAt({ x: ax, y: ay }, { width: g * 12, height: g * 6, content, format: "rich" });
-          ay += g * 8;
+          const p = attPos(g * 12, g * 6);
+          st.addTextBlockAt({ x: p.x, y: p.y }, { width: g * 12, height: g * 6, content, format: "rich" });
         } else if (url) {
-          window.dispatchEvent(new CustomEvent("omnia_attach_link", { detail: { url, clientX: ax, clientY: ay } }));
-          ay += g * 8;
-        }
-
-        if (ay > Math.floor(-camera.y + g * 40)) {
-          ax += g * 14;
-          ay = Math.max(g, Math.floor(-camera.y + g * 2));
+          const p = attPos(g * 10, g * 6);
+          window.dispatchEvent(new CustomEvent("omnia_attach_link", { detail: { url, clientX: p.x, clientY: p.y } }));
         }
       }
     }
-  }, [addAiResponseBlock, addListBlockAt, boardId, retireExistingAiBlocks, setListItems, typeIntoAiResponseBlock, user?.id]);
+  }, [addListBlockAt, boardId, setListItems, user?.id]);
 
   const applyProjectActions = useCallback((actions: CreateAction[]) => {
     const list = Array.isArray(actions) ? actions : [];
     if (!list.length) return { created: 0, failures: [] as string[] };
     const st = useCanvasStore.getState() as any;
     const g = Math.max(1, Math.floor(st.gridSize || 24));
-    const camera = st.camera || { x: 0, y: 0, zoom: 1 };
-    let x = Math.max(0, Math.floor(-camera.x + g * 2));
-    let y = Math.max(0, Math.floor(-camera.y + g * 2));
+    const vw = window.innerWidth || 1280;
+    const vh = window.innerHeight || 800;
     let created = 0;
     const failures: string[] = [];
     const makeId = (prefix = "b") => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
+    const getPos = (bw: number, bh: number) => {
+      const cur = useCanvasStore.getState() as any;
+      return findSmartPlacement({
+        blockW: bw,
+        blockH: bh,
+        gridSize: g,
+        camera: cur.camera || { x: 0, y: 0, zoom: 1 },
+        viewportW: vw,
+        viewportH: vh,
+        railWidth: 0,
+        existingBlocks: Object.values(cur.blocks || {}).filter(Boolean) as any[],
+      });
+    };
+
     for (const raw of list) {
       try {
         const type = String(raw?.type || "").trim().toLowerCase();
-        const nextId = (id: string) => {
-          const h = Number((st.blocks as any)[id]?.height || g);
-          y += h + g;
+        const nextId = (_id: string) => {
           created += 1;
         };
 
@@ -1785,7 +2039,8 @@ export default function OmniaCanvasPage() {
           const defaultH = isHeading ? (textVariant === "h1" ? 3 : 2) : isList ? Math.max(4, lineCount + 2) : Number(definition?.defaultSize?.h || 4);
           const height = g * Math.max(1, defaultH);
 
-          const createdId = st.addTextBlockAt({ x, y }, { width, height, content: contentText, format: "plain" } as any);
+          const pos = getPos(width, height);
+          const createdId = st.addTextBlockAt({ x: pos.x, y: pos.y }, { width, height, content: contentText, format: "plain" } as any);
           if (textVariant !== "body" || listType !== "none" || (extraData as any)?.brickColor || (extraData as any)?.textColor) {
             const block = st.blocks?.[createdId];
             const curData = block && (block as any).data && typeof (block as any).data === "object" ? { ...(block as any).data } : {};
@@ -1887,7 +2142,8 @@ export default function OmniaCanvasPage() {
           const videoId = extractYouTubeVideoId(rawUrl) || "";
           if (rawUrl || videoId) {
             const ytUrl = rawUrl || `https://www.youtube.com/watch?v=${videoId}`;
-            const createdId = st.addYouTubeBlockAt({ x, y }, { url: ytUrl, videoId });
+            const ytPos = getPos(g * 12, g * 8);
+            const createdId = st.addYouTubeBlockAt({ x: ytPos.x, y: ytPos.y }, { url: ytUrl, videoId });
             nextId(createdId);
           } else {
             failures.push("create_youtube_block: missing url");
@@ -1899,7 +2155,8 @@ export default function OmniaCanvasPage() {
           const title = String((raw as any)?.title || "").trim();
           const body = String((raw as any)?.content || (raw as any)?.outline || "").trim();
           const content = [title ? `# ${title}` : "", body].filter(Boolean).join("\n\n");
-          const id = st.addSheetBlockAt({ x, y }, { content });
+          const sheetPos = getPos(g * 14, g * 10);
+          const id = st.addSheetBlockAt({ x: sheetPos.x, y: sheetPos.y }, { content });
           setTextKind(id, "sheet");
           nextId(id);
           continue;
@@ -1940,12 +2197,13 @@ export default function OmniaCanvasPage() {
           const title = String((raw as any)?.title || "Task Board").trim() || "Task Board";
           const boardW = g * Math.max(18, columns.length * 6 + 4);
           const boardH = g * 16;
+          const tbPos = getPos(boardW, boardH);
           const boardId = makeId("create");
           st.addBlock({
             id: boardId,
             type: "create",
-            x,
-            y,
+            x: tbPos.x,
+            y: tbPos.y,
             width: boardW,
             height: boardH,
             mode: "taskboard",
@@ -1953,20 +2211,20 @@ export default function OmniaCanvasPage() {
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
           } as any);
-          y += boardH + g;
           created += 1;
           continue;
         }
         if (type === "create_design_board" || type === "brainstorm") {
           const width = g * 20;
           const height = g * 14;
+          const dbPos = getPos(width, height);
           const id = makeId("create");
           const seedText = String((raw as any)?.seedText || (raw as any)?.content || "").trim();
           st.addBlock({
             id,
             type: "create",
-            x,
-            y,
+            x: dbPos.x,
+            y: dbPos.y,
             width,
             height,
             mode: "design",
@@ -1978,14 +2236,14 @@ export default function OmniaCanvasPage() {
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
           } as any);
-          y += height + g;
           created += 1;
           continue;
         }
         if (type === "create_spreadsheet") {
           const rows = Math.max(1, Math.min(1000, Number((raw as any)?.rows || 30)));
           const cols = Math.max(1, Math.min(100, Number((raw as any)?.cols || 20)));
-          const id = st.addSpreadsheetBlockAt({ x, y }, { rows, cols });
+          const ssPos = getPos(g * 14, g * 10);
+          const id = st.addSpreadsheetBlockAt({ x: ssPos.x, y: ssPos.y }, { rows, cols });
           setTextKind(id, "spreadsheet");
           const existing = String((st.blocks as any)?.[id]?.content || "");
           let parsedSheet: any = null;
@@ -2030,7 +2288,8 @@ export default function OmniaCanvasPage() {
           const language = normalizeLanguage(String((raw as any)?.language || "plaintext"));
           const provided = String((raw as any)?.content || "").trim();
           const content = provided || defaultCodeFor(language);
-          const id = st.addCodeBlockAt({ x, y }, { width: g * 14, height: g * 7, language, content });
+          const codePos = getPos(g * 14, g * 7);
+          const id = st.addCodeBlockAt({ x: codePos.x, y: codePos.y }, { width: g * 14, height: g * 7, language, content });
           setTextKind(id, "code");
           nextId(id);
           continue;
@@ -2043,7 +2302,8 @@ export default function OmniaCanvasPage() {
               : requested === "bulleted" || type === "bulleted_list"
               ? "bulleted"
               : "todo";
-          const id = st.addListBlockAt({ x, y }, { listType });
+          const listPos = getPos(g * 10, g * 6);
+          const id = st.addListBlockAt({ x: listPos.x, y: listPos.y }, { listType });
           const items = Array.isArray((raw as any)?.items)
             ? (raw as any).items
             : String((raw as any)?.content || "")
@@ -2210,7 +2470,7 @@ export default function OmniaCanvasPage() {
     let cancelled = false;
     const loadBoard = async () => {
       hydratedRef.current = false;
-      let id: string | null = routeBoardId || null;
+      let id: string | null = null;
       try {
         const existing = routeBoardId || localStorage.getItem("omnia_board_id");
         if (existing) {
@@ -2962,13 +3222,9 @@ export default function OmniaCanvasPage() {
       ...(sentAttachments.length ? { attachments: sentAttachments } : {}),
     }]);
 
-    // In focused chat mode, skip canvas brick — responses go inline in the chat.
+    // AI text responses now appear only in the chat rail — users drag them onto the grid.
+    // Images, videos, and structural blocks (lists, sheets, etc.) still auto-place on the grid.
     let responseBlockId: string | null = null;
-    if (!chatMode) {
-      retireExistingAiBlocks();
-      responseBlockId = addAiResponseBlock("AI is thinking...") as string | null;
-      lastAiResponseBlockRef.current = responseBlockId ? String(responseBlockId) : null;
-    }
 
     try {
       const cappedText = text.length > 3000 ? text.slice(0, 3000) : text;
@@ -3230,8 +3486,13 @@ export default function OmniaCanvasPage() {
             if (aiThreadRef.current.length > 40) aiThreadRef.current = aiThreadRef.current.slice(-40);
             if (responseBlockId && typeof updateBlock === "function") {
               const normalized = normalizeAiTextForBlock(assistantText);
-              const size = calcAiBubbleSize(normalized);
-              updateBlock(String(responseBlockId), { content: normalized, width: size.width, height: size.height } as any);
+              const curBlk2: any = useCanvasStore.getState().blocks?.[responseBlockId];
+              if (curBlk2?.data?.userResized) {
+                updateBlock(String(responseBlockId), { content: normalized } as any);
+              } else {
+                const size = calcAiBubbleSize(normalized);
+                updateBlock(String(responseBlockId), { content: normalized, width: size.width, height: size.height } as any);
+              }
             }
             setChatStatusText(actions.length ? "Bricks updated" : "Answered");
           } else {
@@ -3309,26 +3570,26 @@ export default function OmniaCanvasPage() {
                     setChatStatusText("Image generated");
                     const imageUrl = String(parsed.image);
                     setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: `[Generated Image]`, aiImageUrl: imageUrl } : m)));
-                    if (responseBlockId) {
-                      const st = useCanvasStore.getState() as any;
-                      const placeholderBlock = st.blocks?.[responseBlockId];
-                      const imgX = placeholderBlock?.x ?? 100;
-                      const imgY = placeholderBlock?.y ?? 100;
-                      const g = Math.max(1, Math.floor(st.gridSize || 24));
-                      try { deleteBlock(responseBlockId as any); } catch {}
-                      const imgBlock = {
+                    {
+                      const stImg = useCanvasStore.getState() as any;
+                      const gImg = Math.max(1, Math.floor(stImg.gridSize || 24));
+                      let imgX: number, imgY: number;
+                      if (responseBlockId && stImg.blocks?.[responseBlockId]) {
+                        imgX = stImg.blocks[responseBlockId].x ?? 100;
+                        imgY = stImg.blocks[responseBlockId].y ?? 100;
+                        try { deleteBlock(responseBlockId as any); } catch {}
+                      } else {
+                        const imgPos = findSmartPlacement({ blockW: gImg * 12, blockH: gImg * 12, gridSize: gImg, camera: stImg.camera || { x: 0, y: 0, zoom: 1 }, viewportW: window.innerWidth || 1280, viewportH: window.innerHeight || 800, railWidth: 0, existingBlocks: Object.values(stImg.blocks || {}).filter(Boolean) as any[] });
+                        imgX = imgPos.x;
+                        imgY = imgPos.y;
+                      }
+                      stImg.addBlock({
                         id: `create-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-                        type: "create" as const,
-                        mode: "image",
-                        x: imgX,
-                        y: imgY,
-                        width: g * 12,
-                        height: g * 12,
+                        type: "create" as const, mode: "image",
+                        x: imgX, y: imgY, width: gImg * 12, height: gImg * 12,
                         data: { src: imageUrl },
-                        createdAt: new Date().toISOString(),
-                        updatedAt: new Date().toISOString(),
-                      };
-                      st.addBlock(imgBlock);
+                        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+                      });
                       responseBlockId = null;
                     }
                     accumulated = `[Generated Image](${imageUrl})`;
@@ -3338,21 +3599,23 @@ export default function OmniaCanvasPage() {
                     setChatStatusText("Video generated");
                     const videoUrl = String(parsed.video);
                     setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: `[Generated Video]`, aiVideoUrl: videoUrl } : m)));
-                    if (responseBlockId) {
-                      const st = useCanvasStore.getState() as any;
-                      const placeholderBlock = st.blocks?.[responseBlockId];
-                      const vidX = placeholderBlock?.x ?? 100;
-                      const vidY = placeholderBlock?.y ?? 100;
-                      const g = Math.max(1, Math.floor(st.gridSize || 24));
-                      try { deleteBlock(responseBlockId as any); } catch {}
-                      st.addBlock({
+                    {
+                      const stVid = useCanvasStore.getState() as any;
+                      const gVid = Math.max(1, Math.floor(stVid.gridSize || 24));
+                      let vidX: number, vidY: number;
+                      if (responseBlockId && stVid.blocks?.[responseBlockId]) {
+                        vidX = stVid.blocks[responseBlockId].x ?? 100;
+                        vidY = stVid.blocks[responseBlockId].y ?? 100;
+                        try { deleteBlock(responseBlockId as any); } catch {}
+                      } else {
+                        const vidPos = findSmartPlacement({ blockW: gVid * 16, blockH: gVid * 10, gridSize: gVid, camera: stVid.camera || { x: 0, y: 0, zoom: 1 }, viewportW: window.innerWidth || 1280, viewportH: window.innerHeight || 800, railWidth: 0, existingBlocks: Object.values(stVid.blocks || {}).filter(Boolean) as any[] });
+                        vidX = vidPos.x;
+                        vidY = vidPos.y;
+                      }
+                      stVid.addBlock({
                         id: `create-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-                        type: "create" as const,
-                        mode: "video",
-                        x: vidX,
-                        y: vidY,
-                        width: g * 16,
-                        height: g * 10,
+                        type: "create" as const, mode: "video",
+                        x: vidX, y: vidY, width: gVid * 16, height: gVid * 10,
                         data: { url: videoUrl, mime: "video/mp4" },
                         createdAt: new Date().toISOString(),
                         updatedAt: new Date().toISOString(),
@@ -3372,8 +3635,13 @@ export default function OmniaCanvasPage() {
                     setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: visibleText } : m)));
                     if (responseBlockId && typeof updateBlock === "function") {
                       const normalized = normalizeAiTextForBlock(visibleText);
-                      const size = calcAiBubbleSize(normalized);
-                      updateBlock(String(responseBlockId), { content: normalized, width: size.width, height: size.height } as any);
+                      const curBlk: any = useCanvasStore.getState().blocks?.[responseBlockId];
+                      if (curBlk?.data?.userResized) {
+                        updateBlock(String(responseBlockId), { content: normalized } as any);
+                      } else {
+                        const size = calcAiBubbleSize(normalized);
+                        updateBlock(String(responseBlockId), { content: normalized, width: size.width, height: size.height } as any);
+                      }
                     }
                     const el = chatScrollRef.current;
                     if (el) el.scrollTop = el.scrollHeight;
@@ -3426,8 +3694,13 @@ export default function OmniaCanvasPage() {
         if (aiThreadRef.current.length > 40) aiThreadRef.current = aiThreadRef.current.slice(-40);
         if (responseBlockId && typeof updateBlock === "function") {
           const normalized = normalizeAiTextForBlock(finalDisplayText);
-          const size = calcAiBubbleSize(normalized);
-          updateBlock(String(responseBlockId), { content: normalized, width: size.width, height: size.height } as any);
+          const curBlk3: any = useCanvasStore.getState().blocks?.[responseBlockId];
+          if (curBlk3?.data?.userResized) {
+            updateBlock(String(responseBlockId), { content: normalized } as any);
+          } else {
+            const size = calcAiBubbleSize(normalized);
+            updateBlock(String(responseBlockId), { content: normalized, width: size.width, height: size.height } as any);
+          }
           if (sources.length > 0) attachSourcesToBlock(String(responseBlockId), sources);
         }
         setChatStatusText(mediaResult.pulled > 0 ? "Media added to board" : ytResult.urls.length ? "Video embedded" : aiConnections.length > 0 ? "Connection found" : "Answered");
@@ -3455,24 +3728,25 @@ export default function OmniaCanvasPage() {
           setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: "[Generated Image]", aiImageUrl: imageUrl } : m)));
           aiThreadRef.current.push({ role: "assistant", content: `[Generated Image](${imageUrl})` });
           if (aiThreadRef.current.length > 40) aiThreadRef.current = aiThreadRef.current.slice(-40);
-          if (responseBlockId) {
-            const st = useCanvasStore.getState() as any;
-            const placeholderBlock = st.blocks?.[responseBlockId];
-            const imgX = placeholderBlock?.x ?? 100;
-            const imgY = placeholderBlock?.y ?? 100;
-            const g = Math.max(1, Math.floor(st.gridSize || 24));
-            try { deleteBlock(responseBlockId as any); } catch {}
-            st.addBlock({
+          {
+            const stImg2 = useCanvasStore.getState() as any;
+            const gImg2 = Math.max(1, Math.floor(stImg2.gridSize || 24));
+            let imgX2: number, imgY2: number;
+            if (responseBlockId && stImg2.blocks?.[responseBlockId]) {
+              imgX2 = stImg2.blocks[responseBlockId].x ?? 100;
+              imgY2 = stImg2.blocks[responseBlockId].y ?? 100;
+              try { deleteBlock(responseBlockId as any); } catch {}
+            } else {
+              const imgPos2 = findSmartPlacement({ blockW: gImg2 * 12, blockH: gImg2 * 12, gridSize: gImg2, camera: stImg2.camera || { x: 0, y: 0, zoom: 1 }, viewportW: window.innerWidth || 1280, viewportH: window.innerHeight || 800, railWidth: 0, existingBlocks: Object.values(stImg2.blocks || {}).filter(Boolean) as any[] });
+              imgX2 = imgPos2.x;
+              imgY2 = imgPos2.y;
+            }
+            stImg2.addBlock({
               id: `create-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-              type: "create",
-              mode: "image",
-              x: imgX,
-              y: imgY,
-              width: g * 12,
-              height: g * 12,
+              type: "create", mode: "image",
+              x: imgX2, y: imgY2, width: gImg2 * 12, height: gImg2 * 12,
               data: { src: imageUrl },
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString(),
+              createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
             });
           }
           setChatStatusText("Image generated");
@@ -3483,24 +3757,25 @@ export default function OmniaCanvasPage() {
           setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: "[Generated Video]", aiVideoUrl: videoUrl } : m)));
           aiThreadRef.current.push({ role: "assistant", content: `[Generated Video](${videoUrl})` });
           if (aiThreadRef.current.length > 40) aiThreadRef.current = aiThreadRef.current.slice(-40);
-          if (responseBlockId) {
-            const st = useCanvasStore.getState() as any;
-            const placeholderBlock = st.blocks?.[responseBlockId];
-            const vidX = placeholderBlock?.x ?? 100;
-            const vidY = placeholderBlock?.y ?? 100;
-            const g = Math.max(1, Math.floor(st.gridSize || 24));
-            try { deleteBlock(responseBlockId as any); } catch {}
-            st.addBlock({
+          {
+            const stVid2 = useCanvasStore.getState() as any;
+            const gVid2 = Math.max(1, Math.floor(stVid2.gridSize || 24));
+            let vidX2: number, vidY2: number;
+            if (responseBlockId && stVid2.blocks?.[responseBlockId]) {
+              vidX2 = stVid2.blocks[responseBlockId].x ?? 100;
+              vidY2 = stVid2.blocks[responseBlockId].y ?? 100;
+              try { deleteBlock(responseBlockId as any); } catch {}
+            } else {
+              const vidPos2 = findSmartPlacement({ blockW: gVid2 * 16, blockH: gVid2 * 10, gridSize: gVid2, camera: stVid2.camera || { x: 0, y: 0, zoom: 1 }, viewportW: window.innerWidth || 1280, viewportH: window.innerHeight || 800, railWidth: 0, existingBlocks: Object.values(stVid2.blocks || {}).filter(Boolean) as any[] });
+              vidX2 = vidPos2.x;
+              vidY2 = vidPos2.y;
+            }
+            stVid2.addBlock({
               id: `create-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-              type: "create",
-              mode: "video",
-              x: vidX,
-              y: vidY,
-              width: g * 16,
-              height: g * 10,
+              type: "create", mode: "video",
+              x: vidX2, y: vidY2, width: gVid2 * 16, height: gVid2 * 10,
               data: { url: videoUrl, mime: "video/mp4" },
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString(),
+              createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
             });
           }
           setChatStatusText("Video generated");
@@ -3692,18 +3967,25 @@ export default function OmniaCanvasPage() {
 
         const { cleanText } = extractSourceLinks(aiText);
         const normalized = normalizeAiTextForBlock(cleanText);
-        const size = calcAiBubbleSize(normalized);
 
         const existingData = (blk as any).data && typeof (blk as any).data === "object" ? { ...(blk as any).data } : {};
         const sourceRowHeight = Math.ceil(sources.length / 2) * 32 + 24;
         const g = Math.max(1, Math.floor(st.gridSize || 24));
         const extraHeight = Math.ceil(sourceRowHeight / g) * g;
-        updateBlock(blockId as any, {
-          content: normalized,
-          width: size.width,
-          height: size.height + extraHeight,
-          data: { ...existingData, sources },
-        } as any);
+        if (existingData.userResized) {
+          updateBlock(blockId as any, {
+            content: normalized,
+            data: { ...existingData, sources },
+          } as any);
+        } else {
+          const size = calcAiBubbleSize(normalized);
+          updateBlock(blockId as any, {
+            content: normalized,
+            width: size.width,
+            height: size.height + extraHeight,
+            data: { ...existingData, sources },
+          } as any);
+        }
 
         setChatMessages((prev) => prev.map((m) =>
           m.id === msg.id ? { ...m, aiResponse: cleanText, sources } : m
@@ -4732,6 +5014,74 @@ export default function OmniaCanvasPage() {
                     </ReactMarkdown>
                   </div>
                 )}
+                {msg.role === "user" && msg.aiResponse && (
+                  <div className="self-start max-w-[94%] mt-1.5 space-y-1">
+                    {(msg as any).aiImageUrl ? (
+                      <div className="rounded-2xl rounded-bl-md px-3 py-2 border bg-white/70 border-white/70">
+                        <img src={(msg as any).aiImageUrl} alt="Generated" className="max-w-full rounded-lg" style={{ maxHeight: "120px" }} />
+                      </div>
+                    ) : (msg as any).aiVideoUrl ? (
+                      <div className="rounded-2xl rounded-bl-md px-3 py-2 border bg-white/70 border-white/70">
+                        <video src={(msg as any).aiVideoUrl} controls preload="metadata" className="max-w-full rounded-lg" style={{ maxHeight: "120px" }} />
+                      </div>
+                    ) : (() => {
+                      const chunks = splitResponseIntoChunks(msg.aiResponse || "");
+                      const isSingle = chunks.length <= 1;
+                      return (
+                        <>
+                          {chunks.map((chunk, ci) => (
+                            <div key={`${msg.id}-chunk-${ci}`} className="group/chunk relative">
+                              <div
+                                draggable
+                                onDragStart={(e) => {
+                                  const sel = window.getSelection()?.toString()?.trim();
+                                  const text = sel || chunk;
+                                  e.dataTransfer.effectAllowed = "copy";
+                                  e.dataTransfer.setData("application/x-omnia-chat-response", text);
+                                  e.dataTransfer.setData("text/plain", text);
+                                  try {
+                                    const ghost = document.createElement("div");
+                                    ghost.textContent = text.length > 60 ? text.slice(0, 57) + "…" : text;
+                                    ghost.style.cssText = "position:fixed;top:-9999px;padding:6px 10px;border-radius:8px;background:rgba(59,130,246,0.15);font-size:11px;max-width:200px;overflow:hidden;white-space:nowrap";
+                                    document.body.appendChild(ghost);
+                                    e.dataTransfer.setDragImage(ghost, 0, 0);
+                                    requestAnimationFrame(() => ghost.remove());
+                                  } catch {}
+                                }}
+                                className={`rounded-xl px-3 py-1.5 text-xs leading-relaxed break-words border text-black/85 cursor-grab active:cursor-grabbing transition-all ${isSingle ? "bg-white/70 border-white/70 rounded-2xl rounded-bl-md" : "bg-white/50 border-white/40 hover:bg-white/70 hover:border-blue-300/40 hover:shadow-sm"}`}
+                              >
+                                <div className={`absolute -left-5 top-1/2 -translate-y-1/2 opacity-0 group-hover/chunk:opacity-100 transition-opacity ${isSingle ? "hidden" : ""}`}>
+                                  <GripVertical className="w-3 h-3 text-blue-400/60" />
+                                </div>
+                                <ReactMarkdown remarkPlugins={[remarkGfm]} components={buildChatMarkdownComponents(msg.id)}>
+                                  {normalizeChecklistSyntax(chunk)}
+                                </ReactMarkdown>
+                              </div>
+                              {!isSingle && (
+                                <button
+                                  type="button"
+                                  title="Add this section to grid"
+                                  className="absolute -right-1 top-0.5 opacity-0 group-hover/chunk:opacity-100 transition-opacity p-0.5 rounded text-blue-400/70 hover:text-blue-500 hover:bg-blue-500/10"
+                                  onClick={() => addChatResponseToGrid(chunk)}
+                                >
+                                  <LayoutGrid className="w-2.5 h-2.5" />
+                                </button>
+                              )}
+                            </div>
+                          ))}
+                        </>
+                      );
+                    })()}
+                    <div className="flex items-center gap-0.5 px-1">
+                      <button type="button" title="Add full response to grid" className="p-1 rounded-md text-black/30 hover:text-blue-500 hover:bg-blue-500/10 transition-colors" onClick={() => addChatResponseToGrid(msg.aiResponse || "")}>
+                        <LayoutGrid className="w-3 h-3" />
+                      </button>
+                      <button type="button" title="Copy" className={`p-1 rounded-md transition-colors ${copiedMsgId === msg.id ? "text-blue-500 bg-blue-500/10" : "text-black/30 hover:text-black/60 hover:bg-black/5"}`} onClick={() => { void navigator.clipboard.writeText(msg.aiResponse || ""); setCopiedMsgId(msg.id); setTimeout(() => setCopiedMsgId((cur) => cur === msg.id ? null : cur), 2000); }}>
+                        {copiedMsgId === msg.id ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -4982,7 +5332,7 @@ export default function OmniaCanvasPage() {
                       </div>
                     )}
                     {msg.role === "user" && msg.aiResponse && (
-                      <div className="flex justify-start">
+                      <div className="flex justify-start group/aifocused">
                         <div className="max-w-[80%]">
                           {(msg as any).aiImageUrl ? (
                             <div className="px-4 py-3">
@@ -4998,13 +5348,54 @@ export default function OmniaCanvasPage() {
                                 {savedMediaUrls.has((msg as any).aiVideoUrl) ? <><Check className="w-3 h-3" /> Saved</> : <><Save className="w-3 h-3" /> Save to Vault</>}
                               </button>
                             </div>
-                          ) : (
-                            <div className="px-4 py-3 text-sm leading-relaxed break-words text-black/85">
-                              <ReactMarkdown remarkPlugins={[remarkGfm]} components={buildChatMarkdownComponents(msg.id)}>
-                                {normalizeChecklistSyntax(msg.aiResponse || "")}
-                              </ReactMarkdown>
-                            </div>
-                          )}
+                          ) : (() => {
+                            const chunks = splitResponseIntoChunks(msg.aiResponse || "");
+                            const isSingle = chunks.length <= 1;
+                            return (
+                              <div className="px-4 py-3 space-y-2">
+                                {chunks.map((chunk, ci) => (
+                                  <div key={`${msg.id}-fchunk-${ci}`} className="group/fchunk relative">
+                                    <div
+                                      draggable
+                                      onDragStart={(e) => {
+                                        const sel = window.getSelection()?.toString()?.trim();
+                                        const text = sel || chunk;
+                                        e.dataTransfer.effectAllowed = "copy";
+                                        e.dataTransfer.setData("application/x-omnia-chat-response", text);
+                                        e.dataTransfer.setData("text/plain", text);
+                                        try {
+                                          const ghost = document.createElement("div");
+                                          ghost.textContent = text.length > 80 ? text.slice(0, 77) + "…" : text;
+                                          ghost.style.cssText = "position:fixed;top:-9999px;padding:8px 12px;border-radius:10px;background:rgba(59,130,246,0.15);font-size:12px;max-width:260px;overflow:hidden;white-space:nowrap";
+                                          document.body.appendChild(ghost);
+                                          e.dataTransfer.setDragImage(ghost, 0, 0);
+                                          requestAnimationFrame(() => ghost.remove());
+                                        } catch {}
+                                      }}
+                                      className={`text-sm leading-relaxed break-words text-black/85 cursor-grab active:cursor-grabbing transition-all rounded-xl ${isSingle ? "" : "px-3 py-2 hover:bg-white/40 hover:ring-1 hover:ring-blue-400/20"}`}
+                                    >
+                                      <div className={`absolute -left-6 top-1/2 -translate-y-1/2 opacity-0 group-hover/fchunk:opacity-100 transition-opacity ${isSingle ? "hidden" : ""}`}>
+                                        <GripVertical className="w-3.5 h-3.5 text-blue-400/60" />
+                                      </div>
+                                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={buildChatMarkdownComponents(msg.id)}>
+                                        {normalizeChecklistSyntax(chunk)}
+                                      </ReactMarkdown>
+                                    </div>
+                                    {!isSingle && (
+                                      <button
+                                        type="button"
+                                        title="Add this section to grid"
+                                        className="absolute -right-2 top-1 opacity-0 group-hover/fchunk:opacity-100 transition-opacity p-1 rounded-md text-blue-400/70 hover:text-blue-500 hover:bg-blue-500/10"
+                                        onClick={() => addChatResponseToGrid(chunk)}
+                                      >
+                                        <LayoutGrid className="w-3 h-3" />
+                                      </button>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            );
+                          })()}
                           {(msg as any).aiYouTubeUrls && (msg as any).aiYouTubeUrls.length > 0 && (
                             <div className="px-4 pb-3 space-y-3">
                               {(msg as any).aiYouTubeUrls.map((yt: { url: string; videoId: string }) => (
@@ -5073,6 +5464,9 @@ export default function OmniaCanvasPage() {
                             </div>
                           )}
                           <div className="flex items-center gap-0.5 px-3 pb-2 pt-0.5">
+                            <button type="button" title="Add to grid" className="p-1.5 rounded-md text-black/40 hover:text-blue-500 hover:bg-blue-500/10 transition-colors" onClick={() => addChatResponseToGrid(msg.aiResponse || "")}>
+                              <LayoutGrid className="w-3.5 h-3.5" />
+                            </button>
                             <button type="button" title="Share" className="p-1.5 rounded-md text-black/40 hover:text-black/70 hover:bg-black/5 transition-colors" onClick={() => { const text = msg.aiResponse || ""; if (navigator.share) { navigator.share({ text }).catch(() => {}); } else { void navigator.clipboard.writeText(text); } }}>
                               <Share2 className="w-3.5 h-3.5" />
                             </button>
@@ -5610,21 +6004,34 @@ export default function OmniaCanvasPage() {
 
                 const st = useCanvasStore.getState() as any;
                 const g = Math.max(1, Math.floor(st.gridSize || 24));
-                const cam = st.camera || { x: 0, y: 0 };
-                let placeX = Math.max(0, Math.floor(-cam.x + g * 2));
-                let placeY = Math.max(0, Math.floor(-cam.y + g * 2));
+                const niVw = window.innerWidth || 1280;
+                const niVh = window.innerHeight || 800;
+
+                const niPos = (bw: number, bh: number) => {
+                  const cur = useCanvasStore.getState() as any;
+                  return findSmartPlacement({
+                    blockW: bw,
+                    blockH: bh,
+                    gridSize: g,
+                    camera: cur.camera || { x: 0, y: 0, zoom: 1 },
+                    viewportW: niVw,
+                    viewportH: niVh,
+                    railWidth: 0,
+                    existingBlocks: Object.values(cur.blocks || {}).filter(Boolean) as any[],
+                  });
+                };
 
                 for (const note of notes) {
                   const atts = parseNoteAtts(note.content || "");
                   if (atts.length === 0) {
                     const ytMatch = (note.content || "").match(/https?:\/\/(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([\w-]{11})/);
                     if (ytMatch) {
-                      st.addYouTubeBlockAt({ x: placeX, y: placeY }, { url: ytMatch[0], videoId: ytMatch[1] });
-                      placeY += g * 10 + g;
+                      const p = niPos(g * 12, g * 8);
+                      st.addYouTubeBlockAt({ x: p.x, y: p.y }, { url: ytMatch[0], videoId: ytMatch[1] });
                     } else {
+                      const p = niPos(g * 10, g * 4);
                       const blockId = `b-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-                      st.addBlock({ id: blockId, type: "text" as const, x: placeX, y: placeY, width: g * 10, height: g * 4, content: (note.content || "").replace(/\[ATTACHMENTS_JSON:[\s\S]*$/, "").trim(), format: "rich", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
-                      placeY += g * 5;
+                      st.addBlock({ id: blockId, type: "text" as const, x: p.x, y: p.y, width: g * 10, height: g * 4, content: (note.content || "").replace(/\[ATTACHMENTS_JSON:[\s\S]*$/, "").trim(), format: "rich", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
                     }
                     continue;
                   }
@@ -5635,23 +6042,23 @@ export default function OmniaCanvasPage() {
                     const blockId = `b-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
                     if (type === "youtube") {
                       const vid = att.videoId || (url.match(/(?:v=|youtu\.be\/)([\w-]{11})/) || [])[1] || "";
-                      st.addYouTubeBlockAt({ x: placeX, y: placeY }, { url, videoId: vid });
-                      placeY += g * 10 + g;
+                      const p = niPos(g * 12, g * 8);
+                      st.addYouTubeBlockAt({ x: p.x, y: p.y }, { url, videoId: vid });
                     } else if (type === "image") {
-                      st.addBlock({ id: blockId, type: "create" as const, mode: "image", x: placeX, y: placeY, width: g * 12, height: g * 12, data: { src: url, name: att.name || "Image" }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
-                      placeY += g * 13;
+                      const p = niPos(g * 12, g * 12);
+                      st.addBlock({ id: blockId, type: "create" as const, mode: "image", x: p.x, y: p.y, width: g * 12, height: g * 12, data: { src: url, name: att.name || "Image" }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
                     } else if (type === "video") {
-                      st.addBlock({ id: blockId, type: "create" as const, mode: "video", x: placeX, y: placeY, width: g * 16, height: g * 10, data: { url, mime: att.mime || "video/mp4", name: att.name || "Video" }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
-                      placeY += g * 11;
+                      const p = niPos(g * 16, g * 10);
+                      st.addBlock({ id: blockId, type: "create" as const, mode: "video", x: p.x, y: p.y, width: g * 16, height: g * 10, data: { url, mime: att.mime || "video/mp4", name: att.name || "Video" }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
                     } else if (type === "audio") {
-                      st.addBlock({ id: blockId, type: "create" as const, mode: "embed", x: placeX, y: placeY, width: g * 14, height: g * 4, data: { url, mime: att.mime || "audio/mpeg", name: att.name || "Audio", dataUrl: url }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
-                      placeY += g * 5;
+                      const p = niPos(g * 14, g * 4);
+                      st.addBlock({ id: blockId, type: "create" as const, mode: "embed", x: p.x, y: p.y, width: g * 14, height: g * 4, data: { url, mime: att.mime || "audio/mpeg", name: att.name || "Audio", dataUrl: url }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
                     } else if (type === "pdf") {
-                      st.addBlock({ id: blockId, type: "create" as const, mode: "embed", x: placeX, y: placeY, width: g * 16, height: g * 14, data: { url, mime: "application/pdf", name: att.name || "PDF", dataUrl: url }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
-                      placeY += g * 15;
+                      const p = niPos(g * 16, g * 14);
+                      st.addBlock({ id: blockId, type: "create" as const, mode: "embed", x: p.x, y: p.y, width: g * 16, height: g * 14, data: { url, mime: "application/pdf", name: att.name || "PDF", dataUrl: url }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
                     } else {
-                      st.addBlock({ id: blockId, type: "create" as const, mode: "embed", x: placeX, y: placeY, width: g * 14, height: g * 6, data: { url, name: att.name || note.title || "File", dataUrl: url }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
-                      placeY += g * 7;
+                      const p = niPos(g * 14, g * 6);
+                      st.addBlock({ id: blockId, type: "create" as const, mode: "embed", x: p.x, y: p.y, width: g * 14, height: g * 6, data: { url, name: att.name || note.title || "File", dataUrl: url }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
                     }
                   }
                 }
