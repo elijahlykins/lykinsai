@@ -689,6 +689,8 @@ export default function OmniaCanvasPage() {
       wireConnections: st.wireConnections,
       title: resolvedTitle,
       version: SNAPSHOT_VERSION,
+      chatMessages: chatMessagesRef.current,
+      aiThread: aiThreadRef.current,
     };
   }, [SNAPSHOT_VERSION, title]);
 
@@ -784,13 +786,10 @@ export default function OmniaCanvasPage() {
         }
       })();
 
-      // Backward compat: migrate chat from old DB snapshots into localStorage.
-      // New snapshots no longer include chat — it lives in localStorage only.
+      // Restore chat: prefer localStorage (updated more frequently) then fall back to DB snapshot.
       if (boardId) {
         const boardChatKey = `omnia_chat_${boardId}`;
-        if (Array.isArray(snapshot.chatMessages) && snapshot.chatMessages.length > 0) {
-          try { localStorage.setItem(boardChatKey, JSON.stringify({ chatMessages: snapshot.chatMessages, aiThread: snapshot.aiThread || [] })); } catch { /* quota */ }
-        }
+        let chatLoaded = false;
 
         try {
           const chatRaw = localStorage.getItem(boardChatKey);
@@ -800,12 +799,22 @@ export default function OmniaCanvasPage() {
               setChatMessages(chatData.chatMessages);
               setChatRailOpen(true);
               setChatRailVisible(true);
+              chatLoaded = true;
             }
             if (Array.isArray(chatData.aiThread) && chatData.aiThread.length > 0) {
               aiThreadRef.current = chatData.aiThread;
             }
           }
         } catch { /* ignore corrupt localStorage */ }
+
+        if (!chatLoaded && Array.isArray(snapshot.chatMessages) && snapshot.chatMessages.length > 0) {
+          setChatMessages(snapshot.chatMessages);
+          setChatRailOpen(true);
+          setChatRailVisible(true);
+          if (Array.isArray(snapshot.aiThread) && snapshot.aiThread.length > 0) {
+            aiThreadRef.current = snapshot.aiThread;
+          }
+        }
       }
     },
     [boardId, gridSize, loadBlocks]
@@ -2410,12 +2419,39 @@ export default function OmniaCanvasPage() {
       cleanBlocks[id] = b;
     }
 
-    // Chat is now stored in localStorage — strip from DB snapshot entirely
-    const { chatMessages: _cm, aiThread: _at, history: _h, future: _f, ...rest } = raw;
+    const { history: _h, future: _f, ...rest } = raw;
+
+    const MAX_DB_CHAT = 50;
+    const sanitizedChat = Array.isArray(rest.chatMessages)
+      ? rest.chatMessages.slice(-MAX_DB_CHAT).map((m: any) => {
+          const cleaned = { ...m };
+          if (Array.isArray(cleaned.attachments)) {
+            cleaned.attachments = cleaned.attachments.map((a: any) => {
+              const c = { ...a };
+              if (typeof c.url === "string" && SIGNED_URL_RE.test(c.url)) c.url = "";
+              delete c.transcript;
+              return c;
+            });
+          }
+          if (typeof cleaned.content === "string" && cleaned.content.length > 3000) {
+            cleaned.content = cleaned.content.slice(0, 3000);
+          }
+          if (typeof cleaned.aiResponse === "string" && cleaned.aiResponse.length > 10_000) {
+            cleaned.aiResponse = cleaned.aiResponse.slice(0, 10_000);
+          }
+          return cleaned;
+        })
+      : [];
+
+    const sanitizedThread = Array.isArray(rest.aiThread)
+      ? rest.aiThread.slice(-MAX_DB_CHAT)
+      : [];
 
     return {
       ...rest,
       blocks: cleanBlocks,
+      chatMessages: sanitizedChat,
+      aiThread: sanitizedThread,
     };
   }, []);
 
@@ -2624,8 +2660,8 @@ export default function OmniaCanvasPage() {
     };
   }, [boardId, buildSnapshot, markProjectDirty, projectId, user?.id]);
 
-  // Persist chat to localStorage whenever messages change (debounced).
-  // Chat no longer lives in the DB snapshot — localStorage is the single source.
+  // Persist chat to localStorage as a fast local cache (debounced).
+  // Chat is also saved to the DB via the board snapshot for durable cross-device persistence.
   useEffect(() => {
     if (!boardId) return;
     const timer = setTimeout(() => {

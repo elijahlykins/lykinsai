@@ -1288,52 +1288,78 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
   );
 }
 
-function renderConnectionNodes(
+export const CONNECTION_NODE_SIZE = 10;
+export const CONNECTION_NODE_GAP = 8;
+
+export function renderConnectionNodes(
   id: string,
   onDragStart: (id: string, side: ConnectionNodeSide, e: React.PointerEvent<HTMLDivElement>) => void
 ) {
-  const nodeSize = 10;
-  const sides: Array<{ side: ConnectionNodeSide; style: React.CSSProperties }> = [
+  const nodeSize = CONNECTION_NODE_SIZE;
+  const nodeGap = CONNECTION_NODE_GAP;
+  const hitPad = nodeGap + 4;
+  const hitW = nodeSize + hitPad;
+
+  const sides: Array<{
+    side: ConnectionNodeSide;
+    hitStyle: React.CSSProperties;
+    dotStyle: React.CSSProperties;
+  }> = [
     {
       side: "top",
-      style: { top: `-${nodeSize / 2}px`, left: "50%", transform: "translateX(-50%)" },
+      hitStyle: { top: `-${nodeSize + nodeGap}px`, left: "50%", transform: "translateX(-50%)", width: `${hitW}px`, height: `${hitW}px`, paddingBottom: `${hitPad}px` },
+      dotStyle: { width: `${nodeSize}px`, height: `${nodeSize}px` },
     },
     {
       side: "right",
-      style: { top: "50%", right: `-${nodeSize / 2}px`, transform: "translateY(-50%)" },
+      hitStyle: { top: "50%", right: `-${nodeSize + nodeGap}px`, transform: "translateY(-50%)", width: `${hitW}px`, height: `${hitW}px`, paddingLeft: `${hitPad}px` },
+      dotStyle: { width: `${nodeSize}px`, height: `${nodeSize}px` },
     },
     {
       side: "bottom",
-      style: { bottom: `-${nodeSize / 2}px`, left: "50%", transform: "translateX(-50%)" },
+      hitStyle: { bottom: `-${nodeSize + nodeGap}px`, left: "50%", transform: "translateX(-50%)", width: `${hitW}px`, height: `${hitW}px`, paddingTop: `${hitPad}px` },
+      dotStyle: { width: `${nodeSize}px`, height: `${nodeSize}px` },
     },
     {
       side: "left",
-      style: { top: "50%", left: `-${nodeSize / 2}px`, transform: "translateY(-50%)" },
+      hitStyle: { top: "50%", left: `-${nodeSize + nodeGap}px`, transform: "translateY(-50%)", width: `${hitW}px`, height: `${hitW}px`, paddingRight: `${hitPad}px` },
+      dotStyle: { width: `${nodeSize}px`, height: `${nodeSize}px` },
     },
   ];
 
-  return sides.map(({ side, style }) =>
-    React.createElement("div", {
-      key: `conn-node-${side}`,
-      "data-connection-node": side,
-      className:
-        "absolute opacity-0 group-hover:opacity-100 transition-all cursor-crosshair z-[35] hover:scale-150",
-      style: {
-        ...style,
-        width: `${nodeSize}px`,
-        height: `${nodeSize}px`,
-        borderRadius: "50%",
-        background: "rgba(59,130,246,0.55)",
-        border: "2px solid rgba(255,255,255,0.9)",
-        boxShadow: "0 1px 4px rgba(0,0,0,0.25)",
-        transition: "opacity 0.15s, transform 0.15s, background 0.15s",
+  return sides.map(({ side, hitStyle, dotStyle }) =>
+    React.createElement(
+      "div",
+      {
+        key: `conn-node-${side}`,
+        "data-connection-node": side,
+        className: "absolute opacity-0 group-hover:opacity-100 cursor-crosshair z-[35]",
+        style: {
+          ...hitStyle,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          transition: "opacity 0.15s",
+        },
+        onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => {
+          e.stopPropagation();
+          e.preventDefault();
+          onDragStart(id, side, e);
+        },
+        onClick: (e: any) => e.stopPropagation(),
       },
-      onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => {
-        e.stopPropagation();
-        e.preventDefault();
-        onDragStart(id, side, e);
-      },
-      onClick: (e: any) => e.stopPropagation(),
-    })
+      React.createElement("div", {
+        className: "hover:scale-150",
+        style: {
+          ...dotStyle,
+          borderRadius: "50%",
+          background: "rgba(59,130,246,0.55)",
+          border: "2px solid rgba(255,255,255,0.9)",
+          boxShadow: "0 1px 4px rgba(0,0,0,0.25)",
+          transition: "transform 0.15s, background 0.15s",
+          pointerEvents: "none",
+        },
+      })
+    )
   );
 }

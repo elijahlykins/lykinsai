@@ -13,7 +13,7 @@ import { LinkBlock } from "@/canvas/blocks/LinkBlock";
 import { MediaBlock } from "@/canvas/blocks/MediaBlock";
 import { SpreadsheetBlock } from "@/canvas/blocks/SpreadsheetBlock";
 import type { AiAnswerEntry } from "@/canvas/types";
-import { canUseActiveBrickLogic, renderBrickShell, computeColumnCount, COLUMN_GAP_PX } from "./brick";
+import { canUseActiveBrickLogic, renderBrickShell, renderConnectionNodes, computeColumnCount, COLUMN_GAP_PX } from "./brick";
 import type { ConnectionNodeSide } from "./brick";
 import ConnectionWires from "./ConnectionWires";
 import type { WireSide } from "@/store/canvasStore";
@@ -500,6 +500,70 @@ function makeDuplicateId(prefix = "b") {
   return `${prefix}-dup-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+const NODE_LINGER_MS = 600;
+
+function ConnectionNodeOverlay({
+  blockId,
+  x,
+  y,
+  width,
+  height,
+  onConnectionDragStart,
+}: {
+  blockId: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  onConnectionDragStart: (id: string, side: ConnectionNodeSide, e: React.PointerEvent<HTMLDivElement>) => void;
+}) {
+  const [visible, setVisible] = useState(false);
+  const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const overlayRef = useRef<HTMLDivElement | null>(null);
+
+  const show = useCallback(() => {
+    if (hideTimer.current) { clearTimeout(hideTimer.current); hideTimer.current = null; }
+    setVisible(true);
+  }, []);
+
+  const hideAfterDelay = useCallback(() => {
+    if (hideTimer.current) clearTimeout(hideTimer.current);
+    hideTimer.current = setTimeout(() => {
+      setVisible(false);
+      hideTimer.current = null;
+    }, NODE_LINGER_MS);
+  }, []);
+
+  useEffect(() => {
+    const el = document.querySelector(`[data-canvas-block][data-block-id="${blockId}"]`) as HTMLElement | null;
+    if (!el) return;
+    el.addEventListener("pointerenter", show);
+    el.addEventListener("pointerleave", hideAfterDelay);
+    return () => {
+      el.removeEventListener("pointerenter", show);
+      el.removeEventListener("pointerleave", hideAfterDelay);
+      if (hideTimer.current) clearTimeout(hideTimer.current);
+    };
+  }, [blockId, show, hideAfterDelay]);
+
+  return (
+    <div
+      ref={overlayRef}
+      className="absolute pointer-events-none"
+      style={{ left: `${x}px`, top: `${y}px`, width: `${width}px`, height: `${height}px`, zIndex: 34 }}
+    >
+      {renderConnectionNodes(blockId, onConnectionDragStart).map((node) =>
+        React.cloneElement(node as React.ReactElement, {
+          className: `absolute cursor-crosshair z-[35] pointer-events-auto ${visible ? "opacity-100" : "opacity-0"}`,
+          style: { ...(node as React.ReactElement).props.style, transition: "opacity 0.15s" },
+          onPointerEnter: show,
+          onPointerLeave: hideAfterDelay,
+        })
+      )}
+    </div>
+  );
+}
+
 export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatusText = "" }: CanvasProps) {
   const { user } = useAuth();
 
@@ -831,6 +895,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
     keys: [],
   });
   const suppressBrickClickRef = useRef(false);
+  const [liveDragOffset, setLiveDragOffset] = useState<{ ids: string[]; dx: number; dy: number } | null>(null);
   const floatingBrickRef = useRef<{ active: boolean; ids: string[] }>({ active: false, ids: [] });
   const lastShapeCellClickRef = useRef<{ key: string; at: number }>({ key: "", at: 0 });
 
@@ -1035,6 +1100,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
   const wireConnections = useCanvasStore((s) => s.wireConnections);
   const addWireConnection = useCanvasStore((s) => s.addWireConnection);
   const removeWireConnection = useCanvasStore((s) => s.removeWireConnection);
+  const updateWireConnection = useCanvasStore((s) => s.updateWireConnection);
 
   useEffect(() => {
     setFocusedBrickIds(raisedBrickIds);
@@ -1734,11 +1800,12 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       const by = Number(b.y || 0);
       const bw = Number(b.width || gridSize);
       const bh = Number(b.height || gridSize);
+      const nodeOutset = 13;
       switch (side) {
-        case "top": return { x: bx + bw / 2, y: by };
-        case "right": return { x: bx + bw, y: by + bh / 2 };
-        case "bottom": return { x: bx + bw / 2, y: by + bh };
-        case "left": return { x: bx, y: by + bh / 2 };
+        case "top": return { x: bx + bw / 2, y: by - nodeOutset };
+        case "right": return { x: bx + bw + nodeOutset, y: by + bh / 2 };
+        case "bottom": return { x: bx + bw / 2, y: by + bh + nodeOutset };
+        case "left": return { x: bx - nodeOutset, y: by + bh / 2 };
       }
     },
     [blocks, gridSize]
@@ -1746,7 +1813,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
 
   const findNearestConnectionTarget = useCallback(
     (worldX: number, worldY: number, excludeId: string): { id: string; side: WireSide } | null => {
-      const snapDist = 24;
+      const snapDist = 36;
       let best: { id: string; side: WireSide; dist: number } | null = null;
       for (const id of blockOrder) {
         if (id === excludeId) continue;
@@ -2594,6 +2661,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         const el = document.querySelector(`[data-canvas-block][data-block-id="${s.id}"]`) as HTMLElement | null;
         if (el) el.style.transform = `translate(${snappedDx}px, ${snappedDy}px)`;
       }
+      setLiveDragOffset({ ids: d.snapshot.map((s) => s.id), dx: snappedDx, dy: snappedDy });
     };
     const onUp = (e: PointerEvent) => {
       const d = groupDragRef.current;
@@ -2615,6 +2683,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         moveBlocksFromSnapshot(snapshot as any, snappedDx, snappedDy, { snap: false } as any);
       }
       groupDragRef.current = { active: false, moved: false, pointerId: null, startWorldX: 0, startWorldY: 0, startClientX: 0, startClientY: 0, snapshot: [] };
+      setLiveDragOffset(null);
       if (moved) {
         suppressBrickClickRef.current = true;
         window.setTimeout(() => {
@@ -4474,6 +4543,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         if (e.button === 0) {
           const t = e.target as Element | null;
           if (t?.closest?.("[data-resize-handle]")) return;
+          if (t?.closest?.("[data-connection-node]")) return;
           if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement) return;
           const blockEl = t?.closest?.("[data-canvas-block]") as HTMLElement | null;
           if (blockEl?.hasAttribute?.("data-self-drag")) return;
@@ -5369,12 +5439,18 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
                   {icon}
                   <span className="text-[10px] text-black/60 dark:text-white/55 truncate leading-none font-medium">{label}</span>
                 </div>
+                {renderConnectionNodes(id, handleConnectionDragStart)}
               </div>
             );
           }
 
           if (isCreateImage) {
-            return <ImageBlock key={id} id={id} onMinimize={toggleMinimized} onMenu={handleBlockMenu} />;
+            return (
+              <React.Fragment key={id}>
+                <ImageBlock id={id} onMinimize={toggleMinimized} onMenu={handleBlockMenu} />
+                <ConnectionNodeOverlay blockId={id} x={Number((b as any).x || 0)} y={Number((b as any).y || 0)} width={Number((b as any).width || gridSize)} height={Number((b as any).height || gridSize)} onConnectionDragStart={handleConnectionDragStart} />
+              </React.Fragment>
+            );
           }
           if (isCreateEmbedAudio) {
             const audioName = String(createData.name || "Audio");
@@ -5401,7 +5477,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
                 ),
               ),
             );
-            const audioBrick = renderBrickShell(b as any, id, { extraContent: audioExtra, resizeGridSize: gridSize, canvasZoom: canvasZoomRef.current, onCornerScale: (bid, _nextScale, newWidth, newHeight) => { const cur: any = (blocks as any)[bid]; if (!cur) return; const data = cur?.data && typeof cur.data === "object" ? { ...cur.data } : {}; updateBlock(bid as any, { width: Math.max(gridSize * 10, newWidth), height: Math.max(gridSize, newHeight), data: { ...data, userResized: true } } as any); }, onMinimize: toggleMinimized, onBrickMenu: handleBlockMenu });
+            const audioBrick = renderBrickShell(b as any, id, { extraContent: audioExtra, resizeGridSize: gridSize, canvasZoom: canvasZoomRef.current, onCornerScale: (bid, _nextScale, newWidth, newHeight) => { const cur: any = (blocks as any)[bid]; if (!cur) return; const data = cur?.data && typeof cur.data === "object" ? { ...cur.data } : {}; updateBlock(bid as any, { width: Math.max(gridSize * 10, newWidth), height: Math.max(gridSize, newHeight), data: { ...data, userResized: true } } as any); }, onMinimize: toggleMinimized, onBrickMenu: handleBlockMenu, onConnectionDragStart: handleConnectionDragStart });
             return React.cloneElement(audioBrick as React.ReactElement, { key: id });
           }
           if (isCreateEmbedPdf) {
@@ -5422,18 +5498,33 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
                 style: { minHeight: "200px" },
               }),
             );
-            const pdfBrick = renderBrickShell(b as any, id, { extraContent: pdfExtra, resizeGridSize: gridSize, canvasZoom: canvasZoomRef.current, onCornerScale: (bid, _nextScale, newWidth, newHeight) => { const cur: any = (blocks as any)[bid]; if (!cur) return; const data = cur?.data && typeof cur.data === "object" ? { ...cur.data } : {}; updateBlock(bid as any, { width: Math.max(gridSize * 10, newWidth), height: Math.max(gridSize * 4, newHeight), data: { ...data, userResized: true } } as any); }, onMinimize: toggleMinimized, onBrickMenu: handleBlockMenu });
+            const pdfBrick = renderBrickShell(b as any, id, { extraContent: pdfExtra, resizeGridSize: gridSize, canvasZoom: canvasZoomRef.current, onCornerScale: (bid, _nextScale, newWidth, newHeight) => { const cur: any = (blocks as any)[bid]; if (!cur) return; const data = cur?.data && typeof cur.data === "object" ? { ...cur.data } : {}; updateBlock(bid as any, { width: Math.max(gridSize * 10, newWidth), height: Math.max(gridSize * 4, newHeight), data: { ...data, userResized: true } } as any); }, onMinimize: toggleMinimized, onBrickMenu: handleBlockMenu, onConnectionDragStart: handleConnectionDragStart });
             return React.cloneElement(pdfBrick as React.ReactElement, { key: id });
           }
           if (isCreateEmbedLink) {
-            return <LinkBlock key={id} id={id} onMinimize={toggleMinimized} onMenu={handleBlockMenu} />;
+            return (
+              <React.Fragment key={id}>
+                <LinkBlock id={id} onMinimize={toggleMinimized} onMenu={handleBlockMenu} />
+                <ConnectionNodeOverlay blockId={id} x={Number((b as any).x || 0)} y={Number((b as any).y || 0)} width={Number((b as any).width || gridSize)} height={Number((b as any).height || gridSize)} onConnectionDragStart={handleConnectionDragStart} />
+              </React.Fragment>
+            );
           }
           if ((b as any).type === "youtube" || ((b as any).type === "create" && ((b as any).mode === "video" || (b as any).data?.videoId))) {
-            return <YouTubeBlock key={id} id={id} onMinimize={toggleMinimized} onMenu={handleBlockMenu} />;
+            return (
+              <React.Fragment key={id}>
+                <YouTubeBlock id={id} onMinimize={toggleMinimized} onMenu={handleBlockMenu} />
+                <ConnectionNodeOverlay blockId={id} x={Number((b as any).x || 0)} y={Number((b as any).y || 0)} width={Number((b as any).width || gridSize)} height={Number((b as any).height || gridSize)} onConnectionDragStart={handleConnectionDragStart} />
+              </React.Fragment>
+            );
           }
           const blockFormat = String((b as any).format || "").toLowerCase();
           if ((b as any).type === "text" && blockFormat === "table") {
-            return <SpreadsheetBlock key={id} id={id} onMinimize={toggleMinimized} onMenu={handleBlockMenu} />;
+            return (
+              <React.Fragment key={id}>
+                <SpreadsheetBlock id={id} onMinimize={toggleMinimized} onMenu={handleBlockMenu} />
+                <ConnectionNodeOverlay blockId={id} x={Number((b as any).x || 0)} y={Number((b as any).y || 0)} width={Number((b as any).width || gridSize)} height={Number((b as any).height || gridSize)} onConnectionDragStart={handleConnectionDragStart} />
+              </React.Fragment>
+            );
           }
           const isSpecialBlock = (b as any).type === "text" && ["media"].includes(blockFormat);
           if (isSpecialBlock) {
@@ -5442,6 +5533,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
             return (
               <React.Fragment key={id}>
                 <Component id={id} onMinimize={toggleMinimized} onMenu={handleBlockMenu} />
+                <ConnectionNodeOverlay blockId={id} x={Number((b as any).x || 0)} y={Number((b as any).y || 0)} width={Number((b as any).width || gridSize)} height={sbh} onConnectionDragStart={handleConnectionDragStart} />
                 <div
                   data-block-menu-zone
                   className="absolute"
@@ -5969,11 +6061,17 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
           blocks={blocks as any}
           wireConnections={wireConnections}
           activeDrag={wireDrag}
+          liveDragOffset={liveDragOffset}
           surfaceWidth={surface.width}
           surfaceHeight={surface.height}
           onRemoveWire={(id) => {
             pushHistory();
             removeWireConnection(id);
+            setTimeout(() => window.dispatchEvent(new Event("omnia_flush_save")), 300);
+          }}
+          onUpdateWire={(id, patch) => {
+            pushHistory();
+            updateWireConnection(id, patch);
             setTimeout(() => window.dispatchEvent(new Event("omnia_flush_save")), 300);
           }}
         />

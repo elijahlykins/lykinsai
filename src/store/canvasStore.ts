@@ -15,6 +15,7 @@ export type WireConnection = {
   toId: BlockId;
   fromSide: WireSide;
   toSide: WireSide;
+  controlPoints?: Array<{ x: number; y: number }>;
 };
 
 const MAX_UNDO_HISTORY = 30;
@@ -91,6 +92,7 @@ type CanvasState = {
   wireConnections: WireConnection[];
   addWireConnection: (conn: Omit<WireConnection, "id">) => void;
   removeWireConnection: (id: string) => void;
+  updateWireConnection: (id: string, patch: Partial<Omit<WireConnection, "id">>) => void;
   clearWireConnectionsForBlock: (blockId: BlockId) => void;
 
   pushHistory: () => void;
@@ -893,6 +895,13 @@ export const useCanvasStore = create<CanvasState>()(
     removeWireConnection: (id) => {
       set((state) => {
         state.wireConnections = state.wireConnections.filter((w) => w.id !== id);
+      });
+    },
+
+    updateWireConnection: (id, patch) => {
+      set((state) => {
+        const wire = state.wireConnections.find((w) => w.id === id);
+        if (wire) Object.assign(wire, patch);
       });
     },
 
