@@ -663,7 +663,7 @@ function BrickTextSurface(props: {
     if (isTyping) {
       return React.createElement(
         "div",
-        { className: "relative w-full min-h-full" },
+        { key: "ai-editing", className: "relative w-full min-h-full" },
         React.createElement("div", {
           ref: editorRef,
           tabIndex: 0,
@@ -678,6 +678,8 @@ function BrickTextSurface(props: {
             WebkitUserSelect: "text",
           },
           onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => { e.stopPropagation(); },
+          onClick: (e: React.MouseEvent<HTMLDivElement>) => { e.stopPropagation(); },
+          onDoubleClick: (e: React.MouseEvent<HTMLDivElement>) => { e.stopPropagation(); },
           onInput: (e: React.FormEvent<HTMLDivElement>) => {
             const nextRaw = getEditorText(e.currentTarget);
             const nativeInput = e.nativeEvent as InputEvent | undefined;
@@ -704,7 +706,7 @@ function BrickTextSurface(props: {
     }
     return React.createElement(
       "div",
-      { className: "relative w-full", style: { pointerEvents: "none" as const } },
+      { key: "ai-display", className: "relative w-full", style: { pointerEvents: "none" as const } },
       React.createElement(
         "div",
         {

@@ -3646,7 +3646,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
 
     const clamp = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n));
 
-    const callAI = async (prompt: string): Promise<string> => {
+    const callAI = async (prompt: string, userMessage?: string): Promise<string> => {
       let aiModel = "claude-sonnet-4-6";
       try {
         const settings = JSON.parse(localStorage.getItem("lykinsai_settings") || "{}");
@@ -3655,10 +3655,12 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         // ignore
       }
       const { API_BASE_URL } = await import("@/lib/api-config");
+      const payload: Record<string, any> = { model: aiModel, prompt: String(prompt || ""), ...getAiPrefs() };
+      if (userMessage) payload.text = userMessage;
       const res = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: aiModel, prompt: String(prompt || ""), ...getAiPrefs() }),
+        body: JSON.stringify(payload),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -4099,6 +4101,14 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         "- Combine formats: heading + list + table + paragraph in one response is ideal.",
         "- NEVER output a plain wall of text. Always structure the response.",
         "",
+        "WEB BROWSING & INTERNET SEARCH:",
+        "You have FULL live web browsing and search capabilities. You CAN search the internet, browse websites, read articles, and access current information in real time.",
+        "NEVER say you cannot browse the web, access websites, or get live information — because you CAN.",
+        "When the user asks you to search the internet, look something up, find information online, or asks about current events, news, prices, weather, or anything that requires up-to-date information — you will search the web and provide accurate, current answers.",
+        "When web results are available, you MUST include relevant links so the user can visit the sources themselves. Format links as Markdown: [Title](https://url).",
+        "When the system provides [WEB_SEARCH_RESULTS], [DEEP_BROWSE_CONTENT], or [SCRAPED_WEB_PAGES], that is live data fetched from the internet. Use it confidently and cite the sources with links.",
+        "If the user asks you to browse a specific website or URL, you can do that too.",
+        "",
         "Supported actions (allowlist):",
         '- { "type": "create_spreadsheet", "rows": 30, "cols": 20, "cells2d": [["Header A","Header B"],["A2","B2"]] }',
         '- { "type": "create_spreadsheet", "rows": 30, "cols": 20, "cells": { "0,0": "Header" } }',
@@ -4132,7 +4142,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       ].join("\n");
 
       try {
-        const raw = await callAI(prompt);
+        const raw = await callAI(prompt, promptText);
         if (!raw) return;
 
         const parsedObj = extractFirstJsonObject(raw);
@@ -4545,6 +4555,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
           if (t?.closest?.("[data-resize-handle]")) return;
           if (t?.closest?.("[data-connection-node]")) return;
           if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement) return;
+          if (t?.closest?.("[contenteditable='true']")) return;
           const blockEl = t?.closest?.("[data-canvas-block]") as HTMLElement | null;
           if (blockEl?.hasAttribute?.("data-self-drag")) return;
           const blockId = blockEl?.getAttribute?.("data-block-id");
@@ -4605,7 +4616,12 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         const blockId = blockEl?.getAttribute?.("data-block-id");
         if (!blockId) return;
         const dblBlock: any = blocks[blockId];
-        if (dblBlock?.data?.aiResponseBubble) return;
+        if (dblBlock?.data?.aiResponseBubble) {
+          e.stopPropagation();
+          setTypingBlockId(blockId);
+          focusBrickInputById(blockId);
+          return;
+        }
         const gid = getMoveGroupId(blockId);
         const ids = gid ? getMoveGroupMembers(gid) : [blockId];
         if (e.shiftKey && floatingBrickRef.current.active) {
@@ -5629,7 +5645,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
           const brickEl = renderBrickShell(b as any, id, {
             isActivated: isAiResponseBubble ? false : (typingBlockId === id ? false : activatedBrickIds.includes(id)),
             isRaised: isAiResponseBubble ? false : (typingBlockId === id ? false : raisedBrickIds.includes(id)),
-            isTyping: preventTypingMode ? false : typingBlockId === id,
+            isTyping: isAiResponseBubble ? typingBlockId === id : (preventTypingMode ? false : typingBlockId === id),
             enableWidthResize: isTextBrick || isAiResponseBubble || hasRichMarkdown,
             extraContent: sourcesExtraContent,
             resizeGridSize: gridSize,

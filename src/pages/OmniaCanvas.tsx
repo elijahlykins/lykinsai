@@ -3489,6 +3489,7 @@ export default function OmniaCanvasPage() {
         conversation: truncatedConversation,
         workspaceContext: (wsContext?.full || "").slice(0, 2000),
         projectId,
+        boardId: routeBoardId || boardId || undefined,
         hasFocusedBricks,
         skipWebSearch: hasVideoTranscript,
         ...(mediaContext ? { mediaContext: mediaContext.slice(0, 8000) } : {}),
@@ -4019,6 +4020,7 @@ export default function OmniaCanvasPage() {
             prompt: regenPrompt,
             text: userPrompt,
             intent: "ask",
+            boardId: routeBoardId || boardId || undefined,
             ...getAiPrefs(),
           }),
         });

@@ -18,6 +18,21 @@ import {
   retranscribeSegment,
   transcribeBuffer,
 } from './youtubeQa.js';
+import {
+  getOrCreateSession,
+  logAiUsage,
+  classifyActionType,
+  estimateTokens,
+  detectProvider,
+  extractOpenAIUsage,
+  extractAnthropicUsage,
+  extractGeminiUsage,
+  extractGrokUsage,
+  getUserMonthlyUsage,
+  getUserSessions,
+  getSessionWithLogs,
+  startSessionCleanup,
+} from './usageTracking.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, '.env') });
@@ -32,6 +47,7 @@ console.log('  YOUTUBE_API_KEY:', process.env.YOUTUBE_API_KEY ? '✅ Set' : '❌
 console.log('  GOOGLE_CSE_ID:', process.env.GOOGLE_CSE_ID ? '✅ Set' : '⚪ Not set');
 console.log('  SERPER_API_KEY:', process.env.SERPER_API_KEY ? '✅ Set' : '❌ Missing');
 console.log('  RESEND_API_KEY:', process.env.RESEND_API_KEY ? '✅ Set' : '❌ Missing');
+console.log('  SUPABASE_SERVICE_ROLE_KEY:', process.env.SUPABASE_SERVICE_ROLE_KEY ? '✅ Set' : '⚪ Not set (usage tracking disabled)');
 
 const app = express();
 const PORT = 3001;
@@ -670,7 +686,12 @@ const invokeOpenAIModel = async (model, prompt, imageUrls = []) => {
     if (responsesRes.ok) {
       const data = await responsesRes.json();
       const responseText = parseOpenAIResponsesText(data);
-      if (responseText) return responseText;
+      if (responseText) {
+        const usage = data.usage
+          ? { input_tokens: data.usage.input_tokens || 0, output_tokens: data.usage.output_tokens || 0 }
+          : { input_tokens: estimateTokens(prompt), output_tokens: estimateTokens(responseText) };
+        return { text: responseText, usage };
+      }
     } else {
       const errorData = await responsesRes.json().catch(() => ({}));
       console.warn('⚠️ OpenAI Responses API fallback to chat/completions:', errorData?.error?.message || responsesRes.statusText);
@@ -697,7 +718,9 @@ const invokeOpenAIModel = async (model, prompt, imageUrls = []) => {
     throw new Error(`OpenAI: ${errorData.error?.message || openaiRes.statusText}`);
   }
   const data = await openaiRes.json();
-  return data.choices?.[0]?.message?.content?.trim() || '';
+  const text = data.choices?.[0]?.message?.content?.trim() || '';
+  const usage = extractOpenAIUsage(data);
+  return { text, usage };
 };
 
 const getDynamicOpenAIGptModels = async () => {
@@ -1365,6 +1388,8 @@ ${t}
     }
 
     let responseText = '';
+    let usageData = { input_tokens: 0, output_tokens: 0 };
+    const boardId = req.body?.boardId || null;
 
     if (isOpenAIModel(actualModel)) {
       if (!process.env.OPENAI_API_KEY) {
@@ -1373,7 +1398,9 @@ ${t}
           error: 'OpenAI API key not configured. Please set OPENAI_API_KEY in your .env file.' 
         });
       }
-      responseText = await invokeOpenAIModel(actualModel, prompt, imageUrls);
+      const openAIResult = await invokeOpenAIModel(actualModel, prompt, imageUrls);
+      responseText = openAIResult.text;
+      usageData = openAIResult.usage;
 
     } else if (actualModel.includes('claude')) {
       if (!process.env.ANTHROPIC_API_KEY) {
@@ -1432,6 +1459,7 @@ ${t}
       }
       const data = await anthropicRes.json();
       responseText = data.content?.[0]?.text?.trim() || '';
+      usageData = extractAnthropicUsage(data);
 
     } else if (actualModel.startsWith('gemini-') || actualModel.includes('gemini')) {
       // Google Gemini
@@ -1576,6 +1604,7 @@ ${t}
       const data = await geminiRes.json();
       console.log('✅ Gemini API Response received');
       responseText = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+      usageData = extractGeminiUsage(data);
       
       if (!responseText) {
         console.warn('⚠️ Empty response from Gemini. Full response:', JSON.stringify(data, null, 2));
@@ -1634,6 +1663,7 @@ ${t}
       }
       const data = await grokRes.json();
       responseText = data.choices?.[0]?.message?.content?.trim() || '';
+      usageData = extractGrokUsage(data);
 
     } else {
       console.error(`❌ Unsupported model: ${actualModel} (original: ${model})`);
@@ -1646,6 +1676,28 @@ ${t}
       console.warn('⚠️ Empty response from AI model');
       responseText = 'No response generated. Please try again or check your API keys.';
     }
+
+    // Fire-and-forget usage logging
+    if (usageData.input_tokens === 0 && usageData.output_tokens === 0) {
+      usageData = { input_tokens: estimateTokens(prompt), output_tokens: estimateTokens(responseText) };
+    }
+    const actionType = classifyActionType('invoke', {
+      promptLength: prompt?.length || 0,
+      responseLength: responseText?.length || 0,
+      hasImages: imageUrls.length > 0,
+      intent,
+    });
+    getOrCreateSession(req.user?.id, boardId).then((session) => {
+      logAiUsage({
+        sessionId: session?.id,
+        userId: req.user?.id,
+        actionType,
+        model: actualModel,
+        provider: detectProvider(actualModel),
+        inputTokens: usageData.input_tokens,
+        outputTokens: usageData.output_tokens,
+      });
+    }).catch(() => {});
 
     if (wantsActions) {
       const parsed = extractFirstJsonObject(responseText);
@@ -2121,9 +2173,36 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, async (req, res) => {
 
     let streamActivity = Date.now();
     let stallCheck, hardKill;
+    let streamedTextLength = 0;
+    const streamBoardId = req.body?.boardId || null;
     const cleanup = () => { clearInterval(stallCheck); clearTimeout(hardKill); };
-    const sendChunk = (text) => { if (!res.writableEnded) { streamActivity = Date.now(); res.write(`data: ${JSON.stringify({ t: text })}\n\n`); if (typeof res.flush === 'function') res.flush(); } };
-    const sendDone = () => { if (!res.writableEnded) { cleanup(); console.log('✅ Stream complete'); res.write('data: [DONE]\n\n'); res.end(); } };
+    const sendChunk = (text) => { if (!res.writableEnded) { streamActivity = Date.now(); streamedTextLength += (text || '').length; res.write(`data: ${JSON.stringify({ t: text })}\n\n`); if (typeof res.flush === 'function') res.flush(); } };
+    const sendDone = () => {
+      if (!res.writableEnded) {
+        cleanup();
+        console.log('✅ Stream complete');
+        res.write('data: [DONE]\n\n');
+        res.end();
+        // Fire-and-forget usage logging for stream
+        const streamActionType = classifyActionType('invoke', {
+          promptLength: prompt?.length || 0,
+          responseLength: streamedTextLength,
+          hasImages: imageUrls.length > 0,
+          intent,
+        });
+        getOrCreateSession(req.user?.id, streamBoardId).then((session) => {
+          logAiUsage({
+            sessionId: session?.id,
+            userId: req.user?.id,
+            actionType: streamActionType,
+            model: actualModel,
+            provider: detectProvider(actualModel),
+            inputTokens: estimateTokens(prompt),
+            outputTokens: Math.ceil(streamedTextLength / 4),
+          });
+        }).catch(() => {});
+      }
+    };
     const sendError = (msg) => { if (!res.writableEnded) { cleanup(); console.error('❌ Stream error:', msg); res.write(`data: ${JSON.stringify({ error: msg })}\n\n`); res.end(); } };
     stallCheck = setInterval(() => {
       if (Date.now() - streamActivity > 60000) {
@@ -2441,6 +2520,9 @@ app.post('/api/ai/image', requireAuth, generationLimiter, async (req, res) => {
           const url = data?.data?.[0]?.url;
           if (url) {
             console.log('✅ Grok Imagine image generated');
+            getOrCreateSession(req.user?.id, req.body?.boardId).then((session) => {
+              logAiUsage({ sessionId: session?.id, userId: req.user?.id, actionType: 'image_gen', model: 'grok-imagine-image', provider: 'xai' });
+            }).catch(() => {});
             return res.json({ type: 'image', url, provider: 'grok', prompt: imagePrompt });
           }
         } else {
@@ -2476,6 +2558,9 @@ app.post('/api/ai/image', requireAuth, generationLimiter, async (req, res) => {
           const url = data?.data?.[0]?.url;
           if (url) {
             console.log('✅ DALL-E 3 image generated');
+            getOrCreateSession(req.user?.id, req.body?.boardId).then((session) => {
+              logAiUsage({ sessionId: session?.id, userId: req.user?.id, actionType: 'image_gen', model: 'dall-e-3', provider: 'openai' });
+            }).catch(() => {});
             return res.json({ type: 'image', url, provider: 'dalle', prompt: imagePrompt });
           }
         } else {
@@ -2570,6 +2655,9 @@ app.post('/api/ai/video', requireAuth, generationLimiter, async (req, res) => {
         const videoDuration = pollData?.video?.duration;
         if (videoUrl) {
           console.log('✅ Grok Imagine Video generated');
+          getOrCreateSession(req.user?.id, req.body?.boardId).then((session) => {
+            logAiUsage({ sessionId: session?.id, userId: req.user?.id, actionType: 'video', model: 'grok-imagine-video', provider: 'xai', metadata: { duration: videoDuration } });
+          }).catch(() => {});
           return res.json({
             type: 'video',
             url: videoUrl,
@@ -2683,6 +2771,9 @@ app.post('/api/ai/image-edit', requireAuth, generationLimiter, async (req, res) 
           const outBase64 = imgData.data;
           const dataUri = `data:${outMime};base64,${outBase64}`;
           console.log(`✅ Nano Banana image edit complete (model: ${geminiModel})`);
+          getOrCreateSession(req.user?.id, req.body?.boardId).then((session) => {
+            logAiUsage({ sessionId: session?.id, userId: req.user?.id, actionType: 'image_edit', model: geminiModel, provider: 'google' });
+          }).catch(() => {});
           return res.json({ type: 'image', url: dataUri, provider: 'nano-banana', prompt: cleanPrompt });
         }
 
@@ -2754,6 +2845,16 @@ app.post('/api/ai/transcribe', requireAuth, aiLimiter, upload.single('audio'), a
       ? segments.reduce((sum, s) => sum + (s?.no_speech_prob || 0), 0) / segments.length
       : 0;
 
+    const audioDurationSec = data?.duration || (segments.length > 0 ? segments[segments.length - 1]?.end || 0 : 0);
+    getOrCreateSession(req.user?.id, req.body?.boardId).then((session) => {
+      logAiUsage({
+        sessionId: session?.id, userId: req.user?.id, actionType: 'transcription',
+        model: 'whisper-1', provider: 'openai',
+        inputTokens: Math.ceil(audioDurationSec),
+        metadata: { duration_sec: audioDurationSec },
+      });
+    }).catch(() => {});
+
     return res.json({ text, no_speech_prob: avgNoSpeech });
   } catch (error) {
     return res.status(500).json({
@@ -2798,6 +2899,16 @@ app.post('/api/ai/tts', requireAuth, aiLimiter, async (req, res) => {
       const msg = String(errData?.error?.message || ttsRes.statusText || 'TTS request failed');
       return res.status(500).json({ error: `TTS: ${msg}` });
     }
+
+    const charCount = text.length;
+    getOrCreateSession(req.user?.id, req.body?.boardId).then((session) => {
+      logAiUsage({
+        sessionId: session?.id, userId: req.user?.id, actionType: 'tts',
+        model, provider: 'openai',
+        inputTokens: Math.ceil(charCount / 4),
+        metadata: { characters: charCount },
+      });
+    }).catch(() => {});
 
     res.setHeader('Content-Type', 'audio/mpeg');
     res.setHeader('Transfer-Encoding', 'chunked');
@@ -3607,6 +3718,61 @@ app.post('/api/feedback', requireAuth, async (req, res) => {
   }
 });
 
+// ── Usage Tracking API ───────────────────────────────────────────────────────
+
+app.get('/api/usage/me', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Not authenticated' });
+
+    const [monthly, sessions] = await Promise.all([
+      getUserMonthlyUsage(userId),
+      getUserSessions(userId, 10),
+    ]);
+
+    return res.json({
+      month: new Date().toISOString().slice(0, 7),
+      ...monthly,
+      recent_sessions: sessions,
+    });
+  } catch (error) {
+    console.error('❌ Usage API error:', error.message);
+    return res.status(500).json({ error: 'Failed to fetch usage data' });
+  }
+});
+
+app.get('/api/usage/session/:id', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Not authenticated' });
+
+    const result = await getSessionWithLogs(req.params.id, userId);
+    if (!result) return res.status(404).json({ error: 'Session not found' });
+
+    return res.json(result);
+  } catch (error) {
+    console.error('❌ Session API error:', error.message);
+    return res.status(500).json({ error: 'Failed to fetch session data' });
+  }
+});
+
+app.get('/api/usage/history', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Not authenticated' });
+
+    const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
+    const sessions = await getUserSessions(userId, limit);
+
+    return res.json({ sessions });
+  } catch (error) {
+    console.error('❌ Usage history error:', error.message);
+    return res.status(500).json({ error: 'Failed to fetch usage history' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 const HOST = process.env.HOST || '0.0.0.0';
 const frontendUrl = process.env.FRONTEND_URL || 'https://lykinsai-1.onrender.com';
 
@@ -3625,5 +3791,6 @@ if (process.env.NODE_ENV !== 'test') {
     console.log(`   - Anthropic: ${process.env.ANTHROPIC_API_KEY ? '✅' : '❌'}`);
     console.log(`   - Google Gemini: ${process.env.GOOGLE_API_KEY ? '✅' : '❌'}`);
     console.log(`   - xAI Grok: ${process.env.XAI_API_KEY ? '✅' : '❌'}`);
+    startSessionCleanup();
   });
 }
