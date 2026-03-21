@@ -31,6 +31,7 @@ window.fetch = async function patchedFetch(input: RequestInfo | URL, init?: Requ
   const isOurApi = url.startsWith(API_BASE_URL) || url.startsWith('/api/');
   if (!isOurApi) return _originalFetch(input, init);
 
+  let response: Response;
   try {
     const token = await getToken();
     if (token) {
@@ -38,9 +39,23 @@ window.fetch = async function patchedFetch(input: RequestInfo | URL, init?: Requ
       if (!headers.has('Authorization')) {
         headers.set('Authorization', `Bearer ${token}`);
       }
-      return _originalFetch(input, { ...init, headers });
+      response = await _originalFetch(input, { ...init, headers });
+    } else {
+      response = await _originalFetch(input, init);
     }
-  } catch { /* proceed without auth */ }
+  } catch (err) {
+    return _originalFetch(input, init);
+  }
 
-  return _originalFetch(input, init);
+  if (response.status === 429 && url.includes('/api/ai/')) {
+    try {
+      const cloned = response.clone();
+      const body = await cloned.json();
+      if (body?.error === 'ai_limit_reached') {
+        window.dispatchEvent(new CustomEvent('lykn:ai-limit-reached', { detail: body }));
+      }
+    } catch { /* ignore parse errors */ }
+  }
+
+  return response;
 };

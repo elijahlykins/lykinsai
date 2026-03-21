@@ -298,6 +298,39 @@ const generationLimiter = rateLimit({
 
 app.use('/api/', globalLimiter);
 
+const PLAN_REQUEST_LIMITS = {
+  free: 30,
+  starter: 300,
+  pro: 1500,
+  max: Infinity,
+};
+
+async function checkAiUsageLimit(req, res, next) {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return next();
+    const plan = 'free';
+    const limit = PLAN_REQUEST_LIMITS[plan] ?? 30;
+    if (!isFinite(limit)) return next();
+
+    const monthly = await getUserMonthlyUsage(userId);
+    const used = monthly?.log_count || 0;
+    if (used >= limit) {
+      return res.status(429).json({
+        error: 'ai_limit_reached',
+        message: `You've used all ${limit} AI requests this month. Upgrade your plan or add a top-up to continue.`,
+        used,
+        limit,
+        plan,
+      });
+    }
+    next();
+  } catch (err) {
+    console.error('⚠️ AI usage check failed, allowing request:', err.message);
+    next();
+  }
+}
+
 // ============================================
 // SSRF PROTECTION — block private/internal IPs
 // ============================================
@@ -820,7 +853,7 @@ const compressConversation = (msgs, fullCount = 6, maxChars = AI_BUDGETS.convers
   return joined.length > maxChars ? `${joined.slice(0, maxChars)}…` : joined;
 };
 
-app.post('/api/ai/invoke', requireAuth, aiLimiter, async (req, res) => {
+app.post('/api/ai/invoke', requireAuth, aiLimiter, checkAiUsageLimit, async (req, res) => {
   try {
     const normalizedModel = normalizeRequestedModel(req.body?.model);
     const incomingImageUrls = Array.isArray(req.body?.imageUrls) ? req.body.imageUrls : [];
@@ -1732,7 +1765,7 @@ ${t}
   }
 });
 
-app.post('/api/ai/stream', requireAuth, aiLimiter, async (req, res) => {
+app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req, res) => {
   try {
     const normalizedModel = normalizeRequestedModel(req.body?.model);
     const incomingImageUrls = Array.isArray(req.body?.imageUrls) ? req.body.imageUrls : [];
@@ -2486,7 +2519,7 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, async (req, res) => {
 });
 
 // ── Image Generation Endpoint ─────────────────────────────────────────────
-app.post('/api/ai/image', requireAuth, generationLimiter, async (req, res) => {
+app.post('/api/ai/image', requireAuth, generationLimiter, checkAiUsageLimit, async (req, res) => {
   try {
     const { prompt, aspect_ratio } = req.body || {};
     const cleanPrompt = String(prompt || '').trim();
@@ -2580,7 +2613,7 @@ app.post('/api/ai/image', requireAuth, generationLimiter, async (req, res) => {
 });
 
 // ── Video Generation Endpoint (Grok Imagine Video) ──────────────────────────
-app.post('/api/ai/video', requireAuth, generationLimiter, async (req, res) => {
+app.post('/api/ai/video', requireAuth, generationLimiter, checkAiUsageLimit, async (req, res) => {
   try {
     const { prompt, duration, aspect_ratio, resolution, image_url } = req.body || {};
     const cleanPrompt = String(prompt || '').trim();
@@ -2685,7 +2718,7 @@ app.post('/api/ai/video', requireAuth, generationLimiter, async (req, res) => {
 });
 
 // ── Image Edit Endpoint (Nano Banana 2 / Gemini via Google API) ─
-app.post('/api/ai/image-edit', requireAuth, generationLimiter, async (req, res) => {
+app.post('/api/ai/image-edit', requireAuth, generationLimiter, checkAiUsageLimit, async (req, res) => {
   try {
     const { prompt, image_url, image_urls } = req.body || {};
     const cleanPrompt = String(prompt || '').trim();
@@ -2794,7 +2827,7 @@ app.post('/api/ai/image-edit', requireAuth, generationLimiter, async (req, res) 
   }
 });
 
-app.post('/api/ai/transcribe', requireAuth, aiLimiter, upload.single('audio'), async (req, res) => {
+app.post('/api/ai/transcribe', requireAuth, aiLimiter, checkAiUsageLimit, upload.single('audio'), async (req, res) => {
   try {
     if (!process.env.OPENAI_API_KEY) {
       return res.status(500).json({
@@ -2866,7 +2899,7 @@ app.post('/api/ai/transcribe', requireAuth, aiLimiter, upload.single('audio'), a
 // ──────────────────────────────────────────────────
 // TTS — OpenAI Text-to-Speech
 // ──────────────────────────────────────────────────
-app.post('/api/ai/tts', requireAuth, aiLimiter, async (req, res) => {
+app.post('/api/ai/tts', requireAuth, aiLimiter, checkAiUsageLimit, async (req, res) => {
   try {
     if (!process.env.OPENAI_API_KEY) {
       return res.status(500).json({ error: 'OpenAI API key not configured.' });

@@ -11,6 +11,8 @@ import { supabase } from "@/lib/supabase";
 import { useAiStore } from "@/store/aiStore";
 import { useAuth } from "@/lib/SupabaseAuth";
 import RichTextRenderer from "@/components/notes/RichTextRenderer";
+import { useUsageGate } from "@/lib/useUsageGate";
+import UpgradeModal from "@/components/UpgradeModal";
 import { getBlockDefinition } from "@/canvas/blockSystem/definitions";
 import type { UniversalBlockType } from "@/canvas/blockSystem/types";
 import { createDatabaseBlockData } from "@/canvas/blockSystem/notionModel";
@@ -397,6 +399,7 @@ export default function OmniaCanvasPage() {
   const nav = useNavigate();
   const { boardId: routeBoardId } = useParams<{ boardId?: string }>();
   const { user } = useAuth();
+  const { checkVaultLimit, incrementVaultCount, upgradeModal, dismissUpgradeModal } = useUsageGate();
   const blocks = useCanvasStore((s) => s.blocks);
   const blockOrder = useCanvasStore((s) => s.blockOrder);
   const addTextBlockAt = useCanvasStore((s) => s.addTextBlockAt);
@@ -550,6 +553,7 @@ export default function OmniaCanvasPage() {
   const hydratedRef = useRef(false);
   const saveTimerRef = useRef<number | null>(null);
   const savingRef = useRef(false);
+  const lastSaveTimeRef = useRef<string | null>(null);
   const lastSavedTitleRef = useRef<string>("");
   const titleFromSaveRef = useRef(false);
   const [chatMode, setChatMode] = useState(false);
@@ -2477,14 +2481,20 @@ export default function OmniaCanvasPage() {
           { onConflict: "board_id" }
         );
 
-      await Promise.all([updatePromise, upsertPromise]);
+      const [updateRes, upsertRes] = await Promise.all([updatePromise, upsertPromise]);
 
-      lastSavedTitleRef.current = savedTitle;
-      titleFromSaveRef.current = true;
-      try { localStorage.removeItem(`omnia_draft_${boardId}`); } catch { /* ignore */ }
-      window.dispatchEvent(new Event("lykinsai_boards_changed"));
-    } catch {
-      // ignore
+      if (updateRes.error) console.error("[LYKN] Board title save failed:", updateRes.error.message);
+      if (upsertRes.error) console.error("[LYKN] Board state save failed:", upsertRes.error.message);
+
+      if (!updateRes.error && !upsertRes.error) {
+        lastSaveTimeRef.current = now;
+        lastSavedTitleRef.current = savedTitle;
+        titleFromSaveRef.current = true;
+        try { localStorage.removeItem(`omnia_draft_${boardId}`); } catch { /* ignore */ }
+        window.dispatchEvent(new Event("lykinsai_boards_changed"));
+      }
+    } catch (err) {
+      console.error("[LYKN] saveSnapshot error:", err);
     } finally {
       savingRef.current = false;
     }
@@ -2528,6 +2538,25 @@ export default function OmniaCanvasPage() {
       } catch {
         // ignore
       }
+      if (!id && !routeBoardId) {
+        try {
+          const { data: recent } = await supabase
+            .from("omnia_boards")
+            .select("id, title")
+            .eq("user_id", user.id)
+            .order("updated_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          if (recent?.id) {
+            id = recent.id;
+            if (recent.title) setTitle(String(recent.title));
+            lastSavedTitleRef.current = String(recent.title || "New Board");
+            localStorage.setItem("omnia_board_id", id!);
+          }
+        } catch {
+          // ignore
+        }
+      }
       if (!id) {
         const { data } = await supabase
           .from("omnia_boards")
@@ -2549,39 +2578,58 @@ export default function OmniaCanvasPage() {
       setChatMessages([]);
       aiThreadRef.current = [];
       try {
-        // Check for unsaved localStorage draft (crash recovery)
         let draft: any = null;
         try {
           const raw = localStorage.getItem(`omnia_draft_${id}`);
           if (raw) draft = JSON.parse(raw);
         } catch { /* ignore */ }
 
-        if (draft && draft.blocks && Object.keys(draft.blocks).length > 0) {
-          applySnapshotRef.current(draft);
-        } else {
-          const { data } = await supabase
+        let remoteData: any = null;
+        let fetchFailed = false;
+        try {
+          const { data, error } = await supabase
             .from("omnia_board_states")
-            .select("state, version")
+            .select("state, version, updated_at")
             .eq("board_id", id)
             .order("created_at", { ascending: false })
             .limit(1)
             .maybeSingle();
-          if (data?.state) {
-            const snap = { ...(data.state || {}), version: (data as any)?.version || (data.state as any)?.version || 1 };
-            try {
-              const lsCam = localStorage.getItem(`omnia_camera_${id}`);
-              if (lsCam) {
-                const parsed = JSON.parse(lsCam);
-                if (parsed && typeof parsed === "object" && Number.isFinite(parsed.zoom)) {
-                  snap.camera = { ...(snap.camera || {}), ...parsed };
-                }
-              }
-            } catch { /* ignore */ }
-            applySnapshotRef.current(snap);
-          }
+          if (error) { console.error("[LYKN] Board state fetch error:", error.message); fetchFailed = true; }
+          else remoteData = data;
+        } catch { fetchFailed = true; }
+
+        const hasDraft = draft && draft.blocks && Object.keys(draft.blocks).length > 0;
+        const hasRemote = remoteData?.state && typeof remoteData.state === "object";
+
+        let useDraft = false;
+        if (fetchFailed && hasDraft) {
+          useDraft = true;
+        } else if (hasDraft && hasRemote) {
+          const draftTs = draft._savedAt ? new Date(draft._savedAt).getTime() : 0;
+          const remoteTs = remoteData.updated_at ? new Date(remoteData.updated_at).getTime() : 0;
+          useDraft = draftTs > remoteTs;
+        } else if (hasDraft && !hasRemote) {
+          useDraft = true;
         }
-      } catch {
-        // ignore
+
+        if (useDraft) {
+          applySnapshotRef.current(draft);
+        } else if (hasRemote) {
+          const snap = { ...(remoteData.state || {}), version: (remoteData as any)?.version || (remoteData.state as any)?.version || 1 };
+          try {
+            const lsCam = localStorage.getItem(`omnia_camera_${id}`);
+            if (lsCam) {
+              const parsed = JSON.parse(lsCam);
+              if (parsed && typeof parsed === "object" && Number.isFinite(parsed.zoom)) {
+                snap.camera = { ...(snap.camera || {}), ...parsed };
+              }
+            }
+          } catch { /* ignore */ }
+          applySnapshotRef.current(snap);
+        }
+        try { localStorage.removeItem(`omnia_draft_${id}`); } catch { /* ignore */ }
+      } catch (err) {
+        console.error("[LYKN] Failed to load board state:", err);
       }
       hydratedRef.current = true;
 
@@ -2722,6 +2770,7 @@ export default function OmniaCanvasPage() {
     const onBeforeUnload = () => {
       try {
         const snapshot = buildSnapshot();
+        snapshot._savedAt = lastSaveTimeRef.current || new Date().toISOString();
         localStorage.setItem(`omnia_draft_${boardId}`, JSON.stringify(snapshot));
       } catch { /* quota */ }
       savingRef.current = false;
@@ -2731,11 +2780,25 @@ export default function OmniaCanvasPage() {
       savingRef.current = false;
       saveSnapshot();
     };
+    const autoSaveInterval = window.setInterval(() => {
+      if (hydratedRef.current && !savingRef.current) {
+        saveSnapshot();
+      }
+    }, 30_000);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden" && hydratedRef.current) {
+        savingRef.current = false;
+        saveSnapshot();
+      }
+    };
     window.addEventListener("beforeunload", onBeforeUnload);
     window.addEventListener("omnia_flush_save", onFlushSave);
+    document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
+      window.clearInterval(autoSaveInterval);
       window.removeEventListener("beforeunload", onBeforeUnload);
       window.removeEventListener("omnia_flush_save", onFlushSave);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [boardId, buildSnapshot, saveSnapshot, user?.id]);
 
@@ -2783,6 +2846,7 @@ export default function OmniaCanvasPage() {
     if (!user?.id || isQuickNoteSaving) return;
     const content = quickNoteContent.trim();
     if (!content) return;
+    if (!(await checkVaultLimit())) return;
     setIsQuickNoteSaving(true);
     try {
       const { error } = await supabase
@@ -2911,6 +2975,7 @@ export default function OmniaCanvasPage() {
 
   const saveAiImageToMedia = useCallback(async (imageUrl: string, promptText?: string) => {
     if (!user?.id || !imageUrl) return;
+    if (!(await checkVaultLimit())) return;
 
     let ext = "jpg";
     let fileUrl = imageUrl;
@@ -2971,6 +3036,7 @@ export default function OmniaCanvasPage() {
 
   const saveAiVideoToMedia = useCallback(async (videoUrl: string, promptText?: string) => {
     if (!user?.id || !videoUrl) return;
+    if (!(await checkVaultLimit())) return;
     const filename = `AI Generated Video ${new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}.mp4`;
 
     let fileUrl = videoUrl;
@@ -3027,6 +3093,7 @@ export default function OmniaCanvasPage() {
 
   const saveYouTubeToMedia = useCallback(async (videoId: string, url: string) => {
     if (!user?.id || !videoId) return;
+    if (!(await checkVaultLimit())) return;
     const title = `YouTube Video — ${videoId}`;
     const watchUrl = url || `https://www.youtube.com/watch?v=${videoId}`;
     const thumbnail = `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`;
@@ -3052,6 +3119,7 @@ export default function OmniaCanvasPage() {
 
   const saveLinkToMedia = useCallback(async (linkUrl: string) => {
     if (!user?.id || !linkUrl) return;
+    if (!(await checkVaultLimit())) return;
     try {
       const { API_BASE_URL } = await import("@/lib/api-config");
       const res = await fetch(`${API_BASE_URL}/api/unfurl?url=${encodeURIComponent(linkUrl)}`);
@@ -3086,6 +3154,7 @@ export default function OmniaCanvasPage() {
 
   const saveAttachmentToMedia = useCallback(async (url: string, name: string, mediaType: "image" | "video" | "audio" | "file") => {
     if (!user?.id || !url) return;
+    if (!(await checkVaultLimit())) return;
     const fileId = crypto.randomUUID();
     let fileUrl = url;
     let storagePath = "";
@@ -6148,6 +6217,7 @@ export default function OmniaCanvasPage() {
         />
       )}
 
+      <UpgradeModal modal={upgradeModal} onDismiss={dismissUpgradeModal} />
     </div>
   );
 }

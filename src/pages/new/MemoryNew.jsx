@@ -29,6 +29,8 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSepa
 import DraggableChat from "@/components/notes/DraggableChat";
 import DraggableQuickNote from "@/components/notes/DraggableQuickNote";
 import DragDropFileUpload from "@/components/files/DragDropFileUpload";
+import { useUsageGate } from "@/lib/useUsageGate";
+import UpgradeModal from "@/components/UpgradeModal";
 import { extractYouTubeVideoId, getYouTubeEmbedUrl } from "@/canvas/utils/youtube";
 import LoadingScreen from "@/components/LoadingScreen";
 import { getAiPrefs } from "@/lib/ai-prefs";
@@ -424,6 +426,7 @@ export default function MemoryNew() {
     }
   }, [isEmbeddedMode]);
 
+  const { checkVaultLimit, incrementVaultCount, upgradeModal, dismissUpgradeModal } = useUsageGate();
   const [embeddedSearch, setEmbeddedSearch] = useState("");
   const memoryQueryClient = useQueryClient();
   const [notes, setNotes] = useState([]);
@@ -933,6 +936,7 @@ export default function MemoryNew() {
     if (!user?.id || isQuickNoteSaving) return;
     const content = quickNoteContent.trim();
     if (!content) return;
+    if (!(await checkVaultLimit())) return;
 
     setIsQuickNoteSaving(true);
     try {
@@ -956,6 +960,7 @@ export default function MemoryNew() {
       setQuickNoteContent("");
       setShowQuickNote(false);
       setNotes((prev) => [insertedNote, ...prev]);
+      incrementVaultCount();
     } catch (error) {
       setNotesError("Couldn't save your note. Please try again.");
     } finally {
@@ -994,6 +999,7 @@ export default function MemoryNew() {
 
   const handleSaveLink = useCallback(async () => {
     if (!user?.id || isSaveLinkSaving || !saveLinkPreview) return;
+    if (!(await checkVaultLimit())) return;
     setIsSaveLinkSaving(true);
     try {
       const attachment = [{
@@ -1022,7 +1028,10 @@ export default function MemoryNew() {
         .select("id, title, content, created_at, updated_at")
         .single();
       if (error) throw error;
-      if (insertedNote) setNotes((prev) => [insertedNote, ...prev]);
+      if (insertedNote) {
+        setNotes((prev) => [insertedNote, ...prev]);
+        incrementVaultCount();
+      }
       setShowSaveLink(false);
       setSaveLinkUrl("");
       setSaveLinkPreview(null);
@@ -1031,7 +1040,7 @@ export default function MemoryNew() {
     } finally {
       setIsSaveLinkSaving(false);
     }
-  }, [user?.id, isSaveLinkSaving, saveLinkPreview, saveLinkUrl]);
+  }, [user?.id, isSaveLinkSaving, saveLinkPreview, saveLinkUrl, checkVaultLimit, incrementVaultCount]);
 
   const handleChatSend = async () => {
     const text = chatInput.trim();
@@ -1767,6 +1776,7 @@ User: ${text}`;
     <div className={`min-h-screen bg-transparent text-black relative overflow-x-hidden`}>
       <DragDropFileUpload
         triggerRef={addMediaTriggerRef}
+        beforeUpload={checkVaultLimit}
         onUploadComplete={(payload) => {
           const createdNotes = Array.isArray(payload?.createdNotes) ? payload.createdNotes : [];
           if (createdNotes.length > 0) {
@@ -2561,6 +2571,7 @@ User: ${text}`;
         })(),
         document.body
       )}
+      <UpgradeModal modal={upgradeModal} onDismiss={dismissUpgradeModal} />
     </div>
   );
 }

@@ -20,7 +20,7 @@ import { useAuth } from '@/lib/SupabaseAuth';
  * This component creates an invisible overlay that captures drag-and-drop events
  * across the entire page when used in Memory page.
  */
-export default function DragDropFileUpload({ onUploadComplete, triggerRef }) {
+export default function DragDropFileUpload({ onUploadComplete, triggerRef, beforeUpload }) {
   const { user } = useAuth();
   const [isDragging, setIsDragging] = useState(false);
   const [uploads, setUploads] = useState([]); // Array of { file, progress, status, error, fileId }
@@ -80,6 +80,7 @@ export default function DragDropFileUpload({ onUploadComplete, triggerRef }) {
 
   const createDroppedLinkNote = useCallback(async (url) => {
     if (!user?.id || !url) return false;
+    if (beforeUpload && !(await beforeUpload())) return false;
 
     const trimmedUrl = String(url).trim();
     const youtube = isYouTubeUrl(trimmedUrl);
@@ -421,6 +422,7 @@ Size: ${sizeDisplay}
       alert('Please sign in to upload files');
       return;
     }
+    if (beforeUpload && !(await beforeUpload())) return;
 
     setIsUploading(true);
     
@@ -460,7 +462,7 @@ Size: ${sizeDisplay}
     if (onUploadComplete) {
       onUploadComplete({ createdNotes });
     }
-  }, [user, processFileList, uploadFileHandler, onUploadComplete]);
+  }, [user, processFileList, uploadFileHandler, onUploadComplete, beforeUpload]);
 
   // Listen for file input events from external triggers (like the attachment button)
   useEffect(() => {

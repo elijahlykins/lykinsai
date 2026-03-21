@@ -22,6 +22,8 @@ import { getAiPrefs } from "@/lib/ai-prefs";
 import { extractTextFromFile, isDocumentFile } from "@/lib/extract-text";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/SupabaseAuth";
+import { useUsageGate } from "@/lib/useUsageGate";
+import UpgradeModal from "@/components/UpgradeModal";
 
 type CanvasProps = {
   liveAIMode?: boolean;
@@ -566,10 +568,12 @@ function ConnectionNodeOverlay({
 
 export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatusText = "" }: CanvasProps) {
   const { user } = useAuth();
+  const { checkVaultLimit, incrementVaultCount, upgradeModal, dismissUpgradeModal } = useUsageGate();
 
   const mediaDedupCache = useRef<Set<string>>(new Set());
 
   const insertNoteToMedia = useCallback(async (row: { user_id: string; title: string; content: string }) => {
+    if (!(await checkVaultLimit())) return;
     const dedupKey = `${row.user_id}::${row.title}`;
     if (mediaDedupCache.current.has(dedupKey)) {
       console.log("[Canvas] Skipped duplicate media (cache):", row.title);
@@ -6238,6 +6242,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
                       }
 
                       if (!attachments.length && !bodyText) return;
+                      if (!(await checkVaultLimit())) return;
 
                       const content = attachments.length
                         ? `${noteTitle}\n\n[ATTACHMENTS_JSON:${JSON.stringify(attachments)}]`
@@ -6494,6 +6499,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         </div>,
         document.body
       )}
+      <UpgradeModal modal={upgradeModal} onDismiss={dismissUpgradeModal} />
     </div>
   );
 }
