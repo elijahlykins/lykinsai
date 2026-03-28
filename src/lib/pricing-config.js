@@ -93,7 +93,7 @@ export const FAQ_ITEMS = [
 ];
 
 export const PLAN_LIMITS = {
-  free: { requests: 30, vaultCards: 50, grids: 3, projects: 0 },
+  free: { requests: Infinity, vaultCards: Infinity, grids: Infinity, projects: Infinity },
   starter: { requests: 300, vaultCards: 500, grids: Infinity, projects: 5 },
   pro: { requests: 1500, vaultCards: Infinity, grids: Infinity, projects: 20 },
   max: { requests: Infinity, vaultCards: Infinity, grids: Infinity, projects: Infinity },

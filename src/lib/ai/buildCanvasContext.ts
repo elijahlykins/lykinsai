@@ -106,12 +106,41 @@ export function buildTieredCanvasContext(params: {
   blockOrder: string[];
   focusedBrickIds: string[];
   viewportCenter?: { x: number; y: number };
+  wireConnections?: Array<{
+    id: string;
+    fromId: string;
+    toId: string;
+    fromSide?: string;
+    toSide?: string;
+  }>;
 }): string {
-  const { blocks, blockOrder, focusedBrickIds, viewportCenter } = params;
+  const { blocks, blockOrder, focusedBrickIds, viewportCenter, wireConnections } = params;
   const allIds = Array.isArray(blockOrder) ? blockOrder : [];
   const focusedSet = new Set((focusedBrickIds || []).slice(0, 3));
   const included = new Set<string>();
   const lines: string[] = [];
+  const wires = Array.isArray(wireConnections) ? wireConnections : [];
+
+  // Build adjacency lookup: blockId → set of connected blockIds
+  const adjacency = new Map<string, Set<string>>();
+  for (const w of wires) {
+    if (!blocks[w.fromId] || !blocks[w.toId]) continue;
+    if (!adjacency.has(w.fromId)) adjacency.set(w.fromId, new Set());
+    if (!adjacency.has(w.toId)) adjacency.set(w.toId, new Set());
+    adjacency.get(w.fromId)!.add(w.toId);
+    adjacency.get(w.toId)!.add(w.fromId);
+  }
+
+  // Collect IDs directly connected to focused bricks (they deserve higher priority)
+  const connectedToFocused = new Set<string>();
+  for (const fid of focusedSet) {
+    const neighbors = adjacency.get(fid);
+    if (neighbors) {
+      for (const nid of neighbors) {
+        if (!focusedSet.has(nid)) connectedToFocused.add(nid);
+      }
+    }
+  }
 
   // ── Tier 1: Focused blocks (max 3, up to 3 000 chars content) ────────
   const focusedLines: string[] = [];
@@ -121,6 +150,18 @@ export function buildTieredCanvasContext(params: {
     if (!b) continue;
     focusedLines.push(
       describeBlock(b, id, { contentLen: 3000, focused: true }),
+    );
+    included.add(id);
+  }
+
+  // ── Tier 1.5: Blocks wired to focused bricks (up to 800 chars, tagged) ──
+  const connectedLines: string[] = [];
+  for (const id of connectedToFocused) {
+    if (included.has(id)) continue;
+    const b = blocks[id];
+    if (!b) continue;
+    connectedLines.push(
+      describeBlock(b, id, { contentLen: 800 }) + " [CONNECTED TO FOCUSED]",
     );
     included.add(id);
   }
@@ -172,6 +213,23 @@ export function buildTieredCanvasContext(params: {
     included.add(id);
   }
 
+  // ── Build connection graph description ──────────────────────────────
+  const connectionLines: string[] = [];
+  const validWires = wires.filter((w) => blocks[w.fromId] && blocks[w.toId]);
+  if (validWires.length > 0) {
+    const blockLabel = (id: string) => {
+      const b = blocks[id];
+      if (!b) return id;
+      const type = String(b.type || "unknown");
+      const content = String(b.content || b.data?.content || b.data?.title || "").replace(/\s+/g, " ").trim();
+      const preview = content ? ` "${content.slice(0, 40)}"` : "";
+      return `${id}(${type}${preview})`;
+    };
+    for (const w of validWires) {
+      connectionLines.push(`  ${blockLabel(w.fromId)} --[${w.fromSide || "?"}→${w.toSide || "?"}]--> ${blockLabel(w.toId)}`);
+    }
+  }
+
   // ── Assemble ─────────────────────────────────────────────────────────
   if (focusedLines.length) {
     const focusedBlocks = [...focusedSet].map((id) => blocks[id]).filter(Boolean);
@@ -197,12 +255,25 @@ export function buildTieredCanvasContext(params: {
     );
   }
 
+  if (connectedLines.length) {
+    lines.push("", ...connectedLines);
+  }
+
   if (nearbyLines.length) {
     lines.push("", ...nearbyLines);
   }
 
   if (compactLines.length) {
     lines.push("", ...compactLines);
+  }
+
+  if (connectionLines.length) {
+    lines.push(
+      "",
+      "[CONNECTIONS]",
+      "These bricks are explicitly connected by the user via wires. Treat connected bricks as contextually related — the user linked them intentionally to show a relationship, data flow, or logical grouping.",
+      ...connectionLines,
+    );
   }
 
   return lines.join("\n");

@@ -134,7 +134,7 @@ export default function AppSidebar() {
 
   const deleteBoard = async (boardId) => {
     if (!user?.id) return;
-    if (!window.confirm("Delete this board? This cannot be undone.")) return;
+    if (!window.confirm("Delete this grid? This cannot be undone.")) return;
     await supabase.from("omnia_board_states").delete().eq("board_id", boardId);
     await supabase.from("omnia_boards").delete().eq("id", boardId).eq("user_id", user.id);
     setMenuBoardId(null);
@@ -159,10 +159,10 @@ export default function AppSidebar() {
   const renameBoard = async (boardId) => {
     if (!user?.id) return;
     const board = boards.find((b) => b.id === boardId);
-    const currentTitle = board?.title || "New Board";
-    const next = window.prompt("Rename board", currentTitle);
+    const currentTitle = board?.title || "New Grid";
+    const next = window.prompt("Rename grid", currentTitle);
     if (next === null) return;
-    const name = next.trim() || "New Board";
+    const name = next.trim() || "New Grid";
     await supabase
       .from("omnia_boards")
       .update({ title: name, updated_at: new Date().toISOString() })
@@ -234,14 +234,22 @@ export default function AppSidebar() {
           </button>
           <button
             type="button"
+            onClick={() => flushAndNavigate(nav, "/")}
+            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
+          >
+            <LayoutGrid className="w-3.5 h-3.5 text-black/60" />
+            Grid
+          </button>
+          <button
+            type="button"
             onClick={() => {
               const newId = crypto.randomUUID();
               flushAndNavigate(nav, `/canvas/${newId}`);
             }}
             className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
           >
-            <LayoutGrid className="w-3.5 h-3.5 text-black/60" />
-            Grid
+            <Plus className="w-3.5 h-3.5 text-black/60" />
+            New Grid
           </button>
           <button
             type="button"
@@ -272,10 +280,10 @@ export default function AppSidebar() {
           )}
         </div>
 
-        <div className="mt-3 text-[0.6875rem] font-semibold text-black/70 px-2 py-1">Boards</div>
+        <div className="mt-3 text-[0.6875rem] font-semibold text-black/70 px-2 py-1">Grids</div>
         <div className="flex flex-col gap-0.5 max-h-[28vh] overflow-y-auto scrollbar-hide pr-1">
           {boards.length === 0 ? (
-            <div className="text-[0.6875rem] text-black/50 px-2.5 py-1.5">No boards yet.</div>
+            <div className="text-[0.6875rem] text-black/50 px-2.5 py-1.5">No grids yet.</div>
           ) : (
             boards.map((board) => {
               const isActive = location.pathname === `/canvas/${board.id}`;
@@ -289,7 +297,7 @@ export default function AppSidebar() {
                     }`}
                   >
                     <span className={`inline-block h-1.5 w-1.5 rounded-full flex-shrink-0 ${isActive ? "bg-blue-500" : "bg-black/30"}`} />
-                    <span className="truncate">{board.title || "Untitled Board"}</span>
+                    <span className="truncate">{board.title || "Untitled Grid"}</span>
                   </button>
                   <button
                     type="button"
@@ -468,7 +476,7 @@ export default function AppSidebar() {
             onClick={() => deleteBoard(menuBoardId)}
           >
             <Trash2 className="w-3 h-3" />
-            Delete board
+            Delete grid
           </button>
         </div>,
         document.body

@@ -635,6 +635,14 @@ export const SpreadsheetBlock = memo(function SpreadsheetBlock({ id, onMinimize,
   const isFileImport = Boolean((block as any).data?.sourceFileName);
   const isTableMode = Boolean((block as any).data?.tableMode);
 
+  const scaledFontSize = useMemo(() => {
+    if (!isTableMode) return 12;
+    const cellHeight = block.height / Math.max(1, rows);
+    const defaultCellHeight = (gridSize * 5) / 3;
+    const fontScale = Math.max(0.5, cellHeight / defaultCellHeight);
+    return Math.max(8, Math.min(72, Math.round(12 * fontScale)));
+  }, [isTableMode, block.height, rows, gridSize]);
+
   const addRow = useCallback(() => {
     if (rows >= MAX_ROWS) return;
     const nextRows = rows + 1;
@@ -937,7 +945,7 @@ export const SpreadsheetBlock = memo(function SpreadsheetBlock({ id, onMinimize,
         )}
 
         {isTableMode ? (
-          /* ── TABLE MODE: flex layout that fills the brick exactly ── */
+          /* ── TABLE MODE: clean table style matching AI chat tables ── */
           <div className="flex flex-col w-full h-full">
             {/* Drag strip */}
             <div
@@ -967,67 +975,84 @@ export const SpreadsheetBlock = memo(function SpreadsheetBlock({ id, onMinimize,
               >
                 <div
                   ref={viewportRef}
-                  className="flex-1 min-h-0 overflow-hidden scrollbar-hide"
-                  style={{ fontSize: 12, userSelect: editing ? "text" : "none" }}
+                  className="flex-1 min-h-0 overflow-x-auto scrollbar-hide"
+                  style={{ userSelect: editing ? "text" : "none" }}
                 >
-                  <div
-                    className="grid w-full h-full"
-                    style={{
-                      gridTemplateColumns,
-                      gridTemplateRows: `repeat(${rows}, 1fr)`,
-                    }}
-                  >
-                    {Array.from({ length: rows }).map((_, r) => (
-                      <React.Fragment key={`r-${r}`}>
-                        {Array.from({ length: cols }).map((__, c) => {
-                          const isSel = selected.r === r && selected.c === c;
-                          const isEdit = editing?.r === r && editing?.c === c;
-                          const raw = String(cells?.[`${r},${c}`] ?? "");
-                          const shown = display[r]?.[c] ?? "";
-                          const isHeaderRow = r === 0;
-                          const cellSelStyle: React.CSSProperties | undefined = isSel
-                            ? { boxShadow: "inset 0 0 0 1.5px rgba(100,180,255,0.6)" }
-                            : undefined;
+                  <table className="w-full border-collapse text-sm">
+                    <thead className="border-b border-black/20 dark:border-white/20">
+                      <tr>
+                        {Array.from({ length: cols }).map((_, c) => {
+                          const isSel = selected.r === 0 && selected.c === c;
+                          const isEdit = editing?.r === 0 && editing?.c === c;
+                          const raw = String(cells?.[`0,${c}`] ?? "");
+                          const shown = display[0]?.[c] ?? "";
                           return (
-                            <div
-                              key={`c-${r}-${c}`}
-                              data-sheet-cell={`${r},${c}`}
-                              className={`border-b border-black/12 dark:border-white/15 ${
-                                c !== cols - 1 ? "border-r border-black/12 dark:border-white/15" : ""
-                              } ${isHeaderRow ? "bg-black/5 dark:bg-white/10" : "bg-white/22 dark:bg-white/6"} px-2 flex items-center overflow-hidden`}
-                              style={{ cursor: "default", minHeight: 0, ...(cellSelStyle || {}) }}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setSelected({ r, c });
-                                setEditing(null);
-                                setDraft("");
-                              }}
-                              onDoubleClick={(e) => {
-                                e.stopPropagation();
-                                startEdit(r, c);
-                              }}
+                            <th
+                              key={`th-${c}`}
+                              data-sheet-cell={`0,${c}`}
+                              className={`text-left px-3 py-2 font-semibold${isSel ? " bg-blue-500/10" : ""}`}
+                              style={{ cursor: "default" }}
+                              onClick={(e) => { e.stopPropagation(); setSelected({ r: 0, c }); setEditing(null); setDraft(""); }}
+                              onDoubleClick={(e) => { e.stopPropagation(); startEdit(0, c); }}
                             >
                               {isEdit ? (
                                 <input
                                   ref={editInputRef}
                                   autoFocus
-                                  className="w-full bg-transparent outline-none text-xs text-gray-900 dark:text-gray-100"
+                                  className="w-full bg-transparent outline-none font-semibold"
                                   value={draft}
                                   onChange={(e) => setDraft(e.target.value)}
                                   onBlur={() => commitEdit()}
                                   onKeyDown={(e) => e.stopPropagation()}
                                 />
                               ) : (
-                                <span className={`text-xs text-gray-900 dark:text-gray-100 truncate ${isHeaderRow ? "font-semibold" : ""}`}>
-                                  {raw.startsWith("=") ? shown : raw}
-                                </span>
+                                <span className="truncate">{raw.startsWith("=") ? shown : raw}</span>
                               )}
-                            </div>
+                            </th>
                           );
                         })}
-                      </React.Fragment>
-                    ))}
-                  </div>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {Array.from({ length: Math.max(0, rows - 1) }).map((_, ri) => {
+                        const r = ri + 1;
+                        return (
+                          <tr key={`tr-${r}`} className="border-b border-black/10 dark:border-white/10">
+                            {Array.from({ length: cols }).map((__, c) => {
+                              const isSel = selected.r === r && selected.c === c;
+                              const isEdit = editing?.r === r && editing?.c === c;
+                              const raw = String(cells?.[`${r},${c}`] ?? "");
+                              const shown = display[r]?.[c] ?? "";
+                              return (
+                                <td
+                                  key={`td-${r}-${c}`}
+                                  data-sheet-cell={`${r},${c}`}
+                                  className={`px-3 py-2${isSel ? " bg-blue-500/10" : ""}`}
+                                  style={{ cursor: "default" }}
+                                  onClick={(e) => { e.stopPropagation(); setSelected({ r, c }); setEditing(null); setDraft(""); }}
+                                  onDoubleClick={(e) => { e.stopPropagation(); startEdit(r, c); }}
+                                >
+                                  {isEdit ? (
+                                    <input
+                                      ref={editInputRef}
+                                      autoFocus
+                                      className="w-full bg-transparent outline-none"
+                                      value={draft}
+                                      onChange={(e) => setDraft(e.target.value)}
+                                      onBlur={() => commitEdit()}
+                                      onKeyDown={(e) => e.stopPropagation()}
+                                    />
+                                  ) : (
+                                    <span className="truncate">{raw.startsWith("=") ? shown : raw}</span>
+                                  )}
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
                 </div>
                 {/* + add row */}
                 <div

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { WireConnection, WireSide } from "@/store/canvasStore";
 
-type BlockRect = { x: number; y: number; width: number; height: number };
+type BlockRect = { x: number; y: number; width: number; height: number; data?: { brickScale?: number; [k: string]: any } };
 
 type ActiveWireDrag = {
   fromId: string;
@@ -26,19 +26,20 @@ type ConnectionWiresProps = {
   onUpdateWire?: (id: string, patch: Partial<Omit<WireConnection, "id">>) => void;
 };
 
-const NODE_OUTSET = 13;
+const BASE_NODE_OUTSET = 13;
 const HOVER_LINGER_MS = 400;
 
 function getAnchorPoint(block: BlockRect, side: WireSide) {
+  const outset = BASE_NODE_OUTSET;
   switch (side) {
     case "top":
-      return { x: block.x + block.width / 2, y: block.y - NODE_OUTSET };
+      return { x: block.x + block.width / 2, y: block.y - outset };
     case "right":
-      return { x: block.x + block.width + NODE_OUTSET, y: block.y + block.height / 2 };
+      return { x: block.x + block.width + outset, y: block.y + block.height / 2 };
     case "bottom":
-      return { x: block.x + block.width / 2, y: block.y + block.height + NODE_OUTSET };
+      return { x: block.x + block.width / 2, y: block.y + block.height + outset };
     case "left":
-      return { x: block.x - NODE_OUTSET, y: block.y + block.height / 2 };
+      return { x: block.x - outset, y: block.y + block.height / 2 };
   }
 }
 

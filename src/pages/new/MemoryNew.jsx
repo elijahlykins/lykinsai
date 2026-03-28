@@ -2,25 +2,30 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
+  Check,
   ChevronDown,
   ChevronUp,
   Clock,
   ExternalLink,
   FileText,
   Globe,
+  Grid3X3,
+  Layers,
+  LayoutGrid,
   Link as LinkIcon,
   Loader2,
   MessageSquare,
   MoreHorizontal,
   Music,
   Plus,
+  Search,
   StickyNote,
+  Tag,
   Trash2,
   Table2,
   Upload,
   Video,
   X,
-  Zap,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/SupabaseAuth";
@@ -34,6 +39,7 @@ import UpgradeModal from "@/components/UpgradeModal";
 import { extractYouTubeVideoId, getYouTubeEmbedUrl } from "@/canvas/utils/youtube";
 import LoadingScreen from "@/components/LoadingScreen";
 import { getAiPrefs } from "@/lib/ai-prefs";
+import { motion } from "framer-motion";
 
 function stripAttachmentJsonMarker(content) {
   if (!content) return "";
@@ -426,6 +432,7 @@ export default function MemoryNew() {
     }
   }, [isEmbeddedMode]);
 
+
   const { checkVaultLimit, incrementVaultCount, upgradeModal, dismissUpgradeModal } = useUsageGate();
   const [embeddedSearch, setEmbeddedSearch] = useState("");
   const memoryQueryClient = useQueryClient();
@@ -461,6 +468,18 @@ export default function MemoryNew() {
   const [saveLinkPreview, setSaveLinkPreview] = useState(null);
   const [isSaveLinkLoading, setIsSaveLinkLoading] = useState(false);
   const [isSaveLinkSaving, setIsSaveLinkSaving] = useState(false);
+  const [vaultSearch, setVaultSearch] = useState("");
+  const [vaultView, setVaultView] = useState(() => {
+    try { return localStorage.getItem("lykn_vault_view") || "collage"; } catch { return "collage"; }
+  });
+  const [conceptResultIds, setConceptResultIds] = useState(null);
+  const [isConceptSearching, setIsConceptSearching] = useState(false);
+  const [selectedFilterTags, setSelectedFilterTags] = useState([]);
+  const [tagPickerCardId, setTagPickerCardId] = useState(null);
+  const [tagPickerPosition, setTagPickerPosition] = useState(null);
+  const [newTagInput, setNewTagInput] = useState("");
+  const tagPickerRef = useRef(null);
+  const conceptSearchAbortRef = useRef(null);
   const lastHoverTargetRef = useRef(null);
   const loadMoreRef = useRef(null);
   const cardMenuRef = useRef(null);
@@ -469,7 +488,7 @@ export default function MemoryNew() {
   const assistantIndexRef = useRef(null);
   const signedUrlCacheRef = useRef(new Map());
   const lastAutoSavedAttachmentNoteTextRef = useRef("");
-  const MEMORY_PAGE_SIZE = 24;
+  const MEMORY_PAGE_SIZE = 100;
 
   const mergeUploadedNotes = useCallback((incoming = []) => {
     if (!Array.isArray(incoming) || incoming.length === 0) return;
@@ -503,32 +522,46 @@ export default function MemoryNew() {
     }
     return "claude-sonnet-4-6";
   });
-  const [liveAIMode, setLiveAIMode] = useState(() => {
-    try {
-      const saved = localStorage.getItem("lykinsai_settings");
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        return Boolean(parsed.liveAIMode);
-      }
-    } catch {
-      // ignore
-    }
-    return false;
-  });
 
   const notesCursorRef = useRef(null);
 
+  const resolvedColumnsRef = useRef(null);
+
+  const COLUMN_SETS = [
+    "id, title, content, attachments, tags, created_at, updated_at",
+    "id, title, content, tags, created_at, updated_at",
+    "id, title, content, attachments, created_at, updated_at",
+    "id, title, content, created_at, updated_at",
+  ];
+
   const fetchNotesBatch = useCallback(
     async (cursor) => {
-      let query = supabase
-        .from("notes")
-        .select("id, title, content, created_at, updated_at")
-        .eq("user_id", user.id)
-        .order("updated_at", { ascending: false })
-        .limit(MEMORY_PAGE_SIZE);
-      if (cursor) query = query.lt("updated_at", cursor);
-      const { data, error } = await query;
-      return { data, error };
+      const buildQuery = (cols) => {
+        let q = supabase
+          .from("notes")
+          .select(cols)
+          .eq("user_id", user.id)
+          .order("updated_at", { ascending: false })
+          .limit(MEMORY_PAGE_SIZE);
+        if (cursor) q = q.lt("updated_at", cursor);
+        return q;
+      };
+
+      if (resolvedColumnsRef.current) {
+        const { data, error } = await buildQuery(resolvedColumnsRef.current);
+        return { data, error };
+      }
+
+      for (const cols of COLUMN_SETS) {
+        const { data, error } = await buildQuery(cols);
+        if (!error) {
+          resolvedColumnsRef.current = cols;
+          return { data, error: null };
+        }
+      }
+
+      resolvedColumnsRef.current = COLUMN_SETS[COLUMN_SETS.length - 1];
+      return await buildQuery(resolvedColumnsRef.current);
     },
     [user?.id]
   );
@@ -612,7 +645,6 @@ export default function MemoryNew() {
         if (!saved) return;
         const parsed = JSON.parse(saved);
         if (parsed.aiModel) setSelectedModel(parsed.aiModel);
-        if (typeof parsed.liveAIMode !== "undefined") setLiveAIMode(Boolean(parsed.liveAIMode));
       } catch {
         // ignore
       }
@@ -646,6 +678,11 @@ export default function MemoryNew() {
         setAttachmentNoteDraft("");
         setAttachmentNoteDraftSavedId(null);
         lastAutoSavedAttachmentNoteTextRef.current = "";
+      }
+      if (tagPickerRef.current && !tagPickerRef.current.contains(event.target)) {
+        setTagPickerCardId(null);
+        setTagPickerPosition(null);
+        setNewTagInput("");
       }
     };
     window.addEventListener("mousedown", onPointerDown);
@@ -696,6 +733,9 @@ export default function MemoryNew() {
         ? String(cleanContent || "").replace(/\r\n/g, "\n").trim()
         : buildTextExcerpt(cleanContent);
 
+      const noteTags = Array.isArray(note.tags) ? note.tags : [];
+      const noteExcerpt = excerpt || "";
+
       attachments.forEach((attachment, idx) => {
         const type = resolveAttachmentType(attachment);
         cards.push({
@@ -707,21 +747,25 @@ export default function MemoryNew() {
           attachment,
           title: attachment.name || note.title || "Untitled",
           parentTitle: note.title || "Untitled note",
+          noteExcerpt,
           dateLabel,
+          tags: noteTags,
         });
       });
 
-      // Support YouTube memories even when they are stored as plain links in note text.
       if (attachments.length === 0 && youtubeLinks.length > 0) {
         youtubeLinks.forEach((url, idx) => {
           cards.push({
             id: `${note.id}-yt-${idx}`,
             kind: "attachment",
+            noteId: note.id,
             type: "youtube",
             attachment: { url, name: "YouTube Video" },
             title: "YouTube Video",
             parentTitle: note.title || "Untitled note",
+            noteExcerpt,
             dateLabel,
+            tags: noteTags,
           });
         });
       }
@@ -730,11 +774,14 @@ export default function MemoryNew() {
         cards.push({
           id: `${note.id}-chat-preview`,
           kind: "chat-preview",
+          noteId: note.id,
           title: note.title || "AI Chat",
           question: chatPreview.question,
           answer: chatPreview.answer,
           turnsCount: chatPreview.turnsCount,
+          noteExcerpt,
           dateLabel,
+          tags: noteTags,
         });
       }
 
@@ -747,6 +794,7 @@ export default function MemoryNew() {
           title: note.title || "Quick Note",
           excerpt,
           dateLabel,
+          tags: noteTags,
         });
       }
     });
@@ -778,6 +826,87 @@ export default function MemoryNew() {
       return true;
     });
   }, [notes]);
+
+  const [allTagsRaw, setAllTagsRaw] = useState([]);
+
+  useEffect(() => {
+    if (!user?.id) { setAllTagsRaw([]); return; }
+    let cancelled = false;
+    (async () => {
+      const { data, error } = await supabase
+        .from("notes")
+        .select("tags")
+        .eq("user_id", user.id)
+        .not("tags", "is", null);
+      if (cancelled) return;
+      if (error || !data) { setAllTagsRaw([]); return; }
+      const tagMap = {};
+      data.forEach((row) => {
+        (row.tags || []).forEach((t) => {
+          const tag = String(t).trim();
+          if (!tag) return;
+          if (!tagMap[tag]) tagMap[tag] = 0;
+          tagMap[tag] += 1;
+        });
+      });
+      setAllTagsRaw(
+        Object.entries(tagMap)
+          .sort((a, b) => b[1] - a[1])
+          .map(([name, count]) => ({ name, count }))
+      );
+    })();
+    return () => { cancelled = true; };
+  }, [user?.id, notes]);
+
+  const allTags = allTagsRaw;
+
+  const updateNoteTags = useCallback(
+    async (noteId, newTags) => {
+      if (!user?.id) return;
+      if (resolvedColumnsRef.current && !resolvedColumnsRef.current.includes("tags")) return;
+      const { error } = await supabase
+        .from("notes")
+        .update({ tags: newTags })
+        .eq("id", noteId)
+        .eq("user_id", user.id);
+      if (error) {
+        console.error("Failed to update tags:", error);
+        return;
+      }
+      setNotes((prev) =>
+        prev.map((n) => (String(n.id) === String(noteId) ? { ...n, tags: newTags } : n))
+      );
+    },
+    [user?.id]
+  );
+
+  const toggleCardTag = useCallback(
+    async (noteId, tag) => {
+      const note = notes.find((n) => String(n.id) === String(noteId));
+      if (!note) return;
+      const current = Array.isArray(note.tags) ? [...note.tags] : [];
+      const idx = current.indexOf(tag);
+      if (idx >= 0) current.splice(idx, 1);
+      else current.push(tag);
+      await updateNoteTags(noteId, current);
+    },
+    [notes, updateNoteTags]
+  );
+
+  const createAndAssignTag = useCallback(
+    async (noteId, tagName) => {
+      const trimmed = tagName.trim();
+      if (!trimmed || !noteId) return;
+      const note = notes.find((n) => String(n.id) === String(noteId));
+      if (!note) return;
+      const current = Array.isArray(note.tags) ? [...note.tags] : [];
+      if (!current.includes(trimmed)) {
+        current.push(trimmed);
+        await updateNoteTags(noteId, current);
+      }
+    },
+    [notes, updateNoteTags]
+  );
 
   const visibleCardIdsRef = useRef(new Set());
   const urlResolveObserverRef = useRef(null);
@@ -854,10 +983,130 @@ export default function MemoryNew() {
     return memoryCards.filter((card) => card.kind !== "chat-preview");
   }, [memoryCards]);
 
+  const backfillDescribedRef = useRef(new Set());
+  const backfillRunningRef = useRef(false);
+
+  useEffect(() => {
+    if (!user?.id || isLoadingNotes || backfillRunningRef.current) return;
+
+    const undescribed = memoryCards.filter(
+      (card) =>
+        card.kind === "attachment" &&
+        card.noteId &&
+        !card.attachment?.aiDescription &&
+        !backfillDescribedRef.current.has(card.id)
+    );
+    if (undescribed.length === 0) return;
+
+    let cancelled = false;
+    backfillRunningRef.current = true;
+
+    (async () => {
+      const { API_BASE_URL } = await import("@/lib/api-config");
+      const batch = undescribed.slice(0, 5);
+
+      for (const card of batch) {
+        if (cancelled) break;
+        backfillDescribedRef.current.add(card.id);
+
+        const att = card.attachment || {};
+        const isVisual = card.type === "image" || card.type === "video";
+        const rawUrl = resolvedAttachmentUrls[card.id] || att.url || "";
+        const imageUrl = isVisual && rawUrl && !rawUrl.startsWith("data:") ? rawUrl : undefined;
+        const textContent = att.extractedText || att.articleText || att.description || "";
+        const fileName = att.name || card.title || "";
+
+        if (!imageUrl && !textContent && !fileName) continue;
+
+        try {
+          const res = await fetch(`${API_BASE_URL}/api/ai/describe-image`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              imageUrl,
+              textContent: textContent ? textContent.slice(0, 5000) : undefined,
+              fileType: card.type,
+              fileName,
+            }),
+          });
+          if (!res.ok) continue;
+          const { description } = await res.json();
+          if (!description || cancelled) continue;
+
+          const { data: note } = await supabase
+            .from("notes")
+            .select("content")
+            .eq("id", card.noteId)
+            .single();
+          if (!note?.content) continue;
+
+          const marker = "[ATTACHMENTS_JSON:";
+          const start = note.content.indexOf(marker);
+          if (start === -1) continue;
+          const jsonStart = start + marker.length;
+          let bracketCount = 0;
+          let jsonEnd = jsonStart;
+          for (let i = jsonStart; i < note.content.length; i++) {
+            if (note.content[i] === "[") bracketCount++;
+            if (note.content[i] === "]") {
+              bracketCount--;
+              if (bracketCount === 0) { jsonEnd = i + 1; break; }
+            }
+          }
+          if (jsonEnd <= jsonStart) continue;
+
+          let attachments;
+          try { attachments = JSON.parse(note.content.slice(jsonStart, jsonEnd)); } catch { continue; }
+          if (!Array.isArray(attachments)) continue;
+
+          const attIdx = card.attachmentIndex ?? 0;
+          if (attachments[attIdx]) attachments[attIdx].aiDescription = description;
+
+          const updatedContent = note.content.slice(0, start) +
+            `[ATTACHMENTS_JSON:${JSON.stringify(attachments)}]` +
+            note.content.slice(jsonEnd + (note.content[jsonEnd] === "]" ? 1 : 0));
+
+          await supabase.from("notes").update({ content: updatedContent }).eq("id", card.noteId);
+
+          if (!cancelled) {
+            setNotes((prev) =>
+              prev.map((n) => (String(n.id) === String(card.noteId) ? { ...n, content: updatedContent } : n))
+            );
+          }
+
+          await new Promise((r) => setTimeout(r, 2000));
+        } catch {
+          // best-effort backfill
+        }
+      }
+
+      backfillRunningRef.current = false;
+    })();
+
+    return () => { cancelled = true; backfillRunningRef.current = false; };
+  }, [memoryCards, user?.id, isLoadingNotes, resolvedAttachmentUrls]);
+
   const filteredVisibleCards = useMemo(() => {
+    let cards = visibleCards;
+
+    if (selectedFilterTags.length > 0) {
+      cards = cards.filter((card) => {
+        const cardTags = card.tags || [];
+        return selectedFilterTags.every((t) => cardTags.includes(t));
+      });
+    }
+
+    if (conceptResultIds !== null) {
+      if (conceptResultIds.length === 0) return [];
+      const idSet = new Set(conceptResultIds);
+      const matched = cards.filter((card) => idSet.has(card.id));
+      matched.sort((a, b) => conceptResultIds.indexOf(a.id) - conceptResultIds.indexOf(b.id));
+      return matched;
+    }
+
     const query = String(embeddedSearch || "").trim().toLowerCase();
-    if (!query) return visibleCards;
-    return visibleCards.filter((card) => {
+    if (!query) return cards;
+    return cards.filter((card) => {
       const fields = [
         card?.title,
         card?.parentTitle,
@@ -870,7 +1119,7 @@ export default function MemoryNew() {
       ];
       return fields.some((value) => String(value || "").toLowerCase().includes(query));
     });
-  }, [embeddedSearch, visibleCards]);
+  }, [embeddedSearch, visibleCards, conceptResultIds, selectedFilterTags]);
 
   const orderStorageKey = useMemo(
     () => (user?.id ? `memory_collage_order_v1_${user.id}` : "memory_collage_order_v1_guest"),
@@ -903,6 +1152,10 @@ export default function MemoryNew() {
     }
   }, [orderByPage, orderStorageKey]);
 
+  useEffect(() => {
+    try { localStorage.setItem("lykn_vault_view", vaultView); } catch {}
+  }, [vaultView]);
+
   const orderedVisibleCards = useMemo(() => {
     const currentOrder = orderByPage.everything || [];
     const visibleMap = new Map(filteredVisibleCards.map((card) => [card.id, card]));
@@ -910,6 +1163,43 @@ export default function MemoryNew() {
     const remaining = filteredVisibleCards.filter((card) => !currentOrder.includes(card.id));
     return [...ordered, ...remaining];
   }, [filteredVisibleCards, orderByPage]);
+
+  const tagGroupedCards = useMemo(() => {
+    if (vaultView !== "tags") return [];
+    const groups = {};
+    const untagged = [];
+    for (const card of orderedVisibleCards) {
+      const tags = card.tags || [];
+      if (tags.length === 0) {
+        untagged.push(card);
+      } else {
+        tags.forEach((t) => {
+          if (!groups[t]) groups[t] = [];
+          groups[t].push(card);
+        });
+      }
+    }
+    const sorted = Object.entries(groups).sort((a, b) => b[1].length - a[1].length);
+    if (untagged.length > 0) sorted.push(["Untagged", untagged]);
+    return sorted;
+  }, [orderedVisibleCards, vaultView]);
+
+  const typeGroupedCards = useMemo(() => {
+    if (vaultView !== "type") return [];
+    const typeLabels = {
+      image: "Images", video: "Videos", youtube: "YouTube", audio: "Audio",
+      pdf: "PDFs", spreadsheet: "Spreadsheets", bookmark: "Links", file: "Files",
+      "quick-note": "Quick Notes", "chat-preview": "Chats",
+    };
+    const groups = {};
+    for (const card of orderedVisibleCards) {
+      const key = card.kind === "attachment" ? (card.type || "file") : card.kind;
+      const label = typeLabels[key] || key;
+      if (!groups[label]) groups[label] = [];
+      groups[label].push(card);
+    }
+    return Object.entries(groups).sort((a, b) => b[1].length - a[1].length);
+  }, [orderedVisibleCards, vaultView]);
 
   const reorderActivePage = useCallback(
     (dragId, overId) => {
@@ -931,6 +1221,222 @@ export default function MemoryNew() {
     },
     [orderedVisibleCards]
   );
+
+  const handleCardDragStart = useCallback((e, card) => {
+    if (e.target instanceof Element && e.target.closest("[data-no-drag='true']")) {
+      e.preventDefault();
+      return;
+    }
+    const resolvedUrl =
+      card.kind === "attachment"
+        ? resolvedAttachmentUrls[card.id] || card?.attachment?.url || ""
+        : "";
+    if (resolvedUrl) {
+      try {
+        e.dataTransfer.setData("text/uri-list", resolvedUrl);
+        e.dataTransfer.setData("text/plain", resolvedUrl);
+      } catch {}
+    }
+
+    if (isEmbeddedMode && card.kind === "attachment" && card.attachment) {
+      const att = card.attachment;
+      const videoId = card.type === "youtube" ? (att.videoId || extractYouTubeVideoId(att.url || "") || "") : "";
+      const resolvedForDrag = resolvedAttachmentUrls[card.id] || att.url || "";
+      const pdfText = (card.type === "pdf" && att.extractedText) ? String(att.extractedText) : "";
+      const pendingData = {
+        id: card.id,
+        title: card.title || "",
+        content: "",
+        attachments: [{ ...att, url: resolvedForDrag, type: card.type, videoId, ...(pdfText ? { pdfText, extractedText: pdfText } : {}) }],
+        timestamp: Date.now(),
+      };
+      try { e.dataTransfer.setData("application/x-omnia-memory", JSON.stringify(pendingData)); } catch {}
+      try {
+        const target = window.parent !== window ? window.parent : window;
+        /** @type {any} */ (target).__omnia_pending_memory = pendingData;
+      } catch {}
+      try {
+        window.parent.postMessage({ type: "omnia-memory-drag-start", data: pendingData }, "*");
+      } catch {}
+      e.dataTransfer.effectAllowed = "copyMove";
+    } else if (isEmbeddedMode && card.kind === "quick-note") {
+      const pendingData = {
+        id: card.id,
+        title: card.title || "Quick Note",
+        content: card.excerpt || "",
+        attachments: [],
+        timestamp: Date.now(),
+      };
+      try {
+        e.dataTransfer.setData("text/plain", card.excerpt || card.title || "Quick Note");
+        e.dataTransfer.setData("application/x-omnia-memory", JSON.stringify(pendingData));
+      } catch {}
+      try {
+        const target = window.parent !== window ? window.parent : window;
+        /** @type {any} */ (target).__omnia_pending_memory = pendingData;
+      } catch {}
+      try {
+        window.parent.postMessage({ type: "omnia-memory-drag-start", data: pendingData }, "*");
+      } catch {}
+      e.dataTransfer.effectAllowed = "copyMove";
+    } else {
+      e.dataTransfer.effectAllowed = "move";
+    }
+
+    setDraggedCardId(card.id);
+    lastHoverTargetRef.current = card.id;
+    window.dispatchEvent(new CustomEvent("memory_collage_reorder_drag_start"));
+    try { e.dataTransfer.setData("application/x-lykins-memory-card-id", card.id); } catch {}
+  }, [isEmbeddedMode, resolvedAttachmentUrls]);
+
+  const handleCardDragEnd = useCallback(() => {
+    setDraggedCardId(null);
+    setDropTargetCardId(null);
+    lastHoverTargetRef.current = null;
+    window.dispatchEvent(new CustomEvent("memory_collage_reorder_drag_end"));
+    if (isEmbeddedMode) {
+      try { window.parent.postMessage({ type: "omnia-memory-drag-end" }, "*"); } catch {}
+    }
+  }, [isEmbeddedMode]);
+
+  const getCardSearchText = useCallback((card) => {
+    const parts = [];
+    parts.push(card.title || "");
+    if (card.kind === "attachment") {
+      const att = card.attachment || {};
+      parts.push(att.name || "");
+      if (att.aiDescription) parts.push(String(att.aiDescription));
+      const fileNotes = parseAttachmentNotes(att);
+      fileNotes.forEach((n) => parts.push(n.text));
+    } else if (card.kind === "quick-note") {
+      parts.push(card.excerpt || "");
+    } else if (card.kind === "chat-preview") {
+      parts.push(card.question || "", card.answer || "");
+    }
+    (card.tags || []).forEach((t) => parts.push(t));
+    return parts.join(" ").toLowerCase();
+  }, []);
+
+  const buildCardSummary = useCallback((card) => {
+    const parts = [card.id];
+    parts.push(card.title || card.attachment?.name || "Untitled");
+    if (card.kind === "attachment") {
+      const att = card.attachment || {};
+      if (att.aiDescription) parts.push(String(att.aiDescription).slice(0, 150));
+      const fileNotes = parseAttachmentNotes(att);
+      if (fileNotes.length > 0) parts.push(fileNotes.map((n) => n.text).join("; ").slice(0, 100));
+    } else if (card.kind === "quick-note") {
+      if (card.excerpt) parts.push(card.excerpt.slice(0, 200));
+    } else if (card.kind === "chat-preview") {
+      if (card.question) parts.push(card.question.slice(0, 150));
+    }
+    const cardTags = card.tags || [];
+    if (cardTags.length > 0) parts.push(`Tags: ${cardTags.join(", ")}`);
+    return parts.join(" | ");
+  }, []);
+
+  const conceptSearchIdRef = useRef(0);
+
+  const handleConceptSearch = useCallback(async (query) => {
+    const q = (query || "").trim();
+    if (!q) {
+      setConceptResultIds(null);
+      setIsConceptSearching(false);
+      return;
+    }
+    if (visibleCards.length === 0) {
+      setIsConceptSearching(false);
+      return;
+    }
+
+    if (conceptSearchAbortRef.current) {
+      conceptSearchAbortRef.current.abort();
+      conceptSearchAbortRef.current = null;
+    }
+
+    const searchId = ++conceptSearchIdRef.current;
+    const controller = new AbortController();
+    conceptSearchAbortRef.current = controller;
+    setIsConceptSearching(true);
+    setConceptResultIds(null);
+
+    try {
+      const keywords = q.toLowerCase().split(/\s+/).filter((w) => w.length > 1);
+      const localMatches = [];
+      const remaining = [];
+
+      for (const card of visibleCards) {
+        const text = getCardSearchText(card);
+        const hit = keywords.some((kw) => text.includes(kw));
+        if (hit) {
+          localMatches.push(card.id);
+        } else {
+          remaining.push(card);
+        }
+      }
+
+      if (remaining.length === 0) {
+        console.log("[VaultSearch] All items matched locally:", localMatches.length);
+        setConceptResultIds(localMatches);
+        return;
+      }
+
+      const itemSummaries = remaining.map((card) => buildCardSummary(card)).join("\n");
+
+      const prompt = [
+        `Search: "${q}"`,
+        "",
+        `${remaining.length} items. Find anything conceptually related.`,
+        "",
+        "ITEMS:",
+        itemSummaries,
+        "",
+        'Return ONLY a JSON array of matching IDs. Example: ["id-1","id-2"]',
+        "If nothing matches: []",
+      ].join("\n");
+
+      const { API_BASE_URL } = await import("@/lib/api-config");
+      console.log("[VaultSearch] Local matches:", localMatches.length, "| Sending", remaining.length, "to AI");
+      const res = await fetch(`${API_BASE_URL}/api/ai/vault-search`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt }),
+        signal: controller.signal,
+      });
+
+      if (searchId !== conceptSearchIdRef.current) return;
+
+      let aiMatchIds = [];
+      if (res.ok) {
+        const data = await res.json().catch(() => ({}));
+        const raw = String(data.response || "").trim();
+        const jsonMatch = raw.match(/\[[\s\S]*\]/);
+        if (jsonMatch) {
+          try {
+            const ids = JSON.parse(jsonMatch[0]);
+            if (Array.isArray(ids)) aiMatchIds = ids.map(String);
+          } catch { /* use empty */ }
+        }
+      } else {
+        console.warn("[VaultSearch] Server returned", res.status);
+      }
+
+      if (searchId !== conceptSearchIdRef.current) return;
+
+      const combined = [...localMatches, ...aiMatchIds];
+      console.log("[VaultSearch] Results:", localMatches.length, "local +", aiMatchIds.length, "AI =", combined.length, "total");
+      setConceptResultIds(combined);
+    } catch (err) {
+      if (err?.name === "AbortError") return;
+      if (searchId !== conceptSearchIdRef.current) return;
+      console.error("[VaultSearch] Error:", err);
+      setConceptResultIds(null);
+    } finally {
+      if (searchId === conceptSearchIdRef.current) {
+        setIsConceptSearching(false);
+      }
+    }
+  }, [visibleCards, buildCardSummary, getCardSearchText]);
 
   const handleSaveQuickNote = async () => {
     if (!user?.id || isQuickNoteSaving) return;
@@ -1060,18 +1566,68 @@ export default function MemoryNew() {
         .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
         .join("\n");
 
-      const memoryContext = notes
-        .slice(0, 16)
-        .map((n) => `- ${n.title || "Untitled"}: ${buildTextExcerpt(stripAttachmentJsonMarker(n.content || "")).slice(0, 160)}`)
-        .join("\n");
+      const vaultItems = orderedVisibleCards.slice(0, 40).map((card) => {
+        const date = card.dateLabel || "unknown date";
+        const tagStr = card.tags?.length ? ` [tags: ${card.tags.join(", ")}]` : "";
+        if (card.kind === "attachment") {
+          const att = card.attachment || {};
+          const type = (card.type || "file").toUpperCase();
+          const name = card.title || att.name || "Untitled file";
+          const extras = [];
+          if (card.parentTitle && card.parentTitle !== name && card.parentTitle !== "Untitled note") {
+            extras.push(`From note: "${card.parentTitle}"`);
+          }
+          if (card.noteExcerpt) extras.push(`Note context: ${card.noteExcerpt.slice(0, 300)}`);
+          if (att.aiDescription) extras.push(`Visual: ${String(att.aiDescription).slice(0, 300)}`);
+          if (att.extractedText) extras.push(`Content: ${String(att.extractedText).slice(0, 500)}`);
+          if (att.description) extras.push(`Desc: ${String(att.description).slice(0, 250)}`);
+          if (att.articleText) extras.push(`Article: ${String(att.articleText).slice(0, 500)}`);
+          if (att.siteName) extras.push(`Site: ${att.siteName}`);
+          if (att.url) extras.push(`URL: ${att.url}`);
+          const fileNotes = parseAttachmentNotes(att);
+          if (fileNotes.length > 0) extras.push(`User notes (context on why they saved this): ${fileNotes.map((n) => n.text).join(" | ").slice(0, 400)}`);
+          return `[${type}] "${name}" (${date})${tagStr}${extras.length ? " — " + extras.join(" | ") : ""}`;
+        }
+        if (card.kind === "quick-note") {
+          return `[NOTE] "${card.title || "Quick Note"}" — ${(card.excerpt || "").slice(0, 500)} (${date})${tagStr}`;
+        }
+        if (card.kind === "chat-preview") {
+          const q = (card.question || "").slice(0, 250);
+          const a = (card.answer || "").slice(0, 250);
+          return `[CHAT] "${card.title || "AI Chat"}" — Q: ${q}${a ? ` A: ${a}` : ""} (${date})${tagStr}`;
+        }
+        return `[ITEM] "${card.title || "Untitled"}" (${date})${tagStr}`;
+      }).join("\n");
 
-      const prompt = `You are an AI assistant for a Memory page inside a creative workspace app.
-Be concise and practical.
+      const totalCount = orderedVisibleCards.length;
 
-Recent memories:
-${memoryContext || "(none)"}
+      const prompt = `You are the Vault Assistant — the AI helper inside The Vault, a personal collection space within LYKN where users save and organise their files, images, videos, links, notes, and ideas.
 
-Conversation:
+YOUR ROLE:
+- Help the user find, understand, and organise what's in their Vault.
+- Answer questions about their saved content — summarise notes, describe files, spot themes, draw connections between items.
+- Help them brainstorm, expand on ideas captured in their notes, and suggest how to organise or tag things.
+- Be conversational, concise, and helpful. Speak naturally.
+
+WHAT YOU CAN SEE:
+Below is the user's Vault content (${totalCount} items total, showing up to 40). Each item has a type tag: NOTE (text notes), IMAGE/VIDEO/AUDIO/PDF/DOC/YOUTUBE (media files), CHAT (saved AI conversations), LINK (saved URLs). Items may also have [tags: ...] which are user-created labels, and "User notes" which are personal annotations the user wrote about why they saved something.
+
+=== VAULT CONTENTS ===
+${vaultItems || "(The Vault is empty)"}
+=== END VAULT CONTENTS ===
+
+GUIDELINES:
+- When the user asks "what do I have about X" or "find my notes on Y", search through the vault contents above and answer from them. Think conceptually — match by theme, topic, and meaning, not just keywords.
+- Pay special attention to tags and user notes — these reveal the user's intent and how they think about their content. A file tagged "inspiration" with a note "use this style for the rebrand" tells you far more than the filename alone.
+- When searching, treat user notes as high-signal context. They explain WHY the user saved something and what it means to them.
+- Use tags to understand groupings and themes the user has already established. If they ask about a topic, check if any tags relate to it.
+- When asked to help organise, suggest groupings, themes, or connections you notice across their items. Reference existing tags and notes to ground your suggestions.
+- If the user asks about something not in their Vault, you can still help — just be clear you're giving general knowledge rather than referencing their saved content.
+- Never say you can't see or access their Vault. The contents are right above.
+- Reference specific items by name when relevant.
+- When the user asks to find things by concept or idea (e.g. "anything about creativity", "stuff related to travel", "ideas about productivity"), look for thematic and conceptual connections across ALL vault items — don't limit to exact keyword matches. Group and present the results clearly.
+
+Conversation so far:
 ${history || "(none)"}
 
 User: ${text}`;
@@ -1265,7 +1821,7 @@ User: ${text}`;
             href={linkUrl}
             target="_blank"
             rel="noreferrer"
-            className="block rounded-2xl overflow-hidden glass-control hover:shadow-lg transition-shadow group/bm"
+            className="block rounded-2xl overflow-hidden border border-white/40 dark:border-white/15 bg-white/30 dark:bg-white/5 backdrop-blur-md hover:bg-white/40 dark:hover:bg-white/10 transition-colors group/bm"
             draggable={false}
           >
             <div className="p-4 flex flex-col gap-2.5">
@@ -1293,7 +1849,7 @@ User: ${text}`;
           href={linkUrl}
           target="_blank"
           rel="noreferrer"
-          className="block rounded-2xl overflow-hidden glass-control hover:shadow-lg transition-shadow group/bm"
+          className="block rounded-2xl overflow-hidden border border-white/40 dark:border-white/15 bg-white/30 dark:bg-white/5 backdrop-blur-md hover:bg-white/40 dark:hover:bg-white/10 transition-colors group/bm"
           draggable={false}
         >
           {hasImage && (
@@ -1793,7 +2349,7 @@ User: ${text}`;
           <button
             type="button"
             onClick={() => setTopPanelOpen((v) => !v)}
-            className="rounded-full w-8 h-8 glass-control hover:opacity-90 touch-manipulation flex items-center justify-center"
+            className="rounded-full w-8 h-8 hover:bg-blue-500/15 dark:hover:bg-blue-400/20 transition-colors touch-manipulation flex items-center justify-center"
             title={topPanelOpen ? "Hide panel" : "Show panel"}
           >
             {topPanelOpen ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
@@ -1852,15 +2408,13 @@ User: ${text}`;
                   </SelectGroup>
                   <SelectSeparator />
                   <SelectGroup>
-                    <SelectLabel>Image & Video Gen</SelectLabel>
+                    <SelectLabel>Image Gen</SelectLabel>
                     <SelectItem value="gpt-image-1.5" hint="OpenAI, images">GPT Image 1.5</SelectItem>
                     <SelectItem value="gemini-3.1-flash-image-preview" hint="Google, images">Nano Banana 2</SelectItem>
                     <SelectItem value="grok-imagine-image-pro" hint="xAI, pro images">Grok Imagine Image Pro</SelectItem>
                     <SelectItem value="grok-imagine-image" hint="xAI, images">Grok Imagine Image</SelectItem>
                     <SelectItem value="grok-2-image-1212" hint="xAI, images">Grok 2 Image</SelectItem>
                     <SelectItem value="dall-e-3" hint="OpenAI, images">DALL-E 3</SelectItem>
-                    <SelectItem value="veo-3.1-generate-preview" hint="Google, video">Veo 3.1</SelectItem>
-                    <SelectItem value="grok-imagine-video" hint="xAI, video">Grok Imagine Video</SelectItem>
                   </SelectGroup>
                   <SelectSeparator />
                   <SelectGroup>
@@ -1902,32 +2456,6 @@ User: ${text}`;
 
               <button
                 type="button"
-                onClick={() => {
-                  const next = !liveAIMode;
-                  setLiveAIMode(next);
-                  try {
-                    const saved = localStorage.getItem("lykinsai_settings");
-                    const settings = saved ? JSON.parse(saved) : {};
-                    settings.liveAIMode = next;
-                    localStorage.setItem("lykinsai_settings", JSON.stringify(settings));
-                    window.dispatchEvent(new CustomEvent("lykinsai_settings_changed"));
-                  } catch {
-                    // ignore
-                  }
-                }}
-                className={`rounded-full px-1.5 h-7 gap-1 text-[0.6875rem] glass-control hover:opacity-90 touch-manipulation flex items-center ${
-                  liveAIMode ? "ring-1 ring-white/40 dark:ring-white/20" : ""
-                }`}
-                title="Live AI"
-              >
-                <Zap className={`w-3 h-3 ${liveAIMode ? "text-yellow-500" : "text-black"}`} />
-                <span>Live AI</span>
-              </button>
-
-              <div className="w-px h-3 bg-black/10 dark:bg-white/10 mx-0.5" />
-
-              <button
-                type="button"
                 onClick={() => setShowChat((v) => !v)}
                 className="rounded-full px-1.5 h-7 text-[0.6875rem] glass-control hover:opacity-90 touch-manipulation flex items-center gap-1"
                 title="Chat with AI"
@@ -1941,22 +2469,215 @@ User: ${text}`;
       </div>
       )}
 
-      <main className={`relative z-20 mx-auto w-full max-w-[1560px] px-4 sm:px-6 lg:px-8 ${isEmbeddedMode ? "pt-6" : "pt-24"} pb-16`}>
+      <main className={`relative z-20 mx-auto w-full max-w-[1560px] px-4 sm:px-6 lg:px-8 ${isEmbeddedMode ? "pt-6" : "pt-24"} pb-16`} style={{ transform: "translateZ(0)" }}>
         <section className="mb-6">
           {isEmbeddedMode ? (
-            <input
-              type="text"
-              value={embeddedSearch}
-              onChange={(e) => setEmbeddedSearch(e.target.value)}
-              placeholder="Search memories..."
-              className="w-full h-10 rounded-xl border border-black/10 bg-white/80 px-3 text-sm outline-none"
-            />
+            <div className="space-y-3">
+              <div className="flex items-center gap-3">
+                <input
+                  type="text"
+                  value={embeddedSearch}
+                  onChange={(e) => setEmbeddedSearch(e.target.value)}
+                  placeholder="Search memories..."
+                  className="flex-1 h-10 rounded-xl border border-black/10 bg-white/80 px-3 text-sm outline-none"
+                />
+                <div className="flex items-center rounded-xl glass-control p-0.5 gap-0.5 shrink-0">
+                  {[
+                    { id: "collage", icon: Layers, label: "Collage" },
+                    { id: "grid", icon: Grid3X3, label: "Grid" },
+                    { id: "tags", icon: Tag, label: "Tags" },
+                    { id: "type", icon: LayoutGrid, label: "Type" },
+                  ].map((v) => (
+                    <button
+                      key={v.id}
+                      type="button"
+                      onClick={() => setVaultView(v.id)}
+                      className={`flex items-center justify-center w-8 h-8 rounded-lg text-[0.6875rem] font-medium transition-all ${
+                        vaultView === v.id
+                          ? "bg-blue-500 text-white shadow-sm"
+                          : "text-black/50 hover:text-black/80 hover:bg-black/[0.04]"
+                      }`}
+                      title={v.label}
+                    >
+                      <v.icon className="w-3.5 h-3.5" />
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5" style={{ minHeight: 1, transform: "translateZ(0)" }}>
+                {allTags.length > 0 && (
+                  <>
+                    <Tag className="w-3 h-3 text-black/35 shrink-0" />
+                    {allTags.map((tag) => {
+                      const active = selectedFilterTags.includes(tag.name);
+                      return (
+                        <button
+                          key={tag.name}
+                          type="button"
+                          onClick={() =>
+                            setSelectedFilterTags((prev) =>
+                              active ? prev.filter((t) => t !== tag.name) : [...prev, tag.name]
+                            )
+                          }
+                          className={`vault-filter-pill inline-flex items-center gap-0.5 rounded-full text-[8px] leading-none px-2 py-0.5 font-medium transition-all ${
+                            active
+                              ? "bg-blue-500 text-white shadow-sm"
+                              : "glass-control text-black/65 hover:text-black/85"
+                          }`}
+                        >
+                          {tag.name}
+                          <span className={`text-[0.5625rem] ${active ? "text-white/70" : "text-black/35"}`}>
+                            {tag.count}
+                          </span>
+                        </button>
+                      );
+                    })}
+                    {selectedFilterTags.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setSelectedFilterTags([])}
+                        className="text-[0.625rem] text-blue-500 hover:text-blue-600 ml-0.5"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
           ) : (
             <>
               <h1 className="text-3xl font-semibold">The Vault</h1>
               <p className="text-black/60 mt-1">
                 Your digital collage of media files, videos, images, and quick notes. Drag and drop files or folders anywhere on this page.
               </p>
+              <div className="mt-4 flex items-center gap-3">
+                <form
+                  className="relative flex-1 max-w-xl"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    handleConceptSearch(vaultSearch);
+                  }}
+                >
+                  <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-black/35 pointer-events-none" />
+                  <input
+                    type="text"
+                    value={vaultSearch}
+                    onChange={(e) => {
+                      setVaultSearch(e.target.value);
+                      if (conceptResultIds !== null) setConceptResultIds(null);
+                    }}
+                    placeholder="Search your vault — type an idea, topic, or keyword and press Enter"
+                    className="w-full h-11 rounded-2xl glass-control pl-10 pr-20 text-sm outline-none placeholder:text-black/35"
+                  />
+                  <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+                    {isConceptSearching ? (
+                      <Loader2 className="w-4 h-4 animate-spin text-blue-500" />
+                    ) : vaultSearch.trim() ? (
+                      <>
+                        <button
+                          type="submit"
+                          className="w-7 h-7 flex items-center justify-center text-black/50 hover:text-black/80 transition-colors"
+                          title="Search"
+                        >
+                          <Search className="w-4 h-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setVaultSearch(""); setConceptResultIds(null); }}
+                          className="w-5 h-5 flex items-center justify-center text-black/40 hover:text-black/70"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </>
+                    ) : null}
+                  </div>
+                </form>
+
+                <div className="flex items-center rounded-xl glass-control p-0.5 gap-0.5 shrink-0">
+                  {[
+                    { id: "collage", icon: Layers, label: "Collage" },
+                    { id: "grid", icon: Grid3X3, label: "Grid" },
+                    { id: "tags", icon: Tag, label: "Tags" },
+                    { id: "type", icon: LayoutGrid, label: "Type" },
+                  ].map((v) => (
+                    <button
+                      key={v.id}
+                      type="button"
+                      onClick={() => setVaultView(v.id)}
+                      className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[0.6875rem] font-medium transition-all ${
+                        vaultView === v.id
+                          ? "bg-blue-500 text-white shadow-sm"
+                          : "text-black/50 hover:text-black/80 hover:bg-black/[0.04]"
+                      }`}
+                      title={v.label}
+                    >
+                      <v.icon className="w-3.5 h-3.5" />
+                      <span className="hidden sm:inline">{v.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {isConceptSearching && (
+                <p className="mt-2 text-xs text-black/40">Reading through your vault...</p>
+              )}
+              {conceptResultIds !== null && !isConceptSearching && (
+                <div className="mt-2 flex items-center gap-2 text-xs text-black/50">
+                  <span>
+                    {conceptResultIds.length === 0
+                      ? "Nothing in your vault matches that"
+                      : `Found ${conceptResultIds.length} related item${conceptResultIds.length === 1 ? "" : "s"}`}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => { setVaultSearch(""); setConceptResultIds(null); }}
+                    className="text-blue-500 hover:text-blue-600"
+                  >
+                    Show all
+                  </button>
+                </div>
+              )}
+              <div className="mt-4 flex flex-wrap items-center gap-2" style={{ minHeight: 1, transform: "translateZ(0)" }}>
+                {allTags.length > 0 && (
+                  <>
+                    <Tag className="w-3.5 h-3.5 text-black/35 shrink-0" />
+                    {allTags.map((tag) => {
+                      const active = selectedFilterTags.includes(tag.name);
+                      return (
+                        <button
+                          key={tag.name}
+                          type="button"
+                          onClick={() =>
+                            setSelectedFilterTags((prev) =>
+                              active ? prev.filter((t) => t !== tag.name) : [...prev, tag.name]
+                            )
+                          }
+                          className={`inline-flex items-center gap-1 rounded-full font-medium transition-all ${
+                            active
+                              ? "bg-blue-500 text-white shadow-sm"
+                              : "glass-control text-black/65 hover:text-black/85"
+                          }`}
+                          style={{ fontSize: 11, lineHeight: 1, height: 22, paddingLeft: 8, paddingRight: 8 }}
+                        >
+                          {tag.name}
+                          <span className={`text-[0.625rem] ${active ? "text-white/70" : "text-black/35"}`}>
+                            {tag.count}
+                          </span>
+                        </button>
+                      );
+                    })}
+                    {selectedFilterTags.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setSelectedFilterTags([])}
+                        className="text-[0.6875rem] text-blue-500 hover:text-blue-600 ml-1"
+                      >
+                        Clear filters
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
             </>
           )}
         </section>
@@ -2008,8 +2729,247 @@ User: ${text}`;
                   </div>
                 )}
               </div>
+            ) : vaultView === "tags" ? (
+              <div className="space-y-8">
+                <div className="rounded-2xl border-2 border-dashed border-blue-500/30 p-4 flex items-center justify-center text-center gap-4 max-w-xs">
+                  <button type="button" onClick={() => addMediaTriggerRef.current?.()} className="group/opt flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-blue-500/[0.06] transition-colors">
+                    <div className="w-8 h-8 rounded-full bg-blue-500/10 flex items-center justify-center group-hover/opt:bg-blue-500/20 transition-colors"><Upload className="w-4 h-4 text-blue-500" /></div>
+                    <span className="text-[0.6875rem] font-medium text-black/50 group-hover/opt:text-blue-500 transition-colors">Files</span>
+                  </button>
+                  <button type="button" onClick={() => setShowSaveLink(true)} className="group/opt flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-blue-500/[0.06] transition-colors">
+                    <div className="w-8 h-8 rounded-full bg-blue-500/10 flex items-center justify-center group-hover/opt:bg-blue-500/20 transition-colors"><Globe className="w-4 h-4 text-blue-500" /></div>
+                    <span className="text-[0.6875rem] font-medium text-black/50 group-hover/opt:text-blue-500 transition-colors">Link</span>
+                  </button>
+                </div>
+                {tagGroupedCards.map(([tagName, cards]) => (
+                  <div key={tagName}>
+                    <div className="flex items-center gap-2 mb-3">
+                      <Tag className="w-4 h-4 text-black/40" />
+                      <h2 className="text-lg font-semibold text-black/80">{tagName}</h2>
+                      <span className="text-xs text-black/40 font-medium">{cards.length}</span>
+                    </div>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4">
+                      {cards.map((card) => (
+                        <motion.article
+                          initial={{ opacity: 0, scale: 0.97 }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          transition={{ duration: 0.15 }}
+                          key={`${tagName}-${card.id}`}
+                          data-memory-card-id={card.id}
+                          data-card-id={card.id}
+                          ref={(el) => { if (card.kind === "attachment") registerCardRef(card.id, el); }}
+                          draggable
+                          onDragStart={(e) => handleCardDragStart(e, card)}
+                          onDragEnd={handleCardDragEnd}
+                          className={`rounded-2xl relative overflow-hidden cursor-grab ${
+                            card.kind === "attachment" || card.kind === "quick-note"
+                              ? "bg-transparent border-0 shadow-none"
+                              : "glass-control"
+                          }`}
+                        >
+                          {card.kind === "attachment" ? (
+                            <>
+                              {renderAttachmentCard(card, "h-40")}
+                              {card.tags?.length > 0 && (
+                                <div className="mt-1 flex flex-wrap gap-1 px-1">
+                                  {card.tags.map((t) => (
+                                    <span key={t} className="vault-tag-pill inline-flex items-center rounded-full bg-black/5 text-[7px] leading-none px-2 py-px font-medium text-black/55">{t}</span>
+                                  ))}
+                                </div>
+                              )}
+                              <div className="mt-1 flex justify-end px-1">
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setOpenAttachmentNotesCardId(null);
+                                    if (openCardMenuId === card.id) { setOpenCardMenuId(null); return; }
+                                    openCardMenuForAnchor(card.id, e.currentTarget);
+                                  }}
+                                  className="px-1 py-0.5 text-black/75 hover:text-black leading-none text-base font-semibold"
+                                  title="Actions"
+                                >
+                                  <MoreHorizontal className="w-4 h-4" />
+                                </button>
+                              </div>
+                            </>
+                          ) : card.kind === "quick-note" ? (
+                            <>
+                              <div className="glass-control rounded-2xl p-3 h-40 overflow-hidden">
+                                <div className="flex items-center gap-1.5 text-black/60 mb-1.5">
+                                  <StickyNote className="w-3.5 h-3.5" />
+                                  <span className="text-[0.625rem] font-medium">Quick Note</span>
+                                </div>
+                                <p className="text-xs text-black/70 whitespace-pre-wrap break-words line-clamp-5">{card.excerpt}</p>
+                              </div>
+                              <div className="mt-1 flex justify-end px-1">
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setOpenAttachmentNotesCardId(null);
+                                    if (openCardMenuId === card.id) { setOpenCardMenuId(null); return; }
+                                    openCardMenuForAnchor(card.id, e.currentTarget);
+                                  }}
+                                  className="px-1 py-0.5 text-black/75 hover:text-black leading-none text-base font-semibold"
+                                  title="Quick note actions"
+                                >
+                                  <MoreHorizontal className="w-4 h-4" />
+                                </button>
+                              </div>
+                            </>
+                          ) : (
+                            <>
+                              <div className="glass-control rounded-2xl p-3 h-40 overflow-hidden">
+                                <h3 className="text-xs font-semibold text-black/80 truncate mb-1">{card.title}</h3>
+                                {card.question && <p className="text-[0.6875rem] text-black/60 line-clamp-3">{card.question}</p>}
+                              </div>
+                              <div className="mt-1 flex justify-end px-1">
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setOpenAttachmentNotesCardId(null);
+                                    if (openCardMenuId === card.id) { setOpenCardMenuId(null); return; }
+                                    openCardMenuForAnchor(card.id, e.currentTarget);
+                                  }}
+                                  className="px-1 py-0.5 text-black/75 hover:text-black leading-none text-base font-semibold"
+                                  title="Actions"
+                                >
+                                  <MoreHorizontal className="w-4 h-4" />
+                                </button>
+                              </div>
+                            </>
+                          )}
+                        </motion.article>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+                <div ref={loadMoreRef} className="h-6" />
+              </div>
+            ) : vaultView === "type" ? (
+              <div className="space-y-8">
+                <div className="rounded-2xl border-2 border-dashed border-blue-500/30 p-4 flex items-center justify-center text-center gap-4 max-w-xs">
+                  <button type="button" onClick={() => addMediaTriggerRef.current?.()} className="group/opt flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-blue-500/[0.06] transition-colors">
+                    <div className="w-8 h-8 rounded-full bg-blue-500/10 flex items-center justify-center group-hover/opt:bg-blue-500/20 transition-colors"><Upload className="w-4 h-4 text-blue-500" /></div>
+                    <span className="text-[0.6875rem] font-medium text-black/50 group-hover/opt:text-blue-500 transition-colors">Files</span>
+                  </button>
+                  <button type="button" onClick={() => setShowSaveLink(true)} className="group/opt flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-blue-500/[0.06] transition-colors">
+                    <div className="w-8 h-8 rounded-full bg-blue-500/10 flex items-center justify-center group-hover/opt:bg-blue-500/20 transition-colors"><Globe className="w-4 h-4 text-blue-500" /></div>
+                    <span className="text-[0.6875rem] font-medium text-black/50 group-hover/opt:text-blue-500 transition-colors">Link</span>
+                  </button>
+                </div>
+                {typeGroupedCards.map(([typeName, cards]) => {
+                  return (
+                    <div key={typeName}>
+                      <div className="flex items-center gap-2 mb-3">
+                        <h2 className="text-lg font-semibold text-black/80">{typeName}</h2>
+                        <span className="text-xs text-black/40 font-medium">{cards.length}</span>
+                      </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4">
+                        {cards.map((card) => (
+                          <motion.article
+                            initial={{ opacity: 0, scale: 0.97 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            transition={{ duration: 0.15 }}
+                            key={`${typeName}-${card.id}`}
+                            data-memory-card-id={card.id}
+                            data-card-id={card.id}
+                            ref={(el) => { if (card.kind === "attachment") registerCardRef(card.id, el); }}
+                            draggable
+                            onDragStart={(e) => handleCardDragStart(e, card)}
+                            onDragEnd={handleCardDragEnd}
+                            className={`rounded-2xl relative overflow-hidden cursor-grab ${
+                              card.kind === "attachment" || card.kind === "quick-note"
+                                ? "bg-transparent border-0 shadow-none"
+                                : "glass-control"
+                            }`}
+                          >
+                            {card.kind === "attachment" ? (
+                              <>
+                                {renderAttachmentCard(card, "h-40")}
+                                <div className="mt-1 flex justify-end px-1">
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setOpenAttachmentNotesCardId(null);
+                                      if (openCardMenuId === card.id) { setOpenCardMenuId(null); return; }
+                                      openCardMenuForAnchor(card.id, e.currentTarget);
+                                    }}
+                                    className="px-1 py-0.5 text-black/75 hover:text-black leading-none text-base font-semibold"
+                                    title="Actions"
+                                  >
+                                    <MoreHorizontal className="w-4 h-4" />
+                                  </button>
+                                </div>
+                              </>
+                            ) : card.kind === "quick-note" ? (
+                              <>
+                                <div className="glass-control rounded-2xl p-3 h-40 overflow-hidden">
+                                  <div className="flex items-center gap-1.5 text-black/60 mb-1.5">
+                                    <StickyNote className="w-3.5 h-3.5" />
+                                    <span className="text-[0.625rem] font-medium">Quick Note</span>
+                                  </div>
+                                  <p className="text-xs text-black/70 whitespace-pre-wrap break-words line-clamp-5">{card.excerpt}</p>
+                                </div>
+                                <div className="mt-1 flex justify-end px-1">
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setOpenAttachmentNotesCardId(null);
+                                      if (openCardMenuId === card.id) { setOpenCardMenuId(null); return; }
+                                      openCardMenuForAnchor(card.id, e.currentTarget);
+                                    }}
+                                    className="px-1 py-0.5 text-black/75 hover:text-black leading-none text-base font-semibold"
+                                    title="Quick note actions"
+                                  >
+                                    <MoreHorizontal className="w-4 h-4" />
+                                  </button>
+                                </div>
+                              </>
+                            ) : (
+                              <>
+                                <div className="glass-control rounded-2xl p-3 h-40 overflow-hidden">
+                                  <h3 className="text-xs font-semibold text-black/80 truncate mb-1">{card.title}</h3>
+                                  {card.question && <p className="text-[0.6875rem] text-black/60 line-clamp-3">{card.question}</p>}
+                                </div>
+                                <div className="mt-1 flex justify-end px-1">
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setOpenAttachmentNotesCardId(null);
+                                      if (openCardMenuId === card.id) { setOpenCardMenuId(null); return; }
+                                      openCardMenuForAnchor(card.id, e.currentTarget);
+                                    }}
+                                    className="px-1 py-0.5 text-black/75 hover:text-black leading-none text-base font-semibold"
+                                    title="Actions"
+                                  >
+                                    <MoreHorizontal className="w-4 h-4" />
+                                  </button>
+                                </div>
+                              </>
+                            )}
+                          </motion.article>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+                <div ref={loadMoreRef} className="h-6" />
+              </div>
             ) : (
-              <div className={isEmbeddedMode ? "columns-2 gap-3" : "columns-1 sm:columns-2 md:columns-3 xl:columns-4 2xl:columns-5 gap-4 md:gap-5"}>
+              <div className={
+                isEmbeddedMode
+                  ? "columns-2 gap-3"
+                  : vaultView === "grid"
+                    ? "grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4"
+                    : "columns-1 sm:columns-2 md:columns-3 xl:columns-4 2xl:columns-5 gap-4 md:gap-5"
+              }>
+                {vaultView === "collage" && (
                 <div className="break-inside-avoid mb-5 rounded-2xl border-2 border-dashed border-blue-500/30 p-4 flex flex-col items-center justify-center text-center min-h-[130px] gap-2">
                   <div className="text-xs font-medium text-black/40 dark:text-white/40">Add to Vault</div>
                   <div className="flex gap-2">
@@ -2035,81 +2995,31 @@ User: ${text}`;
                     </button>
                   </div>
                 </div>
+                )}
+                {vaultView === "grid" && (
+                  <div className="rounded-2xl border-2 border-dashed border-blue-500/30 p-4 flex flex-col items-center justify-center text-center aspect-square gap-2">
+                    <div className="text-xs font-medium text-black/40 dark:text-white/40">Add</div>
+                    <div className="flex gap-1.5">
+                      <button type="button" onClick={() => addMediaTriggerRef.current?.()} className="w-8 h-8 rounded-full bg-blue-500/10 flex items-center justify-center hover:bg-blue-500/20 transition-colors">
+                        <Upload className="w-3.5 h-3.5 text-blue-500" />
+                      </button>
+                      <button type="button" onClick={() => setShowSaveLink(true)} className="w-8 h-8 rounded-full bg-blue-500/10 flex items-center justify-center hover:bg-blue-500/20 transition-colors">
+                        <Globe className="w-3.5 h-3.5 text-blue-500" />
+                      </button>
+                    </div>
+                  </div>
+                )}
                 {orderedVisibleCards.map((card) => (
-                  <article
+                  <motion.article
+                    initial={{ opacity: 0, scale: 0.97 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    transition={{ duration: 0.2, ease: "easeOut" }}
                     key={card.id}
                     data-memory-card-id={card.id}
                     data-card-id={card.id}
                     ref={(el) => { if (card.kind === "attachment") registerCardRef(card.id, el); }}
                     draggable
-                    onDragStart={(e) => {
-                      if (e.target instanceof Element && e.target.closest("[data-no-drag='true']")) {
-                        e.preventDefault();
-                        return;
-                      }
-                      const resolvedUrl =
-                        card.kind === "attachment"
-                          ? resolvedAttachmentUrls[card.id] || card?.attachment?.url || ""
-                          : "";
-                      if (resolvedUrl) {
-                        try {
-                          e.dataTransfer.setData("text/uri-list", resolvedUrl);
-                          e.dataTransfer.setData("text/plain", resolvedUrl);
-                        } catch {
-                          // ignore drag payload issues between contexts
-                        }
-                      }
-
-                      if (isEmbeddedMode && card.kind === "attachment" && card.attachment) {
-                        const att = card.attachment;
-                        const videoId = card.type === "youtube" ? (att.videoId || extractYouTubeVideoId(att.url || "") || "") : "";
-                        const resolvedForDrag = resolvedAttachmentUrls[card.id] || att.url || "";
-                        const pdfText = (card.type === "pdf" && att.extractedText) ? String(att.extractedText) : "";
-                        const pendingData = {
-                          id: card.id,
-                          title: card.title || "",
-                          content: "",
-                          attachments: [{ ...att, url: resolvedForDrag, type: card.type, videoId, ...(pdfText ? { pdfText, extractedText: pdfText } : {}) }],
-                          timestamp: Date.now(),
-                        };
-                        try { e.dataTransfer.setData("application/x-omnia-memory", JSON.stringify(pendingData)); } catch {}
-                        try {
-                          const target = window.parent !== window ? window.parent : window;
-                          /** @type {any} */ (target).__omnia_pending_memory = pendingData;
-                        } catch {}
-                        try {
-                          window.parent.postMessage({ type: "omnia-memory-drag-start", data: pendingData }, "*");
-                        } catch {}
-                        e.dataTransfer.effectAllowed = "copyMove";
-                      } else if (isEmbeddedMode && card.kind === "quick-note") {
-                        const pendingData = {
-                          id: card.id,
-                          title: card.title || "Quick Note",
-                          content: card.excerpt || "",
-                          attachments: [],
-                          timestamp: Date.now(),
-                        };
-                        try {
-                          e.dataTransfer.setData("text/plain", card.excerpt || card.title || "Quick Note");
-                          e.dataTransfer.setData("application/x-omnia-memory", JSON.stringify(pendingData));
-                        } catch {}
-                        try {
-                          const target = window.parent !== window ? window.parent : window;
-                          /** @type {any} */ (target).__omnia_pending_memory = pendingData;
-                        } catch {}
-                        try {
-                          window.parent.postMessage({ type: "omnia-memory-drag-start", data: pendingData }, "*");
-                        } catch {}
-                        e.dataTransfer.effectAllowed = "copyMove";
-                      } else {
-                        e.dataTransfer.effectAllowed = "move";
-                      }
-
-                      setDraggedCardId(card.id);
-                      lastHoverTargetRef.current = card.id;
-                      window.dispatchEvent(new CustomEvent("memory_collage_reorder_drag_start"));
-                      try { e.dataTransfer.setData("application/x-lykins-memory-card-id", card.id); } catch {}
-                    }}
+                    onDragStart={(e) => handleCardDragStart(e, card)}
                     onDragEnter={(e) => {
                       e.preventDefault();
                       if (!draggedCardId || draggedCardId === card.id) return;
@@ -2134,26 +3044,18 @@ User: ${text}`;
                       lastHoverTargetRef.current = null;
                       window.dispatchEvent(new CustomEvent("memory_collage_reorder_drag_end"));
                     }}
-                    onDragEnd={() => {
-                      setDraggedCardId(null);
-                      setDropTargetCardId(null);
-                      lastHoverTargetRef.current = null;
-                      window.dispatchEvent(new CustomEvent("memory_collage_reorder_drag_end"));
-                      if (isEmbeddedMode) {
-                        try { window.parent.postMessage({ type: "omnia-memory-drag-end" }, "*"); } catch {}
-                      }
-                    }}
-                    className={`break-inside-avoid ${isEmbeddedMode ? "mb-0" : "mb-5"} rounded-2xl relative ${
-                      card.kind === "chat-preview" ? "overflow-hidden" : "overflow-visible"
+                    onDragEnd={handleCardDragEnd}
+                    className={`${vaultView === "grid" ? "" : "break-inside-avoid"} ${isEmbeddedMode ? "mb-0" : vaultView === "grid" ? "" : "mb-5"} rounded-2xl relative ${
+                      card.kind === "chat-preview" ? "overflow-hidden" : vaultView === "grid" ? "overflow-hidden" : "overflow-visible"
                     } ${
                       card.kind === "attachment" || card.kind === "quick-note"
                         ? "bg-transparent border-0 shadow-none backdrop-blur-0"
                         : "glass-control"
                     } ${
                       draggedCardId === card.id
-                        ? "opacity-50 cursor-grabbing"
+                        ? "opacity-30 cursor-grabbing ring-2 ring-blue-400/50"
                         : "cursor-grab"
-                    } ${dropTargetCardId === card.id ? "ring-2 ring-white/50" : ""} ${
+                    } ${dropTargetCardId === card.id && draggedCardId !== card.id ? "ring-2 ring-blue-400/40" : ""} ${
                       card.kind === "attachment" && card.type === "youtube"
                         ? getYouTubeOffsetClass(card.id)
                         : ""
@@ -2165,7 +3067,7 @@ User: ${text}`;
                   >
                     {card.kind === "attachment" ? (
                       <>
-                        {renderAttachmentCard(card, getAttachmentHeightClass(card))}
+                        {renderAttachmentCard(card, vaultView === "grid" ? "h-44" : getAttachmentHeightClass(card))}
                         {parseAttachmentNotes(card.attachment).length > 0 && (
                           <button
                             type="button"
@@ -2205,6 +3107,15 @@ User: ${text}`;
                             </div>
                           </div>
                         )}
+                        {card.tags?.length > 0 && (
+                          <div className="mt-1.5 flex flex-wrap gap-1 px-1" data-no-drag="true">
+                            {card.tags.map((t) => (
+                              <span key={t} className="vault-tag-pill inline-flex items-center rounded-full bg-black/5 dark:bg-white/10 text-[7px] leading-none px-2 py-px font-medium text-black/55 dark:text-white/55">
+                                {t}
+                              </span>
+                            ))}
+                          </div>
+                        )}
                         <div className="mt-2 flex justify-end px-1" data-no-drag="true">
                           <button
                             type="button"
@@ -2229,34 +3140,54 @@ User: ${text}`;
                         </div>
                       </>
                     ) : card.kind === "chat-preview" ? (
-                      <div className="p-4 space-y-3">
+                      <div className={`p-4 space-y-3 ${vaultView === "grid" ? "h-44 overflow-hidden" : ""}`}>
                         <div className="flex items-center justify-between">
                           <h2 className="text-sm font-semibold text-black/90 truncate">{card.title}</h2>
                           <span className="text-[0.6875rem] text-black/60">{card.turnsCount} turns</span>
                         </div>
                         <div className="rounded-xl bg-white/40 border border-white/45 px-3 py-2">
-                          <p className="text-[0.75rem] text-black/80 line-clamp-3">{card.question}</p>
+                          <p className={`text-[0.75rem] text-black/80 ${vaultView === "grid" ? "line-clamp-2" : "line-clamp-3"}`}>{card.question}</p>
                         </div>
-                        {card.answer && (
+                        {card.answer && vaultView !== "grid" && (
                           <div className="rounded-xl bg-black/10 border border-white/30 px-3 py-2">
                             <p className="text-[0.75rem] text-black/75 line-clamp-4">{card.answer}</p>
                           </div>
                         )}
+                        {card.tags?.length > 0 && (
+                          <div className="flex flex-wrap gap-1">
+                            {card.tags.map((t) => (
+                              <span key={t} className="vault-tag-pill inline-flex items-center rounded-full bg-black/5 dark:bg-white/10 text-[7px] leading-none px-2 py-px font-medium text-black/55 dark:text-white/55">
+                                {t}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        {vaultView !== "grid" && (
                         <div className="text-[0.6875rem] text-black/55 flex items-center gap-1">
                           <Clock className="w-3 h-3" />
                           <span>{card.dateLabel}</span>
                         </div>
+                        )}
                       </div>
                     ) : (
                       <>
-                        <div className="glass-control rounded-2xl p-4">
+                        <div className={`glass-control rounded-2xl p-4 ${vaultView === "grid" ? "h-44 overflow-hidden" : ""}`}>
                           <div className="flex items-center gap-2 text-black/70 mb-2">
                             <StickyNote className="w-4 h-4" />
                             <span className="text-xs font-medium">Quick Note</span>
                           </div>
-                          <div className="max-h-56 overflow-y-auto scrollbar-hide">
-                            <p className="text-sm text-black/70 whitespace-pre-wrap break-words">{card.excerpt}</p>
+                          <div className={vaultView === "grid" ? "overflow-hidden" : "max-h-56 overflow-y-auto scrollbar-hide"}>
+                            <p className={`text-sm text-black/70 whitespace-pre-wrap break-words ${vaultView === "grid" ? "line-clamp-5" : ""}`}>{card.excerpt}</p>
                           </div>
+                          {card.tags?.length > 0 && (
+                            <div className="mt-2 flex flex-wrap gap-1">
+                              {card.tags.map((t) => (
+                                <span key={t} className="vault-tag-pill inline-flex items-center rounded-full bg-black/5 dark:bg-white/10 text-[7px] leading-none px-2 py-px font-medium text-black/55 dark:text-white/55">
+                                  {t}
+                                </span>
+                              ))}
+                            </div>
+                          )}
                           <div className="mt-3 text-[0.6875rem] text-black/55 flex items-center gap-1">
                             <Clock className="w-3 h-3" />
                             <span>{card.dateLabel}</span>
@@ -2286,7 +3217,7 @@ User: ${text}`;
                         </div>
                       </>
                     )}
-                  </article>
+                  </motion.article>
                 ))}
                 <div ref={loadMoreRef} className="break-inside-avoid h-6" />
               </div>
@@ -2548,6 +3479,24 @@ User: ${text}`;
                   </button>
                 </>
               )}
+              {menuCard.noteId && (
+                <>
+                  <div className="my-1 h-px bg-black/10" />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const rect = openCardMenuRect;
+                      setTagPickerCardId(menuCard.id);
+                      setTagPickerPosition({ left: rect.left, top: rect.bottom + 8 });
+                      setOpenCardMenuId(null);
+                    }}
+                    className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 flex items-center gap-2"
+                  >
+                    <Tag className="w-3.5 h-3.5" />
+                    Tags
+                  </button>
+                </>
+              )}
               <div className="my-1 h-px bg-black/10" />
               <button
                 type="button"
@@ -2566,6 +3515,113 @@ User: ${text}`;
                 <Trash2 className="w-3.5 h-3.5" />
                 Delete
               </button>
+            </div>
+          );
+        })(),
+        document.body
+      )}
+      {tagPickerCardId && tagPickerPosition && createPortal(
+        (() => {
+          const pickerCard = memoryCards.find((c) => c.id === tagPickerCardId);
+          if (!pickerCard || !pickerCard.noteId) return null;
+          const cardTags = pickerCard.tags || [];
+          const menuW = 260;
+          const pad = 8;
+          let left = tagPickerPosition.left;
+          let top = tagPickerPosition.top;
+          if (left + menuW > window.innerWidth - pad) left = window.innerWidth - pad - menuW;
+          if (left < pad) left = pad;
+          if (top + 320 > window.innerHeight) top = tagPickerPosition.top - 340;
+
+          const filteredTags = newTagInput.trim()
+            ? allTags.filter((t) => t.name.toLowerCase().includes(newTagInput.trim().toLowerCase()))
+            : allTags;
+          const exactMatch = allTags.some((t) => t.name.toLowerCase() === newTagInput.trim().toLowerCase());
+
+          return (
+            <div
+              ref={tagPickerRef}
+              className="rounded-2xl border border-white/60 bg-white/90 dark:bg-[#171515]/90 backdrop-blur-xl shadow-2xl p-3 overflow-hidden"
+              style={{ position: "fixed", width: menuW, left, top, zIndex: 10000 }}
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center gap-2 mb-2">
+                <Tag className="w-3.5 h-3.5 text-black/50" />
+                <span className="text-xs font-medium text-black/70">Tags</span>
+              </div>
+              <div className="relative mb-2">
+                <input
+                  type="text"
+                  value={newTagInput}
+                  onChange={(e) => setNewTagInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && newTagInput.trim()) {
+                      e.preventDefault();
+                      void createAndAssignTag(pickerCard.noteId, newTagInput.trim());
+                      setNewTagInput("");
+                    }
+                  }}
+                  placeholder="Search or create tag..."
+                  className="w-full h-8 rounded-lg border border-black/10 bg-white/60 dark:bg-[#1f1d1d]/60 px-2.5 text-xs outline-none placeholder:text-black/35 focus:border-blue-400/50"
+                  autoFocus
+                />
+              </div>
+              {newTagInput.trim() && !exactMatch && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    void createAndAssignTag(pickerCard.noteId, newTagInput.trim());
+                    setNewTagInput("");
+                  }}
+                  className="w-full text-left rounded-md px-2 py-1.5 text-xs hover:bg-blue-500/10 text-blue-600 flex items-center gap-2 mb-1"
+                >
+                  <Plus className="w-3 h-3" />
+                  Create "{newTagInput.trim()}"
+                </button>
+              )}
+              <div className="max-h-48 overflow-y-auto scrollbar-hide space-y-0.5">
+                {filteredTags.length === 0 && !newTagInput.trim() && (
+                  <div className="px-2 py-2 text-[0.6875rem] text-black/45">No tags yet. Type to create one.</div>
+                )}
+                {filteredTags.map((tag) => {
+                  const isAssigned = cardTags.includes(tag.name);
+                  return (
+                    <button
+                      key={tag.name}
+                      type="button"
+                      onClick={() => void toggleCardTag(pickerCard.noteId, tag.name)}
+                      className={`w-full text-left rounded-md px-2 py-1.5 text-xs flex items-center justify-between gap-2 transition-colors ${
+                        isAssigned ? "bg-blue-500/10 text-blue-700" : "hover:bg-black/5 text-black/70"
+                      }`}
+                    >
+                      <span className="truncate">{tag.name}</span>
+                      <span className="flex items-center gap-1.5 shrink-0">
+                        <span className="text-[0.625rem] text-black/35">{tag.count}</span>
+                        {isAssigned && <Check className="w-3 h-3 text-blue-500" />}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              {cardTags.length > 0 && (
+                <div className="mt-2 pt-2 border-t border-black/8 flex flex-wrap gap-1">
+                  {cardTags.map((tag) => (
+                    <span
+                      key={tag}
+                      className="vault-tag-pill inline-flex items-center gap-1 rounded-full bg-blue-500/15 text-blue-700 text-[7px] leading-none px-2 py-px font-medium"
+                    >
+                      {tag}
+                      <button
+                        type="button"
+                        onClick={() => void toggleCardTag(pickerCard.noteId, tag)}
+                        className="hover:text-red-500 transition-colors"
+                      >
+                        <X className="w-2.5 h-2.5" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
           );
         })(),

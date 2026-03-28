@@ -41,6 +41,7 @@ export default function MemoryChatPage() {
   const queryClient = useQueryClient();
   const pendingSaveRef = useRef(null);
   const saveTimerRef = useRef(null);
+  const pendingResendRef = useRef(false);
 
   const {  notes = [], isError } = useQuery({
     queryKey: ['notes-list', user?.id],
@@ -113,6 +114,14 @@ export default function MemoryChatPage() {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages]);
+
+  useEffect(() => {
+    if (!pendingResendRef.current || isLoading) return;
+    const text = String(input || '').trim();
+    if (!text) return;
+    pendingResendRef.current = false;
+    handleSend();
+  });
 
   useEffect(() => {
     const settings = JSON.parse(localStorage.getItem('lykinsai_settings') || '{}');
@@ -389,6 +398,10 @@ User: ${input}
 IMPORTANT: 
 - If the user's memories include YouTube video transcripts, you MUST read and understand the actual content of those videos. Base your responses on what is actually discussed in the video transcripts, not on assumptions.
 - Reference specific video content when relevant. If the user asks about a video, use the transcript to provide accurate information about what was discussed.
+- You have FULL live web browsing and search capabilities. You CAN search the internet, browse websites, read articles, and access current information in real time. NEVER say you cannot browse the web, access websites, or get live information — because you CAN. When the system provides [WEB_SEARCH_RESULTS] or [DEEP_BROWSE_CONTENT], that is live data fetched from the internet right now. Use it confidently.
+- If [WEB_SEARCH_RESULTS] or [DEEP_BROWSE_CONTENT] are present, the system already searched the web — use the results and briefly mention you looked it up. If the user asks something needing live info but no results are present, offer: "Want me to browse the web for that?"
+- If the user asks you to create or generate an image but the current model isn't an image model, suggest switching: "I can create that! Want to switch to an image model like GPT Image 1.5 or DALL-E 3? Just use the model dropdown at the top."
+- Never say "I can't do that." Instead, tell the user HOW to do it and offer to help.
 
 Provide thoughtful, insightful responses based on their memories. Reference specific memories or video content when relevant. Do not use emojis in your responses unless the user explicitly asks for them.`;
 
@@ -403,29 +416,42 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
         throw new Error(`AI API error: ${aiResponse.statusText}`);
       }
 
-      // ✅ ROBUST PARSING: Handle both JSON and plain text
       let aiText = '';
+      let toolSuggestion = null;
+      let imageResponse = null;
       const contentType = aiResponse.headers.get('content-type');
       
       if (contentType && contentType.includes('application/json')) {
         try {
           const data = await aiResponse.json();
-          aiText = data.response || data.content || data.text || '';
+          if (data?.type === 'image' && data?.url) {
+            imageResponse = { url: data.url, prompt: data.prompt || '' };
+          } else {
+            aiText = data.response || data.content || data.text || '';
+            toolSuggestion = data.toolSuggestion || null;
+          }
         } catch (jsonError) {
-          // Fallback to text if JSON is malformed
           aiText = await aiResponse.text();
         }
       } else {
         aiText = await aiResponse.text();
       }
 
-      // Clean common issues (quotes, whitespace)
+      if (imageResponse) {
+        setMessages(prev => {
+          const newMessages = [...prev];
+          newMessages[assistantMessageIndex] = { role: 'assistant', content: '', generatedImage: imageResponse };
+          return newMessages;
+        });
+        setLastMessageTime(Date.now());
+        return;
+      }
+
       aiText = aiText.trim();
       if (aiText.startsWith('"') && aiText.endsWith('"')) {
         aiText = aiText.slice(1, -1).replace(/\\"/g, '"');
       }
 
-      // Stream the response
       const words = aiText.split(' ');
       let currentText = '';
 
@@ -433,7 +459,7 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
         currentText += (i === 0 ? '' : ' ') + words[i];
         setMessages(prev => {
           const newMessages = [...prev];
-          newMessages[assistantMessageIndex] = { role: 'assistant', content: currentText };
+          newMessages[assistantMessageIndex] = { role: 'assistant', content: currentText, ...(toolSuggestion ? { toolSuggestion } : {}) };
           return newMessages;
         });
         await new Promise(resolve => setTimeout(resolve, 30));
@@ -649,15 +675,13 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
                   </SelectGroup>
                   <SelectSeparator />
                   <SelectGroup>
-                    <SelectLabel>Image & Video Gen</SelectLabel>
+                    <SelectLabel>Image Gen</SelectLabel>
                     <SelectItem value="gpt-image-1.5" hint="OpenAI, images">GPT Image 1.5</SelectItem>
                     <SelectItem value="gemini-3.1-flash-image-preview" hint="Google, images">Nano Banana 2</SelectItem>
                     <SelectItem value="grok-imagine-image-pro" hint="xAI, pro images">Grok Imagine Image Pro</SelectItem>
                     <SelectItem value="grok-imagine-image" hint="xAI, images">Grok Imagine Image</SelectItem>
                     <SelectItem value="grok-2-image-1212" hint="xAI, images">Grok 2 Image</SelectItem>
                     <SelectItem value="dall-e-3" hint="OpenAI, images">DALL-E 3</SelectItem>
-                    <SelectItem value="veo-3.1-generate-preview" hint="Google, video">Veo 3.1</SelectItem>
-                    <SelectItem value="grok-imagine-video" hint="xAI, video">Grok Imagine Video</SelectItem>
                   </SelectGroup>
                   <SelectSeparator />
                   <SelectGroup>
@@ -788,7 +812,17 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
                         ? 'bg-gray-200 dark:bg-[#1f1d1d]/80 text-black dark:text-white p-4 rounded-3xl' 
                         : 'text-gray-800 dark:text-gray-200'
                     }`}>
-                      <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                      {msg.content && <p className="text-sm whitespace-pre-wrap">{msg.content}</p>}
+                      {msg.generatedImage?.url && (
+                        <div className="mt-2">
+                          <img
+                            src={msg.generatedImage.url}
+                            alt={msg.generatedImage.prompt || 'Generated image'}
+                            className="rounded-xl max-w-full max-h-[480px] object-contain shadow-md"
+                            draggable={false}
+                          />
+                        </div>
+                      )}
                       {msg.attachments && msg.attachments.length > 0 && (
                         <div className="flex flex-wrap gap-2 mt-2">
                           {msg.attachments.map((att) => (
@@ -796,6 +830,31 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
                               {att.type === 'image' ? <ImageIcon className="w-3 h-3" /> : att.type === 'link' ? <LinkIcon className="w-3 h-3" /> : <File className="w-3 h-3" />}
                               {att.name}
                             </a>
+                          ))}
+                        </div>
+                      )}
+                      {msg.toolSuggestion?.type === 'switch_model' && Array.isArray(msg.toolSuggestion.models) && (
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {msg.toolSuggestion.models.map((m) => (
+                            <button
+                              key={m.id}
+                              type="button"
+                              onClick={() => {
+                                const userMsg = messages[idx - 1];
+                                const originalText = userMsg?.role === 'user' ? String(userMsg.content || '').trim() : '';
+                                handleModelChange(m.id);
+                                setMessages(prev => prev.filter((_, i) => i !== idx && i !== idx - 1));
+                                if (originalText) {
+                                  setInput(originalText);
+                                  pendingResendRef.current = true;
+                                }
+                              }}
+                              className="inline-flex items-center gap-1.5 rounded-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-[#1f1d1d]/80 px-3 py-1.5 text-xs font-medium text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#2a2828] hover:border-gray-400 dark:hover:border-gray-500 transition-all active:scale-95"
+                            >
+                              <ImageIcon className="w-3.5 h-3.5 opacity-60" />
+                              <span>{m.label}</span>
+                              {m.hint && <span className="opacity-45 text-[0.65rem]">{m.hint}</span>}
+                            </button>
                           ))}
                         </div>
                       )}

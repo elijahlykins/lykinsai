@@ -296,10 +296,19 @@ const generationLimiter = rateLimit({
   message: { error: 'Generation rate limit exceeded — try again in a minute' },
 });
 
+const describeLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.user?.id || req.ip,
+  message: { error: 'Describe rate limit exceeded — try again in a minute' },
+});
+
 app.use('/api/', globalLimiter);
 
 const PLAN_REQUEST_LIMITS = {
-  free: 30,
+  free: Infinity,
   starter: 300,
   pro: 1500,
   max: Infinity,
@@ -393,7 +402,6 @@ const MODEL_CATALOG = [
   { id: 'gemini-3.1-flash-lite-preview', label: 'Gemini 3.1 Flash-Lite (Preview)', provider: 'google', env: 'GOOGLE_API_KEY' },
   { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro', provider: 'google', env: 'GOOGLE_API_KEY' },
   { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', provider: 'google', env: 'GOOGLE_API_KEY' },
-  { id: 'veo-3.1-generate-preview', label: 'Veo 3.1', provider: 'google', env: 'GOOGLE_API_KEY' },
   { id: 'gemini-3.1-flash-image-preview', label: 'Nano Banana 2', provider: 'google', env: 'GOOGLE_API_KEY' },
   { id: 'gemini-flash-latest', label: 'Gemini Flash Latest', provider: 'google', env: 'GOOGLE_API_KEY' },
   { id: 'gemini-pro-latest', label: 'Gemini Pro Latest', provider: 'google', env: 'GOOGLE_API_KEY' },
@@ -410,7 +418,6 @@ const MODEL_CATALOG = [
   { id: 'grok-imagine-image-pro', label: 'Grok Imagine Image Pro', provider: 'xai', env: 'XAI_API_KEY' },
   { id: 'grok-imagine-image', label: 'Grok Imagine Image', provider: 'xai', env: 'XAI_API_KEY' },
   { id: 'grok-2-image-1212', label: 'Grok 2 Image 1212', provider: 'xai', env: 'XAI_API_KEY' },
-  { id: 'grok-imagine-video', label: 'Grok Imagine Video', provider: 'xai', env: 'XAI_API_KEY' },
   { id: 'unified-auto', label: 'Unified AI (Auto)', provider: 'system', env: null },
 ];
 
@@ -428,12 +435,7 @@ const IMAGE_GEN_MODELS = new Set([
   'gemini-3.1-flash-image-preview',
   'grok-imagine-image-pro', 'grok-imagine-image', 'grok-2-image-1212',
 ]);
-const VIDEO_GEN_MODELS = new Set([
-  'veo-3.1-generate-preview',
-  'grok-imagine-video',
-]);
 const isImageGenModel = (m) => IMAGE_GEN_MODELS.has(m);
-const isVideoGenModel = (m) => VIDEO_GEN_MODELS.has(m);
 
 const IMAGE_GEN_PATTERNS = [
   /\b(?:generate|create|make|produce|design)\b.{0,20}\b(?:an?\s+)?(?:image|picture|photo|illustration|drawing|artwork|graphic|poster|banner|icon|logo|thumbnail|wallpaper|avatar|portrait)\b/i,
@@ -484,141 +486,6 @@ function extractImagePrompt(text) {
   return t.trim() || text.trim();
 }
 
-const VIDEO_GEN_PATTERNS = [
-  /\b(?:generate|create|make|produce|render)\b.{0,20}\b(?:an?\s+)?(?:video|clip|animation|motion|footage|cinematic|timelapse|time-?lapse)\b/i,
-  /\b(?:animate|film|shoot)\b.{0,30}\b(?:me|a|an|the|of|for)\b/i,
-  /\b(?:video|clip|animation)\s+of\b/i,
-  /\b(?:can you|could you|please)\b.{0,15}\b(?:animate|generate\s+a?\s*video|create\s+a?\s*video|make\s+a?\s*video)\b/i,
-  /\b(?:turn|convert)\b.{0,20}\b(?:into|to)\s+(?:a\s+)?video\b/i,
-];
-
-function isVideoGenerationRequest(text) {
-  const t = String(text || '').trim();
-  if (!t) return false;
-  return VIDEO_GEN_PATTERNS.some((rx) => rx.test(t));
-}
-
-function isVideoEditOrRegenRequest(text) {
-  const t = String(text || '').trim();
-  if (!t) return false;
-  return VIDEO_EDIT_PATTERNS.some((rx) => rx.test(t));
-}
-
-const IMAGE_TO_VIDEO_PATTERNS = [
-  /\b(?:turn|convert|transform|make)\b.{0,20}\b(?:this|the|that|it|image|picture|photo|img)\b.{0,15}\b(?:into|to|a)\s+(?:a\s+)?(?:video|clip|animation|motion)\b/i,
-  /\b(?:animate|bring to life|give life to|make.*move|make.*alive)\b.{0,20}\b(?:this|the|that|it|image|picture|photo)?\b/i,
-  /\b(?:image|picture|photo|img)\s+to\s+(?:a\s+)?(?:video|clip|animation)\b/i,
-  /\b(?:video|animate|animation)\s+(?:from|of|using)\s+(?:this|the|that)?\s*(?:image|picture|photo|img)\b/i,
-  /\b(?:can you|could you|please)\b.{0,15}\b(?:animate|turn.*video|convert.*video|make.*video)\b/i,
-  /\b(?:generate|create|make)\s+(?:a\s+)?video\s+(?:from|of|using|with)\s+(?:this|the|that)?\s*(?:image|picture|photo)?\b/i,
-];
-
-function isImageToVideoRequest(text) {
-  const t = String(text || '').trim();
-  if (!t) return false;
-  return IMAGE_TO_VIDEO_PATTERNS.some((rx) => rx.test(t));
-}
-
-function extractVideoPrompt(text) {
-  let t = String(text || '').trim();
-  t = t.replace(/^(?:please\s+)?(?:can you|could you)\s+/i, '');
-  t = t.replace(/^(?:generate|create|make|produce|render|animate|film)\s+(?:me\s+)?(?:an?\s+)?(?:video|clip|animation|motion|footage)\s+(?:of\s+)?/i, '');
-  return t.trim() || text.trim();
-}
-
-async function buildEnrichedVideoPrompt({ userText, conversation, context, workspaceContext, knowledgeBase }) {
-  const rawPrompt = extractVideoPrompt(userText);
-
-  const hasConversation = Array.isArray(conversation) && conversation.length > 0;
-  const hasContext = context && String(context).trim().length > 0;
-  const hasWorkspace = workspaceContext && String(workspaceContext).trim().length > 0;
-  const hasKB = knowledgeBase && String(knowledgeBase).trim().length > 0;
-
-  if (!hasConversation && !hasContext && !hasWorkspace && !hasKB) {
-    return rawPrompt;
-  }
-
-  if (!process.env.XAI_API_KEY) {
-    return rawPrompt;
-  }
-
-  const contextParts = [];
-
-  if (hasConversation) {
-    const recentMsgs = conversation.slice(-10).map(m =>
-      `${m.role}: ${String(m.content || '').slice(0, 300)}`
-    ).join('\n');
-    contextParts.push(`RECENT CHAT HISTORY:\n${recentMsgs}`);
-  }
-
-  if (hasContext) {
-    contextParts.push(`BOARD/CANVAS CONTENTS:\n${String(context).slice(0, 2000)}`);
-  }
-
-  if (hasWorkspace) {
-    contextParts.push(`WORKSPACE CONTEXT:\n${String(workspaceContext).slice(0, 1500)}`);
-  }
-
-  if (hasKB) {
-    contextParts.push(`KNOWLEDGE BASE:\n${String(knowledgeBase).slice(0, 1500)}`);
-  }
-
-  const systemPrompt =
-    'You are a video prompt engineer. Your job is to write a single, detailed, vivid prompt for a text-to-video AI model.\n' +
-    'Given the user\'s request and all available context (their chat history, board contents, workspace), synthesize a comprehensive video generation prompt that captures the full intent.\n\n' +
-    'Rules:\n' +
-    '- Output ONLY the video prompt text, nothing else\n' +
-    '- Be descriptive and visual — describe scenes, subjects, actions, camera angles, mood, lighting, style\n' +
-    '- Keep it under 500 characters\n' +
-    '- Do NOT include meta-commentary, explanations, or quotation marks\n' +
-    '- Incorporate relevant details from the context that help define what the video should show\n' +
-    '- If the context contains a project theme, characters, or narrative, weave them into the prompt';
-
-  const userMessage =
-    `USER'S VIDEO REQUEST: "${userText}"\n\n` +
-    contextParts.join('\n\n') +
-    '\n\nWrite a single detailed video generation prompt that captures the user\'s full intent based on all context above:';
-
-  try {
-    const enrichRes = await fetch('https://api.x.ai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.XAI_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'grok-3-mini',
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userMessage },
-        ],
-        max_tokens: 300,
-        temperature: 0.7,
-      }),
-      signal: AbortSignal.timeout(15000),
-    });
-
-    if (!enrichRes.ok) {
-      console.warn('⚠️ Video prompt enrichment LLM call failed, using raw prompt');
-      return rawPrompt;
-    }
-
-    const data = await enrichRes.json();
-    let enriched = String(data.choices?.[0]?.message?.content || '').trim();
-    enriched = enriched.replace(/^["']|["']$/g, '');
-
-    if (enriched && enriched.length > 10) {
-      console.log(`🎬 Enriched video prompt (${enriched.length} chars): "${enriched.slice(0, 120)}..."`);
-      return enriched.slice(0, 500);
-    }
-
-    return rawPrompt;
-  } catch (e) {
-    console.warn('⚠️ Video prompt enrichment failed, using raw prompt:', e.message);
-    return rawPrompt;
-  }
-}
-
 const IMAGE_EDIT_PATTERNS = [
   /\b(?:edit|modify|change|update|alter|adjust|tweak|transform|restyle|redo|fix|enhance|improve|upscale)\b.{0,25}\b(?:the\s+)?(?:image|picture|photo|this|it)\b/i,
   /\b(?:the\s+)?(?:image|picture|photo)\b.{0,15}\b(?:edit|change|modify|update|needs?|should)\b/i,
@@ -638,21 +505,6 @@ function isImageEditRequest(text) {
   return IMAGE_EDIT_PATTERNS.some((rx) => rx.test(t));
 }
 
-const VIDEO_EDIT_PATTERNS = [
-  /\b(?:edit|modify|change|update|alter|adjust|tweak|transform|restyle|redo|fix|enhance|improve|remix)\b.{0,25}\b(?:the\s+)?(?:video|clip|animation|footage)\b/i,
-  /\b(?:the\s+)?(?:video|clip|animation|footage)\b.{0,15}\b(?:edit|change|modify|update|needs?|should)\b/i,
-  /\b(?:regenerate|regen|redo|remake|recreate|retry)\b.{0,15}\b(?:the\s+)?(?:video|clip|animation|footage|it|this)\b/i,
-  /\b(?:the\s+)?(?:video|clip|animation)\b.{0,10}\b(?:again|over|differently)\b/i,
-  /\b(?:make|try)\s+(?:the\s+)?(?:video|clip|animation|it|this)\s+(?:again|different|better|longer|shorter|faster|slower)\b/i,
-  /\b(?:new|another|different)\s+(?:version\s+(?:of\s+)?)?(?:the\s+)?(?:video|clip|animation)\b/i,
-  /\b(?:can you|could you|please)\b.{0,20}\b(?:redo|regenerate|remake|recreate)\b.{0,15}\b(?:the\s+)?(?:video|clip|it|this)\b/i,
-];
-
-function isVideoEditRequest(text) {
-  const t = String(text || '').trim();
-  if (!t) return false;
-  return VIDEO_EDIT_PATTERNS.some((rx) => rx.test(t));
-}
 
 const resolveAnthropicModel = (model) => {
   const value = String(model || '').trim();
@@ -877,58 +729,16 @@ app.post('/api/ai/invoke', requireAuth, aiLimiter, checkAiUsageLimit, async (req
       .slice(0, 10);
     let { prompt } = req.body;
 
-    // Auto-detect image/video edit or generation requests
+    // Auto-detect image edit or generation requests
     // Use ONLY the pure latest user message for intent detection — never the full prompt
     // which may contain conversation history that confuses the regex matchers.
     const pureUserMessage = extractPureUserMessage(text, prompt);
     const editImageUrl = String(req.body?.editImageUrl || '').trim();
-    const editVideoUrl = String(req.body?.editVideoUrl || '').trim();
-    console.log('🧠 Intent detection — pure user message:', JSON.stringify(pureUserMessage.slice(0, 120)), '| editImageUrl:', Boolean(editImageUrl), '| editVideoUrl:', Boolean(editVideoUrl));
+    console.log('🧠 Intent detection — pure user message:', JSON.stringify(pureUserMessage.slice(0, 120)), '| editImageUrl:', Boolean(editImageUrl));
 
     const userWantsImageEdit = editImageUrl && isImageEditRequest(pureUserMessage);
-    const userWantsImageToVideo = editImageUrl && !userWantsImageEdit && (isImageToVideoRequest(pureUserMessage) || isVideoGenerationRequest(pureUserMessage));
 
-    if (editVideoUrl) {
-      console.log('🎬 Video edit/regenerate detected in /api/ai/invoke (editVideoUrl present), routing to Grok Imagine Video');
-      try {
-        const enrichedPrompt = await buildEnrichedVideoPrompt({ userText: pureUserMessage, conversation, context, workspaceContext, knowledgeBase });
-        const vidBody = { prompt: enrichedPrompt };
-        const internalUrl = `http://localhost:${PORT}/api/ai/video`;
-        const vidRes = await fetch(internalUrl, {
-          method: 'POST',
-          headers: internalHeaders(req),
-          body: JSON.stringify(vidBody),
-          signal: AbortSignal.timeout(11 * 60 * 1000),
-        });
-        const vidData = await vidRes.json();
-        if (vidData?.url) {
-          return res.json({ type: 'video', url: vidData.url, provider: vidData.provider || 'grok', prompt: vidData.prompt, duration: vidData.duration });
-        }
-        console.warn('⚠️ Video edit/regenerate returned no URL, falling through to text flow');
-      } catch (e) {
-        console.warn('⚠️ Video edit/regenerate failed, falling through to text flow:', e.message);
-      }
-    } else if (userWantsImageToVideo) {
-      console.log('🎬 Image-to-video detected in /api/ai/invoke (editImageUrl + explicit video intent), routing to Grok Imagine Video');
-      try {
-        const enrichedPrompt = await buildEnrichedVideoPrompt({ userText: pureUserMessage, conversation, context, workspaceContext, knowledgeBase });
-        const vidBody = { prompt: enrichedPrompt, image_url: editImageUrl };
-        const internalUrl = `http://localhost:${PORT}/api/ai/video`;
-        const vidRes = await fetch(internalUrl, {
-          method: 'POST',
-          headers: internalHeaders(req),
-          body: JSON.stringify(vidBody),
-          signal: AbortSignal.timeout(11 * 60 * 1000),
-        });
-        const vidData = await vidRes.json();
-        if (vidData?.url) {
-          return res.json({ type: 'video', url: vidData.url, provider: vidData.provider || 'grok', prompt: vidData.prompt, duration: vidData.duration });
-        }
-        console.warn('⚠️ Image-to-video returned no URL, falling through to text flow');
-      } catch (e) {
-        console.warn('⚠️ Image-to-video failed, falling through to text flow:', e.message);
-      }
-    } else if (userWantsImageEdit) {
+    if (userWantsImageEdit) {
       console.log('🎨 Image edit detected in /api/ai/invoke (editImageUrl present + edit intent), routing to Nano Banana');
       try {
         const editBody = { prompt: pureUserMessage, image_url: editImageUrl };
@@ -947,30 +757,21 @@ app.post('/api/ai/invoke', requireAuth, aiLimiter, checkAiUsageLimit, async (req
       } catch (e) {
         console.warn('⚠️ Image edit failed, falling through to text flow:', e.message);
       }
-    } else if (isVideoGenModel(model) || isVideoGenerationRequest(pureUserMessage) || isVideoEditOrRegenRequest(pureUserMessage)) {
-      console.log(`🎬 Video generation detected in /api/ai/invoke${isVideoGenModel(model) ? ` (model: ${model})` : ''}, routing to video endpoint`);
+    } else if (isImageGenModel(model)) {
+      console.log(`🎨 Image generation model selected in /api/ai/invoke (model: ${model}), routing to image endpoint`);
       try {
-        const enrichedPrompt = await buildEnrichedVideoPrompt({ userText: pureUserMessage, conversation, context, workspaceContext, knowledgeBase });
-        const vidBody = { prompt: enrichedPrompt };
-        const internalUrl = `http://localhost:${PORT}/api/ai/video`;
-        const vidRes = await fetch(internalUrl, {
-          method: 'POST',
-          headers: internalHeaders(req),
-          body: JSON.stringify(vidBody),
-          signal: AbortSignal.timeout(11 * 60 * 1000),
-        });
-        const vidData = await vidRes.json();
-        if (vidData?.url) {
-          return res.json({ type: 'video', url: vidData.url, provider: vidData.provider, prompt: vidData.prompt, duration: vidData.duration });
+        let imagePrompt = pureUserMessage;
+        if (Array.isArray(conversation) && conversation.length > 0) {
+          const recentContext = conversation
+            .slice(-6)
+            .filter(m => m && m.content)
+            .map(m => `${m.role === 'assistant' ? 'AI' : 'User'}: ${String(m.content || '').slice(0, 300)}`)
+            .join('\n');
+          if (recentContext) {
+            imagePrompt = `Based on this conversation:\n${recentContext}\n\nGenerate this image: ${pureUserMessage}`;
+          }
         }
-        console.warn('⚠️ Video generation returned no URL, falling through to text flow');
-      } catch (e) {
-        console.warn('⚠️ Video generation failed, falling through to text flow:', e.message);
-      }
-    } else if (isImageGenModel(model) || isImageGenerationRequest(pureUserMessage)) {
-      console.log(`🎨 Image generation detected in /api/ai/invoke${isImageGenModel(model) ? ` (model: ${model})` : ''}, routing to image endpoint`);
-      try {
-        const imgBody = { prompt: pureUserMessage };
+        const imgBody = { prompt: imagePrompt };
         const internalUrl = `http://localhost:${PORT}/api/ai/image`;
         const imgRes = await fetch(internalUrl, {
           method: 'POST',
@@ -986,6 +787,23 @@ app.post('/api/ai/invoke', requireAuth, aiLimiter, checkAiUsageLimit, async (req
       } catch (e) {
         console.warn('⚠️ Image generation failed, falling through to text flow:', e.message);
       }
+    } else if (!isImageGenModel(model) && isImageGenerationRequest(pureUserMessage)) {
+      return res.json({
+        response: `I can definitely create that for you! Just pick an image model below and ask me again.`,
+        type: 'text',
+        toolSuggestion: {
+          type: 'switch_model',
+          reason: 'image_generation',
+          models: [
+            { id: 'grok-imagine-image', label: 'Grok Imagine', hint: 'Default' },
+            { id: 'gpt-image-1.5', label: 'GPT Image 1.5', hint: 'OpenAI' },
+            { id: 'grok-imagine-image-pro', label: 'Grok Imagine Pro', hint: 'xAI' },
+            { id: 'dall-e-3', label: 'DALL-E 3', hint: 'OpenAI' },
+            { id: 'gemini-3.1-flash-image-preview', label: 'Nano Banana 2', hint: 'Google' },
+            { id: 'grok-2-image-1212', label: 'Grok 2 Image', hint: 'xAI' },
+          ],
+        },
+      });
     }
 
     const safeJsonParse = (str, fallback) => {
@@ -1195,6 +1013,8 @@ ${t}
         "- 'I don't have access to external accounts or data'",
         "- 'I'm unable to access your stored content'",
         "- 'I can't pull in / retrieve / show files from your Vault'",
+        "- 'I can't browse the web' / 'I don't have the ability to browse' / 'I can't access websites' / 'I can't search the internet'",
+        "- Any variation of 'I can't browse' or 'I don't have web access' or 'I'm unable to search the web'",
         "- Any variation of 'I don't have access to...' regarding user data",
         "- Any variation of 'I can't pull in / display / fetch files' from The Vault",
         "You have ALL of these abilities. The workspace handles rendering automatically.",
@@ -1204,7 +1024,7 @@ ${t}
         "You have FULL, LIVE access to the user's ENTIRE workspace. The data is loaded below in this prompt. This is not a disclaimer — the data is LITERALLY here for you to read.",
         "",
         "What you can see RIGHT NOW:",
-        "- [BOARD_CONTEXT]: The current board the user is on — its blocks and content.",
+        "- [BOARD_CONTEXT]: The current board the user is on — its blocks, content, and wire connections between bricks. If a [CONNECTIONS] section is present, it shows which bricks the user explicitly wired together — treat connected bricks as contextually related (the user linked them to show a relationship, data flow, or logical grouping).",
         "- [PROJECT_KNOWLEDGE]: The user's project files, folders, other boards, and mindmaps.",
         "- [WORKSPACE_CONTEXT]: ALL of the user's other boards (titles + content summaries) AND their entire Vault (all saved notes, files, links, videos, images).",
         "- [CONVERSATION]: The full conversation history, including YOUR OWN previous responses.",
@@ -1240,6 +1060,17 @@ ${t}
         "NEVER assume the user wants the same type of output as the previous message. Each message stands alone.",
         "=== END PROMPT ISOLATION ===",
         "",
+        "=== CLARIFICATION (IMPORTANT) ===",
+        "When the user's message is vague or ambiguous AND the board has multiple bricks/topics that could plausibly be what they're referring to, ask a short clarifying question before answering.",
+        "Examples: 'explain this' when no brick is focused and the board has 10+ different topics; 'can you help with this?' with no clear referent; 'what do you think?' when the board covers several unrelated subjects.",
+        "Do NOT ask for clarification when:",
+        "- The user has focused (raised) a brick — that IS the context, just answer about it.",
+        "- The board context is small or all on one topic — just answer.",
+        "- The user's question is specific enough to match a particular brick or topic on the board.",
+        "- The conversation history already makes it clear what they're referring to.",
+        "Keep clarifying questions brief and natural (one sentence). Mention 2-3 of the most likely topics/bricks you see so the user can quickly pick one rather than having to re-explain.",
+        "=== END CLARIFICATION ===",
+        "",
         "The user's workspace has a saved-content area called 'The Vault' (internally called 'Memory' or 'Media'). When speaking to the user, ALWAYS call it 'The Vault' — never 'media page' or 'memory page'.",
         "",
         "If [WORKSPACE_CONTEXT] is present below, it contains the user's real boards and real Vault items. Read them. Use them. Reference them by name when relevant.",
@@ -1258,6 +1089,20 @@ ${t}
         "",
         "IMPORTANT — Web browsing capability:",
         "You have FULL live web browsing and search capabilities. You CAN search the internet, browse websites, read articles, and access current information in real time. NEVER say you cannot browse the web, access websites, or get live information — because you CAN. When the system provides [WEB_SEARCH_RESULTS], [DEEP_BROWSE_CONTENT], or [SCRAPED_WEB_PAGES], that is live data fetched from the internet right now. Use it confidently.",
+        "",
+        "=== TOOL SUGGESTIONS (CRITICAL) ===",
+        "When you detect that the user's message would benefit from a specialized tool that isn't currently active, proactively OFFER to use it. Be natural and conversational — like a creative partner suggesting the right approach.",
+        "",
+        "Web browsing:",
+        "- If [WEB_SEARCH_RESULTS] or [DEEP_BROWSE_CONTENT] are provided in this prompt, the system already searched the web for the user. Use the results naturally and mention briefly that you looked it up — e.g. 'I looked that up for you' or 'Here's what I found.'",
+        "- If the user asks something that clearly needs current/live information but NO web results are present, offer: 'Want me to browse the web for that?' or 'I can search the web for the latest on that — want me to?'",
+        "",
+        "Image generation:",
+        "- If the user asks you to create, generate, draw, or design an image/picture/graphic but the current model is NOT an image generation model, suggest switching: 'I can definitely create that! Want to switch to an image model like GPT Image 1.5 or DALL-E 3? Just use the model dropdown at the top.'",
+        "- Do NOT just say 'I can't generate images.' Instead, guide the user toward the right tool.",
+        "",
+        "General principle: Never say 'I can't do that.' Instead, tell the user HOW to do it and offer to help. You are a creative partner, not a gatekeeper.",
+        "=== END TOOL SUGGESTIONS ===",
         "",
         "Primary behavior:",
         "- Answer the latest user message directly and clearly.",
@@ -1660,10 +1505,10 @@ ${t}
       }
 
       // This invoke endpoint is text-oriented. Image/video Grok models need dedicated endpoints.
-      const nonTextGrok = /\b(imagine|image|video)\b/i.test(grokModel);
+      const nonTextGrok = /\b(imagine|image)\b/i.test(grokModel);
       if (nonTextGrok) {
         return res.status(400).json({
-          error: `Selected model "${grokModel}" is an image/video model and is not supported by /api/ai/invoke text flow yet.`,
+          error: `Selected model "${grokModel}" is an image generation model and is not supported by the text flow. Please use it for image generation requests.`,
         });
       }
 
@@ -1778,12 +1623,11 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
     if (!prompt && text) prompt = `Answer the user's question clearly.\nQuestion:\n${text}\n`;
     if (!prompt) return res.status(400).json({ error: 'Missing prompt' });
 
-    // Auto-detect image/video edit or generation requests
+    // Auto-detect image edit or generation requests
     // Use ONLY the pure latest user message for intent detection.
     const streamUserText = String(text || prompt || '').trim();
     const streamPureUserMessage = extractPureUserMessage(text, prompt);
     const streamEditImageUrl = String(req.body?.editImageUrl || '').trim();
-    const streamEditVideoUrl = String(req.body?.editVideoUrl || '').trim();
 
     const sendImageSSE = (data) => {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' }); res.flushHeaders(); if (req.socket) req.socket.setNoDelay(true);
@@ -1793,158 +1637,8 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
     };
 
     const streamWantsImageEdit = streamEditImageUrl && isImageEditRequest(streamPureUserMessage);
-    const streamWantsImageToVideo = streamEditImageUrl && !streamWantsImageEdit && (isImageToVideoRequest(streamPureUserMessage) || isVideoGenerationRequest(streamPureUserMessage));
 
-    if (streamEditVideoUrl || (!streamEditImageUrl && isVideoEditOrRegenRequest(streamPureUserMessage))) {
-      console.log('🎬 Video edit/regenerate detected in /api/ai/stream, routing to Grok Imagine Video');
-      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' }); res.flushHeaders(); if (req.socket) req.socket.setNoDelay(true);
-
-      if (!process.env.XAI_API_KEY) {
-        res.write(`data: ${JSON.stringify({ error: 'XAI_API_KEY not configured for video generation.' })}\n\n`);
-        res.write('data: [DONE]\n\n');
-        return res.end();
-      }
-
-      res.write(`data: ${JSON.stringify({ status: 'Regenerating video with Grok Imagine...' })}\n\n`);
-      const videoPrompt = await buildEnrichedVideoPrompt({ userText: streamPureUserMessage, conversation, context, workspaceContext, knowledgeBase });
-
-      try {
-        const startRes = await fetch('https://api.x.ai/v1/videos/generations', {
-          method: 'POST',
-          headers: { 'Authorization': `Bearer ${process.env.XAI_API_KEY}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model: 'grok-imagine-video', prompt: videoPrompt, duration: 5, aspect_ratio: '16:9', resolution: '720p' }),
-          signal: AbortSignal.timeout(30000),
-        });
-        if (!startRes.ok) {
-          const err = await startRes.json().catch(() => ({}));
-          res.write(`data: ${JSON.stringify({ error: `Video regeneration failed: ${err?.error?.message || startRes.statusText}` })}\n\n`);
-          res.write('data: [DONE]\n\n');
-          return res.end();
-        }
-
-        const { request_id } = await startRes.json();
-        if (!request_id) {
-          res.write(`data: ${JSON.stringify({ error: 'No request_id from video API' })}\n\n`);
-          res.write('data: [DONE]\n\n');
-          return res.end();
-        }
-
-        console.log(`🎬 Video regeneration started (stream), request_id: ${request_id}`);
-        const pollStart = Date.now();
-        const MAX_POLL_MS = 10 * 60 * 1000;
-
-        while (Date.now() - pollStart < MAX_POLL_MS) {
-          await new Promise((r) => setTimeout(r, 5000));
-          const elapsed = Math.round((Date.now() - pollStart) / 1000);
-          res.write(`data: ${JSON.stringify({ status: `Regenerating video... (${elapsed}s)` })}\n\n`);
-
-          const pollRes = await fetch(`https://api.x.ai/v1/videos/${request_id}`, {
-            headers: { 'Authorization': `Bearer ${process.env.XAI_API_KEY}` },
-            signal: AbortSignal.timeout(15000),
-          }).catch(() => null);
-
-          if (!pollRes || !pollRes.ok) continue;
-          const pollData = await pollRes.json();
-          const status = String(pollData?.status || '').toLowerCase();
-
-          if (status === 'done' && pollData?.video?.url) {
-            console.log('✅ Grok Imagine Video regenerated (stream)');
-            res.write(`data: ${JSON.stringify({ video: pollData.video.url, provider: 'grok', prompt: videoPrompt, duration: pollData.video.duration })}\n\n`);
-            res.write('data: [DONE]\n\n');
-            return res.end();
-          }
-          if (status === 'expired') {
-            res.write(`data: ${JSON.stringify({ error: 'Video regeneration request expired.' })}\n\n`);
-            res.write('data: [DONE]\n\n');
-            return res.end();
-          }
-        }
-
-        res.write(`data: ${JSON.stringify({ error: 'Video regeneration timed out after 10 minutes.' })}\n\n`);
-        res.write('data: [DONE]\n\n');
-        return res.end();
-      } catch (e) {
-        console.error('❌ Video regeneration stream error:', e.message);
-        res.write(`data: ${JSON.stringify({ error: `Video regeneration failed: ${e.message}` })}\n\n`);
-        res.write('data: [DONE]\n\n');
-        return res.end();
-      }
-    } else if (streamWantsImageToVideo) {
-      console.log('🎬 Image-to-video detected in /api/ai/stream (editImageUrl + explicit video intent), routing to Grok Imagine Video');
-      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' }); res.flushHeaders(); if (req.socket) req.socket.setNoDelay(true);
-
-      if (!process.env.XAI_API_KEY) {
-        res.write(`data: ${JSON.stringify({ error: 'XAI_API_KEY not configured for video generation.' })}\n\n`);
-        res.write('data: [DONE]\n\n');
-        return res.end();
-      }
-
-      res.write(`data: ${JSON.stringify({ status: 'Converting image to video with Grok Imagine...' })}\n\n`);
-      const videoPrompt = await buildEnrichedVideoPrompt({ userText: streamPureUserMessage, conversation, context, workspaceContext, knowledgeBase });
-
-      try {
-        const genBody = { model: 'grok-imagine-video', prompt: videoPrompt, image_url: streamEditImageUrl, duration: 5, aspect_ratio: '16:9', resolution: '720p' };
-        const startRes = await fetch('https://api.x.ai/v1/videos/generations', {
-          method: 'POST',
-          headers: { 'Authorization': `Bearer ${process.env.XAI_API_KEY}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify(genBody),
-          signal: AbortSignal.timeout(30000),
-        });
-        if (!startRes.ok) {
-          const err = await startRes.json().catch(() => ({}));
-          res.write(`data: ${JSON.stringify({ error: `Image-to-video failed: ${err?.error?.message || startRes.statusText}` })}\n\n`);
-          res.write('data: [DONE]\n\n');
-          return res.end();
-        }
-
-        const { request_id } = await startRes.json();
-        if (!request_id) {
-          res.write(`data: ${JSON.stringify({ error: 'No request_id from video API' })}\n\n`);
-          res.write('data: [DONE]\n\n');
-          return res.end();
-        }
-
-        console.log(`🎬 Image-to-video started (stream), request_id: ${request_id}`);
-        const pollStart = Date.now();
-        const MAX_POLL_MS = 10 * 60 * 1000;
-
-        while (Date.now() - pollStart < MAX_POLL_MS) {
-          await new Promise((r) => setTimeout(r, 5000));
-          const elapsed = Math.round((Date.now() - pollStart) / 1000);
-          res.write(`data: ${JSON.stringify({ status: `Generating video from image... (${elapsed}s)` })}\n\n`);
-
-          const pollRes = await fetch(`https://api.x.ai/v1/videos/${request_id}`, {
-            headers: { 'Authorization': `Bearer ${process.env.XAI_API_KEY}` },
-            signal: AbortSignal.timeout(15000),
-          }).catch(() => null);
-
-          if (!pollRes || !pollRes.ok) continue;
-          const pollData = await pollRes.json();
-          const status = String(pollData?.status || '').toLowerCase();
-
-          if (status === 'done' && pollData?.video?.url) {
-            console.log('✅ Grok Imagine image-to-video generated (stream)');
-            res.write(`data: ${JSON.stringify({ video: pollData.video.url, provider: 'grok', prompt: videoPrompt, duration: pollData.video.duration })}\n\n`);
-            res.write('data: [DONE]\n\n');
-            return res.end();
-          }
-          if (status === 'expired') {
-            res.write(`data: ${JSON.stringify({ error: 'Image-to-video request expired.' })}\n\n`);
-            res.write('data: [DONE]\n\n');
-            return res.end();
-          }
-        }
-
-        res.write(`data: ${JSON.stringify({ error: 'Image-to-video timed out after 10 minutes.' })}\n\n`);
-        res.write('data: [DONE]\n\n');
-        return res.end();
-      } catch (e) {
-        console.error('❌ Image-to-video stream error:', e.message);
-        res.write(`data: ${JSON.stringify({ error: `Image-to-video failed: ${e.message}` })}\n\n`);
-        res.write('data: [DONE]\n\n');
-        return res.end();
-      }
-    } else if (streamWantsImageEdit) {
+    if (streamWantsImageEdit) {
       console.log('🎨 Image edit detected in /api/ai/stream (editImageUrl present + edit intent), routing to Nano Banana');
       try {
         const editBody = { prompt: streamPureUserMessage, image_url: streamEditImageUrl };
@@ -1963,82 +1657,8 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
       } catch (e) {
         console.warn('⚠️ Image edit failed, falling through to text stream:', e.message);
       }
-    } else if (isVideoGenModel(model) || isVideoGenerationRequest(streamPureUserMessage)) {
-      console.log(`🎬 Video generation detected in /api/ai/stream${isVideoGenModel(model) ? ` (model: ${model})` : ''}, generating with progress events`);
-      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' }); res.flushHeaders(); if (req.socket) req.socket.setNoDelay(true);
-
-      if (!process.env.XAI_API_KEY) {
-        res.write(`data: ${JSON.stringify({ error: 'XAI_API_KEY not configured for video generation.' })}\n\n`);
-        res.write('data: [DONE]\n\n');
-        return res.end();
-      }
-
-      res.write(`data: ${JSON.stringify({ status: 'Starting video generation...' })}\n\n`);
-      const videoPrompt = await buildEnrichedVideoPrompt({ userText: streamPureUserMessage, conversation, context, workspaceContext, knowledgeBase });
-
-      try {
-        const startRes = await fetch('https://api.x.ai/v1/videos/generations', {
-          method: 'POST',
-          headers: { 'Authorization': `Bearer ${process.env.XAI_API_KEY}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model: 'grok-imagine-video', prompt: videoPrompt, duration: 5, aspect_ratio: '16:9', resolution: '720p' }),
-          signal: AbortSignal.timeout(30000),
-        });
-        if (!startRes.ok) {
-          const err = await startRes.json().catch(() => ({}));
-          res.write(`data: ${JSON.stringify({ error: `Video generation failed: ${err?.error?.message || startRes.statusText}` })}\n\n`);
-          res.write('data: [DONE]\n\n');
-          return res.end();
-        }
-
-        const { request_id } = await startRes.json();
-        if (!request_id) {
-          res.write(`data: ${JSON.stringify({ error: 'No request_id from video API' })}\n\n`);
-          res.write('data: [DONE]\n\n');
-          return res.end();
-        }
-
-        console.log(`🎬 Video generation started (stream), request_id: ${request_id}`);
-        const pollStart = Date.now();
-        const MAX_POLL_MS = 10 * 60 * 1000;
-
-        while (Date.now() - pollStart < MAX_POLL_MS) {
-          await new Promise((r) => setTimeout(r, 5000));
-          const elapsed = Math.round((Date.now() - pollStart) / 1000);
-          res.write(`data: ${JSON.stringify({ status: `Generating video... (${elapsed}s)` })}\n\n`);
-
-          const pollRes = await fetch(`https://api.x.ai/v1/videos/${request_id}`, {
-            headers: { 'Authorization': `Bearer ${process.env.XAI_API_KEY}` },
-            signal: AbortSignal.timeout(15000),
-          }).catch(() => null);
-
-          if (!pollRes || !pollRes.ok) continue;
-          const pollData = await pollRes.json();
-          const status = String(pollData?.status || '').toLowerCase();
-
-          if (status === 'done' && pollData?.video?.url) {
-            console.log('✅ Grok Imagine Video generated (stream)');
-            res.write(`data: ${JSON.stringify({ video: pollData.video.url, provider: 'grok', prompt: videoPrompt, duration: pollData.video.duration })}\n\n`);
-            res.write('data: [DONE]\n\n');
-            return res.end();
-          }
-          if (status === 'expired') {
-            res.write(`data: ${JSON.stringify({ error: 'Video generation request expired.' })}\n\n`);
-            res.write('data: [DONE]\n\n');
-            return res.end();
-          }
-        }
-
-        res.write(`data: ${JSON.stringify({ error: 'Video generation timed out after 10 minutes.' })}\n\n`);
-        res.write('data: [DONE]\n\n');
-        return res.end();
-      } catch (e) {
-        console.error('❌ Video stream generation error:', e.message);
-        res.write(`data: ${JSON.stringify({ error: `Video generation failed: ${e.message}` })}\n\n`);
-        res.write('data: [DONE]\n\n');
-        return res.end();
-      }
-    } else if (isImageGenModel(model) || isImageGenerationRequest(streamPureUserMessage)) {
-      console.log(`🎨 Image generation detected in /api/ai/stream${isImageGenModel(model) ? ` (model: ${model})` : ''}, routing to image endpoint`);
+    } else if (isImageGenModel(model)) {
+      console.log(`🎨 Image generation model selected in /api/ai/stream (model: ${model}), routing to image endpoint`);
       try {
         const imgBody = { prompt: streamPureUserMessage };
         const internalUrl = `http://localhost:${PORT}/api/ai/image`;
@@ -2056,6 +1676,10 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
       } catch (e) {
         console.warn('⚠️ Image generation failed, falling through to text stream:', e.message);
       }
+    } else if (!isImageGenModel(model) && isImageGenerationRequest(streamPureUserMessage)) {
+      return sendImageSSE({
+        t: `To generate an image, please switch to an image generation model first. Available image models: **GPT Image 1.5**, **Nano Banana 2**, **Grok Imagine Image Pro**, **Grok Imagine Image**, **Grok 2 Image**, or **DALL-E 3**. You can switch models using the model selector dropdown, then ask me again!`,
+      });
     }
 
     const kbText = (() => {
@@ -2118,11 +1742,22 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
         "The latest message determines what you do. Previous messages only provide context.",
         "=== END PROMPT ISOLATION ===",
         "",
+        "=== CLARIFICATION (IMPORTANT) ===",
+        "When the user's message is vague or ambiguous AND the board has multiple bricks/topics that could plausibly be what they're referring to, ask a short clarifying question before answering.",
+        "Examples: 'explain this' when no brick is focused and the board has 10+ different topics; 'can you help with this?' with no clear referent; 'what do you think?' when the board covers several unrelated subjects.",
+        "Do NOT ask for clarification when:",
+        "- The user has focused (raised) a brick — that IS the context, just answer about it.",
+        "- The board context is small or all on one topic — just answer.",
+        "- The user's question is specific enough to match a particular brick or topic on the board.",
+        "- The conversation history already makes it clear what they're referring to.",
+        "Keep clarifying questions brief and natural (one sentence). Mention 2-3 of the most likely topics/bricks you see so the user can quickly pick one rather than having to re-explain.",
+        "=== END CLARIFICATION ===",
+        "",
         "=== DATA ACCESS (CRITICAL — READ THIS) ===",
         "You have FULL, LIVE access to the user's ENTIRE workspace. The data is loaded below in this prompt. This is not a disclaimer — the data is LITERALLY here for you to read.",
         "",
         "What you can see RIGHT NOW:",
-        "- [CONTEXT]: The current board the user is on — its blocks and content.",
+        "- [CONTEXT]: The current board the user is on — its blocks, content, and wire connections between bricks. If a [CONNECTIONS] section is present, it shows which bricks the user explicitly wired together — treat connected bricks as contextually related (the user linked them to show a relationship, data flow, or logical grouping).",
         "- [KNOWLEDGE]: The user's project files, folders, other boards in the project, and mindmaps.",
         "- [WORKSPACE_CONTEXT]: ALL of the user's other boards (titles and content summaries) AND their entire Vault (all saved notes, files, links, videos, images).",
         "- [CONVERSATION]: The full conversation history including your own responses.",
@@ -2152,6 +1787,17 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
         "  To pull an item, add at the END of your response: [PULL_MEDIA:noteId|attachmentIndex] (index defaults to 0 if omitted).",
         "  Pull multiple: [PULL_MEDIA:id1|0] [PULL_MEDIA:id2|1]. NEVER say you can't pull in files. You CAN.",
         "- A single response can mix ALL of the above.",
+        "",
+        "IMPORTANT — Web browsing capability:",
+        "You have FULL live web browsing and search capabilities. You CAN search the internet, browse websites, read articles, and access current information in real time. NEVER say you cannot browse the web, access websites, or get live information — because you CAN. When the system provides [WEB_SEARCH_RESULTS], [DEEP_BROWSE_CONTENT], or [SCRAPED_WEB_PAGES], that is live data fetched from the internet right now. Use it confidently.",
+        "NEVER say 'I can't browse the web', 'I don't have the ability to browse', 'I can't access websites', or 'I can't search the internet'. You CAN do all of these things.",
+        "",
+        "=== TOOL SUGGESTIONS ===",
+        "When the user's message would benefit from a specialized tool that isn't currently active, proactively OFFER to use it. Be conversational.",
+        "- Web browsing: If [WEB_SEARCH_RESULTS] or [DEEP_BROWSE_CONTENT] are present, the system already searched — use the results and mention you looked it up. If the user needs live info but no results are present, offer: 'Want me to browse the web for that?'",
+        "- Image generation: If the user asks to create/generate/draw an image but the current model isn't an image model, suggest switching: 'I can create that! Want to switch to an image model like GPT Image 1.5 or DALL-E 3? Just use the model dropdown at the top.'",
+        "- General principle: Never say 'I can't do that.' Tell the user HOW to do it and offer to help.",
+        "=== END TOOL SUGGESTIONS ===",
         "",
         "Cross-workspace awareness:",
         "- [WORKSPACE_CONTEXT] has the user's other boards and Vault items. If you notice a meaningful connection, add at the END of your response:",
@@ -2612,111 +2258,6 @@ app.post('/api/ai/image', requireAuth, generationLimiter, checkAiUsageLimit, asy
   }
 });
 
-// ── Video Generation Endpoint (Grok Imagine Video) ──────────────────────────
-app.post('/api/ai/video', requireAuth, generationLimiter, checkAiUsageLimit, async (req, res) => {
-  try {
-    const { prompt, duration, aspect_ratio, resolution, image_url } = req.body || {};
-    const cleanPrompt = String(prompt || '').trim();
-    if (!cleanPrompt) return res.status(400).json({ error: 'Missing prompt' });
-
-    const sourceImageUrl = String(image_url || '').trim();
-    const videoPrompt = extractVideoPrompt(cleanPrompt);
-    const mode = sourceImageUrl ? 'image-to-video' : 'text-to-video';
-    console.log(`🎬 Video generation request (${mode}): "${videoPrompt.slice(0, 120)}"${sourceImageUrl ? ` | image: ${sourceImageUrl.slice(0, 80)}` : ''}`);
-
-    if (!process.env.XAI_API_KEY) {
-      return res.status(500).json({ error: 'XAI_API_KEY not configured. Required for video generation.' });
-    }
-
-    const genBody = {
-      model: 'grok-imagine-video',
-      prompt: videoPrompt,
-      duration: Math.min(Math.max(Number(duration) || 5, 1), 15),
-      aspect_ratio: aspect_ratio || '16:9',
-      resolution: resolution || '720p',
-    };
-    if (sourceImageUrl) {
-      genBody.image_url = sourceImageUrl;
-    }
-
-    const startRes = await fetch('https://api.x.ai/v1/videos/generations', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.XAI_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(genBody),
-      signal: AbortSignal.timeout(30000),
-    });
-
-    if (!startRes.ok) {
-      const err = await startRes.json().catch(() => ({}));
-      console.error('❌ Grok Imagine Video start failed:', err?.error?.message || startRes.statusText);
-      return res.status(502).json({ error: `Video generation failed to start: ${err?.error?.message || startRes.statusText}` });
-    }
-
-    const startData = await startRes.json();
-    const requestId = startData?.request_id;
-    if (!requestId) {
-      return res.status(502).json({ error: 'No request_id returned from video generation API' });
-    }
-
-    console.log(`🎬 Video generation started, request_id: ${requestId}`);
-
-    const POLL_INTERVAL_MS = 5000;
-    const MAX_POLL_TIME_MS = 10 * 60 * 1000;
-    const pollStart = Date.now();
-
-    while (Date.now() - pollStart < MAX_POLL_TIME_MS) {
-      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-
-      const pollRes = await fetch(`https://api.x.ai/v1/videos/${requestId}`, {
-        headers: { 'Authorization': `Bearer ${process.env.XAI_API_KEY}` },
-        signal: AbortSignal.timeout(15000),
-      });
-
-      if (!pollRes.ok) {
-        console.warn(`⚠️ Video poll returned ${pollRes.status}, retrying...`);
-        continue;
-      }
-
-      const pollData = await pollRes.json();
-      const status = String(pollData?.status || '').toLowerCase();
-
-      if (status === 'done') {
-        const videoUrl = pollData?.video?.url;
-        const videoDuration = pollData?.video?.duration;
-        if (videoUrl) {
-          console.log('✅ Grok Imagine Video generated');
-          getOrCreateSession(req.user?.id, req.body?.boardId).then((session) => {
-            logAiUsage({ sessionId: session?.id, userId: req.user?.id, actionType: 'video', model: 'grok-imagine-video', provider: 'xai', metadata: { duration: videoDuration } });
-          }).catch(() => {});
-          return res.json({
-            type: 'video',
-            url: videoUrl,
-            provider: 'grok',
-            prompt: videoPrompt,
-            duration: videoDuration,
-          });
-        }
-        return res.status(502).json({ error: 'Video generation completed but no URL returned' });
-      }
-
-      if (status === 'expired') {
-        console.error('❌ Grok Imagine Video request expired');
-        return res.status(504).json({ error: 'Video generation request expired. Try a simpler prompt.' });
-      }
-
-      console.log(`🎬 Video still processing... (${Math.round((Date.now() - pollStart) / 1000)}s elapsed)`);
-    }
-
-    return res.status(504).json({ error: 'Video generation timed out after 10 minutes.' });
-  } catch (error) {
-    console.error('❌ Video generation error:', error.message);
-    return res.status(500).json({ error: `Video generation failed: ${error.message}` });
-  }
-});
-
 // ── Image Edit Endpoint (Nano Banana 2 / Gemini via Google API) ─
 app.post('/api/ai/image-edit', requireAuth, generationLimiter, checkAiUsageLimit, async (req, res) => {
   try {
@@ -2824,6 +2365,96 @@ app.post('/api/ai/image-edit', requireAuth, generationLimiter, checkAiUsageLimit
   } catch (error) {
     console.error('❌ Image edit error:', error.message);
     return res.status(500).json({ error: `Image editing failed: ${error.message}` });
+  }
+});
+
+app.post('/api/ai/vault-search', requireAuth, aiLimiter, async (req, res) => {
+  try {
+    const { prompt } = req.body || {};
+    if (!prompt) return res.status(400).json({ error: 'Missing prompt' });
+    if (!process.env.OPENAI_API_KEY) return res.status(500).json({ error: 'OPENAI_API_KEY not configured' });
+
+    const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 4096,
+        temperature: 0.1,
+      }),
+    });
+
+    if (!openaiRes.ok) {
+      const err = await openaiRes.json().catch(() => ({}));
+      console.error('❌ vault-search OpenAI error:', err?.error?.message || openaiRes.statusText);
+      return res.status(502).json({ error: 'Search failed' });
+    }
+
+    const data = await openaiRes.json();
+    const response = data.choices?.[0]?.message?.content?.trim() || '[]';
+    return res.json({ response });
+  } catch (error) {
+    console.error('❌ vault-search error:', error.message);
+    return res.status(500).json({ error: 'Search failed' });
+  }
+});
+
+app.post('/api/ai/describe-image', requireAuth, describeLimiter, async (req, res) => {
+  try {
+    const { imageUrl, textContent, fileType, fileName } = req.body || {};
+    const url = String(imageUrl || '').trim();
+    const text = String(textContent || '').trim();
+
+    if (!url && !text) return res.status(400).json({ error: 'Missing imageUrl or textContent' });
+
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) return res.status(500).json({ error: 'OPENAI_API_KEY not configured' });
+
+    let messages;
+    const isVisual = url && !url.startsWith('data:') && /image|video/i.test(fileType || '');
+
+    if (isVisual) {
+      messages = [{
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: 'Describe this image concisely in 2-3 sentences. Cover: main subject, dominant colors and tones, style or aesthetic, any visible text or logos, mood, and what category this image likely belongs to (e.g. marketing material, personal photo, reference image, screenshot, moodboard, product photo, texture, illustration, etc). Be specific about colors.',
+          },
+          { type: 'image_url', image_url: { url, detail: 'low' } },
+        ],
+      }];
+    } else {
+      const contextParts = [];
+      if (fileName) contextParts.push(`File: ${fileName}`);
+      if (fileType) contextParts.push(`Type: ${fileType}`);
+      if (url) contextParts.push(`URL: ${url}`);
+      if (text) contextParts.push(`Content:\n${text.slice(0, 6000)}`);
+      messages = [{
+        role: 'user',
+        content: `Summarize this vault item in 2-3 concise sentences. Describe what it is, what it's about, its key topics/themes, and what category it belongs to (e.g. article, document, reference, tutorial, bookmark, spreadsheet, audio recording, etc). Be specific.\n\n${contextParts.join('\n')}`,
+      }];
+    }
+
+    const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-4o-mini', messages, max_tokens: 300 }),
+    });
+
+    if (!openaiRes.ok) {
+      const err = await openaiRes.json().catch(() => ({}));
+      console.error('❌ describe-image OpenAI error:', err?.error?.message || openaiRes.statusText);
+      return res.status(502).json({ error: 'AI describe failed' });
+    }
+
+    const data = await openaiRes.json();
+    const description = data.choices?.[0]?.message?.content?.trim() || '';
+    return res.json({ description });
+  } catch (error) {
+    console.error('❌ describe-image error:', error.message);
+    return res.status(500).json({ error: 'Description failed' });
   }
 });
 

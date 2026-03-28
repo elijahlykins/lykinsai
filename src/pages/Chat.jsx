@@ -350,6 +350,7 @@ export default function ChatPage() {
   const mediaStreamRef = useRef(null);
   const audioChunksRef = useRef([]);
   const canvasHandoffAppliedRef = useRef(false);
+  const pendingResendRef = useRef(false);
   const thinkingStatus = useThinkingStatus(isLoading);
 
   const rotatingPhrases = useMemo(() => {
@@ -589,6 +590,14 @@ export default function ChatPage() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!pendingResendRef.current || isLoading) return;
+    const text = String(input || "").trim();
+    if (!text) return;
+    pendingResendRef.current = false;
+    sendMessage();
+  });
+
   const conversation = useMemo(
     () =>
       messages.map((m) => ({
@@ -758,13 +767,27 @@ export default function ChatPage() {
         return;
       }
 
+      if (data?.type === "image" && data?.url) {
+        setMessages((prev) => {
+          const next = [...prev];
+          next[assistantMessageIndex] = {
+            role: "assistant",
+            content: "",
+            generatedImage: { url: data.url, prompt: data.prompt || "" },
+          };
+          return next;
+        });
+        return;
+      }
+
       const reply = String(data?.response || "").trim() || "No response returned.";
+      const toolSuggestion = data?.toolSuggestion || null;
       let currentText = "";
       for (let i = 0; i < reply.length; i++) {
         currentText += reply[i];
         setMessages((prev) => {
           const next = [...prev];
-          next[assistantMessageIndex] = { role: "assistant", content: currentText };
+          next[assistantMessageIndex] = { role: "assistant", content: currentText, ...(toolSuggestion ? { toolSuggestion } : {}) };
           return next;
         });
         await new Promise((resolve) => setTimeout(resolve, TYPING_DELAY_MS));
@@ -1477,15 +1500,13 @@ export default function ChatPage() {
                   </SelectGroup>
                   <SelectSeparator />
                   <SelectGroup>
-                    <SelectLabel>Image & Video Gen</SelectLabel>
+                    <SelectLabel>Image Gen</SelectLabel>
                     <SelectItem value="gpt-image-1.5" hint="OpenAI, images">GPT Image 1.5</SelectItem>
                     <SelectItem value="gemini-3.1-flash-image-preview" hint="Google, images">Nano Banana 2</SelectItem>
                     <SelectItem value="grok-imagine-image-pro" hint="xAI, pro images">Grok Imagine Image Pro</SelectItem>
                     <SelectItem value="grok-imagine-image" hint="xAI, images">Grok Imagine Image</SelectItem>
                     <SelectItem value="grok-2-image-1212" hint="xAI, images">Grok 2 Image</SelectItem>
                     <SelectItem value="dall-e-3" hint="OpenAI, images">DALL-E 3</SelectItem>
-                    <SelectItem value="veo-3.1-generate-preview" hint="Google, video">Veo 3.1</SelectItem>
-                    <SelectItem value="grok-imagine-video" hint="xAI, video">Grok Imagine Video</SelectItem>
                   </SelectGroup>
                   <SelectSeparator />
                   <SelectGroup>
@@ -1653,6 +1674,16 @@ export default function ChatPage() {
                       ) : (
                         msg.content
                       )}
+                      {msg.generatedImage?.url && (
+                        <div className="mt-2">
+                          <img
+                            src={msg.generatedImage.url}
+                            alt={msg.generatedImage.prompt || "Generated image"}
+                            className="rounded-xl max-w-full max-h-[480px] object-contain shadow-md"
+                            draggable={false}
+                          />
+                        </div>
+                      )}
                       {Array.isArray(msg.attachments) && msg.attachments.length > 0 && (
                         <div className="mt-2 flex flex-wrap gap-2 items-end">
                           {msg.attachments.map((att) => {
@@ -1691,6 +1722,31 @@ export default function ChatPage() {
                               </a>
                             );
                           })}
+                        </div>
+                      )}
+                      {msg.toolSuggestion?.type === "switch_model" && Array.isArray(msg.toolSuggestion.models) && (
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {msg.toolSuggestion.models.map((m) => (
+                            <button
+                              key={m.id}
+                              type="button"
+                              onClick={() => {
+                                const userMsg = messages[idx - 1];
+                                const originalText = userMsg?.role === "user" ? String(userMsg.content || "").trim() : "";
+                                updateSelectedModel(m.id);
+                                setMessages((prev) => prev.filter((_, i) => i !== idx && i !== idx - 1));
+                                if (originalText) {
+                                  setInput(originalText);
+                                  pendingResendRef.current = true;
+                                }
+                              }}
+                              className="inline-flex items-center gap-1.5 rounded-full border border-black/15 dark:border-white/20 bg-white/50 dark:bg-white/8 px-3 py-1.5 text-xs font-medium text-black dark:text-white hover:bg-black/8 dark:hover:bg-white/15 hover:border-black/25 dark:hover:border-white/35 transition-all active:scale-95"
+                            >
+                              <ImageIcon className="w-3.5 h-3.5 opacity-60" />
+                              <span>{m.label}</span>
+                              {m.hint && <span className="opacity-45 text-[0.65rem]">{m.hint}</span>}
+                            </button>
+                          ))}
                         </div>
                       )}
                       {msg.role === "assistant" && isLoading && idx === messages.length - 1 ? (
@@ -1735,11 +1791,13 @@ export default function ChatPage() {
             </button>
           </div>
           <div className="flex-1 min-h-0">
-            <iframe
-              src="/memory?embedded=1"
-              title="Memory"
-              className="w-full h-full border-0 bg-transparent"
-            />
+            {showMemorySidebar && (
+              <iframe
+                src="/memory?embedded=1"
+                title="Memory"
+                className="w-full h-full border-0 bg-transparent"
+              />
+            )}
           </div>
         </div>
       </aside>

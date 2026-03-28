@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { createPortal } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Trash2, ZoomIn, ZoomOut, Maximize, ChevronUp, ChevronDown, Copy, CopyPlus, Send, Palette, Type as TypeIcon, Square, Mic, MoreHorizontal, Sparkles, FileText, Maximize2, ArrowUpToLine, ArrowDownToLine, Archive, Check, Mouse } from "lucide-react";
+import { Trash2, ZoomIn, ZoomOut, Maximize, ChevronUp, ChevronDown, Copy, CopyPlus, Send, Palette, Type as TypeIcon, Square, Mic, MoreHorizontal, Sparkles, FileText, Maximize2, ArrowUpToLine, ArrowDownToLine, Archive, Check, Mouse, Highlighter, Search, Brain, ListCollapse } from "lucide-react";
 import { useCanvasStore } from "@/store/canvasStore";
 import { isInViewport } from "@/canvas/utils/isInViewport";
 import { snapToGrid } from "@/canvas/utils/snap";
@@ -815,6 +815,9 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
   const [vaultSavedId, setVaultSavedId] = useState<string | null>(null);
   const [hoveredSpecialBlockId, setHoveredSpecialBlockId] = useState<string | null>(null);
   const [deleteZoneOpen, setDeleteZoneOpen] = useState(false);
+  const [dragActiveForUI, setDragActiveForUI] = useState(false);
+  const [trashHover, setTrashHover] = useState(false);
+  const trashRef = useRef<HTMLDivElement>(null);
   const [wireDrag, setWireDrag] = useState<{
     fromId: string;
     fromSide: WireSide;
@@ -946,6 +949,242 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
   const aiAnswerMeasureRef = useRef<HTMLDivElement | null>(null);
   const aiPanelSizeRef = useRef<{ w: number; h: number }>({ w: 360, h: 140 });
   const aiPanelDragRef = useRef<{ startX: number; startY: number; originLeft: number; originTop: number } | null>(null);
+
+  // ── Text-selection toolbar state ──
+  const [selToolbar, setSelToolbar] = useState<{
+    visible: boolean;
+    x: number;
+    y: number;
+    text: string;
+    blockId: string | null;
+    highlightSub: boolean;
+    textColorSub: boolean;
+  }>({ visible: false, x: 0, y: 0, text: "", blockId: null, highlightSub: false, textColorSub: false });
+  const selToolbarRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const onSel = () => {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed || !sel.toString().trim()) {
+        setSelToolbar((s) => (s.visible ? { ...s, visible: false, highlightSub: false, textColorSub: false } : s));
+        return;
+      }
+      const anchor = sel.anchorNode;
+      const focus = sel.focusNode;
+      if (!anchor || !focus) return;
+      const brickEl = (anchor instanceof Element ? anchor : anchor.parentElement)?.closest?.("[data-brick-shell]") as HTMLElement | null;
+      if (!brickEl) {
+        setSelToolbar((s) => (s.visible ? { ...s, visible: false, highlightSub: false, textColorSub: false } : s));
+        return;
+      }
+      const bid = brickEl.getAttribute("data-block-id") || null;
+      const range = sel.getRangeAt(0);
+      const rect = range.getBoundingClientRect();
+      if (rect.width === 0 && rect.height === 0) return;
+      const tx = rect.left + rect.width / 2;
+      const ty = rect.top - 10;
+      setSelToolbar({ visible: true, x: tx, y: ty, text: sel.toString(), blockId: bid, highlightSub: false, textColorSub: false });
+    };
+    document.addEventListener("selectionchange", onSel);
+    return () => document.removeEventListener("selectionchange", onSel);
+  }, []);
+
+  const selToolbarHighlightColors = useMemo(() => [
+    { label: "Yellow", value: "rgba(250,204,21,0.45)" },
+    { label: "Green", value: "rgba(74,222,128,0.40)" },
+    { label: "Blue", value: "rgba(96,165,250,0.40)" },
+    { label: "Pink", value: "rgba(244,114,182,0.40)" },
+    { label: "Purple", value: "rgba(167,139,250,0.40)" },
+    { label: "Orange", value: "rgba(251,146,60,0.40)" },
+    { label: "Remove", value: "" },
+  ], []);
+  const selToolbarTextColors = useMemo(() => [
+    { label: "Default", value: "" },
+    { label: "Blue", value: "#3B82F6" },
+    { label: "Green", value: "#16A34A" },
+    { label: "Red", value: "#DC2626" },
+    { label: "Purple", value: "#7C3AED" },
+    { label: "Orange", value: "#EA580C" },
+  ], []);
+
+  const isSelectionInEditable = () => {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return false;
+    const container = sel.getRangeAt(0).commonAncestorContainer;
+    const el = container instanceof Element ? container : container.parentElement;
+    return Boolean(el?.closest?.("[contenteditable='true']"));
+  };
+
+  const enterTypingAndReselect = (bid: string, selectedText: string, thenApply: (sel: Selection, range: Range) => void) => {
+    setTypingBlockId(bid);
+    focusBrickInputById(bid);
+    const attempt = (tries: number) => {
+      if (tries <= 0) return;
+      requestAnimationFrame(() => {
+        const editorEl = document.querySelector(`[data-canvas-brick-editor-id="${bid}"]`) as HTMLElement | null;
+        if (!editorEl || !editorEl.isContentEditable) { attempt(tries - 1); return; }
+        const fullText = editorEl.textContent || "";
+        const idx = fullText.indexOf(selectedText);
+        if (idx < 0) return;
+        let charCount = 0;
+        let startNode: Node | null = null;
+        let startOff = 0;
+        let endNode: Node | null = null;
+        let endOff = 0;
+        const tw = document.createTreeWalker(editorEl, NodeFilter.SHOW_TEXT);
+        let tn = tw.nextNode();
+        while (tn) {
+          const len = tn.textContent?.length || 0;
+          if (!startNode && charCount + len > idx) {
+            startNode = tn;
+            startOff = idx - charCount;
+          }
+          if (!endNode && charCount + len >= idx + selectedText.length) {
+            endNode = tn;
+            endOff = idx + selectedText.length - charCount;
+            break;
+          }
+          charCount += len;
+          tn = tw.nextNode();
+        }
+        if (!startNode || !endNode) return;
+        const r = document.createRange();
+        r.setStart(startNode, startOff);
+        r.setEnd(endNode, endOff);
+        const s = window.getSelection();
+        if (!s) return;
+        s.removeAllRanges();
+        s.addRange(r);
+        thenApply(s, r);
+      });
+    };
+    attempt(5);
+  };
+
+  const saveFormattedHtmlForEditor = useCallback((rangeContainer: Node) => {
+    const el = rangeContainer instanceof Element ? rangeContainer : rangeContainer.parentElement;
+    const editable = el?.closest?.("[data-canvas-brick-editor-id]") as HTMLElement | null;
+    if (!editable) return;
+    const bid = editable.getAttribute("data-canvas-brick-editor-id");
+    if (!bid) return;
+    const html = editable.innerHTML;
+    const hasFormatting = /<mark[\s>]|<span[^>]*data-sel-color/.test(html);
+    const st = useCanvasStore.getState();
+    const cur: any = (st.blocks as any)?.[bid];
+    if (!cur) return;
+    const data = cur?.data && typeof cur.data === "object" ? { ...cur.data } : {};
+    if (hasFormatting) data.formattedHtml = html;
+    else delete data.formattedHtml;
+    st.updateBlock(bid as any, { data } as any);
+  }, []);
+
+  const applyHighlightToRange = useCallback((color: string) => {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return;
+    const range = sel.getRangeAt(0);
+    const anchor = range.commonAncestorContainer;
+    const contents = range.extractContents();
+    const walker = document.createTreeWalker(contents, NodeFilter.SHOW_ELEMENT);
+    let n = walker.nextNode();
+    while (n) {
+      if (n instanceof HTMLElement && n.tagName === "MARK") {
+        const parent = n.parentNode;
+        while (n.firstChild) parent?.insertBefore(n.firstChild, n);
+        parent?.removeChild(n);
+        n = walker.nextNode();
+        continue;
+      }
+      n = walker.nextNode();
+    }
+    if (color) {
+      const mark = document.createElement("mark");
+      mark.style.backgroundColor = color;
+      mark.style.borderRadius = "2px";
+      mark.style.padding = "0 1px";
+      mark.appendChild(contents);
+      range.insertNode(mark);
+    } else {
+      range.insertNode(contents);
+    }
+    sel.removeAllRanges();
+    saveFormattedHtmlForEditor(anchor);
+  }, [saveFormattedHtmlForEditor]);
+
+  const applyTextColorToRange = useCallback((color: string) => {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return;
+    const range = sel.getRangeAt(0);
+    const anchor = range.commonAncestorContainer;
+    const contents = range.extractContents();
+    const walker = document.createTreeWalker(contents, NodeFilter.SHOW_ELEMENT);
+    let n = walker.nextNode();
+    while (n) {
+      if (n instanceof HTMLElement && n.tagName === "SPAN" && n.dataset.selColor) {
+        const parent = n.parentNode;
+        while (n.firstChild) parent?.insertBefore(n.firstChild, n);
+        parent?.removeChild(n);
+        n = walker.nextNode();
+        continue;
+      }
+      n = walker.nextNode();
+    }
+    if (color) {
+      const span = document.createElement("span");
+      span.style.color = color;
+      span.dataset.selColor = "1";
+      span.appendChild(contents);
+      range.insertNode(span);
+    } else {
+      range.insertNode(contents);
+    }
+    sel.removeAllRanges();
+    saveFormattedHtmlForEditor(anchor);
+  }, [saveFormattedHtmlForEditor]);
+
+  const applySelectionHighlight = useCallback((color: string) => {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed) return;
+    const selectedText = sel.toString();
+    if (isSelectionInEditable()) {
+      applyHighlightToRange(color);
+    } else {
+      const bid = selToolbar.blockId;
+      if (bid) {
+        enterTypingAndReselect(bid, selectedText, () => applyHighlightToRange(color));
+      }
+    }
+    setSelToolbar((s) => ({ ...s, visible: false, highlightSub: false, textColorSub: false }));
+  }, [selToolbar.blockId, applyHighlightToRange]);
+
+  const applySelectionTextColor = useCallback((color: string) => {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed) return;
+    const selectedText = sel.toString();
+    if (isSelectionInEditable()) {
+      applyTextColorToRange(color);
+    } else {
+      const bid = selToolbar.blockId;
+      if (bid) {
+        enterTypingAndReselect(bid, selectedText, () => applyTextColorToRange(color));
+      }
+    }
+    setSelToolbar((s) => ({ ...s, visible: false, highlightSub: false, textColorSub: false }));
+  }, [selToolbar.blockId, applyTextColorToRange]);
+
+  const dispatchSelectionAiAction = useCallback((action: string, prompt: string) => {
+    const text = selToolbar.text;
+    const bid = selToolbar.blockId;
+    if (!text.trim()) return;
+    window.dispatchEvent(new CustomEvent("omnia_ai_brick_action", {
+      detail: {
+        blockId: bid || "selection",
+        action,
+        prompt: `${prompt}\n\nSelected text:\n"${text}"`,
+      },
+    }));
+    window.getSelection()?.removeAllRanges();
+    setSelToolbar((s) => ({ ...s, visible: false, highlightSub: false, textColorSub: false }));
+  }, [selToolbar.text, selToolbar.blockId]);
 
   const [dictatingBlockId, setDictatingBlockId] = useState<string | null>(null);
   const [dictateTranscribingBlockId, setDictateTranscribingBlockId] = useState<string | null>(null);
@@ -1378,6 +1617,23 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       if (d.pointerId != null && ev.pointerId !== d.pointerId) return;
       lastPointerClientRef.current = { x: ev.clientX, y: ev.clientY };
 
+      const trashEl = trashRef.current;
+      if (trashEl) {
+        const tr = trashEl.getBoundingClientRect();
+        const PAD = 10;
+        let over = ev.clientX >= tr.left - PAD && ev.clientX <= tr.right + PAD && ev.clientY >= tr.top - PAD && ev.clientY <= tr.bottom + PAD;
+        if (!over) {
+          const ids = d.ids || [];
+          for (const id of ids) {
+            const el = document.querySelector(`[data-canvas-block][data-block-id="${id}"]`) as HTMLElement | null;
+            if (!el) continue;
+            const br = el.getBoundingClientRect();
+            if (br.right >= tr.left - PAD && br.left <= tr.right + PAD && br.bottom >= tr.top - PAD && br.top <= tr.bottom + PAD) { over = true; break; }
+          }
+        }
+        setTrashHover(over);
+      }
+
       const pressedToEdge = isPressedToRightWall(ev);
       const touchingWall = pressedToEdge && anyDraggedTouchesRightWall();
       const now = performance.now();
@@ -1396,6 +1652,19 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
     };
 
     const shouldDeleteOnDrop = (ev: PointerEvent) => {
+      const trashEl = trashRef.current;
+      if (trashEl) {
+        const tr = trashEl.getBoundingClientRect();
+        const PAD = 10;
+        if (ev.clientX >= tr.left - PAD && ev.clientX <= tr.right + PAD && ev.clientY >= tr.top - PAD && ev.clientY <= tr.bottom + PAD) return true;
+        const ids = dragDeleteRef.current.ids || [];
+        for (const id of ids) {
+          const el = document.querySelector(`[data-canvas-block][data-block-id="${id}"]`) as HTMLElement | null;
+          if (!el) continue;
+          const br = el.getBoundingClientRect();
+          if (br.right >= tr.left - PAD && br.left <= tr.right + PAD && br.bottom >= tr.top - PAD && br.top <= tr.bottom + PAD) return true;
+        }
+      }
       if (!deleteZoneOpenRef.current) return false;
       const el = containerRef.current;
       if (!el) return false;
@@ -1415,6 +1684,8 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
 
       dragDeleteRef.current = { active: false, pointerId: null, primaryId: null, ids: [], touchStartAt: null };
       if (deleteZoneOpenRef.current) setDeleteZoneOpen(false);
+      setDragActiveForUI(false);
+      setTrashHover(false);
 
       if (doDelete && ids.length) {
         deleteBlocks(ids as any);
@@ -1431,7 +1702,6 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
             if (!b) continue;
             if (b.containerId) continue;
             if (b.type === "text") {
-              // When text enters a canvas block, mark it as CanvasText and keep content intact.
               st.updateBlock(id as any, {
                 containerId,
                 data: { ...(b as any).data, canvasText: true },
@@ -1449,6 +1719,8 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
     const onBlur = () => {
       dragDeleteRef.current = { active: false, pointerId: null, primaryId: null, ids: [], touchStartAt: null };
       if (deleteZoneOpenRef.current) setDeleteZoneOpen(false);
+      setDragActiveForUI(false);
+      setTrashHover(false);
     };
 
     window.addEventListener("pointermove", onMove, true);
@@ -2058,10 +2330,13 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         st.updateBlock(id as any, { content: "", width: Math.max(gridSize * 10, st.blocks[id]?.width || 0), data: { ...data, textVariant: "body", listType: "none" } } as any);
         startBrickDictation(id);
       } else if (transform === "table") {
-        const pos = { x: cur.x, y: cur.y };
-        st.deleteBlock(id);
-        const tId = st.addSpreadsheetBlockAt(pos, { rows: 3, cols: 3 });
-        st.updateBlock(tId, { width: gridSize * 10, height: gridSize * 5, data: { tableMode: true } } as any);
+        const mdTable = "| Column 1 | Column 2 | Column 3 |\n|----------|----------|----------|\n| | | |";
+        st.updateBlock(id as any, {
+          content: mdTable,
+          width: Math.max(gridSize * 18, cur.width || 0),
+          height: Math.max(gridSize * 6, cur.height || 0),
+          data: { ...data, textVariant: "body", listType: "none" },
+        } as any);
       }
     } else {
       const id = existingId || st.addTextBlockAt({ x: p.x, y: p.y }, { width: gridSize, height: gridSize, content: "", format: "plain" } as any);
@@ -2206,7 +2481,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         .join("\n");
     const ensureListSeed = (content: string, listType: "bullet" | "numbered" | "todo" | "toggle" | "quote") => {
       const s = String(content || "");
-      const marker = listType === "bullet" ? "• " : listType === "todo" ? `${TODO_EMPTY} ` : listType === "toggle" ? "▶\uFE0E " : listType === "quote" ? "" : "1. ";
+      const marker = listType === "bullet" ? "• " : listType === "todo" ? `${TODO_EMPTY} ` : listType === "toggle" ? "▷\uFE0E " : listType === "quote" ? "" : "1. ";
       if (!s.trim()) return marker;
       const firstLine = s.split("\n")[0] || "";
       if (listType === "bullet" && /^\s*(?:•|-)\s/.test(firstLine)) return s;
@@ -2216,7 +2491,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       )
         return normalizeTodoMarkers(s);
       if (listType === "numbered" && /^\s*\d+\.\s/.test(firstLine)) return s;
-      if (listType === "toggle" && /^\s*[▶▼](?:\uFE0E|\uFE0F)?\s/.test(firstLine)) return s;
+      if (listType === "toggle" && /^\s*[▶▼▸▾▷▽](?:\uFE0E|\uFE0F)?\s/.test(firstLine)) return s;
       if (listType === "quote") return s;
       return `${marker}${s}`;
     };
@@ -2302,6 +2577,22 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
     }
     if (/^\/table(?:\s+|$)/i.test(slashToken)) {
       return { content: s, variant: currentVariant, listType: currentListType, consumed: true, transform: "table" as const };
+    }
+    // Markdown shortcuts on any line: "- " or "* " → bullet, "1. " → numbered, "[] " → checklist
+    if (currentListType === "none") {
+      const mdLines = s.split("\n");
+      const lastMdLine = mdLines[mdLines.length - 1] ?? "";
+      if (/^[-*] /.test(lastMdLine)) {
+        mdLines[mdLines.length - 1] = "• " + lastMdLine.replace(/^[-*] /, "");
+        return { content: mdLines.join("\n"), variant: "body" as const, listType: "bullet" as const, consumed: true };
+      }
+      if (/^\d+\.\s/.test(lastMdLine)) {
+        return { content: s, variant: "body" as const, listType: "numbered" as const, consumed: false };
+      }
+      if (/^\[\s?\]\s/.test(lastMdLine)) {
+        mdLines[mdLines.length - 1] = "[ ] " + lastMdLine.replace(/^\[\s?\]\s/, "");
+        return { content: mdLines.join("\n"), variant: "body" as const, listType: "todo" as const, consumed: true };
+      }
     }
     return {
       content: currentListType === "todo" ? normalizeTodoMarkers(s) : s,
@@ -2638,6 +2929,23 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
     const blockSelect = (e: Event) => {
       if (groupDragRef.current.active) e.preventDefault();
     };
+    const isOverTrash = (ex: number, ey: number) => {
+      const trashEl = trashRef.current;
+      if (!trashEl) return false;
+      const tr = trashEl.getBoundingClientRect();
+      const PAD = 10;
+      if (ex >= tr.left - PAD && ex <= tr.right + PAD && ey >= tr.top - PAD && ey <= tr.bottom + PAD) return true;
+      const d = groupDragRef.current;
+      if (d.active) {
+        for (const s of d.snapshot) {
+          const el = document.querySelector(`[data-canvas-block][data-block-id="${s.id}"]`) as HTMLElement | null;
+          if (!el) continue;
+          const br = el.getBoundingClientRect();
+          if (br.right >= tr.left - PAD && br.left <= tr.right + PAD && br.bottom >= tr.top - PAD && br.top <= tr.bottom + PAD) return true;
+        }
+      }
+      return false;
+    };
     const onMove = (e: PointerEvent) => {
       const d = groupDragRef.current;
       if (!d.active) return;
@@ -2658,6 +2966,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
           setTypingBlockId(null);
         }
       }
+      setTrashHover(isOverTrash(e.clientX, e.clientY));
       const grid = gridSize;
       const snappedDx = Math.round(dx / grid) * grid;
       const snappedDy = Math.round(dy / grid) * grid;
@@ -2673,6 +2982,24 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       if (d.pointerId != null && e.pointerId !== d.pointerId) return;
       const moved = d.moved;
       const snapshot = d.snapshot;
+
+      const droppedOnTrash = moved && isOverTrash(e.clientX, e.clientY);
+      if (droppedOnTrash) {
+        for (const s of snapshot) {
+          const el = document.querySelector(`[data-canvas-block][data-block-id="${s.id}"]`) as HTMLElement | null;
+          if (el) el.style.transform = "";
+        }
+        const st = useCanvasStore.getState();
+        const ids = snapshot.map((s) => s.id).filter((id) => Boolean((st.blocks as any)[id]));
+        if (ids.length) st.deleteBlocks(ids as any);
+        groupDragRef.current = { active: false, moved: false, pointerId: null, startWorldX: 0, startWorldY: 0, startClientX: 0, startClientY: 0, snapshot: [] };
+        setLiveDragOffset(null);
+        setTrashHover(false);
+        setActivatedBrickIds([]);
+        setRaisedBrickIds([]);
+        return;
+      }
+
       if (moved) {
         const z = canvasZoomRef.current || 1;
         const dx = (e.clientX - d.startClientX) / z;
@@ -2688,6 +3015,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       }
       groupDragRef.current = { active: false, moved: false, pointerId: null, startWorldX: 0, startWorldY: 0, startClientX: 0, startClientY: 0, snapshot: [] };
       setLiveDragOffset(null);
+      setTrashHover(false);
       if (moved) {
         suppressBrickClickRef.current = true;
         window.setTimeout(() => {
@@ -4561,35 +4889,37 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
           if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement) return;
           if (t?.closest?.("[contenteditable='true']")) return;
           const blockEl = t?.closest?.("[data-canvas-block]") as HTMLElement | null;
-          if (blockEl?.hasAttribute?.("data-self-drag")) return;
-          const blockId = blockEl?.getAttribute?.("data-block-id");
-          if (blockId) {
-            window.dispatchEvent(new CustomEvent("omnia_canvas_interact"));
-            const gid = getMoveGroupId(blockId);
-            let ids = gid ? getMoveGroupMembers(gid) : [blockId];
-            const floating = floatingBrickRef.current;
-            if (floating.active && floating.ids.includes(blockId)) {
-              const merged = new Set([...ids, ...floating.ids]);
-              ids = Array.from(merged);
+          if (!blockEl?.hasAttribute?.("data-self-drag")) {
+            if (blockEl?.hasAttribute?.("data-brick-shell") && !t?.closest?.("[data-drag-handle]")) return;
+            const blockId = blockEl?.getAttribute?.("data-block-id");
+            if (blockId) {
+              window.dispatchEvent(new CustomEvent("omnia_canvas_interact"));
+              const gid = getMoveGroupId(blockId);
+              let ids = gid ? getMoveGroupMembers(gid) : [blockId];
+              const floating = floatingBrickRef.current;
+              if (floating.active && floating.ids.includes(blockId)) {
+                const merged = new Set([...ids, ...floating.ids]);
+                ids = Array.from(merged);
+              }
+              const snapshot = ids
+                .map((id) => {
+                  const b: any = blocks[id];
+                  if (!b) return null;
+                  return { id, x: Number(b.x || 0), y: Number(b.y || 0) };
+                })
+                .filter(Boolean) as Array<{ id: string; x: number; y: number }>;
+              const world = clientToWorld(e.clientX, e.clientY);
+              groupDragRef.current = {
+                active: snapshot.length > 0,
+                moved: false,
+                pointerId: e.pointerId,
+                startWorldX: world.x,
+                startWorldY: world.y,
+                startClientX: e.clientX,
+                startClientY: e.clientY,
+                snapshot,
+              };
             }
-            const snapshot = ids
-              .map((id) => {
-                const b: any = blocks[id];
-                if (!b) return null;
-                return { id, x: Number(b.x || 0), y: Number(b.y || 0) };
-              })
-              .filter(Boolean) as Array<{ id: string; x: number; y: number }>;
-            const world = clientToWorld(e.clientX, e.clientY);
-            groupDragRef.current = {
-              active: snapshot.length > 0,
-              moved: false,
-              pointerId: e.pointerId,
-              startWorldX: world.x,
-              startWorldY: world.y,
-              startClientX: e.clientX,
-              startClientY: e.clientY,
-              snapshot,
-            };
           }
         }
         // Detect drag start from any block drag handle (without modifying block drag code).
@@ -4602,6 +4932,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
 
         dragDeleteRef.current = { active: true, pointerId: e.pointerId, primaryId, ids: [primaryId], touchStartAt: null };
         if (deleteZoneOpenRef.current) setDeleteZoneOpen(false);
+        setDragActiveForUI(true);
 
         // After selection logic in the block runs, pick up the dragged group (multi-select).
         window.setTimeout(() => {
@@ -4619,13 +4950,6 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         const blockEl = t?.closest?.("[data-canvas-block]") as HTMLElement | null;
         const blockId = blockEl?.getAttribute?.("data-block-id");
         if (!blockId) return;
-        const dblBlock: any = blocks[blockId];
-        if (dblBlock?.data?.aiResponseBubble) {
-          e.stopPropagation();
-          setTypingBlockId(blockId);
-          focusBrickInputById(blockId);
-          return;
-        }
         const gid = getMoveGroupId(blockId);
         const ids = gid ? getMoveGroupMembers(gid) : [blockId];
         if (e.shiftKey && floatingBrickRef.current.active) {
@@ -5314,7 +5638,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
 
           const isAiResponseBubble = Boolean((b as any)?.data?.aiResponseBubble);
           const blockContent = String((b as any)?.content || "");
-          const hasRichMarkdown = !isAiResponseBubble && /(?:^|\n)\s*#{1,6}\s|(?:\*\*|__).+(?:\*\*|__)|```|(?:^|\n)\s*[-*]\s.+(?:\n\s*[-*]\s)/m.test(blockContent);
+          const hasRichMarkdown = !isAiResponseBubble && /(?:^|\n)\s*#{1,6}\s|(?:\*\*|__).+(?:\*\*|__)|```|(?:^|\n)\s*[-*]\s.+(?:\n\s*[-*]\s)|(?:^|\n)\|.+\|/m.test(blockContent);
           const preventTypingMode = isAiResponseBubble || hasRichMarkdown;
           const isTextBrick = String((b as any)?.type || "") === "text";
           const mode = String((b as any).mode || "").toLowerCase();
@@ -5647,8 +5971,8 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
               )
             : null;
           const brickEl = renderBrickShell(b as any, id, {
-            isActivated: isAiResponseBubble ? false : (typingBlockId === id ? false : activatedBrickIds.includes(id)),
-            isRaised: isAiResponseBubble ? false : (typingBlockId === id ? false : raisedBrickIds.includes(id)),
+            isActivated: typingBlockId === id ? false : activatedBrickIds.includes(id),
+            isRaised: typingBlockId === id ? false : raisedBrickIds.includes(id),
             isTyping: isAiResponseBubble ? typingBlockId === id : (preventTypingMode ? false : typingBlockId === id),
             enableWidthResize: isTextBrick || isAiResponseBubble || hasRichMarkdown,
             extraContent: sourcesExtraContent,
@@ -5689,16 +6013,25 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
               window.setTimeout(() => { suppressBrickClickRef.current = false; }, 50);
               const nextWidth = Math.max(gridSize * 10, newWidth);
               const nextHeight = Math.max(gridSize, newHeight);
-              updateBlock(bid as any, { width: nextWidth, height: nextHeight, data: { ...data, brickScale: nextScale, userResized: true } } as any);
+              updateBlock(bid as any, { width: nextWidth, height: nextHeight, data: { ...data, brickScale: nextScale, userResized: false } } as any);
             },
             onTypingChange: (bid, raw, meta) => {
               if (!(blocks as any)[bid]) return;
               const cur: any = (blocks as any)[bid];
               if (!cur) return;
               const data = cur?.data && typeof cur.data === "object" ? { ...cur.data } : {};
+              if (meta?.formattedHtml !== undefined) {
+                if (meta.formattedHtml) data.formattedHtml = meta.formattedHtml;
+                else delete data.formattedHtml;
+              }
               const currentVariant = (String(data.textVariant || "body").toLowerCase() as "body" | "h2" | "h1") || "body";
               const currentListType =
                 (String(data.listType || "none").toLowerCase() as "none" | "bullet" | "numbered" | "todo" | "toggle" | "quote") || "none";
+              if (meta?.exitList) {
+                updateBlock(bid as any, { content: raw, data: { ...data, textVariant: currentVariant, listType: "none" } } as any);
+                syncBrickEditorText(bid, raw);
+                return;
+              }
               const parsed = parseTextSlashVariant(raw, currentVariant, currentListType);
               if ((parsed as any).transform) {
                 const transform = (parsed as any).transform as string;
@@ -5720,10 +6053,13 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
                   } as any);
                   startBrickDictation(bid);
                 } else if (transform === "table") {
-                  const pos = { x: cur.x, y: cur.y };
-                  deleteBlock(bid);
-                  const tId = addSpreadsheetBlockAt(pos, { rows: 3, cols: 3 });
-                  updateBlock(tId, { width: gridSize * 10, height: gridSize * 5, data: { tableMode: true } } as any);
+                  const mdTable = "| Column 1 | Column 2 | Column 3 |\n|----------|----------|----------|\n| | | |";
+                  updateBlock(bid as any, {
+                    content: mdTable,
+                    width: Math.max(gridSize * 18, cur.width || 0),
+                    height: Math.max(gridSize * 6, cur.height || 0),
+                    data: { ...data, textVariant: "body", listType: "none" },
+                  } as any);
                 }
                 return;
               }
@@ -5950,8 +6286,9 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
                 return;
               }
               dropEmptyTypingBlockIfNeeded(bid);
+              const alreadyTyping = typingBlockId === bid;
               setTypingBlockId(bid);
-              focusBrickInputById(bid);
+              if (!alreadyTyping) focusBrickInputById(bid);
               setShiftAnchor(target);
             },
             onDoubleClick: undefined,
@@ -6447,6 +6784,18 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
           >
             {zoomPanelOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronUp className="w-4 h-4" />}
           </button>
+          <div
+            ref={trashRef}
+            className="flex items-center justify-center p-1.5 transition-all duration-150"
+            style={{ pointerEvents: "none" }}
+            title="Drop here to delete"
+          >
+            <Trash2 className={`transition-all duration-150 ${
+              trashHover
+                ? "w-5 h-5 text-red-500 dark:text-red-400 drop-shadow-[0_0_6px_rgba(239,68,68,0.5)]"
+                : "w-4 h-4 text-black/35 dark:text-white/35"
+            }`} />
+          </div>
           {zoomPanelOpen && (
             <div
               className="glass-control flex items-center gap-1 rounded-full px-1.5 py-1"
@@ -6499,6 +6848,119 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         </div>,
         document.body
       )}
+      {/* ── Text-selection floating toolbar ── */}
+      {selToolbar.visible && createPortal(
+        <div
+          ref={selToolbarRef}
+          className="fixed z-[9999] flex flex-col items-center"
+          style={{
+            left: `${selToolbar.x}px`,
+            top: `${selToolbar.y}px`,
+            transform: "translate(-50%, -100%)",
+            animation: "selToolbarFadeIn 0.12s ease-out",
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <div className="flex items-stretch rounded-lg overflow-hidden border border-white/50 bg-[linear-gradient(145deg,rgba(255,255,255,0.96),rgba(245,247,255,0.94))] shadow-[0_8px_32px_rgba(0,0,0,0.22)] backdrop-blur-lg">
+            {!selToolbar.highlightSub && !selToolbar.textColorSub && (
+              <>
+                <button
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium text-black/75 hover:bg-black/8 transition-colors whitespace-nowrap"
+                  title="Highlight"
+                  onClick={() => setSelToolbar((s) => ({ ...s, highlightSub: true, textColorSub: false }))}
+                >
+                  <Highlighter className="w-3.5 h-3.5" />
+                  <span>Highlight</span>
+                </button>
+                <div className="w-px bg-black/10 my-1" />
+                <button
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium text-black/75 hover:bg-black/8 transition-colors whitespace-nowrap"
+                  title="Text Color"
+                  onClick={() => setSelToolbar((s) => ({ ...s, textColorSub: true, highlightSub: false }))}
+                >
+                  <TypeIcon className="w-3.5 h-3.5" />
+                  <span>Color</span>
+                </button>
+                <div className="w-px bg-black/10 my-1" />
+                <button
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium text-blue-600 hover:bg-blue-500/10 transition-colors whitespace-nowrap"
+                  title="AI Analyze"
+                  onClick={() => dispatchSelectionAiAction("ai-analyse", "Analyse this text. Strengths, weaknesses, opportunities, risks — bullet points only, max 6 bullets. No fluff.")}
+                >
+                  <Brain className="w-3.5 h-3.5" />
+                  <span>Analyze</span>
+                </button>
+                <div className="w-px bg-black/10 my-1" />
+                <button
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium text-blue-600 hover:bg-blue-500/10 transition-colors whitespace-nowrap"
+                  title="AI Summarize"
+                  onClick={() => dispatchSelectionAiAction("ai-summary", "Summarize this in 2-3 sentences max. Core concept, value prop, who it's for. Nothing else.")}
+                >
+                  <ListCollapse className="w-3.5 h-3.5" />
+                  <span>Summarize</span>
+                </button>
+                <div className="w-px bg-black/10 my-1" />
+                <button
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium text-blue-600 hover:bg-blue-500/10 transition-colors whitespace-nowrap"
+                  title="AI Search"
+                  onClick={() => dispatchSelectionAiAction("ai-search", "Search for related information, context, and insights about this topic. Provide relevant findings.")}
+                >
+                  <Search className="w-3.5 h-3.5" />
+                  <span>Search</span>
+                </button>
+              </>
+            )}
+
+            {selToolbar.highlightSub && (
+              <div className="flex items-center gap-1 px-2 py-1.5">
+                <button
+                  className="text-[10px] text-black/50 hover:text-black/80 px-1 transition-colors"
+                  onClick={() => setSelToolbar((s) => ({ ...s, highlightSub: false }))}
+                >
+                  ←
+                </button>
+                {selToolbarHighlightColors.map((c) => (
+                  <button
+                    key={c.label}
+                    className="w-5 h-5 rounded-md border border-black/15 hover:scale-125 transition-transform flex items-center justify-center"
+                    style={{ background: c.value || "transparent" }}
+                    title={c.label}
+                    onClick={() => applySelectionHighlight(c.value)}
+                  >
+                    {!c.value && <span className="text-[8px] text-black/40">∅</span>}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {selToolbar.textColorSub && (
+              <div className="flex items-center gap-1 px-2 py-1.5">
+                <button
+                  className="text-[10px] text-black/50 hover:text-black/80 px-1 transition-colors"
+                  onClick={() => setSelToolbar((s) => ({ ...s, textColorSub: false }))}
+                >
+                  ←
+                </button>
+                {selToolbarTextColors.map((c) => (
+                  <button
+                    key={c.label}
+                    className="w-5 h-5 rounded-md border border-black/15 hover:scale-125 transition-transform flex items-center justify-center"
+                    style={{ background: c.value || "transparent" }}
+                    title={c.label}
+                    onClick={() => applySelectionTextColor(c.value)}
+                  >
+                    {!c.value && <span className="text-[8px] text-black/40">∅</span>}
+                    {c.value && <span className="text-[10px] font-bold" style={{ color: c.value, textShadow: "0 0 2px rgba(255,255,255,0.9)" }}>A</span>}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="w-2 h-2 rotate-45 bg-white/95 border-r border-b border-white/50 -mt-1" style={{ boxShadow: "2px 2px 4px rgba(0,0,0,0.08)" }} />
+        </div>,
+        document.body
+      )}
+
       <UpgradeModal modal={upgradeModal} onDismiss={dismissUpgradeModal} />
     </div>
   );

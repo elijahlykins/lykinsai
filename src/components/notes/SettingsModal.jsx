@@ -298,15 +298,13 @@ export default function SettingsModal({ isOpen, onClose }) {
                     </SelectGroup>
                     <SelectSeparator />
                     <SelectGroup>
-                      <SelectLabel>Image & Video Gen</SelectLabel>
+                      <SelectLabel>Image Gen</SelectLabel>
                       <SelectItem value="gpt-image-1.5" hint="OpenAI, images">GPT Image 1.5</SelectItem>
                       <SelectItem value="gemini-3.1-flash-image-preview" hint="Google, images">Nano Banana 2</SelectItem>
                       <SelectItem value="grok-imagine-image-pro" hint="xAI, pro images">Grok Imagine Image Pro</SelectItem>
                       <SelectItem value="grok-imagine-image" hint="xAI, images">Grok Imagine Image</SelectItem>
                       <SelectItem value="grok-2-image-1212" hint="xAI, images">Grok 2 Image</SelectItem>
                       <SelectItem value="dall-e-3" hint="OpenAI, images">DALL-E 3</SelectItem>
-                      <SelectItem value="veo-3.1-generate-preview" hint="Google, video">Veo 3.1</SelectItem>
-                      <SelectItem value="grok-imagine-video" hint="xAI, video">Grok Imagine Video</SelectItem>
                     </SelectGroup>
                     <SelectSeparator />
                     <SelectGroup>

@@ -723,7 +723,7 @@ export const ButtonBlock = memo(function ButtonBlock({ id, onMinimize, onMenu }:
                         ? <div className="px-2 py-3 text-center text-[0.625rem] text-black/40">{boards.length === 0 ? "No boards yet" : "No matches"}</div>
                         : filteredBoards.map((b) => {
                           const selected = config.navigateValue === b.id;
-                          return (<button key={b.id} type="button" className={`w-full flex items-center gap-2 px-2 py-1.5 text-left text-[0.6875rem] hover:bg-blue-50/50 ${selected ? "bg-blue-50 text-blue-700 font-medium" : "text-black/70"}`} onClick={() => save({ navigateValue: b.id, navigateLabel: b.title || "Untitled Board" })}><LayoutGrid className="w-3.5 h-3.5 flex-shrink-0 opacity-60" /><span className="truncate flex-1">{b.title || "Untitled Board"}</span>{selected && <Check className="w-3 h-3 ml-1 text-blue-500" />}</button>);
+                          return (<button key={b.id} type="button" className={`w-full flex items-center gap-2 px-2 py-1.5 text-left text-[0.6875rem] hover:bg-blue-50/50 ${selected ? "bg-blue-50 text-blue-700 font-medium" : "text-black/70"}`} onClick={() => save({ navigateValue: b.id, navigateLabel: b.title || "Untitled Grid" })}><LayoutGrid className="w-3.5 h-3.5 flex-shrink-0 opacity-60" /><span className="truncate flex-1">{b.title || "Untitled Grid"}</span>{selected && <Check className="w-3 h-3 ml-1 text-blue-500" />}</button>);
                         })
                       )}
                       {(config.navigateTarget || "page") === "project" && (filteredProjects.length === 0

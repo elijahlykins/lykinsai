@@ -1,10 +1,12 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ReactDOM from "react-dom";
+import { renderToStaticMarkup } from "react-dom/server";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Heading1, Heading2, Type, List, ListOrdered, ListChecks, ChevronRight, TextQuote, Image, Mic, MoreHorizontal, Minimize2, Maximize2, Table } from "lucide-react";
 import { useCanvasStore } from "@/store/canvasStore";
 import { getStructuredPasteFromEvent } from "@/lib/pasteFromClipboard";
+import { EditableMarkdownTable, InlineEditableTable, parseGfmTable } from "@/canvas/blocks/EditableMarkdownTable";
 import type { Block } from "@/canvas/types";
 
 export const BRICK_BEHAVIOR = {
@@ -54,7 +56,7 @@ export type BrickShellRenderOptions = {
   onPress?: (id: string, shiftKey: boolean, source: "pointerdown" | "click") => void;
   onDoubleClick?: (id: string) => void;
   isTyping?: boolean;
-  onTypingChange?: (id: string, value: string, meta?: { isPaste?: boolean }) => void;
+  onTypingChange?: (id: string, value: string, meta?: { isPaste?: boolean; exitList?: boolean; formattedHtml?: string }) => void;
   onTypingKeyDown?: (id: string, e: React.KeyboardEvent<HTMLDivElement>) => void;
   onTypingBlur?: (id: string) => void;
   enableWidthResize?: boolean;
@@ -106,7 +108,7 @@ export function canUseActiveBrickLogic() {
 function BrickTextSurface(props: {
   shell: BrickShellModel;
   isTyping: boolean;
-  onTypingChange?: (id: string, value: string, meta?: { isPaste?: boolean }) => void;
+  onTypingChange?: (id: string, value: string, meta?: { isPaste?: boolean; exitList?: boolean; formattedHtml?: string }) => void;
   onTypingKeyDown?: (id: string, e: React.KeyboardEvent<HTMLDivElement>) => void;
   onTypingBlur?: (id: string) => void;
 }) {
@@ -131,6 +133,8 @@ function BrickTextSurface(props: {
   const [showSlashMenu, setShowSlashMenu] = useState(false);
   const [activeSlashIndex, setActiveSlashIndex] = useState(0);
   const [slashMenuRect, setSlashMenuRect] = useState<{ left: number; top: number } | null>(null);
+  const aiEditHtmlRef = useRef("");
+  const aiDirtyRef = useRef(false);
   const scale = Math.max(0.5, Number(shell.brickScale || 1));
   const lineRows = shell.textVariant === "h1" ? 3 : shell.textVariant === "h2" ? 2 : 1;
   const lineHeightPx = BRICK_BEHAVIOR.gridSize * lineRows * scale;
@@ -413,21 +417,21 @@ function BrickTextSurface(props: {
     const lineStart = Math.max(0, text.lastIndexOf("\n", Math.max(0, absClick - 1)) + 1);
     const actualLineIdx = lineStart === 0 ? 0 : text.slice(0, lineStart - 1).split("\n").length;
     const line = allLines[actualLineIdx] || "";
-    const match = line.match(/^(\s*)([▶▼])(?:\uFE0E|\uFE0F)?\s/);
+    const match = line.match(/^(\s*)([▶▼▸▾▷▽])(?:\uFE0E|\uFE0F)?\s/);
     if (!match) return false;
     const markerStart = lineStart + (match[1]?.length || 0);
     const markerEnd = markerStart + 1;
     if (absClick < markerStart || absClick > markerEnd) return false;
     e.preventDefault();
-    const isExpanded = match[2] === "▼";
-    const headerText = line.replace(/^(\s*)[▶▼](?:\uFE0E|\uFE0F)?\s/, "").trim();
+    const isExpanded = match[2] === "▼" || match[2] === "▾" || match[2] === "▽";
+    const headerText = line.replace(/^(\s*)[▶▼▸▾▷▽](?:\uFE0E|\uFE0F)?\s/, "").trim();
     const tc: Record<string, string> = { ...(blockData._tc || {}) };
 
     if (isExpanded) {
       // Collapsing: find indented child lines below and store them
       const childLines: string[] = [];
       for (let i = actualLineIdx + 1; i < allLines.length; i++) {
-        if (/^\s+/.test(allLines[i]) && !/^[▶▼](?:\uFE0E|\uFE0F)?\s/.test(allLines[i].trim())) {
+        if (/^\s+/.test(allLines[i]) && !/^[▶▼▸▾▷▽](?:\uFE0E|\uFE0F)?\s/.test(allLines[i].trim())) {
           childLines.push(allLines[i]);
         } else {
           break;
@@ -437,21 +441,21 @@ function BrickTextSurface(props: {
         tc[headerText] = childLines.join("\n");
         const newLines = [...allLines];
         newLines.splice(actualLineIdx + 1, childLines.length);
-        newLines[actualLineIdx] = newLines[actualLineIdx].replace(/^(\s*)▼(?:\uFE0E|\uFE0F)?/, "$1▶\uFE0E");
+        newLines[actualLineIdx] = newLines[actualLineIdx].replace(/^(\s*)[▼▾▽](?:\uFE0E|\uFE0F)?/, "$1▷\uFE0E");
         el.textContent = newLines.join("\n");
         pushHistory();
         const cur = useCanvasStore.getState().blocks[shell.id] as any;
         const curData = cur?.data && typeof cur.data === "object" ? { ...cur.data } : {};
         updateBlock(shell.id as any, { content: newLines.join("\n"), data: { ...curData, _tc: tc } } as any);
       } else {
-        replaceTextByAbsoluteRange(el, markerStart, markerEnd, "▶\uFE0E");
+        replaceTextByAbsoluteRange(el, markerStart, markerEnd, "▷\uFE0E");
         onTypingChange?.(shell.id, getEditorText(el));
       }
     } else {
       // Expanding: restore stored child lines
       const stored = tc[headerText];
       const newLines = [...allLines];
-      newLines[actualLineIdx] = newLines[actualLineIdx].replace(/^(\s*)▶(?:\uFE0E|\uFE0F)?/, "$1▼\uFE0E");
+      newLines[actualLineIdx] = newLines[actualLineIdx].replace(/^(\s*)[▶▸▷](?:\uFE0E|\uFE0F)?/, "$1▽\uFE0E");
       if (stored) {
         const restoredLines = stored.split("\n");
         newLines.splice(actualLineIdx + 1, 0, ...restoredLines);
@@ -470,9 +474,15 @@ function BrickTextSurface(props: {
   useLayoutEffect(() => {
     const next = String(shell.content ?? "");
     if (!isTyping) return;
+    if (shell.isAiResponseBubble) return;
     const el = editorRef.current;
     if (!el) return;
     if (document.activeElement === el && !justEnteredTyping) return;
+    const fHtml = blockData.formattedHtml;
+    if (justEnteredTyping && fHtml && shell.listType === "none") {
+      el.innerHTML = fHtml;
+      return;
+    }
     const display = shell.listType === "todo" ? toDisplayTodoMarkers(next) : next;
     if ((el.textContent ?? "") !== display) el.textContent = display;
   }, [shell.content, isTyping]);
@@ -533,11 +543,12 @@ function BrickTextSurface(props: {
   useEffect(() => {
     hadTodoLinesRef.current = hasTodoLines;
   }, [hasTodoLines]);
-
+  const tableCounterRef = useRef(0);
+  tableCounterRef.current = 0;
   const aiMarkdownComponents = useMemo(() => ({
-    h1: ({ children }: any) => React.createElement("h1", { className: "text-xl font-semibold mt-2 mb-1" }, children),
-    h2: ({ children }: any) => React.createElement("h2", { className: "text-lg font-semibold mt-2 mb-1" }, children),
-    h3: ({ children }: any) => React.createElement("h3", { className: "text-base font-semibold mt-1.5 mb-1" }, children),
+    h1: ({ children }: any) => React.createElement("h1", { className: "font-semibold mt-2 mb-1", style: { fontSize: "1.5em" } }, children),
+    h2: ({ children }: any) => React.createElement("h2", { className: "font-semibold mt-2 mb-1", style: { fontSize: "1.3em" } }, children),
+    h3: ({ children }: any) => React.createElement("h3", { className: "font-semibold mt-1.5 mb-1", style: { fontSize: "1.15em" } }, children),
     p: ({ children }: any) => React.createElement("p", { className: "my-1 whitespace-pre-wrap" }, children),
     ul: ({ children }: any) => React.createElement("ul", { className: "my-1 list-disc pl-5 space-y-0.5" }, children),
     ol: ({ children }: any) => React.createElement("ol", { className: "my-1 list-decimal pl-5 space-y-0.5" }, children),
@@ -546,17 +557,35 @@ function BrickTextSurface(props: {
     blockquote: ({ children }: any) => React.createElement("blockquote", { className: "border-l-2 border-black/20 pl-3 my-1 text-black/70 italic" }, children),
     code: ({ children, className }: any) => {
       const isBlock = className?.startsWith("language-");
-      if (isBlock) return React.createElement("pre", { className: "rounded-lg bg-black/5 p-2 my-1 overflow-x-auto text-[0.85em]" }, React.createElement("code", null, children));
-      return React.createElement("code", { className: "rounded bg-black/10 px-1 py-0.5 text-[0.85em]" }, children);
+      if (isBlock) return React.createElement("pre", { className: "rounded-lg bg-black/5 p-2 my-1 overflow-x-auto", style: { fontSize: "0.85em" } }, React.createElement("code", null, children));
+      return React.createElement("code", { className: "rounded bg-black/10 px-1 py-0.5", style: { fontSize: "0.85em" } }, children);
     },
     pre: ({ children }: any) => React.createElement(React.Fragment, null, children),
-    table: ({ children }: any) => React.createElement("div", { className: "my-2 overflow-x-auto" }, React.createElement("table", { className: "w-full border-collapse text-xs" }, children)),
+    table: ({ children, node }: any) => {
+      const idx = tableCounterRef.current++;
+      return React.createElement(InlineEditableTable, {
+        blockId: shell.id,
+        node,
+        children,
+        tableIndex: idx,
+      });
+    },
     thead: ({ children }: any) => React.createElement("thead", { className: "border-b border-black/20" }, children),
     tbody: ({ children }: any) => React.createElement("tbody", null, children),
     tr: ({ children }: any) => React.createElement("tr", { className: "border-b border-black/10" }, children),
-    th: ({ children }: any) => React.createElement("th", { className: "text-left px-2 py-1 font-semibold" }, children),
-    td: ({ children }: any) => React.createElement("td", { className: "px-2 py-1" }, children),
-  }), []);
+    th: ({ children }: any) => React.createElement("th", { className: "text-left px-3 py-2 font-semibold" }, children),
+    td: ({ children }: any) => React.createElement("td", { className: "px-3 py-2" }, children),
+  }), [shell.id]);
+
+  if (isTyping && shell.isAiResponseBubble && !aiEditHtmlRef.current) {
+    const md = String(shell.content || "");
+    const mdEl = React.createElement(ReactMarkdown as any, { remarkPlugins: [remarkGfm], components: aiMarkdownComponents }, md);
+    aiEditHtmlRef.current = renderToStaticMarkup(mdEl);
+  }
+  if (!isTyping || !shell.isAiResponseBubble) {
+    aiEditHtmlRef.current = "";
+    aiDirtyRef.current = false;
+  }
 
   if (hasTodoLines) {
     return React.createElement(
@@ -571,6 +600,8 @@ function BrickTextSurface(props: {
           userSelect: "text",
           WebkitUserSelect: "text",
         },
+        onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => { e.stopPropagation(); },
+        onClick: (e: React.MouseEvent<HTMLDivElement>) => { e.stopPropagation(); },
       },
       lines.map((line, index) => {
         const todo = parsedTodoLines[index];
@@ -660,7 +691,7 @@ function BrickTextSurface(props: {
       wordBreak: "break-word" as const,
       overflowWrap: "anywhere" as const,
     };
-    if (isTyping) {
+    if (isTyping && aiEditHtmlRef.current) {
       return React.createElement(
         "div",
         { key: "ai-editing", className: "relative w-full min-h-full" },
@@ -671,58 +702,184 @@ function BrickTextSurface(props: {
           suppressContentEditableWarning: true,
           spellCheck: false,
           "data-canvas-brick-editor-id": shell.id,
-          className: "w-full min-h-full outline-none text-foreground overflow-auto scrollbar-hide whitespace-pre-wrap",
-          style: {
-            ...aiFontStyle,
-            userSelect: "text",
-            WebkitUserSelect: "text",
-          },
+          className: "w-full min-h-full outline-none text-foreground overflow-auto scrollbar-hide",
+          style: { ...aiFontStyle, userSelect: "text" as const, WebkitUserSelect: "text" as const },
+          dangerouslySetInnerHTML: { __html: aiEditHtmlRef.current },
           onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => { e.stopPropagation(); },
           onClick: (e: React.MouseEvent<HTMLDivElement>) => { e.stopPropagation(); },
           onDoubleClick: (e: React.MouseEvent<HTMLDivElement>) => { e.stopPropagation(); },
-          onInput: (e: React.FormEvent<HTMLDivElement>) => {
-            const nextRaw = getEditorText(e.currentTarget);
-            const nativeInput = e.nativeEvent as InputEvent | undefined;
-            const isPaste = nativeInput?.inputType === "insertFromPaste";
-            onTypingChange?.(shell.id, nextRaw, { isPaste });
-          },
-          onPaste: (e: React.ClipboardEvent<HTMLDivElement>) => {
-            e.preventDefault();
-            const txt = getStructuredPasteFromEvent(e);
-            insertTextAtCursor(txt);
-            const nextRaw = getEditorText(editorRef.current);
-            onTypingChange?.(shell.id, nextRaw, { isPaste: true });
-          },
+          onInput: () => { aiDirtyRef.current = true; },
           onKeyDown: (e: React.KeyboardEvent<HTMLDivElement>) => {
-            onTypingKeyDown?.(shell.id, e);
+            if (e.key === "Escape") { onTypingBlur?.(shell.id); return; }
           },
           onBlur: (e: React.FocusEvent<HTMLDivElement>) => {
-            const raw = getEditorText(e.currentTarget);
-            onTypingChange?.(shell.id, raw);
+            if (aiDirtyRef.current) {
+              const text = getEditorText(e.currentTarget);
+              onTypingChange?.(shell.id, text);
+            }
             onTypingBlur?.(shell.id);
           },
         })
       );
     }
+    const aiContent = String(shell.content || "");
+    const aiTableData = parseGfmTable(aiContent);
+    if (aiTableData) {
+      return React.createElement(
+        "div",
+        { key: "ai-table", className: "relative w-full", style: { pointerEvents: "auto" as const } },
+        React.createElement(
+          "div",
+          {
+            ref: editorRef,
+            "data-canvas-brick-editor-id": shell.id,
+            className: "w-full outline-none text-foreground overflow-auto scrollbar-hide",
+            style: { ...aiFontStyle, userSelect: "text" as const, WebkitUserSelect: "text" as const },
+            onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => { e.stopPropagation(); },
+            onClick: (e: React.MouseEvent<HTMLDivElement>) => { e.stopPropagation(); },
+          },
+          React.createElement(EditableMarkdownTable, { blockId: shell.id, content: aiContent })
+        )
+      );
+    }
     return React.createElement(
       "div",
-      { key: "ai-display", className: "relative w-full", style: { pointerEvents: "none" as const } },
+      { key: "ai-display", className: "relative w-full", style: { pointerEvents: "auto" as const } },
       React.createElement(
         "div",
         {
           ref: editorRef,
           "data-canvas-brick-editor-id": shell.id,
           className: `w-full outline-none text-foreground ${isThinkingPlaceholder ? "overflow-hidden" : "overflow-auto scrollbar-hide"}`,
-          style: { ...aiFontStyle, pointerEvents: "auto" as const, userSelect: "none" as const, WebkitUserSelect: "none" as const },
+          style: { ...aiFontStyle, pointerEvents: "auto" as const, userSelect: "text" as const, WebkitUserSelect: "text" as const },
+          onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => { e.stopPropagation(); },
+          onClick: (e: React.MouseEvent<HTMLDivElement>) => { e.stopPropagation(); },
         },
-        React.createElement(ReactMarkdown as any, { remarkPlugins: [remarkGfm], components: aiMarkdownComponents }, String(shell.content || ""))
+        React.createElement(ReactMarkdown as any, { remarkPlugins: [remarkGfm], components: aiMarkdownComponents }, aiContent)
       )
     );
   }
 
   if (!isTyping) {
     const contentStr = String(shell.content || "");
-    const hasMarkdown = /(?:^|\n)\s*#{1,6}\s|(?:\*\*|__).+(?:\*\*|__)|```|^\s*[-*]\s/m.test(contentStr);
+
+    if (shell.listType === "toggle") {
+      const toggleLines = contentStr.split("\n");
+      const toggleCollapse = (lineIdx: number) => {
+        const allLines = [...toggleLines];
+        const line = allLines[lineIdx] || "";
+        const m = line.match(/^(\s*)([▶▼▸▾▷▽])(?:\uFE0E|\uFE0F)?\s/);
+        if (!m) return;
+        const isExp = m[2] === "▼" || m[2] === "▾" || m[2] === "▽";
+        const headerText = line.replace(/^(\s*)[▶▼▸▾▷▽](?:\uFE0E|\uFE0F)?\s/, "").trim();
+        const tc: Record<string, string> = { ...(blockData._tc || {}) };
+        if (isExp) {
+          const childLines: string[] = [];
+          for (let i = lineIdx + 1; i < allLines.length; i++) {
+            if (/^\s+/.test(allLines[i]) && !/^[▶▼▸▾▷▽](?:\uFE0E|\uFE0F)?\s/.test(allLines[i].trim())) {
+              childLines.push(allLines[i]);
+            } else break;
+          }
+          if (childLines.length > 0) {
+            tc[headerText] = childLines.join("\n");
+            allLines.splice(lineIdx + 1, childLines.length);
+          }
+          allLines[lineIdx] = allLines[lineIdx].replace(/^(\s*)[▼▾▽](?:\uFE0E|\uFE0F)?/, "$1▷\uFE0E");
+        } else {
+          const stored = tc[headerText];
+          allLines[lineIdx] = allLines[lineIdx].replace(/^(\s*)[▶▸▷](?:\uFE0E|\uFE0F)?/, "$1▽\uFE0E");
+          if (stored) {
+            allLines.splice(lineIdx + 1, 0, ...stored.split("\n"));
+            delete tc[headerText];
+          }
+        }
+        pushHistory();
+        const cur = useCanvasStore.getState().blocks[shell.id] as any;
+        const curData = cur?.data && typeof cur.data === "object" ? { ...cur.data } : {};
+        updateBlock(shell.id as any, { content: allLines.join("\n"), data: { ...curData, _tc: tc } } as any);
+      };
+      return React.createElement(
+        "div",
+        {
+          className: "px-2 py-0 tracking-[-0.01em] whitespace-pre-wrap break-words select-text",
+          style: {
+            overflowWrap: "anywhere",
+            fontSize: `${fontSizePx}px`,
+            lineHeight: `${lineHeightPx}px`,
+            fontWeight,
+            color: shell.textColor || "rgba(0,0,0,0.80)",
+            userSelect: "text",
+            WebkitUserSelect: "text",
+          },
+          onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => { e.stopPropagation(); },
+          onClick: (e: React.MouseEvent<HTMLDivElement>) => { e.stopPropagation(); },
+        },
+        toggleLines.map((line, idx) => {
+          const hm = line.match(/^(\s*)([▶▼▸▾▷▽])(?:\uFE0E|\uFE0F)?\s(.*)/);
+          if (hm) {
+            const isExp = hm[2] === "▼" || hm[2] === "▾" || hm[2] === "▽";
+            return React.createElement(
+              "div",
+              { key: `tl-${idx}`, className: "flex items-start gap-0" },
+              React.createElement(
+                "span",
+                {
+                  className: "cursor-pointer select-none opacity-45 hover:opacity-70 transition-opacity",
+                  style: { display: "inline-block", width: "1.1em", textAlign: "center", flexShrink: 0 },
+                  onPointerDown: (ev: any) => { ev.stopPropagation(); },
+                  onClick: (ev: any) => { ev.stopPropagation(); toggleCollapse(idx); },
+                },
+                isExp ? "▽\uFE0E" : "▷\uFE0E"
+              ),
+              React.createElement("span", null, hm[3] || "")
+            );
+          }
+          return React.createElement("div", { key: `tl-${idx}`, style: { paddingLeft: "1.1em" } }, line.replace(/^\s+/, "") || "\u00A0");
+        })
+      );
+    }
+
+    const isGfmTable = parseGfmTable(contentStr) !== null;
+    if (isGfmTable) {
+      return React.createElement(
+        "div",
+        {
+          className: "px-2 py-0 tracking-[-0.01em] break-words select-text",
+          style: {
+            overflowWrap: "anywhere",
+            fontSize: `${fontSizePx}px`,
+            lineHeight: "1.5",
+            fontWeight,
+            color: shell.textColor || "rgba(0,0,0,0.80)",
+            userSelect: "text",
+            WebkitUserSelect: "text",
+          },
+          onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => { e.stopPropagation(); },
+          onClick: (e: React.MouseEvent<HTMLDivElement>) => { e.stopPropagation(); },
+        },
+        React.createElement(EditableMarkdownTable, { blockId: shell.id, content: contentStr })
+      );
+    }
+
+    if (blockData.formattedHtml) {
+      return React.createElement("div", {
+        className: "px-2 py-0 tracking-[-0.01em] whitespace-pre-wrap break-words select-text",
+        style: {
+          overflowWrap: "anywhere",
+          fontSize: `${fontSizePx}px`,
+          lineHeight: `${lineHeightPx}px`,
+          fontWeight,
+          color: shell.textColor || "rgba(0,0,0,0.80)",
+          userSelect: "text",
+          WebkitUserSelect: "text",
+        },
+        onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => { e.stopPropagation(); },
+        onClick: (e: React.MouseEvent<HTMLDivElement>) => { e.stopPropagation(); },
+        dangerouslySetInnerHTML: { __html: blockData.formattedHtml },
+      });
+    }
+
+    const hasMarkdown = /(?:^|\n)\s*#{1,6}\s|(?:\*\*|__).+(?:\*\*|__)|```|^\s*[-*]\s|(?:^|\n)\|.+\|/m.test(contentStr);
     return React.createElement(
       "div",
       {
@@ -736,6 +893,8 @@ function BrickTextSurface(props: {
           userSelect: "text",
           WebkitUserSelect: "text",
         },
+        onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => { e.stopPropagation(); },
+        onClick: (e: React.MouseEvent<HTMLDivElement>) => { e.stopPropagation(); },
       },
       hasMarkdown
         ? React.createElement(ReactMarkdown as any, { remarkPlugins: [remarkGfm], components: aiMarkdownComponents }, contentStr)
@@ -871,30 +1030,55 @@ function BrickTextSurface(props: {
           const current = getEditorText(editorRef.current);
           const lines = String(current || "").split("\n");
 
-          if (shell.listType === "toggle") {
-            // Determine if cursor is on a toggle header or indented child
-            const sel = window.getSelection();
-            let cursorAbs = 0;
-            if (sel && sel.rangeCount > 0 && editorRef.current) {
-              const r = sel.getRangeAt(0);
-              const pre = document.createRange();
-              pre.selectNodeContents(editorRef.current);
-              pre.setEnd(r.endContainer, r.endOffset);
-              cursorAbs = pre.toString().length;
+          // Find which line the cursor is on
+          const sel = window.getSelection();
+          let cursorAbs = 0;
+          if (sel && sel.rangeCount > 0 && editorRef.current) {
+            const r = sel.getRangeAt(0);
+            const pre = document.createRange();
+            pre.selectNodeContents(editorRef.current);
+            pre.setEnd(r.endContainer, r.endOffset);
+            cursorAbs = pre.toString().length;
+          }
+          const textBefore = current.slice(0, cursorAbs);
+          const curLineIdx = textBefore.split("\n").length - 1;
+          const curLine = lines[curLineIdx] || "";
+
+          // Double-Enter to exit: if cursor is on an empty marker line, remove it and exit list mode
+          if (shell.listType === "bullet" || shell.listType === "numbered" || shell.listType === "todo") {
+            const isEmptyMarker =
+              (shell.listType === "bullet" && /^•\s*$/.test(curLine)) ||
+              (shell.listType === "numbered" && /^\d+\.\s*$/.test(curLine)) ||
+              (shell.listType === "todo" && /^(?:◻(?:\uFE0E|\uFE0F)?|◼(?:\uFE0E|\uFE0F)?)\s*$/.test(curLine));
+            if (isEmptyMarker) {
+              lines.splice(curLineIdx, 1);
+              const cleaned = lines.join("\n");
+              onTypingChange?.(shell.id, shell.listType === "todo" ? toStorageTodoMarkers(cleaned) : cleaned, { exitList: true });
+              return;
             }
-            const textBefore = current.slice(0, cursorAbs);
-            const currentLineIdx = textBefore.split("\n").length - 1;
-            const currentLine = lines[currentLineIdx] || "";
-            const isOnHeader = /^[▶▼](?:\uFE0E|\uFE0F)?\s/.test(currentLine);
+          }
+
+          if (shell.listType === "toggle") {
+            const currentLine = lines[curLineIdx] || "";
+            const isOnHeader = /^[▶▼▸▾▷▽](?:\uFE0E|\uFE0F)?\s/.test(currentLine);
             const isOnChild = /^\s+/.test(currentLine);
-            const isExpandedHeader = /^▼(?:\uFE0E|\uFE0F)?\s/.test(currentLine);
+            const isExpandedHeader = /^[▼▾▽](?:\uFE0E|\uFE0F)?\s/.test(currentLine);
+
+            const isEmptyToggleHeader = isOnHeader && /^[▶▼▸▾▷▽](?:\uFE0E|\uFE0F)?\s*$/.test(currentLine);
+            const isEmptyChild = isOnChild && /^\s*$/.test(currentLine.trim());
+            if (isEmptyToggleHeader || isEmptyChild) {
+              lines.splice(curLineIdx, 1);
+              const cleaned = lines.join("\n");
+              onTypingChange?.(shell.id, cleaned, { exitList: true });
+              return;
+            }
 
             if (isOnHeader && isExpandedHeader) {
               insertTextAtCursor("\n  ");
             } else if (isOnChild) {
               insertTextAtCursor("\n  ");
             } else {
-              insertTextAtCursor("\n▶\uFE0E ");
+              insertTextAtCursor("\n▷\uFE0E ");
             }
             onTypingChange?.(shell.id, getEditorText(editorRef.current));
             return;
@@ -923,7 +1107,9 @@ function BrickTextSurface(props: {
         if (applyingSlashRef.current) return;
         const raw = getEditorText(e.currentTarget);
         const text = shell.listType === "todo" ? toStorageTodoMarkers(raw) : raw;
-        onTypingChange?.(shell.id, text);
+        const html = e.currentTarget.innerHTML;
+        const hasInlineFormat = /<mark[\s>]|<span[^>]*data-sel-color/.test(html);
+        onTypingChange?.(shell.id, text, { formattedHtml: hasInlineFormat ? html : undefined });
         setShowSlashMenu(false);
         onTypingBlur?.(shell.id);
       },
@@ -1129,8 +1315,13 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
       "data-canvas-block": true,
       "data-block-id": shell.id,
       "data-brick-shell": true,
-      className: "absolute group cursor-pointer select-none",
-      onPointerDown: handlePointerDown,
+      className: "absolute group cursor-default",
+      onPointerDown: (e: any) => {
+        const t = e.target as Element | null;
+        if (t?.closest?.("[data-drag-handle]") || t?.closest?.("[data-resize-handle]") || t?.closest?.("[data-connection-node]")) {
+          handlePointerDown(e);
+        }
+      },
       onClick: handleClick,
       onDoubleClick: handleDoubleClick,
       style: {
@@ -1234,8 +1425,35 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
             borderRadius: "6px",
             whiteSpace: "nowrap",
           },
-        }, "Double click to focus")
+        }, "Double-click to lift")
       : null,
+    React.createElement("div", {
+      key: "brick-drag-handle",
+      "data-drag-handle": true,
+      className: "absolute z-30 cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 transition-opacity",
+      style: {
+        left: "8px",
+        top: "-20px",
+        width: "72px",
+        height: "20px",
+        background: "linear-gradient(180deg, rgba(255,255,255,0.72), rgba(255,255,255,0.48))",
+        backdropFilter: "blur(8px)",
+        borderRadius: "8px 8px 0 0",
+        border: "1px solid rgba(255,255,255,0.55)",
+        borderBottom: "none",
+        boxShadow: "0 -2px 8px rgba(0,0,0,0.08)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+      },
+      title: "Drag to move",
+      onClick: (e: any) => e.stopPropagation(),
+      onPointerDown: (e: any) => e.stopPropagation(),
+    },
+      React.createElement("span", {
+        style: { width: 16, height: 2, borderRadius: 1, background: "rgba(0,0,0,0.25)" },
+      })
+    ),
     shell.content.trim()
       ? React.createElement(
           "div",
@@ -1245,8 +1463,6 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
             style: {
               top: "2px",
               right: `calc(100% + 4px)`,
-              transform: (shell.brickScale ?? 1) > 1 ? `scale(${shell.brickScale})` : undefined,
-              transformOrigin: "top right",
             },
           },
           typeof opts?.onMinimize === "function"
@@ -1285,7 +1501,7 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
         )
       : null,
     typeof opts?.onConnectionDragStart === "function"
-      ? renderConnectionNodes(shell.id, opts.onConnectionDragStart)
+      ? renderConnectionNodes(shell.id, opts.onConnectionDragStart, 1)
       : null
   );
 }
@@ -1295,11 +1511,13 @@ export const CONNECTION_NODE_GAP = 8;
 
 export function renderConnectionNodes(
   id: string,
-  onDragStart: (id: string, side: ConnectionNodeSide, e: React.PointerEvent<HTMLDivElement>) => void
+  onDragStart: (id: string, side: ConnectionNodeSide, e: React.PointerEvent<HTMLDivElement>) => void,
+  brickScale: number = 1
 ) {
-  const nodeSize = CONNECTION_NODE_SIZE;
-  const nodeGap = CONNECTION_NODE_GAP;
-  const hitPad = nodeGap + 4;
+  const s = Math.max(0.5, brickScale);
+  const nodeSize = Math.round(CONNECTION_NODE_SIZE * s);
+  const nodeGap = Math.round(CONNECTION_NODE_GAP * s);
+  const hitPad = nodeGap + Math.round(4 * s);
   const hitW = nodeSize + hitPad;
 
   const sides: Array<{

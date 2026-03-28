@@ -537,12 +537,12 @@ export default function ProjectPlaceholder() {
     if (!user?.id || !projectId) return;
     const { data } = await supabase
       .from("omnia_boards")
-      .insert({ user_id: user.id, title: "New Board", project_id: projectId })
+      .insert({ user_id: user.id, title: "New Grid", project_id: projectId })
       .select("id, title")
       .single();
     const id = data?.id;
     if (id) {
-      setBoards((prev) => [{ id, title: data?.title || "New Board", folderId: activeFolderId }, ...prev]);
+      setBoards((prev) => [{ id, title: data?.title || "New Grid", folderId: activeFolderId }, ...prev]);
       const folderMap = readStored<Record<string, string | null>>(
         `project:${projectId}:boardFolders`,
         {}
@@ -558,7 +558,7 @@ export default function ProjectPlaceholder() {
     if (!user?.id) return;
     const next = window.prompt("Rename board", board.title);
     if (next === null) return;
-    const name = next.trim() || "New Board";
+    const name = next.trim() || "New Grid";
     await supabase
       .from("omnia_boards")
       .update({ title: name })
@@ -1260,15 +1260,13 @@ If the user asks about old memories or references past ideas, refer to the memor
                   </SelectGroup>
                   <SelectSeparator />
                   <SelectGroup>
-                    <SelectLabel>Image & Video Gen</SelectLabel>
+                    <SelectLabel>Image Gen</SelectLabel>
                     <SelectItem value="gpt-image-1.5" hint="OpenAI, images">GPT Image 1.5</SelectItem>
                     <SelectItem value="gemini-3.1-flash-image-preview" hint="Google, images">Nano Banana 2</SelectItem>
                     <SelectItem value="grok-imagine-image-pro" hint="xAI, pro images">Grok Imagine Image Pro</SelectItem>
                     <SelectItem value="grok-imagine-image" hint="xAI, images">Grok Imagine Image</SelectItem>
                     <SelectItem value="grok-2-image-1212" hint="xAI, images">Grok 2 Image</SelectItem>
                     <SelectItem value="dall-e-3" hint="OpenAI, images">DALL-E 3</SelectItem>
-                    <SelectItem value="veo-3.1-generate-preview" hint="Google, video">Veo 3.1</SelectItem>
-                    <SelectItem value="grok-imagine-video" hint="xAI, video">Grok Imagine Video</SelectItem>
                   </SelectGroup>
                   <SelectSeparator />
                   <SelectGroup>
