@@ -13,7 +13,7 @@ export const BRICK_BEHAVIOR = {
   // Single source of truth for main-canvas brick behavior.
   enableLogic: false,
   gridSize: 24,
-  showHoverLabel: true,
+  showHoverLabel: false,
 } as const;
 
 const MARKDOWN_TODO_LINE_RE = /^(\s*)([-*]\s+)?\[([ xX])\]\s+(.*)$/;
@@ -736,7 +736,6 @@ function BrickTextSurface(props: {
             className: "w-full outline-none text-foreground overflow-auto scrollbar-hide",
             style: { ...aiFontStyle, userSelect: "text" as const, WebkitUserSelect: "text" as const },
             onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => { e.stopPropagation(); },
-            onClick: (e: React.MouseEvent<HTMLDivElement>) => { e.stopPropagation(); },
           },
           React.createElement(EditableMarkdownTable, { blockId: shell.id, content: aiContent })
         )
@@ -753,7 +752,6 @@ function BrickTextSurface(props: {
           className: `w-full outline-none text-foreground ${isThinkingPlaceholder ? "overflow-hidden" : "overflow-auto scrollbar-hide"}`,
           style: { ...aiFontStyle, pointerEvents: "auto" as const, userSelect: "text" as const, WebkitUserSelect: "text" as const },
           onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => { e.stopPropagation(); },
-          onClick: (e: React.MouseEvent<HTMLDivElement>) => { e.stopPropagation(); },
         },
         React.createElement(ReactMarkdown as any, { remarkPlugins: [remarkGfm], components: aiMarkdownComponents }, aiContent)
       )
@@ -812,7 +810,6 @@ function BrickTextSurface(props: {
             WebkitUserSelect: "text",
           },
           onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => { e.stopPropagation(); },
-          onClick: (e: React.MouseEvent<HTMLDivElement>) => { e.stopPropagation(); },
         },
         toggleLines.map((line, idx) => {
           const hm = line.match(/^(\s*)([▶▼▸▾▷▽])(?:\uFE0E|\uFE0F)?\s(.*)/);
@@ -855,7 +852,6 @@ function BrickTextSurface(props: {
             WebkitUserSelect: "text",
           },
           onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => { e.stopPropagation(); },
-          onClick: (e: React.MouseEvent<HTMLDivElement>) => { e.stopPropagation(); },
         },
         React.createElement(EditableMarkdownTable, { blockId: shell.id, content: contentStr })
       );
@@ -874,7 +870,6 @@ function BrickTextSurface(props: {
           WebkitUserSelect: "text",
         },
         onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => { e.stopPropagation(); },
-        onClick: (e: React.MouseEvent<HTMLDivElement>) => { e.stopPropagation(); },
         dangerouslySetInnerHTML: { __html: blockData.formattedHtml },
       });
     }
@@ -894,7 +889,6 @@ function BrickTextSurface(props: {
           WebkitUserSelect: "text",
         },
         onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => { e.stopPropagation(); },
-        onClick: (e: React.MouseEvent<HTMLDivElement>) => { e.stopPropagation(); },
       },
       hasMarkdown
         ? React.createElement(ReactMarkdown as any, { remarkPlugins: [remarkGfm], components: aiMarkdownComponents }, contentStr)
@@ -1329,7 +1323,7 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
         top: `${shell.y}px`,
         width: `${shell.width}px`,
         ...(useFlexHeight
-          ? { minHeight: `${shell.height}px`, height: "auto" }
+          ? { minHeight: `${shell.height}px`, height: "auto", display: "flex", flexDirection: "column" as const }
           : { height: `${shell.height}px` }),
         ...(isRaised ? { zIndex: 40 } : {}),
         willChange: "transform",
@@ -1339,7 +1333,7 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
       "div",
       {
         className:
-          `w-full rounded border border-white/45 ${shell.brickColor ? "" : "bg-[linear-gradient(145deg,rgba(255,255,255,0.34),rgba(255,255,255,0.18))]"} backdrop-blur-[2px]${useFlexHeight ? " min-h-full" : " h-full"} relative overflow-hidden`,
+          `w-full rounded border border-white/45 ${shell.brickColor ? "" : "bg-[linear-gradient(145deg,rgba(255,255,255,0.34),rgba(255,255,255,0.18))]"} backdrop-blur-[2px]${useFlexHeight ? " flex-1" : " h-full"} relative overflow-hidden`,
         style: {
           transform: isRaised
             ? (shell.isAiResponseBubble ? "translateY(-8px)" : "translateY(-8px) scale(1.02)")
@@ -1409,24 +1403,7 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
         : null,
       labelEl
     ),
-    !isTyping && !isActivated && !isRaised
-      ? React.createElement("div", {
-          key: "brick-hover-hint",
-          className: "brick-hover-hint absolute pointer-events-none opacity-0 z-50",
-          style: {
-            bottom: "calc(100% + 6px)",
-            left: "50%",
-            transform: "translateX(-50%)",
-            background: "rgba(0,0,0,0.7)",
-            color: "#fff",
-            fontSize: "10px",
-            fontWeight: 500,
-            padding: "3px 8px",
-            borderRadius: "6px",
-            whiteSpace: "nowrap",
-          },
-        }, "Double-click to lift")
-      : null,
+    null,
     React.createElement("div", {
       key: "brick-drag-handle",
       "data-drag-handle": true,

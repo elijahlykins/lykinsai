@@ -21,6 +21,10 @@ html {
     --background: 0 0% 100%;
     --foreground: 0 0% 3.9%;
 
+    /* Responsive header height — used by fixed chrome offsets */
+    --header-height: 4.9rem;
+    --header-height-sm: 4.2rem;
+
     /* App background (customizable) */
     --app-background: hsl(var(--background));
 
@@ -803,8 +807,29 @@ body.embedded-memory-mode .app-content {
   }
 }
 
-/* Laptop / small-desktop optimizations (most MacBooks, 13-15" Windows laptops) */
-@media (min-width: 1025px) and (max-width: 1440px) {
+/* Small laptop / compact screens (13" Dell, HP, low-res Windows laptops) */
+@media (min-width: 1025px) and (max-width: 1366px) {
+  :root {
+    --header-height: 4.2rem;
+    --header-height-sm: 3.6rem;
+  }
+
+  .clay-card {
+    padding: calc(1rem * var(--layout-density, 1));
+  }
+
+  body.sidebar-push {
+    --sidebar-offset: 10rem;
+    --sidebar-width: 10rem;
+  }
+
+  body.sidebar-push .app-content {
+    padding-left: 10rem;
+  }
+}
+
+/* Laptop / small-desktop optimizations (most MacBooks, 14-15" Windows laptops) */
+@media (min-width: 1367px) and (max-width: 1600px) {
   .clay-card {
     padding: calc(1.25rem * var(--layout-density, 1));
   }
@@ -1033,15 +1058,6 @@ input[type="color"].color-circle::-moz-color-swatch {
   to   { opacity: 1; transform: translateY(0); }
 }
 
-@keyframes hintFlash {
-  0%   { opacity: 0; transform: translateX(-50%) scale(0.95); }
-  10%  { opacity: 1; transform: translateX(-50%) scale(1); }
-  60%  { opacity: 1; transform: translateX(-50%) scale(1); }
-  100% { opacity: 0; transform: translateX(-50%) scale(0.95); }
-}
-.group:hover > .brick-hover-hint {
-  animation: hintFlash 1.2s ease-in-out forwards;
-}
 
 @keyframes selToolbarFadeIn {
   from { opacity: 0; transform: translate(-50%, -100%) translateY(6px); }

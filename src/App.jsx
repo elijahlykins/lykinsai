@@ -9,7 +9,6 @@ import { SupabaseAuthProvider, useAuth } from '@/lib/SupabaseAuth';
 import LoadingScreen from "@/components/LoadingScreen";
 
 // ✅ CORRECT IMPORTS (no spaces, match your filenames)
-import Dashboard from "./pages/Dashboard";
 import Login from "./pages/Login";
 import OmniaCanvas from "./pages/OmniaCanvas";
 import ProjectPlaceholder from "./pages/ProjectPlaceholder";
@@ -67,7 +66,7 @@ function AppShell() {
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/" element={<ProtectedRoute><OmniaCanvas /></ProtectedRoute>} />
-          <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+          <Route path="/dashboard" element={<Navigate to="/" replace />} />
           <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
           <Route path="/canvas/:boardId" element={<ProtectedRoute><OmniaCanvas /></ProtectedRoute>} />
           <Route path="/project/:projectId" element={<ProtectedRoute><ProjectPlaceholder /></ProtectedRoute>} />

@@ -1426,10 +1426,11 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       const h = Math.floor(r.height);
       viewportWidthRef.current = w;
       setViewport({ width: w, height: h });
+      setCanvasWidth(w);
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
+  }, [setCanvasWidth]);
 
   // Scrolling-as-camera (BrickEditor feel): keep store camera in sync with scroll.
   useEffect(() => {
@@ -2162,8 +2163,8 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
   // Expand the inner scroll surface to fit placed blocks and provide room for panning.
   // Surface is zoom-independent to avoid layout thrashing during zoom.
   const surface = useMemo(() => {
-    const vw = viewport.width || 1920;
-    const vh = viewport.height || 1080;
+    const vw = viewport.width || window.innerWidth || 1280;
+    const vh = viewport.height || window.innerHeight || 800;
     let maxBottom = 0;
     let maxRight = 0;
     for (const id of blockOrder) {
@@ -5639,7 +5640,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
           const isAiResponseBubble = Boolean((b as any)?.data?.aiResponseBubble);
           const blockContent = String((b as any)?.content || "");
           const hasRichMarkdown = !isAiResponseBubble && /(?:^|\n)\s*#{1,6}\s|(?:\*\*|__).+(?:\*\*|__)|```|(?:^|\n)\s*[-*]\s.+(?:\n\s*[-*]\s)|(?:^|\n)\|.+\|/m.test(blockContent);
-          const preventTypingMode = isAiResponseBubble || hasRichMarkdown;
+          const preventTypingMode = false;
           const isTextBrick = String((b as any)?.type || "") === "text";
           const mode = String((b as any).mode || "").toLowerCase();
           const createData = (b as any).data || {};
@@ -5973,7 +5974,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
           const brickEl = renderBrickShell(b as any, id, {
             isActivated: typingBlockId === id ? false : activatedBrickIds.includes(id),
             isRaised: typingBlockId === id ? false : raisedBrickIds.includes(id),
-            isTyping: isAiResponseBubble ? typingBlockId === id : (preventTypingMode ? false : typingBlockId === id),
+            isTyping: typingBlockId === id,
             enableWidthResize: isTextBrick || isAiResponseBubble || hasRichMarkdown,
             extraContent: sourcesExtraContent,
             resizeGridSize: gridSize,
@@ -6277,14 +6278,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
               setShiftLinkedGridSelection(false);
               setActivatedBrickIds([]);
               setRaisedBrickIds([]);
-              if (preventTypingMode) {
-                if (typingBlockId) {
-                  dropEmptyTypingBlockIfNeeded(bid);
-                  setTypingBlockId(null);
-                }
-                setShiftAnchor(target);
-                return;
-              }
+              
               dropEmptyTypingBlockIfNeeded(bid);
               const alreadyTyping = typingBlockId === bid;
               setTypingBlockId(bid);
@@ -6775,7 +6769,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
 
       {/* Zoom toggle + panel — portaled to body so sidebar never covers it */}
       {createPortal(
-        <div className="fixed z-[200] flex items-end gap-2" style={{ bottom: "16px", left: sidebarOpen ? "calc(16px + 12rem)" : "16px", transition: "left 200ms ease" }} onPointerDown={(e) => e.stopPropagation()}>
+        <div className="fixed z-[200] flex items-end gap-2" style={{ bottom: "16px", left: sidebarOpen ? "calc(16px + var(--sidebar-offset, 12rem))" : "16px", transition: "left 200ms ease" }} onPointerDown={(e) => e.stopPropagation()}>
           <button
             type="button"
             onClick={() => setZoomPanelOpen((v) => !v)}

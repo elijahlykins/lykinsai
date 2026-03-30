@@ -4,7 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Loader2, Send, X, MessageSquare } from 'lucide-react';
+import { Loader2, Send, X, MessageSquare, Tag } from 'lucide-react';
 import { useThinkingStatus } from '@/hooks/useThinkingStatus';
 
 export default function DraggableChat({ 
@@ -161,6 +161,17 @@ export default function DraggableChat({
                   </div>
                 </div>
               ))}
+              {messages.length > 0 && (() => {
+                const last = messages[messages.length - 1];
+                return last?.role === 'assistant' && last?.tagActions?.applied > 0 ? (
+                  <div className="flex justify-start">
+                    <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-700 dark:text-emerald-400 text-[11px] font-medium">
+                      <Tag className="w-3 h-3" />
+                      <span>Organised {last.tagActions.applied} item{last.tagActions.applied !== 1 ? 's' : ''}</span>
+                    </div>
+                  </div>
+                ) : null;
+              })()}
               {isLoading && (
                 <div className="flex justify-start">
                   <div className="glass-control p-3 rounded-2xl rounded-tl-none border border-white/10 shadow-sm flex items-center gap-2">
