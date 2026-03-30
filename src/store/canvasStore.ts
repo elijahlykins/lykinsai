@@ -307,9 +307,9 @@ export const useCanvasStore = create<CanvasState>()(
 
     setFocusedBrickIds: (ids) => set((state) => { state.focusedBrickIds = ids; }),
 
-    setCanvasWidth: (_width) => {
+    setCanvasWidth: (width) => {
       set((state) => {
-        state.canvasWidth = null;
+        state.canvasWidth = width;
       });
     },
 

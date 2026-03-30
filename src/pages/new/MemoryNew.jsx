@@ -137,6 +137,22 @@ function resolveAttachmentType(attachment = {}) {
   return "file";
 }
 
+function parseTagActions(text) {
+  const match = text.match(/\[TAG_ACTIONS\]\s*([\s\S]*?)\s*\[\/TAG_ACTIONS\]/);
+  if (!match) return { cleanText: text, actions: [] };
+  const cleanText = text.replace(/\[TAG_ACTIONS\][\s\S]*?\[\/TAG_ACTIONS\]/, "").trim();
+  try {
+    const parsed = JSON.parse(match[1].trim());
+    const actions = Array.isArray(parsed.actions) ? parsed.actions : [];
+    const valid = actions.filter(
+      (a) => a.noteId && Array.isArray(a.tags) && a.tags.every((t) => typeof t === "string")
+    );
+    return { cleanText, actions: valid };
+  } catch {
+    return { cleanText, actions: [] };
+  }
+}
+
 function parseStorageTarget(attachment = {}) {
   const explicitPath = String(attachment.storagePath || "").trim();
   const explicitBucket = String(attachment.storageBucket || "user-files").trim() || "user-files";
@@ -1569,6 +1585,7 @@ export default function MemoryNew() {
       const vaultItems = orderedVisibleCards.slice(0, 40).map((card) => {
         const date = card.dateLabel || "unknown date";
         const tagStr = card.tags?.length ? ` [tags: ${card.tags.join(", ")}]` : "";
+        const nid = card.noteId ? ` {noteId:${card.noteId}}` : "";
         if (card.kind === "attachment") {
           const att = card.attachment || {};
           const type = (card.type || "file").toUpperCase();
@@ -1586,20 +1603,22 @@ export default function MemoryNew() {
           if (att.url) extras.push(`URL: ${att.url}`);
           const fileNotes = parseAttachmentNotes(att);
           if (fileNotes.length > 0) extras.push(`User notes (context on why they saved this): ${fileNotes.map((n) => n.text).join(" | ").slice(0, 400)}`);
-          return `[${type}] "${name}" (${date})${tagStr}${extras.length ? " — " + extras.join(" | ") : ""}`;
+          return `[${type}]${nid} "${name}" (${date})${tagStr}${extras.length ? " — " + extras.join(" | ") : ""}`;
         }
         if (card.kind === "quick-note") {
-          return `[NOTE] "${card.title || "Quick Note"}" — ${(card.excerpt || "").slice(0, 500)} (${date})${tagStr}`;
+          return `[NOTE]${nid} "${card.title || "Quick Note"}" — ${(card.excerpt || "").slice(0, 500)} (${date})${tagStr}`;
         }
         if (card.kind === "chat-preview") {
           const q = (card.question || "").slice(0, 250);
           const a = (card.answer || "").slice(0, 250);
-          return `[CHAT] "${card.title || "AI Chat"}" — Q: ${q}${a ? ` A: ${a}` : ""} (${date})${tagStr}`;
+          return `[CHAT]${nid} "${card.title || "AI Chat"}" — Q: ${q}${a ? ` A: ${a}` : ""} (${date})${tagStr}`;
         }
-        return `[ITEM] "${card.title || "Untitled"}" (${date})${tagStr}`;
+        return `[ITEM]${nid} "${card.title || "Untitled"}" (${date})${tagStr}`;
       }).join("\n");
 
       const totalCount = orderedVisibleCards.length;
+      const existingTags = allTags.map((t) => t.name);
+      const existingTagStr = existingTags.length ? existingTags.join(", ") : "(none yet)";
 
       const prompt = `You are the Vault Assistant — the AI helper inside The Vault, a personal collection space within LYKN where users save and organise their files, images, videos, links, notes, and ideas.
 
@@ -1608,20 +1627,40 @@ YOUR ROLE:
 - Answer questions about their saved content — summarise notes, describe files, spot themes, draw connections between items.
 - Help them brainstorm, expand on ideas captured in their notes, and suggest how to organise or tag things.
 - Be conversational, concise, and helpful. Speak naturally.
+- When the user asks you to organise, tag, or categorise their vault items, you can ACTUALLY DO IT — not just suggest. Use TAG_ACTIONS (described below) to apply changes directly.
 
 WHAT YOU CAN SEE:
 Below is the user's Vault content (${totalCount} items total, showing up to 40). Each item has a type tag: NOTE (text notes), IMAGE/VIDEO/AUDIO/PDF/DOC/YOUTUBE (media files), CHAT (saved AI conversations), LINK (saved URLs). Items may also have [tags: ...] which are user-created labels, and "User notes" which are personal annotations the user wrote about why they saved something.
+Each item has a {noteId:...} identifier you can reference when applying tag actions.
+
+EXISTING TAGS IN USE: ${existingTagStr}
 
 === VAULT CONTENTS ===
 ${vaultItems || "(The Vault is empty)"}
 === END VAULT CONTENTS ===
+
+TAG ACTIONS — ORGANISING THE VAULT:
+When the user asks you to organise, tag, categorise, or auto-tag their vault items, you can apply tags directly. To do this, include a TAG_ACTIONS block at the END of your response (after your conversational message). Format:
+
+[TAG_ACTIONS]
+{"actions":[{"noteId":"<id>","tags":["tag1","tag2"]},...]}
+[/TAG_ACTIONS]
+
+Rules for TAG_ACTIONS:
+- "tags" is the COMPLETE new tag list for that note (replaces existing tags). Include any existing tags you want to keep.
+- Only include TAG_ACTIONS when the user explicitly asks you to organise, tag, auto-tag, or categorise items. Don't add tags unprompted.
+- Re-use existing tags (listed above) when they fit before creating new ones.
+- Keep tag names short, lowercase, and descriptive (e.g. "design", "travel", "work", "inspiration").
+- You can tag as many or as few items as makes sense.
+- Briefly explain in your message what you're tagging and why, so the user knows what's happening.
+- If the user says something like "organise my vault", "auto-tag everything", "categorise these", or "tag my stuff", that IS permission to apply tags.
 
 GUIDELINES:
 - When the user asks "what do I have about X" or "find my notes on Y", search through the vault contents above and answer from them. Think conceptually — match by theme, topic, and meaning, not just keywords.
 - Pay special attention to tags and user notes — these reveal the user's intent and how they think about their content. A file tagged "inspiration" with a note "use this style for the rebrand" tells you far more than the filename alone.
 - When searching, treat user notes as high-signal context. They explain WHY the user saved something and what it means to them.
 - Use tags to understand groupings and themes the user has already established. If they ask about a topic, check if any tags relate to it.
-- When asked to help organise, suggest groupings, themes, or connections you notice across their items. Reference existing tags and notes to ground your suggestions.
+- When asked to help organise, suggest groupings, themes, or connections you notice across their items. Reference existing tags and notes to ground your suggestions — and use TAG_ACTIONS to actually apply the changes.
 - If the user asks about something not in their Vault, you can still help — just be clear you're giving general knowledge rather than referencing their saved content.
 - Never say you can't see or access their Vault. The contents are right above.
 - Reference specific items by name when relevant.
@@ -1640,32 +1679,74 @@ User: ${text}`;
       });
       if (!res.ok) throw new Error("AI request failed");
       const data = await res.json().catch(() => ({}));
-      const aiText = String(data.response || "").trim();
+      const rawAiText = String(data.response || "").trim();
+
+      const { cleanText: aiText, actions: tagActions } = parseTagActions(rawAiText);
 
       const idx = assistantIndexRef.current;
       if (idx == null) return;
 
-      const words = aiText.split(" ").filter(Boolean);
-      if (words.length === 0) {
-        setChatMessages((prev) => {
-          const next = prev.slice();
-          if (next[idx]) next[idx] = { ...next[idx], content: aiText };
-          return next;
-        });
-      } else {
-        let i = 0;
-        let current = "";
-        const tick = () => {
-          current += (i === 0 ? "" : " ") + words[i];
-          i += 1;
+      if (tagActions.length > 0) {
+        let applied = 0;
+        const noteIdSet = new Set(notes.map((n) => String(n.id)));
+        for (const action of tagActions) {
+          if (noteIdSet.has(String(action.noteId))) {
+            await updateNoteTags(String(action.noteId), action.tags);
+            applied += 1;
+          }
+        }
+        const newTagNames = [...new Set(tagActions.flatMap((a) => a.tags))];
+        const tagSummary = applied > 0
+          ? `\n\n---\n✅ **Tagged ${applied} item${applied !== 1 ? "s" : ""}** with: ${newTagNames.map((t) => `\`${t}\``).join(", ")}`
+          : "";
+        const fullText = aiText + tagSummary;
+
+        const words = fullText.split(" ").filter(Boolean);
+        if (words.length === 0) {
           setChatMessages((prev) => {
             const next = prev.slice();
-            if (next[idx]) next[idx] = { ...next[idx], content: current };
+            if (next[idx]) next[idx] = { ...next[idx], content: fullText, tagActions: { applied, tags: newTagNames } };
             return next;
           });
-          if (i < words.length) window.setTimeout(tick, 18);
-        };
-        tick();
+        } else {
+          let i = 0;
+          let current = "";
+          const tick = () => {
+            current += (i === 0 ? "" : " ") + words[i];
+            i += 1;
+            const done = i >= words.length;
+            setChatMessages((prev) => {
+              const next = prev.slice();
+              if (next[idx]) next[idx] = { ...next[idx], content: current, ...(done ? { tagActions: { applied, tags: newTagNames } } : {}) };
+              return next;
+            });
+            if (!done) window.setTimeout(tick, 18);
+          };
+          tick();
+        }
+      } else {
+        const words = aiText.split(" ").filter(Boolean);
+        if (words.length === 0) {
+          setChatMessages((prev) => {
+            const next = prev.slice();
+            if (next[idx]) next[idx] = { ...next[idx], content: aiText };
+            return next;
+          });
+        } else {
+          let i = 0;
+          let current = "";
+          const tick = () => {
+            current += (i === 0 ? "" : " ") + words[i];
+            i += 1;
+            setChatMessages((prev) => {
+              const next = prev.slice();
+              if (next[idx]) next[idx] = { ...next[idx], content: current };
+              return next;
+            });
+            if (i < words.length) window.setTimeout(tick, 18);
+          };
+          tick();
+        }
       }
     } catch {
       const idx = assistantIndexRef.current;

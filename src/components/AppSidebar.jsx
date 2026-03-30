@@ -7,7 +7,6 @@ import {
   CreditCard,
   Edit2,
   FolderPlus,
-  Home,
   Bug,
   LayoutGrid,
   Lightbulb,
@@ -226,19 +225,19 @@ export default function AppSidebar() {
         <div className="mt-2 flex flex-col gap-1">
           <button
             type="button"
-            onClick={() => flushAndNavigate(nav, "/dashboard")}
-            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
-          >
-            <Home className="w-3.5 h-3.5 text-black/60" />
-            Home
-          </button>
-          <button
-            type="button"
             onClick={() => flushAndNavigate(nav, "/")}
             className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
           >
             <LayoutGrid className="w-3.5 h-3.5 text-black/60" />
             Grid
+          </button>
+          <button
+            type="button"
+            onClick={() => flushAndNavigate(nav, "/memory")}
+            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
+          >
+            <Lock className="w-3.5 h-3.5 text-black/60" />
+            Vault
           </button>
           <button
             type="button"
@@ -253,11 +252,23 @@ export default function AppSidebar() {
           </button>
           <button
             type="button"
-            onClick={() => flushAndNavigate(nav, "/memory")}
+            onClick={async () => {
+              const name = window.prompt("Project name:");
+              if (!name?.trim() || !user?.id) return;
+              const { data } = await supabase
+                .from("omnia_projects")
+                .insert({ user_id: user.id, name: name.trim() })
+                .select("id")
+                .single();
+              if (data?.id) {
+                window.dispatchEvent(new Event(PROJECTS_CHANGED_EVENT));
+                flushAndNavigate(nav, `/project/${data.id}`);
+              }
+            }}
             className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
           >
-            <Lock className="w-3.5 h-3.5 text-black/60" />
-            Vault
+            <FolderPlus className="w-3.5 h-3.5 text-black/60" />
+            New Project
           </button>
         </div>
 

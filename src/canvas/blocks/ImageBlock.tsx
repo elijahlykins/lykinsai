@@ -334,30 +334,45 @@ export const ImageBlock = memo(function ImageBlock({ id, onMinimize, onMenu }: {
             const maxH = snapDownSize(rr.maxH ?? Number.POSITIVE_INFINITY);
 
             if (rr.mode === "right") {
-              let nextW = snapSize(rr.startW + dx);
+              const g = Math.max(1, Math.floor(gridSize || 24));
+              const snappedDx = Math.round(dx / g) * g;
+              let nextW = Math.max(min, rr.startW + snappedDx);
               if (Number.isFinite(maxW)) nextW = Math.min(nextW, maxW);
+              let nextH = Math.max(min, Math.round(nextW / rr.aspect));
+              if (Number.isFinite(maxH)) nextH = Math.min(nextH, maxH);
               updateBlock(id, {
                 x: rr.startX,
                 y: rr.startY,
-                width: Math.max(min, nextW),
+                width: nextW,
+                height: nextH,
               });
               return;
             }
 
             if (rr.mode === "top") {
-              const nextH = snapSize(rr.startH - dy);
-              const nextY = snapToGrid(bottom - nextH, min);
-              updateBlock(id, { y: nextY, height: Math.max(min, nextH) });
+              const g = Math.max(1, Math.floor(gridSize || 24));
+              const snappedDy = Math.round(dy / g) * g;
+              let nextH = Math.max(min, rr.startH - snappedDy);
+              if (Number.isFinite(maxH)) nextH = Math.min(nextH, maxH);
+              let nextW = Math.max(min, Math.round(nextH * rr.aspect));
+              if (Number.isFinite(maxW)) nextW = Math.min(nextW, maxW);
+              const nextY = bottom - nextH;
+              updateBlock(id, { x: rr.startX, y: nextY, width: nextW, height: nextH });
               return;
             }
 
             if (rr.mode === "bottom") {
-              let nextH = snapSize(rr.startH + dy);
+              const g = Math.max(1, Math.floor(gridSize || 24));
+              const snappedDy = Math.round(dy / g) * g;
+              let nextH = Math.max(min, rr.startH + snappedDy);
               if (Number.isFinite(maxH)) nextH = Math.min(nextH, maxH);
+              let nextW = Math.max(min, Math.round(nextH * rr.aspect));
+              if (Number.isFinite(maxW)) nextW = Math.min(nextW, maxW);
               updateBlock(id, {
                 x: rr.startX,
                 y: rr.startY,
-                height: Math.max(min, nextH),
+                width: nextW,
+                height: nextH,
               });
               return;
             }
@@ -430,7 +445,6 @@ export const ImageBlock = memo(function ImageBlock({ id, onMinimize, onMenu }: {
       }}
     >
       <BlockHoverToolbar blockId={id} onMinimize={onMinimize} onMenu={onMenu} />
-      <div className="brick-hover-hint absolute pointer-events-none opacity-0 z-50" style={{ bottom: "calc(100% + 6px)", left: "50%", transform: "translateX(-50%)", background: "rgba(0,0,0,0.7)", color: "#fff", fontSize: "10px", fontWeight: 500, padding: "3px 8px", borderRadius: "6px", whiteSpace: "nowrap" }}>Double click to focus</div>
       <div
         data-drag-handle
         className="absolute z-30 cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 transition-opacity"

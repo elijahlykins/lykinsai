@@ -3,7 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { Canvas } from "@/canvas/Canvas";
 import { useCanvasStore } from "@/store/canvasStore";
 import type { Block } from "@/canvas/types";
-import { ChevronDown, ChevronUp, Plus, Link as LinkIcon, Image as ImageIcon, Zap, MessageSquare, Mic, BookOpen, X, Clock, Edit2, Folder as FolderIcon, Link2, MoreHorizontal, PanelRightClose, PanelRight, StickyNote, Play, FileText, Music, Video, Share2, Download, Copy, Check, RefreshCw, ThumbsUp, ThumbsDown, Square, Sparkles, Save, Globe, GripVertical, LayoutGrid } from "lucide-react";
+import { ChevronDown, ChevronUp, ChevronRight, Plus, Link as LinkIcon, Image as ImageIcon, Zap, MessageSquare, Mic, BookOpen, X, Clock, Edit2, Folder as FolderIcon, Link2, MoreHorizontal, PanelRightClose, PanelRight, StickyNote, Play, FileText, Music, Video, Share2, Download, Copy, Check, RefreshCw, ThumbsUp, ThumbsDown, Square, Sparkles, Save, Globe, GripVertical, LayoutGrid } from "lucide-react";
 import DraggableQuickNote from "@/components/notes/DraggableQuickNote";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -23,6 +23,7 @@ import { useThinkingStatus } from "@/hooks/useThinkingStatus";
 import { getStructuredPasteFromEvent } from "@/lib/pasteFromClipboard";
 import { getAiPrefs } from "@/lib/ai-prefs";
 import { buildTieredCanvasContext } from "@/lib/ai/buildCanvasContext";
+import { getMemorySidebarWidth } from "@/hooks/useViewportTier";
 
 const TASK_LINE_RE = /^\s*(?:[-*]\s+)?\[([ xX])\]\s+(.+)$/;
 
@@ -418,6 +419,7 @@ export default function OmniaCanvasPage() {
   const [isQuickNoteSaving, setIsQuickNoteSaving] = useState(false);
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth || 1280);
   const [chatRailWidthManual, setChatRailWidthManual] = useState<number | null>(null);
+  const memorySidebarWidthPx = useMemo(() => getMemorySidebarWidth(viewportWidth), [viewportWidth]);
   const DialogAny = Dialog as any;
   const DialogContentAny = DialogContent as any;
   const DialogHeaderAny = DialogHeader as any;
@@ -564,6 +566,8 @@ export default function OmniaCanvasPage() {
   const [chatRailVisible, setChatRailVisible] = useState(false);
   const [centerChatLeaving, setCenterChatLeaving] = useState(false);
   const [focusedChatAttachments, setFocusedChatAttachments] = useState<FocusedChatAttachment[]>([]);
+  const [expandedAiMsgIds, setExpandedAiMsgIds] = useState<Set<string>>(new Set());
+  const prevMsgCountRef = useRef(0);
   const [isChatLoading, setIsChatLoading] = useState(false);
   const [chatReactions, setChatReactions] = useState<Record<string, "like" | "dislike" | null>>({});
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
@@ -680,6 +684,29 @@ export default function OmniaCanvasPage() {
   useEffect(() => {
     chatMessagesRef.current = chatMessages;
   }, [chatMessages]);
+
+  useEffect(() => {
+    const count = chatMessages.length;
+    if (count > prevMsgCountRef.current && count > 0) {
+      const latest = chatMessages[count - 1];
+      if (latest) setExpandedAiMsgIds(new Set([latest.id]));
+    }
+    prevMsgCountRef.current = count;
+  }, [chatMessages.length]);
+
+  const toggleAiExpanded = useCallback((msgId: string) => {
+    setExpandedAiMsgIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(msgId)) next.delete(msgId);
+      else next.add(msgId);
+      return next;
+    });
+  }, []);
+
+  const getCollapsedPreview = useCallback((text: string) => {
+    const clean = text.replace(/[#*_`~>\[\]()!|]/g, "").replace(/\n+/g, " ").trim();
+    return clean.length > 120 ? clean.slice(0, 117) + "..." : clean;
+  }, []);
 
   const buildSnapshot = useCallback(() => {
     const st = useCanvasStore.getState();
@@ -983,9 +1010,11 @@ export default function OmniaCanvasPage() {
     (vw: number) => {
       if (chatMode) return 0;
       const width = Math.max(0, Math.floor(vw || 0));
-      if (width <= 900) return Math.max(220, Math.min(280, Math.floor(width * 0.34)));
-      if (width <= 1300) return Math.max(240, Math.min(320, Math.floor(width * 0.3)));
-      return Math.min(380, Math.floor(width * 0.42));
+      if (width <= 900) return Math.max(200, Math.min(260, Math.floor(width * 0.30)));
+      if (width <= 1100) return Math.max(220, Math.min(280, Math.floor(width * 0.26)));
+      if (width <= 1366) return Math.max(240, Math.min(310, Math.floor(width * 0.25)));
+      if (width <= 1600) return Math.max(260, Math.min(340, Math.floor(width * 0.25)));
+      return Math.min(380, Math.floor(width * 0.30));
     },
     [chatMode]
   );
@@ -2532,24 +2561,34 @@ export default function OmniaCanvasPage() {
       const snapshot = sanitizeSnapshotForDb(raw);
       const now = new Date().toISOString();
 
-      const updatePromise = supabase
-        .from("omnia_boards")
-        .update({ title: savedTitle, updated_at: now })
-        .eq("id", boardId);
+      const statePayload = { board_id: boardId, state: snapshot, version: raw.version || SNAPSHOT_VERSION, user_id: user.id, updated_at: now };
 
-      const upsertPromise = supabase
-        .from("omnia_board_states")
-        .upsert(
-          { board_id: boardId, state: snapshot, version: raw.version || SNAPSHOT_VERSION, user_id: user.id, updated_at: now },
-          { onConflict: "board_id" }
-        );
+      const [updateRes, initialUpsertRes] = await Promise.all([
+        supabase.from("omnia_boards").update({ title: savedTitle, updated_at: now }).eq("id", boardId),
+        supabase.from("omnia_board_states").upsert(statePayload, { onConflict: "board_id" }),
+      ]);
 
-      const [updateRes, upsertRes] = await Promise.all([updatePromise, upsertPromise]);
+      let stateSaveOk = !initialUpsertRes.error;
+
+      // Self-heal: if the upsert failed (e.g. NULL user_id on existing row blocking RLS),
+      // patch user_id on the orphaned row and retry once.
+      if (initialUpsertRes.error) {
+        console.error("[LYKN] Board state save failed, attempting self-heal:", initialUpsertRes.error.message);
+        await supabase
+          .from("omnia_board_states")
+          .update({ user_id: user.id })
+          .eq("board_id", boardId)
+          .is("user_id", null);
+        const retryRes = await supabase
+          .from("omnia_board_states")
+          .upsert(statePayload, { onConflict: "board_id" });
+        if (retryRes.error) console.error("[LYKN] Board state save retry failed:", retryRes.error.message);
+        else stateSaveOk = true;
+      }
 
       if (updateRes.error) console.error("[LYKN] Board title save failed:", updateRes.error.message);
-      if (upsertRes.error) console.error("[LYKN] Board state save failed:", upsertRes.error.message);
 
-      if (!updateRes.error && !upsertRes.error) {
+      if (!updateRes.error && stateSaveOk) {
         lastSaveTimeRef.current = now;
         lastSavedTitleRef.current = savedTitle;
         titleFromSaveRef.current = true;
@@ -4567,8 +4606,8 @@ export default function OmniaCanvasPage() {
     <div className="w-full h-[100svh] relative overflow-hidden bg-transparent">
       {/* Match BrickEditor layout: minimal chrome + floating controls */}
       {/* Heading panel (matches Create view top pill) */}
-      {/* Board title — fixed next to Signed-in pill; does not move when sidebar expands */}
-      <div className="fixed top-[1.1rem] z-[75] pointer-events-auto" style={{ left: "11.5rem" }}>
+      {/* Board title — always to the right of the Signed-in pill */}
+      <div className="fixed top-[1.1rem] z-[75] pointer-events-auto" style={{ left: "max(calc(var(--sidebar-offset, 0px) + 1rem), 11.5rem)" }}>
         <input
           type="text"
           value={title}
@@ -4743,8 +4782,8 @@ export default function OmniaCanvasPage() {
       <div
         className={`h-full transition-[width,margin-right] duration-300 ${chatMode ? "invisible pointer-events-none" : ""}`}
         style={{
-          marginRight: `${chatRailWidthPx + (showMemorySidebar ? 380 : 0)}px`,
-          width: `calc(100% - ${chatRailWidthPx + (showMemorySidebar ? 380 : 0)}px)`,
+          marginRight: `${chatRailWidthPx + (showMemorySidebar ? memorySidebarWidthPx : 0)}px`,
+          width: `calc(100% - ${chatRailWidthPx + (showMemorySidebar ? memorySidebarWidthPx : 0)}px)`,
         }}
       >
         <Canvas liveAIMode={false} isAiThinking={isChatLoading} thinkingStatusText={thinkingStatus} />
@@ -4927,9 +4966,10 @@ export default function OmniaCanvasPage() {
       )}
 
       <aside
-        className={`fixed top-[4.9rem] bottom-0 right-0 z-[65] w-[23.75rem] max-w-[92vw] border-l border-white/20 dark:border-white/10 bg-white/40 dark:bg-[rgba(20,20,24,0.55)] shadow-[0_18px_60px_rgba(0,0,0,0.22)] backdrop-blur-[40px] backdrop-saturate-[1.6] transition-transform duration-300 ${
+        className={`fixed bottom-0 right-0 z-[65] max-w-[92vw] border-l border-white/20 dark:border-white/10 bg-white/40 dark:bg-[rgba(20,20,24,0.55)] shadow-[0_18px_60px_rgba(0,0,0,0.22)] backdrop-blur-[40px] backdrop-saturate-[1.6] transition-transform duration-300 ${
           showMemorySidebar ? "translate-x-0 pointer-events-auto" : "translate-x-full pointer-events-none"
         }`}
+        style={{ top: "var(--header-height, 4.9rem)", width: `${memorySidebarWidthPx}px` }}
       >
         <div className="h-full flex flex-col">
           <div className="px-4 py-3 border-b border-black/10 dark:border-white/10 flex items-center justify-between gap-3">
@@ -5005,8 +5045,10 @@ export default function OmniaCanvasPage() {
       {/* Side rail chat (canvas mode — toggled open via button or canvas interaction) */}
       {!chatMode && chatRailVisible && (
         <div
-          className={`fixed top-[4.9rem] bottom-0 z-[64] flex flex-col bg-white/40 backdrop-blur-sm border-l border-black/10 transition-[right] duration-300 ${showMemorySidebar ? "right-[380px]" : "right-0"}`}
+          className="fixed bottom-0 z-[64] flex flex-col bg-white/40 backdrop-blur-sm border-l border-black/10 transition-[right] duration-300"
           style={{
+            top: "var(--header-height, 4.9rem)",
+            right: showMemorySidebar ? `${memorySidebarWidthPx}px` : "0px",
             width: `${chatRailWidthPx}px`,
             animation: "chatRailSlideIn 350ms cubic-bezier(0.22,1,0.36,1) both",
           }}
@@ -5111,8 +5153,27 @@ export default function OmniaCanvasPage() {
                     </ReactMarkdown>
                   </div>
                 )}
-                {msg.role === "user" && msg.aiResponse && (
-                  <div className="self-start max-w-[94%] mt-1.5 space-y-1">
+                {msg.role === "user" && msg.aiResponse && (() => {
+                  const isExpanded = expandedAiMsgIds.has(msg.id);
+                  return (
+                  <div className="self-start max-w-[94%] mt-1.5">
+                    <button
+                      type="button"
+                      className="w-full flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-white/50 bg-white/40 backdrop-blur-sm hover:bg-white/60 transition-all text-left group/collapse"
+                      onClick={() => toggleAiExpanded(msg.id)}
+                    >
+                      <ChevronRight className={`w-3 h-3 text-black/40 flex-shrink-0 transition-transform duration-200 ${isExpanded ? "rotate-90" : ""}`} />
+                      {!isExpanded && (
+                        <span className="text-[0.6875rem] text-black/60 truncate leading-tight flex-1">
+                          {(msg as any).aiImageUrl ? "Generated image" : getCollapsedPreview(msg.aiResponse || "")}
+                        </span>
+                      )}
+                      {isExpanded && (
+                        <span className="text-[0.6875rem] text-black/40 font-medium flex-1">AI Response</span>
+                      )}
+                    </button>
+                    <div className={`overflow-hidden transition-all duration-200 ease-in-out ${isExpanded ? "max-h-[5000px] opacity-100 mt-1" : "max-h-0 opacity-0"}`}>
+                      <div className="space-y-1">
                     {(msg as any).aiImageUrl ? (
                       <div className="rounded-2xl rounded-bl-md px-3 py-2 border bg-white/70 border-white/70">
                         <img src={(msg as any).aiImageUrl} alt="Generated" className="max-w-full rounded-lg" style={{ maxHeight: "120px" }} />
@@ -5173,8 +5234,11 @@ export default function OmniaCanvasPage() {
                         {copiedMsgId === msg.id ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
                       </button>
                     </div>
+                      </div>
+                    </div>
                   </div>
-                )}
+                  );
+                })()}
               </div>
             ))}
           </div>
@@ -5222,7 +5286,7 @@ export default function OmniaCanvasPage() {
         <>
           {/* Left collage panel — canvas files */}
           {canvasFileBlocks.length > 0 && (
-            <div className="fixed top-[4.2rem] bottom-0 z-[66] w-[13.75rem] overflow-y-auto scrollbar-hide p-3 space-y-2 bg-white/20 backdrop-blur-sm border-r border-black/5 transition-all duration-300" style={{ left: "var(--sidebar-offset, 0px)" }}>
+            <div className="fixed bottom-0 z-[66] w-[13.75rem] overflow-y-auto scrollbar-hide p-3 space-y-2 bg-white/20 backdrop-blur-sm border-r border-black/5 transition-all duration-300" style={{ top: "var(--header-height-sm, 4.2rem)", left: "var(--sidebar-offset, 0px)" }}>
               <p className="text-[0.625rem] font-semibold uppercase tracking-wider text-black/40 px-1 mb-1">Canvas Files</p>
               <div className="flex flex-col gap-2">
                 {canvasFileBlocks.map((item) => (
@@ -5343,8 +5407,8 @@ export default function OmniaCanvasPage() {
           ) : (
             /* Active conversation: messages scrollable, input pinned to bottom */
             <div
-              className="fixed top-[4.2rem] bottom-0 right-0 z-[65] flex flex-col items-center bg-transparent transition-all duration-300"
-              style={{ left: canvasFileBlocks.length > 0 ? `calc(220px + var(--sidebar-offset, 0px))` : "var(--sidebar-offset, 0px)" }}
+              className="fixed bottom-0 right-0 z-[65] flex flex-col items-center bg-transparent transition-all duration-300"
+              style={{ top: "var(--header-height-sm, 4.2rem)", left: canvasFileBlocks.length > 0 ? `calc(220px + var(--sidebar-offset, 0px))` : "var(--sidebar-offset, 0px)" }}
               onDragOver={handleFocusedChatDragOver}
               onDrop={handleFocusedChatDrop}
             >
@@ -5424,9 +5488,28 @@ export default function OmniaCanvasPage() {
                         </div>
                       </div>
                     )}
-                    {msg.role === "user" && msg.aiResponse && (
-                      <div className="flex justify-start group/aifocused">
-                        <div className="max-w-[80%]">
+                    {msg.role === "user" && msg.aiResponse && (() => {
+                      const isFocusedExpanded = expandedAiMsgIds.has(msg.id);
+                      return (
+                      <div className="flex justify-start">
+                        <div className="max-w-[80%] w-full">
+                          <button
+                            type="button"
+                            className="w-full flex items-center gap-2 px-4 py-2.5 rounded-2xl border border-white/50 bg-white/30 backdrop-blur-sm hover:bg-white/50 transition-all text-left"
+                            onClick={() => toggleAiExpanded(msg.id)}
+                          >
+                            <ChevronRight className={`w-4 h-4 text-black/40 flex-shrink-0 transition-transform duration-200 ${isFocusedExpanded ? "rotate-90" : ""}`} />
+                            {!isFocusedExpanded && (
+                              <span className="text-sm text-black/60 truncate leading-tight flex-1">
+                                {(msg as any).aiImageUrl ? "Generated image" : getCollapsedPreview(msg.aiResponse || "")}
+                              </span>
+                            )}
+                            {isFocusedExpanded && (
+                              <span className="text-sm text-black/40 font-medium flex-1">AI Response</span>
+                            )}
+                          </button>
+                          <div className={`overflow-hidden transition-all duration-200 ease-in-out ${isFocusedExpanded ? "max-h-[10000px] opacity-100 mt-1" : "max-h-0 opacity-0"}`}>
+                            <div className="group/aifocused">
                           {(msg as any).aiImageUrl ? (
                             <div className="px-4 py-3">
                               <img src={(msg as any).aiImageUrl} alt="Generated image" className="max-w-full rounded-xl shadow-lg" style={{ maxHeight: "320px" }} />
@@ -5573,12 +5656,33 @@ export default function OmniaCanvasPage() {
                               <ThumbsDown className="w-3.5 h-3.5" />
                             </button>
                           </div>
+                            </div>
+                          </div>
                         </div>
                       </div>
-                    )}
-                    {msg.role !== "user" && (
+                      );
+                    })()}
+                    {msg.role !== "user" && (() => {
+                      const isNonUserExpanded = expandedAiMsgIds.has(msg.id);
+                      return (
                       <div className="flex justify-start">
-                        <div className="max-w-[80%]">
+                        <div className="max-w-[80%] w-full">
+                          <button
+                            type="button"
+                            className="w-full flex items-center gap-2 px-4 py-2.5 rounded-2xl border border-white/50 bg-white/30 backdrop-blur-sm hover:bg-white/50 transition-all text-left"
+                            onClick={() => toggleAiExpanded(msg.id)}
+                          >
+                            <ChevronRight className={`w-4 h-4 text-black/40 flex-shrink-0 transition-transform duration-200 ${isNonUserExpanded ? "rotate-90" : ""}`} />
+                            {!isNonUserExpanded && (
+                              <span className="text-sm text-black/60 truncate leading-tight flex-1">
+                                {getCollapsedPreview(msg.content || "")}
+                              </span>
+                            )}
+                            {isNonUserExpanded && (
+                              <span className="text-sm text-black/40 font-medium flex-1">AI Response</span>
+                            )}
+                          </button>
+                          <div className={`overflow-hidden transition-all duration-200 ease-in-out ${isNonUserExpanded ? "max-h-[10000px] opacity-100 mt-1" : "max-h-0 opacity-0"}`}>
                           <div className="px-4 py-3 text-sm leading-relaxed break-words text-black/85">
                             <ReactMarkdown remarkPlugins={[remarkGfm]} components={buildChatMarkdownComponents(msg.id)}>
                               {normalizeChecklistSyntax(msg.content || "")}
@@ -5638,9 +5742,11 @@ export default function OmniaCanvasPage() {
                               <ThumbsDown className="w-3.5 h-3.5" />
                             </button>
                           </div>
+                          </div>
                         </div>
                       </div>
-                    )}
+                      );
+                    })()}
                   </React.Fragment>
                 ))}
                 {isChatLoading && (
