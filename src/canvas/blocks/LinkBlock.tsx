@@ -78,7 +78,6 @@ export const LinkBlock = memo(function LinkBlock({ id, onMinimize, onMenu }: { i
   const moveBlocksFromSnapshot = useCanvasStore((s) => s.moveBlocksFromSnapshot);
   const updateBlock = useCanvasStore((s) => s.updateBlock);
   const gridSize = useCanvasStore((s) => s.gridSize);
-  const canvasWidth = useCanvasStore((s) => s.canvasWidth);
   const pushHistory = useCanvasStore((s) => s.pushHistory);
 
   const dragRef = useRef<DragState | null>(null);
@@ -166,8 +165,6 @@ export const LinkBlock = memo(function LinkBlock({ id, onMinimize, onMenu }: { i
         maxW = Math.max(gridSize, cRight - Number(block.x || 0));
         maxH = Math.max(gridSize, cBottom - Number(block.y || 0));
       }
-    } else if (Number.isFinite(canvasWidth as any) && Number(canvasWidth) > 0) {
-      maxW = Math.max(gridSize, Number(canvasWidth) - Number(block.x || 0));
     }
     resizeRef.current = {
       pointerId: e.pointerId,

@@ -48,7 +48,6 @@ type ResizeState = {
 export const ImageBlock = memo(function ImageBlock({ id, onMinimize, onMenu }: { id: string; onMinimize?: (id: string) => void; onMenu?: (id: string, rect: DOMRect) => void }) {
   const block = useCanvasStore((s) => s.blocks[id]);
   const allBlocks = useCanvasStore((s) => s.blocks);
-  const canvasWidth = useCanvasStore((s) => s.canvasWidth);
   const selectBlocks = useCanvasStore((s) => s.selectBlocks);
   const toggleSelect = useCanvasStore((s) => s.toggleSelect);
   const isSelected = useCanvasStore((s) => s.selectedIds.includes(id));
@@ -196,8 +195,6 @@ export const ImageBlock = memo(function ImageBlock({ id, onMinimize, onMenu }: {
         maxW = Math.max(gridSize, cRight - Number(block.x || 0));
         maxH = Math.max(gridSize, cBottom - Number(block.y || 0));
       }
-    } else if (Number.isFinite(canvasWidth as any) && Number(canvasWidth) > 0) {
-      maxW = Math.max(gridSize, Number(canvasWidth) - Number(block.x || 0));
     }
 
     resizeRef.current = {
