@@ -15,7 +15,7 @@ import { useAuth } from '@/lib/SupabaseAuth';
 import { useThinkingStatus } from '@/hooks/useThinkingStatus';
 import { getAiPrefs } from '@/lib/ai-prefs';
 
-export default function MemoryChatPage() {
+export default function VaultChatPage() {
   const { user } = useAuth();
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
@@ -279,10 +279,10 @@ export default function MemoryChatPage() {
       const detailLevel = settings.aiDetailLevel || 'medium';
 
       const personalityStyles = {
-        professional: 'You are a professional memory assistant. Be formal, precise, and objective.',
+        professional: 'You are a professional vault assistant. Be formal, precise, and objective.',
         balanced: 'You are a helpful AI assistant. Be friendly yet professional.',
         casual: 'You are a friendly companion. Be warm, conversational, and supportive.',
-        enthusiastic: 'You are an enthusiastic memory coach. Be energetic, motivating, and positive!'
+        enthusiastic: 'You are an enthusiastic vault coach. Be energetic, motivating, and positive!'
       };
 
       const detailStyles = {
@@ -617,8 +617,8 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
         onViewChange={(view) => {
           if (view === 'create') {
             navigate('/create');
-          } else if (view === 'memory') {
-            navigate('/memory');
+          } else if (view === 'vault') {
+            navigate('/vault');
           } else {
             navigate(createPageUrl(
             view === 'short_term' ? 'ShortTerm' :
@@ -629,7 +629,7 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
           }
         }}
           onOpenSearch={() => navigate(createPageUrl('AISearch'))}
-          onOpenChat={() => navigate(createPageUrl('MemoryChat'))}
+          onOpenChat={() => navigate(createPageUrl('VaultChat'))}
           onOpenSettings={() => setSettingsOpen(true)}
           isCollapsed={sidebarCollapsed}
           onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}

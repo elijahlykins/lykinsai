@@ -23,8 +23,8 @@ export default function NotionSidebar({
   const isCompact = density === 'compact';
   const navItems = [
     { id: 'create', icon: Plus, label: 'Create', tooltip: 'Create new memories' },
-    { id: 'memory', icon: Clock, label: 'Memory', tooltip: 'View all your memories' },
-    { id: 'chat', icon: MessageCircle, label: 'Memory Chat', tooltip: 'Chat with AI about your memories', onClick: onOpenChat },
+    { id: 'vault', icon: Clock, label: 'Vault', tooltip: 'View all your memories' },
+    { id: 'chat', icon: MessageCircle, label: 'Vault Chat', tooltip: 'Chat with AI about your memories', onClick: onOpenChat },
   ];
 
   const handleBillingClick = () => {
@@ -118,7 +118,7 @@ export default function NotionSidebar({
       <div className={`flex items-center justify-between ${isCompact ? 'mb-4' : 'mb-8'}`}>
         <div>
           <h1 className={`${isCompact ? 'text-xl' : 'text-2xl'} font-bold text-black dark:text-white tracking-tight`}>lykinsai</h1>
-          <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">Your AI Memory Companion</p>
+          <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">Your AI Vault Companion</p>
         </div>
         {showCollapseToggle && (
           <button

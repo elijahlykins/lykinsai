@@ -413,15 +413,15 @@ body.sidebar-push .app-content {
   padding-left: 12rem;
 }
 
-/* Embedded memory pullout: make iframe document transparent */
-html.embedded-memory-mode,
-html.embedded-memory-mode body,
-body.embedded-memory-mode {
+/* Embedded vault pullout: make iframe document transparent */
+html.embedded-vault-mode,
+html.embedded-vault-mode body,
+body.embedded-vault-mode {
   background: transparent !important;
   background-image: none !important;
 }
 
-body.embedded-memory-mode .app-content {
+body.embedded-vault-mode .app-content {
   background: transparent !important;
   padding-left: 0 !important;
 }
@@ -444,8 +444,8 @@ body.embedded-memory-mode .app-content {
     border-right-color: rgba(255,255,255,0.25);
     border-bottom-color: rgba(255,255,255,0.25);
     box-shadow:
-      0 20px 64px rgba(0,0,0,0.16),
-      0 8px 20px rgba(0,0,0,0.12),
+      0 1px 3px rgba(0,0,0,0.06),
+      0 2px 8px rgba(0,0,0,0.04),
       inset 0 2px 4px rgba(255,255,255,0.35),
       inset 1px 1px 0 rgba(255,255,255,0.25),
       inset -1px -1px 0 rgba(0,0,0,0.05);
@@ -460,8 +460,8 @@ body.embedded-memory-mode .app-content {
     border-right-color: rgba(255,255,255,0.14);
     border-bottom-color: rgba(255,255,255,0.14);
     box-shadow:
-      0 20px 64px rgba(0,0,0,0.35),
-      0 8px 20px rgba(0,0,0,0.22),
+      0 1px 3px rgba(0,0,0,0.12),
+      0 2px 8px rgba(0,0,0,0.08),
       inset 0 2px 4px rgba(255,255,255,0.15),
       inset 1px 1px 0 rgba(255,255,255,0.12),
       inset -1px -1px 0 rgba(0,0,0,0.15);
@@ -479,7 +479,7 @@ body.embedded-memory-mode .app-content {
   }
 
   /* =========================================================
-     Omnia Canvas — selected block treatment (sleek "lit glass")
+     Omnia Grid — selected block treatment (sleek "lit glass")
      ========================================================= */
   .omnia-selected-glass {
     /* Light blue "through-glass" glow (minimal border emphasis) */
@@ -506,7 +506,7 @@ body.embedded-memory-mode .app-content {
       inset 0 0 10px rgba(110, 200, 255, 0.08);
   }
 
-  /* Hover should match selection glow (Omnia canvas only) */
+  /* Hover should match selection glow (Omnia grid only) */
   [data-omnia-canvas] .group:hover .glass-text-card,
   [data-omnia-canvas] .group:hover .glass-block {
     box-shadow:

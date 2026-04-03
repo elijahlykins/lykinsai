@@ -15,12 +15,15 @@ import {
   Link as LinkIcon,
   Loader2,
   MessageSquare,
+  Mic,
   MoreHorizontal,
   Music,
   Plus,
   Search,
   StickyNote,
   Tag,
+  Send,
+  Square,
   Trash2,
   Table2,
   Upload,
@@ -31,7 +34,6 @@ import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select";
-import DraggableChat from "@/components/notes/DraggableChat";
 import DraggableQuickNote from "@/components/notes/DraggableQuickNote";
 import DragDropFileUpload from "@/components/files/DragDropFileUpload";
 import { useUsageGate } from "@/lib/useUsageGate";
@@ -40,6 +42,9 @@ import { extractYouTubeVideoId, getYouTubeEmbedUrl } from "@/canvas/utils/youtub
 import LoadingScreen from "@/components/LoadingScreen";
 import { getAiPrefs } from "@/lib/ai-prefs";
 import { motion } from "framer-motion";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { useThinkingStatus } from "@/hooks/useThinkingStatus";
 
 function stripAttachmentJsonMarker(content) {
   if (!content) return "";
@@ -432,7 +437,7 @@ function extractYouTubeLinks(content = "") {
   return [...new Set(matches)];
 }
 
-export default function MemoryNew() {
+export default function VaultNew() {
   const location = useLocation();
   const nav = useNavigate();
   const { user, loading } = useAuth();
@@ -451,7 +456,7 @@ export default function MemoryNew() {
 
   const { checkVaultLimit, incrementVaultCount, upgradeModal, dismissUpgradeModal } = useUsageGate();
   const [embeddedSearch, setEmbeddedSearch] = useState("");
-  const memoryQueryClient = useQueryClient();
+  const vaultQueryClient = useQueryClient();
   const [notes, setNotes] = useState([]);
   const [isLoadingNotes, setIsLoadingNotes] = useState(true);
   const [notesError, setNotesError] = useState("");
@@ -491,6 +496,8 @@ export default function MemoryNew() {
   const [conceptResultIds, setConceptResultIds] = useState(null);
   const [isConceptSearching, setIsConceptSearching] = useState(false);
   const [selectedFilterTags, setSelectedFilterTags] = useState([]);
+  const [showEmbeddedTagDropdown, setShowEmbeddedTagDropdown] = useState(false);
+  const embeddedTagDropdownRef = useRef(null);
   const [tagPickerCardId, setTagPickerCardId] = useState(null);
   const [tagPickerPosition, setTagPickerPosition] = useState(null);
   const [newTagInput, setNewTagInput] = useState("");
@@ -502,9 +509,58 @@ export default function MemoryNew() {
   const notesPopoverRef = useRef(null);
   const noteComposerRef = useRef(null);
   const assistantIndexRef = useRef(null);
+  const chatScrollRef = useRef(null);
+  const chatInputRef = useRef(null);
   const signedUrlCacheRef = useRef(new Map());
+
+  const CHAT_RAIL_DEFAULT_WIDTH = 340;
+  const [chatRailWidthManual, setChatRailWidthManual] = useState(null);
+  const thinkingStatus = useThinkingStatus(isChatLoading);
+
+  const clampChatRailWidth = useCallback((raw, vw) => {
+    const width = Math.max(0, Math.floor(vw || 0));
+    if (width < 640) return width;
+    const minW = width <= 900 ? 200 : 260;
+    const maxW = Math.max(minW + 20, Math.floor(width * 0.45));
+    return Math.max(minW, Math.min(maxW, Math.floor(raw || minW)));
+  }, []);
+
+  const isMobileChat = typeof window !== "undefined" && window.innerWidth < 640;
+
+  const chatRailWidthPx = showChat
+    ? clampChatRailWidth(chatRailWidthManual ?? CHAT_RAIL_DEFAULT_WIDTH, window.innerWidth)
+    : 0;
+
+  const handleStartChatResize = useCallback(
+    (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const startX = e.clientX;
+      const startWidth = chatRailWidthPx;
+      const onMove = (ev) => {
+        const dx = startX - ev.clientX;
+        const vw = window.innerWidth || 1280;
+        setChatRailWidthManual(clampChatRailWidth(startWidth + dx, vw));
+      };
+      const onUp = () => {
+        window.removeEventListener("pointermove", onMove, true);
+        window.removeEventListener("pointerup", onUp, true);
+        window.removeEventListener("pointercancel", onUp, true);
+      };
+      window.addEventListener("pointermove", onMove, true);
+      window.addEventListener("pointerup", onUp, true);
+      window.addEventListener("pointercancel", onUp, true);
+    },
+    [chatRailWidthPx, clampChatRailWidth]
+  );
   const lastAutoSavedAttachmentNoteTextRef = useRef("");
   const MEMORY_PAGE_SIZE = 100;
+
+  useEffect(() => {
+    if (chatScrollRef.current) {
+      chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+    }
+  }, [chatMessages]);
 
   const mergeUploadedNotes = useCallback((incoming = []) => {
     if (!Array.isArray(incoming) || incoming.length === 0) return;
@@ -700,9 +756,17 @@ export default function MemoryNew() {
         setTagPickerPosition(null);
         setNewTagInput("");
       }
+      if (embeddedTagDropdownRef.current && !embeddedTagDropdownRef.current.contains(event.target)) {
+        setShowEmbeddedTagDropdown(false);
+      }
     };
+    const onBlur = () => setShowEmbeddedTagDropdown(false);
     window.addEventListener("mousedown", onPointerDown);
-    return () => window.removeEventListener("mousedown", onPointerDown);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("mousedown", onPointerDown);
+      window.removeEventListener("blur", onBlur);
+    };
   }, []);
 
   useEffect(() => {
@@ -732,7 +796,7 @@ export default function MemoryNew() {
     return () => observer.disconnect();
   }, [loadMoreNotes, loading, user?.id]);
 
-  const memoryCards = useMemo(() => {
+  const vaultCards = useMemo(() => {
     const safeNotes = notes.filter((n) => n && !n.trashed);
     const cards = [];
 
@@ -939,18 +1003,27 @@ export default function MemoryNew() {
       });
       return;
     }
-    const { data } = await supabase.storage
-      .from(target.bucket)
-      .createSignedUrl(target.path, 60 * 60 * 24 * 7);
-    if (data?.signedUrl) {
-      signedUrlCacheRef.current.set(cacheKey, data.signedUrl);
-      setResolvedAttachmentUrls((prev) => ({ ...prev, [card.id]: data.signedUrl }));
-    } else {
+    try {
+      const { data } = await supabase.storage
+        .from(target.bucket)
+        .createSignedUrl(target.path, 60 * 60 * 24 * 7);
+      if (data?.signedUrl) {
+        signedUrlCacheRef.current.set(cacheKey, data.signedUrl);
+        setResolvedAttachmentUrls((prev) => ({ ...prev, [card.id]: data.signedUrl }));
+        return;
+      }
+    } catch {
+      // signed URL failed — fall through to public URL
+    }
+    try {
       const { data: pubData } = supabase.storage.from(target.bucket).getPublicUrl(target.path);
       if (pubData?.publicUrl) {
         signedUrlCacheRef.current.set(cacheKey, pubData.publicUrl);
         setResolvedAttachmentUrls((prev) => ({ ...prev, [card.id]: pubData.publicUrl }));
       }
+    } catch {
+      // mark failed so the observer can retry on next cycle
+      visibleCardIdsRef.current.delete(card.id);
     }
   }, []);
 
@@ -967,25 +1040,44 @@ export default function MemoryNew() {
     }
   }, []);
 
+  const urlResolveQueueRef = useRef([]);
+  const urlResolveDrainingRef = useRef(false);
+
+  const drainUrlResolveQueue = useCallback(async () => {
+    if (urlResolveDrainingRef.current) return;
+    urlResolveDrainingRef.current = true;
+    while (urlResolveQueueRef.current.length > 0) {
+      const batch = urlResolveQueueRef.current.splice(0, 4);
+      await Promise.allSettled(batch.map((card) => resolveSignedUrlForCard(card)));
+    }
+    urlResolveDrainingRef.current = false;
+  }, [resolveSignedUrlForCard]);
+
   useEffect(() => {
     if (!user?.id) return;
-    const cardLookup = new Map(memoryCards.map((c) => [c.id, c]));
+    const cardLookup = new Map(vaultCards.map((c) => [c.id, c]));
+    visibleCardIdsRef.current.clear();
 
     urlResolveObserverRef.current = new IntersectionObserver(
       (entries) => {
+        let queued = false;
         for (const entry of entries) {
           if (!entry.isIntersecting) continue;
           const cardId = entry.target.dataset?.cardId;
           if (!cardId || visibleCardIdsRef.current.has(cardId)) continue;
           visibleCardIdsRef.current.add(cardId);
           const card = cardLookup.get(cardId);
-          if (card) resolveSignedUrlForCard(card);
+          if (card) {
+            urlResolveQueueRef.current.push(card);
+            queued = true;
+          }
         }
+        if (queued) drainUrlResolveQueue();
       },
       { rootMargin: "200px" }
     );
 
-    for (const [cardId, el] of cardElementsRef.current) {
+    for (const [, el] of cardElementsRef.current) {
       urlResolveObserverRef.current.observe(el);
     }
 
@@ -993,11 +1085,11 @@ export default function MemoryNew() {
       urlResolveObserverRef.current?.disconnect();
       urlResolveObserverRef.current = null;
     };
-  }, [memoryCards, user?.id, resolveSignedUrlForCard]);
+  }, [vaultCards, user?.id, resolveSignedUrlForCard, drainUrlResolveQueue]);
 
   const visibleCards = useMemo(() => {
-    return memoryCards.filter((card) => card.kind !== "chat-preview");
-  }, [memoryCards]);
+    return vaultCards.filter((card) => card.kind !== "chat-preview");
+  }, [vaultCards]);
 
   const backfillDescribedRef = useRef(new Set());
   const backfillRunningRef = useRef(false);
@@ -1005,7 +1097,7 @@ export default function MemoryNew() {
   useEffect(() => {
     if (!user?.id || isLoadingNotes || backfillRunningRef.current) return;
 
-    const undescribed = memoryCards.filter(
+    const undescribed = vaultCards.filter(
       (card) =>
         card.kind === "attachment" &&
         card.noteId &&
@@ -1100,15 +1192,19 @@ export default function MemoryNew() {
     })();
 
     return () => { cancelled = true; backfillRunningRef.current = false; };
-  }, [memoryCards, user?.id, isLoadingNotes, resolvedAttachmentUrls]);
+  }, [vaultCards, user?.id, isLoadingNotes, resolvedAttachmentUrls]);
 
   const filteredVisibleCards = useMemo(() => {
     let cards = visibleCards;
 
     if (selectedFilterTags.length > 0) {
+      const wantUntagged = selectedFilterTags.includes("__untagged__");
+      const realTags = selectedFilterTags.filter((t) => t !== "__untagged__");
       cards = cards.filter((card) => {
         const cardTags = card.tags || [];
-        return selectedFilterTags.every((t) => cardTags.includes(t));
+        if (wantUntagged && cardTags.length === 0) return true;
+        if (realTags.length > 0 && realTags.every((t) => cardTags.includes(t))) return true;
+        return false;
       });
     }
 
@@ -1138,7 +1234,7 @@ export default function MemoryNew() {
   }, [embeddedSearch, visibleCards, conceptResultIds, selectedFilterTags]);
 
   const orderStorageKey = useMemo(
-    () => (user?.id ? `memory_collage_order_v1_${user.id}` : "memory_collage_order_v1_guest"),
+    () => (user?.id ? `vault_collage_order_v1_${user.id}` : "vault_collage_order_v1_guest"),
     [user?.id]
   );
 
@@ -1264,15 +1360,16 @@ export default function MemoryNew() {
         title: card.title || "",
         content: "",
         attachments: [{ ...att, url: resolvedForDrag, type: card.type, videoId, ...(pdfText ? { pdfText, extractedText: pdfText } : {}) }],
+        tags: Array.isArray(card.tags) ? card.tags : [],
         timestamp: Date.now(),
       };
-      try { e.dataTransfer.setData("application/x-omnia-memory", JSON.stringify(pendingData)); } catch {}
+      try { e.dataTransfer.setData("application/x-omnia-vault", JSON.stringify(pendingData)); } catch {}
       try {
         const target = window.parent !== window ? window.parent : window;
-        /** @type {any} */ (target).__omnia_pending_memory = pendingData;
+        /** @type {any} */ (target).__omnia_pending_vault = pendingData;
       } catch {}
       try {
-        window.parent.postMessage({ type: "omnia-memory-drag-start", data: pendingData }, "*");
+        window.parent.postMessage({ type: "omnia-vault-drag-start", data: pendingData }, "*");
       } catch {}
       e.dataTransfer.effectAllowed = "copyMove";
     } else if (isEmbeddedMode && card.kind === "quick-note") {
@@ -1281,18 +1378,19 @@ export default function MemoryNew() {
         title: card.title || "Quick Note",
         content: card.excerpt || "",
         attachments: [],
+        tags: Array.isArray(card.tags) ? card.tags : [],
         timestamp: Date.now(),
       };
       try {
         e.dataTransfer.setData("text/plain", card.excerpt || card.title || "Quick Note");
-        e.dataTransfer.setData("application/x-omnia-memory", JSON.stringify(pendingData));
+        e.dataTransfer.setData("application/x-omnia-vault", JSON.stringify(pendingData));
       } catch {}
       try {
         const target = window.parent !== window ? window.parent : window;
-        /** @type {any} */ (target).__omnia_pending_memory = pendingData;
+        /** @type {any} */ (target).__omnia_pending_vault = pendingData;
       } catch {}
       try {
-        window.parent.postMessage({ type: "omnia-memory-drag-start", data: pendingData }, "*");
+        window.parent.postMessage({ type: "omnia-vault-drag-start", data: pendingData }, "*");
       } catch {}
       e.dataTransfer.effectAllowed = "copyMove";
     } else {
@@ -1301,17 +1399,17 @@ export default function MemoryNew() {
 
     setDraggedCardId(card.id);
     lastHoverTargetRef.current = card.id;
-    window.dispatchEvent(new CustomEvent("memory_collage_reorder_drag_start"));
-    try { e.dataTransfer.setData("application/x-lykins-memory-card-id", card.id); } catch {}
+    window.dispatchEvent(new CustomEvent("vault_collage_reorder_drag_start"));
+    try { e.dataTransfer.setData("application/x-lykins-vault-card-id", card.id); } catch {}
   }, [isEmbeddedMode, resolvedAttachmentUrls]);
 
   const handleCardDragEnd = useCallback(() => {
     setDraggedCardId(null);
     setDropTargetCardId(null);
     lastHoverTargetRef.current = null;
-    window.dispatchEvent(new CustomEvent("memory_collage_reorder_drag_end"));
+    window.dispatchEvent(new CustomEvent("vault_collage_reorder_drag_end"));
     if (isEmbeddedMode) {
-      try { window.parent.postMessage({ type: "omnia-memory-drag-end" }, "*"); } catch {}
+      try { window.parent.postMessage({ type: "omnia-vault-drag-end" }, "*"); } catch {}
     }
   }, [isEmbeddedMode]);
 
@@ -1776,14 +1874,18 @@ User: ${text}`;
           draggable={false}
           onError={(e) => {
             const img = e.currentTarget;
-            if (img && !img.dataset.retried && attachment?.storagePath && attachment?.storageBucket) {
+            if (img && !img.dataset.retried) {
               img.dataset.retried = "1";
-              supabase.storage
-                .from(attachment.storageBucket)
-                .createSignedUrl(attachment.storagePath, 60 * 60 * 24 * 7)
-                .then(({ data }) => {
-                  if (data?.signedUrl) img.src = data.signedUrl;
-                });
+              const target = parseStorageTarget(attachment || {});
+              if (target?.bucket && target?.path) {
+                supabase.storage
+                  .from(target.bucket)
+                  .createSignedUrl(target.path, 60 * 60 * 24 * 7)
+                  .then(({ data }) => {
+                    if (data?.signedUrl) img.src = data.signedUrl;
+                  })
+                  .catch(() => {});
+              }
             }
           }}
         />
@@ -2179,11 +2281,12 @@ User: ${text}`;
       const existingFiles = Array.isArray(parsed?.files) ? parsed.files : [];
       const newFile = {
         id: crypto.randomUUID(),
-        name: card.title || (card.kind === "quick-note" ? "Quick Note" : "Memory File"),
+        name: card.title || (card.kind === "quick-note" ? "Quick Note" : "Vault File"),
         path: storageTarget?.path || fileUrl,
         folderId: null,
         kind,
         url: fileUrl,
+        tags: Array.isArray(card.tags) ? card.tags : [],
       };
       const nextFiles = [newFile, ...existingFiles];
       localStorage.setItem(
@@ -2236,7 +2339,7 @@ User: ${text}`;
       const kind = kindByType[card.type || card.kind] || "file";
       const newFile = {
         id: crypto.randomUUID(),
-        name: card.title || (card.kind === "quick-note" ? "Quick Note" : "Memory File"),
+        name: card.title || (card.kind === "quick-note" ? "Quick Note" : "Vault File"),
         path: storageTarget?.path || fileUrl,
         folderId: null,
         kind,
@@ -2251,7 +2354,7 @@ User: ${text}`;
         })
       );
 
-      memoryQueryClient.invalidateQueries({ queryKey: ["projects", user?.id] });
+      vaultQueryClient.invalidateQueries({ queryKey: ["projects", user?.id] });
       setOpenCardMenuId(null);
       alert(`Created project "${project.name}" and added this file.`);
     } finally {
@@ -2338,10 +2441,10 @@ User: ${text}`;
 
   const composerCard = useMemo(
     () =>
-      memoryCards.find(
+      vaultCards.find(
         (card) => card.kind === "attachment" && String(card.id) === String(openAttachmentNoteComposerCardId)
       ) || null,
-    [memoryCards, openAttachmentNoteComposerCardId]
+    [vaultCards, openAttachmentNoteComposerCardId]
   );
 
   useEffect(() => {
@@ -2364,7 +2467,7 @@ User: ${text}`;
   }, [removeAttachmentFromNote]);
 
   const openAttachmentComposerForCard = useCallback((cardId, anchorRect = null) => {
-    const articleEl = document.querySelector(`[data-memory-card-id="${String(cardId)}"]`);
+    const articleEl = document.querySelector(`[data-vault-card-id="${String(cardId)}"]`);
     const rect = anchorRect || articleEl?.getBoundingClientRect();
     const panelWidth = 380;
     const fallbackLeft = Math.max(12, Math.round(window.innerWidth * 0.55));
@@ -2430,7 +2533,7 @@ User: ${text}`;
           <button
             type="button"
             onClick={() => setTopPanelOpen((v) => !v)}
-            className="rounded-full w-8 h-8 hover:bg-blue-500/15 dark:hover:bg-blue-400/20 transition-colors touch-manipulation flex items-center justify-center"
+            className="rounded-full w-9 h-9 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center"
             title={topPanelOpen ? "Hide panel" : "Show panel"}
           >
             {topPanelOpen ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
@@ -2438,7 +2541,7 @@ User: ${text}`;
           </button>
 
           {topPanelOpen && (
-            <div className="flex h-9 items-center gap-1 p-0.5 rounded-full glass-control flex-wrap">
+            <div className="flex items-center gap-1 p-1 rounded-full glass-control flex-wrap">
               <Select
                 value={selectedModel}
                 onValueChange={(value) => {
@@ -2454,12 +2557,12 @@ User: ${text}`;
                   }
                 }}
               >
-                <SelectTrigger className="w-[124px] !h-7 rounded-full glass-control hover:opacity-90 text-[0.6875rem] font-medium px-2">
+                <SelectTrigger className="w-[100px] sm:w-[124px] !h-7 rounded-full glass-control hover:opacity-90 text-[0.6875rem] font-medium px-2">
                   <SelectValue placeholder="Model" />
                 </SelectTrigger>
                 <SelectContent
                   align="end"
-                  className="glass-control border border-white/25 dark:border-white/10 bg-white/35 dark:bg-white/10 backdrop-blur-xl shadow-lg overflow-hidden"
+                  className="glass-control border border-white/25 dark:border-white/10 bg-white/35 dark:bg-white/10 backdrop-blur-xl overflow-hidden"
                 >
                   <SelectGroup>
                     <SelectLabel>Latest</SelectLabel>
@@ -2533,16 +2636,24 @@ User: ${text}`;
                 </SelectContent>
               </Select>
 
-              <div className="w-px h-3 bg-black/10 dark:bg-white/10 mx-0.5" />
+              <div className="w-px h-4 bg-black/10 dark:bg-white/10 mx-1" />
 
               <button
                 type="button"
                 onClick={() => setShowChat((v) => !v)}
-                className="rounded-full px-1.5 h-7 text-[0.6875rem] glass-control hover:opacity-90 touch-manipulation flex items-center gap-1"
-                title="Chat with AI"
+                className={`rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center ${showChat ? "bg-blue-500/15" : ""}`}
+                title={showChat ? "Hide chat" : "Open chat"}
               >
-                <span className="hidden md:inline">Chat</span>
-                <MessageSquare className="w-3 h-3 md:hidden" />
+                <MessageSquare className={`w-4 h-4 ${showChat ? "text-blue-500" : ""}`} />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowQuickNote((v) => !v)}
+                className={`rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center ${showQuickNote ? "bg-amber-500/15" : ""}`}
+                title={showQuickNote ? "Hide quick note" : "New quick note"}
+              >
+                <StickyNote className={`w-4 h-4 ${showQuickNote ? "text-amber-500" : ""}`} />
               </button>
             </div>
           )}
@@ -2550,7 +2661,10 @@ User: ${text}`;
       </div>
       )}
 
-      <main className={`relative z-20 mx-auto w-full max-w-[1560px] px-4 sm:px-6 lg:px-8 ${isEmbeddedMode ? "pt-6" : "pt-24"} pb-16`} style={{ transform: "translateZ(0)" }}>
+      <main
+        className={`relative z-20 mx-auto w-full px-4 sm:px-6 lg:px-8 ${isEmbeddedMode ? "pt-6" : "pt-24"} pb-16 transition-[margin-right,max-width] duration-300`}
+        style={{ transform: "translateZ(0)", marginRight: showChat && !isMobileChat ? `${chatRailWidthPx}px` : 0, maxWidth: showChat && !isMobileChat ? `calc(100% - ${chatRailWidthPx}px)` : "1560px" }}
+      >
         <section className="mb-6">
           {isEmbeddedMode ? (
             <div className="space-y-3">
@@ -2585,46 +2699,78 @@ User: ${text}`;
                   ))}
                 </div>
               </div>
-              <div className="flex flex-wrap items-center gap-1.5" style={{ minHeight: 1, transform: "translateZ(0)" }}>
-                {allTags.length > 0 && (
-                  <>
-                    <Tag className="w-3 h-3 text-black/35 shrink-0" />
-                    {allTags.map((tag) => {
-                      const active = selectedFilterTags.includes(tag.name);
-                      return (
-                        <button
-                          key={tag.name}
-                          type="button"
-                          onClick={() =>
-                            setSelectedFilterTags((prev) =>
-                              active ? prev.filter((t) => t !== tag.name) : [...prev, tag.name]
-                            )
-                          }
-                          className={`vault-filter-pill inline-flex items-center gap-0.5 rounded-full text-[8px] leading-none px-2 py-0.5 font-medium transition-all ${
-                            active
-                              ? "bg-blue-500 text-white shadow-sm"
-                              : "glass-control text-black/65 hover:text-black/85"
-                          }`}
-                        >
-                          {tag.name}
-                          <span className={`text-[0.5625rem] ${active ? "text-white/70" : "text-black/35"}`}>
-                            {tag.count}
-                          </span>
-                        </button>
-                      );
-                    })}
-                    {selectedFilterTags.length > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => setSelectedFilterTags([])}
-                        className="text-[0.625rem] text-blue-500 hover:text-blue-600 ml-0.5"
-                      >
-                        Clear
-                      </button>
-                    )}
-                  </>
-                )}
-              </div>
+              {allTags.length > 0 && (
+                <div className="relative" ref={embeddedTagDropdownRef}>
+                  <button
+                    type="button"
+                    onClick={() => setShowEmbeddedTagDropdown((v) => !v)}
+                    className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[0.6875rem] font-medium bg-black/[0.04] hover:bg-black/[0.07] text-black/60 hover:text-black/80 dark:bg-white/10 dark:hover:bg-white/15 dark:text-white/60 transition-colors"
+                  >
+                    <Tag className="w-3 h-3" />
+                    {selectedFilterTags.length > 0
+                      ? `${selectedFilterTags.length} tag${selectedFilterTags.length > 1 ? "s" : ""} selected`
+                      : "Filter by tag"}
+                    <ChevronDown className={`w-3 h-3 transition-transform ${showEmbeddedTagDropdown ? "rotate-180" : ""}`} />
+                  </button>
+                  {selectedFilterTags.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setSelectedFilterTags([])}
+                      className="ml-1.5 text-[0.625rem] text-blue-500 hover:text-blue-600"
+                    >
+                      Clear
+                    </button>
+                  )}
+                  {showEmbeddedTagDropdown && (
+                    <div className="absolute top-full left-0 mt-1 w-52 max-h-56 overflow-y-auto rounded-xl border border-black/10 dark:border-white/10 bg-white/95 dark:bg-[#1c1c1e]/95 backdrop-blur-xl shadow-md z-50 py-1 scrollbar-hide">
+                      {(() => {
+                        const untaggedActive = selectedFilterTags.includes("__untagged__");
+                        return (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setSelectedFilterTags((prev) =>
+                                untaggedActive ? prev.filter((t) => t !== "__untagged__") : [...prev, "__untagged__"]
+                              )
+                            }
+                            className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[0.6875rem] hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors border-b border-black/5 dark:border-white/5 mb-0.5"
+                          >
+                            <div className={`w-3.5 h-3.5 rounded flex items-center justify-center shrink-0 ${untaggedActive ? "bg-blue-500 text-white" : "border border-black/20 dark:border-white/20"}`}>
+                              {untaggedActive && <Check className="w-2.5 h-2.5" />}
+                            </div>
+                            <span className={`flex-1 truncate italic ${untaggedActive ? "text-black/90 dark:text-white/90 font-medium" : "text-black/50 dark:text-white/50"}`}>
+                              Not Tagged
+                            </span>
+                          </button>
+                        );
+                      })()}
+                      {allTags.map((tag) => {
+                        const active = selectedFilterTags.includes(tag.name);
+                        return (
+                          <button
+                            key={tag.name}
+                            type="button"
+                            onClick={() =>
+                              setSelectedFilterTags((prev) =>
+                                active ? prev.filter((t) => t !== tag.name) : [...prev, tag.name]
+                              )
+                            }
+                            className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[0.6875rem] hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors"
+                          >
+                            <div className={`w-3.5 h-3.5 rounded flex items-center justify-center shrink-0 ${active ? "bg-blue-500 text-white" : "border border-black/20 dark:border-white/20"}`}>
+                              {active && <Check className="w-2.5 h-2.5" />}
+                            </div>
+                            <span className={`flex-1 truncate ${active ? "text-black/90 dark:text-white/90 font-medium" : "text-black/65 dark:text-white/65"}`}>
+                              {tag.name}
+                            </span>
+                            <span className="text-[0.625rem] text-black/30 dark:text-white/30">{tag.count}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           ) : (
             <>
@@ -2632,9 +2778,9 @@ User: ${text}`;
               <p className="text-black/60 mt-1">
                 Your digital collage of media files, videos, images, and quick notes. Drag and drop files or folders anywhere on this page.
               </p>
-              <div className="mt-4 flex items-center gap-3">
+              <div className="mt-4 flex flex-wrap items-center gap-3">
                 <form
-                  className="relative flex-1 max-w-xl"
+                  className="relative w-full sm:flex-1 sm:max-w-xl"
                   onSubmit={(e) => {
                     e.preventDefault();
                     handleConceptSearch(vaultSearch);
@@ -2675,7 +2821,7 @@ User: ${text}`;
                   </div>
                 </form>
 
-                <div className="flex items-center rounded-xl glass-control p-0.5 gap-0.5 shrink-0">
+                <div className="flex items-center rounded-xl glass-control p-0.5 gap-0.5 shrink-0 w-full sm:w-auto">
                   {[
                     { id: "collage", icon: Layers, label: "Collage" },
                     { id: "grid", icon: Grid3X3, label: "Grid" },
@@ -2686,7 +2832,7 @@ User: ${text}`;
                       key={v.id}
                       type="button"
                       onClick={() => setVaultView(v.id)}
-                      className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[0.6875rem] font-medium transition-all ${
+                      className={`flex-1 sm:flex-initial flex items-center justify-center sm:justify-start gap-1.5 rounded-lg px-2.5 py-1.5 text-[0.6875rem] font-medium transition-all ${
                         vaultView === v.id
                           ? "bg-blue-500 text-white shadow-sm"
                           : "text-black/50 hover:text-black/80 hover:bg-black/[0.04]"
@@ -2829,14 +2975,14 @@ User: ${text}`;
                       <h2 className="text-lg font-semibold text-black/80">{tagName}</h2>
                       <span className="text-xs text-black/40 font-medium">{cards.length}</span>
                     </div>
-                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4">
+                    <div className={isEmbeddedMode ? "grid grid-cols-2 gap-3" : "grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4"}>
                       {cards.map((card) => (
                         <motion.article
                           initial={{ opacity: 0, scale: 0.97 }}
                           animate={{ opacity: 1, scale: 1 }}
                           transition={{ duration: 0.15 }}
                           key={`${tagName}-${card.id}`}
-                          data-memory-card-id={card.id}
+                          data-vault-card-id={card.id}
                           data-card-id={card.id}
                           ref={(el) => { if (card.kind === "attachment") registerCardRef(card.id, el); }}
                           draggable
@@ -2854,7 +3000,7 @@ User: ${text}`;
                               {card.tags?.length > 0 && (
                                 <div className="mt-1 flex flex-wrap gap-1 px-1">
                                   {card.tags.map((t) => (
-                                    <span key={t} className="vault-tag-pill inline-flex items-center rounded-full bg-black/5 text-[7px] leading-none px-2 py-px font-medium text-black/55">{t}</span>
+                                    <span key={t} className="vault-tag-pill inline-flex items-center rounded-full bg-black/5 dark:bg-white/10 text-[7px] leading-none px-2 py-px font-medium text-black/55 dark:text-white/55">{t}</span>
                                   ))}
                                 </div>
                               )}
@@ -2948,14 +3094,14 @@ User: ${text}`;
                         <h2 className="text-lg font-semibold text-black/80">{typeName}</h2>
                         <span className="text-xs text-black/40 font-medium">{cards.length}</span>
                       </div>
-                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4">
+                      <div className={isEmbeddedMode ? "grid grid-cols-2 gap-3" : "grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4"}>
                         {cards.map((card) => (
                           <motion.article
                             initial={{ opacity: 0, scale: 0.97 }}
                             animate={{ opacity: 1, scale: 1 }}
                             transition={{ duration: 0.15 }}
                             key={`${typeName}-${card.id}`}
-                            data-memory-card-id={card.id}
+                            data-vault-card-id={card.id}
                             data-card-id={card.id}
                             ref={(el) => { if (card.kind === "attachment") registerCardRef(card.id, el); }}
                             draggable
@@ -3045,7 +3191,9 @@ User: ${text}`;
             ) : (
               <div className={
                 isEmbeddedMode
-                  ? "columns-2 gap-3"
+                  ? vaultView === "grid"
+                    ? "grid grid-cols-2 gap-3"
+                    : "columns-2 gap-3"
                   : vaultView === "grid"
                     ? "grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4"
                     : "columns-1 sm:columns-2 md:columns-3 xl:columns-4 2xl:columns-5 gap-4 md:gap-5"
@@ -3096,7 +3244,7 @@ User: ${text}`;
                     animate={{ opacity: 1, scale: 1 }}
                     transition={{ duration: 0.2, ease: "easeOut" }}
                     key={card.id}
-                    data-memory-card-id={card.id}
+                    data-vault-card-id={card.id}
                     data-card-id={card.id}
                     ref={(el) => { if (card.kind === "attachment") registerCardRef(card.id, el); }}
                     draggable
@@ -3116,14 +3264,14 @@ User: ${text}`;
                     }}
                     onDrop={(e) => {
                       e.preventDefault();
-                      const droppedId = e.dataTransfer.getData("application/x-lykins-memory-card-id") || draggedCardId;
+                      const droppedId = e.dataTransfer.getData("application/x-lykins-vault-card-id") || draggedCardId;
                       if (droppedId && droppedId !== card.id) {
                         reorderActivePage(droppedId, card.id);
                       }
                       setDraggedCardId(null);
                       setDropTargetCardId(null);
                       lastHoverTargetRef.current = null;
-                      window.dispatchEvent(new CustomEvent("memory_collage_reorder_drag_end"));
+                      window.dispatchEvent(new CustomEvent("vault_collage_reorder_drag_end"));
                     }}
                     onDragEnd={handleCardDragEnd}
                     className={`${vaultView === "grid" ? "" : "break-inside-avoid"} ${isEmbeddedMode ? "mb-0" : vaultView === "grid" ? "" : "mb-5"} rounded-2xl relative ${
@@ -3169,7 +3317,7 @@ User: ${text}`;
                         {openAttachmentNotesCardId === card.id && (
                           <div
                             ref={notesPopoverRef}
-                            className="absolute top-10 right-2 w-64 rounded-2xl border border-white/60 bg-white/85 dark:bg-[#171515]/85 backdrop-blur-xl shadow-2xl p-2 z-[130]"
+                            className="absolute top-10 right-2 w-64 max-w-[calc(100vw-2rem)] rounded-2xl border border-white/60 bg-white/85 dark:bg-[#171515]/85 backdrop-blur-xl shadow-lg p-2 z-[130]"
                             data-no-drag="true"
                             draggable={false}
                             onPointerDown={(e) => e.stopPropagation()}
@@ -3310,16 +3458,153 @@ User: ${text}`;
         )}
       </main>
 
-      {showChat && (
-        <DraggableChat
-          messages={chatMessages}
-          input={chatInput}
-          setInput={setChatInput}
-          onSend={handleChatSend}
-          isLoading={isChatLoading}
-          onClose={() => setShowChat(false)}
-          onNoteClick={() => {}}
+      {showChat && isMobileChat && (
+        <div
+          className="fixed inset-0 z-[63] bg-black/20 backdrop-blur-[2px]"
+          onClick={() => setShowChat(false)}
         />
+      )}
+      {showChat && (
+        <div
+          className={`fixed bottom-0 flex flex-col bg-white/40 backdrop-blur-sm border-l border-black/10 ${isMobileChat ? "z-[80] inset-x-0 border-l-0" : "z-[64]"}`}
+          style={{
+            top: isMobileChat ? 0 : "var(--header-height, 4.9rem)",
+            right: isMobileChat ? undefined : 0,
+            width: isMobileChat ? undefined : `${chatRailWidthPx}px`,
+            animation: "chatRailSlideIn 350ms cubic-bezier(0.22,1,0.36,1) both",
+          }}
+        >
+          {/* Resize handle (desktop only) */}
+          {!isMobileChat && (
+            <div className="absolute left-0 top-0 bottom-0 w-3 -translate-x-1/2 cursor-col-resize z-[70] pointer-events-auto" onPointerDown={handleStartChatResize} title="Drag to resize chat" />
+          )}
+
+          {/* Header */}
+          <div className="flex items-center justify-between px-3 py-2 border-b border-black/10">
+            <div className="flex items-center gap-2 text-xs font-semibold text-black/80">
+              <MessageSquare className="w-3.5 h-3.5" />
+              Vault Assistant
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowChat(false)}
+              className="h-6 w-6 rounded-full flex items-center justify-center text-black/40 hover:text-red-500 hover:bg-red-500/10 transition-colors"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+
+          {/* Messages */}
+          <div ref={chatScrollRef} className="flex-1 overflow-y-auto scrollbar-hide p-3 space-y-3">
+            {isChatLoading && (
+              <div className="text-[0.6875rem] text-black/60 px-1 flex items-center gap-2" aria-live="polite">
+                <Loader2 className="w-3 h-3 animate-spin" />
+                {thinkingStatus}
+              </div>
+            )}
+            {chatMessages.length === 0 && !isChatLoading && (
+              <div className="flex flex-col items-center justify-center text-center py-12 text-black/40 space-y-3">
+                <div className="w-12 h-12 rounded-full bg-blue-50 flex items-center justify-center">
+                  <MessageSquare className="w-6 h-6 text-blue-500" />
+                </div>
+                <p className="text-xs">Ask me anything about your vault.</p>
+              </div>
+            )}
+            {chatMessages.map((msg, idx) => (
+              <div key={idx} className={`flex flex-col ${msg.role === "user" ? "items-end" : "items-start"}`}>
+                {msg.role === "user" ? (
+                  <div className="max-w-[90%] rounded-2xl rounded-br-md px-3 py-2 text-xs leading-relaxed text-white bg-black/70 shadow-sm">
+                    {msg.content}
+                  </div>
+                ) : (
+                  <div
+                    draggable
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData("text/plain", msg.content);
+                      e.dataTransfer.effectAllowed = "copy";
+                    }}
+                    className="max-w-[90%] rounded-2xl rounded-bl-md px-3 py-2 text-xs leading-relaxed border bg-white/70 border-white/70 text-black/85 cursor-grab active:cursor-grabbing hover:bg-white/90 transition-colors"
+                    title="Drag to insert"
+                  >
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      components={{
+                        h1: ({ children }) => <h1 className="text-base font-semibold mt-2 mb-1">{children}</h1>,
+                        h2: ({ children }) => <h2 className="text-sm font-semibold mt-2 mb-1">{children}</h2>,
+                        h3: ({ children }) => <h3 className="text-xs font-semibold mt-1.5 mb-1">{children}</h3>,
+                        p: ({ children }) => <p className="my-1 whitespace-pre-wrap">{children}</p>,
+                        ul: ({ children }) => <ul className="my-1.5 list-disc pl-4 space-y-0.5">{children}</ul>,
+                        ol: ({ children }) => <ol className="my-1.5 list-decimal pl-4 space-y-0.5">{children}</ol>,
+                        li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+                        strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
+                        code: ({ children }) => (
+                          <code className="rounded bg-black/10 px-1 py-0.5 text-[0.8em]">{children}</code>
+                        ),
+                        a: ({ href, children }) => (
+                          <a href={href} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline font-medium">{children}</a>
+                        ),
+                      }}
+                    >
+                      {msg.content || ""}
+                    </ReactMarkdown>
+                  </div>
+                )}
+              </div>
+            ))}
+            {chatMessages.length > 0 && (() => {
+              const last = chatMessages[chatMessages.length - 1];
+              return last?.role === "assistant" && last?.tagActions?.applied > 0 ? (
+                <div className="flex justify-start">
+                  <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-700 text-[11px] font-medium">
+                    <Tag className="w-3 h-3" />
+                    <span>Organised {last.tagActions.applied} item{last.tagActions.applied !== 1 ? "s" : ""}</span>
+                  </div>
+                </div>
+              ) : null;
+            })()}
+          </div>
+
+          {/* Input */}
+          <div className="p-2 pb-2">
+            <div className="glass-control rounded-2xl px-2 py-1.5 w-full">
+              <div className="flex items-center gap-1.5">
+                <button type="button" onClick={() => addMediaTriggerRef.current?.()} className="h-8 w-8 rounded-full flex items-center justify-center transition-colors hover:bg-black/10 shrink-0" title="Add attachments">
+                  <Plus className="w-3.5 h-3.5" />
+                </button>
+                <textarea
+                  ref={chatInputRef}
+                  data-min-h="32"
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  onInput={(e) => {
+                    const el = e.currentTarget;
+                    el.style.height = "auto";
+                    el.style.height = Math.min(el.scrollHeight, 220) + "px";
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      handleChatSend();
+                    }
+                  }}
+                  placeholder="Ask me anything..."
+                  rows={1}
+                  className="w-full min-h-[32px] max-h-[220px] rounded-xl bg-white/12 border border-white/30 px-3 py-1.5 text-sm text-black placeholder:text-black/55 outline-none resize-none leading-5 scrollbar-hide"
+                  disabled={isChatLoading}
+                />
+                {isChatLoading ? (
+                  <button type="button" onClick={() => setIsChatLoading(false)} className="h-8 w-8 rounded-full flex items-center justify-center transition-colors bg-red-500/15 hover:bg-red-500/25 shrink-0" title="Stop generating">
+                    <Square className="w-3 h-3 text-red-500" fill="currentColor" />
+                  </button>
+                ) : (
+                  <button type="button" className="h-8 w-8 rounded-full flex items-center justify-center transition-colors hover:bg-black/10 shrink-0" title="Dictate">
+                    <Mic className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       {showQuickNote && (
@@ -3337,7 +3622,7 @@ User: ${text}`;
       {openAttachmentNoteComposerCardId && composerCard && attachmentNoteComposerPosition && (
         <div
           ref={noteComposerRef}
-          className="fixed group pointer-events-auto w-[380px] max-w-[92vw] min-h-[360px] max-h-[86vh] glass-control rounded-2xl shadow-2xl p-3 z-[340]"
+          className="fixed group pointer-events-auto w-[380px] max-w-[92vw] min-h-[360px] max-h-[86vh] glass-control rounded-2xl shadow-lg p-3 z-[340]"
           style={{ left: `${attachmentNoteComposerPosition.left}px`, top: `${attachmentNoteComposerPosition.top}px` }}
           onPointerDown={(e) => e.stopPropagation()}
           onMouseDown={(e) => e.stopPropagation()}
@@ -3380,7 +3665,7 @@ User: ${text}`;
       {showSaveLink && (
         <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/20 backdrop-blur-sm" onClick={() => { setShowSaveLink(false); setSaveLinkUrl(""); setSaveLinkPreview(null); }}>
           <div
-            className="w-[420px] max-w-[92vw] glass-control rounded-2xl shadow-2xl p-5 space-y-4"
+            className="w-[420px] max-w-[92vw] glass-control rounded-2xl shadow-lg p-5 space-y-4"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between">
@@ -3465,22 +3750,11 @@ User: ${text}`;
         </div>
       )}
 
-      {!isEmbeddedMode && (
-        <button
-          type="button"
-          onClick={() => setShowQuickNote(true)}
-          className="fixed bottom-8 right-8 w-14 h-14 rounded-full glass-control hover:opacity-90 shadow-lg hover:shadow-xl transition-all flex items-center justify-center hover:scale-110 z-[80]"
-          title="Quick Notes"
-        >
-          <StickyNote className="w-6 h-6" />
-        </button>
-      )}
-
       {openCardMenuId && openCardMenuRect && createPortal(
         (() => {
           const menuCard = orderedVisibleCards.find((c) => c.id === openCardMenuId);
           if (!menuCard) return null;
-          const menuW = 224;
+          const menuW = Math.min(224, window.innerWidth - 16);
           const pad = 8;
           let top, maxH;
           if (openCardMenuPlacement === "up") {
@@ -3497,7 +3771,7 @@ User: ${text}`;
           return (
             <div
               ref={cardMenuRef}
-              className="rounded-2xl border border-white/60 bg-white/85 dark:bg-[#171515]/85 backdrop-blur-xl shadow-2xl p-2 overflow-y-auto scrollbar-hide"
+              className="rounded-2xl border border-white/60 bg-white/85 dark:bg-[#171515]/85 backdrop-blur-xl shadow-lg p-2 overflow-y-auto scrollbar-hide"
               style={{
                 position: "fixed",
                 width: menuW,
@@ -3548,7 +3822,7 @@ User: ${text}`;
                     type="button"
                     disabled={isCardActionBusy}
                     onClick={() => {
-                      const articleEl = document.querySelector(`[data-memory-card-id="${menuCard.id}"]`);
+                      const articleEl = document.querySelector(`[data-vault-card-id="${menuCard.id}"]`);
                       const rect = articleEl?.getBoundingClientRect() || null;
                       openAttachmentComposerForCard(menuCard.id, rect);
                       setOpenCardMenuId(null);
@@ -3603,10 +3877,10 @@ User: ${text}`;
       )}
       {tagPickerCardId && tagPickerPosition && createPortal(
         (() => {
-          const pickerCard = memoryCards.find((c) => c.id === tagPickerCardId);
+          const pickerCard = vaultCards.find((c) => c.id === tagPickerCardId);
           if (!pickerCard || !pickerCard.noteId) return null;
           const cardTags = pickerCard.tags || [];
-          const menuW = 260;
+          const menuW = Math.min(260, window.innerWidth - 16);
           const pad = 8;
           let left = tagPickerPosition.left;
           let top = tagPickerPosition.top;
@@ -3622,7 +3896,7 @@ User: ${text}`;
           return (
             <div
               ref={tagPickerRef}
-              className="rounded-2xl border border-white/60 bg-white/90 dark:bg-[#171515]/90 backdrop-blur-xl shadow-2xl p-3 overflow-hidden"
+              className="rounded-2xl border border-white/60 bg-white/90 dark:bg-[#171515]/90 backdrop-blur-xl shadow-lg p-3 overflow-hidden"
               style={{ position: "fixed", width: menuW, left, top, zIndex: 10000 }}
               onMouseDown={(e) => e.stopPropagation()}
             >

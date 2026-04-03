@@ -1,17 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
-  Search as SearchIcon,
   StickyNote,
   Plus,
-  Activity,
   Clock,
-  Eye,
-  Zap,
   ChevronDown,
   ChevronUp,
-  ArrowLeft,
-  BookOpen,
+  MessageSquare,
   X,
   PanelRightClose,
   Image as ImageIcon,
@@ -27,6 +22,8 @@ import {
   BrickWall,
   LayoutGrid,
   Table,
+  Tag,
+  Check,
 } from "lucide-react";
 import DraggableChat from "@/components/notes/DraggableChat";
 import DraggableQuickNote from "@/components/notes/DraggableQuickNote";
@@ -71,6 +68,8 @@ type FileEntry = {
   content?: string;
   spreadsheetData?: SpreadsheetData;
   size?: number;
+  tags?: string[];
+  notes?: string[];
 };
 
 function decodeBrickTextFromContent(contentHtml) {
@@ -88,7 +87,7 @@ function decodeBrickTextFromContent(contentHtml) {
 
 function summarizeBrickV2ForAI(v2Payload) {
   const blocks = Array.isArray(v2Payload?.blocks) ? v2Payload.blocks : [];
-  if (blocks.length === 0) return "(empty canvas)";
+  if (blocks.length === 0) return "(empty grid)";
   const lines = [];
   for (let i = 0; i < blocks.length; i += 1) {
     const b = blocks[i] || {};
@@ -134,7 +133,6 @@ export default function ProjectPlaceholder() {
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [draftTitle, setDraftTitle] = useState("Project");
   const [search, setSearch] = useState("");
-  const [bottomTab, setBottomTab] = useState<"connections" | "graph">("graph");
   const [activeFolderId, setActiveFolderId] = useState<string | null>(null);
   const [folders, setFolders] = useState<FolderEntry[]>([]);
   const [boards, setBoards] = useState<BoardEntry[]>([]);
@@ -149,7 +147,7 @@ export default function ProjectPlaceholder() {
   const signedUrlCacheRef = useRef<Map<string, string>>(new Map());
 
   const [topPanelOpen, setTopPanelOpen] = useState(true);
-  const [showMemorySidebar, setShowMemorySidebar] = useState(false);
+  const [showVaultSidebar, setShowVaultSidebar] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [showChat, setShowChat] = useState(false);
   const [chatMessages, setChatMessages] = useState([]);
@@ -162,6 +160,13 @@ export default function ProjectPlaceholder() {
   const [openBoardMenuId, setOpenBoardMenuId] = useState<string | null>(null);
   const boardMenuRef = useRef<HTMLDivElement | null>(null);
   const [moveBoardId, setMoveBoardId] = useState<string | null>(null);
+  const [tagPickerFileId, setTagPickerFileId] = useState<string | null>(null);
+  const [newTagInput, setNewTagInput] = useState("");
+  const tagPickerRef = useRef<HTMLDivElement | null>(null);
+  const [noteComposerFileId, setNoteComposerFileId] = useState<string | null>(null);
+  const [noteComposerText, setNoteComposerText] = useState("");
+  const noteComposerRef = useRef<HTMLDivElement | null>(null);
+  const [selectedTagFilter, setSelectedTagFilter] = useState<string | null>(null);
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
   const [tilt, setTilt] = useState({ x: 0, y: 0 });
   const mapRef = useRef<HTMLDivElement | null>(null);
@@ -296,8 +301,8 @@ export default function ProjectPlaceholder() {
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
-      if (event.data?.type === "omnia-memory-drag-start") {
-        (window as any).__omnia_pending_memory = event.data.data;
+      if (event.data?.type === "omnia-vault-drag-start") {
+        (window as any).__omnia_pending_vault = event.data.data;
       }
     };
     window.addEventListener("message", onMessage);
@@ -323,6 +328,28 @@ export default function ProjectPlaceholder() {
     document.addEventListener("mousedown", onClick);
     return () => document.removeEventListener("mousedown", onClick);
   }, []);
+
+  useEffect(() => {
+    if (!tagPickerFileId) return;
+    const onClick = (event: MouseEvent) => {
+      if (tagPickerRef.current?.contains(event.target as Node)) return;
+      setTagPickerFileId(null);
+      setNewTagInput("");
+    };
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, [tagPickerFileId]);
+
+  useEffect(() => {
+    if (!noteComposerFileId) return;
+    const onClick = (event: MouseEvent) => {
+      if (noteComposerRef.current?.contains(event.target as Node)) return;
+      setNoteComposerFileId(null);
+      setNoteComposerText("");
+    };
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, [noteComposerFileId]);
 
   useEffect(() => {
     if (!projectId) return;
@@ -496,6 +523,156 @@ export default function ProjectPlaceholder() {
     refetchOnWindowFocus: false,
   });
 
+  const [vaultTags, setVaultTags] = useState<Array<{ name: string; count: number }>>([]);
+
+  useEffect(() => {
+    if (!user?.id) { setVaultTags([]); return; }
+    let cancelled = false;
+    (async () => {
+      const { data, error } = await supabase
+        .from("notes")
+        .select("tags")
+        .eq("user_id", user.id)
+        .not("tags", "is", null);
+      if (cancelled) return;
+      if (error || !data) { setVaultTags([]); return; }
+      const tagMap: Record<string, number> = {};
+      data.forEach((row: any) => {
+        (row.tags || []).forEach((t: string) => {
+          const tag = String(t).trim();
+          if (!tag) return;
+          tagMap[tag] = (tagMap[tag] || 0) + 1;
+        });
+      });
+      setVaultTags(
+        Object.entries(tagMap)
+          .sort((a, b) => b[1] - a[1])
+          .map(([name, count]) => ({ name, count }))
+      );
+    })();
+    return () => { cancelled = true; };
+  }, [user?.id, files]);
+
+  const localFileTags = useMemo(() => {
+    const tagMap: Record<string, number> = {};
+    files.forEach((f) => {
+      (f.tags || []).forEach((t) => {
+        tagMap[t] = (tagMap[t] || 0) + 1;
+      });
+    });
+    return Object.entries(tagMap)
+      .sort((a, b) => b[1] - a[1])
+      .map(([name, count]) => ({ name, count }));
+  }, [files]);
+
+  const allAvailableTags = useMemo(() => {
+    const nameSet = new Set(localFileTags.map((t) => t.name));
+    const merged = [...localFileTags];
+    vaultTags.forEach((vt) => {
+      if (!nameSet.has(vt.name)) merged.push(vt);
+    });
+    return merged;
+  }, [localFileTags, vaultTags]);
+
+  const toggleFileTag = useCallback((fileId: string, tag: string) => {
+    setFiles((prev) =>
+      prev.map((f) => {
+        if (f.id !== fileId) return f;
+        const current = f.tags || [];
+        return {
+          ...f,
+          tags: current.includes(tag) ? current.filter((t) => t !== tag) : [...current, tag],
+        };
+      })
+    );
+  }, []);
+
+  const addNewTagToFile = useCallback((fileId: string, tag: string) => {
+    const trimmed = tag.trim();
+    if (!trimmed) return;
+    setFiles((prev) =>
+      prev.map((f) => {
+        if (f.id !== fileId) return f;
+        const current = f.tags || [];
+        if (current.includes(trimmed)) return f;
+        return { ...f, tags: [...current, trimmed] };
+      })
+    );
+  }, []);
+
+  const addNoteToFile = useCallback((fileId: string, text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    setFiles((prev) =>
+      prev.map((f) => {
+        if (f.id !== fileId) return f;
+        return { ...f, notes: [...(f.notes || []), trimmed] };
+      })
+    );
+  }, []);
+
+  const importTagToProject = useCallback(async (tagName: string) => {
+    if (!user?.id || !projectId) return;
+    const { data: taggedNotes } = await supabase
+      .from("notes")
+      .select("id, title, content, attachments, tags")
+      .eq("user_id", user.id)
+      .contains("tags", [tagName]);
+    if (!taggedNotes || taggedNotes.length === 0) {
+      alert(`No vault items found with tag "${tagName}".`);
+      return;
+    }
+    const newFiles: FileEntry[] = [];
+    for (const note of taggedNotes) {
+      const noteTags: string[] = Array.isArray(note.tags) ? note.tags : [];
+      let attachments: any[] = [];
+      if (Array.isArray(note.attachments)) attachments = note.attachments;
+      else if (typeof note.attachments === "string") {
+        try { attachments = JSON.parse(note.attachments); } catch { /* ignore */ }
+      }
+
+      if (attachments.length > 0) {
+        for (const att of attachments) {
+          const kind = att.type === "image" ? "image" : att.type === "video" ? "video" : att.type === "audio" ? "audio" : att.type === "pdf" ? "pdf" : att.type === "youtube" ? "link" : "file";
+          newFiles.push({
+            id: crypto.randomUUID(),
+            name: att.name || att.title || note.title || "Vault File",
+            path: att.storagePath || att.url || "",
+            folderId: null,
+            kind: kind as FileEntry["kind"],
+            url: att.url || "",
+            storagePath: att.storagePath,
+            storageBucket: att.storageBucket,
+            tags: noteTags,
+          });
+        }
+      } else if (note.content) {
+        newFiles.push({
+          id: crypto.randomUUID(),
+          name: note.title || "Quick Note",
+          path: "",
+          folderId: null,
+          kind: "doc",
+          url: "",
+          content: note.content,
+          tags: noteTags,
+        });
+      }
+    }
+    if (newFiles.length === 0) {
+      alert(`No importable files found for tag "${tagName}".`);
+      return;
+    }
+    const existingIds = new Set(files.map((f) => f.name + f.url));
+    const deduped = newFiles.filter((f) => !existingIds.has(f.name + f.url));
+    if (deduped.length === 0) {
+      alert(`All items with tag "${tagName}" are already in this project.`);
+      return;
+    }
+    setFiles((prev) => [...deduped, ...prev]);
+    alert(`Imported ${deduped.length} item${deduped.length !== 1 ? "s" : ""} with tag "${tagName}".`);
+  }, [user?.id, projectId, files]);
+
   const filteredBoards = useMemo(() => {
     const base = activeFolderId ? boards.filter((b) => b.folderId === activeFolderId) : boards;
     if (!search.trim()) return base;
@@ -506,7 +683,10 @@ export default function ProjectPlaceholder() {
     return files.filter((f) => f.folderId === activeFolderId);
   }, [activeFolderId, files]);
 
-  const allFilesForCollage = useMemo(() => files, [files]);
+  const allFilesForCollage = useMemo(() => {
+    if (!selectedTagFilter) return files;
+    return files.filter((f) => (f.tags || []).includes(selectedTagFilter));
+  }, [files, selectedTagFilter]);
 
   const projectSummary = useMemo(() => {
     const lastFile = files[0];
@@ -514,19 +694,19 @@ export default function ProjectPlaceholder() {
     const lastFolder = folders[folders.length - 1];
     let lastActivity = "No recent activity yet.";
     if (lastFile) lastActivity = `Last added file: ${lastFile.name}.`;
-    else if (lastBoard) lastActivity = `Last created board: ${lastBoard.title}.`;
+    else if (lastBoard) lastActivity = `Last created grid: ${lastBoard.title}.`;
     else if (lastFolder) lastActivity = `Last created folder: ${lastFolder.name}.`;
 
     const suggestions: string[] = [];
-    if (boards.length === 0) suggestions.push("Create a board to capture ideas.");
+    if (boards.length === 0) suggestions.push("Create a grid to capture ideas.");
     if (folders.length === 0) suggestions.push("Add folders to organize files.");
     if (files.length === 0) suggestions.push("Drop files into a folder to get started.");
-    if (files.length > 0 && boards.length > 0) suggestions.push("Connect files to boards in Connections.");
-    if (boards.length > 3) suggestions.push("Group related boards under folders.");
+    if (files.length > 0 && boards.length > 0) suggestions.push("Connect files to grids in Connections.");
+    if (boards.length > 3) suggestions.push("Group related grids under folders.");
     if (suggestions.length === 0) suggestions.push("Keep building — everything looks organized.");
 
     return {
-      summary: `You have ${boards.length} board${boards.length === 1 ? "" : "s"}, ${folders.length} folder${
+      summary: `You have ${boards.length} grid${boards.length === 1 ? "" : "s"}, ${folders.length} folder${
         folders.length === 1 ? "" : "s"
       }, and ${files.length} file${files.length === 1 ? "" : "s"} in this project. ${lastActivity}`,
       suggestions: suggestions.slice(0, 4),
@@ -550,13 +730,13 @@ export default function ProjectPlaceholder() {
       folderMap[id] = activeFolderId;
       storeValue(`project:${projectId}:boardFolders`, folderMap);
       localStorage.setItem("omnia_board_id", id);
-      nav(`/canvas/${id}`);
+      nav(`/grid/${id}`);
     }
   };
 
   const handleRenameBoard = async (board: BoardEntry) => {
     if (!user?.id) return;
-    const next = window.prompt("Rename board", board.title);
+    const next = window.prompt("Rename grid", board.title);
     if (next === null) return;
     const name = next.trim() || "New Grid";
     await supabase
@@ -569,7 +749,7 @@ export default function ProjectPlaceholder() {
 
   const handleDeleteBoard = async (board: BoardEntry) => {
     if (!user?.id) return;
-    const ok = window.confirm("Delete this board? This cannot be undone.");
+    const ok = window.confirm("Delete this grid? This cannot be undone.");
     if (!ok) return;
     await supabase.from("omnia_board_states").delete().eq("board_id", board.id);
     await supabase.from("omnia_boards").delete().eq("id", board.id).eq("user_id", user.id);
@@ -815,10 +995,11 @@ export default function ProjectPlaceholder() {
     if (fileEntries.length) handleDropFiles(fileEntries);
   };
 
-  const memoryToFileEntry = (payload: any): FileEntry[] => {
+  const vaultToFileEntry = (payload: any): FileEntry[] => {
     const entries: FileEntry[] = [];
-    const title = String(payload.title || "Memory").trim();
+    const title = String(payload.title || "Vault").trim();
     const attachments = Array.isArray(payload.attachments) ? payload.attachments : [];
+    const payloadTags: string[] = Array.isArray(payload.tags) ? payload.tags : [];
 
     if (attachments.length > 0) {
       for (const att of attachments) {
@@ -849,6 +1030,7 @@ export default function ProjectPlaceholder() {
           ...(kind === "spreadsheet" && att?.rows != null && att?.cols != null && att?.cells
             ? { spreadsheetData: { rows: att.rows, cols: att.cols, cells: att.cells } }
             : {}),
+          ...(payloadTags.length > 0 ? { tags: payloadTags } : {}),
         });
       }
     } else if (payload.content) {
@@ -860,6 +1042,7 @@ export default function ProjectPlaceholder() {
         kind: "doc",
         url: "",
         content: String(payload.content).trim(),
+        ...(payloadTags.length > 0 ? { tags: payloadTags } : {}),
       });
     }
     return entries;
@@ -868,10 +1051,10 @@ export default function ProjectPlaceholder() {
   const handleDrop = async (event: React.DragEvent<HTMLDivElement>) => {
     const win = window as any;
 
-    // Check for cross-iframe pending memory (from embedded memory sidebar)
-    if (win.__omnia_pending_memory) {
-      const entries = memoryToFileEntry(win.__omnia_pending_memory);
-      win.__omnia_pending_memory = null;
+    // Check for cross-iframe pending vault (from embedded vault sidebar)
+    if (win.__omnia_pending_vault) {
+      const entries = vaultToFileEntry(win.__omnia_pending_vault);
+      win.__omnia_pending_vault = null;
       if (entries.length > 0) {
         event.preventDefault();
         dragDepthRef.current = 0;
@@ -881,11 +1064,11 @@ export default function ProjectPlaceholder() {
       }
     }
 
-    // Check for MIME-based memory drag
-    const omniaRaw = event.dataTransfer.getData("application/x-omnia-memory") || "";
+    // Check for MIME-based vault drag
+    const omniaRaw = event.dataTransfer.getData("application/x-omnia-vault") || "";
     if (omniaRaw) {
       try {
-        const entries = memoryToFileEntry(JSON.parse(omniaRaw));
+        const entries = vaultToFileEntry(JSON.parse(omniaRaw));
         if (entries.length > 0) {
           event.preventDefault();
           dragDepthRef.current = 0;
@@ -896,11 +1079,11 @@ export default function ProjectPlaceholder() {
       } catch { /* fall through */ }
     }
 
-    // Legacy memory MIME
+    // Legacy vault MIME
     const legacyRaw = event.dataTransfer.getData("application/x-lykins-memory-card") || "";
     if (legacyRaw) {
       try {
-        const entries = memoryToFileEntry(JSON.parse(legacyRaw));
+        const entries = vaultToFileEntry(JSON.parse(legacyRaw));
         if (entries.length > 0) {
           event.preventDefault();
           dragDepthRef.current = 0;
@@ -1085,12 +1268,12 @@ Active folder: ${activeFolderId || "None"}
 Conversation History:
 ${history}
 
-User's recent memories:
+User's recent vault items:
 ${notesContext}
 
 User's Current Question: ${chatInput}
 
-If the user asks about old memories or references past ideas, refer to the memories above. When referencing a specific memory, you MUST wrap the exact note title in double brackets like this: [[Note Title]]. For example, if there's a note titled "Project Ideas for AI App", you would write [[Project Ideas for AI App]]. This makes it clickable. Always use the exact title from the memories list above. Provide helpful guidance, suggestions, or answers to help develop this idea. Do not use emojis unless explicitly asked.`;
+If the user asks about old vault items or references past ideas, refer to the vault items above. When referencing a specific vault item, you MUST wrap the exact note title in double brackets like this: [[Note Title]]. For example, if there's a note titled "Project Ideas for AI App", you would write [[Project Ideas for AI App]]. This makes it clickable. Always use the exact title from the vault items list above. Provide helpful guidance, suggestions, or answers to help develop this idea. Do not use emojis unless explicitly asked.`;
 
       const { API_BASE_URL } = await import("@/lib/api-config");
       const aiResponse = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
@@ -1213,17 +1396,6 @@ If the user asks about old memories or references past ideas, refer to the memor
 
           {topPanelOpen && (
             <div className="flex items-center gap-1 p-1 rounded-full glass-control flex-wrap">
-              <button
-                type="button"
-                onClick={() => nav(-1)}
-                className="rounded-full w-9 h-9 p-0 hover:bg-black/10 transition-colors touch-manipulation flex items-center justify-center"
-                title="Back"
-              >
-                <ArrowLeft className="w-4 h-4" />
-              </button>
-
-              <div className="w-px h-4 bg-black/10 mx-1" />
-
               <Select value={selectedModel} onValueChange={updateSelectedModel}>
                 <SelectTrigger className="w-[6.25rem] sm:w-[8.125rem] h-9 rounded-full glass-control hover:opacity-90 text-xs font-medium">
                   <SelectValue placeholder="Model" />
@@ -1308,349 +1480,184 @@ If the user asks about old memories or references past ideas, refer to the memor
 
               <button
                 type="button"
-                onClick={() => fileInputRef.current?.click()}
+                onClick={() => setShowVaultSidebar((v) => !v)}
                 className="rounded-full w-9 h-9 p-0 hover:bg-black/10 transition-colors touch-manipulation flex items-center justify-center"
-                title="Add attachments"
+                title={showVaultSidebar ? "Hide media sidebar" : "Add media"}
               >
-                <Plus className="w-4 h-4" />
+                {showVaultSidebar ? <PanelRightClose className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
               </button>
 
               <div className="w-px h-4 bg-black/10 mx-1" />
 
               <button
                 type="button"
-                onClick={() => setShowMemorySidebar((v) => !v)}
+                onClick={() => setShowChat((v) => !v)}
                 className="rounded-full w-9 h-9 p-0 hover:bg-black/10 transition-colors touch-manipulation flex items-center justify-center"
-                title={showMemorySidebar ? "Hide media sidebar" : "Open media sidebar"}
+                title={showChat ? "Hide chat" : "Open chat"}
               >
-                {showMemorySidebar ? <PanelRightClose className="w-4 h-4" /> : <BookOpen className="w-4 h-4" />}
+                <MessageSquare className="w-4 h-4" />
               </button>
             </div>
           )}
         </div>
       </div>
 
-      <main className="mx-auto max-w-[100rem] px-3 sm:px-6 pt-28 pb-16 grid grid-cols-1 md:grid-cols-[13rem_1fr] lg:grid-cols-[17.5rem_1fr] xl:grid-cols-[21.25rem_1fr_17.5rem] gap-3">
-        {/* Left: File Collage */}
-        <div className="space-y-5">
-        <section className="rounded-2xl border border-white/60 bg-[#e9e9ef]/75 backdrop-blur-lg shadow-xl shadow-white/20 p-3 sm:p-4">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-sm font-semibold">All Files</h2>
-            <span className="text-[0.6875rem] text-black/50">{allFilesForCollage.length} file{allFilesForCollage.length !== 1 ? "s" : ""}</span>
-          </div>
-          {allFilesForCollage.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-16 text-center">
-              <div className="w-16 h-16 rounded-2xl bg-white/40 border border-white/50 flex items-center justify-center mb-3">
-                <ImageIcon className="w-7 h-7 text-black/30" />
+      <main className="mx-auto max-w-[100rem] px-3 sm:px-6 pt-28 pb-16 grid grid-cols-1 lg:grid-cols-[17.5rem_1fr] xl:grid-cols-[21.25rem_1fr] gap-4">
+        {/* Left: Project Stats */}
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-3">
+            {[
+              { label: "Grids", value: boards.length, color: "#1d4ed8" },
+              { label: "Files", value: files.length, color: "#3b82f6" },
+              { label: "Chats", value: chatMessages.filter((m) => m.role === "user").length, color: "#60a5fa" },
+              { label: "Connections", value: 0, color: "#93c5fd" },
+            ].map((stat) => (
+              <div key={stat.label} className="rounded-xl border border-white/50 bg-white/40 backdrop-blur-md p-3 text-center">
+                <div className="text-xl font-bold" style={{ color: stat.color }}>{stat.value}</div>
+                <div className="text-[0.6875rem] text-black/50 mt-0.5">{stat.label}</div>
               </div>
-              <p className="text-sm text-black/50">No files yet</p>
-              <p className="text-xs text-black/40 mt-1">Drop files anywhere to add them</p>
-            </div>
-          ) : (
-            <div className="columns-1 lg:columns-2 gap-4">
-              {allFilesForCollage.map((file) => {
-                const lower = file.name.toLowerCase();
-                const isImage = file.kind === "image" || /\.(png|jpe?g|webp|gif|svg|bmp|ico|tiff?|avif|heic|heif)$/i.test(lower);
-                const isVideo = file.kind === "video" || /\.(mp4|mov|webm|m4v|avi|mkv|flv|3gp|ogv)$/i.test(lower);
-                const isAudio = file.kind === "audio" || /\.(mp3|wav|ogg|flac|aac|m4a|wma)$/i.test(lower);
-                const isPdf = file.kind === "pdf" || /\.pdf$/i.test(lower);
-                const isLink = file.kind === "link";
-                const isYouTube = isLink && /youtube\.com|youtu\.be/i.test(file.url);
-                const displayUrl = resolvedUrls[file.id] || file.url;
+            ))}
+          </div>
 
-                const fallbackCard = (icon: React.ReactNode, label: string, subtitle?: string) => (
-                  <div className="glass-control rounded-2xl p-4" draggable={false}>
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-xl bg-white/50 border border-white/60 flex items-center justify-center shrink-0">
-                        {icon}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <p className="text-xs font-medium text-black/85 truncate">{label}</p>
-                        {subtitle && <p className="text-[0.6875rem] text-black/55 mt-0.5 truncate">{subtitle}</p>}
-                      </div>
-                    </div>
-                  </div>
-                );
-
-                const renderMediaContent = () => {
-                  if (isImage) {
-                    if (!displayUrl) return fallbackCard(<ImageIcon className="w-5 h-5 text-black/40" />, file.name, "Image");
-                    return (
-                      <div className="relative">
-                        <img
-                          src={displayUrl}
-                          alt={file.name}
-                          className="w-full h-auto max-h-[42rem] rounded-2xl bg-white/30"
-                          loading="lazy"
-                          draggable={false}
-                          onError={(e) => {
-                            const target = e.currentTarget;
-                            target.style.display = "none";
-                            const fb = target.parentElement?.querySelector("[data-fallback]") as HTMLElement;
-                            if (fb) fb.style.display = "";
-                          }}
-                        />
-                        <div data-fallback="" style={{ display: "none" }}>
-                          {fallbackCard(<ImageIcon className="w-5 h-5 text-black/40" />, file.name, "Image")}
-                        </div>
-                      </div>
-                    );
-                  }
-
-                  if (isYouTube) {
-                    const videoId = extractYouTubeVideoId(file.url);
-                    const embedUrl = videoId ? getYouTubeEmbedUrl(videoId) : "";
-                    if (embedUrl) {
-                      return (
-                        <div className="w-full rounded-2xl overflow-hidden bg-black" draggable={false}>
-                          <iframe
-                            src={embedUrl}
-                            title={file.name}
-                            className="w-full h-44 border-0"
-                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                            allowFullScreen
-                          />
-                        </div>
-                      );
-                    }
-                    return fallbackCard(<Video className="w-5 h-5 text-red-500/70" />, file.name, "YouTube Video");
-                  }
-
-                  if (isVideo) {
-                    if (!displayUrl) return fallbackCard(<Video className="w-5 h-5 text-black/40" />, file.name, "Video");
-                    return (
-                      <video
-                        src={displayUrl}
-                        className="w-full h-auto max-h-[42rem] rounded-2xl bg-black/5"
-                        controls
-                        preload="metadata"
-                        draggable={false}
-                      />
-                    );
-                  }
-
-                  if (isAudio) {
-                    return (
-                      <div className="glass-control rounded-2xl p-3 space-y-3">
-                        <div className="flex items-center gap-2 text-black/80">
-                          <Music className="w-4 h-4" />
-                          <span className="text-xs font-medium truncate">{file.name}</span>
-                        </div>
-                        {displayUrl ? (
-                          <audio src={displayUrl} controls className="w-full h-10" preload="metadata" />
-                        ) : (
-                          <p className="text-[0.6875rem] text-black/50">Audio file</p>
-                        )}
-                      </div>
-                    );
-                  }
-
-                  if (isPdf) {
-                    if (displayUrl) {
-                      return (
-                        <div className="w-full h-80 rounded-2xl overflow-hidden bg-white/40 border border-white/50">
-                          <iframe
-                            src={displayUrl}
-                            title={file.name}
-                            className="w-full h-full border-0"
-                            draggable={false}
-                          />
-                        </div>
-                      );
-                    }
-                    return fallbackCard(<FileText className="w-5 h-5 text-red-400/70" />, file.name, "PDF");
-                  }
-
-                  if (isLink) {
-                    let domain = "";
-                    try { domain = new URL(file.url).hostname.replace("www.", ""); } catch { /* ignore */ }
-                    return fallbackCard(
-                      <Link2 className="w-5 h-5 text-blue-400/70" />,
-                      file.name,
-                      domain || file.url || "Link"
-                    );
-                  }
-
-                  if (file.kind === "doc") {
-                    if (file.content) {
-                      return (
-                        <div className="glass-control rounded-2xl p-4" draggable={false}>
-                          <div className="flex items-center gap-2 text-black/70 mb-2">
-                            <StickyNote className="w-4 h-4" />
-                            <span className="text-xs font-medium">Quick Note</span>
-                          </div>
-                          <div className="max-h-56 overflow-y-auto scrollbar-hide">
-                            <p className="text-sm text-black/70 whitespace-pre-wrap break-words">{file.content}</p>
-                          </div>
-                          <div className="mt-3 text-[0.6875rem] text-black/55 flex items-center gap-1">
-                            <Clock className="w-3 h-3" />
-                            <span>{file.name}</span>
-                          </div>
-                        </div>
-                      );
-                    }
-                    return fallbackCard(
-                      <FileText className="w-5 h-5 text-blue-400/70" />,
-                      file.name,
-                      `${lower.split(".").pop()?.toUpperCase()} file`
-                    );
-                  }
-
-                  if (file.kind === "spreadsheet" && file.spreadsheetData) {
-                    const { rows, cols, cells } = file.spreadsheetData;
-                    return (
-                      <div className="glass-control rounded-2xl overflow-hidden" draggable={false}>
-                        <div className="flex items-center gap-2 text-black/70 px-3 py-2 border-b border-black/10">
-                          <Table className="w-4 h-4" />
-                          <span className="text-xs font-medium truncate">{file.name}</span>
-                        </div>
-                        <div className="max-h-[28rem] overflow-auto scrollbar-thin">
-                          <table className="w-full border-collapse text-[0.6875rem]">
-                            <tbody>
-                              {Array.from({ length: rows }, (_, r) => (
-                                <tr key={r}>
-                                  {Array.from({ length: cols }, (_, c) => (
-                                    <td
-                                      key={c}
-                                      className="border border-black/15 px-2 py-1.5 align-top bg-white/50 min-w-[4rem] max-w-[14rem] break-words"
-                                      title={cells[`${r},${c}`]}
-                                    >
-                                      {cells[`${r},${c}`] ?? "\u00A0"}
-                                    </td>
-                                  ))}
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      </div>
-                    );
-                  }
-
-                  if (file.kind === "spreadsheet") {
-                    return fallbackCard(
-                      <Table className="w-5 h-5 text-blue-400/70" />,
-                      file.name,
-                      "Spreadsheet (loading…)"
-                    );
-                  }
-
-                  return fallbackCard(
-                    <FileIcon className="w-5 h-5 text-black/40" />,
-                    file.name,
-                    "File"
-                  );
-                };
-
-                return (
-                  <article
-                    key={file.id}
-                    className={`break-inside-avoid mb-5 rounded-2xl relative overflow-visible cursor-grab ${
-                      openFileMenuId === file.id ? "z-[120]" : "z-0"
-                    }`}
-                    draggable
-                    onDragStart={(e) => {
-                      setDraggedFileId(file.id);
-                      e.dataTransfer.setData("text/plain", file.id);
-                    }}
-                    onDragEnd={() => setDraggedFileId(null)}
-                  >
+          <div className="rounded-xl border border-white/50 bg-white/30 backdrop-blur-md p-4">
+            <div className="text-xs font-semibold mb-3">Content Breakdown</div>
+            <div className="space-y-2.5">
+              {[
+                { label: "Images", value: files.filter((f) => f.kind === "image").length, max: Math.max(files.length, 1), color: "#1d4ed8" },
+                { label: "Videos", value: files.filter((f) => f.kind === "video").length, max: Math.max(files.length, 1), color: "#2563eb" },
+                { label: "Documents", value: files.filter((f) => f.kind === "pdf" || f.kind === "doc" || f.kind === "spreadsheet").length, max: Math.max(files.length, 1), color: "#3b82f6" },
+                { label: "Audio", value: files.filter((f) => f.kind === "audio").length, max: Math.max(files.length, 1), color: "#60a5fa" },
+                { label: "Links", value: files.filter((f) => f.kind === "link").length, max: Math.max(files.length, 1), color: "#93c5fd" },
+                { label: "Other", value: files.filter((f) => f.kind === "file").length, max: Math.max(files.length, 1), color: "#bfdbfe" },
+              ].map((bar) => (
+                <div key={bar.label} className="flex items-center gap-2">
+                  <span className="text-[0.6875rem] text-black/60 w-16 shrink-0">{bar.label}</span>
+                  <div className="flex-1 h-4 rounded-full bg-black/5 overflow-hidden">
                     <div
-                      className="cursor-pointer"
-                      onClick={() => setSelectedFile(file)}
-                      role="button"
-                      tabIndex={0}
-                      onKeyDown={(e) => { if (e.key === "Enter") setSelectedFile(file); }}
-                    >
-                      {renderMediaContent()}
-                    </div>
+                      className="h-full rounded-full transition-all duration-500"
+                      style={{ width: `${Math.max((bar.value / bar.max) * 100, bar.value > 0 ? 8 : 0)}%`, backgroundColor: bar.color }}
+                    />
+                  </div>
+                  <span className="text-[0.6875rem] font-medium w-5 text-right">{bar.value}</span>
+                </div>
+              ))}
+            </div>
+          </div>
 
-                    {/* 3-dot menu — same as Memory page */}
-                    <div className="mt-2 flex justify-end px-1">
-                      <div className="relative" ref={openFileMenuId === file.id ? fileMenuRef : null}>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setOpenFileMenuId((prev) => (prev === file.id ? null : file.id));
-                          }}
-                          onMouseDown={(e) => e.stopPropagation()}
-                          className="px-1 py-0.5 text-black/75 hover:text-black leading-none text-base font-semibold"
-                          title="File actions"
-                        >
-                          <MoreHorizontal className="w-4 h-4" />
-                        </button>
-                        {openFileMenuId === file.id && (
-                          <div
-                            className="absolute right-0 bottom-full mb-2 w-48 rounded-2xl border border-white/60 bg-white/85 backdrop-blur-xl shadow-2xl p-2 z-[130]"
-                            onMouseDown={(e) => e.stopPropagation()}
-                          >
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleRenameFile(file);
-                              }}
-                              className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 flex items-center gap-2"
-                            >
-                              <Pencil className="w-3.5 h-3.5" />
-                              Rename
-                            </button>
-                            {file.url && (
-                              <a
-                                href={file.url}
-                                download={file.name}
-                                onClick={() => setOpenFileMenuId(null)}
-                                className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 flex items-center gap-2"
-                              >
-                                <Download className="w-3.5 h-3.5" />
-                                Download
-                              </a>
-                            )}
-                            <div className="my-1 h-px bg-black/10" />
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleDeleteFile(file.id);
-                              }}
-                              className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 flex items-center gap-2 text-red-600"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                              Delete
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </article>
+          <div className="rounded-xl border border-white/50 bg-white/30 backdrop-blur-md p-4">
+            <div className="text-xs font-semibold mb-3">Weekly Activity</div>
+            <div className="flex items-end gap-1.5 h-20">
+              {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((day, i) => {
+                const heights = [35, 55, 42, 68, 80, 25, 48];
+                return (
+                  <div key={day} className="flex-1 flex flex-col items-center gap-1">
+                    <div
+                      className="w-full rounded-md transition-all duration-500"
+                      style={{
+                        height: `${heights[i]}%`,
+                        backgroundColor: i === new Date().getDay() - 1 ? "#3b82f6" : "rgba(0,0,0,0.08)",
+                      }}
+                    />
+                    <span className="text-[9px] text-black/40">{day}</span>
+                  </div>
                 );
               })}
             </div>
-          )}
-        </section>
-
-        </div>
-
-        {/* Center: Boards, Connections */}
-        <div className="min-w-0 space-y-6">
-          <div className="w-full flex items-center gap-2 rounded-xl border border-white/60 bg-white/70 backdrop-blur-md px-3 sm:px-4 py-2 text-[0.75rem] text-black/70">
-            <SearchIcon className="w-4 h-4" />
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search boards"
-              className="w-full bg-transparent outline-none placeholder:text-black/40"
-            />
           </div>
 
-          {/* Boards */}
-          <section className="rounded-2xl border border-white/60 bg-[#e9e9ef]/75 backdrop-blur-lg shadow-xl shadow-white/20 p-3 sm:p-4 lg:p-6 overflow-visible relative z-10">
+          <div className="rounded-xl border border-white/50 bg-white/30 backdrop-blur-md p-4">
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-xs font-semibold">Team Space</div>
+              <span className="text-[0.625rem] font-medium text-blue-500/70 bg-blue-500/10 px-2 py-0.5 rounded-full">Coming soon</span>
+            </div>
+            <div className="flex -space-x-2">
+              {user?.user_metadata?.avatar_url ? (
+                <img
+                  src={user.user_metadata.avatar_url}
+                  alt={user.user_metadata?.full_name || "You"}
+                  className="w-8 h-8 rounded-full border-2 border-white object-cover relative z-10"
+                  referrerPolicy="no-referrer"
+                />
+              ) : (
+                <div className="w-8 h-8 rounded-full border-2 border-white bg-blue-500 flex items-center justify-center text-[0.6875rem] font-bold text-white relative z-10">
+                  {(user?.email?.[0] || "?").toUpperCase()}
+                </div>
+              )}
+              <button
+                type="button"
+                disabled
+                className="w-8 h-8 rounded-full border-2 border-white bg-blue-500 flex items-center justify-center cursor-not-allowed opacity-70 relative z-0"
+                title="Add team members (coming soon)"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4 text-white" viewBox="0 0 20 20" fill="currentColor">
+                  <path d="M10 5a1 1 0 011 1v3h3a1 1 0 110 2h-3v3a1 1 0 11-2 0v-3H6a1 1 0 110-2h3V6a1 1 0 011-1z" />
+                </svg>
+              </button>
+            </div>
+            <div className="text-[0.6875rem] text-black/50 mt-2">
+              {user?.user_metadata?.full_name || user?.email || "1 member"}
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-white/50 bg-white/30 backdrop-blur-md p-4">
+            <div className="text-xs font-semibold mb-2">Storage Used</div>
+            {(() => {
+              const totalBytes = files.reduce((sum, f) => sum + (f.size || 0), 0);
+              const maxBytes = 10 * 1024 * 1024 * 1024;
+              const pct = Math.min((totalBytes / maxBytes) * 100, 100);
+              const fmt = (bytes: number) => {
+                if (bytes < 1024) return `${bytes} B`;
+                if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+                if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+                return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+              };
+              return (
+                <>
+                  <div className="relative h-2 rounded-full bg-black/5 overflow-hidden mt-3">
+                    <div className="h-full rounded-full bg-blue-500 transition-all" style={{ width: `${pct}%` }} />
+                  </div>
+                  <div className="flex items-center justify-between mt-2">
+                    <span className="text-[0.6875rem] text-black/50">{fmt(totalBytes)}</span>
+                    <span className="text-[0.6875rem] text-black/40">of 10 GB</span>
+                  </div>
+                </>
+              );
+            })()}
+          </div>
+
+          {vaultTags.length > 0 && (
+            <div className="rounded-xl border border-white/50 bg-white/30 backdrop-blur-md p-4">
+              <div className="flex items-center gap-2 mb-3">
+                <Tag className="w-3.5 h-3.5 text-black/60" />
+                <div className="text-xs font-semibold">Import from Vault</div>
+              </div>
+              <p className="text-[0.6875rem] text-black/50 mb-3">Move all items with a tag into this project.</p>
+              <div className="max-h-44 overflow-y-auto scrollbar-hide space-y-1">
+                {vaultTags.map((tag) => (
+                  <button
+                    key={tag.name}
+                    type="button"
+                    onClick={() => void importTagToProject(tag.name)}
+                    className="w-full flex items-center justify-between gap-2 px-2 py-1.5 text-left text-xs hover:bg-black/5 rounded-md transition-colors"
+                  >
+                    <span className="truncate text-black/70">{tag.name}</span>
+                    <span className="text-[0.625rem] text-black/35 shrink-0">{tag.count}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Center: Grids + Files */}
+        <div className="min-w-0 space-y-6">
+          {/* Grids */}
+          <section className="overflow-visible relative z-10">
             <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
               <div className="min-w-0">
-                <h2 className="text-base sm:text-lg font-semibold">Boards</h2>
+                <h2 className="text-base sm:text-lg font-semibold">Grids</h2>
                 <p className="text-[0.6875rem] sm:text-xs text-black/60">
-                  Create and organize boards inside this project.
+                  Create and organize grids inside this project.
                 </p>
               </div>
             </div>
@@ -1664,7 +1671,7 @@ If the user asks about old memories or references past ideas, refer to the memor
                 <div className="w-9 h-9 rounded-lg bg-white/60 border border-white/70 flex items-center justify-center">
                   <Plus className="w-5 h-5 text-black/50" />
                 </div>
-                <span className="text-xs font-medium text-black/60">Create new board</span>
+                <span className="text-xs font-medium text-black/60">Create new grid</span>
               </button>
 
               {filteredBoards.map((board) => (
@@ -1673,12 +1680,12 @@ If the user asks about old memories or references past ideas, refer to the memor
                     type="button"
                     onClick={() => {
                       localStorage.setItem("omnia_board_id", board.id);
-                      nav(`/canvas/${board.id}`);
+                      nav(`/grid/${board.id}`);
                     }}
                     className="w-full h-[88px] rounded-xl border border-white/60 bg-white/50 hover:bg-white/70 backdrop-blur-md p-4 shadow-lg text-left transition-all flex flex-col justify-center"
                   >
                     <div className="text-sm font-semibold truncate">{board.title}</div>
-                    <div className="mt-1 text-xs text-black/50">Board</div>
+                    <div className="mt-1 text-xs text-black/50">Grid</div>
                   </button>
                   <div className="absolute top-2 right-2 z-20 opacity-0 group-hover:opacity-100 transition-opacity">
                     <div className="relative" ref={openBoardMenuId === board.id ? boardMenuRef : null}>
@@ -1689,7 +1696,7 @@ If the user asks about old memories or references past ideas, refer to the memor
                           setOpenBoardMenuId((prev) => (prev === board.id ? null : board.id));
                         }}
                         className="px-1 py-0.5 text-black/60 hover:text-black transition-colors"
-                        aria-label="Board actions"
+                        aria-label="Grid actions"
                       >
                         <MoreHorizontal className="w-4 h-4" />
                       </button>
@@ -1741,366 +1748,509 @@ If the user asks about old memories or references past ideas, refer to the memor
             </div>
           </section>
 
-          {/* Connections / Graph */}
-          <section className="rounded-2xl border border-white/60 bg-[#e9e9ef]/75 backdrop-blur-lg shadow-xl shadow-white/20 p-3 sm:p-4 lg:p-6">
-            <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+          {localFileTags.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2" style={{ minHeight: 1, transform: "translateZ(0)" }}>
+              <Tag className="w-3.5 h-3.5 text-black/35 shrink-0" />
+              {localFileTags.map((tag) => {
+                const active = selectedTagFilter === tag.name;
+                return (
+                  <button
+                    key={tag.name}
+                    type="button"
+                    onClick={() => setSelectedTagFilter((prev) => (prev === tag.name ? null : tag.name))}
+                    className={`inline-flex items-center gap-1 rounded-full font-medium transition-all ${
+                      active
+                        ? "bg-blue-500 text-white shadow-sm"
+                        : "glass-control text-black/65 hover:text-black/85"
+                    }`}
+                    style={{ fontSize: 11, lineHeight: 1, height: 22, paddingLeft: 8, paddingRight: 8 }}
+                  >
+                    {tag.name}
+                    <span className={`text-[0.625rem] ${active ? "text-white/70" : "text-black/35"}`}>
+                      {tag.count}
+                    </span>
+                  </button>
+                );
+              })}
+              {selectedTagFilter && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedTagFilter(null)}
+                  className="text-[0.6875rem] text-blue-500 hover:text-blue-600 ml-1"
+                >
+                  Clear filter
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* All Files */}
+          <section>
+            <div className="flex items-center justify-between mb-4">
               <div className="min-w-0">
-                <h2 className="text-base sm:text-lg font-semibold">{bottomTab === "connections" ? "Connections" : "Graph"}</h2>
+                <h2 className="text-base sm:text-lg font-semibold">All Files</h2>
                 <p className="text-[0.6875rem] sm:text-xs text-black/60">
-                  {bottomTab === "connections"
-                    ? "Boards and their files in this project."
-                    : "Visual graph of boards and files in this project."}
+                  All media and documents in this project.
                 </p>
               </div>
-              <div className="flex items-center gap-2">
-                {bottomTab === "connections" && (
-                  <div className="hidden sm:block rounded-full border border-white/60 bg-white/60 px-3 py-1 text-[0.6875rem] text-black/60">
-                    {boards.length} board{boards.length !== 1 ? "s" : ""} · {files.length} file{files.length !== 1 ? "s" : ""}
-                  </div>
-                )}
-                <div className="inline-flex items-center gap-1 p-1 rounded-full glass-control">
-                  <button
-                    type="button"
-                    onClick={() => setBottomTab("connections")}
-                    className={`rounded-full px-3 py-1.5 text-xs font-medium transition ${
-                      bottomTab === "connections" ? "bg-white/50 text-black" : "text-black/55 hover:text-black"
-                    }`}
-                  >
-                    Connections
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setBottomTab("graph")}
-                    className={`rounded-full px-3 py-1.5 text-xs font-medium transition ${
-                      bottomTab === "graph" ? "bg-white/50 text-black" : "text-black/55 hover:text-black"
-                    }`}
-                  >
-                    Graph
-                  </button>
-                </div>
-              </div>
+              <span className="text-[0.6875rem] text-black/50">{allFilesForCollage.length} file{allFilesForCollage.length !== 1 ? "s" : ""}</span>
             </div>
-
-            {bottomTab === "connections" ? (
-              <div className="space-y-3">
-                {/* Project Root */}
-                <div className="rounded-2xl border border-white/50 bg-white/30 backdrop-blur-md p-4">
-                  <div className="flex items-center gap-2 mb-3">
-                    <div className="w-8 h-8 rounded-lg bg-blue-500/15 flex items-center justify-center">
-                      <LayoutGrid className="w-4 h-4 text-blue-600" />
-                    </div>
-                    <div>
-                      <div className="text-sm font-semibold">Project Root</div>
-                      <div className="text-[0.6875rem] text-black/50">{files.length} file{files.length !== 1 ? "s" : ""} total</div>
-                    </div>
-                  </div>
-                  {files.length > 0 ? (
-                    <div className="flex flex-wrap gap-1.5">
-                      {files.map((f) => (
-                        <div key={f.id} className="inline-flex items-center gap-1.5 rounded-lg bg-white/50 border border-white/60 px-2.5 py-1 text-[0.6875rem] text-black/70">
-                          {f.kind === "image" ? <ImageIcon className="w-3 h-3 text-black/40" /> :
-                           f.kind === "video" ? <Video className="w-3 h-3 text-black/40" /> :
-                           f.kind === "audio" ? <Music className="w-3 h-3 text-black/40" /> :
-                           f.kind === "pdf" ? <FileText className="w-3 h-3 text-black/40" /> :
-                           f.kind === "doc" ? <StickyNote className="w-3 h-3 text-black/40" /> :
-                           f.kind === "spreadsheet" ? <Table className="w-3 h-3 text-black/40" /> :
-                           f.kind === "link" ? <Link2 className="w-3 h-3 text-black/40" /> :
-                           <FileIcon className="w-3 h-3 text-black/40" />}
-                          <span className="truncate max-w-[7.5rem]">{f.name}</span>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="text-[0.6875rem] text-black/40">No files yet.</p>
-                  )}
+            {allFilesForCollage.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-16 text-center">
+                <div className="w-16 h-16 rounded-2xl bg-white/40 border border-white/50 flex items-center justify-center mb-3">
+                  <ImageIcon className="w-7 h-7 text-black/30" />
                 </div>
-
-                {/* Boards */}
-                {boards.length > 0 ? boards.map((board) => {
-                  const boardFiles = files.filter((f) => f.folderId === board.folderId && board.folderId != null);
-                  return (
-                    <div key={board.id} className="rounded-2xl border border-white/50 bg-white/30 backdrop-blur-md p-4">
-                      <div className="flex items-center gap-2 mb-3">
-                        <div className="w-8 h-8 rounded-lg bg-blue-500/15 flex items-center justify-center">
-                          <BrickWall className="w-4 h-4 text-blue-500" />
-                        </div>
-                        <div>
-                          <div className="text-sm font-semibold">{board.title}</div>
-                          <div className="text-[0.6875rem] text-black/50">{boardFiles.length} file{boardFiles.length !== 1 ? "s" : ""}</div>
-                        </div>
-                      </div>
-                      {boardFiles.length > 0 ? (
-                        <div className="flex flex-wrap gap-1.5">
-                          {boardFiles.map((f) => (
-                            <div key={f.id} className="inline-flex items-center gap-1.5 rounded-lg bg-white/50 border border-white/60 px-2.5 py-1 text-[0.6875rem] text-black/70">
-                              {f.kind === "image" ? <ImageIcon className="w-3 h-3 text-black/40" /> :
-                               f.kind === "video" ? <Video className="w-3 h-3 text-black/40" /> :
-                               f.kind === "audio" ? <Music className="w-3 h-3 text-black/40" /> :
-                               f.kind === "pdf" ? <FileText className="w-3 h-3 text-black/40" /> :
-                               f.kind === "doc" ? <StickyNote className="w-3 h-3 text-black/40" /> :
-                               f.kind === "spreadsheet" ? <Table className="w-3 h-3 text-black/40" /> :
-                               f.kind === "link" ? <Link2 className="w-3 h-3 text-black/40" /> :
-                               <FileIcon className="w-3 h-3 text-black/40" />}
-                              <span className="truncate max-w-[7.5rem]">{f.name}</span>
-                            </div>
-                          ))}
-                        </div>
-                      ) : (
-                        <p className="text-[0.6875rem] text-black/40">No files in this board.</p>
-                      )}
-                    </div>
-                  );
-                }) : (
-                  <div className="rounded-2xl border border-white/50 bg-white/30 backdrop-blur-md p-4 text-center">
-                    <p className="text-[0.6875rem] text-black/40">No boards yet. Create one above.</p>
-                  </div>
-                )}
+                <p className="text-sm text-black/50">No files yet</p>
+                <p className="text-xs text-black/40 mt-1">Drop files anywhere to add them</p>
               </div>
             ) : (
-              <div className="space-y-5">
-                {/* Stat cards row */}
-                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-                  {[
-                    { label: "Boards", value: boards.length, color: "#1d4ed8" },
-                    { label: "Files", value: files.length, color: "#3b82f6" },
-                    { label: "Chats", value: chatMessages.filter((m) => m.role === "user").length, color: "#60a5fa" },
-                    { label: "Connections", value: 0, color: "#93c5fd" },
-                  ].map((stat) => (
-                    <div key={stat.label} className="rounded-xl border border-white/50 bg-white/40 backdrop-blur-md p-3 text-center">
-                      <div className="text-xl font-bold" style={{ color: stat.color }}>{stat.value}</div>
-                      <div className="text-[0.6875rem] text-black/50 mt-0.5">{stat.label}</div>
-                    </div>
-                  ))}
-                </div>
+              <div className="columns-1 sm:columns-2 xl:columns-3 gap-5">
+                {allFilesForCollage.map((file) => {
+                  const lower = file.name.toLowerCase();
+                  const isImage = file.kind === "image" || /\.(png|jpe?g|webp|gif|svg|bmp|ico|tiff?|avif|heic|heif)$/i.test(lower);
+                  const isVideo = file.kind === "video" || /\.(mp4|mov|webm|m4v|avi|mkv|flv|3gp|ogv)$/i.test(lower);
+                  const isAudio = file.kind === "audio" || /\.(mp3|wav|ogg|flac|aac|m4a|wma)$/i.test(lower);
+                  const isPdf = file.kind === "pdf" || /\.pdf$/i.test(lower);
+                  const isLink = file.kind === "link";
+                  const isYouTube = isLink && /youtube\.com|youtu\.be/i.test(file.url);
+                  const displayUrl = resolvedUrls[file.id] || file.url;
 
-                {/* Bar chart: content breakdown */}
-                <div className="rounded-xl border border-white/50 bg-white/30 backdrop-blur-md p-4">
-                  <div className="text-xs font-semibold mb-3">Content Breakdown</div>
-                  <div className="space-y-2.5">
-                    {[
-                      { label: "Images", value: files.filter((f) => f.kind === "image").length, max: Math.max(files.length, 1), color: "#1d4ed8" },
-                      { label: "Videos", value: files.filter((f) => f.kind === "video").length, max: Math.max(files.length, 1), color: "#2563eb" },
-                      { label: "Documents", value: files.filter((f) => f.kind === "pdf" || f.kind === "doc" || f.kind === "spreadsheet").length, max: Math.max(files.length, 1), color: "#3b82f6" },
-                      { label: "Audio", value: files.filter((f) => f.kind === "audio").length, max: Math.max(files.length, 1), color: "#60a5fa" },
-                      { label: "Links", value: files.filter((f) => f.kind === "link").length, max: Math.max(files.length, 1), color: "#93c5fd" },
-                      { label: "Other", value: files.filter((f) => f.kind === "file").length, max: Math.max(files.length, 1), color: "#bfdbfe" },
-                    ].map((bar) => (
-                      <div key={bar.label} className="flex items-center gap-2">
-                        <span className="text-[0.6875rem] text-black/60 w-16 shrink-0">{bar.label}</span>
-                        <div className="flex-1 h-4 rounded-full bg-black/5 overflow-hidden">
-                          <div
-                            className="h-full rounded-full transition-all duration-500"
-                            style={{ width: `${Math.max((bar.value / bar.max) * 100, bar.value > 0 ? 8 : 0)}%`, backgroundColor: bar.color }}
-                          />
+                  const fallbackCard = (icon: React.ReactNode, label: string, subtitle?: string) => (
+                    <div className="rounded-2xl border border-white/40 bg-white/30 backdrop-blur-md p-4" draggable={false}>
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-white/50 border border-white/60 flex items-center justify-center shrink-0">
+                          {icon}
                         </div>
-                        <span className="text-[0.6875rem] font-medium w-5 text-right">{bar.value}</span>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-medium text-black/85 truncate">{label}</p>
+                          {subtitle && <p className="text-[0.6875rem] text-black/55 mt-0.5 truncate">{subtitle}</p>}
+                        </div>
                       </div>
-                    ))}
-                  </div>
-                </div>
+                    </div>
+                  );
 
-                {/* Activity sparkline (filler) */}
-                <div className="rounded-xl border border-white/50 bg-white/30 backdrop-blur-md p-4">
-                  <div className="text-xs font-semibold mb-3">Weekly Activity</div>
-                  <div className="flex items-end gap-1.5 h-20">
-                    {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((day, i) => {
-                      const heights = [35, 55, 42, 68, 80, 25, 48];
+                  const renderMediaContent = () => {
+                    if (isImage) {
+                      if (!displayUrl) return fallbackCard(<ImageIcon className="w-5 h-5 text-black/40" />, file.name, "Image");
                       return (
-                        <div key={day} className="flex-1 flex flex-col items-center gap-1">
-                          <div
-                            className="w-full rounded-md transition-all duration-500"
-                            style={{
-                              height: `${heights[i]}%`,
-                              backgroundColor: i === new Date().getDay() - 1 ? "#3b82f6" : "rgba(0,0,0,0.08)",
+                        <div className="relative">
+                          <img
+                            src={displayUrl}
+                            alt={file.name}
+                            className="w-full h-auto max-h-[42rem] rounded-2xl bg-white/30"
+                            loading="lazy"
+                            draggable={false}
+                            onError={(e) => {
+                              const target = e.currentTarget;
+                              target.style.display = "none";
+                              const fb = target.parentElement?.querySelector("[data-fallback]") as HTMLElement;
+                              if (fb) fb.style.display = "";
                             }}
                           />
-                          <span className="text-[9px] text-black/40">{day}</span>
+                          <div data-fallback="" style={{ display: "none" }}>
+                            {fallbackCard(<ImageIcon className="w-5 h-5 text-black/40" />, file.name, "Image")}
+                          </div>
                         </div>
                       );
-                    })}
-                  </div>
-                </div>
+                    }
 
-                {/* Collaboration & storage (filler) */}
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-                  <div className="rounded-xl border border-white/50 bg-white/30 backdrop-blur-md p-4">
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="text-xs font-semibold">Team Space</div>
-                      <span className="text-[0.625rem] font-medium text-blue-500/70 bg-blue-500/10 px-2 py-0.5 rounded-full">Coming soon</span>
-                    </div>
-                    <div className="flex -space-x-2">
-                      {user?.user_metadata?.avatar_url ? (
-                        <img
-                          src={user.user_metadata.avatar_url}
-                          alt={user.user_metadata?.full_name || "You"}
-                          className="w-8 h-8 rounded-full border-2 border-white object-cover relative z-10"
-                          referrerPolicy="no-referrer"
+                    if (isYouTube) {
+                      const videoId = extractYouTubeVideoId(file.url);
+                      const embedUrl = videoId ? getYouTubeEmbedUrl(videoId) : "";
+                      if (embedUrl) {
+                        return (
+                          <div className="w-full rounded-2xl overflow-hidden bg-black" draggable={false}>
+                            <iframe
+                              src={embedUrl}
+                              title={file.name}
+                              className="w-full h-44 border-0"
+                              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                              allowFullScreen
+                            />
+                          </div>
+                        );
+                      }
+                      return fallbackCard(<Video className="w-5 h-5 text-red-500/70" />, file.name, "YouTube Video");
+                    }
+
+                    if (isVideo) {
+                      if (!displayUrl) return fallbackCard(<Video className="w-5 h-5 text-black/40" />, file.name, "Video");
+                      return (
+                        <video
+                          src={displayUrl}
+                          className="w-full h-auto max-h-[42rem] rounded-2xl bg-black/5"
+                          controls
+                          preload="metadata"
+                          draggable={false}
                         />
-                      ) : (
-                        <div className="w-8 h-8 rounded-full border-2 border-white bg-blue-500 flex items-center justify-center text-[0.6875rem] font-bold text-white relative z-10">
-                          {(user?.email?.[0] || "?").toUpperCase()}
+                      );
+                    }
+
+                    if (isAudio) {
+                      return (
+                        <div className="rounded-2xl border border-white/40 bg-white/30 backdrop-blur-md p-3 space-y-3">
+                          <div className="flex items-center gap-2 text-black/80">
+                            <Music className="w-4 h-4" />
+                            <span className="text-xs font-medium truncate">{file.name}</span>
+                          </div>
+                          {displayUrl ? (
+                            <audio src={displayUrl} controls className="w-full h-10" preload="metadata" />
+                          ) : (
+                            <p className="text-[0.6875rem] text-black/50">Audio file</p>
+                          )}
+                        </div>
+                      );
+                    }
+
+                    if (isPdf) {
+                      if (displayUrl) {
+                        return (
+                          <div className="w-full h-80 rounded-2xl overflow-hidden bg-white/40 border border-white/50">
+                            <iframe
+                              src={displayUrl}
+                              title={file.name}
+                              className="w-full h-full border-0"
+                              draggable={false}
+                            />
+                          </div>
+                        );
+                      }
+                      return fallbackCard(<FileText className="w-5 h-5 text-red-400/70" />, file.name, "PDF");
+                    }
+
+                    if (isLink) {
+                      let domain = "";
+                      try { domain = new URL(file.url).hostname.replace("www.", ""); } catch { /* ignore */ }
+                      return fallbackCard(
+                        <Link2 className="w-5 h-5 text-blue-400/70" />,
+                        file.name,
+                        domain || file.url || "Link"
+                      );
+                    }
+
+                    if (file.kind === "doc") {
+                      if (file.content) {
+                        return (
+                          <div className="rounded-2xl border border-white/40 bg-white/30 backdrop-blur-md p-4" draggable={false}>
+                            <div className="flex items-center gap-2 text-black/70 mb-2">
+                              <StickyNote className="w-4 h-4" />
+                              <span className="text-xs font-medium">Quick Note</span>
+                            </div>
+                            <div className="max-h-56 overflow-y-auto scrollbar-hide">
+                              <p className="text-sm text-black/70 whitespace-pre-wrap break-words">{file.content}</p>
+                            </div>
+                            <div className="mt-3 text-[0.6875rem] text-black/55 flex items-center gap-1">
+                              <Clock className="w-3 h-3" />
+                              <span>{file.name}</span>
+                            </div>
+                          </div>
+                        );
+                      }
+                      return fallbackCard(
+                        <FileText className="w-5 h-5 text-blue-400/70" />,
+                        file.name,
+                        `${lower.split(".").pop()?.toUpperCase()} file`
+                      );
+                    }
+
+                    if (file.kind === "spreadsheet" && file.spreadsheetData) {
+                      const { rows, cols, cells } = file.spreadsheetData;
+                      return (
+                        <div className="rounded-2xl border border-white/40 bg-white/30 backdrop-blur-md overflow-hidden" draggable={false}>
+                          <div className="flex items-center gap-2 text-black/70 px-3 py-2 border-b border-black/10">
+                            <Table className="w-4 h-4" />
+                            <span className="text-xs font-medium truncate">{file.name}</span>
+                          </div>
+                          <div className="max-h-[28rem] overflow-auto scrollbar-thin">
+                            <table className="w-full border-collapse text-[0.6875rem]">
+                              <tbody>
+                                {Array.from({ length: rows }, (_, r) => (
+                                  <tr key={r}>
+                                    {Array.from({ length: cols }, (_, c) => (
+                                      <td
+                                        key={c}
+                                        className="border border-black/15 px-2 py-1.5 align-top bg-white/50 min-w-[4rem] max-w-[14rem] break-words"
+                                        title={cells[`${r},${c}`]}
+                                      >
+                                        {cells[`${r},${c}`] ?? "\u00A0"}
+                                      </td>
+                                    ))}
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    if (file.kind === "spreadsheet") {
+                      return fallbackCard(
+                        <Table className="w-5 h-5 text-blue-400/70" />,
+                        file.name,
+                        "Spreadsheet (loading…)"
+                      );
+                    }
+
+                    return fallbackCard(
+                      <FileIcon className="w-5 h-5 text-black/40" />,
+                      file.name,
+                      "File"
+                    );
+                  };
+
+                  return (
+                    <article
+                      key={file.id}
+                      className={`break-inside-avoid mb-5 rounded-2xl relative overflow-visible cursor-grab ${
+                        openFileMenuId === file.id ? "z-[120]" : "z-0"
+                      }`}
+                      draggable
+                      onDragStart={(e) => {
+                        setDraggedFileId(file.id);
+                        e.dataTransfer.setData("text/plain", file.id);
+                      }}
+                      onDragEnd={() => setDraggedFileId(null)}
+                    >
+                      <div
+                        className="cursor-pointer"
+                        onClick={() => setSelectedFile(file)}
+                        role="button"
+                        tabIndex={0}
+                        onKeyDown={(e) => { if (e.key === "Enter") setSelectedFile(file); }}
+                      >
+                        {renderMediaContent()}
+                      </div>
+
+                      {file.tags && file.tags.length > 0 && (
+                        <div className="mt-1.5 flex flex-wrap gap-1 px-1">
+                          {file.tags.map((t) => (
+                            <span key={t} className="inline-flex items-center rounded-full bg-black/5 text-[7px] leading-none px-2 py-px font-medium text-black/55">
+                              {t}
+                            </span>
+                          ))}
                         </div>
                       )}
-                      <button
-                        type="button"
-                        disabled
-                        className="w-8 h-8 rounded-full border-2 border-white bg-blue-500 flex items-center justify-center cursor-not-allowed opacity-70 relative z-0"
-                        title="Add team members (coming soon)"
-                      >
-                        <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4 text-white" viewBox="0 0 20 20" fill="currentColor">
-                          <path d="M10 5a1 1 0 011 1v3h3a1 1 0 110 2h-3v3a1 1 0 11-2 0v-3H6a1 1 0 110-2h3V6a1 1 0 011-1z" />
-                        </svg>
-                      </button>
-                    </div>
-                    <div className="text-[0.6875rem] text-black/50 mt-2">
-                      {user?.user_metadata?.full_name || user?.email || "1 member"}
-                    </div>
-                  </div>
-                  <div className="rounded-xl border border-white/50 bg-white/30 backdrop-blur-md p-4">
-                    <div className="text-xs font-semibold mb-2">Storage Used</div>
-                    {(() => {
-                      const totalBytes = files.reduce((sum, f) => sum + (f.size || 0), 0);
-                      const maxBytes = 10 * 1024 * 1024 * 1024;
-                      const pct = Math.min((totalBytes / maxBytes) * 100, 100);
-                      const fmt = (bytes: number) => {
-                        if (bytes < 1024) return `${bytes} B`;
-                        if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-                        if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-                        return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-                      };
-                      return (
-                        <>
-                          <div className="relative h-2 rounded-full bg-black/5 overflow-hidden mt-3">
-                            <div className="h-full rounded-full bg-blue-500 transition-all" style={{ width: `${pct}%` }} />
-                          </div>
-                          <div className="flex items-center justify-between mt-2">
-                            <span className="text-[0.6875rem] text-black/50">{fmt(totalBytes)}</span>
-                            <span className="text-[0.6875rem] text-black/40">of 10 GB</span>
-                          </div>
-                        </>
-                      );
-                    })()}
-                  </div>
-                </div>
+
+                      {file.notes && file.notes.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setNoteComposerFileId((prev) => (prev === file.id ? null : file.id));
+                          }}
+                          className="absolute top-2 right-2 h-6 min-w-6 px-1.5 rounded-full bg-white/70 backdrop-blur-md border border-white/60 text-[0.6875rem] font-semibold flex items-center justify-center gap-1 z-[125] shadow-sm"
+                          title="View file notes"
+                        >
+                          <MessageSquare className="w-3 h-3" />
+                          <span>{file.notes.length}</span>
+                        </button>
+                      )}
+
+                      <div className="mt-2 flex justify-end px-1">
+                        <div className="relative" ref={openFileMenuId === file.id ? fileMenuRef : null}>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setOpenFileMenuId((prev) => (prev === file.id ? null : file.id));
+                            }}
+                            onMouseDown={(e) => e.stopPropagation()}
+                            className="px-1 py-0.5 text-black/75 hover:text-black leading-none text-base font-semibold"
+                            title="File actions"
+                          >
+                            <MoreHorizontal className="w-4 h-4" />
+                          </button>
+                          {openFileMenuId === file.id && (
+                            <div
+                              className="absolute right-0 bottom-full mb-2 w-48 rounded-2xl border border-white/60 bg-white/85 backdrop-blur-xl shadow-2xl p-2 z-[130]"
+                              onMouseDown={(e) => e.stopPropagation()}
+                            >
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleRenameFile(file);
+                                }}
+                                className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 flex items-center gap-2"
+                              >
+                                <Pencil className="w-3.5 h-3.5" />
+                                Rename
+                              </button>
+                              {file.url && (
+                                <a
+                                  href={file.url}
+                                  download={file.name}
+                                  onClick={() => setOpenFileMenuId(null)}
+                                  className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 flex items-center gap-2"
+                                >
+                                  <Download className="w-3.5 h-3.5" />
+                                  Download
+                                </a>
+                              )}
+                              <div className="my-1 h-px bg-black/10" />
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setTagPickerFileId(file.id);
+                                  setOpenFileMenuId(null);
+                                }}
+                                className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 flex items-center gap-2"
+                              >
+                                <Tag className="w-3.5 h-3.5" />
+                                Tags
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setNoteComposerFileId(file.id);
+                                  setOpenFileMenuId(null);
+                                }}
+                                className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 flex items-center gap-2"
+                              >
+                                <StickyNote className="w-3.5 h-3.5" />
+                                Note
+                              </button>
+                              <div className="my-1 h-px bg-black/10" />
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDeleteFile(file.id);
+                                }}
+                                className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 flex items-center gap-2 text-red-600"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                                Delete
+                              </button>
+                            </div>
+                          )}
+                          {noteComposerFileId === file.id && (
+                            <div
+                              ref={noteComposerRef}
+                              className="absolute right-0 bottom-full mb-2 w-64 rounded-2xl border border-white/60 bg-white/85 backdrop-blur-xl shadow-2xl p-3 z-[140]"
+                              onMouseDown={(e) => e.stopPropagation()}
+                            >
+                              <div className="text-[0.6875rem] font-medium text-black/60 mb-2">Add a note</div>
+                              <textarea
+                                value={noteComposerText}
+                                onChange={(e) => setNoteComposerText(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter" && !e.shiftKey && noteComposerText.trim()) {
+                                    e.preventDefault();
+                                    addNoteToFile(file.id, noteComposerText);
+                                    setNoteComposerText("");
+                                    setNoteComposerFileId(null);
+                                  }
+                                }}
+                                placeholder="Write a note about this file…"
+                                className="w-full rounded-lg border border-black/10 bg-white/70 px-2.5 py-2 text-xs outline-none resize-none placeholder:text-black/40"
+                                rows={3}
+                                autoFocus
+                              />
+                              <div className="flex items-center justify-between mt-2">
+                                <button
+                                  type="button"
+                                  onClick={() => { setNoteComposerFileId(null); setNoteComposerText(""); }}
+                                  className="text-[0.6875rem] text-black/50 hover:text-black/70"
+                                >
+                                  Cancel
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (noteComposerText.trim()) {
+                                      addNoteToFile(file.id, noteComposerText);
+                                      setNoteComposerText("");
+                                      setNoteComposerFileId(null);
+                                    }
+                                  }}
+                                  disabled={!noteComposerText.trim()}
+                                  className="rounded-lg bg-blue-500 text-white text-[0.6875rem] font-medium px-3 py-1 disabled:opacity-40 hover:bg-blue-600 transition-colors"
+                                >
+                                  Save
+                                </button>
+                              </div>
+                              {(file.notes || []).length > 0 && (
+                                <div className="mt-3 border-t border-black/10 pt-2 max-h-32 overflow-y-auto scrollbar-hide space-y-1.5">
+                                  {(file.notes || []).map((note, i) => (
+                                    <div key={i} className="rounded-md bg-black/5 px-2 py-1.5">
+                                      <p className="text-xs text-black/80 whitespace-pre-wrap break-words">{note}</p>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          {tagPickerFileId === file.id && (
+                            <div
+                              ref={tagPickerRef}
+                              className="absolute right-0 bottom-full mb-2 w-56 rounded-2xl border border-white/60 bg-white/85 backdrop-blur-xl shadow-2xl p-2 z-[140]"
+                              onMouseDown={(e) => e.stopPropagation()}
+                            >
+                              <div className="px-1 py-1 text-[0.6875rem] font-medium text-black/60 mb-1">Tags</div>
+                              <div className="mb-2">
+                                <input
+                                  type="text"
+                                  value={newTagInput}
+                                  onChange={(e) => setNewTagInput(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter" && newTagInput.trim()) {
+                                      addNewTagToFile(file.id, newTagInput);
+                                      setNewTagInput("");
+                                    }
+                                  }}
+                                  placeholder="Add or search tags…"
+                                  className="w-full rounded-lg border border-black/10 bg-white/70 px-2 py-1.5 text-xs outline-none placeholder:text-black/40"
+                                  autoFocus
+                                />
+                              </div>
+                              <div className="max-h-40 overflow-y-auto scrollbar-hide space-y-0.5">
+                                {(newTagInput.trim()
+                                  ? allAvailableTags.filter((t) => t.name.toLowerCase().includes(newTagInput.trim().toLowerCase()))
+                                  : allAvailableTags
+                                ).map((tag) => {
+                                  const active = (file.tags || []).includes(tag.name);
+                                  return (
+                                    <button
+                                      key={tag.name}
+                                      type="button"
+                                      onClick={() => toggleFileTag(file.id, tag.name)}
+                                      className="w-full flex items-center gap-2 px-2 py-1.5 text-left text-xs hover:bg-black/5 rounded-md"
+                                    >
+                                      <div className={`w-3.5 h-3.5 rounded flex items-center justify-center shrink-0 ${active ? "bg-blue-500 text-white" : "border border-black/20"}`}>
+                                        {active && <Check className="w-2.5 h-2.5" />}
+                                      </div>
+                                      <span className={`flex-1 truncate ${active ? "font-medium" : "text-black/65"}`}>{tag.name}</span>
+                                      <span className="text-[0.625rem] text-black/30">{tag.count}</span>
+                                    </button>
+                                  );
+                                })}
+                                {newTagInput.trim() && !allAvailableTags.some((t) => t.name.toLowerCase() === newTagInput.trim().toLowerCase()) && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      addNewTagToFile(file.id, newTagInput);
+                                      setNewTagInput("");
+                                    }}
+                                    className="w-full flex items-center gap-2 px-2 py-1.5 text-left text-xs hover:bg-black/5 rounded-md text-blue-600"
+                                  >
+                                    <Plus className="w-3.5 h-3.5" />
+                                    Create "{newTagInput.trim()}"
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </article>
+                  );
+                })}
               </div>
             )}
-          </section>
-        </div>
-
-        {/* Right: AI Summary + AI Suggestions */}
-        <div className="md:col-span-2 xl:col-span-1 grid grid-cols-1 md:grid-cols-3 xl:grid-cols-1 gap-3 xl:gap-5">
-          <section className="rounded-2xl border border-white/60 bg-[#e9e9ef]/75 backdrop-blur-lg shadow-xl shadow-white/20 p-3 sm:p-5">
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="text-sm font-semibold">AI Summary</h2>
-            </div>
-            <p className="text-xs text-black/70 leading-relaxed">
-              {projectSummary.summary}
-            </p>
-          </section>
-
-          <section className="rounded-2xl border border-white/60 bg-[#e9e9ef]/75 backdrop-blur-lg shadow-xl shadow-white/20 p-3 sm:p-5">
-            <div className="mb-3">
-              <h2 className="text-sm font-semibold">AI Suggestions</h2>
-            </div>
-            <div className="space-y-2.5">
-              {[
-                ...(boards.length === 0
-                  ? [{ text: "Create your first board to start organizing ideas", action: "create-board", icon: "plus" }]
-                  : []),
-                ...(files.length === 0
-                  ? [{ text: "Drop files into the project to build your knowledge base", action: "add-files", icon: "file" }]
-                  : []),
-                ...(files.length > 0 && boards.length > 0
-                  ? [{ text: "Connect your files to boards in the Connections view", action: "connect", icon: "link" }]
-                  : []),
-                ...(boards.length >= 2
-                  ? [{ text: "Compare ideas across boards using the Graph view", action: "graph", icon: "graph" }]
-                  : []),
-                ...(chatMessages.filter((m) => m.role === "user").length === 0
-                  ? [{ text: "Start a chat to brainstorm with AI about this project", action: "chat", icon: "chat" }]
-                  : []),
-                ...(files.filter((f) => f.kind === "image").length >= 3
-                  ? [{ text: "You have several images — try creating a mood board", action: "mood", icon: "image" }]
-                  : []),
-                ...(boards.length > 5
-                  ? [{ text: "Consider archiving inactive boards to stay focused", action: "archive", icon: "archive" }]
-                  : []),
-                { text: "Review your project health score for improvement tips", action: "health", icon: "heart" },
-                { text: "Use quick notes to capture fleeting ideas instantly", action: "notes", icon: "note" },
-              ]
-                .slice(0, 5)
-                .map((suggestion) => (
-                  <button
-                    key={suggestion.action}
-                    type="button"
-                    onClick={() => {
-                      if (suggestion.action === "create-board") handleCreateBoard();
-                      else if (suggestion.action === "chat") setShowChat(true);
-                      else if (suggestion.action === "graph") setBottomTab("graph");
-                      else if (suggestion.action === "notes") setShowQuickNote(true);
-                    }}
-                    className="w-full text-left rounded-xl border border-white/50 bg-white/40 hover:bg-white/60 backdrop-blur-md p-3 transition-all group"
-                  >
-                    <div className="text-xs text-black/80 leading-relaxed group-hover:text-black">
-                      {suggestion.text}
-                    </div>
-                    <div className="text-[0.625rem] text-black/40 mt-1 group-hover:text-black/55">
-                      Click to take action
-                    </div>
-                  </button>
-                ))}
-            </div>
-          </section>
-
-          {/* Project Health */}
-          <section className="rounded-2xl border border-white/60 bg-[#e9e9ef]/75 backdrop-blur-lg shadow-xl shadow-white/20 p-3 sm:p-4">
-            <div className="flex items-center gap-2 mb-3">
-              <Activity className="w-4 h-4 text-black/60" />
-              <h2 className="text-sm font-semibold">Project Health</h2>
-            </div>
-
-            <div className="flex items-center gap-3 mb-3">
-              <div
-                className="relative w-12 h-12 rounded-full flex items-center justify-center"
-                style={{
-                  background: `conic-gradient(${projectHealth.color} ${projectHealth.score * 3.6}deg, rgba(0,0,0,0.06) 0deg)`,
-                }}
-              >
-                <div className="w-9 h-9 rounded-full bg-[#e9e9ef] flex items-center justify-center text-xs font-bold">
-                  {projectHealth.score}
-                </div>
-              </div>
-              <div>
-                <div className="text-sm font-semibold" style={{ color: projectHealth.color }}>
-                  {projectHealth.label}
-                </div>
-                <div className="text-[0.6875rem] text-black/50">Health score</div>
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <div className="flex items-center justify-between text-xs">
-                <span className="flex items-center gap-1.5 text-black/60">
-                  <Eye className="w-3.5 h-3.5" />
-                  Visits
-                </span>
-                <span className="font-medium">{projectHealth.visits}</span>
-              </div>
-              <div className="flex items-center justify-between text-xs">
-                <span className="flex items-center gap-1.5 text-black/60">
-                  <Clock className="w-3.5 h-3.5" />
-                  Time spent
-                </span>
-                <span className="font-medium">{formatTimeSpent(projectHealth.totalSeconds)}</span>
-              </div>
-              <div className="flex items-center justify-between text-xs">
-                <span className="flex items-center gap-1.5 text-black/60">
-                  <Activity className="w-3.5 h-3.5" />
-                  Last active
-                </span>
-                <span className="font-medium">{formatLastVisit(projectHealth.lastVisit)}</span>
-              </div>
-            </div>
           </section>
         </div>
       </main>
@@ -2134,7 +2284,7 @@ If the user asks about old memories or references past ideas, refer to the memor
       <Dialog open={!!moveBoardId} onOpenChange={(open) => !open && setMoveBoardId(null)}>
         <DialogContent className="rounded-2xl border border-white/60 bg-[#f2f2f7]/85 backdrop-blur-lg text-black shadow-2xl">
           <DialogHeader>
-            <DialogTitle>Move board</DialogTitle>
+            <DialogTitle>Move grid</DialogTitle>
           </DialogHeader>
           <div className="space-y-2">
             {(allProjects as Array<{ id: string; name: string }>)
@@ -2189,7 +2339,7 @@ If the user asks about old memories or references past ideas, refer to the memor
       />
 
       {/* Media Sidebar */}
-      {showMemorySidebar && (
+      {showVaultSidebar && (
         <aside
           className="fixed top-14 right-0 z-[95] bottom-0 w-[23.75rem] max-w-[92vw] border-l border-black/10 dark:border-white/10 bg-[#f5f5f5] dark:bg-[#1a1a1a] shadow-[-4px_0_24px_rgba(0,0,0,0.08)]"
         >
@@ -2201,7 +2351,7 @@ If the user asks about old memories or references past ideas, refer to the memor
               </div>
               <button
                 type="button"
-                onClick={() => setShowMemorySidebar(false)}
+                onClick={() => setShowVaultSidebar(false)}
                 className="h-8 w-8 rounded-full hover:bg-black/10 dark:hover:bg-white/10 transition-colors flex items-center justify-center"
                 title="Close media sidebar"
               >
@@ -2210,7 +2360,7 @@ If the user asks about old memories or references past ideas, refer to the memor
             </div>
             <div className="flex-1 min-h-0">
               <iframe
-                src="/memory?embedded=1"
+                src="/vault?embedded=1"
                 title="Media"
                 className="w-full h-full border-0"
               />

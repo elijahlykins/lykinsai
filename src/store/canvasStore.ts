@@ -430,13 +430,15 @@ export const useCanvasStore = create<CanvasState>()(
         : snapToGrid(Math.round((w * 9) / 16), grid);
       const b: Block = {
         id: makeId("youtube"),
-        type: "youtube",
+        type: "create",
+        mode: "video",
         x: snapToGrid(pos.x, grid),
         y: snapToGrid(pos.y, grid),
         width: w,
         height: h,
         url: watchUrl,
         videoId,
+        data: { url: watchUrl, videoId },
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       } as any;

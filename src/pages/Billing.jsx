@@ -116,8 +116,8 @@ export default function BillingPage() {
         onViewChange={(view) => {
           if (view === 'create') {
             navigate('/create');
-          } else if (view === 'memory') {
-            navigate('/memory');
+          } else if (view === 'vault') {
+            navigate('/vault');
           } else {
             navigate(createPageUrl(
             view === 'short_term' ? 'ShortTerm' :
@@ -128,7 +128,7 @@ export default function BillingPage() {
           }
         }}
           onOpenSearch={() => navigate(createPageUrl('AISearch'))}
-          onOpenChat={() => navigate(createPageUrl('MemoryChat'))}
+          onOpenChat={() => navigate(createPageUrl('VaultChat'))}
           onOpenSettings={() => setSettingsOpen(true)}
           isCollapsed={sidebarCollapsed}
           onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
@@ -140,7 +140,7 @@ export default function BillingPage() {
           <div className="text-center mb-8 md:mb-12">
             <div className="flex items-center justify-center gap-2 mb-4">
               <Sparkles className="w-6 h-6 md:w-8 md:h-8 text-black dark:text-white" />
-              <h1 className="text-2xl md:text-4xl font-bold text-black dark:text-white">Upgrade Your Memory</h1>
+              <h1 className="text-2xl md:text-4xl font-bold text-black dark:text-white">Upgrade Your Vault</h1>
             </div>
             <p className="text-gray-600 dark:text-gray-400 text-lg">
               Unlock the full potential of AI-powered memory management

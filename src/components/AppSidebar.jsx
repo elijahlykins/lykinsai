@@ -51,11 +51,14 @@ export default function AppSidebar() {
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0 });
   const [showProjectPicker, setShowProjectPicker] = useState(false);
   const [pickerPos, setPickerPos] = useState({ top: 0, left: 0 });
+  const [menuProjectId, setMenuProjectId] = useState(null);
+  const [menuProjectPos, setMenuProjectPos] = useState({ top: 0, left: 0 });
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [feedbackType, setFeedbackType] = useState("bug");
   const menuRef = useRef(null);
   const addToProjectRef = useRef(null);
   const pickerRef = useRef(null);
+  const projectMenuRef = useRef(null);
 
   const { data: projects = [] } = useQuery({
     queryKey: ["projects", user?.id],
@@ -131,6 +134,48 @@ export default function AppSidebar() {
     return () => document.removeEventListener("mousedown", onClick);
   }, [menuBoardId]);
 
+  useEffect(() => {
+    if (!menuProjectId) return;
+    const onClick = (e) => {
+      if (projectMenuRef.current && !projectMenuRef.current.contains(e.target)) {
+        setMenuProjectId(null);
+      }
+    };
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, [menuProjectId]);
+
+  const deleteProject = async (projectId) => {
+    if (!user?.id) return;
+    if (!window.confirm("Delete this project and unlink its grids? This cannot be undone.")) return;
+    await supabase
+      .from("omnia_boards")
+      .update({ project_id: null })
+      .eq("project_id", projectId)
+      .eq("user_id", user.id);
+    await supabase.from("omnia_projects").delete().eq("id", projectId).eq("user_id", user.id);
+    setMenuProjectId(null);
+    window.dispatchEvent(new Event(PROJECTS_CHANGED_EVENT));
+    window.dispatchEvent(new Event("lykinsai_boards_changed"));
+    if (location.pathname === `/project/${projectId}`) nav("/");
+  };
+
+  const renameProject = async (projectId) => {
+    if (!user?.id) return;
+    const project = projects.find((p) => p.id === projectId);
+    const currentName = project?.name || "Untitled Project";
+    const next = window.prompt("Rename project", currentName);
+    if (next === null) return;
+    const name = next.trim() || "Untitled Project";
+    await supabase
+      .from("omnia_projects")
+      .update({ name, updated_at: new Date().toISOString() })
+      .eq("id", projectId)
+      .eq("user_id", user.id);
+    setMenuProjectId(null);
+    window.dispatchEvent(new Event(PROJECTS_CHANGED_EVENT));
+  };
+
   const deleteBoard = async (boardId) => {
     if (!user?.id) return;
     if (!window.confirm("Delete this grid? This cannot be undone.")) return;
@@ -139,7 +184,7 @@ export default function AppSidebar() {
     setMenuBoardId(null);
     if (localStorage.getItem("omnia_board_id") === boardId) localStorage.removeItem("omnia_board_id");
     window.dispatchEvent(new Event("lykinsai_boards_changed"));
-    if (location.pathname === `/canvas/${boardId}`) nav("/");
+    if (location.pathname === `/grid/${boardId}`) nav("/");
   };
 
   const addBoardToProject = async (boardId, projectId) => {
@@ -233,7 +278,7 @@ export default function AppSidebar() {
           </button>
           <button
             type="button"
-            onClick={() => flushAndNavigate(nav, "/memory")}
+            onClick={() => flushAndNavigate(nav, "/vault")}
             className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
           >
             <Lock className="w-3.5 h-3.5 text-black/60" />
@@ -243,7 +288,7 @@ export default function AppSidebar() {
             type="button"
             onClick={() => {
               const newId = crypto.randomUUID();
-              flushAndNavigate(nav, `/canvas/${newId}`);
+              flushAndNavigate(nav, `/grid/${newId}`);
             }}
             className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
           >
@@ -253,11 +298,10 @@ export default function AppSidebar() {
           <button
             type="button"
             onClick={async () => {
-              const name = window.prompt("Project name:");
-              if (!name?.trim() || !user?.id) return;
+              if (!user?.id) return;
               const { data } = await supabase
                 .from("omnia_projects")
-                .insert({ user_id: user.id, name: name.trim() })
+                .insert({ user_id: user.id, name: "New Project" })
                 .select("id")
                 .single();
               if (data?.id) {
@@ -273,21 +317,45 @@ export default function AppSidebar() {
         </div>
 
         <div className="mt-3 text-[0.6875rem] font-semibold text-black/70 px-2 py-1">Projects</div>
-        <div className="flex flex-col gap-1 max-h-[28vh] overflow-y-auto scrollbar-hide pr-1">
+        <div className="flex flex-col gap-0.5 max-h-[28vh] overflow-y-auto scrollbar-hide pr-1">
           {projects.length === 0 ? (
             <div className="text-[0.6875rem] text-black/50 px-2.5 py-1.5">No projects yet.</div>
           ) : (
-            projects.map((project, idx) => (
-              <button
-                key={project.id}
-                type="button"
-                onClick={() => flushAndNavigate(nav, `/project/${project.id}`)}
-                className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
-              >
-                <span className="inline-block h-1 w-1 rounded-full bg-black/70" />
-                <span className="truncate">{project.name}</span>
-              </button>
-            ))
+            projects.map((project) => {
+              const isActive = location.pathname === `/project/${project.id}`;
+              return (
+                <div key={project.id} className="group relative flex items-center">
+                  <button
+                    type="button"
+                    onClick={() => flushAndNavigate(nav, `/project/${project.id}`)}
+                    className={`flex-1 min-w-0 text-left text-[0.6875rem] pl-2.5 pr-7 py-1.5 rounded-md flex items-center gap-2 transition-colors ${
+                      isActive ? "bg-blue-500/15" : "hover:bg-blue-500/15"
+                    }`}
+                  >
+                    <span className={`inline-block h-1.5 w-1.5 rounded-full flex-shrink-0 ${isActive ? "bg-blue-500" : "bg-black/30"}`} />
+                    <span className="truncate">{project.name}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setMenuBoardId(null);
+                      setShowProjectPicker(false);
+                      if (menuProjectId === project.id) {
+                        setMenuProjectId(null);
+                      } else {
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        setMenuProjectPos({ top: rect.bottom + 4, left: rect.right });
+                        setMenuProjectId(project.id);
+                      }
+                    }}
+                    className="absolute right-1 top-1/2 -translate-y-1/2 w-5 h-5 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-blue-500/15 transition-opacity"
+                  >
+                    <MoreHorizontal className="w-3 h-3 text-black/50" />
+                  </button>
+                </div>
+              );
+            })
           )}
         </div>
 
@@ -297,12 +365,12 @@ export default function AppSidebar() {
             <div className="text-[0.6875rem] text-black/50 px-2.5 py-1.5">No grids yet.</div>
           ) : (
             boards.map((board) => {
-              const isActive = location.pathname === `/canvas/${board.id}`;
+              const isActive = location.pathname === `/grid/${board.id}`;
               return (
                 <div key={board.id} className="group relative flex items-center">
                   <button
                     type="button"
-                    onClick={() => flushAndNavigate(nav, `/canvas/${board.id}`)}
+                    onClick={() => flushAndNavigate(nav, `/grid/${board.id}`)}
                     className={`flex-1 min-w-0 text-left text-[0.6875rem] pl-2.5 pr-7 py-1.5 rounded-md flex items-center gap-2 transition-colors ${
                       isActive ? "bg-blue-500/15" : "hover:bg-blue-500/15"
                     }`}
@@ -314,6 +382,7 @@ export default function AppSidebar() {
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
+                      setMenuProjectId(null);
                       if (menuBoardId === board.id) {
                         setMenuBoardId(null);
                         setShowProjectPicker(false);
@@ -391,6 +460,32 @@ export default function AppSidebar() {
         defaultType={feedbackType}
       />
 
+      {menuProjectId && ReactDOM.createPortal(
+        <div
+          ref={projectMenuRef}
+          className="fixed z-[9999] w-44 rounded-lg border border-black/10 bg-white/95 backdrop-blur-xl shadow-lg py-1 text-[0.6875rem]"
+          style={{ top: menuProjectPos.top, left: menuProjectPos.left }}
+        >
+          <button
+            type="button"
+            className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-blue-500/15 transition-colors"
+            onClick={() => renameProject(menuProjectId)}
+          >
+            <Edit2 className="w-3 h-3 text-black/50" />
+            Rename
+          </button>
+          <button
+            type="button"
+            className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-red-50 text-red-600 transition-colors"
+            onClick={() => deleteProject(menuProjectId)}
+          >
+            <Trash2 className="w-3 h-3" />
+            Delete project
+          </button>
+        </div>,
+        document.body
+      )}
+
       {menuBoardId && ReactDOM.createPortal(
         <div
           ref={menuRef}
@@ -438,11 +533,10 @@ export default function AppSidebar() {
                   className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-blue-500/15 transition-colors font-medium"
                   onClick={async () => {
                     const boardToAdd = menuBoardId;
-                    const name = window.prompt("Project name:");
-                    if (!name?.trim() || !user?.id || !boardToAdd) return;
+                    if (!user?.id || !boardToAdd) return;
                     const { data } = await supabase
                       .from("omnia_projects")
-                      .insert({ user_id: user.id, name: name.trim() })
+                      .insert({ user_id: user.id, name: "New Project" })
                       .select("id")
                       .single();
                     if (data?.id) {

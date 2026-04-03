@@ -18,7 +18,7 @@ import { useAuth } from '@/lib/SupabaseAuth';
  * - Auto-processing (text extraction, embeddings, tagging)
  * 
  * This component creates an invisible overlay that captures drag-and-drop events
- * across the entire page when used in Memory page.
+ * across the entire page when used in Vault page.
  */
 export default function DragDropFileUpload({ onUploadComplete, triggerRef, beforeUpload }) {
   const { user } = useAuth();
@@ -251,7 +251,7 @@ export default function DragDropFileUpload({ onUploadComplete, triggerRef, befor
     }
   };
 
-  const createMemoryNoteForAsset = useCallback(async ({
+  const createVaultNoteForAsset = useCallback(async ({
     filename,
     folderPath,
     fileType,
@@ -439,7 +439,7 @@ Size: ${sizeDisplay}
         } catch { /* parse is best-effort */ }
       }
 
-      const createdNote = await createMemoryNoteForAsset({
+      const createdNote = await createVaultNoteForAsset({
         filename,
         folderPath,
         fileType,
@@ -491,7 +491,7 @@ Size: ${sizeDisplay}
       });
       return null;
     }
-  }, [createMemoryNoteForAsset, user]);
+  }, [createVaultNoteForAsset, user]);
 
   // Core upload handler (used by both drag-drop and button click)
   const handleFileUpload = useCallback(async (acceptedFiles) => {
@@ -578,16 +578,16 @@ Size: ${sizeDisplay}
     const onInternalDragEnd = () => {
       internalCollageDragRef.current = false;
     };
-    window.addEventListener('memory_collage_reorder_drag_start', onInternalDragStart);
-    window.addEventListener('memory_collage_reorder_drag_end', onInternalDragEnd);
+    window.addEventListener('vault_collage_reorder_drag_start', onInternalDragStart);
+    window.addEventListener('vault_collage_reorder_drag_end', onInternalDragEnd);
     return () => {
-      window.removeEventListener('memory_collage_reorder_drag_start', onInternalDragStart);
-      window.removeEventListener('memory_collage_reorder_drag_end', onInternalDragEnd);
+      window.removeEventListener('vault_collage_reorder_drag_start', onInternalDragStart);
+      window.removeEventListener('vault_collage_reorder_drag_end', onInternalDragEnd);
     };
   }, []);
 
   // Global drag listeners so users can drag from desktop
-  // and hover/drop anywhere on the Memory page.
+  // and hover/drop anywhere on the Vault page.
   useEffect(() => {
     const hasSupportedDropData = (event) => {
       if (internalCollageDragRef.current) return false;

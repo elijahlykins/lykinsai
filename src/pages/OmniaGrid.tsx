@@ -23,7 +23,7 @@ import { useThinkingStatus } from "@/hooks/useThinkingStatus";
 import { getStructuredPasteFromEvent } from "@/lib/pasteFromClipboard";
 import { getAiPrefs } from "@/lib/ai-prefs";
 import { buildTieredCanvasContext } from "@/lib/ai/buildCanvasContext";
-import { getMemorySidebarWidth } from "@/hooks/useViewportTier";
+import { getVaultSidebarWidth } from "@/hooks/useViewportTier";
 
 const TASK_LINE_RE = /^\s*(?:[-*]\s+)?\[([ xX])\]\s+(.+)$/;
 
@@ -325,8 +325,8 @@ type ImportedChatAttachment = {
   url?: string;
   name?: string;
   videoId?: string;
-  memoryTitle?: string;
-  memoryContent?: string;
+  vaultTitle?: string;
+  vaultContent?: string;
   transcript?: string;
   pdfText?: string;
   extractedText?: string;
@@ -352,8 +352,8 @@ type FocusedChatAttachment = {
   mime: string;
   size: number;
   videoId?: string;
-  memoryTitle?: string;
-  memoryContent?: string;
+  vaultTitle?: string;
+  vaultContent?: string;
   transcript?: string;
   pdfText?: string;
   extractedText?: string;
@@ -394,7 +394,7 @@ const makeAttId = () =>
   (typeof crypto !== "undefined" && crypto.randomUUID && crypto.randomUUID()) ||
   `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-export default function OmniaCanvasPage() {
+export default function OmniaGridPage() {
   const SNAPSHOT_VERSION = 2;
   const nav = useNavigate();
   const { boardId: routeBoardId } = useParams<{ boardId?: string }>();
@@ -412,14 +412,15 @@ export default function OmniaCanvasPage() {
   const gridSize = useCanvasStore((s) => s.gridSize);
   const [topPanelOpen, setTopPanelOpen] = useState(true);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
-  const [showMemorySidebar, setShowMemorySidebar] = useState(false);
-  const [memoryDragActive, setMemoryDragActive] = useState(false);
+  const [showVaultSidebar, setShowVaultSidebar] = useState(false);
+  const [vaultDragActive, setVaultDragActive] = useState(false);
   const [showQuickNote, setShowQuickNote] = useState(false);
   const [quickNoteContent, setQuickNoteContent] = useState("");
   const [isQuickNoteSaving, setIsQuickNoteSaving] = useState(false);
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth || 1280);
   const [chatRailWidthManual, setChatRailWidthManual] = useState<number | null>(null);
-  const memorySidebarWidthPx = useMemo(() => getMemorySidebarWidth(viewportWidth), [viewportWidth]);
+  const isMobileGrid = viewportWidth < 640;
+  const vaultSidebarWidthPx = useMemo(() => getVaultSidebarWidth(viewportWidth), [viewportWidth]);
   const DialogAny = Dialog as any;
   const DialogContentAny = DialogContent as any;
   const DialogHeaderAny = DialogHeader as any;
@@ -951,6 +952,7 @@ export default function OmniaCanvasPage() {
 
   const clampChatRailWidth = useCallback((raw: number, vw: number) => {
     const width = Math.max(0, Math.floor(vw || 0));
+    if (width < 640) return width;
     const minW = width <= 900 ? 200 : 220;
     const maxW = Math.max(minW + 20, Math.floor(width * 0.9));
     return Math.max(minW, Math.min(maxW, Math.floor(raw || minW)));
@@ -2020,7 +2022,7 @@ export default function OmniaCanvasPage() {
         } else if (attType === "pdf") {
           const pdfText = String(att.pdfText || att.extractedText || "").trim();
           if (pdfText) {
-            const title = String(att.name || att.memoryTitle || "PDF").trim();
+            const title = String(att.name || att.vaultTitle || "PDF").trim();
             const combined = `# ${title}\n\n${pdfText}`;
             const charsPerLine = Math.max(1, Math.floor((g * 16 * 0.85) / 8));
             const wrappedLines = combined.split("\n").reduce((sum: number, line: string) => sum + Math.max(1, Math.ceil(line.length / charsPerLine)), 0);
@@ -2028,7 +2030,7 @@ export default function OmniaCanvasPage() {
             const p = attPos(g * 16, height);
             st.addTextBlockAt({ x: p.x, y: p.y }, { width: g * 16, height, content: combined, format: "plain" });
           } else if (url) {
-            const pdfName = String(att.name || att.memoryTitle || "document.pdf").trim();
+            const pdfName = String(att.name || att.vaultTitle || "document.pdf").trim();
             const pdfUrl = url;
             const p = attPos(g * 16, g * 10);
             (async () => {
@@ -2044,8 +2046,8 @@ export default function OmniaCanvasPage() {
               window.dispatchEvent(new CustomEvent("omnia_attach_link", { detail: { url: pdfUrl, clientX: p.x, clientY: p.y } }));
             })();
           }
-        } else if (attType === "memory" && att.memoryContent) {
-          const content = att.memoryTitle ? `# ${att.memoryTitle}\n\n${att.memoryContent}` : att.memoryContent;
+        } else if (attType === "vault" && att.vaultContent) {
+          const content = att.vaultTitle ? `# ${att.vaultTitle}\n\n${att.vaultContent}` : att.vaultContent;
           const p = attPos(g * 12, g * 6);
           st.addTextBlockAt({ x: p.x, y: p.y }, { width: g * 12, height: g * 6, content, format: "rich" });
         } else if (url) {
@@ -2992,9 +2994,9 @@ export default function OmniaCanvasPage() {
   }, [handleSaveQuickNote, isQuickNoteSaving, quickNoteContent]);
 
   useEffect(() => {
-    const openSidebar = () => setShowMemorySidebar(true);
-    window.addEventListener("omnia_open_memory_sidebar", openSidebar);
-    return () => window.removeEventListener("omnia_open_memory_sidebar", openSidebar);
+    const openSidebar = () => setShowVaultSidebar(true);
+    window.addEventListener("omnia_open_vault_sidebar", openSidebar);
+    return () => window.removeEventListener("omnia_open_vault_sidebar", openSidebar);
   }, []);
 
   useEffect(() => {
@@ -3043,14 +3045,14 @@ export default function OmniaCanvasPage() {
   useEffect(() => {
     const handler = (e: MessageEvent) => {
       if (!e.data || typeof e.data !== "object") return;
-      if (e.data.type === "omnia-memory-drag-start" && e.data.data) {
-        console.log("[MEMORY-DRAG] postMessage received: drag-start", e.data.data?.attachments?.map((a: any) => ({ type: a.type, url: a.url?.substring(0, 60), videoId: a.videoId })));
-        (window as any).__omnia_pending_memory = { ...e.data.data, timestamp: Date.now() };
-        setMemoryDragActive(true);
+      if (e.data.type === "omnia-vault-drag-start" && e.data.data) {
+        console.log("[VAULT-DRAG] postMessage received: drag-start", e.data.data?.attachments?.map((a: any) => ({ type: a.type, url: a.url?.substring(0, 60), videoId: a.videoId })));
+        (window as any).__omnia_pending_vault = { ...e.data.data, timestamp: Date.now() };
+        setVaultDragActive(true);
       }
-      if (e.data.type === "omnia-memory-drag-end") {
-        console.log("[MEMORY-DRAG] postMessage received: drag-end");
-        setMemoryDragActive(false);
+      if (e.data.type === "omnia-vault-drag-end") {
+        console.log("[VAULT-DRAG] postMessage received: drag-end");
+        setVaultDragActive(false);
       }
     };
     window.addEventListener("message", handler);
@@ -3354,14 +3356,14 @@ export default function OmniaCanvasPage() {
     const attachmentContext = sentAttachments.length > 0
       ? "\n\n[Attached content]\n" + sentAttachments.map((a) => {
           const t = (a.type || "").toLowerCase();
-          const label = a.name || a.memoryTitle || "Untitled";
+          const label = a.name || a.vaultTitle || "Untitled";
           const parts: string[] = [];
-          if (a.memoryContent) parts.push(String(a.memoryContent).slice(0, 1500));
+          if (a.vaultContent) parts.push(String(a.vaultContent).slice(0, 1500));
           if (a.pdfText) parts.push(String(a.pdfText).slice(0, 1500));
           if (a.extractedText) parts.push(String(a.extractedText).slice(0, 1500));
           if (a.transcript) parts.push(String(a.transcript).slice(0, 8000));
-          if (t === "memory" || t === "note") {
-            return `${t === "note" ? "Note" : "Memory"} "${label}": ${parts.join("\n") || "(empty)"}`;
+          if (t === "vault" || t === "note") {
+            return `${t === "note" ? "Note" : "Vault"} "${label}": ${parts.join("\n") || "(empty)"}`;
           }
           if (t === "pdf") return `PDF "${label}": ${parts.join("\n") || `(PDF at ${a.url})`}`;
           if (t === "document") {
@@ -3572,10 +3574,10 @@ export default function OmniaCanvasPage() {
       }
 
       if (editImageUrl) {
-        console.log("[OmniaCanvas] Found image for editing:", editImageUrl.slice(0, 80) + "...");
+        console.log("[OmniaGrid] Found image for editing:", editImageUrl.slice(0, 80) + "...");
       }
       if (visionImageUrls.length) {
-        console.log("[OmniaCanvas] Sending", visionImageUrls.length, "image(s) for vision analysis (focused:", focusedIds.filter((id) => isImgBlock((st.blocks as any)?.[id])).length, "board:", visionImageUrls.length - focusedIds.filter((id) => isImgBlock((st.blocks as any)?.[id])).length, ")");
+        console.log("[OmniaGrid] Sending", visionImageUrls.length, "image(s) for vision analysis (focused:", focusedIds.filter((id) => isImgBlock((st.blocks as any)?.[id])).length, "board:", visionImageUrls.length - focusedIds.filter((id) => isImgBlock((st.blocks as any)?.[id])).length, ")");
       }
 
 
@@ -4241,8 +4243,8 @@ export default function OmniaCanvasPage() {
       const isDup = prev.some((existing) => {
         if (att.url && existing.url && att.url === existing.url) return true;
         if (att.videoId && existing.videoId && att.videoId === existing.videoId) return true;
-        if (att.type === "memory" && existing.type === "memory" && att.memoryContent && existing.memoryContent && att.memoryContent === existing.memoryContent) return true;
-        if (att.type === "note" && existing.type === "note" && att.memoryContent && existing.memoryContent && att.memoryContent === existing.memoryContent) return true;
+        if (att.type === "vault" && existing.type === "vault" && att.vaultContent && existing.vaultContent && att.vaultContent === existing.vaultContent) return true;
+        if (att.type === "note" && existing.type === "note" && att.vaultContent && existing.vaultContent && att.vaultContent === existing.vaultContent) return true;
         return false;
       });
       if (isDup) return prev;
@@ -4250,9 +4252,9 @@ export default function OmniaCanvasPage() {
     });
   }, []);
 
-  const applyMemoryDropToChat = useCallback(async (payload: any) => {
+  const applyVaultDropToChat = useCallback(async (payload: any) => {
     if (!payload) return;
-    const title = String(payload.title || "Memory").trim();
+    const title = String(payload.title || "Vault item").trim();
     const content = String(payload.content || "").trim();
     const payloadAttachments = Array.isArray(payload.attachments) ? payload.attachments : [];
 
@@ -4281,7 +4283,7 @@ export default function OmniaCanvasPage() {
           name: String(att?.name || att?.title || title || url).trim(),
           mime: String(att?.mime || ""),
           size: Number(att?.size || 0),
-          memoryTitle: title,
+          vaultTitle: title,
           ...(videoId ? { videoId } : {}),
           ...(transcript ? { transcript } : {}),
           ...(pdfText ? { pdfText } : {}),
@@ -4290,13 +4292,13 @@ export default function OmniaCanvasPage() {
     } else if (content) {
       addFocusedAttachment({
         id: makeAttId(),
-        type: "memory",
+        type: "vault",
         url: "",
-        name: title || "Memory",
+        name: title || "Vault item",
         mime: "",
         size: 0,
-        memoryTitle: title,
-        memoryContent: content,
+        vaultTitle: title,
+        vaultContent: content,
       });
     }
     window.setTimeout(() => chatPanelInputRef.current?.focus(), 0);
@@ -4314,7 +4316,7 @@ export default function OmniaCanvasPage() {
             <div className="w-9 h-7 bg-red-600 rounded-lg flex items-center justify-center shadow-md"><Play className="w-3.5 h-3.5 text-white ml-0.5" fill="white" /></div>
           </div>
           <button type="button" onClick={() => removeFocusedAttachment(att.id)} className="absolute top-1 right-1 h-5 w-5 rounded-full bg-black/60 hover:bg-black/80 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"><X className="w-3 h-3" /></button>
-          <span className="absolute bottom-1 left-1 right-6 text-[0.625rem] text-white truncate bg-black/50 rounded px-1">{att.memoryTitle || att.name || "YouTube Video"}</span>
+          <span className="absolute bottom-1 left-1 right-6 text-[0.625rem] text-white truncate bg-black/50 rounded px-1">{att.vaultTitle || att.name || "YouTube Video"}</span>
         </div>
       );
     }
@@ -4334,7 +4336,7 @@ export default function OmniaCanvasPage() {
             <div className="w-9 h-7 bg-white/80 rounded-lg flex items-center justify-center shadow-md"><Play className="w-3.5 h-3.5 text-black ml-0.5" fill="black" /></div>
           </div>
           <button type="button" onClick={() => removeFocusedAttachment(att.id)} className="absolute top-1 right-1 h-5 w-5 rounded-full bg-black/60 hover:bg-black/80 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"><X className="w-3 h-3" /></button>
-          <span className="absolute bottom-1 left-1 right-6 text-[0.625rem] text-white truncate bg-black/50 rounded px-1">{att.memoryTitle || att.name || "Video"}</span>
+          <span className="absolute bottom-1 left-1 right-6 text-[0.625rem] text-white truncate bg-black/50 rounded px-1">{att.vaultTitle || att.name || "Video"}</span>
         </div>
       );
     }
@@ -4342,18 +4344,18 @@ export default function OmniaCanvasPage() {
       return (
         <div className="relative inline-flex items-center gap-2 rounded-xl border border-white/30 bg-white/30 px-3 py-2 group">
           <Music className="w-4 h-4 flex-shrink-0 opacity-60" />
-          <span className="max-w-[11.25rem] truncate text-xs">{att.memoryTitle || att.name || "Audio"}</span>
+          <span className="max-w-[11.25rem] truncate text-xs">{att.vaultTitle || att.name || "Audio"}</span>
           <button type="button" onClick={() => removeFocusedAttachment(att.id)} className="h-4 w-4 rounded-full hover:bg-black/10 flex items-center justify-center"><X className="w-3 h-3" /></button>
         </div>
       );
     }
-    if (t === "memory") {
+    if (t === "vault") {
       return (
         <div className="relative inline-flex items-center gap-2 rounded-xl border border-violet-300/40 bg-violet-100/40 px-3 py-2 max-w-[16.25rem] group">
           <BookOpen className="w-4 h-4 flex-shrink-0 text-violet-500" />
           <div className="min-w-0">
-            <span className="block text-xs font-medium truncate">{att.memoryTitle || "Memory"}</span>
-            {att.memoryContent && <span className="block text-[0.625rem] opacity-60 truncate">{att.memoryContent.slice(0, 80)}</span>}
+            <span className="block text-xs font-medium truncate">{att.vaultTitle || "Vault item"}</span>
+            {att.vaultContent && <span className="block text-[0.625rem] opacity-60 truncate">{att.vaultContent.slice(0, 80)}</span>}
           </div>
           <button type="button" onClick={() => removeFocusedAttachment(att.id)} className="h-4 w-4 rounded-full hover:bg-black/10 flex items-center justify-center flex-shrink-0"><X className="w-3 h-3" /></button>
         </div>
@@ -4363,7 +4365,7 @@ export default function OmniaCanvasPage() {
       return (
         <div className="relative inline-flex items-center gap-2 rounded-xl border border-white/30 bg-white/30 px-3 py-2 group">
           <FileText className="w-4 h-4 flex-shrink-0 opacity-60" />
-          <span className="max-w-[11.25rem] truncate text-xs">{att.memoryTitle || att.name || "PDF"}</span>
+          <span className="max-w-[11.25rem] truncate text-xs">{att.vaultTitle || att.name || "PDF"}</span>
           <button type="button" onClick={() => removeFocusedAttachment(att.id)} className="h-4 w-4 rounded-full hover:bg-black/10 flex items-center justify-center"><X className="w-3 h-3" /></button>
         </div>
       );
@@ -4374,7 +4376,7 @@ export default function OmniaCanvasPage() {
           <StickyNote className="w-4 h-4 flex-shrink-0 text-amber-600" />
           <div className="min-w-0">
             <span className="block text-xs font-medium truncate">{att.name || "Note"}</span>
-            {att.memoryContent && <span className="block text-[0.625rem] opacity-60 truncate">{att.memoryContent.slice(0, 80)}</span>}
+            {att.vaultContent && <span className="block text-[0.625rem] opacity-60 truncate">{att.vaultContent.slice(0, 80)}</span>}
           </div>
           <button type="button" onClick={() => removeFocusedAttachment(att.id)} className="h-4 w-4 rounded-full hover:bg-black/10 flex items-center justify-center flex-shrink-0"><X className="w-3 h-3" /></button>
         </div>
@@ -4383,7 +4385,7 @@ export default function OmniaCanvasPage() {
     return (
       <div className="relative inline-flex items-center gap-2 rounded-xl border border-white/30 bg-white/30 px-3 py-2 group">
         <Link2 className="w-4 h-4 flex-shrink-0 opacity-60" />
-        <span className="max-w-[12.5rem] truncate text-xs">{att.memoryTitle || att.name || att.url || "Attachment"}</span>
+        <span className="max-w-[12.5rem] truncate text-xs">{att.vaultTitle || att.name || att.url || "Attachment"}</span>
         <button type="button" onClick={() => removeFocusedAttachment(att.id)} className="h-4 w-4 rounded-full hover:bg-black/10 flex items-center justify-center"><X className="w-3 h-3" /></button>
       </div>
     );
@@ -4399,8 +4401,8 @@ export default function OmniaCanvasPage() {
     e.preventDefault();
     e.stopPropagation();
 
-    // Canvas file collage item
-    const canvasFileRaw = e.dataTransfer.getData("application/x-canvas-file");
+    // Grid file collage item
+    const canvasFileRaw = e.dataTransfer.getData("application/x-grid-file");
     if (canvasFileRaw) {
       try {
         const item = JSON.parse(canvasFileRaw);
@@ -4410,14 +4412,14 @@ export default function OmniaCanvasPage() {
           id: makeAttId(),
           type: itemType,
           url: item.url || "",
-          name: item.name || "Canvas file",
+          name: item.name || "Grid file",
           mime: "",
           size: 0,
           ...(item.videoId ? { videoId: item.videoId } : {}),
-          ...(hasContent && (itemType === "note" || itemType === "memory") ? { memoryContent: item.content } : {}),
+          ...(hasContent && (itemType === "note" || itemType === "vault") ? { vaultContent: item.content } : {}),
           ...(hasContent && itemType === "pdf" ? { pdfText: item.content } : {}),
           ...(hasContent && itemType === "document" ? { extractedText: item.content } : {}),
-          ...(hasContent && !["note", "memory", "pdf", "document"].includes(itemType) ? { memoryContent: item.content } : {}),
+          ...(hasContent && !["note", "vault", "pdf", "document"].includes(itemType) ? { vaultContent: item.content } : {}),
           ...(item.id ? { canvasBlockId: item.id } : {}),
         });
         window.setTimeout(() => chatPanelInputRef.current?.focus(), 0);
@@ -4444,7 +4446,7 @@ export default function OmniaCanvasPage() {
           });
         }
       } else {
-        addFocusedAttachment({ id: makeAttId(), type: "memory", url: "", name: "Dropped text", mime: "", size: 0, memoryTitle: "Dropped text", memoryContent: text });
+        addFocusedAttachment({ id: makeAttId(), type: "vault", url: "", name: "Dropped text", mime: "", size: 0, vaultTitle: "Dropped text", vaultContent: text });
       }
     }
     const files = Array.from(e.dataTransfer.files);
@@ -4607,7 +4609,7 @@ export default function OmniaCanvasPage() {
       {/* Match BrickEditor layout: minimal chrome + floating controls */}
       {/* Heading panel (matches Create view top pill) */}
       {/* Board title — always to the right of the Signed-in pill */}
-      <div className="fixed top-[1.1rem] z-[75] pointer-events-auto" style={{ left: "max(calc(var(--sidebar-offset, 0px) + 1rem), 11.5rem)" }}>
+      <div className="fixed top-[1.1rem] z-[68] pointer-events-auto" style={{ left: "max(calc(var(--sidebar-offset, 0px) + 1rem), 11.5rem)" }}>
         <input
           type="text"
           value={title}
@@ -4615,7 +4617,7 @@ export default function OmniaCanvasPage() {
           onBlur={() => void commitBoardTitle()}
           onKeyDown={(e) => { if (e.key === "Enter") { e.currentTarget.blur(); } }}
           placeholder="New Grid"
-          className="bg-transparent text-[0.8125rem] font-medium text-black/80 placeholder:text-black/30 outline-none border-none w-[14rem] truncate px-1.5 py-0.5 rounded-md hover:bg-black/5 focus:bg-black/5 transition-colors"
+          className="bg-transparent text-[0.8125rem] font-medium text-black/80 placeholder:text-black/30 outline-none border-none w-[8rem] sm:w-[14rem] truncate px-1.5 py-0.5 rounded-md hover:bg-black/5 focus:bg-black/5 transition-colors"
         />
       </div>
 
@@ -4649,7 +4651,7 @@ export default function OmniaCanvasPage() {
                   }
                 }}
               >
-                <SelectTrigger className="w-[8.125rem] h-9 rounded-full glass-control hover:opacity-90 text-xs font-medium">
+                <SelectTrigger className="w-[6.5rem] sm:w-[8.125rem] h-9 rounded-full glass-control hover:opacity-90 text-xs font-medium">
                   <SelectValue placeholder="Model" />
                 </SelectTrigger>
                 <SelectContent
@@ -4768,11 +4770,11 @@ export default function OmniaCanvasPage() {
 
               <button
                 type="button"
-                onClick={() => setShowMemorySidebar((v) => !v)}
+                onClick={() => setShowVaultSidebar((v) => !v)}
                 className="rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center"
-                title={showMemorySidebar ? "Hide vault sidebar" : "Open vault sidebar"}
+                title={showVaultSidebar ? "Hide vault sidebar" : "Open vault sidebar"}
               >
-                {showMemorySidebar ? <PanelRightClose className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
+                {showVaultSidebar ? <PanelRightClose className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
               </button>
             </div>
           )}
@@ -4782,14 +4784,14 @@ export default function OmniaCanvasPage() {
       <div
         className={`h-full transition-[width,margin-right] duration-300 ${chatMode ? "invisible pointer-events-none" : ""}`}
         style={{
-          marginRight: `${chatRailWidthPx + (showMemorySidebar ? memorySidebarWidthPx : 0)}px`,
-          width: `calc(100% - ${chatRailWidthPx + (showMemorySidebar ? memorySidebarWidthPx : 0)}px)`,
+          marginRight: isMobileGrid ? 0 : `${chatRailWidthPx + (showVaultSidebar ? vaultSidebarWidthPx : 0)}px`,
+          width: isMobileGrid ? "100%" : `calc(100% - ${chatRailWidthPx + (showVaultSidebar ? vaultSidebarWidthPx : 0)}px)`,
         }}
       >
         <Canvas liveAIMode={false} isAiThinking={isChatLoading} thinkingStatusText={thinkingStatus} />
       </div>
 
-      {memoryDragActive && (
+      {vaultDragActive && (
         <div
           className="fixed inset-0 z-[90]"
           style={{ background: "transparent" }}
@@ -4801,26 +4803,26 @@ export default function OmniaCanvasPage() {
           onDrop={(e) => {
             e.preventDefault();
             e.stopPropagation();
-            setMemoryDragActive(false);
+            setVaultDragActive(false);
             window.dispatchEvent(new CustomEvent("omnia_canvas_interact"));
-            const pending = (window as any).__omnia_pending_memory;
-            console.log("[MEMORY-DROP] overlay onDrop fired, pending:", !!pending, pending);
-            if (!pending || typeof pending !== "object") { console.log("[MEMORY-DROP] no pending data, aborting"); return; }
-            (window as any).__omnia_pending_memory = null;
+            const pending = (window as any).__omnia_pending_vault;
+            console.log("[VAULT-DROP] overlay onDrop fired, pending:", !!pending, pending);
+            if (!pending || typeof pending !== "object") { console.log("[VAULT-DROP] no pending data, aborting"); return; }
+            (window as any).__omnia_pending_vault = null;
 
             const attachments = Array.isArray(pending.attachments) ? pending.attachments : [];
 
             // In focused chat mode, route dropped content as visual attachments
             if (chatMode) {
-              void applyMemoryDropToChat(pending);
+              void applyVaultDropToChat(pending);
               return;
             }
 
-            console.log("[MEMORY-DROP] attachments:", attachments.map((a: any) => ({ type: a.type, url: a.url?.substring(0, 80), videoId: a.videoId })));
+            console.log("[VAULT-DROP] attachments:", attachments.map((a: any) => ({ type: a.type, url: a.url?.substring(0, 80), videoId: a.videoId })));
             const youtubeAttach = attachments.find((a: any) =>
               a.type === "youtube" || a.videoId || (a.url && (a.url.includes("youtube.com") || a.url.includes("youtu.be")))
             );
-            console.log("[MEMORY-DROP] youtubeAttach:", youtubeAttach ? { type: youtubeAttach.type, url: youtubeAttach.url?.substring(0, 80), videoId: youtubeAttach.videoId } : null);
+            console.log("[VAULT-DROP] youtubeAttach:", youtubeAttach ? { type: youtubeAttach.type, url: youtubeAttach.url?.substring(0, 80), videoId: youtubeAttach.videoId } : null);
             const imageAttach = attachments.find((a: any) =>
               a.type === "image" || (a.url && /\.(jpg|jpeg|png|gif|webp|svg|heic|heif)(\?|$)/i.test(a.url)) || (a.url && a.url.startsWith("data:image/"))
             );
@@ -4854,7 +4856,7 @@ export default function OmniaCanvasPage() {
                 ytUrl = `https://www.youtube.com/watch?v=${vid}`;
               }
               const extractedVid = extractYouTubeVideoId(ytUrl) || vid;
-              console.log("[MEMORY-DROP] YouTube processing:", { ytUrl, vid, extractedVid });
+              console.log("[VAULT-DROP] YouTube processing:", { ytUrl, vid, extractedVid });
               if (ytUrl && extractedVid) {
                 const st = useCanvasStore.getState();
                 const existingIds = Array.isArray(st.blockOrder) ? st.blockOrder : [];
@@ -4862,7 +4864,7 @@ export default function OmniaCanvasPage() {
                   const blk = (st.blocks as any)?.[bid];
                   return blk && (blk.videoId === extractedVid || blk.data?.videoId === extractedVid || blk.url === ytUrl || blk.data?.url === ytUrl);
                 });
-                if (alreadyOnCanvas) { console.log("[MEMORY-DROP] YouTube duplicate, skipping"); return; }
+                if (alreadyOnCanvas) { console.log("[VAULT-DROP] YouTube duplicate, skipping"); return; }
                 const g = Math.max(1, Math.floor(st.gridSize || 24));
                 const canvasEl = document.querySelector<HTMLElement>(".overflow-auto.overscroll-contain");
                 const rect = canvasEl?.getBoundingClientRect();
@@ -4870,10 +4872,10 @@ export default function OmniaCanvasPage() {
                 const localY = rect ? cy - rect.top : cy;
                 const wx = Math.round(localX / g) * g;
                 const wy = Math.round((Number(st.camera?.y || 0) + localY) / g) * g;
-                console.log("[MEMORY-DROP] Creating YouTube block at", { wx, wy, ytUrl, extractedVid });
+                console.log("[VAULT-DROP] Creating YouTube block at", { wx, wy, ytUrl, extractedVid });
                 st.addYouTubeBlockAt({ x: wx, y: wy }, { url: ytUrl, videoId: extractedVid });
               } else {
-                console.log("[MEMORY-DROP] YouTube: no valid URL or videoId, skipping");
+                console.log("[VAULT-DROP] YouTube: no valid URL or videoId, skipping");
               }
               return;
             }
@@ -4956,20 +4958,23 @@ export default function OmniaCanvasPage() {
 
             // Pure text → text block
             window.dispatchEvent(
-              new CustomEvent("omnia_attach_memory_text", { detail: { title: pending.title, content: pending.content, clientX: cx, clientY: cy } })
+              new CustomEvent("omnia_attach_vault_text", { detail: { title: pending.title, content: pending.content, clientX: cx, clientY: cy } })
             );
           }}
           onDragLeave={(e) => {
-            if (!e.relatedTarget) setMemoryDragActive(false);
+            if (!e.relatedTarget) setVaultDragActive(false);
           }}
         />
       )}
 
+      {showVaultSidebar && isMobileGrid && (
+        <div className="fixed inset-0 z-[64] bg-black/20 backdrop-blur-[2px]" onClick={() => setShowVaultSidebar(false)} />
+      )}
       <aside
-        className={`fixed bottom-0 right-0 z-[65] max-w-[92vw] border-l border-white/20 dark:border-white/10 bg-white/40 dark:bg-[rgba(20,20,24,0.55)] shadow-[0_18px_60px_rgba(0,0,0,0.22)] backdrop-blur-[40px] backdrop-saturate-[1.6] transition-transform duration-300 ${
-          showMemorySidebar ? "translate-x-0 pointer-events-auto" : "translate-x-full pointer-events-none"
-        }`}
-        style={{ top: "var(--header-height, 4.9rem)", width: `${memorySidebarWidthPx}px` }}
+        className={`fixed bottom-0 right-0 max-w-[92vw] border-l border-white/20 dark:border-white/10 bg-white/40 dark:bg-[rgba(20,20,24,0.55)] shadow-[0_18px_60px_rgba(0,0,0,0.22)] backdrop-blur-[40px] backdrop-saturate-[1.6] transition-transform duration-300 ${
+          showVaultSidebar ? "translate-x-0 pointer-events-auto" : "translate-x-full pointer-events-none"
+        } ${isMobileGrid ? "z-[80] inset-x-0 border-l-0 max-w-none" : "z-[65]"}`}
+        style={{ top: isMobileGrid ? 0 : "var(--header-height, 4.9rem)", width: isMobileGrid ? undefined : `${vaultSidebarWidthPx}px` }}
       >
         <div className="h-full flex flex-col">
           <div className="px-4 py-3 border-b border-black/10 dark:border-white/10 flex items-center justify-between gap-3">
@@ -4979,7 +4984,7 @@ export default function OmniaCanvasPage() {
             </div>
             <button
               type="button"
-              onClick={() => setShowMemorySidebar(false)}
+              onClick={() => setShowVaultSidebar(false)}
               className="h-8 w-8 rounded-full hover:bg-black/10 dark:hover:bg-white/15 transition-colors flex items-center justify-center"
               title="Close vault sidebar"
             >
@@ -4987,9 +4992,9 @@ export default function OmniaCanvasPage() {
             </button>
           </div>
           <div className="flex-1 min-h-0 relative">
-            {showMemorySidebar && (
+            {showVaultSidebar && (
               <iframe
-                src="/memory?embedded=1"
+                src="/vault?embedded=1"
                 title="The Vault"
                 className="absolute inset-0 w-full h-full border-0 bg-transparent"
               />
@@ -5006,7 +5011,7 @@ export default function OmniaCanvasPage() {
         >
           <div className="w-full max-w-2xl space-y-6">
             <p
-              className={`pointer-events-none text-center text-3xl font-semibold tracking-tight min-h-[44px] text-black ${centerChatLeaving ? "opacity-0" : ""}`}
+              className={`pointer-events-none text-center text-xl sm:text-3xl font-semibold tracking-tight min-h-[44px] text-black ${centerChatLeaving ? "opacity-0" : ""}`}
               style={{ transition: "opacity 400ms ease-out" }}
             >
               {typedWelcome}
@@ -5042,18 +5047,38 @@ export default function OmniaCanvasPage() {
         </div>
       )}
 
+      {/* Mobile backdrop for side rail */}
+      {!chatMode && chatRailVisible && isMobileGrid && (
+        <div
+          className="fixed inset-0 z-[63] bg-black/20 backdrop-blur-[2px]"
+          onClick={() => { setChatRailVisible(false); setChatRailOpen(false); }}
+        />
+      )}
       {/* Side rail chat (canvas mode — toggled open via button or canvas interaction) */}
       {!chatMode && chatRailVisible && (
         <div
-          className="fixed bottom-0 z-[64] flex flex-col bg-white/40 backdrop-blur-sm border-l border-black/10 transition-[right] duration-300"
+          className={`fixed bottom-0 flex flex-col bg-white/40 backdrop-blur-sm border-l border-black/10 transition-[right] duration-300 ${isMobileGrid ? "z-[80] inset-x-0 border-l-0" : "z-[64]"}`}
           style={{
-            top: "var(--header-height, 4.9rem)",
-            right: showMemorySidebar ? `${memorySidebarWidthPx}px` : "0px",
-            width: `${chatRailWidthPx}px`,
+            top: isMobileGrid ? 0 : "var(--header-height, 4.9rem)",
+            right: isMobileGrid ? undefined : (showVaultSidebar ? `${vaultSidebarWidthPx}px` : "0px"),
+            width: isMobileGrid ? undefined : `${chatRailWidthPx}px`,
             animation: "chatRailSlideIn 350ms cubic-bezier(0.22,1,0.36,1) both",
           }}
         >
-          <div className="absolute left-0 top-0 bottom-0 w-3 -translate-x-1/2 cursor-col-resize z-[70] pointer-events-auto" onPointerDown={handleStartChatResize} title="Drag to resize chat" />
+          {!isMobileGrid && (
+            <div className="absolute left-0 top-0 bottom-0 w-3 -translate-x-1/2 cursor-col-resize z-[70] pointer-events-auto" onPointerDown={handleStartChatResize} title="Drag to resize chat" />
+          )}
+          {isMobileGrid && (
+            <div className="flex items-center justify-between px-3 py-2 border-b border-black/10 shrink-0">
+              <div className="flex items-center gap-2 text-xs font-semibold text-black/80">
+                <MessageSquare className="w-3.5 h-3.5" />
+                Chat
+              </div>
+              <button type="button" onClick={() => { setChatRailVisible(false); setChatRailOpen(false); }} className="h-6 w-6 rounded-full flex items-center justify-center text-black/40 hover:text-red-500 hover:bg-red-500/10 transition-colors">
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          )}
           <div ref={chatScrollRef} className="flex-1 overflow-y-auto scrollbar-hide p-3 space-y-3">
             {isChatLoading && (<div className="text-[0.6875rem] text-black/60 px-1 flex items-center gap-2" aria-live="polite"><div className="brick-spinner" />{thinkingStatus}</div>)}
             {chatMessages.map((msg, idx) => (
@@ -5284,10 +5309,10 @@ export default function OmniaCanvasPage() {
       {/* Focused chat mode — centered, below top panel, no overlay */}
       {chatMode && (
         <>
-          {/* Left collage panel — canvas files */}
-          {canvasFileBlocks.length > 0 && (
+          {/* Left collage panel — grid files */}
+          {canvasFileBlocks.length > 0 && !isMobileGrid && (
             <div className="fixed bottom-0 z-[66] w-[13.75rem] overflow-y-auto scrollbar-hide p-3 space-y-2 bg-white/20 backdrop-blur-sm border-r border-black/5 transition-all duration-300" style={{ top: "var(--header-height-sm, 4.2rem)", left: "var(--sidebar-offset, 0px)" }}>
-              <p className="text-[0.625rem] font-semibold uppercase tracking-wider text-black/40 px-1 mb-1">Canvas Files</p>
+              <p className="text-[0.625rem] font-semibold uppercase tracking-wider text-black/40 px-1 mb-1">Grid Files</p>
               <div className="flex flex-col gap-2">
                 {canvasFileBlocks.map((item) => (
                   <div
@@ -5295,7 +5320,7 @@ export default function OmniaCanvasPage() {
                     draggable
                     onDragStart={(e) => {
                       e.dataTransfer.effectAllowed = "copy";
-                      e.dataTransfer.setData("application/x-canvas-file", JSON.stringify(item));
+                      e.dataTransfer.setData("application/x-grid-file", JSON.stringify(item));
                       e.dataTransfer.setData("text/plain", item.url);
                     }}
                     className="relative rounded-xl overflow-hidden bg-black/5 border border-white/30 cursor-grab active:cursor-grabbing hover:ring-2 hover:ring-blue-400/50 transition-all group"
@@ -5353,13 +5378,13 @@ export default function OmniaCanvasPage() {
           {chatMessages.length === 0 ? (
             /* Empty state: identical to the canvas first-render welcome */
             <div
-              className={`fixed top-0 bottom-0 right-0 z-[65] flex items-center justify-center px-4 transition-all duration-300 ${canvasFileBlocks.length > 0 ? "pl-[232px]" : ""}`}
+              className={`fixed top-0 bottom-0 right-0 z-[65] flex items-center justify-center px-4 transition-all duration-300 ${canvasFileBlocks.length > 0 && !isMobileGrid ? "pl-[232px]" : ""}`}
               style={{ left: "var(--sidebar-offset, 0px)" }}
               onDragOver={handleFocusedChatDragOver}
               onDrop={handleFocusedChatDrop}
             >
               <div className="w-full max-w-2xl space-y-6">
-                <p className="text-center text-3xl font-semibold tracking-tight min-h-[44px] text-black pointer-events-none">
+                <p className="text-center text-xl sm:text-3xl font-semibold tracking-tight min-h-[44px] text-black pointer-events-none">
                   {typedWelcome}
                 </p>
                 <div className="glass-control rounded-2xl p-2 w-full transition-all duration-300">
@@ -5408,7 +5433,7 @@ export default function OmniaCanvasPage() {
             /* Active conversation: messages scrollable, input pinned to bottom */
             <div
               className="fixed bottom-0 right-0 z-[65] flex flex-col items-center bg-transparent transition-all duration-300"
-              style={{ top: "var(--header-height-sm, 4.2rem)", left: canvasFileBlocks.length > 0 ? `calc(220px + var(--sidebar-offset, 0px))` : "var(--sidebar-offset, 0px)" }}
+              style={{ top: "var(--header-height-sm, 4.2rem)", left: canvasFileBlocks.length > 0 && !isMobileGrid ? `calc(220px + var(--sidebar-offset, 0px))` : "var(--sidebar-offset, 0px)" }}
               onDragOver={handleFocusedChatDragOver}
               onDrop={handleFocusedChatDrop}
             >
@@ -5466,11 +5491,11 @@ export default function OmniaCanvasPage() {
                                   </div>
                                 );
                               }
-                              if (at === "note" || at === "memory") {
+                              if (at === "note" || at === "vault") {
                                 return (
                                   <div key={att.id} className="rounded-xl border border-white/30 bg-white/20 px-3 py-2 max-w-[16.25rem]">
                                     <div className="flex items-center gap-1 mb-1"><StickyNote className="w-3.5 h-3.5 opacity-60" /><span className="text-[0.625rem] font-medium truncate">{att.name || "Note"}</span></div>
-                                    {att.memoryContent && <p className="text-[0.6875rem] text-black/70 line-clamp-3 whitespace-pre-wrap">{att.memoryContent.slice(0, 200)}</p>}
+                                    {att.vaultContent && <p className="text-[0.6875rem] text-black/70 line-clamp-3 whitespace-pre-wrap">{att.vaultContent.slice(0, 200)}</p>}
                                   </div>
                                 );
                               }
@@ -5810,7 +5835,7 @@ export default function OmniaCanvasPage() {
           <DialogHeaderAny>
             <DialogTitleAny className="text-black">Add Attachment</DialogTitleAny>
             <DialogDescriptionAny className="text-black/60">
-              Add links or upload files onto your canvas
+              Add links or upload files onto your grid
             </DialogDescriptionAny>
           </DialogHeaderAny>
 
@@ -5989,7 +6014,7 @@ export default function OmniaCanvasPage() {
 
       {aiSuggestions.length > 0 && (
         <div
-          className={`fixed right-6 bottom-6 z-[85] w-[20rem] rounded-2xl border border-white/60 bg-[#f2f2f7]/85 backdrop-blur-lg shadow-2xl shadow-white/20 p-4 text-black transition-transform duration-300 ${
+          className={`fixed right-3 sm:right-6 bottom-6 z-[85] w-[calc(100vw-1.5rem)] sm:w-[20rem] rounded-2xl border border-white/60 bg-[#f2f2f7]/85 backdrop-blur-lg shadow-2xl shadow-white/20 p-4 text-black transition-transform duration-300 ${
             showAiSuggestionToast ? "translate-x-0 opacity-100" : "translate-x-8 opacity-0 pointer-events-none"
           }`}
         >
@@ -6006,7 +6031,7 @@ export default function OmniaCanvasPage() {
 
       {connectionCards.length > 0 && (
         <div
-          className={`fixed right-6 z-[86] w-[22rem] rounded-2xl border border-blue-200/60 bg-white/95 backdrop-blur-lg shadow-2xl shadow-blue-500/10 p-4 text-black transition-all duration-300 ${
+          className={`fixed right-3 sm:right-6 z-[86] w-[calc(100vw-1.5rem)] sm:w-[22rem] rounded-2xl border border-blue-200/60 bg-white/95 backdrop-blur-lg shadow-2xl shadow-blue-500/10 p-4 text-black transition-all duration-300 ${
             showConnectionCard ? "translate-x-0 opacity-100" : "translate-x-8 opacity-0 pointer-events-none"
           }`}
           style={{ bottom: aiSuggestions.length > 0 && showAiSuggestionToast ? "calc(1.5rem + 12rem)" : "1.5rem" }}
@@ -6074,7 +6099,7 @@ export default function OmniaCanvasPage() {
                     }
                   } else {
                     savingRef.current = false;
-                    saveSnapshot().then(() => nav("/memory"));
+                    saveSnapshot().then(() => nav("/vault"));
                   }
                   setShowConnectionCard(false);
                 }}
@@ -6098,7 +6123,7 @@ export default function OmniaCanvasPage() {
 
       {mediaSuggestions.length > 0 && (
         <div
-          className={`fixed right-6 z-[87] w-[22rem] rounded-2xl border border-blue-200/60 bg-white/95 backdrop-blur-lg shadow-2xl shadow-blue-500/10 p-4 text-black transition-all duration-300 ${
+          className={`fixed right-3 sm:right-6 z-[87] w-[calc(100vw-1.5rem)] sm:w-[22rem] rounded-2xl border border-blue-200/60 bg-white/95 backdrop-blur-lg shadow-2xl shadow-blue-500/10 p-4 text-black transition-all duration-300 ${
             showMediaSuggestion ? "translate-x-0 opacity-100" : "translate-x-8 opacity-0 pointer-events-none"
           }`}
           style={{ bottom: showConnectionCard && connectionCards.length > 0 ? "calc(1.5rem + 14rem)" : aiSuggestions.length > 0 && showAiSuggestionToast ? "calc(1.5rem + 12rem)" : "1.5rem" }}

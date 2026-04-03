@@ -22,7 +22,7 @@ export default function DraggableQuickNote({
   const constraintsRef = useRef<HTMLDivElement | null>(null);
 
   return (
-    <div className="fixed inset-0 pointer-events-none z-50 flex items-center justify-center" ref={constraintsRef}>
+    <div className="fixed inset-0 pointer-events-none z-[75] flex items-center justify-center" ref={constraintsRef}>
       <motion.div
         drag
         dragConstraints={constraintsRef}

@@ -51,6 +51,7 @@ const baseFields = (block: LegacyBlock) => ({
 });
 
 const toTextBlock = (block: LegacyBlock, args: { content: string; format: TextFormat; language?: string }) => {
+  const bAny = block as any;
   const next: TextBlock = {
     ...baseFields(block),
     type: "text",
@@ -58,6 +59,9 @@ const toTextBlock = (block: LegacyBlock, args: { content: string; format: TextFo
     format: args.format,
     language: args.language,
   };
+  if (bAny.data && typeof bAny.data === "object") {
+    (next as any).data = bAny.data;
+  }
   return next;
 };
 

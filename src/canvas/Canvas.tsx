@@ -34,17 +34,17 @@ type CanvasProps = {
 const ENABLE_CANVAS_HOTKEYS = false;
 const ENABLE_BRICK_LOGIC = canUseActiveBrickLogic();
 
-function consumePendingMemoryDrop(dataTransfer?: DataTransfer | null): { id: string; title: string; content: string; attachments: any[]; timestamp: number } | null {
+function consumePendingVaultDrop(dataTransfer?: DataTransfer | null): { id: string; title: string; content: string; attachments: any[]; timestamp: number } | null {
   try {
-    const pending = (window as any).__omnia_pending_memory;
+    const pending = (window as any).__omnia_pending_vault;
     if (pending && typeof pending === "object" && Date.now() - (pending.timestamp || 0) < 30000) {
-      (window as any).__omnia_pending_memory = null;
+      (window as any).__omnia_pending_vault = null;
       return pending;
     }
   } catch { /* ignore */ }
   if (dataTransfer) {
     try {
-      const raw = dataTransfer.getData("application/x-omnia-memory");
+      const raw = dataTransfer.getData("application/x-omnia-vault");
       if (raw) {
         const parsed = JSON.parse(raw);
         if (parsed && typeof parsed === "object" && Date.now() - (parsed.timestamp || 0) < 30000) {
@@ -71,14 +71,14 @@ function dataUrlToFile(dataUrl: string, name: string): File | null {
   }
 }
 
-function processMemoryDrop(pending: { title: string; content: string; attachments: any[] }, clientX: number, clientY: number) {
+function processVaultDrop(pending: { title: string; content: string; attachments: any[] }, clientX: number, clientY: number) {
   const attachments = Array.isArray(pending.attachments) ? pending.attachments : [];
-  console.log("[MEMORY-DROP-CANVAS] processMemoryDrop called, attachments:", attachments.map((a: any) => ({ type: a.type, url: a.url?.substring(0, 80), videoId: a.videoId })));
+  console.log("[VAULT-DROP-CANVAS] processVaultDrop called, attachments:", attachments.map((a: any) => ({ type: a.type, url: a.url?.substring(0, 80), videoId: a.videoId })));
 
   const youtubeAttach = attachments.find((a: any) =>
     a.type === "youtube" || a.videoId || (a.url && (a.url.includes("youtube.com") || a.url.includes("youtu.be")))
   );
-  console.log("[MEMORY-DROP-CANVAS] youtubeAttach:", youtubeAttach ? { type: youtubeAttach.type, url: youtubeAttach.url?.substring(0, 80), videoId: youtubeAttach.videoId } : null);
+  console.log("[VAULT-DROP-CANVAS] youtubeAttach:", youtubeAttach ? { type: youtubeAttach.type, url: youtubeAttach.url?.substring(0, 80), videoId: youtubeAttach.videoId } : null);
   const imageAttach = attachments.find((a: any) =>
     a.type === "image" || (a.url && /\.(jpg|jpeg|png|gif|webp|svg|heic|heif)(\?|$)/i.test(a.url)) || (a.url && a.url.startsWith("data:image/"))
   );
@@ -247,7 +247,7 @@ function processMemoryDrop(pending: { title: string; content: string; attachment
 
   // Pure text → text block
   window.dispatchEvent(
-    new CustomEvent("omnia_attach_memory_text", { detail: { title: pending.title, content: pending.content, clientX, clientY } })
+    new CustomEvent("omnia_attach_vault_text", { detail: { title: pending.title, content: pending.content, clientX, clientY } })
   );
 }
 
@@ -3844,9 +3844,9 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       void addUrlAsBlock(String(ce.detail?.url || ""), ce.detail?.clientX, ce.detail?.clientY);
     };
 
-    const onMemoryText = (e: Event) => {
+    const onVaultText = (e: Event) => {
       const ce = e as CustomEvent<{ title?: string; content?: string; clientX?: number; clientY?: number }>;
-      const title = String(ce.detail?.title || "Untitled memory").trim();
+      const title = String(ce.detail?.title || "Untitled vault item").trim();
       const body = String(ce.detail?.content || "").trim();
       const combined = body ? `# ${title}\n\n${body}` : `# ${title}`;
       if (isDuplicateOnCanvas({ content: combined })) return;
@@ -3875,13 +3875,13 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
 
     window.addEventListener("omnia_attach_files", onFiles as any);
     window.addEventListener("omnia_attach_link", onLink as any);
-    window.addEventListener("omnia_attach_memory_text", onMemoryText as any);
+    window.addEventListener("omnia_attach_vault_text", onVaultText as any);
     window.addEventListener("omnia_save_to_media", onSaveToMedia as any);
     window.addEventListener("omnia_save_file_to_media", onSaveFileToMedia as any);
     return () => {
       window.removeEventListener("omnia_attach_files", onFiles as any);
       window.removeEventListener("omnia_attach_link", onLink as any);
-      window.removeEventListener("omnia_attach_memory_text", onMemoryText as any);
+      window.removeEventListener("omnia_attach_vault_text", onVaultText as any);
       window.removeEventListener("omnia_save_to_media", onSaveToMedia as any);
       window.removeEventListener("omnia_save_file_to_media", onSaveFileToMedia as any);
     };
@@ -3917,7 +3917,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
     };
 
     const onWindowDragOver = (event: DragEvent) => {
-      if ((window as any).__omnia_pending_memory) {
+      if ((window as any).__omnia_pending_vault) {
         event.preventDefault();
         return;
       }
@@ -3926,11 +3926,11 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
     };
 
     const onWindowDrop = (event: DragEvent) => {
-      const pending = consumePendingMemoryDrop(event.dataTransfer);
+      const pending = consumePendingVaultDrop(event.dataTransfer);
       if (pending) {
         event.preventDefault();
         window.dispatchEvent(new CustomEvent("omnia_canvas_interact"));
-        processMemoryDrop(pending, event.clientX, event.clientY);
+        processVaultDrop(pending, event.clientX, event.clientY);
         return;
       }
       if (!hasSupportedDropData(event)) return;
@@ -3957,7 +3957,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       const plainText = String(event.dataTransfer?.getData("text/plain") || "").trim();
       if (plainText && !plainText.startsWith("http")) {
         window.dispatchEvent(
-          new CustomEvent("omnia_attach_memory_text", {
+          new CustomEvent("omnia_attach_vault_text", {
             detail: { title: "Quick Note", content: plainText, clientX: event.clientX, clientY: event.clientY },
           })
         );
@@ -4076,8 +4076,8 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
           out.push(`[${id}] image ${pos(b)}: ${String(b?.src || "").slice(0, 80)}`);
           continue;
         }
-        if (kind === "youtube") {
-          out.push(`[${id}] youtube ${pos(b)}: ${String(b?.url || "").slice(0, 80)}`);
+        if (kind === "youtube" || (kind === "create" && String((b as any)?.mode || "") === "video")) {
+          out.push(`[${id}] youtube ${pos(b)}: ${String(b?.url || (b as any)?.data?.url || "").slice(0, 80)}`);
           continue;
         }
         if (kind === "code") {
@@ -4408,7 +4408,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         .join("\n");
 
       const prompt = [
-        "You are an assistant embedded in a block-based note canvas.",
+        "You are an assistant embedded in a block-based note grid.",
         "You can read ALL blocks on screen and you may create/update blocks using the allowed actions below.",
         "",
         "Return ONLY a JSON object (no markdown, no extra text) shaped like:",
@@ -4457,11 +4457,11 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         '- { "type": "delete_block", "blockId": "block-id" }',
         '- { "type": "delete_block", "blockIds": ["id1", "id2"] }',
         "",
-        "update_text_block: Edits an existing text brick in place. blockId is REQUIRED (from Canvas blocks id= field). content replaces all text; append adds to existing text. data.textVariant/listType/brickColor/textColor change formatting. Prefer update over delete+create.",
+        "update_text_block: Edits an existing text brick in place. blockId is REQUIRED (from Grid blocks id= field). content replaces all text; append adds to existing text. data.textVariant/listType/brickColor/textColor change formatting. Prefer update over delete+create.",
         "delete_block: Removes blocks by ID. Only use when the user explicitly asks to remove or delete.",
         'Important: If the user is giving follow-up details after creating a spreadsheet (e.g., dimensions or values), update the last spreadsheet using "update_spreadsheet" instead of creating a new one. Only create a new spreadsheet when the user explicitly asks for a new/another spreadsheet.',
         "",
-        "Canvas blocks:",
+        "Grid blocks:",
         canvas || "(none)",
         "",
         "User's current text block:",
@@ -4990,9 +4990,9 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         e.stopPropagation();
         window.dispatchEvent(new CustomEvent("omnia_canvas_interact"));
         if (shapePickerOpen) setShapePickerOpen(false);
-        const pendingMemory = consumePendingMemoryDrop(e.dataTransfer);
-        if (pendingMemory) {
-          processMemoryDrop(pendingMemory, e.clientX, e.clientY);
+        const pendingVault = consumePendingVaultDrop(e.dataTransfer);
+        if (pendingVault) {
+          processVaultDrop(pendingVault, e.clientX, e.clientY);
           return;
         }
         const chatResponse = String(e.dataTransfer?.getData("application/x-omnia-chat-response") || "").trim();
@@ -6525,7 +6525,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
                       const videoId = String(orig.videoId || data.videoId || "").trim();
                       const blockName = String(data.name || data.title || data.ogTitle || "").trim();
 
-                      let noteTitle = blockName || "Saved from Canvas";
+                      let noteTitle = blockName || "Saved from Grid";
                       let attachments: any[] = [];
                       let bodyText = "";
 
@@ -6674,7 +6674,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
                         if (!subject) return;
 
                         const imageUrl = (bType === "create" && (bMode === "image" || bMode === "generated") && src) ? src : "";
-                        const ytVideoId = (bType === "youtube" && videoId) ? videoId : "";
+                        const ytVideoId = ((bType === "youtube" || (bType === "create" && bMode === "video")) && videoId) ? videoId : "";
                         window.dispatchEvent(new CustomEvent("omnia_ai_brick_action", {
                           detail: {
                             blockId: bid,

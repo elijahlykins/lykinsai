@@ -144,8 +144,8 @@ export default function TagManagementPage() {
         onViewChange={(view) => {
           if (view === 'create') {
             navigate('/create');
-          } else if (view === 'memory') {
-            navigate('/memory');
+          } else if (view === 'vault') {
+            navigate('/vault');
           } else {
             navigate(createPageUrl(
               view === 'short_term' ? 'ShortTerm' :
@@ -156,7 +156,7 @@ export default function TagManagementPage() {
           }
         }}
         onOpenSearch={() => navigate(createPageUrl('AISearch'))}
-        onOpenChat={() => navigate(createPageUrl('MemoryChat'))}
+        onOpenChat={() => navigate(createPageUrl('VaultChat'))}
         onOpenSettings={() => setSettingsOpen(true)}
         isCollapsed={sidebarCollapsed}
         onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}

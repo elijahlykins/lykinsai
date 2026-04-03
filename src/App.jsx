@@ -10,18 +10,18 @@ import LoadingScreen from "@/components/LoadingScreen";
 
 // ✅ CORRECT IMPORTS (no spaces, match your filenames)
 import Login from "./pages/Login";
-import OmniaCanvas from "./pages/OmniaCanvas";
+import OmniaGrid from "./pages/OmniaGrid";
 import ProjectPlaceholder from "./pages/ProjectPlaceholder";
 import Settings from "./pages/Settings";
 import AppSidebar from "./components/AppSidebar";
-import MemoryNew from "./pages/new/MemoryNew";
-import MemoryChatNew from "./pages/new/MemoryChatNew";
+import VaultNew from "./pages/new/VaultNew";
+import VaultChatNew from "./pages/new/VaultChatNew";
 import TagManagementNew from "./pages/new/TagManagementNew";
 import BillingNew from "./pages/new/BillingNew";
 
 
 const legacyEnabled = String(import.meta.env.VITE_ENABLE_LEGACY_NOTES || "").toLowerCase() === "true";
-const LegacyMemoryChat = React.lazy(() => import("./pages/MemoryChat"));
+const LegacyVaultChat = React.lazy(() => import("./pages/VaultChat"));
 const LegacyTagManagement = React.lazy(() => import("./pages/TagManagement"));
 const LegacyBilling = React.lazy(() => import("./pages/Billing"));
 const loadingFallback = <LoadingScreen isLoading={true} />;
@@ -39,17 +39,17 @@ function AppShell() {
   const { user, loading } = useAuth();
   const location = useLocation();
   const search = new URLSearchParams(location.search);
-  const isEmbeddedMemory = location.pathname === "/memory" && search.get("embedded") === "1";
+  const isEmbeddedVault = location.pathname === "/vault" && search.get("embedded") === "1";
   const isLoginPage = location.pathname === "/login";
 
   useEffect(() => {
-    document.documentElement.classList.toggle("embedded-memory-mode", isEmbeddedMemory);
-    document.body.classList.toggle("embedded-memory-mode", isEmbeddedMemory);
+    document.documentElement.classList.toggle("embedded-vault-mode", isEmbeddedVault);
+    document.body.classList.toggle("embedded-vault-mode", isEmbeddedVault);
     return () => {
-      document.documentElement.classList.remove("embedded-memory-mode");
-      document.body.classList.remove("embedded-memory-mode");
+      document.documentElement.classList.remove("embedded-vault-mode");
+      document.body.classList.remove("embedded-vault-mode");
     };
-  }, [isEmbeddedMemory]);
+  }, [isEmbeddedVault]);
 
   if (!loading && !user && !isLoginPage) {
     return (
@@ -61,17 +61,17 @@ function AppShell() {
 
   return (
     <>
-      {!isEmbeddedMemory && !isLoginPage && <AppSidebar />}
+      {!isEmbeddedVault && !isLoginPage && <AppSidebar />}
       <div className={isLoginPage ? "" : "app-content"}>
         <Routes>
           <Route path="/login" element={<Login />} />
-          <Route path="/" element={<ProtectedRoute><OmniaCanvas /></ProtectedRoute>} />
+          <Route path="/" element={<ProtectedRoute><OmniaGrid /></ProtectedRoute>} />
           <Route path="/dashboard" element={<Navigate to="/" replace />} />
           <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
-          <Route path="/canvas/:boardId" element={<ProtectedRoute><OmniaCanvas /></ProtectedRoute>} />
+          <Route path="/grid/:boardId" element={<ProtectedRoute><OmniaGrid /></ProtectedRoute>} />
           <Route path="/project/:projectId" element={<ProtectedRoute><ProjectPlaceholder /></ProtectedRoute>} />
-          <Route path="/omnia" element={<ProtectedRoute><OmniaCanvas /></ProtectedRoute>} />
-          <Route path="/memory" element={<ProtectedRoute><MemoryNew /></ProtectedRoute>} />
+          <Route path="/omnia" element={<ProtectedRoute><OmniaGrid /></ProtectedRoute>} />
+          <Route path="/vault" element={<ProtectedRoute><VaultNew /></ProtectedRoute>} />
           <Route
             path="/tag-management"
             element={
@@ -87,34 +87,34 @@ function AppShell() {
             }
           />
           <Route
-            path="/memorychat"
+            path="/vaultchat"
             element={
               <ProtectedRoute>
                 {legacyEnabled ? (
                   <Suspense fallback={loadingFallback}>
-                    <LegacyMemoryChat />
+                    <LegacyVaultChat />
                   </Suspense>
                 ) : (
-                  <MemoryChatNew />
+                  <VaultChatNew />
                 )}
               </ProtectedRoute>
             }
           />
           <Route
-            path="/memory-chat"
+            path="/vault-chat"
             element={
               <ProtectedRoute>
                 {legacyEnabled ? (
                   <Suspense fallback={loadingFallback}>
-                    <LegacyMemoryChat />
+                    <LegacyVaultChat />
                   </Suspense>
                 ) : (
-                  <MemoryChatNew />
+                  <VaultChatNew />
                 )}
               </ProtectedRoute>
             }
           />
-          {/* Chat is now an inline mode on the canvas — no separate route */}
+          {/* Chat is now an inline mode on the grid — no separate route */}
           <Route
             path="/billing"
             element={

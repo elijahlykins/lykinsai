@@ -63,7 +63,8 @@ export function useIsMobile() {
   return tier === "mobile";
 }
 
-export function getMemorySidebarWidth(viewportWidth: number): number {
+export function getVaultSidebarWidth(viewportWidth: number): number {
+  if (viewportWidth < 640) return viewportWidth;
   if (viewportWidth < 1366) return 300;
   if (viewportWidth < 1600) return 340;
   return 380;
