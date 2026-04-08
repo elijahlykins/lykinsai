@@ -12,10 +12,27 @@ export function SupabaseAuthProvider({ children }) {
     let isMounted = true;
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (_event, session) => {
-        if (isMounted) {
-          setUser(session?.user || null);
+      async (event, session) => {
+        if (!isMounted) return;
+
+        if (session?.user) {
+          setUser(session.user);
+          return;
         }
+
+        // On SIGNED_OUT or null-session events, attempt one recovery before
+        // clearing the user — covers transient refresh failures and stale tabs.
+        if (event === 'SIGNED_OUT' || event === 'TOKEN_REFRESHED') {
+          try {
+            const { data } = await supabase.auth.getSession();
+            if (isMounted) setUser(data?.session?.user || null);
+          } catch {
+            if (isMounted) setUser(null);
+          }
+          return;
+        }
+
+        setUser(null);
       }
     );
 
@@ -49,7 +66,21 @@ export function SupabaseAuthProvider({ children }) {
           await new Promise(r => setTimeout(r, 100));
         }
 
-        const { data: { session } } = await supabase.auth.getSession();
+        let session = null;
+        try {
+          const { data } = await supabase.auth.getSession();
+          session = data?.session;
+        } catch {
+          // Retry once after a short delay for transient network failures
+          await new Promise(r => setTimeout(r, 500));
+          try {
+            const { data } = await supabase.auth.getSession();
+            session = data?.session;
+          } catch (retryErr) {
+            console.error('Auth session recovery failed:', retryErr);
+          }
+        }
+
         if (isMounted) {
           setUser(session?.user || null);
         }
@@ -87,20 +118,29 @@ export function SupabaseAuthProvider({ children }) {
     if (error) throw error;
   };
 
-  const signUpWithEmail = async (email, password) => {
+  const signUpWithEmail = async (email, password, { name } = {}) => {
     setAuthError(null);
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
       options: {
         emailRedirectTo: window.location.origin,
+        ...(name ? { data: { full_name: name } } : {}),
       },
     });
     if (error) throw error;
+    if (import.meta.env.DEV) {
+      console.log('[signUp response]', JSON.stringify({
+        hasUser: !!data?.user,
+        hasSession: !!data?.session,
+        identities: data?.user?.identities?.length ?? 'none',
+        confirmed: data?.user?.email_confirmed_at || data?.user?.confirmed_at || null,
+      }));
+    }
     return data;
   };
 
-  const signOut = () => supabase.auth.signOut();
+  const signOut = () => supabase.auth.signOut({ scope: 'local' });
 
   return (
     <AuthContext.Provider value={{

@@ -83,8 +83,21 @@ export default function Login() {
       if (mode === "login") {
         await signInWithEmail(email.trim(), password);
       } else {
-        await signUpWithEmail(email.trim(), password);
-        setShowSuccess(true);
+        const data = await signUpWithEmail(email.trim(), password, { name: name.trim() });
+        const u = data?.user;
+        const emptyIdentities = !u?.identities || u.identities.length === 0;
+        const alreadyConfirmed = !!(u?.email_confirmed_at || u?.confirmed_at);
+        const noSession = !data?.session;
+
+        if (u && emptyIdentities) {
+          setError("An account with this email already exists. Try signing in instead.");
+        } else if (u && noSession && alreadyConfirmed) {
+          setError("An account with this email already exists. Try signing in instead.");
+        } else if (!u) {
+          setError("Something went wrong. Please try again.");
+        } else {
+          setShowSuccess(true);
+        }
       }
     } catch (err) {
       setError(err?.message || "Authentication failed.");
