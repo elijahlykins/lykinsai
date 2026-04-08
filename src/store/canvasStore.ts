@@ -95,13 +95,25 @@ type CanvasState = {
   updateWireConnection: (id: string, patch: Partial<Omit<WireConnection, "id">>) => void;
   clearWireConnectionsForBlock: (blockId: BlockId) => void;
 
+  recentlyDeleted: Array<{ id: string; type: string; preview: string; deletedAt: number }>;
+
   pushHistory: () => void;
   undo: () => void;
   redo: () => void;
 };
 
+const MAX_RECENTLY_DELETED = 10;
+
 function makeId(prefix = "b") {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function snapshotForDeletion(b: any, id: string): { id: string; type: string; preview: string; deletedAt: number } {
+  const t = String(b?.type || "unknown");
+  const mode = String(b?.mode || "").toLowerCase();
+  const type = t === "create" && mode ? mode : t;
+  const raw = String(b?.content || b?.data?.content || b?.data?.title || b?.data?.name || "").replace(/\s+/g, " ").trim();
+  return { id, type, preview: raw.slice(0, 60), deletedAt: Date.now() };
 }
 
 function makeListItem(listType: LegacyListType, text: string): LegacyListItem {
@@ -304,6 +316,7 @@ export const useCanvasStore = create<CanvasState>()(
     future: [],
     focusedBrickIds: [],
     wireConnections: [],
+    recentlyDeleted: [],
 
     setFocusedBrickIds: (ids) => set((state) => { state.focusedBrickIds = ids; }),
 
@@ -492,6 +505,8 @@ export const useCanvasStore = create<CanvasState>()(
         state.history.push(JSON.stringify({ blocks: state.blocks, blockOrder: state.blockOrder, camera: state.camera, gridSize: state.gridSize, wireConnections: state.wireConnections }));
         if (state.history.length > MAX_UNDO_HISTORY) state.history.splice(0, state.history.length - MAX_UNDO_HISTORY);
         state.future = [];
+        state.recentlyDeleted.push(snapshotForDeletion(state.blocks[id], id));
+        if (state.recentlyDeleted.length > MAX_RECENTLY_DELETED) state.recentlyDeleted.splice(0, state.recentlyDeleted.length - MAX_RECENTLY_DELETED);
         delete state.blocks[id];
         state.blockOrder = state.blockOrder.filter((x) => x !== id);
         state.selectedIds = state.selectedIds.filter((x) => x !== id);
@@ -508,6 +523,8 @@ export const useCanvasStore = create<CanvasState>()(
         state.history.push(JSON.stringify({ blocks: state.blocks, blockOrder: state.blockOrder, camera: state.camera, gridSize: state.gridSize, wireConnections: state.wireConnections }));
         if (state.history.length > MAX_UNDO_HISTORY) state.history.splice(0, state.history.length - MAX_UNDO_HISTORY);
         state.future = [];
+        for (const id of toDelete) state.recentlyDeleted.push(snapshotForDeletion(state.blocks[id], id));
+        if (state.recentlyDeleted.length > MAX_RECENTLY_DELETED) state.recentlyDeleted.splice(0, state.recentlyDeleted.length - MAX_RECENTLY_DELETED);
         for (const id of toDelete) delete state.blocks[id];
         const delSet = new Set(toDelete);
         state.blockOrder = state.blockOrder.filter((x) => !delSet.has(x));

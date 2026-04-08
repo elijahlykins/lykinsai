@@ -110,10 +110,13 @@ export default function VaultChatPage() {
   });
 
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    const root = scrollRef.current;
+    if (!root) return;
+    const viewport = root.querySelector("[data-radix-scroll-area-viewport]");
+    if (viewport) {
+      viewport.scrollTop = viewport.scrollHeight;
     }
-  }, [messages]);
+  }, [messages, isLoading]);
 
   useEffect(() => {
     if (!pendingResendRef.current || isLoading) return;
@@ -862,9 +865,9 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
                   </div>
                 ))}
                 {isLoading && (
-                  <div className="flex items-center gap-2">
-                    <div className="text-gray-600 dark:text-gray-400 text-sm flex items-center gap-1.5">
-                      <span className="inline-block w-1.5 h-1.5 rounded-full bg-current animate-pulse" />
+                  <div className="flex justify-end w-full">
+                    <div className="max-w-[80%] text-[0.6875rem] text-black/60 dark:text-white/60 px-1 flex items-center justify-end gap-2" aria-live="polite">
+                      <div className="brick-spinner" />
                       <span>{thinkingStatus}</span>
                     </div>
                   </div>

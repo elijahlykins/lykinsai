@@ -36,6 +36,8 @@ type CanvasProps = {
 
 const ENABLE_CANVAS_HOTKEYS = false;
 const ENABLE_BRICK_LOGIC = canUseActiveBrickLogic();
+/** Pointer or dragged brick must stay over the trash control this long before release deletes. */
+const CANVAS_TRASH_HOLD_MS = 1000;
 
 function consumePendingVaultDrop(dataTransfer?: DataTransfer | null): { id: string; title: string; content: string; attachments: any[]; timestamp: number } | null {
   try {
@@ -864,7 +866,37 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
   const [deleteZoneOpen, setDeleteZoneOpen] = useState(false);
   const [dragActiveForUI, setDragActiveForUI] = useState(false);
   const [trashHover, setTrashHover] = useState(false);
+  const [trashHoldReady, setTrashHoldReady] = useState(false);
   const trashRef = useRef<HTMLDivElement>(null);
+  const trashHoldStartAtRef = useRef<number | null>(null);
+  const trashHoldTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearTrashHold = useCallback(() => {
+    trashHoldStartAtRef.current = null;
+    if (trashHoldTimeoutRef.current) {
+      clearTimeout(trashHoldTimeoutRef.current);
+      trashHoldTimeoutRef.current = null;
+    }
+    setTrashHoldReady(false);
+  }, []);
+
+  const syncTrashHoldDuringDrag = useCallback(
+    (overTrash: boolean) => {
+      if (overTrash) {
+        if (trashHoldStartAtRef.current === null) {
+          trashHoldStartAtRef.current = performance.now();
+          if (trashHoldTimeoutRef.current) clearTimeout(trashHoldTimeoutRef.current);
+          trashHoldTimeoutRef.current = window.setTimeout(() => {
+            trashHoldTimeoutRef.current = null;
+            setTrashHoldReady(true);
+          }, CANVAS_TRASH_HOLD_MS);
+        }
+      } else {
+        clearTrashHold();
+      }
+    },
+    [clearTrashHold]
+  );
   const [wireDrag, setWireDrag] = useState<{
     fromId: string;
     fromSide: WireSide;
@@ -1396,6 +1428,65 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
     setFocusedBrickIds(raisedBrickIds);
   }, [raisedBrickIds, setFocusedBrickIds]);
 
+  // ── Auto-describe image blocks missing aiDescription ──────────────
+  const describeInflightRef = useRef<Set<string>>(new Set());
+  const describeBudgetRef = useRef(0);
+  const AUTO_DESCRIBE_MAX_PER_LOAD = 10;
+  const AUTO_DESCRIBE_CONCURRENCY = 2;
+
+  useEffect(() => {
+    const st = useCanvasStore.getState();
+    const ids = Array.isArray(st.blockOrder) ? st.blockOrder : [];
+    const isImg = (b: any) =>
+      b?.type === "image" ||
+      (b?.type === "create" && (b.mode === "image" || b.mode === "generated"));
+    const getSrc = (b: any) => {
+      const s = String(b?.src || b?.data?.src || "").trim();
+      return s.startsWith("http") ? s : "";
+    };
+
+    const pending: Array<{ id: string; src: string }> = [];
+    for (const id of ids) {
+      const b = (st.blocks as any)[id];
+      if (!b || !isImg(b)) continue;
+      const src = getSrc(b);
+      if (!src) continue;
+      if (b.data?.aiDescription) continue;
+      if (describeInflightRef.current.has(id)) continue;
+      pending.push({ id, src });
+    }
+    if (!pending.length) return;
+
+    const remaining = AUTO_DESCRIBE_MAX_PER_LOAD - describeBudgetRef.current;
+    const batch = pending.slice(0, Math.min(remaining, AUTO_DESCRIBE_CONCURRENCY));
+    if (!batch.length) return;
+
+    for (const item of batch) {
+      describeInflightRef.current.add(item.id);
+      describeBudgetRef.current += 1;
+      (async () => {
+        try {
+          const { API_BASE_URL } = await import("@/lib/api-config");
+          const res = await fetch(`${API_BASE_URL}/api/ai/describe-image`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ imageUrl: item.src, fileType: "image" }),
+          });
+          if (!res.ok) return;
+          const { description } = await res.json();
+          if (!description) return;
+          const latest = useCanvasStore.getState();
+          const blk = (latest.blocks as any)[item.id];
+          if (!blk) return;
+          const existingData = blk.data && typeof blk.data === "object" ? blk.data : {};
+          latest.updateBlock(item.id as any, { data: { ...existingData, aiDescription: description } } as any);
+        } catch { /* silently skip */ } finally {
+          describeInflightRef.current.delete(item.id);
+        }
+      })();
+    }
+  }, [blockOrder]);
+
   const prevBlockCountRef = useRef(Object.keys(blocks).length);
   useEffect(() => {
     const count = Object.keys(blocks).length;
@@ -1680,6 +1771,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
           }
         }
         setTrashHover(over);
+        syncTrashHoldDuringDrag(over);
       }
 
       const pressedToEdge = isPressedToRightWall(ev);
@@ -1704,13 +1796,22 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       if (trashEl) {
         const tr = trashEl.getBoundingClientRect();
         const PAD = 10;
-        if (ev.clientX >= tr.left - PAD && ev.clientX <= tr.right + PAD && ev.clientY >= tr.top - PAD && ev.clientY <= tr.bottom + PAD) return true;
-        const ids = dragDeleteRef.current.ids || [];
-        for (const id of ids) {
-          const el = document.querySelector(`[data-canvas-block][data-block-id="${id}"]`) as HTMLElement | null;
-          if (!el) continue;
-          const br = el.getBoundingClientRect();
-          if (br.right >= tr.left - PAD && br.left <= tr.right + PAD && br.bottom >= tr.top - PAD && br.top <= tr.bottom + PAD) return true;
+        let overTrash = ev.clientX >= tr.left - PAD && ev.clientX <= tr.right + PAD && ev.clientY >= tr.top - PAD && ev.clientY <= tr.bottom + PAD;
+        if (!overTrash) {
+          const ids = dragDeleteRef.current.ids || [];
+          for (const id of ids) {
+            const el = document.querySelector(`[data-canvas-block][data-block-id="${id}"]`) as HTMLElement | null;
+            if (!el) continue;
+            const br = el.getBoundingClientRect();
+            if (br.right >= tr.left - PAD && br.left <= tr.right + PAD && br.bottom >= tr.top - PAD && br.top <= tr.bottom + PAD) {
+              overTrash = true;
+              break;
+            }
+          }
+        }
+        if (overTrash) {
+          const start = trashHoldStartAtRef.current;
+          return start != null && performance.now() - start >= CANVAS_TRASH_HOLD_MS;
         }
       }
       if (!deleteZoneOpenRef.current) return false;
@@ -1734,6 +1835,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       if (deleteZoneOpenRef.current) setDeleteZoneOpen(false);
       setDragActiveForUI(false);
       setTrashHover(false);
+      clearTrashHold();
 
       if (doDelete && ids.length) {
         deleteBlocks(ids as any);
@@ -1769,6 +1871,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       if (deleteZoneOpenRef.current) setDeleteZoneOpen(false);
       setDragActiveForUI(false);
       setTrashHover(false);
+      clearTrashHold();
     };
 
     window.addEventListener("pointermove", onMove, true);
@@ -1781,7 +1884,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       window.removeEventListener("pointercancel", onCancel, true);
       window.removeEventListener("blur", onBlur, true);
     };
-  }, [deleteBlocks]);
+  }, [deleteBlocks, clearTrashHold, syncTrashHoldDuringDrag]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -3014,15 +3117,15 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
           setTypingBlockId(null);
         }
       }
-      setTrashHover(isOverTrash(e.clientX, e.clientY));
-      const grid = gridSize;
-      const snappedDx = Math.round(dx / grid) * grid;
-      const snappedDy = Math.round(dy / grid) * grid;
+      const overTrash = isOverTrash(e.clientX, e.clientY);
+      setTrashHover(overTrash);
+      syncTrashHoldDuringDrag(overTrash);
+      // Smooth follow during drag; grid snap happens on pointer up only.
       for (const s of d.snapshot) {
         const el = document.querySelector(`[data-canvas-block][data-block-id="${s.id}"]`) as HTMLElement | null;
-        if (el) el.style.transform = `translate(${snappedDx}px, ${snappedDy}px)`;
+        if (el) el.style.transform = `translate(${dx}px, ${dy}px)`;
       }
-      setLiveDragOffset({ ids: d.snapshot.map((s) => s.id), dx: snappedDx, dy: snappedDy });
+      setLiveDragOffset({ ids: d.snapshot.map((s) => s.id), dx, dy });
     };
     const onUp = (e: PointerEvent) => {
       const d = groupDragRef.current;
@@ -3031,7 +3134,9 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       const moved = d.moved;
       const snapshot = d.snapshot;
 
-      const droppedOnTrash = moved && isOverTrash(e.clientX, e.clientY);
+      const overTrash = isOverTrash(e.clientX, e.clientY);
+      const trashHoldOk = trashHoldStartAtRef.current != null && performance.now() - trashHoldStartAtRef.current >= CANVAS_TRASH_HOLD_MS;
+      const droppedOnTrash = moved && overTrash && trashHoldOk;
       if (droppedOnTrash) {
         for (const s of snapshot) {
           const el = document.querySelector(`[data-canvas-block][data-block-id="${s.id}"]`) as HTMLElement | null;
@@ -3043,6 +3148,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         groupDragRef.current = { active: false, moved: false, pointerId: null, startWorldX: 0, startWorldY: 0, startClientX: 0, startClientY: 0, snapshot: [] };
         setLiveDragOffset(null);
         setTrashHover(false);
+        clearTrashHold();
         setActivatedBrickIds([]);
         setRaisedBrickIds([]);
         return;
@@ -3064,6 +3170,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       groupDragRef.current = { active: false, moved: false, pointerId: null, startWorldX: 0, startWorldY: 0, startClientX: 0, startClientY: 0, snapshot: [] };
       setLiveDragOffset(null);
       setTrashHover(false);
+      clearTrashHold();
       if (moved) {
         suppressBrickClickRef.current = true;
         window.setTimeout(() => {
@@ -3084,7 +3191,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       window.removeEventListener("pointerup", onUp, true);
       window.removeEventListener("pointercancel", onUp, true);
     };
-  }, [gridSize, moveBlocksFromSnapshot, pushHistory]);
+  }, [gridSize, moveBlocksFromSnapshot, pushHistory, clearTrashHold, syncTrashHoldDuringDrag]);
 
   // Floating brick: double-click lifts visually; click anywhere or Escape to drop.
   useEffect(() => {
@@ -4180,8 +4287,43 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
           out.push(`[${id}] code(${lang}) ${pos(b)}: ${t || "(empty)"}`);
           continue;
         }
+        if (kind === "create") {
+          const mode = String(b?.mode || "").toLowerCase();
+          if (mode === "image" || mode === "generated") {
+            out.push(`[${id}] image ${pos(b)}: ${String(b?.src || b?.data?.src || "").slice(0, 80)}`);
+            continue;
+          }
+          if (mode === "embed") {
+            out.push(`[${id}] embed ${pos(b)}: ${String(b?.data?.name || b?.data?.url || "").slice(0, 80)}`);
+            continue;
+          }
+          if (mode === "design") {
+            const elCount = Array.isArray(b?.data?.board?.elements) ? b.data.board.elements.length : 0;
+            out.push(`[${id}] design ${pos(b)}: ${elCount} items`);
+            continue;
+          }
+          if (mode === "taskboard") {
+            const colCount = Array.isArray(b?.data?.columns) ? b.data.columns.length : 0;
+            const title = String(b?.data?.title || "").trim().slice(0, 60);
+            out.push(`[${id}] taskboard ${pos(b)}: ${colCount} cols${title ? `, "${title}"` : ""}`);
+            continue;
+          }
+          out.push(`[${id}] ${mode || "create"} ${pos(b)}`);
+          continue;
+        }
         out.push(`[${id}] ${kind} ${pos(b)}`);
       }
+
+      const wires = Array.isArray(st.wireConnections) ? st.wireConnections : [];
+      const validWires = wires.filter((w: any) => (st.blocks as any)[w.fromId] && (st.blocks as any)[w.toId]);
+      if (validWires.length > 0) {
+        out.push("");
+        out.push(`[WIRES] ${validWires.length} connections`);
+        for (const w of validWires.slice(0, 20)) {
+          out.push(`  ${(w as any).fromId} -> ${(w as any).toId}`);
+        }
+      }
+
       return out.join("\n");
     };
 
@@ -6864,7 +7006,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
           <button
             type="button"
             onClick={() => setZoomPanelOpen((v) => !v)}
-            className="rounded-full w-9 h-9 glass-control hover:opacity-90 transition-colors touch-manipulation flex items-center justify-center text-black/60 dark:text-white/70"
+            className="rounded-full w-9 h-9 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center"
             title={zoomPanelOpen ? "Hide zoom" : "Show zoom"}
           >
             {zoomPanelOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronUp className="w-4 h-4" />}
@@ -6873,13 +7015,23 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
             ref={trashRef}
             className="flex items-center justify-center p-1.5 transition-all duration-150"
             style={{ pointerEvents: "none" }}
-            title="Drop here to delete"
+            title={
+              trashHoldReady
+                ? "Release to delete"
+                : trashHover
+                  ? "Hold for 1s to delete"
+                  : "Drag here and hold to delete"
+            }
           >
-            <Trash2 className={`transition-all duration-150 ${
-              trashHover
-                ? "w-5 h-5 text-red-500 dark:text-red-400 drop-shadow-[0_0_6px_rgba(239,68,68,0.5)]"
-                : "w-4 h-4 text-black/35 dark:text-white/35"
-            }`} />
+            <span className={trashHoldReady ? "omnia-canvas-trash-ready-shake" : undefined}>
+              <Trash2 className={`transition-all duration-150 ${
+                trashHoldReady
+                  ? "w-6 h-6 text-red-600 dark:text-red-400 drop-shadow-[0_0_10px_rgba(239,68,68,0.65)]"
+                  : trashHover
+                    ? "w-5 h-5 text-red-500 dark:text-red-400 drop-shadow-[0_0_6px_rgba(239,68,68,0.5)]"
+                    : "w-4 h-4 text-black/35 dark:text-white/35"
+              }`} />
+            </span>
           </div>
           {zoomPanelOpen && (
             <div

@@ -12,6 +12,7 @@ export const CONTEXT_BUDGETS = {
   compactSummary: 2000,
   canvasTotal: 14000,
   projectSummary: 2000,
+  projectSummaryInProject: 4000,
   workspaceContext: 28000,
   conversation: 8000,
   userPrompt: 3000,
@@ -85,9 +86,12 @@ export function buildPrompt(input: BuildPromptInput): string {
   const ctx = String(input.context || "")
     .trim()
     .slice(0, CONTEXT_BUDGETS.canvasTotal);
+  const psBudget = input.projectId
+    ? CONTEXT_BUDGETS.projectSummaryInProject
+    : CONTEXT_BUDGETS.projectSummary;
   const ps = String(input.projectSummary || "")
     .trim()
-    .slice(0, CONTEXT_BUDGETS.projectSummary);
+    .slice(0, psBudget);
   const ws = String(input.workspaceContext || "")
     .trim()
     .slice(0, CONTEXT_BUDGETS.workspaceContext);
@@ -108,8 +112,6 @@ export function buildPrompt(input: BuildPromptInput): string {
       : "",
     input.projectId ? `[PROJECT_ID]\n${String(input.projectId)}` : "",
     convo ? `[CONVERSATION]\n${convo}` : "",
-    ctx ? `[GRID_CONTEXT]\n${ctx}` : "",
-    ps ? `[PROJECT_KNOWLEDGE]\n${ps}` : "",
     ws
       ? `[WORKSPACE_CONTEXT]\nBelow are the user's OTHER boards and their entire Vault contents. This is real data.\n${ws}`
       : "",
@@ -119,6 +121,8 @@ export function buildPrompt(input: BuildPromptInput): string {
     input.fullContext && input.fullContext !== user
       ? `[REQUEST_CONTEXT]\n${String(input.fullContext).slice(0, 16000)}`
       : "",
+    ps ? `[PROJECT_KNOWLEDGE]\n${ps}` : "",
+    ctx ? `[GRID_CONTEXT]\n${ctx}` : "",
     `[LATEST_USER_MESSAGE]\n${user || "(empty)"}`,
   ]
     .filter(Boolean)

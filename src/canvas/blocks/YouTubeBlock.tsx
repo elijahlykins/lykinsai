@@ -218,13 +218,20 @@ export const YouTubeBlock = memo(function YouTubeBlock({ id, onMinimize, onMenu 
       const d2 = dragRef.current;
       if (!d2) return;
       d2.raf = null;
-      moveBlocksFromSnapshot(d2.snapshot, d2.lastX - d2.originX, d2.lastY - d2.originY, { snap: true });
+      moveBlocksFromSnapshot(d2.snapshot, d2.lastX - d2.originX, d2.lastY - d2.originY, { snap: false });
     });
   };
 
   const onDragEnd = (e: React.PointerEvent) => {
     const d = dragRef.current;
     if (!d || d.pointerId !== e.pointerId) return;
+    if (d.raf != null) {
+      window.cancelAnimationFrame(d.raf);
+      d.raf = null;
+    }
+    if (d.snapshot?.length) {
+      moveBlocksFromSnapshot(d.snapshot, d.lastX - d.originX, d.lastY - d.originY, { snap: true });
+    }
     dragRef.current = null;
     try {
       (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);

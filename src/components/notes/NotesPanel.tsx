@@ -5,10 +5,20 @@ import Placeholder from "@tiptap/extension-placeholder";
 import TaskList from "@tiptap/extension-task-list";
 import TaskItem from "@tiptap/extension-task-item";
 import { Table, TableRow, TableCell, TableHeader } from "@tiptap/extension-table";
+import Image from "@tiptap/extension-image";
+import Youtube from "@tiptap/extension-youtube";
 import Suggestion from "@tiptap/suggestion";
+import { WebEmbed } from "./webEmbedExtension";
 import type { SuggestionOptions } from "@tiptap/suggestion";
+import type { Editor as TiptapEditor } from "@tiptap/core";
 import tippy, { type Instance as TippyInstance } from "tippy.js";
 import SlashCommandList, { SLASH_ITEMS, type SlashCommandItem, type SlashCommandListRef } from "./SlashCommandMenu";
+import {
+  insertNotesDropContent,
+  insertVaultPayloadIntoNotes,
+  hasNotesDropHintTypes,
+  hasExternalNotesDropPayload,
+} from "./notesDropInsert";
 import { StickyNote, ChevronDown } from "lucide-react";
 
 const SlashCommands = Extension.create({
@@ -103,24 +113,35 @@ interface NotesPanelProps {
   hasLeftRail?: boolean;
 }
 
-const HEADER_REM = 4.2;
 const MIN_HEIGHT_VH = 20;
 const MAX_HEIGHT_VH = 100;
+/** Below this height (vh) on release, the sheet closes */
+const DISMISS_BELOW_VH = 22;
+/** When sheet is this tall or more, treat as full-screen (no left rail gutter; square top corners) */
+const FULLSCREEN_FROM_VH = 94;
 
 export default function NotesPanel({ open, onOpenChange, content, onContentChange, hasLeftRail }: NotesPanelProps) {
+  const editorRef = useRef<TiptapEditor | null>(null);
   const contentInitialised = useRef(false);
-  const [heightVh, setHeightVh] = useState(50);
+  const [heightVh, setHeightVh] = useState(MAX_HEIGHT_VH);
+  const heightVhRef = useRef(heightVh);
   const dragging = useRef(false);
+  const [dragActive, setDragActive] = useState(false);
   const startY = useRef(0);
   const startH = useRef(0);
+
+  useEffect(() => {
+    heightVhRef.current = heightVh;
+  }, [heightVh]);
 
   const onPointerDown = useCallback((e: React.PointerEvent) => {
     e.preventDefault();
     dragging.current = true;
+    setDragActive(true);
     startY.current = e.clientY;
-    startH.current = heightVh;
+    startH.current = heightVhRef.current;
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
-  }, [heightVh]);
+  }, []);
 
   const onPointerMove = useCallback((e: React.PointerEvent) => {
     if (!dragging.current) return;
@@ -133,13 +154,39 @@ export default function NotesPanel({ open, onOpenChange, content, onContentChang
   const onPointerUp = useCallback((e: React.PointerEvent) => {
     if (!dragging.current) return;
     dragging.current = false;
-    (e.target as HTMLElement).releasePointerCapture(e.pointerId);
-    if (heightVh < 12) onOpenChange(false);
-  }, [heightVh, onOpenChange]);
+    setDragActive(false);
+    try {
+      (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+    if (heightVhRef.current < DISMISS_BELOW_VH) onOpenChange(false);
+  }, [onOpenChange]);
 
   useEffect(() => {
-    if (open) setHeightVh(50);
+    if (open) setHeightVh(MAX_HEIGHT_VH);
   }, [open]);
+
+  useEffect(() => {
+    const onVaultInsert = (e: Event) => {
+      if (!open) return;
+      const ce = e as CustomEvent<{ payload?: Record<string, unknown>; clientX?: number; clientY?: number }>;
+      const payload = ce.detail?.payload;
+      if (!payload || typeof payload !== "object") return;
+      const ed = editorRef.current;
+      if (!ed) return;
+      void insertVaultPayloadIntoNotes(ed, payload, {
+        clientX: ce.detail.clientX,
+        clientY: ce.detail.clientY,
+      });
+    };
+    window.addEventListener("omnia_notes_insert_vault", onVaultInsert as EventListener);
+    return () => window.removeEventListener("omnia_notes_insert_vault", onVaultInsert as EventListener);
+  }, [open]);
+
+  const isFullBleed = heightVh >= FULLSCREEN_FROM_VH;
+  /** Match focused chat: editor clears the fixed left “Grid Files” column whenever the rail is shown */
+  const editorPadLeft = hasLeftRail && open ? "calc(13.75rem + 1.5rem)" : "1.5rem";
 
   const editor = useEditor({
     extensions: [
@@ -157,17 +204,51 @@ export default function NotesPanel({ open, onOpenChange, content, onContentChang
       TableRow,
       TableCell,
       TableHeader,
+      Image.configure({ allowBase64: true }),
+      Youtube.configure({
+        nocookie: true,
+        width: 640,
+        height: 360,
+        controls: true,
+        allowFullscreen: true,
+      }),
+      WebEmbed,
       SlashCommands,
     ],
     editorProps: {
       attributes: {
         class: "notes-editor-content outline-none min-h-[200px] px-1",
       },
+      handleDragOver(_view, event) {
+        if (hasNotesDropHintTypes(event)) {
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "copy";
+        }
+        return false;
+      },
+      handleDrop(_view, event, _slice, moved) {
+        if (moved) return false;
+        if (!hasExternalNotesDropPayload(event)) return false;
+        const ed = editorRef.current;
+        if (!ed) return false;
+        void insertNotesDropContent(ed, event);
+        return true;
+      },
+    },
+    onCreate: ({ editor: created }) => {
+      editorRef.current = created;
+    },
+    onDestroy: () => {
+      editorRef.current = null;
     },
     onUpdate: ({ editor: ed }) => {
       onContentChange(ed.getJSON());
     },
   });
+
+  useEffect(() => {
+    editorRef.current = editor;
+  }, [editor]);
 
   useEffect(() => {
     if (!editor) return;
@@ -184,9 +265,23 @@ export default function NotesPanel({ open, onOpenChange, content, onContentChang
 
   return (
     <>
+      <style>{`
+        .notes-editor-content [data-youtube-video] {
+          max-width: 100%;
+          margin: 0.75rem 0;
+          border-radius: 0.75rem;
+          overflow: hidden;
+        }
+        .notes-editor-content [data-youtube-video] iframe {
+          width: 100% !important;
+          max-width: 100%;
+          height: auto !important;
+          aspect-ratio: 16 / 9;
+        }
+      `}</style>
       {/* Small centered tab — always visible at bottom, pull to open */}
       {!open && (
-        <div className="fixed bottom-0 left-1/2 -translate-x-1/2 z-[70]">
+        <div className="fixed bottom-0 left-1/2 -translate-x-1/2 z-[210] max-md:bottom-[env(safe-area-inset-bottom,0px)]">
           <div
             className="w-16 h-[0.4rem] rounded-t-md bg-black/15 hover:bg-black/25 cursor-pointer select-none touch-none transition-colors py-1 box-content"
             onPointerDown={onPointerDown}
@@ -197,17 +292,20 @@ export default function NotesPanel({ open, onOpenChange, content, onContentChang
         </div>
       )}
 
-      {/* Sliding notes panel */}
+      {/* Sliding notes panel — opens full viewport; drag handle down to resize / dismiss */}
       <div
-        className={`fixed inset-x-0 bottom-0 z-[68] flex flex-col rounded-t-2xl bg-white/95 backdrop-blur-xl border-t border-black/10 shadow-2xl ${
-          dragging.current ? "" : "transition-transform duration-300 ease-out"
+        data-omnia-notes-root=""
+        className={`fixed inset-x-0 bottom-0 flex flex-col bg-white/95 backdrop-blur-xl border-black/10 shadow-2xl ${
+          isFullBleed ? "rounded-none border-t-0" : "rounded-t-2xl border-t"
+        } ${open ? "z-[220]" : "z-[68]"} ${
+          dragActive ? "" : "transition-[transform,height] duration-300 ease-out"
         } ${open ? "translate-y-0" : "translate-y-full"}`}
-        style={{ height: `${heightVh}svh` }}
+        style={{ height: `${heightVh}svh`, maxHeight: "100svh" }}
       >
         {/* Drag handle inside panel */}
         <div className="flex-shrink-0 flex justify-center">
           <div
-            className="w-12 pt-1.5 pb-1 cursor-row-resize select-none touch-none flex items-center justify-center"
+            className="w-12 min-h-[44px] pt-2 pb-1 cursor-row-resize select-none touch-none flex items-center justify-center touch-manipulation"
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}
             onPointerUp={onPointerUp}
@@ -235,13 +333,13 @@ export default function NotesPanel({ open, onOpenChange, content, onContentChang
 
         {/* Editor area */}
         <div
-          className="flex-1 overflow-y-auto scrollbar-hide py-4"
+          className="flex-1 overflow-y-auto scrollbar-hide py-4 pb-[max(1rem,env(safe-area-inset-bottom))]"
           style={{
-            paddingLeft: hasLeftRail ? "calc(13.75rem + 1.5rem)" : "1.5rem",
+            paddingLeft: editorPadLeft,
             paddingRight: "1.5rem",
           }}
         >
-          <div className="mx-auto max-w-2xl">
+          <div className="mx-auto max-w-2xl min-h-[min(60vh,480px)]">
             <EditorContent editor={editor} />
           </div>
         </div>

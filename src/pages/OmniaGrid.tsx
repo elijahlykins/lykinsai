@@ -3,7 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { Canvas } from "@/canvas/Canvas";
 import { useCanvasStore } from "@/store/canvasStore";
 import type { Block } from "@/canvas/types";
-import { ChevronDown, ChevronUp, ChevronRight, Plus, Link as LinkIcon, Image as ImageIcon, Zap, MessageSquare, Mic, BookOpen, X, Clock, Edit2, Folder as FolderIcon, Link2, MoreHorizontal, PanelRightClose, PanelRight, StickyNote, Play, FileText, Music, Video, Share2, Download, Copy, Check, RefreshCw, ThumbsUp, ThumbsDown, Square, Sparkles, Save, Globe, GripVertical, LayoutGrid } from "lucide-react";
+import { ChevronDown, ChevronUp, ChevronRight, Plus, Link as LinkIcon, Image as ImageIcon, Zap, MessageSquare, Mic, BookOpen, X, Clock, Edit2, Folder as FolderIcon, Link2, MoreHorizontal, PanelRightClose, PanelRight, StickyNote, Play, FileText, Music, Video, Share2, Download, Copy, Check, RefreshCw, ThumbsUp, ThumbsDown, Square, Sparkles, Save, Globe, GripVertical, LayoutGrid, ArrowUp } from "lucide-react";
 import DraggableQuickNote from "@/components/notes/DraggableQuickNote";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -40,6 +40,9 @@ function tiptapJsonToPlainText(node: any): string {
   if (!node || typeof node !== "object") return "";
   let text = "";
   if (node.type === "text") return node.text || "";
+  if (node.type === "youtube" && node.attrs?.src) return `\n[YouTube: ${node.attrs.src}]\n`;
+  if (node.type === "webEmbed" && node.attrs?.src) return `\n[Embedded link: ${node.attrs.src}]\n`;
+  if (node.type === "image" && node.attrs?.src) return `\n[Image: ${node.attrs.alt || ""} ${node.attrs.src}]\n`;
   if (Array.isArray(node.content)) {
     for (const child of node.content) {
       text += tiptapJsonToPlainText(child);
@@ -417,6 +420,93 @@ const makeAttId = () =>
   (typeof crypto !== "undefined" && crypto.randomUUID && crypto.randomUUID()) ||
   `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
+/** TipTap JSON — empty notes doc; each grid board keeps its own snapshot.notesContent */
+const EMPTY_NOTES_TIPTAP_DOC: { type: string; content: unknown[] } = {
+  type: "doc",
+  content: [{ type: "paragraph" }],
+};
+
+function isValidNotesTiptapDoc(v: unknown): v is { type: string; content: unknown[] } {
+  return Boolean(v && typeof v === "object" && (v as { type?: string }).type === "doc" && Array.isArray((v as { content?: unknown }).content));
+}
+
+/** Shared model list for top panel and chat-bar selectors */
+function OmniaGridModelSelectMenuBody() {
+  return (
+    <>
+      <SelectGroup>
+        <SelectLabel>Latest</SelectLabel>
+        <SelectItem value="claude-sonnet-4-6" hint="Anthropic flagship">Claude Sonnet 4.6</SelectItem>
+        <SelectItem value="gpt-5.4" hint="OpenAI flagship">GPT-5.4</SelectItem>
+        <SelectItem value="gemini-3.1-pro-preview" hint="Google flagship">Gemini 3.1 Pro</SelectItem>
+        <SelectItem value="grok-4-1-fast-reasoning" hint="xAI flagship">Grok 4.1 Fast Reasoning</SelectItem>
+      </SelectGroup>
+      <SelectSeparator />
+      <SelectGroup>
+        <SelectLabel>Fastest</SelectLabel>
+        <SelectItem value="gemini-3-flash-preview" hint="Google, ultra-fast">Gemini 3 Flash</SelectItem>
+        <SelectItem value="gemini-3.1-flash-lite-preview" hint="Google, cheapest">Gemini 3.1 Flash-Lite</SelectItem>
+        <SelectItem value="gemini-2.5-flash" hint="Google, balanced">Gemini 2.5 Flash</SelectItem>
+        <SelectItem value="gpt-4.1-nano" hint="OpenAI, smallest">GPT-4.1 Nano</SelectItem>
+        <SelectItem value="gpt-4.1-mini" hint="OpenAI, fast + smart">GPT-4.1 Mini</SelectItem>
+        <SelectItem value="gpt-5-mini" hint="OpenAI, near-frontier">GPT-5 Mini</SelectItem>
+        <SelectItem value="claude-haiku-4-5-20251001" hint="Anthropic, fast">Claude Haiku 4.5</SelectItem>
+        <SelectItem value="grok-4-1-fast-non-reasoning" hint="xAI, low latency">Grok 4.1 Fast Non-Reasoning</SelectItem>
+      </SelectGroup>
+      <SelectSeparator />
+      <SelectGroup>
+        <SelectLabel>Cheap</SelectLabel>
+        <SelectItem value="gpt-4o-mini" hint="OpenAI, budget">GPT-4o Mini</SelectItem>
+        <SelectItem value="o4-mini" hint="OpenAI, cheap reasoning">o4 Mini</SelectItem>
+        <SelectItem value="grok-3-mini" hint="xAI, budget">Grok 3 Mini</SelectItem>
+      </SelectGroup>
+      <SelectSeparator />
+      <SelectGroup>
+        <SelectLabel>Image Gen</SelectLabel>
+        <SelectItem value="gpt-image-1.5" hint="OpenAI, images">GPT Image 1.5</SelectItem>
+        <SelectItem value="gemini-3.1-flash-image-preview" hint="Google, images">Nano Banana 2</SelectItem>
+        <SelectItem value="grok-imagine-image-pro" hint="xAI, pro images">Grok Imagine Image Pro</SelectItem>
+        <SelectItem value="grok-imagine-image" hint="xAI, images">Grok Imagine Image</SelectItem>
+        <SelectItem value="grok-2-image-1212" hint="xAI, images">Grok 2 Image</SelectItem>
+        <SelectItem value="dall-e-3" hint="OpenAI, images">DALL-E 3</SelectItem>
+      </SelectGroup>
+      <SelectSeparator />
+      <SelectGroup>
+        <SelectLabel>Deep Thinking</SelectLabel>
+        <SelectItem value="o3" hint="OpenAI, reasoning">o3</SelectItem>
+        <SelectItem value="o3-pro" hint="OpenAI, max reasoning">o3 Pro</SelectItem>
+        <SelectItem value="gpt-5.4-pro" hint="OpenAI, extended">GPT-5.4 Pro</SelectItem>
+        <SelectItem value="claude-opus-4-1-20250805" hint="Anthropic, deep">Claude Opus 4.1</SelectItem>
+        <SelectItem value="claude-opus-4-20250514" hint="Anthropic, deep">Claude Opus 4</SelectItem>
+        <SelectItem value="gemini-2.5-pro" hint="Google, reasoning">Gemini 2.5 Pro</SelectItem>
+        <SelectItem value="grok-4-fast-reasoning" hint="xAI, reasoning">Grok 4 Fast Reasoning</SelectItem>
+      </SelectGroup>
+      <SelectSeparator />
+      <SelectGroup>
+        <SelectLabel>Code</SelectLabel>
+        <SelectItem value="claude-opus-4-6-code" hint="Anthropic, top coder">Claude Opus 4.6</SelectItem>
+        <SelectItem value="gpt-5.3-codex" hint="OpenAI, agentic code">Codex 5.3</SelectItem>
+        <SelectItem value="gpt-4.1" hint="OpenAI, 1M ctx code">GPT-4.1</SelectItem>
+        <SelectItem value="grok-code-fast-1" hint="xAI, code">Grok Code Fast 1</SelectItem>
+      </SelectGroup>
+      <SelectSeparator />
+      <SelectGroup>
+        <SelectLabel>General</SelectLabel>
+        <SelectItem value="gpt-5.2" hint="OpenAI, previous gen">GPT-5.2</SelectItem>
+        <SelectItem value="gpt-5.1" hint="OpenAI, previous gen">GPT-5.1</SelectItem>
+        <SelectItem value="gpt-5" hint="OpenAI, previous gen">GPT-5</SelectItem>
+        <SelectItem value="gpt-4o" hint="OpenAI, versatile">GPT-4o</SelectItem>
+        <SelectItem value="claude-sonnet-4-20250514" hint="Anthropic, balanced">Claude Sonnet 4</SelectItem>
+        <SelectItem value="grok-4-fast-non-reasoning" hint="xAI, general">Grok 4 Fast Non-Reasoning</SelectItem>
+        <SelectItem value="grok-4-0709" hint="xAI, general">Grok 4 0709</SelectItem>
+        <SelectItem value="grok-3" hint="xAI, previous gen">Grok 3</SelectItem>
+        <SelectItem value="grok-2-vision-1212" hint="xAI, vision">Grok 2 Vision</SelectItem>
+        <SelectItem value="unified-auto" hint="Auto-picks best">Unified AI (Auto)</SelectItem>
+      </SelectGroup>
+    </>
+  );
+}
+
 export default function OmniaGridPage() {
   const SNAPSHOT_VERSION = 2;
   const nav = useNavigate();
@@ -568,6 +658,18 @@ export default function OmniaGridPage() {
     }
     return false;
   });
+  const persistSelectedModel = useCallback((value: string) => {
+    setSelectedModel(value);
+    try {
+      const saved = localStorage.getItem("lykinsai_settings");
+      const settings = saved ? JSON.parse(saved) : {};
+      settings.aiModel = value;
+      localStorage.setItem("lykinsai_settings", JSON.stringify(settings));
+      window.dispatchEvent(new CustomEvent("lykinsai_settings_changed"));
+    } catch {
+      /* ignore */
+    }
+  }, []);
   const [title, setTitle] = useState(() => {
     try {
       return localStorage.getItem("omnia_title") || "";
@@ -584,7 +686,7 @@ export default function OmniaGridPage() {
   const titleFromSaveRef = useRef(false);
   const [chatMode, setChatMode] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
-  const notesContentRef = useRef<any>(null);
+  const notesContentRef = useRef<any>(EMPTY_NOTES_TIPTAP_DOC);
   const [chatMessages, setChatMessages] = useState<PromptMessage[]>([]);
   const chatMessagesRef = useRef<PromptMessage[]>([]);
   const titleRef = useRef<string>("");
@@ -614,6 +716,10 @@ export default function OmniaGridPage() {
   const dictationTimerRef = useRef<number | null>(null);
   const aiTypingRunRef = useRef(0);
   const chatTypingTimerRef = useRef<number | null>(null);
+  const streamTargetTextRef = useRef("");
+  const streamDisplayedLenRef = useRef(0);
+  const streamTypingRafRef = useRef<number | null>(null);
+  const streamPromptIdRef = useRef<string | null>(null);
   const chatImportAppliedRef = useRef<string | null>(null);
   const isSendingRef = useRef(false);
   const activeAiAbortRef = useRef<AbortController | null>(null);
@@ -964,9 +1070,9 @@ export default function OmniaGridPage() {
         restoreSavedToVaultState(boardId);
       }
 
-      if (snapshot.notesContent && typeof snapshot.notesContent === "object") {
-        notesContentRef.current = snapshot.notesContent;
-      }
+      notesContentRef.current = isValidNotesTiptapDoc(snapshot.notesContent)
+        ? snapshot.notesContent
+        : EMPTY_NOTES_TIPTAP_DOC;
 
       const hasBlocks = blocks && Object.keys(blocks).length > 0;
       if (hasBlocks) {
@@ -1103,6 +1209,7 @@ export default function OmniaGridPage() {
         y: (cam.y || 0) + vh / 2,
       },
       wireConnections: Array.isArray(st.wireConnections) ? st.wireConnections : [],
+      recentlyDeleted: Array.isArray((st as any).recentlyDeleted) ? (st as any).recentlyDeleted : [],
     });
   }, []);
   const getAllYouTubeBlocks = useCallback(() => {
@@ -1276,7 +1383,7 @@ export default function OmniaGridPage() {
   }, []);
   const isVideoQuestion = useCallback((s: string) => {
     const t = String(s || "").toLowerCase();
-    return /(video|youtube|clip|summari[sz]e.*video|explain.*video|talk.*about.*video|what.*video.*about|what.*youtube.*about)/i.test(t);
+    return /(video|youtube|clip|summari[sz]e.*video|explain.*video|talk.*about.*video|what.*video.*about|what.*youtube.*about|what.*does.*he.*say|what.*does.*she.*say|what.*do.*they.*say|what.*is.*this.*about|what.*are.*they.*talking|what.*is.*he.*talking|what.*is.*she.*talking|summarize\s+this|explain\s+this|break\s+this\s+down|what.*main\s+point|key\s+takeaway|transcript|what.*saying|what.*said|watch|recap|overview\s+of\s+this)/i.test(t);
   }, []);
   const sanitizeAssistantResponse = useCallback((s: string) => {
     return String(s || "").trim();
@@ -1463,6 +1570,39 @@ export default function OmniaGridPage() {
     const cleanText = responseText.replace(/\s*\[AI_CONNECTION:[^\]]*\]/g, "").trimEnd();
     return { connections: connections.slice(0, 3), cleanText };
   }, []);
+
+  const extractAndApplyTagActions = useCallback(async (responseText: string): Promise<string> => {
+    const tagRegex = /\[TAG_NOTES:([^|\]]+)\|([^\]]+)\]/g;
+    const actions: Array<{ noteId: string; tags: string[] }> = [];
+    let match: RegExpExecArray | null;
+    while ((match = tagRegex.exec(responseText)) !== null) {
+      const noteId = match[1].trim();
+      const rawTags = match[2].split(",").map((t) => t.trim().toLowerCase()).filter(Boolean);
+      if (noteId && rawTags.length > 0) actions.push({ noteId, tags: rawTags });
+    }
+    if (actions.length > 0 && user?.id) {
+      for (const action of actions) {
+        try {
+          const { data: existing } = await supabase
+            .from("notes")
+            .select("tags")
+            .eq("id", action.noteId)
+            .eq("user_id", user.id)
+            .single();
+          const currentTags: string[] = Array.isArray(existing?.tags) ? existing.tags : [];
+          const merged = [...new Set([...currentTags, ...action.tags])];
+          await supabase
+            .from("notes")
+            .update({ tags: merged })
+            .eq("id", action.noteId)
+            .eq("user_id", user.id);
+        } catch (err) {
+          console.error("[LYKN] Failed to apply tag action:", err);
+        }
+      }
+    }
+    return responseText.replace(/\s*\[TAG_NOTES:[^\]]*\]/g, "").trimEnd();
+  }, [user?.id]);
 
   const extractAndEmbedYouTubeUrls = useCallback((
     aiText: string,
@@ -2772,6 +2912,16 @@ export default function OmniaGridPage() {
             }
           } catch { /* ignore */ }
           applySnapshotRef.current(snap);
+        } else {
+          applySnapshotRef.current({
+            version: SNAPSHOT_VERSION,
+            blocks: {},
+            blockOrder: [],
+            camera: { x: 0, y: 0, zoom: 1 },
+            gridSize: 24,
+            wireConnections: [],
+            notesContent: EMPTY_NOTES_TIPTAP_DOC,
+          });
         }
         try { localStorage.removeItem(`omnia_draft_${id}`); } catch { /* ignore */ }
       } catch (err) {
@@ -3014,10 +3164,11 @@ export default function OmniaGridPage() {
   }, [boardId, savedMediaUrls, savedYouTubeIds]);
 
   // Knowledge base is project-scoped; workspace summary (vault + other boards) must load even without a project.
+  const kbBoardId = routeBoardId || boardId;
   useEffect(() => {
     if (!projectId) return;
-    refreshKnowledgeBase(projectId);
-  }, [projectId, refreshKnowledgeBase]);
+    refreshKnowledgeBase(projectId, { excludeBoardId: kbBoardId || undefined });
+  }, [projectId, kbBoardId, refreshKnowledgeBase]);
 
   useEffect(() => {
     if (!user?.id) return;
@@ -3242,7 +3393,7 @@ export default function OmniaGridPage() {
         setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: partial } : m)));
         if (!chatUserScrolledUpRef.current) {
           const el = chatScrollRef.current;
-          if (el) el.scrollTop = el.scrollHeight;
+          if (el) { chatProgrammaticScrollRef.current = true; el.scrollTop = el.scrollHeight; }
         }
         if (idx >= words.length) {
           if (chatTypingTimerRef.current) window.clearInterval(chatTypingTimerRef.current);
@@ -3473,6 +3624,10 @@ export default function OmniaGridPage() {
     const text = chatInput.trim();
     if (!text || isChatLoading || isSendingRef.current) return;
     chatUserScrolledUpRef.current = false;
+    if (streamTypingRafRef.current) { clearTimeout(streamTypingRafRef.current); streamTypingRafRef.current = null; }
+    streamTargetTextRef.current = "";
+    streamDisplayedLenRef.current = 0;
+    streamPromptIdRef.current = null;
     window.setTimeout(() => chatPanelInputRef.current?.focus(), 0);
 
     const now = Date.now();
@@ -3632,6 +3787,31 @@ export default function OmniaGridPage() {
       conversationArray.push({ role: "user", content: cappedText });
 
       let canvasContext = buildCanvasContext();
+
+      // Enrich canvas context with cached transcripts for focused YouTube blocks
+      const earlyFocused = (() => {
+        const s = useCanvasStore.getState();
+        return Array.isArray(s.focusedBrickIds) ? s.focusedBrickIds : [];
+      })();
+      for (const fid of earlyFocused) {
+        const blk: any = (useCanvasStore.getState().blocks as any)?.[fid];
+        if (!blk) continue;
+        const t = String(blk.type || "").toLowerCase();
+        const m = String(blk.mode || blk.data?.mode || "").toLowerCase();
+        if (t !== "youtube" && !(t === "create" && m === "video")) continue;
+        const vid = String(blk.videoId || blk.data?.videoId || "");
+        const rawUrl = String(blk.url || blk.data?.url || "");
+        const resolvedVid = vid || extractYouTubeVideoId(rawUrl) || "";
+        if (!resolvedVid) continue;
+        const cached = youtubeTranscriptCacheRef.current[resolvedVid];
+        if (cached?.transcript) {
+          const preview = cached.transcript.length > 2000
+            ? cached.transcript.slice(0, 2000) + "…"
+            : cached.transcript;
+          canvasContext += `\n\n[FOCUSED VIDEO TRANSCRIPT — id=${fid} videoId=${resolvedVid}]\n${cached.title || "YouTube Video"}\n${preview}`;
+        }
+      }
+
       const notesText = tiptapJsonToPlainText(notesContentRef.current).trim();
       if (notesText) {
         canvasContext += `\n\n[GRID NOTES]\n${notesText}`;
@@ -3649,6 +3829,20 @@ export default function OmniaGridPage() {
       console.log("[LYKN] Context sizes — canvas:", canvasContext.length, "kb:", kbText.length, "mediaPull:", mediaContext.length);
       const API_BASE_URL = apiBase;
       const asksAboutVideo = !isBrickAction && isVideoQuestion(text);
+
+      // Check if any focused bricks are YouTube/video blocks
+      const earlyFocusedIds: string[] = (() => {
+        const s = useCanvasStore.getState();
+        return Array.isArray(s.focusedBrickIds) ? s.focusedBrickIds : [];
+      })();
+      const hasFocusedVideo = earlyFocusedIds.some((fid) => {
+        const blk: any = (useCanvasStore.getState().blocks as any)?.[fid];
+        if (!blk) return false;
+        const t = String(blk.type || "").toLowerCase();
+        const m = String(blk.mode || blk.data?.mode || "").toLowerCase();
+        return t === "youtube" || (t === "create" && m === "video");
+      });
+
       // Find ALL YouTube videos on the board (not just visible ones) + chat attachments
       const boardVideos = getAllYouTubeBlocks();
       const attachedYouTubeVideos = sentAttachments
@@ -3656,6 +3850,29 @@ export default function OmniaGridPage() {
         .map((a) => ({ videoId: a.videoId!, url: a.url, title: a.name || `YouTube ${a.videoId}` }));
       const seen = new Set<string>();
       const allYouTubeVideos: Array<{ videoId: string; url: string; title: string }> = [];
+
+      // Prioritize focused video blocks so they're fetched first
+      if (hasFocusedVideo) {
+        for (const fid of earlyFocusedIds) {
+          const blk: any = (useCanvasStore.getState().blocks as any)?.[fid];
+          if (!blk) continue;
+          const t = String(blk.type || "").toLowerCase();
+          const m = String(blk.mode || blk.data?.mode || "").toLowerCase();
+          if (t !== "youtube" && !(t === "create" && m === "video")) continue;
+          const vid = String(blk.videoId || blk.data?.videoId || "");
+          const rawUrl = String(blk.url || blk.data?.url || "");
+          const resolvedVid = vid || extractYouTubeVideoId(rawUrl) || "";
+          if (resolvedVid && !seen.has(resolvedVid)) {
+            seen.add(resolvedVid);
+            allYouTubeVideos.push({
+              videoId: resolvedVid,
+              url: rawUrl || `https://www.youtube.com/watch?v=${resolvedVid}`,
+              title: String(blk.data?.title || blk.data?.name || "").trim(),
+            });
+          }
+        }
+      }
+
       for (const v of [...attachedYouTubeVideos, ...boardVideos]) {
         if (seen.has(v.videoId)) continue;
         seen.add(v.videoId);
@@ -3663,8 +3880,8 @@ export default function OmniaGridPage() {
       }
       // YouTube transcript fetching
       let youtubeGrounding = "";
-      const needsFullTranscript = asksAboutVideo || isBrickAction;
-      console.log("[LYKN] Video detection:", { asksAboutVideo, isBrickAction, needsFullTranscript, boardVideos: boardVideos.length, attachedYT: attachedYouTubeVideos.length, allYT: allYouTubeVideos.length, videoIds: allYouTubeVideos.map(v => v.videoId) });
+      const needsFullTranscript = asksAboutVideo || isBrickAction || hasFocusedVideo;
+      console.log("[LYKN] Video detection:", { asksAboutVideo, isBrickAction, hasFocusedVideo, needsFullTranscript, boardVideos: boardVideos.length, attachedYT: attachedYouTubeVideos.length, allYT: allYouTubeVideos.length, videoIds: allYouTubeVideos.map(v => v.videoId) });
       if (needsFullTranscript && allYouTubeVideos.length > 0 && !sendAbort.signal.aborted) {
         const targetVideo = allYouTubeVideos[0];
         setChatStatusText("Fetching video transcript...");
@@ -3686,8 +3903,8 @@ export default function OmniaGridPage() {
               segments: Array.isArray((tJson as any)?.segments) ? (tJson as any).segments : [],
             };
             const safeTranscript =
-              fullTranscript.length > 3000
-                ? fullTranscript.slice(0, 1000) + "...[truncated transcript]"
+              fullTranscript.length > 12000
+                ? fullTranscript.slice(0, 10000) + "\n...[transcript truncated — " + Math.round(fullTranscript.length / 1000) + "k total chars]"
                 : fullTranscript;
             youtubeGrounding = `Video: ${targetVideo.title || targetVideo.videoId}\nFull transcript:\n${safeTranscript}`;
             setChatStatusText("Transcript ready — generating response...");
@@ -3705,15 +3922,63 @@ export default function OmniaGridPage() {
         setChatStatusText("Analyzing visible YouTube videos...");
         youtubeGrounding = await buildYouTubeGrounding(API_BASE_URL, text, sendAbort.signal);
       }
+
+      // Transcribe focused uploaded (non-YouTube) video/audio blocks via Whisper
+      let uploadedVideoTranscript = "";
+      if (!sendAbort.signal.aborted) {
+        for (const fid of earlyFocusedIds) {
+          const blk: any = (useCanvasStore.getState().blocks as any)?.[fid];
+          if (!blk) continue;
+          const t = String(blk.type || "").toLowerCase();
+          const m = String(blk.mode || blk.data?.mode || "").toLowerCase();
+          if (!(t === "create" && m === "video")) continue;
+          const vid = String(blk.videoId || blk.data?.videoId || "");
+          const rawUrl = String(blk.url || blk.data?.url || "");
+          const resolvedVid = vid || extractYouTubeVideoId(rawUrl) || "";
+          if (resolvedVid) continue; // YouTube block — already handled above
+          if (!rawUrl) continue;
+          try {
+            setChatStatusText("Transcribing uploaded video...");
+            const resp = await fetch(rawUrl, { signal: sendAbort.signal });
+            if (!resp.ok) continue;
+            const blob = await resp.blob();
+            const mimeType = String(blk.data?.mime || blk.mime || blob.type || "video/mp4");
+            const ext = mimeType.split("/")[1] || "mp4";
+            const fileName = String(blk.data?.name || `video.${ext}`);
+            const formData = new FormData();
+            formData.append("file", blob, fileName);
+            const wRes = await fetch(`${API_BASE_URL}/api/whisper/transcribe`, {
+              method: "POST",
+              body: formData,
+              signal: sendAbort.signal,
+            });
+            if (wRes.ok) {
+              const wData = await wRes.json();
+              const tr = String(wData?.transcript || "").trim();
+              if (tr) {
+                const safeTr = tr.length > 10000
+                  ? tr.slice(0, 10000) + "\n...[transcript truncated]"
+                  : tr;
+                uploadedVideoTranscript += `\nUploaded video "${fileName}":\n${safeTr}`;
+              }
+            }
+          } catch { /* continue without transcript */ }
+        }
+      }
+
       const userTextCapped = text.length > 3000 ? text.slice(0, 3000) + "…" : text;
       const videoTranscriptBlock = youtubeGrounding
         ? (youtubeGrounding.includes("Full transcript:")
             ? `[VIDEO TRANSCRIPT — Use this to answer the user's question about the video. Do NOT say you cannot access the video. The transcript below IS the video's content.]\n${youtubeGrounding}`
             : `YouTube transcript context:\n${youtubeGrounding}`)
         : "";
+      const uploadedVideoBlock = uploadedVideoTranscript
+        ? `[UPLOADED VIDEO TRANSCRIPT — Use this to answer the user's question about the video. The transcript below IS the video's spoken content.]\n${uploadedVideoTranscript.trim()}`
+        : "";
       const prompt = [
         history ? `Conversation so far:\n${history}` : "",
         videoTranscriptBlock,
+        uploadedVideoBlock,
         `Latest user message:\n${userTextCapped}${attachmentContext}`,
       ].filter(Boolean).join("\n\n");
       const attachedImageUrls = sentAttachments
@@ -3754,7 +4019,7 @@ export default function OmniaGridPage() {
       }
 
       // Collect remaining board images sorted by proximity to viewport center
-      const MAX_VISION_IMAGES = 6;
+      const MAX_VISION_IMAGES = 8;
       if (visionImageUrls.length < MAX_VISION_IMAGES) {
         const cam = (st as any).camera || { x: 0, y: 0 };
         const vw = window.innerWidth || 1280;
@@ -3792,8 +4057,10 @@ export default function OmniaGridPage() {
       }
 
 
-      const hasVideoTranscript = Boolean(youtubeGrounding && youtubeGrounding.includes("Full transcript:"));
-      console.log("[LYKN] Prompt being sent:", { promptLen: prompt.length, hasVideoTranscript, youtubeGroundingLen: youtubeGrounding.length, videoTranscriptBlockLen: videoTranscriptBlock.length, promptPreview: prompt.slice(0, 300) });
+      const hasVideoTranscript = Boolean(
+        (youtubeGrounding && youtubeGrounding.includes("Full transcript:")) || uploadedVideoTranscript
+      );
+      console.log("[LYKN] Prompt being sent:", { promptLen: prompt.length, hasVideoTranscript, youtubeGroundingLen: youtubeGrounding.length, uploadedVideoLen: uploadedVideoTranscript.length, videoTranscriptBlockLen: videoTranscriptBlock.length, promptPreview: prompt.slice(0, 300) });
       // Send the full prompt (with transcript) as BOTH `prompt` and `text` when we have video context.
       // The server's buildLyknStreamPrompt uses `text` for the user message — if we only send
       // the raw question as `text`, the server throws away the transcript.
@@ -3825,7 +4092,7 @@ export default function OmniaGridPage() {
         text: textForServer,
         intent: "ask",
         context: (canvasContext || "").slice(0, 14000),
-        knowledgeBase: (kbText || "").slice(0, 2000),
+        knowledgeBase: (kbText || "").slice(0, projectId ? 4000 : 2000),
         conversation: truncatedConversation,
         conversationMemory: memoryText || undefined,
         workspaceContext: workspaceContextStr,
@@ -3999,10 +4266,13 @@ export default function OmniaGridPage() {
                     if (firstToken) {
                       setChatStatusText("Responding...");
                       firstToken = false;
+                      streamDisplayedLenRef.current = 0;
+                      streamTargetTextRef.current = "";
+                      streamPromptIdRef.current = promptId;
                     }
                     accumulated += parsed.t;
-                    const visibleText = accumulated.replace(/\n*(?:Sources?|References?):?\s*\n[\s\S]*$/i, "").trimEnd();
-                    setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: visibleText } : m)));
+                    const visibleText = accumulated.replace(/\n*(?:Sources?|References?):?\s*\n[\s\S]*$/i, "").replace(/\s*\[TAG_NOTES:[^\]]*\]/g, "").trimEnd();
+                    streamTargetTextRef.current = visibleText;
                     if (responseBlockId && typeof updateBlock === "function") {
                       const normalized = normalizeAiTextForBlock(visibleText);
                       const curBlk: any = useCanvasStore.getState().blocks?.[responseBlockId];
@@ -4013,9 +4283,27 @@ export default function OmniaGridPage() {
                         updateBlock(String(responseBlockId), { content: normalized, width: size.width, height: size.height } as any);
                       }
                     }
-                    if (!chatUserScrolledUpRef.current) {
-                      const el = chatScrollRef.current;
-                      if (el) el.scrollTop = el.scrollHeight;
+                    if (!streamTypingRafRef.current) {
+                      const typeTick = () => {
+                        const target = streamTargetTextRef.current;
+                        const cur = streamDisplayedLenRef.current;
+                        if (cur < target.length) {
+                          const behind = target.length - cur;
+                          const step = Math.max(2, Math.min(6, Math.ceil(behind / 6)));
+                          streamDisplayedLenRef.current = Math.min(cur + step, target.length);
+                          const partial = target.substring(0, streamDisplayedLenRef.current);
+                          const pid = streamPromptIdRef.current;
+                          if (pid) setChatMessages((prev) => prev.map((m) => (m.id === pid ? { ...m, aiResponse: partial } : m)));
+                          if (!chatUserScrolledUpRef.current) {
+                            const el = chatScrollRef.current;
+                            if (el) { chatProgrammaticScrollRef.current = true; el.scrollTop = el.scrollHeight; }
+                          }
+                          streamTypingRafRef.current = window.setTimeout(typeTick, 18);
+                        } else {
+                          streamTypingRafRef.current = null;
+                        }
+                      };
+                      streamTypingRafRef.current = window.setTimeout(typeTick, 18);
                     }
                   }
                 } catch {}
@@ -4027,6 +4315,14 @@ export default function OmniaGridPage() {
             clearTimeout(inactivityTimer);
           }
         }
+
+        if (streamTypingRafRef.current) { clearTimeout(streamTypingRafRef.current); streamTypingRafRef.current = null; }
+        if (streamPromptIdRef.current && streamDisplayedLenRef.current < streamTargetTextRef.current.length) {
+          setChatMessages((prev) => prev.map((m) => (m.id === streamPromptIdRef.current ? { ...m, aiResponse: streamTargetTextRef.current } : m)));
+        }
+        streamTargetTextRef.current = "";
+        streamDisplayedLenRef.current = 0;
+        streamPromptIdRef.current = null;
 
         let aiText = sanitizeAssistantResponse(accumulated.trim());
         const hasYTG = Boolean(String(youtubeGrounding || "").trim() && String(youtubeGrounding || "").trim() !== "(none)");
@@ -4056,13 +4352,14 @@ export default function OmniaGridPage() {
             }
           }
         }
-        const { cleanText: displayText, sources } = extractSourceLinks(textWithoutConnections);
+        const textAfterTags = await extractAndApplyTagActions(textWithoutConnections);
+        const { cleanText: displayText, sources } = extractSourceLinks(textAfterTags);
         const ytResult = extractAndEmbedYouTubeUrls(displayText, promptId, responseBlockId);
         const mediaResult = await extractAndEmbedMediaItems(displayText, responseBlockId);
         const finalDisplayText = mediaResult.pulled > 0 ? mediaResult.cleanText : displayText;
         const webLinks1 = extractWebLinksFromText(finalDisplayText);
         setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: finalDisplayText, sources, aiYouTubeUrls: ytResult.urls.length ? ytResult.urls : undefined, aiWebLinks: webLinks1.length ? webLinks1 : undefined } : m)));
-        aiThreadRef.current.push({ role: "assistant", content: textWithoutConnections });
+        aiThreadRef.current.push({ role: "assistant", content: textAfterTags });
         if (aiThreadRef.current.length > 40) aiThreadRef.current = aiThreadRef.current.slice(-40);
         if (user?.id) { invalidateMemoryCache(); saveExchange(user.id, "grid", routeBoardId || boardId || null, titleRef.current || null, cappedText, textWithoutConnections); }
         if (responseBlockId && typeof updateBlock === "function") {
@@ -4170,16 +4467,17 @@ export default function OmniaGridPage() {
             }
           }
         }
-        const { cleanText: displayText2, sources: sources2 } = extractSourceLinks(textWithoutConnections2);
+        const textAfterTags2 = await extractAndApplyTagActions(textWithoutConnections2);
+        const { cleanText: displayText2, sources: sources2 } = extractSourceLinks(textAfterTags2);
         const ytResult2 = extractAndEmbedYouTubeUrls(displayText2, promptId, responseBlockId);
         const mediaResult2 = await extractAndEmbedMediaItems(displayText2, responseBlockId);
         const finalDisplayText2 = mediaResult2.pulled > 0 ? mediaResult2.cleanText : displayText2;
         await typeResponseIntoChat(promptId, finalDisplayText2);
         const webLinks2 = extractWebLinksFromText(finalDisplayText2);
         setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, sources: sources2, aiYouTubeUrls: ytResult2.urls.length ? ytResult2.urls : undefined, aiWebLinks: webLinks2.length ? webLinks2 : undefined } : m)));
-        aiThreadRef.current.push({ role: "assistant", content: textWithoutConnections2 });
+        aiThreadRef.current.push({ role: "assistant", content: textAfterTags2 });
         if (aiThreadRef.current.length > 40) aiThreadRef.current = aiThreadRef.current.slice(-40);
-        if (user?.id) { invalidateMemoryCache(); saveExchange(user.id, "grid", routeBoardId || boardId || null, titleRef.current || null, cappedText, textWithoutConnections2); }
+        if (user?.id) { invalidateMemoryCache(); saveExchange(user.id, "grid", routeBoardId || boardId || null, titleRef.current || null, cappedText, textAfterTags2); }
         if (responseBlockId) {
           await typeIntoAiResponseBlock(String(responseBlockId), finalDisplayText2);
           if (sources2.length > 0) attachSourcesToBlock(String(responseBlockId), sources2);
@@ -4253,14 +4551,30 @@ export default function OmniaGridPage() {
     return el.scrollHeight - el.scrollTop - el.clientHeight <= threshold;
   }, []);
 
+  const chatProgrammaticScrollRef = useRef(false);
+
   useEffect(() => {
     const el = chatScrollRef.current;
     if (!el) return;
-    const onScroll = () => {
-      chatUserScrolledUpRef.current = !chatIsNearBottom();
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY < 0) chatUserScrolledUpRef.current = true;
     };
+    const onTouchStart = () => { chatUserScrolledUpRef.current = true; };
+    const onScroll = () => {
+      if (chatProgrammaticScrollRef.current) {
+        chatProgrammaticScrollRef.current = false;
+        return;
+      }
+      if (chatIsNearBottom()) chatUserScrolledUpRef.current = false;
+    };
+    el.addEventListener("wheel", onWheel, { passive: true });
+    el.addEventListener("touchstart", onTouchStart, { passive: true });
     el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
+    return () => {
+      el.removeEventListener("wheel", onWheel);
+      el.removeEventListener("touchstart", onTouchStart);
+      el.removeEventListener("scroll", onScroll);
+    };
   }, [chatMode, chatRailVisible, chatIsNearBottom]);
 
   useEffect(() => {
@@ -4268,6 +4582,7 @@ export default function OmniaGridPage() {
     if (chatUserScrolledUpRef.current) return;
     const el = chatScrollRef.current;
     if (!el) return;
+    chatProgrammaticScrollRef.current = true;
     el.scrollTop = el.scrollHeight;
   }, [chatMessages, isChatLoading, chatMode, chatRailVisible]);
 
@@ -4386,7 +4701,7 @@ export default function OmniaGridPage() {
 
   const resizeChatInput = useCallback((el: HTMLTextAreaElement | null) => {
     if (!el) return;
-    const maxHeight = 220;
+    const maxHeight = 180;
     el.style.height = "auto";
     const minH = el.dataset.minH ? Number(el.dataset.minH) : 36;
     const nextHeight = Math.min(maxHeight, Math.max(minH, el.scrollHeight));
@@ -4491,22 +4806,41 @@ export default function OmniaGridPage() {
 
     if (payloadAttachments.length > 0) {
       for (const att of payloadAttachments) {
-        let url = String(att?.url || "").trim();
-        if (!url) continue;
         const attType = String(att?.type || "").toLowerCase();
-        const videoId = att?.videoId || (attType === "youtube" ? extractYouTubeVideoId(url) : "") || "";
+        let url = String(att?.url || "").trim();
+        let videoId = String(att?.videoId || "").trim();
+        if (!videoId && attType === "youtube") videoId = extractYouTubeVideoId(url) || "";
+        if (!url && videoId) url = `https://www.youtube.com/watch?v=${videoId}`;
 
-        if (!url.startsWith("http") && !url.startsWith("data:") && attType !== "youtube") {
+        const pathOnly = String(att?.storagePath || "").trim();
+        if (!url || (!url.startsWith("http") && !url.startsWith("data:") && attType !== "youtube")) {
           try {
-            const path = att?.storagePath || url;
-            const bucket = att?.storageBucket || "user-files";
-            const { data } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 60 * 24 * 7);
-            if (data?.signedUrl) url = data.signedUrl;
+            const path = pathOnly || url;
+            if (path) {
+              const bucket = att?.storageBucket || "user-files";
+              const { data } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 60 * 24 * 7);
+              if (data?.signedUrl) url = data.signedUrl;
+            }
           } catch { /* ignore */ }
         }
 
         const transcript = String(att?.transcript || "").trim();
         const pdfText = String(att?.pdfText || att?.extractedText || "").trim();
+        if (!url && pdfText) {
+          addFocusedAttachment({
+            id: makeAttId(),
+            type: "pdf",
+            url: "",
+            name: String(att?.name || att?.title || title || "PDF").trim(),
+            mime: String(att?.mime || "application/pdf"),
+            size: Number(att?.size || 0),
+            vaultTitle: title,
+            pdfText,
+          });
+          continue;
+        }
+        if (!url) continue;
+
         addFocusedAttachment({
           id: makeAttId(),
           type: attType || inferUrlAttachmentType(url),
@@ -4632,6 +4966,16 @@ export default function OmniaGridPage() {
     e.preventDefault();
     e.stopPropagation();
 
+    const vaultRaw = e.dataTransfer.getData("application/x-omnia-vault");
+    if (vaultRaw) {
+      try {
+        const payload = JSON.parse(vaultRaw) as Record<string, unknown>;
+        (window as any).__omnia_pending_vault = null;
+        void applyVaultDropToChat(payload);
+        return;
+      } catch { /* fall through */ }
+    }
+
     // Grid file collage item
     const canvasFileRaw = e.dataTransfer.getData("application/x-grid-file");
     if (canvasFileRaw) {
@@ -4724,7 +5068,7 @@ export default function OmniaGridPage() {
       reader.readAsDataURL(f);
     }
     window.setTimeout(() => chatPanelInputRef.current?.focus(), 0);
-  }, [addFocusedAttachment]);
+  }, [addFocusedAttachment, applyVaultDropToChat]);
 
   useEffect(() => {
     // Keep whichever composer is visible synced with current text height.
@@ -4835,12 +5179,78 @@ export default function OmniaGridPage() {
       });
   }, [chatInput, isDictating]);
 
+  function OmniaChatBarToolbar({ compact, onSend }: { compact?: boolean; onSend: () => void | Promise<void> }) {
+    const sendDisabled = !chatInput.trim() || isChatLoading || isDictating || isTranscribing;
+    const triggerCls = compact
+      ? "omnia-neu-chat-toolbar-select-trigger h-8 max-w-[6.5rem] min-w-0 shrink-0 rounded-lg border-0 bg-transparent text-[0.625rem] px-1.5 font-medium text-black/75 shadow-none dark:text-white/80 [&>span]:truncate"
+      : "omnia-neu-chat-toolbar-select-trigger h-9 max-w-[9rem] sm:max-w-[10rem] min-w-0 shrink-0 rounded-lg border-0 bg-transparent text-xs font-medium text-black/75 shadow-none dark:text-white/80 [&>span]:truncate";
+    const iconBtn = compact ? "h-8 w-8" : "h-9 w-9";
+    const iconSm = compact ? "w-3 h-3" : "w-3.5 h-3.5";
+
+    return (
+      <div className={`flex items-center gap-2 ${compact ? "pt-0.5" : "pt-1"}`}>
+        <Select value={selectedModel} onValueChange={persistSelectedModel}>
+          <SelectTrigger className={triggerCls}>
+            <SelectValue placeholder="Model" />
+          </SelectTrigger>
+          <SelectContent
+            side="top"
+            align="start"
+            className="glass-control border border-white/25 dark:border-white/10 bg-white/35 dark:bg-white/10 backdrop-blur-xl shadow-lg max-h-[min(28rem,70vh)] overflow-y-auto w-[min(92vw,18rem)]"
+          >
+            <OmniaGridModelSelectMenuBody />
+          </SelectContent>
+        </Select>
+        <div className="flex-1 min-w-[4px]" aria-hidden />
+        <button
+          type="button"
+          onClick={handleOpenAttachments}
+          className={`${iconBtn} omnia-neu-chat-icon-plain flex items-center justify-center text-black/80 dark:text-white/85 shrink-0`}
+          title="Add attachments"
+        >
+          <Plus className={iconSm} />
+        </button>
+        {isChatLoading ? (
+          <button
+            type="button"
+            onClick={handleStopAi}
+            className={`${iconBtn} omnia-neu-chat-icon-plain flex items-center justify-center shrink-0`}
+            title="Stop generating"
+          >
+            <Square className={`${compact ? "w-2.5 h-2.5" : "w-3 h-3"} text-red-600 dark:text-red-400`} fill="currentColor" />
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={handleDictateToggle}
+            className={`${iconBtn} omnia-neu-chat-icon-plain flex items-center justify-center shrink-0 ${isDictating ? "ring-1 ring-blue-400/40 rounded-lg" : ""}`}
+            title={isDictating ? "Stop recording" : "Dictate"}
+          >
+            <Mic className={`${iconSm} text-black/75 dark:text-white/80 ${isDictating ? "text-blue-600 dark:text-blue-400" : ""}`} />
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => void onSend()}
+          disabled={sendDisabled}
+          className={`${iconBtn} omnia-neu-chat-send-btn flex items-center justify-center shrink-0 ${sendDisabled ? "opacity-40 cursor-not-allowed" : "text-blue-600 dark:text-blue-400"}`}
+          title="Send"
+        >
+          <ArrowUp className={iconSm} strokeWidth={2.25} />
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="w-full h-[100svh] relative overflow-hidden bg-transparent">
       {/* Match BrickEditor layout: minimal chrome + floating controls */}
       {/* Heading panel (matches Create view top pill) */}
       {/* Board title — always to the right of the Signed-in pill */}
-      <div className="fixed top-[1.1rem] z-[68] pointer-events-auto" style={{ left: "max(calc(var(--sidebar-offset, 0px) + 1rem), 11.5rem)" }}>
+      <div
+        className={`fixed top-[1.1rem] pointer-events-auto ${notesOpen ? "z-[235]" : "z-[68]"}`}
+        style={{ left: "max(calc(var(--sidebar-offset, 0px) + 1rem), 11.5rem)" }}
+      >
         <input
           type="text"
           value={title}
@@ -4852,7 +5262,10 @@ export default function OmniaGridPage() {
         />
       </div>
 
-      <div className="fixed top-3 right-0 z-[70] px-3 flex items-center justify-end pointer-events-none" style={{ left: "var(--sidebar-offset, 0px)", transition: "left 200ms ease" }}>
+      <div
+        className={`fixed top-3 right-0 px-3 flex items-center justify-end pointer-events-none ${notesOpen ? "z-[235]" : "z-[70]"}`}
+        style={{ left: "var(--sidebar-offset, 0px)", transition: "left 200ms ease" }}
+      >
         <div className="pointer-events-auto flex items-center gap-2">
           <button
             type="button"
@@ -4867,97 +5280,15 @@ export default function OmniaGridPage() {
           {topPanelOpen && (
             <div className="flex items-center gap-1 p-1 rounded-full glass-control flex-wrap">
               {/* AI model selector */}
-              <Select
-                value={selectedModel}
-                onValueChange={(value) => {
-                  setSelectedModel(value);
-                  try {
-                    const saved = localStorage.getItem("lykinsai_settings");
-                    const settings = saved ? JSON.parse(saved) : {};
-                    settings.aiModel = value;
-                    localStorage.setItem("lykinsai_settings", JSON.stringify(settings));
-                    window.dispatchEvent(new CustomEvent("lykinsai_settings_changed"));
-                  } catch {
-                    // ignore
-                  }
-                }}
-              >
+              <Select value={selectedModel} onValueChange={persistSelectedModel}>
                 <SelectTrigger className="w-[6.5rem] sm:w-[8.125rem] h-9 rounded-full glass-control hover:opacity-90 text-xs font-medium">
                   <SelectValue placeholder="Model" />
                 </SelectTrigger>
                 <SelectContent
                   align="end"
-                  className="glass-control border border-white/25 dark:border-white/10 bg-white/35 dark:bg-white/10 backdrop-blur-xl shadow-lg overflow-hidden"
+                  className="glass-control border border-white/25 dark:border-white/10 bg-white/35 dark:bg-white/10 backdrop-blur-xl shadow-lg max-h-[min(28rem,70vh)] overflow-y-auto"
                 >
-                  <SelectGroup>
-                    <SelectLabel>Latest</SelectLabel>
-                    <SelectItem value="claude-sonnet-4-6" hint="Anthropic flagship">Claude Sonnet 4.6</SelectItem>
-                    <SelectItem value="gpt-5.4" hint="OpenAI flagship">GPT-5.4</SelectItem>
-                    <SelectItem value="gemini-3.1-pro-preview" hint="Google flagship">Gemini 3.1 Pro</SelectItem>
-                    <SelectItem value="grok-4-1-fast-reasoning" hint="xAI flagship">Grok 4.1 Fast Reasoning</SelectItem>
-                  </SelectGroup>
-                  <SelectSeparator />
-                  <SelectGroup>
-                    <SelectLabel>Fastest</SelectLabel>
-                    <SelectItem value="gemini-3-flash-preview" hint="Google, ultra-fast">Gemini 3 Flash</SelectItem>
-                    <SelectItem value="gemini-3.1-flash-lite-preview" hint="Google, cheapest">Gemini 3.1 Flash-Lite</SelectItem>
-                    <SelectItem value="gemini-2.5-flash" hint="Google, balanced">Gemini 2.5 Flash</SelectItem>
-                    <SelectItem value="gpt-4.1-nano" hint="OpenAI, smallest">GPT-4.1 Nano</SelectItem>
-                    <SelectItem value="gpt-4.1-mini" hint="OpenAI, fast + smart">GPT-4.1 Mini</SelectItem>
-                    <SelectItem value="gpt-5-mini" hint="OpenAI, near-frontier">GPT-5 Mini</SelectItem>
-                    <SelectItem value="claude-haiku-4-5-20251001" hint="Anthropic, fast">Claude Haiku 4.5</SelectItem>
-                    <SelectItem value="grok-4-1-fast-non-reasoning" hint="xAI, low latency">Grok 4.1 Fast Non-Reasoning</SelectItem>
-                  </SelectGroup>
-                  <SelectSeparator />
-                  <SelectGroup>
-                    <SelectLabel>Cheap</SelectLabel>
-                    <SelectItem value="gpt-4o-mini" hint="OpenAI, budget">GPT-4o Mini</SelectItem>
-                    <SelectItem value="o4-mini" hint="OpenAI, cheap reasoning">o4 Mini</SelectItem>
-                    <SelectItem value="grok-3-mini" hint="xAI, budget">Grok 3 Mini</SelectItem>
-                  </SelectGroup>
-                  <SelectSeparator />
-                  <SelectGroup>
-                    <SelectLabel>Image Gen</SelectLabel>
-                    <SelectItem value="gpt-image-1.5" hint="OpenAI, images">GPT Image 1.5</SelectItem>
-                    <SelectItem value="gemini-3.1-flash-image-preview" hint="Google, images">Nano Banana 2</SelectItem>
-                    <SelectItem value="grok-imagine-image-pro" hint="xAI, pro images">Grok Imagine Image Pro</SelectItem>
-                    <SelectItem value="grok-imagine-image" hint="xAI, images">Grok Imagine Image</SelectItem>
-                    <SelectItem value="grok-2-image-1212" hint="xAI, images">Grok 2 Image</SelectItem>
-                    <SelectItem value="dall-e-3" hint="OpenAI, images">DALL-E 3</SelectItem>
-                  </SelectGroup>
-                  <SelectSeparator />
-                  <SelectGroup>
-                    <SelectLabel>Deep Thinking</SelectLabel>
-                    <SelectItem value="o3" hint="OpenAI, reasoning">o3</SelectItem>
-                    <SelectItem value="o3-pro" hint="OpenAI, max reasoning">o3 Pro</SelectItem>
-                    <SelectItem value="gpt-5.4-pro" hint="OpenAI, extended">GPT-5.4 Pro</SelectItem>
-                    <SelectItem value="claude-opus-4-1-20250805" hint="Anthropic, deep">Claude Opus 4.1</SelectItem>
-                    <SelectItem value="claude-opus-4-20250514" hint="Anthropic, deep">Claude Opus 4</SelectItem>
-                    <SelectItem value="gemini-2.5-pro" hint="Google, reasoning">Gemini 2.5 Pro</SelectItem>
-                    <SelectItem value="grok-4-fast-reasoning" hint="xAI, reasoning">Grok 4 Fast Reasoning</SelectItem>
-                  </SelectGroup>
-                  <SelectSeparator />
-                  <SelectGroup>
-                    <SelectLabel>Code</SelectLabel>
-                    <SelectItem value="claude-opus-4-6-code" hint="Anthropic, top coder">Claude Opus 4.6</SelectItem>
-                    <SelectItem value="gpt-5.3-codex" hint="OpenAI, agentic code">Codex 5.3</SelectItem>
-                    <SelectItem value="gpt-4.1" hint="OpenAI, 1M ctx code">GPT-4.1</SelectItem>
-                    <SelectItem value="grok-code-fast-1" hint="xAI, code">Grok Code Fast 1</SelectItem>
-                  </SelectGroup>
-                  <SelectSeparator />
-                  <SelectGroup>
-                    <SelectLabel>General</SelectLabel>
-                    <SelectItem value="gpt-5.2" hint="OpenAI, previous gen">GPT-5.2</SelectItem>
-                    <SelectItem value="gpt-5.1" hint="OpenAI, previous gen">GPT-5.1</SelectItem>
-                    <SelectItem value="gpt-5" hint="OpenAI, previous gen">GPT-5</SelectItem>
-                    <SelectItem value="gpt-4o" hint="OpenAI, versatile">GPT-4o</SelectItem>
-                    <SelectItem value="claude-sonnet-4-20250514" hint="Anthropic, balanced">Claude Sonnet 4</SelectItem>
-                    <SelectItem value="grok-4-fast-non-reasoning" hint="xAI, general">Grok 4 Fast Non-Reasoning</SelectItem>
-                    <SelectItem value="grok-4-0709" hint="xAI, general">Grok 4 0709</SelectItem>
-                    <SelectItem value="grok-3" hint="xAI, previous gen">Grok 3</SelectItem>
-                    <SelectItem value="grok-2-vision-1212" hint="xAI, vision">Grok 2 Vision</SelectItem>
-                    <SelectItem value="unified-auto" hint="Auto-picks best">Unified AI (Auto)</SelectItem>
-                  </SelectGroup>
+                  <OmniaGridModelSelectMenuBody />
                 </SelectContent>
               </Select>
 
@@ -5024,7 +5355,7 @@ export default function OmniaGridPage() {
 
       {vaultDragActive && (
         <div
-          className="fixed inset-0 z-[90]"
+          className="fixed inset-0 z-[250]"
           style={{ background: "transparent" }}
           onDragOver={(e) => {
             e.preventDefault();
@@ -5042,6 +5373,24 @@ export default function OmniaGridPage() {
             (window as any).__omnia_pending_vault = null;
 
             const attachments = Array.isArray(pending.attachments) ? pending.attachments : [];
+
+            let dropOverNotes = false;
+            if (notesOpen) {
+              const overlayEl = e.currentTarget as HTMLElement;
+              overlayEl.style.pointerEvents = "none";
+              const under = document.elementFromPoint(e.clientX, e.clientY);
+              overlayEl.style.pointerEvents = "";
+              dropOverNotes = !!(under && (under as Element).closest("[data-omnia-notes-root]"));
+            }
+
+            if (dropOverNotes) {
+              window.dispatchEvent(
+                new CustomEvent("omnia_notes_insert_vault", {
+                  detail: { payload: pending, clientX: e.clientX, clientY: e.clientY },
+                })
+              );
+              return;
+            }
 
             // In focused chat mode, route dropped content as visual attachments
             if (chatMode) {
@@ -5201,19 +5550,31 @@ export default function OmniaGridPage() {
               new CustomEvent("omnia_attach_vault_text", { detail: { title: pending.title, content: pending.content, clientX: cx, clientY: cy } })
             );
           }}
-          onDragLeave={(e) => {
-            if (!e.relatedTarget) setVaultDragActive(false);
-          }}
         />
       )}
 
       {showVaultSidebar && isMobileGrid && (
-        <div className="fixed inset-0 z-[64] bg-black/20 backdrop-blur-[2px]" onClick={() => setShowVaultSidebar(false)} />
+        <div
+          className={`fixed inset-0 bg-black/20 backdrop-blur-[2px] ${notesOpen ? "z-[228]" : "z-[64]"}`}
+          onClick={() => setShowVaultSidebar(false)}
+        />
       )}
       <aside
         className={`fixed bottom-0 right-0 max-w-[92vw] border-l border-white/20 dark:border-white/10 bg-white/40 dark:bg-[rgba(20,20,24,0.55)] shadow-[0_18px_60px_rgba(0,0,0,0.22)] backdrop-blur-[40px] backdrop-saturate-[1.6] transition-transform duration-300 ${
           showVaultSidebar ? "translate-x-0 pointer-events-auto" : "translate-x-full pointer-events-none"
-        } ${isMobileGrid ? "z-[80] inset-x-0 border-l-0 max-w-none" : "z-[65]"}`}
+        } ${
+          notesOpen
+            ? isMobileGrid
+              ? "z-[231] inset-x-0 border-l-0 max-w-none"
+              : "z-[231]"
+            : chatMode && showVaultSidebar
+              ? isMobileGrid
+                ? "z-[100] inset-x-0 border-l-0 max-w-none"
+                : "z-[100]"
+              : isMobileGrid
+                ? "z-[80] inset-x-0 border-l-0 max-w-none"
+                : "z-[65]"
+        }`}
         style={{ top: isMobileGrid ? 0 : "var(--header-height, 4.9rem)", width: isMobileGrid ? undefined : `${vaultSidebarWidthPx}px` }}
       >
         <div className="h-full flex flex-col">
@@ -5249,39 +5610,33 @@ export default function OmniaGridPage() {
           className={`fixed top-0 bottom-0 right-0 z-[85] pointer-events-none flex items-center justify-center px-4 ease-out ${centerChatLeaving ? "opacity-0 translate-x-[40vw] scale-[0.85]" : "opacity-100 translate-x-0 scale-100"}`}
           style={{ left: "var(--sidebar-offset, 0px)", transition: "all 400ms cubic-bezier(0.22,1,0.36,1)" }}
         >
-          <div className="w-full max-w-2xl space-y-6">
+          <div className="w-full max-w-2xl space-y-10 sm:space-y-12">
             <p
               className={`pointer-events-none text-center text-xl sm:text-3xl font-semibold tracking-tight min-h-[44px] text-black ${centerChatLeaving ? "opacity-0" : ""}`}
               style={{ transition: "opacity 400ms ease-out" }}
             >
               {typedWelcome}
             </p>
-            <div className="pointer-events-auto glass-control rounded-2xl p-2 w-full transition-all duration-300">
-              <div className="flex items-center gap-2">
-                <button type="button" onClick={handleOpenAttachments} className="h-10 w-10 rounded-full flex items-center justify-center transition-colors hover:bg-black/10" title="Add attachments">
-                  <Plus className="w-4 h-4" />
-                </button>
-                {isDictating || isTranscribing ? (
-                  <div className="w-full min-h-[44px] rounded-xl border border-blue-400/40 bg-blue-500/5 px-4 py-3 flex items-center gap-3">
-                    {isDictating ? (<><div className="dictation-wave"><span /><span /><span /><span /><span /></div><span className="text-sm text-blue-500 font-medium">Recording...</span></>) : (<><div className="brick-spinner" style={{ width: 16, height: 16 }} /><span className="text-sm text-black/60">Transcribing...</span></>)}
-                  </div>
-                ) : (
-                  <textarea
-                    ref={centerChatInputRef}
-                    value={chatInput}
-                    onChange={(e) => setChatInput(e.target.value)}
-                    onPaste={handleChatPaste}
-                    onInput={(e) => resizeChatInput(e.currentTarget)}
-                    onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void handleCenterAskSend(); } }}
-                    placeholder="Ask me anything..."
-                    rows={1}
-                    className="w-full min-h-[44px] max-h-[220px] rounded-xl bg-transparent border border-white/30 px-4 py-3 text-sm text-black placeholder:text-black/55 outline-none resize-none leading-5 scrollbar-hide"
-                  />
-                )}
-                <button type="button" onClick={handleDictateToggle} className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors ${isDictating ? "bg-blue-500/15" : "hover:bg-black/10"}`} title={isDictating ? "Stop recording" : "Dictate"}>
-                  <Mic className={`w-4 h-4 ${isDictating ? "text-blue-500" : ""}`} />
-                </button>
-              </div>
+            <div className="pointer-events-auto omnia-neu-chat-shell omnia-chat-border-run-once p-2.5 sm:p-3 w-full transition-all duration-300 flex flex-col gap-1.5">
+              {isDictating || isTranscribing ? (
+                <div className="w-full min-h-[3.25rem] omnia-neu-chat-field ring-1 ring-blue-400/35 px-3 py-2 flex items-center gap-3">
+                  {isDictating ? (<><div className="dictation-wave"><span /><span /><span /><span /><span /></div><span className="text-xs text-blue-600 dark:text-blue-400 font-medium">Recording...</span></>) : (<><div className="brick-spinner" style={{ width: 14, height: 14 }} /><span className="text-xs text-black/60 dark:text-white/55">Transcribing...</span></>)}
+                </div>
+              ) : (
+                <textarea
+                  ref={centerChatInputRef}
+                  data-min-h="52"
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  onPaste={handleChatPaste}
+                  onInput={(e) => resizeChatInput(e.currentTarget)}
+                  onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void handleCenterAskSend(); } }}
+                  placeholder="Ask me anything..."
+                  rows={1}
+                  className="w-full min-h-[3.25rem] max-h-[180px] omnia-neu-chat-field px-3 py-2 text-xs leading-4 text-black dark:text-white placeholder:text-black/50 dark:placeholder:text-white/45 outline-none resize-none scrollbar-hide"
+                />
+              )}
+              <OmniaChatBarToolbar onSend={handleCenterAskSend} />
             </div>
           </div>
         </div>
@@ -5290,14 +5645,16 @@ export default function OmniaGridPage() {
       {/* Mobile backdrop for side rail */}
       {!chatMode && chatRailVisible && isMobileGrid && (
         <div
-          className="fixed inset-0 z-[63] bg-black/20 backdrop-blur-[2px]"
+          className={`fixed inset-0 bg-black/20 backdrop-blur-[2px] ${notesOpen ? "z-[227]" : "z-[63]"}`}
           onClick={() => { setChatRailVisible(false); setChatRailOpen(false); }}
         />
       )}
       {/* Side rail chat (canvas mode — toggled open via button or canvas interaction) */}
       {!chatMode && chatRailVisible && (
         <div
-          className={`fixed bottom-0 flex flex-col bg-white/40 backdrop-blur-sm border-l border-black/10 transition-[right] duration-300 ${isMobileGrid ? "z-[80] inset-x-0 border-l-0" : notesOpen ? "z-[69]" : "z-[64]"}`}
+          className={`fixed bottom-0 flex flex-col bg-white/40 backdrop-blur-sm border-l border-black/10 transition-[right] duration-300 ${
+            notesOpen ? "z-[232]" : isMobileGrid ? "z-[80] inset-x-0 border-l-0" : "z-[64]"
+          } ${isMobileGrid ? "inset-x-0 border-l-0" : ""}`}
           style={{
             top: isMobileGrid ? 0 : "var(--header-height, 4.9rem)",
             right: isMobileGrid ? undefined : (showVaultSidebar ? `${vaultSidebarWidthPx}px` : "0px"),
@@ -5320,7 +5677,6 @@ export default function OmniaGridPage() {
             </div>
           )}
           <div ref={chatScrollRef} className="flex-1 overflow-y-auto scrollbar-hide p-3 space-y-3">
-            {isChatLoading && (<div className="text-[0.6875rem] text-black/60 px-1 flex items-center gap-2" aria-live="polite"><div className="brick-spinner" />{thinkingStatus}</div>)}
             {chatMessages.map((msg, idx) => (
               <div key={msg.id || idx} className={`flex flex-col ${msg.role === "user" ? "items-end" : "items-start"}`}>
                 {msg.role === "user" && msg.attachments && msg.attachments.length > 0 && (
@@ -5506,41 +5862,36 @@ export default function OmniaGridPage() {
                 })()}
               </div>
             ))}
-          </div>
-          <div className="p-2 pb-2">
-            <div className="glass-control rounded-2xl px-2 py-1.5 w-full">
-              <div className="flex items-center gap-1.5">
-                <button type="button" onClick={handleOpenAttachments} className="h-8 w-8 rounded-full flex items-center justify-center transition-colors hover:bg-black/10 shrink-0" title="Add attachments">
-                  <Plus className="w-3.5 h-3.5" />
-                </button>
-                {isDictating || isTranscribing ? (
-                  <div className="w-full min-h-[32px] rounded-xl border border-blue-400/40 bg-blue-500/5 px-3 py-1.5 flex items-center gap-2">
-                    {isDictating ? (<><div className="dictation-wave"><span /><span /><span /><span /><span /></div><span className="text-xs text-blue-500 font-medium">Recording...</span></>) : (<><div className="brick-spinner" style={{ width: 14, height: 14 }} /><span className="text-xs text-black/60">Transcribing...</span></>)}
-                  </div>
-                ) : (
-                  <textarea
-                    ref={chatPanelInputRef}
-                    data-min-h="32"
-                    value={chatInput}
-                    onChange={(e) => setChatInput(e.target.value)}
-                    onPaste={handleChatPaste}
-                    onInput={(e) => resizeChatInput(e.currentTarget)}
-                    onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void handleChatSend(); } }}
-                    placeholder="Ask me anything..."
-                    rows={1}
-                    className="w-full min-h-[32px] max-h-[220px] rounded-xl bg-white/12 border border-white/30 px-3 py-1.5 text-sm text-black placeholder:text-black/55 outline-none resize-none leading-5 scrollbar-hide"
-                  />
-                )}
-                {isChatLoading ? (
-                  <button type="button" onClick={handleStopAi} className="h-8 w-8 rounded-full flex items-center justify-center transition-colors bg-red-500/15 hover:bg-red-500/25" title="Stop generating">
-                    <Square className="w-3 h-3 text-red-500" fill="currentColor" />
-                  </button>
-                ) : (
-                  <button type="button" onClick={handleDictateToggle} className={`h-8 w-8 rounded-full flex items-center justify-center transition-colors ${isDictating ? "bg-blue-500/15" : "hover:bg-black/10"}`} title={isDictating ? "Stop recording" : "Dictate"}>
-                    <Mic className={`w-3.5 h-3.5 ${isDictating ? "text-blue-500" : ""}`} />
-                  </button>
-                )}
+            {isChatLoading && (
+              <div className="flex flex-col items-start w-full">
+                <div className="omnia-ai-thinking-glow rounded-xl max-w-[94%] bg-white/60 border border-white/50 backdrop-blur-sm text-[0.6875rem] text-black/60 px-3 py-1.5 flex items-center gap-2" aria-live="polite">
+                  <div className="brick-spinner" />
+                  {thinkingStatus}
+                </div>
               </div>
+            )}
+          </div>
+          <div className="p-3 pb-3">
+            <div className="omnia-neu-chat-shell omnia-chat-border-run-once px-2.5 py-2 w-full flex flex-col gap-1.5">
+              {isDictating || isTranscribing ? (
+                <div className="w-full min-h-[2.75rem] omnia-neu-chat-field ring-1 ring-blue-400/35 px-2.5 py-1.5 flex items-center gap-2">
+                  {isDictating ? (<><div className="dictation-wave"><span /><span /><span /><span /><span /></div><span className="text-[0.6875rem] text-blue-600 dark:text-blue-400 font-medium">Recording...</span></>) : (<><div className="brick-spinner" style={{ width: 12, height: 12 }} /><span className="text-[0.6875rem] text-black/60 dark:text-white/55">Transcribing...</span></>)}
+                </div>
+              ) : (
+                <textarea
+                  ref={chatPanelInputRef}
+                  data-min-h="44"
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  onPaste={handleChatPaste}
+                  onInput={(e) => resizeChatInput(e.currentTarget)}
+                  onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void handleChatSend(); } }}
+                  placeholder="Ask me anything..."
+                  rows={1}
+                  className="w-full min-h-[2.75rem] max-h-[160px] omnia-neu-chat-field px-2.5 py-1.5 text-[0.6875rem] leading-4 text-black dark:text-white placeholder:text-black/50 dark:placeholder:text-white/45 outline-none resize-none scrollbar-hide"
+                />
+              )}
+              <OmniaChatBarToolbar compact onSend={handleChatSend} />
             </div>
           </div>
         </div>
@@ -5623,49 +5974,37 @@ export default function OmniaGridPage() {
               onDragOver={handleFocusedChatDragOver}
               onDrop={handleFocusedChatDrop}
             >
-              <div className="w-full max-w-2xl space-y-6">
+              <div className="w-full max-w-2xl space-y-10 sm:space-y-12">
                 <p className="text-center text-xl sm:text-3xl font-semibold tracking-tight min-h-[44px] text-black pointer-events-none">
                   {typedWelcome}
                 </p>
-                <div className="glass-control rounded-2xl p-2 w-full transition-all duration-300">
+                <div className="omnia-neu-chat-shell omnia-chat-border-run-once p-2.5 sm:p-3 w-full transition-all duration-300 flex flex-col gap-1.5">
                   {focusedChatAttachments.length > 0 && (
-                    <div className="mb-2 flex flex-wrap gap-2 items-end">
+                    <div className="mb-0 flex flex-wrap gap-2 items-end">
                       {focusedChatAttachments.map((att) => (
                         <div key={att.id}>{renderFocusedAttachmentPreview(att)}</div>
                       ))}
                     </div>
                   )}
-                  <div className="flex items-center gap-2">
-                    <button type="button" onClick={handleOpenAttachments} className="h-10 w-10 rounded-full flex items-center justify-center transition-colors hover:bg-black/10" title="Add attachments">
-                      <Plus className="w-4 h-4" />
-                    </button>
-                    {isDictating || isTranscribing ? (
-                      <div className="w-full min-h-[44px] rounded-xl border border-blue-400/40 bg-blue-500/5 px-4 py-3 flex items-center gap-3">
-                        {isDictating ? (<><div className="dictation-wave"><span /><span /><span /><span /><span /></div><span className="text-sm text-blue-500 font-medium">Recording...</span></>) : (<><div className="brick-spinner" style={{ width: 16, height: 16 }} /><span className="text-sm text-black/60">Transcribing...</span></>)}
-                      </div>
-                    ) : (
-                      <textarea
-                        ref={chatPanelInputRef}
-                        value={chatInput}
-                        onChange={(e) => setChatInput(e.target.value)}
-                        onPaste={handleChatPaste}
-                        onInput={(e) => resizeChatInput(e.currentTarget)}
-                        onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void handleChatSend(); } }}
-                        placeholder="Ask me anything..."
-                        rows={1}
-                        className="w-full min-h-[44px] max-h-[220px] rounded-xl bg-transparent border border-white/30 px-4 py-3 text-sm text-black placeholder:text-black/55 outline-none resize-none leading-5 scrollbar-hide"
-                      />
-                    )}
-                    {isChatLoading ? (
-                      <button type="button" onClick={handleStopAi} className="h-10 w-10 rounded-full flex items-center justify-center transition-colors bg-red-500/15 hover:bg-red-500/25" title="Stop generating">
-                        <Square className="w-3.5 h-3.5 text-red-500" fill="currentColor" />
-                      </button>
-                    ) : (
-                      <button type="button" onClick={handleDictateToggle} className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors ${isDictating ? "bg-blue-500/15" : "hover:bg-black/10"}`} title={isDictating ? "Stop recording" : "Dictate"}>
-                        <Mic className={`w-4 h-4 ${isDictating ? "text-blue-500" : ""}`} />
-                      </button>
-                    )}
-                  </div>
+                  {isDictating || isTranscribing ? (
+                    <div className="w-full min-h-[3.25rem] omnia-neu-chat-field ring-1 ring-blue-400/35 px-3 py-2 flex items-center gap-3">
+                      {isDictating ? (<><div className="dictation-wave"><span /><span /><span /><span /><span /></div><span className="text-xs text-blue-600 dark:text-blue-400 font-medium">Recording...</span></>) : (<><div className="brick-spinner" style={{ width: 14, height: 14 }} /><span className="text-xs text-black/60 dark:text-white/55">Transcribing...</span></>)}
+                    </div>
+                  ) : (
+                    <textarea
+                      ref={chatPanelInputRef}
+                      data-min-h="52"
+                      value={chatInput}
+                      onChange={(e) => setChatInput(e.target.value)}
+                      onPaste={handleChatPaste}
+                      onInput={(e) => resizeChatInput(e.currentTarget)}
+                      onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void handleChatSend(); } }}
+                      placeholder="Ask me anything..."
+                      rows={1}
+                      className="w-full min-h-[3.25rem] max-h-[180px] omnia-neu-chat-field px-3 py-2 text-xs leading-4 text-black dark:text-white placeholder:text-black/50 dark:placeholder:text-white/45 outline-none resize-none scrollbar-hide"
+                    />
+                  )}
+                  <OmniaChatBarToolbar onSend={handleChatSend} />
                 </div>
               </div>
             </div>
@@ -6016,7 +6355,7 @@ export default function OmniaGridPage() {
                 ))}
                 {isChatLoading && (
                   <div className="flex justify-start">
-                    <div className="max-w-[80%] rounded-2xl rounded-bl-md px-4 py-3 text-sm leading-relaxed border bg-white/80 border-white/70 text-black/60 backdrop-blur-md flex items-center gap-3">
+                    <div className="omnia-ai-thinking-glow rounded-2xl rounded-bl-md max-w-[80%] px-4 py-3 text-sm leading-relaxed border bg-white/80 border-white/70 text-black/60 backdrop-blur-md flex items-center gap-3">
                       <div className="brick-spinner" />
                       {thinkingStatus}
                     </div>
@@ -6024,45 +6363,33 @@ export default function OmniaGridPage() {
                 )}
               </div>
               <div className="w-full max-w-2xl px-4 pb-6 pt-2">
-                <div className="glass-control rounded-2xl p-2 w-full">
+                <div className="omnia-neu-chat-shell omnia-chat-border-run-once p-2.5 sm:p-3 w-full flex flex-col gap-1.5">
                   {focusedChatAttachments.length > 0 && (
-                    <div className="mb-2 flex flex-wrap gap-2 items-end">
+                    <div className="mb-0 flex flex-wrap gap-2 items-end">
                       {focusedChatAttachments.map((att) => (
                         <div key={att.id}>{renderFocusedAttachmentPreview(att)}</div>
                       ))}
                     </div>
                   )}
-                  <div className="flex items-center gap-2">
-                    <button type="button" onClick={handleOpenAttachments} className="h-10 w-10 rounded-full flex items-center justify-center transition-colors hover:bg-black/10" title="Add attachments">
-                      <Plus className="w-4 h-4" />
-                    </button>
-                    {isDictating || isTranscribing ? (
-                      <div className="w-full min-h-[44px] rounded-xl border border-blue-400/40 bg-blue-500/5 px-4 py-3 flex items-center gap-3">
-                        {isDictating ? (<><div className="dictation-wave"><span /><span /><span /><span /><span /></div><span className="text-sm text-blue-500 font-medium">Recording...</span></>) : (<><div className="brick-spinner" style={{ width: 16, height: 16 }} /><span className="text-sm text-black/60">Transcribing...</span></>)}
-                      </div>
-                    ) : (
-                      <textarea
-                        ref={chatPanelInputRef}
-                        value={chatInput}
-                        onChange={(e) => setChatInput(e.target.value)}
-                        onPaste={handleChatPaste}
-                        onInput={(e) => resizeChatInput(e.currentTarget)}
-                        onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void handleChatSend(); } }}
-                        placeholder="Ask me anything..."
-                        rows={1}
-                        className="w-full min-h-[44px] max-h-[220px] rounded-xl bg-transparent border border-white/30 px-4 py-3 text-sm text-black placeholder:text-black/55 outline-none resize-none leading-5 scrollbar-hide"
-                      />
-                    )}
-                    {isChatLoading ? (
-                      <button type="button" onClick={handleStopAi} className="h-10 w-10 rounded-full flex items-center justify-center transition-colors bg-red-500/15 hover:bg-red-500/25" title="Stop generating">
-                        <Square className="w-3.5 h-3.5 text-red-500" fill="currentColor" />
-                      </button>
-                    ) : (
-                      <button type="button" onClick={handleDictateToggle} className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors ${isDictating ? "bg-blue-500/15" : "hover:bg-black/10"}`} title={isDictating ? "Stop recording" : "Dictate"}>
-                        <Mic className={`w-4 h-4 ${isDictating ? "text-blue-500" : ""}`} />
-                      </button>
-                    )}
-                  </div>
+                  {isDictating || isTranscribing ? (
+                    <div className="w-full min-h-[3.25rem] omnia-neu-chat-field ring-1 ring-blue-400/35 px-3 py-2 flex items-center gap-3">
+                      {isDictating ? (<><div className="dictation-wave"><span /><span /><span /><span /><span /></div><span className="text-xs text-blue-600 dark:text-blue-400 font-medium">Recording...</span></>) : (<><div className="brick-spinner" style={{ width: 14, height: 14 }} /><span className="text-xs text-black/60 dark:text-white/55">Transcribing...</span></>)}
+                    </div>
+                  ) : (
+                    <textarea
+                      ref={chatPanelInputRef}
+                      data-min-h="52"
+                      value={chatInput}
+                      onChange={(e) => setChatInput(e.target.value)}
+                      onPaste={handleChatPaste}
+                      onInput={(e) => resizeChatInput(e.currentTarget)}
+                      onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void handleChatSend(); } }}
+                      placeholder="Ask me anything..."
+                      rows={1}
+                      className="w-full min-h-[3.25rem] max-h-[180px] omnia-neu-chat-field px-3 py-2 text-xs leading-4 text-black dark:text-white placeholder:text-black/50 dark:placeholder:text-white/45 outline-none resize-none scrollbar-hide"
+                    />
+                  )}
+                  <OmniaChatBarToolbar onSend={handleChatSend} />
                 </div>
               </div>
             </div>
@@ -6547,6 +6874,7 @@ export default function OmniaGridPage() {
       {/* Notes panel — bottom drawer */}
       {!chatMode && (
         <NotesPanel
+          key={boardId || "__no_board"}
           open={notesOpen}
           onOpenChange={setNotesOpen}
           content={notesContentRef.current}
@@ -6555,13 +6883,12 @@ export default function OmniaGridPage() {
         />
       )}
 
-      {/* Left brick rail when notes panel is open */}
+      {/* Left “Grid Files” rail when notes open — same geometry + drag as focused chat */}
       {notesOpen && !chatMode && canvasFileBlocks.length > 0 && !isMobileGrid && (
         <div
-          className="fixed z-[69] w-[13.75rem] overflow-y-auto scrollbar-hide p-3 space-y-2 bg-white/20 backdrop-blur-sm border-r border-black/5 transition-all duration-300"
+          className="fixed bottom-0 z-[221] w-[13.75rem] overflow-y-auto scrollbar-hide p-3 space-y-2 bg-white/20 backdrop-blur-sm border-r border-black/5 transition-all duration-300"
           style={{
-            top: "50%",
-            bottom: 0,
+            top: "var(--header-height-sm, 4.2rem)",
             left: "var(--sidebar-offset, 0px)",
           }}
         >
@@ -6570,7 +6897,14 @@ export default function OmniaGridPage() {
             {canvasFileBlocks.map((item) => (
               <div
                 key={item.id}
-                className="relative rounded-xl overflow-hidden bg-black/5 border border-white/30 transition-all group"
+                draggable
+                onDragStart={(e) => {
+                  e.dataTransfer.effectAllowed = "copy";
+                  e.dataTransfer.setData("application/x-grid-file", JSON.stringify(item));
+                  e.dataTransfer.setData("text/plain", item.url || "");
+                }}
+                className="relative rounded-xl overflow-hidden bg-black/5 border border-white/30 cursor-grab active:cursor-grabbing hover:ring-2 hover:ring-blue-400/50 transition-all group"
+                title={`Drag to chat or notes: ${item.name}`}
               >
                 {item.type === "youtube" && item.thumbUrl ? (
                   <div className="aspect-video relative">

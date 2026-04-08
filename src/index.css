@@ -467,6 +467,144 @@ body.embedded-vault-mode .app-content {
       inset -1px -1px 0 rgba(0,0,0,0.15);
   }
 
+  /* Omnia Grid — neumorphic chat composer (raised shell; input co-planar, not inset) */
+  .omnia-neu-chat-shell {
+    background: linear-gradient(145deg, #e8eaef, #d9dde5);
+    border-radius: 14px;
+    border: 1px solid rgba(0, 0, 0, 0.045);
+    box-shadow:
+      5px 5px 14px rgba(0, 0, 0, 0.065),
+      -4px -4px 12px rgba(255, 255, 255, 0.78),
+      inset 0 1px 0 rgba(255, 255, 255, 0.42);
+  }
+
+  .dark .omnia-neu-chat-shell {
+    background: linear-gradient(145deg, #343840, #282c32);
+    border-color: rgba(255, 255, 255, 0.05);
+    box-shadow:
+      5px 5px 14px rgba(0, 0, 0, 0.48),
+      -3px -3px 10px rgba(255, 255, 255, 0.025),
+      inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  }
+
+  /* Flush with shell: no inner box — same surface as the card */
+  .omnia-neu-chat-field {
+    border-radius: 0;
+    background: transparent;
+    color: #16161a;
+    border: none;
+    box-shadow: none;
+  }
+
+  .dark .omnia-neu-chat-field {
+    background: transparent;
+    color: rgba(255, 255, 255, 0.92);
+    border: none;
+    box-shadow: none;
+  }
+
+  /* Chat toolbar: icon-only controls (no raised block) */
+  .omnia-neu-chat-icon-plain {
+    border-radius: 10px;
+    flex-shrink: 0;
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    transition:
+      background-color 0.18s ease,
+      box-shadow 0.18s ease,
+      color 0.18s ease;
+  }
+
+  .omnia-neu-chat-icon-plain:hover:not(:disabled) {
+    background-color: rgba(59, 130, 246, 0.1);
+    box-shadow: 0 0 12px rgba(59, 130, 246, 0.14);
+  }
+
+  .omnia-neu-chat-icon-plain:active:not(:disabled) {
+    background-color: rgba(59, 130, 246, 0.06);
+  }
+
+  .dark .omnia-neu-chat-icon-plain:hover:not(:disabled) {
+    background-color: rgba(59, 130, 246, 0.14);
+    box-shadow: 0 0 14px rgba(59, 130, 246, 0.16);
+  }
+
+  .dark .omnia-neu-chat-icon-plain:active:not(:disabled) {
+    background-color: rgba(59, 130, 246, 0.1);
+  }
+
+  /* Send only — neumorphic block */
+  .omnia-neu-chat-send-btn {
+    border-radius: 10px;
+    flex-shrink: 0;
+    background: linear-gradient(145deg, #eceef3, #d8dce4);
+    border: 1px solid rgba(255, 255, 255, 0.4);
+    box-shadow:
+      4px 4px 9px rgba(0, 0, 0, 0.08),
+      -2px -2px 6px rgba(255, 255, 255, 0.85);
+    transition:
+      box-shadow 0.18s ease,
+      transform 0.15s ease,
+      background 0.18s ease,
+      border-color 0.18s ease;
+  }
+
+  .omnia-neu-chat-send-btn:hover:not(:disabled) {
+    background: linear-gradient(145deg, #e8f1fc, #dceaf8);
+    border-color: rgba(59, 130, 246, 0.28);
+    box-shadow:
+      3px 3px 8px rgba(0, 0, 0, 0.06),
+      -2px -2px 6px rgba(255, 255, 255, 0.82),
+      0 0 14px rgba(59, 130, 246, 0.14);
+  }
+
+  .omnia-neu-chat-send-btn:active:not(:disabled) {
+    box-shadow:
+      inset 2px 2px 5px rgba(0, 0, 0, 0.1),
+      inset -1px -1px 4px rgba(255, 255, 255, 0.5),
+      0 0 0 1px rgba(59, 130, 246, 0.12);
+  }
+
+  .dark .omnia-neu-chat-send-btn {
+    background: linear-gradient(145deg, #383c44, #2a2e35);
+    border-color: rgba(255, 255, 255, 0.06);
+    box-shadow:
+      3px 3px 8px rgba(0, 0, 0, 0.45),
+      -2px -2px 6px rgba(255, 255, 255, 0.02);
+  }
+
+  .dark .omnia-neu-chat-send-btn:hover:not(:disabled) {
+    background: linear-gradient(145deg, #2e3848, #283040);
+    border-color: rgba(96, 165, 250, 0.32);
+    box-shadow:
+      3px 3px 8px rgba(0, 0, 0, 0.4),
+      -1px -1px 5px rgba(255, 255, 255, 0.03),
+      0 0 16px rgba(59, 130, 246, 0.16);
+  }
+
+  .dark .omnia-neu-chat-send-btn:active:not(:disabled) {
+    box-shadow:
+      inset 2px 2px 6px rgba(0, 0, 0, 0.45),
+      inset -1px -1px 4px rgba(255, 255, 255, 0.03),
+      0 0 0 1px rgba(96, 165, 250, 0.15);
+  }
+
+  /* Model dropdown — same “icon only” feel as plain buttons */
+  .omnia-neu-chat-toolbar-select-trigger {
+    transition: background-color 0.18s ease, box-shadow 0.18s ease;
+  }
+
+  .omnia-neu-chat-toolbar-select-trigger:hover {
+    background-color: rgba(59, 130, 246, 0.1);
+    box-shadow: 0 0 12px rgba(59, 130, 246, 0.12);
+  }
+
+  .dark .omnia-neu-chat-toolbar-select-trigger:hover {
+    background-color: rgba(59, 130, 246, 0.12);
+    box-shadow: 0 0 14px rgba(59, 130, 246, 0.14);
+  }
+
   /* Hide scrollbars but keep scrolling (Windows/Chrome friendly) */
   .scrollbar-hide {
     -ms-overflow-style: none; /* IE/Edge Legacy */
@@ -1058,6 +1196,17 @@ input[type="color"].color-circle::-moz-color-swatch {
   to   { opacity: 1; transform: translateY(0); }
 }
 
+/* Canvas trash control: “hungry” wobble when delete hold completes */
+@keyframes omniaTrashReadyShake {
+  0%, 100% { transform: rotate(-10deg); }
+  50% { transform: rotate(10deg); }
+}
+
+.omnia-canvas-trash-ready-shake {
+  display: inline-flex;
+  animation: omniaTrashReadyShake 0.22s ease-in-out infinite;
+  transform-origin: 50% 88%;
+}
 
 @keyframes selToolbarFadeIn {
   from { opacity: 0; transform: translate(-50%, -100%) translateY(6px); }
@@ -1231,4 +1380,115 @@ input[type="color"].color-circle::-moz-color-swatch {
 
 .notes-editor-content .selectedCell {
   background: rgba(37, 99, 235, 0.08);
+}
+
+/* ==========================================================
+   Chat border running light — @property must live at root scope
+   ========================================================== */
+@property --omnia-border-trace {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+
+.omnia-neu-chat-shell.omnia-chat-border-run-once {
+  position: relative;
+  overflow: visible;
+}
+
+.omnia-neu-chat-shell.omnia-chat-border-run-once::before {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: 16px;
+  padding: 2px;
+  background: conic-gradient(
+    from var(--omnia-border-trace) at 50% 50%,
+    transparent 0deg,
+    transparent 300deg,
+    rgba(59, 130, 246, 0.15) 320deg,
+    rgba(96, 165, 250, 0.55) 338deg,
+    rgba(147, 197, 253, 1) 348deg,
+    rgba(96, 165, 250, 0.55) 352deg,
+    rgba(59, 130, 246, 0.15) 358deg,
+    transparent 360deg
+  );
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+  z-index: 1;
+  --omnia-border-trace: 0deg;
+  animation: omnia-border-trace 2.6s cubic-bezier(0.35, 0, 0.15, 1) forwards;
+}
+
+.omnia-neu-chat-shell.omnia-chat-border-run-once > * {
+  position: relative;
+  z-index: 2;
+}
+
+@keyframes omnia-border-trace {
+  0% {
+    --omnia-border-trace: 0deg;
+    opacity: 1;
+  }
+  75% {
+    opacity: 1;
+  }
+  100% {
+    --omnia-border-trace: 360deg;
+    opacity: 0;
+  }
+}
+
+/* Looping blue border light for AI thinking indicator */
+.omnia-ai-thinking-glow {
+  position: relative;
+  overflow: visible;
+}
+
+.omnia-ai-thinking-glow::before {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  padding: 2px;
+  background: conic-gradient(
+    from var(--omnia-border-trace) at 50% 50%,
+    transparent 0deg,
+    transparent 300deg,
+    rgba(59, 130, 246, 0.12) 320deg,
+    rgba(96, 165, 250, 0.45) 338deg,
+    rgba(147, 197, 253, 0.85) 348deg,
+    rgba(96, 165, 250, 0.45) 352deg,
+    rgba(59, 130, 246, 0.12) 358deg,
+    transparent 360deg
+  );
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+  z-index: 0;
+  --omnia-border-trace: 0deg;
+  animation: omnia-border-trace-loop 2.4s linear infinite;
+}
+
+.omnia-ai-thinking-glow > * {
+  position: relative;
+  z-index: 1;
+}
+
+@keyframes omnia-border-trace-loop {
+  0%   { --omnia-border-trace: 0deg; }
+  100% { --omnia-border-trace: 360deg; }
 }

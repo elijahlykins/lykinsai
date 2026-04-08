@@ -1038,6 +1038,56 @@ const IMAGE_GEN_MODELS = new Set([
 ]);
 const isImageGenModel = (m) => IMAGE_GEN_MODELS.has(m);
 
+const XAI_IMAGE_MODEL_IDS = new Set(['grok-imagine-image-pro', 'grok-imagine-image', 'grok-2-image-1212']);
+
+/** Text-to-image via Gemini (Nano Banana 2); tries catalog id then known image-capable fallbacks. */
+async function generateGeminiTextToImage(imagePrompt) {
+  if (!process.env.GOOGLE_API_KEY) return { ok: false, error: 'GOOGLE_API_KEY not configured' };
+  const modelsToTry = [
+    'gemini-3.1-flash-image-preview',
+    'gemini-2.5-flash-preview-image-generation',
+    'gemini-2.5-flash-image',
+  ];
+  const requestBody = {
+    contents: [{ parts: [{ text: imagePrompt }] }],
+    generationConfig: {
+      responseModalities: ['TEXT', 'IMAGE'],
+    },
+  };
+  let lastError = '';
+  for (const geminiModel of modelsToTry) {
+    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${process.env.GOOGLE_API_KEY}`;
+    try {
+      const geminiRes = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestBody),
+        signal: AbortSignal.timeout(90000),
+      });
+      if (!geminiRes.ok) {
+        const err = await geminiRes.json().catch(() => ({}));
+        lastError = err?.error?.message || geminiRes.statusText;
+        continue;
+      }
+      const data = await geminiRes.json();
+      const parts = data?.candidates?.[0]?.content?.parts || [];
+      const imagePart = parts.find((p) => p.inline_data?.data || p.inlineData?.data);
+      if (imagePart) {
+        const imgData = imagePart.inline_data || imagePart.inlineData;
+        const outMime = imgData.mimeType || imgData.mime_type || 'image/png';
+        const outBase64 = imgData.data;
+        const dataUri = `data:${outMime};base64,${outBase64}`;
+        return { ok: true, url: dataUri, geminiModel };
+      }
+      const textPart = parts.find((p) => p.text);
+      lastError = textPart?.text || 'No image in response';
+    } catch (e) {
+      lastError = e.message;
+    }
+  }
+  return { ok: false, error: lastError || 'Gemini image generation failed' };
+}
+
 const IMAGE_GEN_PATTERNS = [
   /\b(?:generate|create|make|produce|design)\b.{0,20}\b(?:an?\s+)?(?:image|picture|photo|illustration|drawing|artwork|graphic|poster|banner|icon|logo|thumbnail|wallpaper|avatar|portrait)\b/i,
   /\b(?:draw|paint|sketch|illustrate|render)\b.{0,30}\b(?:me|a|an|the|of|for)\b/i,
@@ -1281,7 +1331,7 @@ app.get('/api/ai/models', (req, res) => {
 });
 
 // Budget constants — mirrors src/lib/ai/promptBuilder.ts CONTEXT_BUDGETS
-const AI_BUDGETS = { canvasTotal: 14000, projectSummary: 2000, workspaceContext: 28000, conversation: 8000, userPrompt: 3000, mediaContext: 8000 };
+const AI_BUDGETS = { canvasTotal: 14000, projectSummary: 2000, projectSummaryInProject: 4000, workspaceContext: 28000, conversation: 8000, userPrompt: 3000, mediaContext: 8000 };
 
 // Conversation compressor — mirrors compressConversation() in src/lib/ai/promptBuilder.ts
 const compressConversation = (msgs, fullCount = 6, maxChars = AI_BUDGETS.conversation) => {
@@ -1889,7 +1939,7 @@ app.post('/api/ai/invoke', requireAuth, aiLimiter, checkAiUsageLimit, async (req
             imagePrompt = `Based on this conversation:\n${recentContext}\n\nGenerate this image: ${pureUserMessage}`;
           }
         }
-        const imgBody = { prompt: imagePrompt };
+        const imgBody = { prompt: imagePrompt, model };
         const internalUrl = `http://localhost:${PORT}/api/ai/image`;
         const imgRes = await fetch(internalUrl, {
           method: 'POST',
@@ -1907,13 +1957,13 @@ app.post('/api/ai/invoke', requireAuth, aiLimiter, checkAiUsageLimit, async (req
       }
     } else if (!isImageGenModel(model) && isImageGenerationRequest(pureUserMessage)) {
       return res.json({
-        response: `I can definitely create that for you! Just pick an image model below and ask me again.`,
+        response: `I can definitely create that for you! Pick an image generation model in the model menu, then ask again.`,
         type: 'text',
         toolSuggestion: {
           type: 'switch_model',
           reason: 'image_generation',
           models: [
-            { id: 'grok-imagine-image', label: 'Grok Imagine', hint: 'Default' },
+            { id: 'grok-imagine-image', label: 'Grok Imagine', hint: 'xAI' },
             { id: 'gpt-image-1.5', label: 'GPT Image 1.5', hint: 'OpenAI' },
             { id: 'grok-imagine-image-pro', label: 'Grok Imagine Pro', hint: 'xAI' },
             { id: 'dall-e-3', label: 'DALL-E 3', hint: 'OpenAI' },
@@ -2049,12 +2099,14 @@ ${t}
       const latestUserMessage = String(input?.text || "").trim().slice(0, AI_BUDGETS.userPrompt) || String(input?.prompt || "").trim().slice(0, AI_BUDGETS.userPrompt);
       const rawPrompt = String(input?.prompt || "").trim().slice(0, 16000);
       const contextText = String(input?.context || "").trim().slice(0, AI_BUDGETS.canvasTotal);
-      const kb = String(input?.knowledgeBase || "").trim().slice(0, AI_BUDGETS.projectSummary);
+      const hasProject = Boolean(input?.projectId);
+      const kbBudget = hasProject ? AI_BUDGETS.projectSummaryInProject : AI_BUDGETS.projectSummary;
+      const kb = String(input?.knowledgeBase || "").trim().slice(0, kbBudget);
       const wsCtx = String(input?.workspaceContext || "").trim().slice(0, AI_BUDGETS.workspaceContext);
       const convo = compressConversation(input?.conversation);
 
       const imageNote = imageUrls.length > 0
-        ? `[ATTACHED_IMAGES]\n${imageUrls.length} image(s) from the board are attached to this message as actual visual data. You CAN see their pixels. Blocks marked [IMAGE ATTACHED] in the context correspond to these images. Analyze, describe, or answer questions about them directly. Do NOT say you cannot see images — you can.`
+        ? `[ATTACHED_IMAGES]\n${imageUrls.length} image(s) from the board are attached as actual pixel data — you CAN see them. Blocks marked [IMAGE ATTACHED] in the context correspond to these images.\nThe [BOARD_IMAGES] section lists ALL images on the board with text descriptions. For images NOT marked [IMAGE ATTACHED], you have only the text description (no pixels). Be transparent: if the user asks about an image you only have a description for, reference the description and note you cannot see the actual pixels for that one.`
         : "";
 
       const responseLengthGuide = responseLength === "concise"
@@ -2103,6 +2155,18 @@ ${t}
         "- ALWAYS tell the user what you're pulling in and from where. Example: 'Here's that sunset photo from your Vault.'",
         "- NEVER say you can't pull in files, images, videos, or any media. You CAN pull in ANY file type.",
         "",
+        "VAULT TAGGING:",
+        "- You can ADD tags to any item in the user's Vault.",
+        "- In [WORKSPACE_CONTEXT] each Vault item shows: \"title\" (id=<noteId>) and may show existing tags.",
+        "- To add tags to a Vault item, include this marker at the END of your response (hidden from user):",
+        "  [TAG_NOTES:noteId|tag1,tag2,tag3]",
+        "- You can tag multiple items: [TAG_NOTES:id1|design,inspiration] [TAG_NOTES:id2|reference]",
+        "- Tag names should be lowercase, short, descriptive words or phrases (no spaces — use hyphens for multi-word tags like 'ui-design').",
+        "- When the user asks 'tag my X as Y', 'add a tag to...', 'label this as...', 'organize my vault items', 'tag all my photos' — use [TAG_NOTES:noteId|tags].",
+        "- Tags are ADDED to existing tags (not replaced). The system handles deduplication.",
+        "- ALWAYS confirm to the user what you tagged and with which tags. Example: 'Done! I tagged your sunset photo with #travel and #photography.'",
+        "- NEVER say you can't tag or organize Vault items. You CAN.",
+        "",
         "MULTI-OUTPUT:",
         "- A single response can produce ANY combination of the above: text explanation + checklist + video + heading — all at once.",
         "- Think of the Grid as your workspace. Use every tool at your disposal to help the user.",
@@ -2139,15 +2203,23 @@ ${t}
         "=== END YOUR CAPABILITIES ===",
         "",
         "=== DATA ACCESS (CRITICAL — READ THIS) ===",
-        "You have FULL, LIVE access to the user's ENTIRE workspace. The data is loaded below in this prompt. This is not a disclaimer — the data is LITERALLY here for you to read.",
+        "You have LIVE access to the user's workspace. The data is loaded below in this prompt.",
         "",
         "What you can see RIGHT NOW:",
-        "- [BOARD_CONTEXT]: The current board the user is on — its blocks, content, and wire connections between bricks. If a [CONNECTIONS] section is present, it shows which bricks the user explicitly wired together — treat connected bricks as contextually related (the user linked them to show a relationship, data flow, or logical grouping).",
-        "- [PROJECT_KNOWLEDGE]: The user's project files, folders, other boards, and mindmaps.",
-        "- [WORKSPACE_CONTEXT]: ALL of the user's other boards (titles + content summaries) AND their entire Vault (all saved notes, files, links, videos, images).",
+        "- [BOARD_CONTEXT]: The current board/grid the user is actively working on. This is your PRIMARY context — always prioritize it.",
+        hasProject ? "- [PROJECT_KNOWLEDGE]: The project this grid belongs to — its other boards, files, and folders. This is your SECONDARY context. Use it to connect the user's current work to the broader project." : "- [PROJECT_KNOWLEDGE]: The user's project files, folders, other boards, and mindmaps.",
+        "- [WORKSPACE_CONTEXT]: The user's other boards and Vault (saved notes, files, links, videos, images). Background context — use when relevant but do NOT prioritize over the current grid" + (hasProject ? " or project." : "."),
         "- [USER_MODEL] (if present): Periodically updated themes and style summary from past chats — use for tone, not as facts.",
         "- [SYNTHESIS_RETRIEVAL] (if present): Semantic matches from their embedded workspace index.",
         "- [CONVERSATION]: The full conversation history, including YOUR OWN previous responses.",
+        "",
+        "=== CONTEXT PRIORITY (CRITICAL) ===",
+        "When answering, follow this priority order strictly:",
+        "1. GRID CONTEXT [BOARD_CONTEXT] — the blocks, notes, and connections on the current board. This is what the user is actively looking at and working on. Always ground your response here first.",
+        hasProject ? "2. PROJECT CONTEXT [PROJECT_KNOWLEDGE] — the broader project this grid belongs to. Use it to relate the user's current work to other boards, files, and goals in the same project." : "",
+        hasProject ? "3. WORKSPACE CONTEXT [WORKSPACE_CONTEXT] — everything else (other boards, Vault). Only reference when the user explicitly asks about it or when a strong connection exists." : "2. WORKSPACE CONTEXT [WORKSPACE_CONTEXT] — everything else (other boards, Vault). Only reference when the user explicitly asks about it or when a strong connection exists.",
+        "If the user's question can be answered from grid context alone, do so. Only widen scope to project or workspace context when the grid context is insufficient or the user's question clearly requires it.",
+        "=== END CONTEXT PRIORITY ===",
         "",
         "=== CONVERSATION MEMORY (CRITICAL) ===",
         "You MUST read the entire [CONVERSATION] section carefully before responding.",
@@ -2289,11 +2361,11 @@ ${t}
         input?.projectId ? `[PROJECT_ID]\n${String(input.projectId)}` : "",
         convo ? `[CONVERSATION]\n${convo}` : "",
         conversationMemory ? `[CONVERSATION_MEMORY — past exchanges from other grids/projects/vault]\n${String(conversationMemory).slice(0, 6000)}` : "",
-        contextText ? `[BOARD_CONTEXT]\n${contextText}` : "",
-        kb ? `[PROJECT_KNOWLEDGE]\n${kb}` : "",
         wsCtx ? `[WORKSPACE_CONTEXT]\nBelow are the user's OTHER boards and their entire Vault contents. This is real data.\n${wsCtx}` : "",
-        imageNote,
         rawPrompt ? `[REQUEST_CONTEXT]\n${rawPrompt}` : "",
+        kb ? `[PROJECT_KNOWLEDGE]\n${kb}` : "",
+        contextText ? `[BOARD_CONTEXT]\n${contextText}` : "",
+        imageNote,
         `[LATEST_USER_MESSAGE]\n${latestUserMessage || "(empty)"}`,
       ]
         .filter(Boolean)
@@ -2751,7 +2823,7 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
   try {
     const normalizedModel = normalizeRequestedModel(req.body?.model);
     const incomingImageUrls = Array.isArray(req.body?.imageUrls) ? req.body.imageUrls : [];
-    const imageUrls = incomingImageUrls.slice(0, 4);
+    const imageUrls = incomingImageUrls.slice(0, 8);
     let { prompt, text, intent, context, knowledgeBase, projectId, conversation, conversationMemory, userPrompt, responseLength, hasFocusedBricks, skipWebSearch, workspaceContext } = req.body;
     let model = normalizedModel;
     console.log('[LYKN-STREAM] workspaceContext received:', workspaceContext ? `${String(workspaceContext).length} chars` : 'EMPTY/MISSING');
@@ -2797,7 +2869,7 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
     } else if (isImageGenModel(model)) {
       console.log(`🎨 Image generation model selected in /api/ai/stream (model: ${model}), routing to image endpoint`);
       try {
-        const imgBody = { prompt: streamPureUserMessage };
+        const imgBody = { prompt: streamPureUserMessage, model };
         const internalUrl = `http://localhost:${PORT}/api/ai/image`;
         const imgRes = await fetch(internalUrl, {
           method: 'POST',
@@ -2830,7 +2902,9 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
       const fullPrompt = String(input?.prompt || "").trim();
       const userMsg = String(input?.text || "").trim().slice(0, AI_BUDGETS.userPrompt);
       const ctx = String(input?.context || "").trim().slice(0, AI_BUDGETS.canvasTotal);
-      const kb = String(input?.knowledgeBase || "").trim().slice(0, AI_BUDGETS.projectSummary);
+      const hasProject = Boolean(input?.projectId);
+      const kbBudget = hasProject ? AI_BUDGETS.projectSummaryInProject : AI_BUDGETS.projectSummary;
+      const kb = String(input?.knowledgeBase || "").trim().slice(0, kbBudget);
       const wsCtx = String(input?.workspaceContext || "").trim().slice(0, AI_BUDGETS.workspaceContext);
       const convo = compressConversation(input?.conversation);
       const hasFocusedBricks = Boolean(input?.hasFocusedBricks);
@@ -2869,8 +2943,9 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
         hasFocusedBricks ? "=== END FOCUSED BRICKS ===" : "",
         hasFocusedBricks ? "" : "",
         imageUrls.length > 0 ? `=== VISION (CRITICAL) ===` : "",
-        imageUrls.length > 0 ? `${imageUrls.length} image(s) from the board are attached to this message as actual image data. You CAN see their pixels. Blocks marked [IMAGE ATTACHED] in the context correspond to these images (in the same order).` : "",
-        imageUrls.length > 0 ? "When the user asks about images, visual content, or the board in general — look at and analyze the attached images. Describe what you see. Do NOT say you cannot see images — you can." : "",
+        imageUrls.length > 0 ? `${imageUrls.length} image(s) from the board are attached as actual pixel data — you CAN see them. Blocks marked [IMAGE ATTACHED] in the context correspond to these images.` : "",
+        imageUrls.length > 0 ? "The [BOARD_IMAGES] section lists ALL images on the board with text descriptions. For images NOT marked [IMAGE ATTACHED], you have only the text description (no pixels). Be transparent about this distinction if relevant." : "",
+        imageUrls.length > 0 ? "When the user asks about images or visual content — analyze attached pixels where available and reference text descriptions for the rest. Do NOT say you cannot see images." : "",
         imageUrls.length > 0 ? "=== END VISION ===" : "",
         imageUrls.length > 0 ? "" : "",
         "=== CONVERSATION MEMORY (CRITICAL) ===",
@@ -2903,15 +2978,23 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
         "=== END CLARIFICATION ===",
         "",
         "=== DATA ACCESS (CRITICAL — READ THIS) ===",
-        "You have FULL, LIVE access to the user's ENTIRE workspace. The data is loaded below in this prompt. This is not a disclaimer — the data is LITERALLY here for you to read.",
+        "You have LIVE access to the user's workspace. The data is loaded below in this prompt.",
         "",
         "What you can see RIGHT NOW:",
-        "- [CONTEXT]: The current board the user is on — its blocks, content, and wire connections between bricks. If a [CONNECTIONS] section is present, it shows which bricks the user explicitly wired together — treat connected bricks as contextually related (the user linked them to show a relationship, data flow, or logical grouping).",
-        "- [KNOWLEDGE]: The user's project files, folders, other boards in the project, and mindmaps.",
-        "- [WORKSPACE_CONTEXT]: ALL of the user's other boards (titles and content summaries) AND their entire Vault (all saved notes, files, links, videos, images).",
+        "- [CONTEXT]: The current board/grid the user is actively working on. This is your PRIMARY context — always prioritize it.",
+        hasProject ? "- [PROJECT_KNOWLEDGE]: The project this grid belongs to — its other boards, files, and folders. This is your SECONDARY context. Use it to connect the user's current work to the broader project." : "",
+        "- [WORKSPACE_CONTEXT]: The user's other boards and Vault (saved notes, files, links, videos, images). Background context — use when relevant but do NOT prioritize over the current grid" + (hasProject ? " or project." : "."),
         "- [USER_MODEL] (if present): A periodically updated summary of this user's themes, style, and interests from past chats — use for tone and continuity, not as factual ground truth.",
         "- [SYNTHESIS_RETRIEVAL] (if present): Semantically matched snippets from their embedded workspace index.",
         "- [CONVERSATION]: The full conversation history including your own responses.",
+        "",
+        "=== CONTEXT PRIORITY (CRITICAL) ===",
+        "When answering, follow this priority order strictly:",
+        "1. GRID CONTEXT [CONTEXT] — the blocks, notes, and connections on the current board. This is what the user is actively looking at and working on. Always ground your response here first.",
+        hasProject ? "2. PROJECT CONTEXT [PROJECT_KNOWLEDGE] — the broader project this grid belongs to. Use it to relate the user's current work to other boards, files, and goals in the same project." : "",
+        hasProject ? "3. WORKSPACE CONTEXT [WORKSPACE_CONTEXT] — everything else (other boards, Vault). Only reference when the user explicitly asks about it or when a strong connection exists." : "2. WORKSPACE CONTEXT [WORKSPACE_CONTEXT] — everything else (other boards, Vault). Only reference when the user explicitly asks about it or when a strong connection exists.",
+        "If the user's question can be answered from grid context alone, do so. Only widen scope to project or workspace context when the grid context is insufficient or the user's question clearly requires it.",
+        "=== END CONTEXT PRIORITY ===",
         "",
         "The user's workspace has a saved-content area called 'The Vault'. When speaking to the user, ALWAYS call it 'The Vault' — never 'media page'.",
         "",
@@ -2940,6 +3023,10 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
         "  In [WORKSPACE_CONTEXT], media items show: \"title\" (id=<noteId>) — files: <type>[<index>]",
         "  To pull an item, add at the END of your response: [PULL_MEDIA:noteId|attachmentIndex] (index defaults to 0 if omitted).",
         "  Pull multiple: [PULL_MEDIA:id1|0] [PULL_MEDIA:id2|1]. NEVER say you can't pull in files. You CAN.",
+        "- Vault tagging: add tags to any Vault item. In [WORKSPACE_CONTEXT] items show \"title\" (id=<noteId>).",
+        "  To tag: [TAG_NOTES:noteId|tag1,tag2,tag3]. Tags are lowercase, short, use hyphens for multi-word (e.g. ui-design).",
+        "  Tag multiple: [TAG_NOTES:id1|design,inspiration] [TAG_NOTES:id2|reference]. Tags are ADDED to existing ones.",
+        "  Always confirm what you tagged. NEVER say you can't tag Vault items.",
         "- A single response can mix ALL of the above.",
         "",
         "IMPORTANT — Web browsing capability:",
@@ -2964,10 +3051,10 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
         conversationMemoryText
           ? `[CONVERSATION_MEMORY — past exchanges from other grids/projects/vault]\n${conversationMemoryText}`
           : '',
-        ctx ? `[CONTEXT]\n${ctx}` : "",
-        kb ? `[KNOWLEDGE]\n${kb}` : "",
         wsCtx ? `[WORKSPACE_CONTEXT]\nBelow are the user's OTHER boards and their entire Vault contents. This is real data.\n${wsCtx}` : "",
         fullPrompt && fullPrompt !== userMsg ? `[FULL_CONTEXT]\n${fullPrompt.slice(0, 16000)}` : "",
+        kb ? `[PROJECT_KNOWLEDGE]\n${kb}` : "",
+        ctx ? `[CONTEXT]\n${ctx}` : "",
         `[USER]\n${userMsg}`,
       ].filter(Boolean).join("\n\n");
     };
@@ -3346,91 +3433,148 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
 // ── Image Generation Endpoint ─────────────────────────────────────────────
 app.post('/api/ai/image', requireAuth, generationLimiter, checkAiUsageLimit, async (req, res) => {
   try {
-    const { prompt, aspect_ratio } = req.body || {};
+    const { prompt, aspect_ratio, model: rawImageModel } = req.body || {};
+    const imageModel = String(rawImageModel || '').trim();
     const cleanPrompt = String(prompt || '').trim();
     if (!cleanPrompt) return res.status(400).json({ error: 'Missing prompt' });
+    if (!imageModel || !isImageGenModel(imageModel)) {
+      return res.status(400).json({
+        error: 'Select an image generation model in the model menu, then try again.',
+      });
+    }
 
     const imagePrompt = extractImagePrompt(cleanPrompt);
-    console.log(`🎨 Image generation request: "${imagePrompt.slice(0, 120)}"`);
+    console.log(`🎨 Image generation (${imageModel}): "${imagePrompt.slice(0, 120)}"`);
 
-    // Try Grok Imagine first
-    if (process.env.XAI_API_KEY) {
-      try {
-        const body = {
-          model: 'grok-imagine-image',
+    const logImageGen = (provider, modelId) => {
+      getOrCreateSession(req.user?.id, req.body?.boardId).then((session) => {
+        logAiUsage({ sessionId: session?.id, userId: req.user?.id, actionType: 'image_gen', model: modelId, provider });
+      }).catch(() => {});
+    };
+
+    const openAiImageUrlFromData = (data) => {
+      const row = data?.data?.[0];
+      if (!row) return null;
+      if (row.url) return row.url;
+      if (row.b64_json) return `data:image/png;base64,${row.b64_json}`;
+      return null;
+    };
+
+    // xAI Grok image models
+    if (XAI_IMAGE_MODEL_IDS.has(imageModel)) {
+      if (!process.env.XAI_API_KEY) {
+        return res.status(503).json({ error: 'XAI_API_KEY not configured for this image model.' });
+      }
+      const body = {
+        model: imageModel,
+        prompt: imagePrompt,
+        n: 1,
+      };
+      if (aspect_ratio) body.aspect_ratio = aspect_ratio;
+
+      const grokRes = await fetch('https://api.x.ai/v1/images/generations', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${process.env.XAI_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(60000),
+      });
+
+      if (grokRes.ok) {
+        const data = await grokRes.json();
+        const url = data?.data?.[0]?.url;
+        if (url) {
+          console.log(`✅ xAI image generated (${imageModel})`);
+          logImageGen('xai', imageModel);
+          return res.json({ type: 'image', url, provider: 'grok', prompt: imagePrompt });
+        }
+      }
+      const err = await grokRes.json().catch(() => ({}));
+      return res.status(502).json({ error: err?.error?.message || grokRes.statusText || 'xAI image generation failed' });
+    }
+
+    // OpenAI DALL-E 3
+    if (imageModel === 'dall-e-3') {
+      if (!process.env.OPENAI_API_KEY) {
+        return res.status(503).json({ error: 'OPENAI_API_KEY not configured for DALL-E 3.' });
+      }
+      const dalleRes = await fetch('https://api.openai.com/v1/images/generations', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'dall-e-3',
           prompt: imagePrompt,
           n: 1,
-        };
-        if (aspect_ratio) body.aspect_ratio = aspect_ratio;
+          size: '1024x1024',
+          quality: 'standard',
+        }),
+        signal: AbortSignal.timeout(60000),
+      });
 
-        const grokRes = await fetch('https://api.x.ai/v1/images/generations', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${process.env.XAI_API_KEY}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(body),
-          signal: AbortSignal.timeout(60000),
-        });
-
-        if (grokRes.ok) {
-          const data = await grokRes.json();
-          const url = data?.data?.[0]?.url;
-          if (url) {
-            console.log('✅ Grok Imagine image generated');
-            getOrCreateSession(req.user?.id, req.body?.boardId).then((session) => {
-              logAiUsage({ sessionId: session?.id, userId: req.user?.id, actionType: 'image_gen', model: 'grok-imagine-image', provider: 'xai' });
-            }).catch(() => {});
-            return res.json({ type: 'image', url, provider: 'grok', prompt: imagePrompt });
-          }
-        } else {
-          const err = await grokRes.json().catch(() => ({}));
-          console.warn('⚠️ Grok Imagine failed, trying DALL-E fallback:', err?.error?.message || grokRes.statusText);
+      if (dalleRes.ok) {
+        const data = await dalleRes.json();
+        const url = openAiImageUrlFromData(data);
+        if (url) {
+          console.log('✅ DALL-E 3 image generated');
+          logImageGen('openai', 'dall-e-3');
+          return res.json({ type: 'image', url, provider: 'dalle', prompt: imagePrompt });
         }
-      } catch (e) {
-        console.warn('⚠️ Grok Imagine error, trying DALL-E fallback:', e.message);
       }
+      const err = await dalleRes.json().catch(() => ({}));
+      return res.status(502).json({ error: err?.error?.message || dalleRes.statusText || 'DALL-E 3 failed' });
     }
 
-    // Fallback to DALL-E 3
-    if (process.env.OPENAI_API_KEY) {
-      try {
-        const dalleRes = await fetch('https://api.openai.com/v1/images/generations', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            model: 'dall-e-3',
-            prompt: imagePrompt,
-            n: 1,
-            size: '1024x1024',
-            quality: 'standard',
-          }),
-          signal: AbortSignal.timeout(60000),
-        });
-
-        if (dalleRes.ok) {
-          const data = await dalleRes.json();
-          const url = data?.data?.[0]?.url;
-          if (url) {
-            console.log('✅ DALL-E 3 image generated');
-            getOrCreateSession(req.user?.id, req.body?.boardId).then((session) => {
-              logAiUsage({ sessionId: session?.id, userId: req.user?.id, actionType: 'image_gen', model: 'dall-e-3', provider: 'openai' });
-            }).catch(() => {});
-            return res.json({ type: 'image', url, provider: 'dalle', prompt: imagePrompt });
-          }
-        } else {
-          const err = await dalleRes.json().catch(() => ({}));
-          console.error('❌ DALL-E 3 failed:', err?.error?.message || dalleRes.statusText);
-        }
-      } catch (e) {
-        console.error('❌ DALL-E 3 error:', e.message);
+    // OpenAI GPT Image 1.5
+    if (imageModel === 'gpt-image-1.5') {
+      if (!process.env.OPENAI_API_KEY) {
+        return res.status(503).json({ error: 'OPENAI_API_KEY not configured for GPT Image 1.5.' });
       }
+      const gptImgRes = await fetch('https://api.openai.com/v1/images/generations', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'gpt-image-1.5',
+          prompt: imagePrompt,
+          n: 1,
+          size: '1024x1024',
+          quality: 'medium',
+        }),
+        signal: AbortSignal.timeout(120000),
+      });
+
+      if (gptImgRes.ok) {
+        const data = await gptImgRes.json();
+        const url = openAiImageUrlFromData(data);
+        if (url) {
+          console.log('✅ GPT Image 1.5 generated');
+          logImageGen('openai', 'gpt-image-1.5');
+          return res.json({ type: 'image', url, provider: 'openai', prompt: imagePrompt });
+        }
+      }
+      const err = await gptImgRes.json().catch(() => ({}));
+      return res.status(502).json({ error: err?.error?.message || gptImgRes.statusText || 'GPT Image 1.5 failed' });
     }
 
-    return res.status(500).json({ error: 'No image generation provider available. Configure XAI_API_KEY or OPENAI_API_KEY.' });
+    // Google Gemini (Nano Banana 2) — text-to-image
+    if (imageModel === 'gemini-3.1-flash-image-preview') {
+      const out = await generateGeminiTextToImage(imagePrompt);
+      if (out.ok && out.url) {
+        console.log(`✅ Gemini text-to-image (${out.geminiModel})`);
+        logImageGen('google', out.geminiModel || 'gemini-3.1-flash-image-preview');
+        return res.json({ type: 'image', url: out.url, provider: 'nano-banana', prompt: imagePrompt });
+      }
+      return res.status(502).json({ error: out.error || 'Gemini image generation failed' });
+    }
+
+    return res.status(400).json({ error: 'Unsupported image model.' });
   } catch (error) {
     console.error('❌ Image generation error:', error.message);
     return res.status(500).json({ error: `Image generation failed: ${error.message}` });

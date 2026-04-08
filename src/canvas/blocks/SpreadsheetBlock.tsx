@@ -826,13 +826,22 @@ export const SpreadsheetBlock = memo(function SpreadsheetBlock({ id, onMinimize,
       d2.raf = null;
       const dx2 = d2.lastX - d2.originX;
       const dy2 = d2.lastY - d2.originY;
-      moveBlocksFromSnapshot(d2.snapshot, dx2, dy2, { snap: true });
+      moveBlocksFromSnapshot(d2.snapshot, dx2, dy2, { snap: false });
     });
   };
 
   const onDragEnd = (e: React.PointerEvent) => {
     const d = dragRef.current;
     if (!d || d.pointerId !== e.pointerId) return;
+    if (d.raf != null) {
+      window.cancelAnimationFrame(d.raf);
+      d.raf = null;
+    }
+    if (d.snapshot?.length) {
+      const dx = d.lastX - d.originX;
+      const dy = d.lastY - d.originY;
+      moveBlocksFromSnapshot(d.snapshot, dx, dy, { snap: true });
+    }
     dragRef.current = null;
     try {
       (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);

@@ -31,7 +31,7 @@ type AiState = {
   isRefreshing: boolean;
   lastError: string | null;
 
-  refreshKnowledgeBase: (projectId: string, opts?: { force?: boolean }) => Promise<string | null>;
+  refreshKnowledgeBase: (projectId: string, opts?: { force?: boolean; excludeBoardId?: string }) => Promise<string | null>;
   getCachedKbText: () => string;
   refreshWorkspaceSummary: (userId: string, excludeBoardId?: string, opts?: { force?: boolean }) => Promise<WorkspaceSummary | null>;
   getCachedWorkspaceSummary: () => WorkspaceSummary | null;
@@ -90,7 +90,10 @@ export const useAiStore = create<AiState>()(
       });
       try {
         const kb = await getProjectKnowledgeBase(projectId);
-        const kbText = projectSummaryForAI(kb);
+        const kbText = projectSummaryForAI(kb, {
+          maxChars: 4000,
+          excludeBoardId: opts?.excludeBoardId,
+        });
         set((s) => {
           s.projectKnowledgeBase = kb;
           s.projectKnowledgeBaseText = kbText;

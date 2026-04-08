@@ -5,7 +5,19 @@
  *   Tier 1 — Focused blocks  (max 3, full content up to 3 000 chars)
  *   Tier 2 — Nearby blocks   (max 20, 120-char content previews)
  *   Tier 3 — Compact summary (max 10, 80-char content previews)
+ *
+ * Also emits:
+ *   [BOARD_OVERVIEW]    — total / shown / hidden counts, type breakdown
+ *   [NEARBY_CLUSTERS]   — auto-detected spatial proximity groups
+ *   [RECENTLY_REMOVED]  — blocks deleted during the current session
  */
+
+export type RecentlyDeletedEntry = {
+  id: string;
+  type: string;
+  preview: string;
+  deletedAt: number;
+};
 
 const take = (v: any, n: number) =>
   String(v || "")
@@ -20,6 +32,18 @@ const host = (u: string) => {
     return "";
   }
 };
+
+function effectiveType(b: any): string {
+  const t = String(b?.type || "unknown");
+  if (t === "create") {
+    const m = String(b?.mode || "").toLowerCase();
+    if (m === "image" || m === "generated") return "image";
+    if (m === "video") return "youtube";
+    if (m === "embed") return "file";
+    if (m) return m;
+  }
+  return t;
+}
 
 function describeBlock(
   b: any,
@@ -113,8 +137,9 @@ export function buildTieredCanvasContext(params: {
     fromSide?: string;
     toSide?: string;
   }>;
+  recentlyDeleted?: RecentlyDeletedEntry[];
 }): string {
-  const { blocks, blockOrder, focusedBrickIds, viewportCenter, wireConnections } = params;
+  const { blocks, blockOrder, focusedBrickIds, viewportCenter, wireConnections, recentlyDeleted } = params;
   const allIds = Array.isArray(blockOrder) ? blockOrder : [];
   const focusedSet = new Set((focusedBrickIds || []).slice(0, 3));
   const included = new Set<string>();
@@ -230,7 +255,98 @@ export function buildTieredCanvasContext(params: {
     }
   }
 
+  // ── Board overview ────────────────────────────────────────────────
+  const totalBlocks = allIds.filter((id) => !!blocks[id]).length;
+  const shownBlocks = included.size;
+  const hiddenBlocks = totalBlocks - shownBlocks;
+
+  const typeFreq: Record<string, number> = {};
+  for (const id of allIds) {
+    const b = blocks[id];
+    if (!b) continue;
+    const et = effectiveType(b);
+    typeFreq[et] = (typeFreq[et] || 0) + 1;
+  }
+  const typeSummary = Object.entries(typeFreq)
+    .sort((a, b) => b[1] - a[1])
+    .map(([t, n]) => `${n} ${t}`)
+    .join(", ");
+
+  // ── Proximity clusters (union-find on auto-neighbor edges) ────────
+  const clusterParent = new Map<string, string>();
+  const find = (x: string): string => {
+    let r = x;
+    while (clusterParent.get(r) !== r) r = clusterParent.get(r) || r;
+    let c = x;
+    while (c !== r) { const p = clusterParent.get(c) || c; clusterParent.set(c, r); c = p; }
+    return r;
+  };
+  const union = (a: string, b: string) => {
+    const ra = find(a), rb = find(b);
+    if (ra !== rb) clusterParent.set(rb, ra);
+  };
+
+  for (const id of included) {
+    clusterParent.set(id, id);
+  }
+  for (const id of included) {
+    const b = blocks[id];
+    const conns: any[] = Array.isArray(b?.data?.connections) ? b.data.connections : [];
+    for (const c of conns) {
+      if (c?.kind !== "neighbor") continue;
+      const otherId = String(c?.toId || "");
+      if (otherId && included.has(otherId)) union(id, otherId);
+    }
+  }
+
+  const clusterMap = new Map<string, string[]>();
+  for (const id of included) {
+    const root = find(id);
+    if (!clusterMap.has(root)) clusterMap.set(root, []);
+    clusterMap.get(root)!.push(id);
+  }
+  const clusterLines: string[] = [];
+  const clusterLabel = (id: string) => {
+    const b = blocks[id];
+    if (!b) return id;
+    const et = effectiveType(b);
+    const content = String(b.content || b.data?.content || b.data?.title || "").replace(/\s+/g, " ").trim();
+    const preview = content ? ` "${content.slice(0, 30)}"` : "";
+    return `${id}(${et}${preview})`;
+  };
+  let clusterChars = 0;
+  const CLUSTER_CHAR_CAP = 500;
+  for (const [, members] of clusterMap) {
+    if (members.length < 2) continue;
+    const line = `  group: ${members.map(clusterLabel).join(", ")}`;
+    if (clusterChars + line.length > CLUSTER_CHAR_CAP) break;
+    clusterLines.push(line);
+    clusterChars += line.length;
+  }
+
+  // ── Recently removed blocks ───────────────────────────────────────
+  const DELETED_EXPIRY_MS = 15 * 60 * 1000;
+  const now = Date.now();
+  const deletedEntries = Array.isArray(recentlyDeleted)
+    ? recentlyDeleted.filter((e) => now - e.deletedAt < DELETED_EXPIRY_MS)
+    : [];
+  const deletedLines: string[] = [];
+  for (const e of deletedEntries) {
+    const ago = Math.round((now - e.deletedAt) / 60_000);
+    const agoStr = ago < 1 ? "just now" : `~${ago} min ago`;
+    const preview = e.preview ? ` "${e.preview}"` : "";
+    deletedLines.push(`  id=${e.id} was ${e.type}${preview} (deleted ${agoStr})`);
+  }
+
   // ── Assemble ─────────────────────────────────────────────────────────
+  lines.push(
+    "[BOARD_OVERVIEW]",
+    `Total: ${totalBlocks} blocks | Showing: ${shownBlocks} | Hidden: ${hiddenBlocks}`,
+    `Types: ${typeSummary}`,
+    `Wires: ${validWires.length} connections | Spatial groups: ${clusterLines.length}`,
+    "",
+  );
+
   if (focusedLines.length) {
     const focusedBlocks = [...focusedSet].map((id) => blocks[id]).filter(Boolean);
     const hasFocusedImage = focusedBlocks.some(
@@ -273,6 +389,56 @@ export function buildTieredCanvasContext(params: {
       "[CONNECTIONS]",
       "These bricks are explicitly connected by the user via wires. Treat connected bricks as contextually related — the user linked them intentionally to show a relationship, data flow, or logical grouping.",
       ...connectionLines,
+    );
+  }
+
+  // ── Board images: text descriptions for all images, even those not in tiers ──
+  const BOARD_IMAGES_CAP = 1500;
+  const imageLines: string[] = [];
+  let imageChars = 0;
+  for (const id of allIds) {
+    const b = blocks[id];
+    if (!b) continue;
+    const isImage =
+      b.type === "image" ||
+      (b.type === "create" &&
+        ["image", "generated"].includes(String(b.mode || "").toLowerCase()));
+    if (!isImage) continue;
+    const src = String(b.src || b?.data?.src || "");
+    const srcHost = src ? (host(src) || "local") : "";
+    const attached = included.has(id) && src && (src.startsWith("http") || src.startsWith("data:image/"))
+      ? " [IMAGE ATTACHED]" : "";
+    const desc = String(b?.data?.aiDescription || "").replace(/\s+/g, " ").trim();
+    const descText = desc ? `— "${desc.slice(0, 120)}"` : "— (no description yet)";
+    const line = `  id=${id} kind=image${srcHost ? ` srcHost=${srcHost}` : ""}${attached} ${descText}`;
+    if (imageChars + line.length > BOARD_IMAGES_CAP) break;
+    imageLines.push(line);
+    imageChars += line.length;
+  }
+  if (imageLines.length) {
+    lines.push(
+      "",
+      "[BOARD_IMAGES]",
+      `All ${imageLines.length} image(s) on this board (text descriptions). You can see actual pixels only for images marked [IMAGE ATTACHED].`,
+      ...imageLines,
+    );
+  }
+
+  if (clusterLines.length) {
+    lines.push(
+      "",
+      "[NEARBY_CLUSTERS]",
+      "Blocks near each other on the board (auto-detected proximity, not user-wired). Treat as loosely related context groups.",
+      ...clusterLines,
+    );
+  }
+
+  if (deletedLines.length) {
+    lines.push(
+      "",
+      "[RECENTLY_REMOVED]",
+      "These blocks were on the board earlier but have since been deleted by the user. Do not reference them as if they still exist.",
+      ...deletedLines,
     );
   }
 

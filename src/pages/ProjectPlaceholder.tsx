@@ -27,6 +27,7 @@ import {
   Check,
   Mic,
   Square,
+  ArrowUp,
   GripVertical,
   Copy,
 } from "lucide-react";
@@ -2636,12 +2637,6 @@ INSTRUCTIONS:
             </div>
           )}
           <div ref={chatScrollRef} className="flex-1 overflow-y-auto scrollbar-hide p-3 space-y-3">
-            {isChatLoading && (
-              <div className="text-[0.6875rem] text-black/60 px-1 flex items-center gap-2" aria-live="polite">
-                <div className="brick-spinner" />
-                {thinkingStatus}
-              </div>
-            )}
             {chatMessages.map((msg: any, idx: number) => (
               <div key={msg.id || idx} className={`flex flex-col ${msg.role === "user" ? "items-end" : "items-start"}`}>
                 {msg.role === "user" ? (
@@ -2722,40 +2717,117 @@ INSTRUCTIONS:
                 })()}
               </div>
             ))}
+            {isChatLoading && (
+              <div className="flex flex-col items-end w-full">
+                <div className="max-w-[94%] text-[0.6875rem] text-black/60 px-1 flex items-center justify-end gap-2" aria-live="polite">
+                  <div className="brick-spinner" />
+                  {thinkingStatus}
+                </div>
+              </div>
+            )}
           </div>
-          <div className="p-2 pb-2">
-            <div className="glass-control rounded-2xl px-2 py-1.5 w-full">
-              <div className="flex items-center gap-1.5">
-                <textarea
-                  ref={chatInputRef}
-                  data-min-h="32"
-                  value={chatInput}
-                  onChange={(e) => setChatInput(e.target.value)}
-                  onInput={(e) => {
-                    const el = e.currentTarget;
-                    el.style.height = "auto";
-                    el.style.height = Math.min(el.scrollHeight, 220) + "px";
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault();
-                      handleChatSend();
-                    }
-                  }}
-                  placeholder="Ask me anything..."
-                  rows={1}
-                  className="w-full min-h-[32px] max-h-[220px] rounded-xl bg-white/12 border border-white/30 px-3 py-1.5 text-sm text-black placeholder:text-black/55 outline-none resize-none leading-5 scrollbar-hide"
-                  disabled={isChatLoading}
-                />
+          <div className="p-3 pb-3">
+            <div className="omnia-neu-chat-shell omnia-chat-border-run-once px-2.5 py-2 w-full flex flex-col gap-1.5">
+              <textarea
+                ref={chatInputRef}
+                data-min-h="44"
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                onInput={(e) => {
+                  const el = e.currentTarget;
+                  el.style.height = "auto";
+                  el.style.height = Math.min(el.scrollHeight, 160) + "px";
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    handleChatSend();
+                  }
+                }}
+                placeholder="Ask me anything..."
+                rows={1}
+                className="w-full min-h-[2.75rem] max-h-[160px] omnia-neu-chat-field px-2.5 py-1.5 text-[0.6875rem] leading-4 text-black dark:text-white placeholder:text-black/50 dark:placeholder:text-white/45 outline-none resize-none scrollbar-hide"
+                disabled={isChatLoading}
+              />
+              <div className="flex items-center gap-2 pt-0.5">
+                <Select value={selectedModel} onValueChange={updateSelectedModel}>
+                  <SelectTrigger className="omnia-neu-chat-toolbar-select-trigger h-8 max-w-[6.5rem] min-w-0 shrink-0 rounded-lg border-0 bg-transparent text-[0.625rem] px-1.5 font-medium text-black/75 shadow-none dark:text-white/80 [&>span]:truncate">
+                    <SelectValue placeholder="Model" />
+                  </SelectTrigger>
+                  <SelectContent side="top" align="start" className="glass-control border border-white/25 dark:border-white/10 bg-white/35 dark:bg-white/10 backdrop-blur-xl shadow-lg max-h-[min(28rem,70vh)] overflow-y-auto w-[min(92vw,18rem)]">
+                    <SelectGroup>
+                      <SelectLabel>Latest</SelectLabel>
+                      <SelectItem value="claude-sonnet-4-6" hint="Anthropic flagship">Claude Sonnet 4.6</SelectItem>
+                      <SelectItem value="gpt-5.4" hint="OpenAI flagship">GPT-5.4</SelectItem>
+                      <SelectItem value="gemini-3.1-pro-preview" hint="Google flagship">Gemini 3.1 Pro</SelectItem>
+                      <SelectItem value="grok-4-1-fast-reasoning" hint="xAI flagship">Grok 4.1 Fast Reasoning</SelectItem>
+                    </SelectGroup>
+                    <SelectSeparator />
+                    <SelectGroup>
+                      <SelectLabel>Fastest</SelectLabel>
+                      <SelectItem value="gemini-3-flash-preview" hint="Google, ultra-fast">Gemini 3 Flash</SelectItem>
+                      <SelectItem value="gemini-3.1-flash-lite-preview" hint="Google, cheapest">Gemini 3.1 Flash-Lite</SelectItem>
+                      <SelectItem value="gemini-2.5-flash" hint="Google, balanced">Gemini 2.5 Flash</SelectItem>
+                      <SelectItem value="gpt-4.1-nano" hint="OpenAI, smallest">GPT-4.1 Nano</SelectItem>
+                      <SelectItem value="gpt-4.1-mini" hint="OpenAI, fast + smart">GPT-4.1 Mini</SelectItem>
+                      <SelectItem value="gpt-5-mini" hint="OpenAI, near-frontier">GPT-5 Mini</SelectItem>
+                      <SelectItem value="claude-haiku-4-5-20251001" hint="Anthropic, fast">Claude Haiku 4.5</SelectItem>
+                      <SelectItem value="grok-4-1-fast-non-reasoning" hint="xAI, low latency">Grok 4.1 Fast Non-Reasoning</SelectItem>
+                    </SelectGroup>
+                    <SelectSeparator />
+                    <SelectGroup>
+                      <SelectLabel>Cheap</SelectLabel>
+                      <SelectItem value="gpt-4o-mini" hint="OpenAI, budget">GPT-4o Mini</SelectItem>
+                      <SelectItem value="o4-mini" hint="OpenAI, cheap reasoning">o4 Mini</SelectItem>
+                      <SelectItem value="grok-3-mini" hint="xAI, budget">Grok 3 Mini</SelectItem>
+                    </SelectGroup>
+                    <SelectSeparator />
+                    <SelectGroup>
+                      <SelectLabel>Image Gen</SelectLabel>
+                      <SelectItem value="gpt-image-1.5" hint="OpenAI, images">GPT Image 1.5</SelectItem>
+                      <SelectItem value="gemini-3.1-flash-image-preview" hint="Google, images">Nano Banana 2</SelectItem>
+                      <SelectItem value="grok-imagine-image-pro" hint="xAI, pro images">Grok Imagine Image Pro</SelectItem>
+                      <SelectItem value="grok-imagine-image" hint="xAI, images">Grok Imagine Image</SelectItem>
+                      <SelectItem value="grok-2-image-1212" hint="xAI, images">Grok 2 Image</SelectItem>
+                      <SelectItem value="dall-e-3" hint="OpenAI, images">DALL-E 3</SelectItem>
+                    </SelectGroup>
+                    <SelectSeparator />
+                    <SelectGroup>
+                      <SelectLabel>Deep Thinking</SelectLabel>
+                      <SelectItem value="o3" hint="OpenAI, reasoning">o3</SelectItem>
+                      <SelectItem value="o3-pro" hint="OpenAI, max reasoning">o3 Pro</SelectItem>
+                      <SelectItem value="gpt-5.4-pro" hint="OpenAI, extended">GPT-5.4 Pro</SelectItem>
+                      <SelectItem value="claude-opus-4-1-20250805" hint="Anthropic, deep">Claude Opus 4.1</SelectItem>
+                      <SelectItem value="claude-opus-4-20250514" hint="Anthropic, deep">Claude Opus 4</SelectItem>
+                      <SelectItem value="gemini-2.5-pro" hint="Google, reasoning">Gemini 2.5 Pro</SelectItem>
+                      <SelectItem value="grok-4-fast-reasoning" hint="xAI, reasoning">Grok 4 Fast Reasoning</SelectItem>
+                    </SelectGroup>
+                    <SelectSeparator />
+                    <SelectGroup>
+                      <SelectLabel>Code</SelectLabel>
+                      <SelectItem value="claude-opus-4-6-code" hint="Anthropic, top coder">Claude Opus 4.6</SelectItem>
+                      <SelectItem value="gpt-5.3-codex" hint="OpenAI, agentic code">Codex 5.3</SelectItem>
+                      <SelectItem value="gpt-4.1" hint="OpenAI, 1M ctx code">GPT-4.1</SelectItem>
+                      <SelectItem value="grok-code-fast-1" hint="xAI, code">Grok Code Fast 1</SelectItem>
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <div className="flex-1 min-w-[4px]" aria-hidden />
+                <button type="button" className="h-8 w-8 omnia-neu-chat-icon-plain flex items-center justify-center text-black/80 dark:text-white/85 shrink-0" title="Add attachments">
+                  <Plus className="w-3 h-3" />
+                </button>
                 {isChatLoading ? (
-                  <button type="button" onClick={() => setIsChatLoading(false)} className="h-8 w-8 rounded-full flex items-center justify-center transition-colors bg-red-500/15 hover:bg-red-500/25 shrink-0" title="Stop generating">
-                    <Square className="w-3 h-3 text-red-500" fill="currentColor" />
+                  <button type="button" onClick={() => setIsChatLoading(false)} className="h-8 w-8 omnia-neu-chat-icon-plain flex items-center justify-center shrink-0" title="Stop generating">
+                    <Square className="w-2.5 h-2.5 text-red-600 dark:text-red-400" fill="currentColor" />
                   </button>
                 ) : (
-                  <button type="button" className="h-8 w-8 rounded-full flex items-center justify-center transition-colors hover:bg-black/10 shrink-0" title="Dictate">
-                    <Mic className="w-3.5 h-3.5" />
+                  <button type="button" className="h-8 w-8 omnia-neu-chat-icon-plain flex items-center justify-center shrink-0" title="Dictate">
+                    <Mic className="w-3 h-3 text-black/75 dark:text-white/80" />
                   </button>
                 )}
+                <button type="button" onClick={() => void handleChatSend()} disabled={!chatInput.trim() || isChatLoading} className={`h-8 w-8 omnia-neu-chat-send-btn flex items-center justify-center shrink-0 ${!chatInput.trim() || isChatLoading ? "opacity-40 cursor-not-allowed" : "text-blue-600 dark:text-blue-400"}`} title="Send">
+                  <ArrowUp className="w-3 h-3" strokeWidth={2.25} />
+                </button>
               </div>
             </div>
           </div>

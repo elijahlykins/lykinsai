@@ -62,8 +62,6 @@ export const ImageBlock = memo(function ImageBlock({ id, onMinimize, onMenu }: {
   const activeDragPointerIdRef = useRef<number | null>(null);
   const resizeRef = useRef<ResizeState | null>(null);
   const endResizeCleanupRef = useRef<(() => void) | null>(null);
-  const naturalAspectRef = useRef<number | null>(null);
-
   const style = useMemo(() => {
     if (!block) return null;
     if (block.type === "create" && ((block as any).mode === "image" || (block as any).mode === "generated")) {
@@ -115,6 +113,9 @@ export const ImageBlock = memo(function ImageBlock({ id, onMinimize, onMenu }: {
         // ignore
       }
       endDragCleanupRef.current = null;
+    }
+    if (d?.snapshot?.length) {
+      moveBlocksFromSnapshot(d.snapshot, d.lastX - d.originX, d.lastY - d.originY, { snap: true });
     }
     if (d?.capturer) {
       try {
@@ -330,46 +331,40 @@ export const ImageBlock = memo(function ImageBlock({ id, onMinimize, onMenu }: {
             const maxW = snapDownSize(rr.maxW ?? Number.POSITIVE_INFINITY);
             const maxH = snapDownSize(rr.maxH ?? Number.POSITIVE_INFINITY);
 
+            // Edge handles: one axis only + object-cover = reframe / crop toward center (narrower or shorter "cuts into" the image).
             if (rr.mode === "right") {
-              const g = Math.max(1, Math.floor(gridSize || 24));
-              const snappedDx = Math.round(dx / g) * g;
-              let nextW = Math.max(min, rr.startW + snappedDx);
+              let nextW = snapSize(rr.startW + dx);
               if (Number.isFinite(maxW)) nextW = Math.min(nextW, maxW);
-              let nextH = Math.max(min, Math.round(nextW / rr.aspect));
-              if (Number.isFinite(maxH)) nextH = Math.min(nextH, maxH);
               updateBlock(id, {
                 x: rr.startX,
                 y: rr.startY,
-                width: nextW,
-                height: nextH,
+                width: Math.max(min, nextW),
+                height: Math.max(min, rr.startH),
               });
               return;
             }
 
             if (rr.mode === "top") {
-              const g = Math.max(1, Math.floor(gridSize || 24));
-              const snappedDy = Math.round(dy / g) * g;
-              let nextH = Math.max(min, rr.startH - snappedDy);
+              let nextH = snapSize(rr.startH - dy);
               if (Number.isFinite(maxH)) nextH = Math.min(nextH, maxH);
-              let nextW = Math.max(min, Math.round(nextH * rr.aspect));
-              if (Number.isFinite(maxW)) nextW = Math.min(nextW, maxW);
               const nextY = bottom - nextH;
-              updateBlock(id, { x: rr.startX, y: nextY, width: nextW, height: nextH });
+              updateBlock(id, {
+                x: rr.startX,
+                y: nextY,
+                width: Math.max(min, rr.startW),
+                height: Math.max(min, nextH),
+              });
               return;
             }
 
             if (rr.mode === "bottom") {
-              const g = Math.max(1, Math.floor(gridSize || 24));
-              const snappedDy = Math.round(dy / g) * g;
-              let nextH = Math.max(min, rr.startH + snappedDy);
+              let nextH = snapSize(rr.startH + dy);
               if (Number.isFinite(maxH)) nextH = Math.min(nextH, maxH);
-              let nextW = Math.max(min, Math.round(nextH * rr.aspect));
-              if (Number.isFinite(maxW)) nextW = Math.min(nextW, maxW);
               updateBlock(id, {
                 x: rr.startX,
                 y: rr.startY,
-                width: nextW,
-                height: nextH,
+                width: Math.max(min, rr.startW),
+                height: Math.max(min, nextH),
               });
               return;
             }
@@ -422,7 +417,7 @@ export const ImageBlock = memo(function ImageBlock({ id, onMinimize, onMenu }: {
           d2.raf = null;
           const dx2 = d2.lastX - d2.originX;
           const dy2 = d2.lastY - d2.originY;
-          moveBlocksFromSnapshot(d2.snapshot, dx2, dy2, { snap: true });
+          moveBlocksFromSnapshot(d2.snapshot, dx2, dy2, { snap: false });
         });
       }}
       onPointerUp={(e) => {
@@ -519,14 +514,8 @@ export const ImageBlock = memo(function ImageBlock({ id, onMinimize, onMenu }: {
         <img
           src={src}
           alt=""
-          className="w-full h-full object-cover select-none pointer-events-none"
+          className="w-full h-full object-cover object-center select-none pointer-events-none"
           draggable={false}
-          onLoad={(e) => {
-            const img = e.currentTarget;
-            const w = Number(img.naturalWidth) || 0;
-            const h = Number(img.naturalHeight) || 0;
-            if (w > 0 && h > 0) naturalAspectRef.current = w / h;
-          }}
         />
       </div>
 
@@ -538,7 +527,7 @@ export const ImageBlock = memo(function ImageBlock({ id, onMinimize, onMenu }: {
           className="absolute top-0 bottom-0 right-0 w-2 pointer-events-auto opacity-0 group-hover:opacity-100 transition-opacity"
           style={{ cursor: "ew-resize" }}
           onPointerDown={(e) => beginResize(e, "right")}
-          title="Resize width"
+          title="Crop width (narrow to focus)"
         />
         {/* Top edge stretch */}
         <div
@@ -546,7 +535,7 @@ export const ImageBlock = memo(function ImageBlock({ id, onMinimize, onMenu }: {
           className="absolute left-0 right-0 top-0 h-2 pointer-events-auto opacity-0 group-hover:opacity-100 transition-opacity"
           style={{ cursor: "ns-resize" }}
           onPointerDown={(e) => beginResize(e, "top")}
-          title="Resize height"
+          title="Crop height (from top)"
         />
         {/* Bottom edge stretch */}
         <div
@@ -554,7 +543,7 @@ export const ImageBlock = memo(function ImageBlock({ id, onMinimize, onMenu }: {
           className="absolute left-0 right-0 bottom-0 h-2 pointer-events-auto opacity-0 group-hover:opacity-100 transition-opacity"
           style={{ cursor: "ns-resize" }}
           onPointerDown={(e) => beginResize(e, "bottom")}
-          title="Resize height"
+          title="Crop height (from bottom)"
         />
         {/* Bottom-right corner scale */}
         <div
@@ -562,7 +551,7 @@ export const ImageBlock = memo(function ImageBlock({ id, onMinimize, onMenu }: {
           className="absolute right-0 bottom-0 w-4 h-4 pointer-events-auto opacity-0 group-hover:opacity-100 transition-opacity"
           style={{ cursor: "nwse-resize" }}
           onPointerDown={(e) => beginResize(e, "corner")}
-          title="Scale"
+          title="Scale (keep crop, zoom frame)"
         >
           <div
             className="w-full h-full rounded-sm"
