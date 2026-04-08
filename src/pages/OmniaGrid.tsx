@@ -5243,7 +5243,7 @@ export default function OmniaGridPage() {
   }
 
   return (
-    <div className="w-full h-[100svh] relative overflow-hidden bg-transparent">
+    <div className="w-full h-[100svh] relative overflow-hidden omnia-grid-bg">
       {/* Match BrickEditor layout: minimal chrome + floating controls */}
       {/* Heading panel (matches Create view top pill) */}
       {/* Board title — always to the right of the Signed-in pill */}
