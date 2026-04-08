@@ -5,6 +5,7 @@ import {
   Plus,
   Clock,
   ChevronDown,
+  ChevronRight,
   ChevronUp,
   MessageSquare,
   X,
@@ -24,9 +25,15 @@ import {
   Table,
   Tag,
   Check,
+  Mic,
+  Square,
+  GripVertical,
+  Copy,
 } from "lucide-react";
-import DraggableChat from "@/components/notes/DraggableChat";
 import DraggableQuickNote from "@/components/notes/DraggableQuickNote";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { useThinkingStatus } from "@/hooks/useThinkingStatus";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { useQuery } from "@tanstack/react-query";
@@ -35,6 +42,10 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { extractYouTubeVideoId, getYouTubeEmbedUrl } from "@/canvas/utils/youtube";
 import { getAiPrefs } from "@/lib/ai-prefs";
+import { saveFileToVault, saveLinkToVault } from "@/lib/saveToVault";
+import { afterVaultNoteSaved } from "@/lib/vault/afterVaultSave";
+import { saveExchange, getMemoryForPrompt, invalidateMemoryCache } from "@/lib/conversationMemory";
+import { splitResponseIntoChunks, normalizeChecklistSyntax, flattenNodeText, handleChunkDragStart } from "@/lib/chatChunks";
 
 const PROJECTS_CHANGED_EVENT = "lykinsai_projects_changed";
 
@@ -153,10 +164,164 @@ export default function ProjectPlaceholder() {
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState("");
   const [isChatLoading, setIsChatLoading] = useState(false);
+
+  const chatScrollRef = useRef<HTMLDivElement | null>(null);
+  const chatUserScrolledUpRef = useRef(false);
+  const chatInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const [expandedAiMsgIds, setExpandedAiMsgIds] = useState<Set<string>>(new Set());
+  const prevMsgCountRef = useRef(0);
+  const CHAT_RAIL_DEFAULT_WIDTH = 340;
+  const [chatRailWidthManual, setChatRailWidthManual] = useState<number | null>(null);
+  const thinkingStatus = useThinkingStatus(isChatLoading);
+
+  const clampChatRailWidth = useCallback((raw: number, vw: number) => {
+    const width = Math.max(0, Math.floor(vw || 0));
+    if (width < 640) return width;
+    const minW = width <= 900 ? 200 : 260;
+    const maxW = Math.max(minW + 20, Math.floor(width * 0.45));
+    return Math.max(minW, Math.min(maxW, Math.floor(raw || minW)));
+  }, []);
+
+  const isMobileChat = typeof window !== "undefined" && window.innerWidth < 640;
+
+  const chatRailWidthPx = showChat
+    ? clampChatRailWidth(chatRailWidthManual ?? CHAT_RAIL_DEFAULT_WIDTH, window.innerWidth)
+    : 0;
+
+  const handleStartChatResize = useCallback(
+    (e: React.PointerEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const startX = e.clientX;
+      const startWidth = chatRailWidthPx;
+      const onMove = (ev: PointerEvent) => {
+        const dx = startX - ev.clientX;
+        const vw = window.innerWidth || 1280;
+        setChatRailWidthManual(clampChatRailWidth(startWidth + dx, vw));
+      };
+      const onUp = () => {
+        window.removeEventListener("pointermove", onMove, true);
+        window.removeEventListener("pointerup", onUp, true);
+        window.removeEventListener("pointercancel", onUp, true);
+      };
+      window.addEventListener("pointermove", onMove, true);
+      window.addEventListener("pointerup", onUp, true);
+      window.addEventListener("pointercancel", onUp, true);
+    },
+    [chatRailWidthPx, clampChatRailWidth]
+  );
+
+  const getCollapsedPreview = useCallback((text: string) => {
+    const clean = text.replace(/[#*_`~>\[\]()!|]/g, "").replace(/\n+/g, " ").trim();
+    return clean.length > 120 ? clean.slice(0, 117) + "..." : clean;
+  }, []);
+
+  const toggleAiExpanded = useCallback((msgId: string) => {
+    setExpandedAiMsgIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(msgId)) next.delete(msgId);
+      else next.add(msgId);
+      return next;
+    });
+  }, []);
+
+  const [assistantTaskChecks, setAssistantTaskChecks] = useState<Record<string, Record<string, boolean>>>({});
+
+  const updateTaskCheck = useCallback((msgId: string, taskKey: string, checked: boolean) => {
+    setAssistantTaskChecks((prev) => ({
+      ...prev,
+      [msgId]: { ...(prev[msgId] || {}), [taskKey]: checked },
+    }));
+  }, []);
+
+  const buildChatMarkdownComponents = useCallback((msgId: string) => ({
+    h1: ({ children }: any) => <h1 className="text-xl font-semibold mt-3 mb-2">{children}</h1>,
+    h2: ({ children }: any) => <h2 className="text-lg font-semibold mt-3 mb-2">{children}</h2>,
+    h3: ({ children }: any) => <h3 className="text-base font-semibold mt-2.5 mb-1.5">{children}</h3>,
+    p: ({ children }: any) => <p className="my-1.5 whitespace-pre-wrap">{children}</p>,
+    ul: ({ children }: any) => <ul className="my-2 list-disc pl-5 space-y-1">{children}</ul>,
+    ol: ({ children }: any) => <ol className="my-2 list-decimal pl-5 space-y-1">{children}</ol>,
+    li: ({ children }: any) => {
+      const raw = flattenNodeText(children).trim();
+      const match = raw.match(/^\[( |x|X)\]\s+(.+)$/);
+      if (!match) return <li className="leading-relaxed">{children}</li>;
+      const defaultChecked = String(match[1]).toLowerCase() === "x";
+      const taskText = match[2];
+      const taskKey = raw;
+      const checked = assistantTaskChecks[msgId]?.[taskKey] ?? defaultChecked;
+      return (
+        <li className={`list-none ml-[-1.25rem] flex items-start gap-2 leading-relaxed ${checked ? "opacity-60" : ""}`}>
+          <input
+            type="checkbox"
+            className="mt-[0.28rem] shrink-0 accent-blue-500"
+            checked={checked}
+            onChange={(e) => updateTaskCheck(msgId, taskKey, e.target.checked)}
+          />
+          <span className={checked ? "line-through" : ""}>{taskText}</span>
+        </li>
+      );
+    },
+    strong: ({ children }: any) => <strong className="font-semibold">{children}</strong>,
+    blockquote: ({ children }: any) => <blockquote className="border-l-2 border-black/20 pl-3 my-2 text-black/70 italic">{children}</blockquote>,
+    code: ({ children, className }: any) => {
+      const isBlock = className?.startsWith("language-");
+      if (isBlock) return <pre className="rounded-lg bg-black/5 p-3 my-2 overflow-x-auto text-[0.85em]"><code>{children}</code></pre>;
+      return <code className="rounded bg-black/10 px-1.5 py-0.5 text-[0.85em]">{children}</code>;
+    },
+    pre: ({ children }: any) => <>{children}</>,
+    table: ({ children }: any) => <div className="my-3 overflow-x-auto"><table className="w-full border-collapse text-sm">{children}</table></div>,
+    thead: ({ children }: any) => <thead className="border-b border-black/20">{children}</thead>,
+    tbody: ({ children }: any) => <tbody>{children}</tbody>,
+    tr: ({ children }: any) => <tr className="border-b border-black/10">{children}</tr>,
+    th: ({ children }: any) => <th className="text-left px-3 py-2 font-semibold">{children}</th>,
+    td: ({ children }: any) => <td className="px-3 py-2">{children}</td>,
+  }), [assistantTaskChecks, updateTaskCheck]);
+
+  const saveChunkAsQuickNote = useCallback((text: string) => {
+    setQuickNoteContent(text);
+    setShowQuickNote(true);
+  }, []);
+
+  const chatIsNearBottom = useCallback((threshold = 80) => {
+    const el = chatScrollRef.current;
+    if (!el) return true;
+    return el.scrollHeight - el.scrollTop - el.clientHeight <= threshold;
+  }, []);
+
+  useEffect(() => {
+    const el = chatScrollRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      chatUserScrolledUpRef.current = !chatIsNearBottom();
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [showChat, chatIsNearBottom]);
+
+  useEffect(() => {
+    if (!showChat) return;
+    if (chatUserScrolledUpRef.current) return;
+    const el = chatScrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [chatMessages, isChatLoading, showChat]);
+
+  useEffect(() => {
+    const count = chatMessages.length;
+    if (count > prevMsgCountRef.current && count > 0) {
+      const latest = chatMessages[count - 1];
+      if ((latest as any)?.id) setExpandedAiMsgIds(new Set([(latest as any).id]));
+    }
+    prevMsgCountRef.current = count;
+  }, [chatMessages.length]);
+
   const [showQuickNote, setShowQuickNote] = useState(false);
   const [quickNoteTitle, setQuickNoteTitle] = useState("");
   const [quickNoteContent, setQuickNoteContent] = useState("");
   const [isQuickNoteSaving, setIsQuickNoteSaving] = useState(false);
+  const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
+  const [chatChunkDragOver, setChatChunkDragOver] = useState(false);
+  const chatChunkDragDepthRef = useRef(0);
   const [openBoardMenuId, setOpenBoardMenuId] = useState<string | null>(null);
   const boardMenuRef = useRef<HTMLDivElement | null>(null);
   const [moveBoardId, setMoveBoardId] = useState<string | null>(null);
@@ -820,7 +985,19 @@ export default function ProjectPlaceholder() {
   };
 
   const handleDropFiles = (fileEntries: FileEntry[]) => {
-    setFiles((prev) => [...fileEntries, ...prev]);
+    setFiles((prev) => {
+      const existingNames = new Set(prev.map((f) => f.name));
+      const existingPaths = new Set(prev.filter((f) => f.storagePath).map((f) => f.storagePath));
+      const existingUrls = new Set(prev.filter((f) => f.kind === "link").map((f) => f.url));
+      const deduped = fileEntries.filter((entry) => {
+        if (entry.kind === "link" && existingUrls.has(entry.url)) return false;
+        if (entry.storagePath && existingPaths.has(entry.storagePath)) return false;
+        if (existingNames.has(entry.name)) return false;
+        return true;
+      });
+      if (!deduped.length) return prev;
+      return [...deduped, ...prev];
+    });
   };
 
   const handleDeleteFile = (fileId: string) => {
@@ -914,7 +1091,7 @@ export default function ProjectPlaceholder() {
       fileUrl = urlData?.publicUrl || "";
     }
 
-    return {
+    const entry: FileEntry = {
       id: `file-${Date.now()}-${Math.random()}`,
       name: file.name,
       path: file.name,
@@ -926,6 +1103,21 @@ export default function ProjectPlaceholder() {
       size: fileToUpload.size,
       ...(spreadsheetData ? { spreadsheetData } : {}),
     };
+
+    saveFileToVault({
+      userId: user.id,
+      filename: file.name,
+      fileType: kind,
+      fileUrl,
+      storagePath,
+      storageBucket,
+      fileSize: fileToUpload.size,
+      mimeType: file.type,
+      projectName,
+      spreadsheetData: spreadsheetData ?? null,
+    }).catch(() => {});
+
+    return entry;
   };
 
   const traverseEntryFiles = (entry: any, currentPath: string, out: File[]) =>
@@ -969,6 +1161,11 @@ export default function ProjectPlaceholder() {
         kind: "link",
         url: urlText,
       });
+      if (user?.id) {
+        saveLinkToVault({ userId: user.id, url: urlText, projectName }).catch(
+          () => {}
+        );
+      }
     }
 
     const rawFiles: File[] = [];
@@ -1049,6 +1246,33 @@ export default function ProjectPlaceholder() {
   };
 
   const handleDrop = async (event: React.DragEvent<HTMLDivElement>) => {
+    // Handle AI chat chunk drops — save as quick note
+    const chatChunkText = event.dataTransfer.getData("application/x-omnia-chat-response");
+    if (chatChunkText && user?.id) {
+      event.preventDefault();
+      dragDepthRef.current = 0;
+      setIsDragging(false);
+      setChatChunkDragOver(false);
+      chatChunkDragDepthRef.current = 0;
+      try {
+        const { data: ins } = await supabase
+          .from("notes")
+          .insert({
+            user_id: user.id,
+            title: "Quick Note",
+            content: chatChunkText,
+          })
+          .select("id")
+          .single();
+        if (ins?.id) {
+          afterVaultNoteSaved(user.id, ins.id, { title: "Quick Note", content: chatChunkText });
+        }
+        setQuickNoteTitle("");
+        setQuickNoteContent("");
+      } catch { /* keep going */ }
+      return;
+    }
+
     const win = window as any;
 
     // Check for cross-iframe pending vault (from embedded vault sidebar)
@@ -1205,11 +1429,19 @@ export default function ProjectPlaceholder() {
     if (!content) return;
     setIsQuickNoteSaving(true);
     try {
-      await supabase.from("notes").insert({
-        user_id: user.id,
-        title: quickNoteTitle.trim() || "Quick Note",
-        content,
-      });
+      const t = quickNoteTitle.trim() || "Quick Note";
+      const { data: ins } = await supabase
+        .from("notes")
+        .insert({
+          user_id: user.id,
+          title: t,
+          content,
+        })
+        .select("id")
+        .single();
+      if (ins?.id) {
+        afterVaultNoteSaved(user.id, ins.id, { title: t, content });
+      }
       setQuickNoteTitle("");
       setQuickNoteContent("");
       setShowQuickNote(false);
@@ -1222,13 +1454,15 @@ export default function ProjectPlaceholder() {
 
   const handleChatSend = async () => {
     if (!chatInput.trim() || isChatLoading) return;
+    chatUserScrolledUpRef.current = false;
     const userMessage = { role: "user", content: chatInput };
+    const asstId = `msg-${Date.now()}`;
     setChatMessages((prev) => [...prev, userMessage]);
     setChatInput("");
     setIsChatLoading(true);
 
     const assistantMessageIndex = chatMessages.length + 1;
-    setChatMessages((prev) => [...prev, { role: "assistant", content: "" }]);
+    setChatMessages((prev) => [...prev, { role: "assistant", content: "", id: asstId }]);
 
     try {
       const settings = JSON.parse(localStorage.getItem("lykinsai_settings") || "{}");
@@ -1248,32 +1482,69 @@ export default function ProjectPlaceholder() {
         detailed: "Give comprehensive, detailed responses with examples and explanations.",
       };
 
+      const foldersContext = folders.map((f) => `- ${f.name} (id: ${f.id})`).join("\n") || "(none)";
+
+      const boardsContext = boards
+        .slice(0, 30)
+        .map((b) => {
+          const folderName = folders.find((f) => f.id === b.folderId)?.name || "Root";
+          return `- "${b.title}" in folder "${folderName}"`;
+        })
+        .join("\n") || "(none)";
+
+      const filesContext = files
+        .slice(0, 30)
+        .map((f) => {
+          const folderName = folders.find((fd) => fd.id === f.folderId)?.name || "Root";
+          const tags = f.tags?.length ? ` [tags: ${f.tags.join(", ")}]` : "";
+          return `- ${f.name} (${f.kind})${tags} in "${folderName}"`;
+        })
+        .join("\n") || "(none)";
+
       const notesContext = allNotes
         .slice(0, 20)
         .map((n) => {
           const summary = summarizeNoteContentForAI(n.content || "");
-          return `ID: ${n.id}\nTitle: ${n.title}\nBlocks:\n${summary}\nDate: ${n.created_at || n.created_date || "N/A"}`;
+          return `Title: ${n.title}\nContent:\n${summary}`;
         })
         .join("\n\n---\n\n");
 
       const history = chatMessages.map((m) => `${m.role === "user" ? "User" : "AI"}: ${m.content}`).join("\n");
 
+      const activeFolderName = folders.find((f) => f.id === activeFolderId)?.name || "All";
+
+      const memoryText = user?.id ? await getMemoryForPrompt(user.id) : "";
+
       const prompt = `${personalityStyles[personality]} ${detailStyles[detailLevel]}
 
-You are helping the user brainstorm and develop their idea. Here's what they're working on:
+You are the Project Assistant for "${projectName}". Your knowledge is scoped specifically to this project and its contents. Answer questions accurately based on the project data below.
 
-Project: ${projectName}
-Active folder: ${activeFolderId || "None"}
+PROJECT STRUCTURE:
+Folders: ${foldersContext}
+Active folder: ${activeFolderName}
 
-Conversation History:
-${history}
+GRIDS (boards):
+${boardsContext}
 
-User's recent vault items:
+FILES:
+${filesContext}
+
+NOTES (vault items in this project):
 ${notesContext}
 
-User's Current Question: ${chatInput}
+CONVERSATION HISTORY:
+${history}
+${memoryText ? `\n[CONVERSATION MEMORY — your past exchanges with this user across all surfaces]\n${memoryText}` : ""}
 
-If the user asks about old vault items or references past ideas, refer to the vault items above. When referencing a specific vault item, you MUST wrap the exact note title in double brackets like this: [[Note Title]]. For example, if there's a note titled "Project Ideas for AI App", you would write [[Project Ideas for AI App]]. This makes it clickable. Always use the exact title from the vault items list above. Provide helpful guidance, suggestions, or answers to help develop this idea. Do not use emojis unless explicitly asked.`;
+USER'S QUESTION: ${chatInput}
+
+INSTRUCTIONS:
+- Focus your answers on this project's contents. When asked about what's in the project, reference the actual boards, files, and notes listed above.
+- The [CONVERSATION MEMORY] section contains your previous exchanges with this user from other grids, projects, and the vault. Use it to maintain continuity — if the user references something you discussed elsewhere, find it in memory and respond accordingly.
+- If the user asks about a specific file, board, or note, look it up in the context above and give a precise answer.
+- When referencing a specific vault item/note, wrap the title in double brackets: [[Note Title]].
+- Be helpful for brainstorming, planning, and developing ideas within this project.
+- Do not use emojis unless explicitly asked.`;
 
       const { API_BASE_URL } = await import("@/lib/api-config");
       const aiResponse = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
@@ -1304,17 +1575,23 @@ If the user asks about old vault items or references past ideas, refer to the va
 
       for (let i = 0; i < words.length; i += 1) {
         currentText += (i === 0 ? "" : " ") + words[i];
+        const textSnapshot = currentText;
         setChatMessages((prev) => {
           const newMessages = [...prev];
-          newMessages[assistantMessageIndex] = { role: "assistant", content: currentText, notes: allNotes };
+          newMessages[assistantMessageIndex] = { ...newMessages[assistantMessageIndex], content: textSnapshot, notes: allNotes };
           return newMessages;
         });
+        if (!chatUserScrolledUpRef.current) {
+          const el = chatScrollRef.current;
+          if (el) el.scrollTop = el.scrollHeight;
+        }
         await new Promise((resolve) => setTimeout(resolve, 30));
       }
+      if (user?.id) { invalidateMemoryCache(); saveExchange(user.id, "project", projectId || null, projectName || null, chatInput, aiText); }
     } catch (error: any) {
       setChatMessages((prev) => {
         const newMessages = [...prev];
-        newMessages[assistantMessageIndex] = { role: "assistant", content: "This model isn\u2019t working properly right now \u2014 try another model." };
+        newMessages[assistantMessageIndex] = { ...newMessages[assistantMessageIndex], content: "This model isn\u2019t working properly right now \u2014 try another model." };
         return newMessages;
       });
     } finally {
@@ -1327,20 +1604,42 @@ If the user asks about old vault items or references past ideas, refer to the va
       className="min-h-screen bg-transparent text-black relative"
       onDragEnter={(e) => {
         e.preventDefault();
+        if (e.dataTransfer.types.includes("application/x-omnia-chat-response")) {
+          chatChunkDragDepthRef.current += 1;
+          setChatChunkDragOver(true);
+        }
         if (draggedFileId) return;
         dragDepthRef.current += 1;
         setIsDragging(true);
       }}
-      onDragOver={(e) => e.preventDefault()}
+      onDragOver={(e) => {
+        e.preventDefault();
+        if (e.dataTransfer.types.includes("application/x-omnia-chat-response")) {
+          e.dataTransfer.dropEffect = "copy";
+        }
+      }}
       onDragLeave={(e) => {
         e.preventDefault();
+        if (e.dataTransfer.types.includes("application/x-omnia-chat-response")) {
+          chatChunkDragDepthRef.current = Math.max(0, chatChunkDragDepthRef.current - 1);
+          if (chatChunkDragDepthRef.current === 0) setChatChunkDragOver(false);
+        }
         if (draggedFileId) return;
         dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
         if (dragDepthRef.current === 0) setIsDragging(false);
       }}
       onDrop={handleDrop}
     >
-      <header className="fixed top-0 left-0 right-0 z-30 bg-white/60 backdrop-blur-md">
+      {chatChunkDragOver && (
+        <div className="fixed inset-0 z-[60] pointer-events-none flex items-center justify-center">
+          <div className="absolute inset-0 bg-blue-500/5 border-2 border-dashed border-blue-400/40 rounded-3xl m-4" />
+          <div className="relative bg-white/90 backdrop-blur-sm rounded-2xl px-6 py-4 shadow-lg border border-blue-300/50 flex items-center gap-3">
+            <StickyNote className="w-5 h-5 text-amber-500" />
+            <span className="text-sm font-medium text-black/70">Drop to save as Quick Note</span>
+          </div>
+        </div>
+      )}
+      <header className="fixed top-0 left-0 z-30 bg-white/60 backdrop-blur-md" style={{ right: showChat && !isMobileChat ? `${chatRailWidthPx}px` : 0, transition: "right 350ms cubic-bezier(0.22,1,0.36,1)" }}>
         <div className="mx-auto w-full max-w-[100rem] px-3 sm:px-6 py-3 sm:py-4 flex items-center">
           <div className="hidden md:block w-[13rem] lg:w-[17.5rem] xl:w-[21.25rem] shrink-0" />
           <div className="text-base sm:text-lg font-semibold shrink-0">
@@ -1502,7 +1801,7 @@ If the user asks about old vault items or references past ideas, refer to the va
         </div>
       </div>
 
-      <main className="mx-auto max-w-[100rem] px-3 sm:px-6 pt-28 pb-16 grid grid-cols-1 lg:grid-cols-[17.5rem_1fr] xl:grid-cols-[21.25rem_1fr] gap-4">
+      <main className="mx-auto max-w-[100rem] px-3 sm:px-6 pt-28 pb-16 grid grid-cols-1 lg:grid-cols-[17.5rem_1fr] xl:grid-cols-[21.25rem_1fr] gap-4" style={{ marginRight: showChat && !isMobileChat ? `${chatRailWidthPx}px` : 0, transition: "margin-right 350ms cubic-bezier(0.22,1,0.36,1)" }}>
         {/* Left: Project Stats */}
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-3">
@@ -2306,16 +2605,161 @@ If the user asks about old vault items or references past ideas, refer to the va
         </DialogContent>
       </Dialog>
 
-      {showChat && (
-        <DraggableChat
-          messages={chatMessages}
-          input={chatInput}
-          setInput={setChatInput}
-          onSend={handleChatSend}
-          isLoading={isChatLoading}
-          onClose={() => setShowChat(false)}
-          onNoteClick={() => {}}
+      {showChat && isMobileChat && (
+        <div
+          className="fixed inset-0 z-[63] bg-black/20 backdrop-blur-[2px]"
+          onClick={() => setShowChat(false)}
         />
+      )}
+      {showChat && (
+        <div
+          className={`fixed bottom-0 flex flex-col bg-white/40 backdrop-blur-sm border-l border-black/10 transition-[right] duration-300 ${isMobileChat ? "z-[80] inset-x-0 border-l-0" : "z-[64]"}`}
+          style={{
+            top: isMobileChat ? 0 : "var(--header-height, 4.9rem)",
+            right: isMobileChat ? undefined : 0,
+            width: isMobileChat ? undefined : `${chatRailWidthPx}px`,
+            animation: "chatRailSlideIn 350ms cubic-bezier(0.22,1,0.36,1) both",
+          }}
+        >
+          {!isMobileChat && (
+            <div className="absolute left-0 top-0 bottom-0 w-3 -translate-x-1/2 cursor-col-resize z-[70] pointer-events-auto" onPointerDown={handleStartChatResize} title="Drag to resize chat" />
+          )}
+          {isMobileChat && (
+            <div className="flex items-center justify-between px-3 py-2 border-b border-black/10 shrink-0">
+              <div className="flex items-center gap-2 text-xs font-semibold text-black/80">
+                <MessageSquare className="w-3.5 h-3.5" />
+                Chat
+              </div>
+              <button type="button" onClick={() => setShowChat(false)} className="h-6 w-6 rounded-full flex items-center justify-center text-black/40 hover:text-red-500 hover:bg-red-500/10 transition-colors">
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          )}
+          <div ref={chatScrollRef} className="flex-1 overflow-y-auto scrollbar-hide p-3 space-y-3">
+            {isChatLoading && (
+              <div className="text-[0.6875rem] text-black/60 px-1 flex items-center gap-2" aria-live="polite">
+                <div className="brick-spinner" />
+                {thinkingStatus}
+              </div>
+            )}
+            {chatMessages.map((msg: any, idx: number) => (
+              <div key={msg.id || idx} className={`flex flex-col ${msg.role === "user" ? "items-end" : "items-start"}`}>
+                {msg.role === "user" ? (
+                  <div className="max-w-[94%] rounded-2xl rounded-br-md px-3 py-2 text-xs leading-relaxed text-black/90 border border-white/55 bg-[linear-gradient(135deg,rgba(255,255,255,0.32),rgba(255,255,255,0.16))] backdrop-blur-xl shadow-[0_10px_28px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.35)] [&_table]:text-[0.6875rem] [&_td]:py-1 [&_th]:py-1">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={buildChatMarkdownComponents(msg.id)}>
+                      {normalizeChecklistSyntax(msg.content || "")}
+                    </ReactMarkdown>
+                  </div>
+                ) : (() => {
+                  const isExpanded = msg.id ? expandedAiMsgIds.has(msg.id) : true;
+                  return (
+                    <div className="self-start max-w-[94%] mt-1.5">
+                      {msg.id && (
+                        <button
+                          type="button"
+                          className="w-full flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-white/50 bg-white/40 backdrop-blur-sm hover:bg-white/60 transition-all text-left group/collapse"
+                          onClick={() => toggleAiExpanded(msg.id)}
+                        >
+                          <ChevronRight className={`w-3 h-3 text-black/40 flex-shrink-0 transition-transform duration-200 ${isExpanded ? "rotate-90" : ""}`} />
+                          {!isExpanded && (
+                            <span className="text-[0.6875rem] text-black/60 truncate leading-tight flex-1">
+                              {getCollapsedPreview(msg.content || "")}
+                            </span>
+                          )}
+                          {isExpanded && (
+                            <span className="text-[0.6875rem] text-black/40 font-medium flex-1">AI Response</span>
+                          )}
+                        </button>
+                      )}
+                      <div className={msg.id ? `overflow-hidden transition-all duration-200 ease-in-out ${isExpanded ? "max-h-[5000px] opacity-100 mt-1" : "max-h-0 opacity-0"}` : ""}>
+                        <div className="space-y-1">
+                          {(() => {
+                            const chunks = splitResponseIntoChunks(msg.content || "");
+                            const isSingle = chunks.length <= 1;
+                            return (
+                              <>
+                                {chunks.map((chunk: string, ci: number) => (
+                                  <div key={`${msg.id}-chunk-${ci}`} className="group/chunk relative">
+                                    <div
+                                      draggable
+                                      onDragStart={(e: React.DragEvent) => handleChunkDragStart(e, chunk)}
+                                      className={`rounded-xl px-3 py-1.5 text-xs leading-relaxed break-words border text-black/85 cursor-grab active:cursor-grabbing transition-all ${isSingle ? "bg-white/70 border-white/70 rounded-2xl rounded-bl-md" : "bg-white/50 border-white/40 hover:bg-white/70 hover:border-blue-300/40 hover:shadow-sm"}`}
+                                    >
+                                      <div className={`absolute -left-5 top-1/2 -translate-y-1/2 opacity-0 group-hover/chunk:opacity-100 transition-opacity ${isSingle ? "hidden" : ""}`}>
+                                        <GripVertical className="w-3 h-3 text-blue-400/60" />
+                                      </div>
+                                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={buildChatMarkdownComponents(msg.id)}>
+                                        {normalizeChecklistSyntax(chunk)}
+                                      </ReactMarkdown>
+                                    </div>
+                                    {!isSingle && (
+                                      <button
+                                        type="button"
+                                        title="Save this section as quick note"
+                                        className="absolute -right-1 top-0.5 opacity-0 group-hover/chunk:opacity-100 transition-opacity p-0.5 rounded text-amber-400/70 hover:text-amber-500 hover:bg-amber-500/10"
+                                        onClick={() => saveChunkAsQuickNote(chunk)}
+                                      >
+                                        <StickyNote className="w-2.5 h-2.5" />
+                                      </button>
+                                    )}
+                                  </div>
+                                ))}
+                              </>
+                            );
+                          })()}
+                          <div className="flex items-center gap-0.5 px-1">
+                            <button type="button" title="Save full response as quick note" className="p-1 rounded-md text-black/30 hover:text-amber-500 hover:bg-amber-500/10 transition-colors" onClick={() => saveChunkAsQuickNote(msg.content || "")}>
+                              <StickyNote className="w-3 h-3" />
+                            </button>
+                            <button type="button" title="Copy" className={`p-1 rounded-md transition-colors ${copiedMsgId === msg.id ? "text-blue-500 bg-blue-500/10" : "text-black/30 hover:text-black/60 hover:bg-black/5"}`} onClick={() => { void navigator.clipboard.writeText(msg.content || ""); setCopiedMsgId(msg.id); setTimeout(() => setCopiedMsgId((cur) => cur === msg.id ? null : cur), 2000); }}>
+                              {copiedMsgId === msg.id ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+            ))}
+          </div>
+          <div className="p-2 pb-2">
+            <div className="glass-control rounded-2xl px-2 py-1.5 w-full">
+              <div className="flex items-center gap-1.5">
+                <textarea
+                  ref={chatInputRef}
+                  data-min-h="32"
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  onInput={(e) => {
+                    const el = e.currentTarget;
+                    el.style.height = "auto";
+                    el.style.height = Math.min(el.scrollHeight, 220) + "px";
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      handleChatSend();
+                    }
+                  }}
+                  placeholder="Ask me anything..."
+                  rows={1}
+                  className="w-full min-h-[32px] max-h-[220px] rounded-xl bg-white/12 border border-white/30 px-3 py-1.5 text-sm text-black placeholder:text-black/55 outline-none resize-none leading-5 scrollbar-hide"
+                  disabled={isChatLoading}
+                />
+                {isChatLoading ? (
+                  <button type="button" onClick={() => setIsChatLoading(false)} className="h-8 w-8 rounded-full flex items-center justify-center transition-colors bg-red-500/15 hover:bg-red-500/25 shrink-0" title="Stop generating">
+                    <Square className="w-3 h-3 text-red-500" fill="currentColor" />
+                  </button>
+                ) : (
+                  <button type="button" className="h-8 w-8 rounded-full flex items-center justify-center transition-colors hover:bg-black/10 shrink-0" title="Dictate">
+                    <Mic className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       {showQuickNote && (
@@ -2372,7 +2816,8 @@ If the user asks about old vault items or references past ideas, refer to the va
       <button
         type="button"
         onClick={() => setShowQuickNote((v) => !v)}
-        className="fixed bottom-6 right-6 w-12 h-12 rounded-full glass-control hover:opacity-90 shadow-lg hover:shadow-xl transition-all flex items-center justify-center z-[80]"
+        className="fixed bottom-6 w-12 h-12 rounded-full glass-control hover:opacity-90 shadow-lg hover:shadow-xl transition-all flex items-center justify-center z-[80]"
+        style={{ right: showChat && !isMobileChat ? `${chatRailWidthPx + 24}px` : "24px", transition: "right 350ms cubic-bezier(0.22,1,0.36,1)" }}
         title="Quick Notes"
       >
         <StickyNote className="w-5 h-5" />

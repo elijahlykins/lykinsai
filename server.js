@@ -10,6 +10,8 @@ import * as mammoth from 'mammoth';
 import * as XLSX from 'xlsx';
 import AdmZip from 'adm-zip';
 import rateLimit from 'express-rate-limit';
+import crypto from 'crypto';
+import { createClient } from '@supabase/supabase-js';
 import { Resend } from 'resend';
 import {
   answerVideoQuestion,
@@ -48,6 +50,8 @@ console.log('  GOOGLE_CSE_ID:', process.env.GOOGLE_CSE_ID ? '✅ Set' : '⚪ Not
 console.log('  SERPER_API_KEY:', process.env.SERPER_API_KEY ? '✅ Set' : '❌ Missing');
 console.log('  RESEND_API_KEY:', process.env.RESEND_API_KEY ? '✅ Set' : '❌ Missing');
 console.log('  SUPABASE_SERVICE_ROLE_KEY:', process.env.SUPABASE_SERVICE_ROLE_KEY ? '✅ Set' : '⚪ Not set (usage tracking disabled)');
+console.log('  BACKFILL_SECRET:', process.env.BACKFILL_SECRET ? '✅ Set' : '⚪ Not set (synthesis backfill disabled)');
+console.log('  META_APP_TOKEN:', process.env.META_APP_TOKEN ? '✅ Set' : '⚪ Not set (Instagram/Facebook oEmbed disabled)');
 
 const app = express();
 const PORT = 3001;
@@ -242,6 +246,11 @@ app.use(express.json({ limit: '5mb' }));
 // ============================================
 const SUPABASE_URL = process.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.VITE_SUPABASE_ANON_KEY;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+const supabaseAdmin = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
+  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false, autoRefreshToken: false } })
+  : null;
 
 async function requireAuth(req, res, next) {
   const authHeader = req.headers.authorization;
@@ -265,6 +274,580 @@ async function requireAuth(req, res, next) {
   } catch {
     return res.status(401).json({ error: 'Auth verification failed' });
   }
+}
+
+// ============================================
+// SYNTHESIS LAYER — semantic retrieval (Phase 2)
+// One OpenAI embed + one Supabase RPC per request when enabled.
+// ============================================
+const SYNTHESIS_RETRIEVAL_TOP_K = 8;
+const SYNTHESIS_MATCH_THRESHOLD = 0.55;
+const SYNTHESIS_BLOCK_MAX_CHARS = 4500;
+
+async function openAiEmbedQueryText(text) {
+  if (!process.env.OPENAI_API_KEY) return null;
+  const input = String(text || '').trim().slice(0, 8000);
+  if (input.length < 4) return null;
+  try {
+    const res = await fetch('https://api.openai.com/v1/embeddings', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'text-embedding-3-small',
+        dimensions: 1536,
+        input,
+      }),
+    });
+    if (!res.ok) {
+      console.warn('⚠️ Synthesis embedding HTTP', res.status);
+      return null;
+    }
+    const data = await res.json();
+    const emb = data?.data?.[0]?.embedding;
+    if (!Array.isArray(emb) || emb.length !== 1536) return null;
+    return emb;
+  } catch (e) {
+    console.warn('⚠️ Synthesis embedding error:', e?.message || e);
+    return null;
+  }
+}
+
+function logSynthesisRetrievalStats(rows, opts = {}) {
+  const { threshold } = opts;
+  if (!Array.isArray(rows) || rows.length === 0) {
+    console.log(
+      `📊 Synthesis retrieval: hits=0 threshold=${threshold != null ? Number(threshold).toFixed(2) : 'n/a'} (no rows above cutoff or index empty)`,
+    );
+    return;
+  }
+  const sims = rows
+    .map((r) => r.similarity)
+    .filter((x) => typeof x === 'number' && Number.isFinite(x));
+  let simPart = 'sim=n/a';
+  if (sims.length) {
+    const min = Math.min(...sims);
+    const max = Math.max(...sims);
+    const mean = sims.reduce((a, b) => a + b, 0) / sims.length;
+    simPart = `sim min=${min.toFixed(3)} mean=${mean.toFixed(3)} max=${max.toFixed(3)}`;
+  }
+  const byType = {};
+  for (const r of rows) {
+    const t = String(r.source_type || 'unknown');
+    byType[t] = (byType[t] || 0) + 1;
+  }
+  const srcPart = Object.keys(byType)
+    .sort()
+    .map((k) => `${k}:${byType[k]}`)
+    .join(' ');
+  console.log(
+    `📊 Synthesis retrieval: n=${rows.length} ${simPart} sources={${srcPart || 'none'}} threshold=${threshold != null ? Number(threshold).toFixed(2) : 'n/a'}`,
+  );
+}
+
+/**
+ * Returns a prompt section or empty string. Uses the caller's JWT so RLS/auth.uid() apply.
+ */
+async function fetchSynthesisRetrievalSection(authHeader, queryText) {
+  if (!authHeader || !String(authHeader).startsWith('Bearer ')) return '';
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return '';
+  const embedding = await openAiEmbedQueryText(queryText);
+  if (!embedding) return '';
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/match_lykn_synthesis_chunks`, {
+      method: 'POST',
+      headers: {
+        Authorization: authHeader,
+        apikey: SUPABASE_ANON_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        query_embedding: embedding,
+        match_count: SYNTHESIS_RETRIEVAL_TOP_K,
+        match_threshold: SYNTHESIS_MATCH_THRESHOLD,
+      }),
+    });
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      console.warn('⚠️ Synthesis RPC', res.status, errText.slice(0, 200));
+      return '';
+    }
+    const rows = await res.json();
+    if (!Array.isArray(rows) || rows.length === 0) {
+      logSynthesisRetrievalStats([], { threshold: SYNTHESIS_MATCH_THRESHOLD });
+      return '';
+    }
+
+    const lines = [
+      '[SYNTHESIS_RETRIEVAL]',
+      'Semantically matched snippets from this user\'s embedded workspace index (vector search). May be empty for new accounts.',
+      'Use when relevant to the latest user message. Prefer live [BOARD_CONTEXT]/[CONTEXT], [WORKSPACE_CONTEXT], and [CONVERSATION] for current session facts.',
+      '',
+    ];
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      const sim = typeof r.similarity === 'number' ? r.similarity.toFixed(3) : '?';
+      const src = `${r.source_type || '?'}|${r.source_id ?? ''}|${r.chunk_index ?? 0}`;
+      const body = String(r.content || '').replace(/\s+/g, ' ').trim();
+      if (!body) continue;
+      lines.push(`${i + 1}. [${src}] similarity=${sim}`);
+      lines.push(body);
+      lines.push('');
+    }
+    let block = lines.join('\n').trim();
+    if (block.length > SYNTHESIS_BLOCK_MAX_CHARS) {
+      block = `${block.slice(0, SYNTHESIS_BLOCK_MAX_CHARS)}…`;
+    }
+    logSynthesisRetrievalStats(rows, { threshold: SYNTHESIS_MATCH_THRESHOLD });
+    return block;
+  } catch (e) {
+    console.warn('⚠️ Synthesis retrieval error:', e?.message || e);
+    return '';
+  }
+}
+
+// ============================================
+// SYNTHESIS LAYER — embed + store (Phase 3)
+// ============================================
+const SYNTHESIS_ALLOWED_SOURCES = new Set(['vault_note', 'grid_board', 'conversation_exchange']);
+const SYNTHESIS_CHUNK_CHARS = 900;
+/** Sliding window step = chunk size minus overlap — reduces boundary noise at retrieval time. */
+const SYNTHESIS_CHUNK_OVERLAP = 100;
+const SYNTHESIS_MAX_CHUNKS = 64;
+const SYNTHESIS_EMBED_BATCH = 32;
+
+function chunkTextForSynthesis(raw) {
+  const t = String(raw || '').trim().slice(0, 200_000);
+  if (t.length < 8) return [];
+  if (t.length <= SYNTHESIS_CHUNK_CHARS) return [t];
+  const step = Math.max(1, SYNTHESIS_CHUNK_CHARS - SYNTHESIS_CHUNK_OVERLAP);
+  const out = [];
+  for (let i = 0; i < t.length && out.length < SYNTHESIS_MAX_CHUNKS; i += step) {
+    out.push(t.slice(i, i + SYNTHESIS_CHUNK_CHARS));
+  }
+  return out;
+}
+
+async function openAiEmbedMany(strings) {
+  if (!process.env.OPENAI_API_KEY || !strings.length) return null;
+  const all = [];
+  for (let i = 0; i < strings.length; i += SYNTHESIS_EMBED_BATCH) {
+    const batch = strings.slice(i, i + SYNTHESIS_EMBED_BATCH);
+    const res = await fetch('https://api.openai.com/v1/embeddings', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'text-embedding-3-small',
+        dimensions: 1536,
+        input: batch,
+      }),
+    });
+    if (!res.ok) {
+      console.warn('⚠️ Synthesis batch embed HTTP', res.status);
+      return null;
+    }
+    const data = await res.json();
+    const items = Array.isArray(data?.data) ? data.data : [];
+    items.sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+    for (const item of items) {
+      const emb = item?.embedding;
+      if (!Array.isArray(emb) || emb.length !== 1536) return null;
+      all.push(emb);
+    }
+  }
+  return all.length === strings.length ? all : null;
+}
+
+async function deleteSynthesisChunksForSource(client, userId, sourceType, sourceId) {
+  const q = client.from('lykn_synthesis_chunks').delete().eq('user_id', userId).eq('source_type', sourceType).eq('source_id', String(sourceId));
+  const { error } = await q;
+  if (error) throw new Error(error.message);
+}
+
+function createSynthesisUserClient(authHeader) {
+  const token = String(authHeader || '').replace(/^Bearer\s+/i, '');
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !token) return null;
+  return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    global: { headers: { Authorization: `Bearer ${token}` } },
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+}
+
+async function replaceSynthesisChunks(userId, authHeader, sourceType, sourceId, textChunks, baseMeta) {
+  const embeddings = await openAiEmbedMany(textChunks);
+  if (!embeddings) throw new Error('embedding_failed');
+  const rows = textChunks.map((content, chunk_index) => ({
+    user_id: userId,
+    source_type: sourceType,
+    source_id: String(sourceId),
+    chunk_index,
+    content,
+    embedding: embeddings[chunk_index],
+    metadata: { ...baseMeta, chunk_index },
+  }));
+
+  if (supabaseAdmin) {
+    await deleteSynthesisChunksForSource(supabaseAdmin, userId, sourceType, sourceId);
+    const { error: insErr } = await supabaseAdmin.from('lykn_synthesis_chunks').insert(rows);
+    if (insErr) throw new Error(insErr.message);
+    return rows.length;
+  }
+
+  const userClient = createSynthesisUserClient(authHeader);
+  if (!userClient) throw new Error('no_supabase_client');
+  await deleteSynthesisChunksForSource(userClient, userId, sourceType, sourceId);
+  const { error: insErr2 } = await userClient.from('lykn_synthesis_chunks').insert(rows);
+  if (insErr2) throw new Error(insErr2.message);
+  return rows.length;
+}
+
+// ============================================
+// USER SYNTHESIS PROFILE (incremental model + prompt injection)
+// ============================================
+const USER_MODEL_CACHE_TTL_MS = 5 * 60 * 1000;
+const USER_MODEL_EMPTY_CACHE_TTL_MS = 90 * 1000;
+const USER_MODEL_SECTION_MAX_CHARS = 3500;
+const PROFILE_LLM_THROTTLE_MS = 10 * 60 * 1000;
+
+const userModelSectionCache = new Map();
+const lastProfileLlmAt = new Map();
+
+function invalidateUserModelCache(userId) {
+  if (userId) userModelSectionCache.delete(userId);
+}
+
+/** Soft staleness hint for prompts; omitted when no timestamps exist. */
+function profileFreshnessSuffix(row) {
+  const updatedAt = row?.updated_at;
+  const intakeAt = row?.intake_completed_at;
+  const now = new Date();
+  let usageDaysAgo = null;
+  if (updatedAt != null && String(updatedAt).trim() !== '') {
+    const d = Math.floor((now.getTime() - new Date(updatedAt).getTime()) / 86_400_000);
+    if (Number.isFinite(d)) usageDaysAgo = d;
+  }
+  let intakeDaysAgo = null;
+  if (intakeAt != null && String(intakeAt).trim() !== '') {
+    const d = Math.floor((now.getTime() - new Date(intakeAt).getTime()) / 86_400_000);
+    if (Number.isFinite(d)) intakeDaysAgo = d;
+  }
+
+  if (usageDaysAgo === null && intakeDaysAgo === null) return '';
+
+  const freshnessLine = [
+    usageDaysAgo !== null ? `last distilled from usage ${usageDaysAgo}d ago` : 'no usage distillation yet',
+    intakeDaysAgo !== null ? `intake seed ${intakeDaysAgo}d ago` : 'no intake on file',
+  ].join(' · ');
+
+  return `\nProfile freshness: ${freshnessLine}`;
+}
+
+function formatUserModelRow(row) {
+  const narrative = String(row.narrative || '').trim();
+  const themes = Array.isArray(row.themes)
+    ? row.themes.map((t) => String(t).trim()).filter(Boolean)
+    : [];
+  const signals = row.signals && typeof row.signals === 'object' && !Array.isArray(row.signals) ? row.signals : {};
+  if (!narrative && themes.length === 0 && Object.keys(signals).length === 0) return '';
+  const lines = [
+    '[USER_MODEL]',
+    'Longer-term model of this user (refreshed periodically from saved cross-surface chats). Use for tone, recurring themes, and continuity — not as ground truth. Prefer live [CONTEXT], [WORKSPACE_CONTEXT], and [CONVERSATION] for facts.',
+    '',
+  ];
+  if (narrative) lines.push(`Narrative:\n${narrative.slice(0, 2000)}`, '');
+  if (themes.length) lines.push(`Themes: ${themes.slice(0, 15).join('; ')}`, '');
+  if (Object.keys(signals).length) {
+    try {
+      lines.push(`Signals:\n${JSON.stringify(signals).slice(0, 1200)}`);
+    } catch {
+      /* ignore */
+    }
+  }
+  let block = lines.join('\n').trim();
+  block += profileFreshnessSuffix(row);
+  if (block.length > USER_MODEL_SECTION_MAX_CHARS) block = `${block.slice(0, USER_MODEL_SECTION_MAX_CHARS)}…`;
+  return block;
+}
+
+async function applyUserSynthesisProfileUpsert(client, userId, row) {
+  const { error } = await client.from('lykn_user_synthesis_profile').upsert(row, { onConflict: 'user_id' });
+  if (error) {
+    console.warn('⚠️ Profile upsert:', error.message);
+    return false;
+  }
+  lastProfileLlmAt.set(userId, Date.now());
+  invalidateUserModelCache(userId);
+  return true;
+}
+
+const INTAKE_ANSWER_MAX_CHARS = 4000;
+
+function normalizeIntakeAnswers(raw) {
+  const keys = ['role', 'focus', 'tools', 'constraints', 'thinkingStyle'];
+  const out = {};
+  for (const k of keys) {
+    out[k] = String(raw?.[k] ?? '')
+      .trim()
+      .slice(0, INTAKE_ANSWER_MAX_CHARS);
+  }
+  return out;
+}
+
+function intakeAnswersHaveContent(a) {
+  return Object.values(a).some((v) => String(v || '').trim().length > 0);
+}
+
+function formatIntakeAnswersBlock(a) {
+  const ts = (x) => (String(x || '').trim() ? String(x).trim() : 'skipped');
+  return [
+    `Role: ${ts(a.role)}`,
+    `Current focus: ${ts(a.focus)}`,
+    `Tools / stack: ${ts(a.tools)}`,
+    `Constraints or context: ${ts(a.constraints)}`,
+    `Thinking style: ${ts(a.thinkingStyle)}`,
+  ].join('\n');
+}
+
+async function runIntakeProfileSynthesisAndUpsert(userId, answers, authHeader, opts = {}) {
+  if (!process.env.OPENAI_API_KEY) return { ok: false, reason: 'no_openai' };
+
+  const client = supabaseAdmin || createSynthesisUserClient(authHeader);
+  if (!client) return { ok: false, reason: 'no_db' };
+
+  const { data: existing } = await client
+    .from('lykn_user_synthesis_profile')
+    .select('intake_completed_at')
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  if (existing?.intake_completed_at && !opts.force) {
+    return { ok: true, updated: false, reason: 'intake_already_completed' };
+  }
+
+  const normalized = normalizeIntakeAnswers(answers);
+  if (!intakeAnswersHaveContent(normalized)) {
+    return { ok: false, reason: 'empty_answers' };
+  }
+
+  const labeled = formatIntakeAnswersBlock(normalized);
+
+  const sys = `You build a compact "user model" for a creative workspace AI from the user's onboarding self-report (not from chat logs).
+Ground truth is ONLY the labeled answers below — treat them as accurate; do not invent biographical or workplace facts beyond what they wrote.
+Output ONLY valid JSON with:
+- narrative: string, max 700 chars, third person ("They..."), plain text, summarizing who this user is and what they are working toward.
+- themes: array of 4-12 short labels (topics or goals they care about).
+- signals: object with optional keys recurring_topics, vocabulary, reasoning_style, goals, tools (each a short string or array of short strings). Map content from the answers; keep concise.
+
+Convert first-person statements in the source into third-person narrative as needed.`;
+
+  const userMsg = `Onboarding self-report:\n${labeled}`;
+
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      temperature: 0.25,
+      max_tokens: 1400,
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: sys },
+        { role: 'user', content: userMsg },
+      ],
+    }),
+  });
+
+  if (!res.ok) {
+    console.warn('⚠️ Intake profile LLM HTTP', res.status);
+    return { ok: false, reason: 'llm_http' };
+  }
+
+  const data = await res.json();
+  const raw = data?.choices?.[0]?.message?.content;
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { ok: false, reason: 'parse_failed' };
+  }
+
+  const narrative = String(parsed.narrative || '').trim().slice(0, 1200);
+  const themes = Array.isArray(parsed.themes)
+    ? parsed.themes.map((t) => String(t).trim()).filter(Boolean).slice(0, 15)
+    : [];
+  const signals =
+    parsed.signals && typeof parsed.signals === 'object' && !Array.isArray(parsed.signals) ? parsed.signals : {};
+
+  if (!narrative && themes.length === 0 && Object.keys(signals).length === 0) {
+    return { ok: false, reason: 'empty_model' };
+  }
+
+  const completedAt = new Date().toISOString();
+  const upsertPayload = {
+    user_id: userId,
+    narrative: narrative || null,
+    themes,
+    signals,
+    model_version: 1,
+    updated_at: completedAt,
+    intake_completed_at: completedAt,
+  };
+
+  const ok = await applyUserSynthesisProfileUpsert(client, userId, upsertPayload);
+  if (!ok) return { ok: false, reason: 'upsert_failed' };
+
+  console.log(`👤 Intake synthesis profile saved for ${String(userId).slice(0, 8)}…`);
+  return { ok: true, updated: true };
+}
+
+async function fetchUserModelSection(authHeader, userId) {
+  if (!userId) return '';
+  const cached = userModelSectionCache.get(userId);
+  const ttl = cached?.text ? USER_MODEL_CACHE_TTL_MS : USER_MODEL_EMPTY_CACHE_TTL_MS;
+  if (cached && Date.now() - cached.at < ttl) return cached.text;
+
+  const client = supabaseAdmin || createSynthesisUserClient(authHeader);
+  if (!client) return '';
+  try {
+    const { data: row, error } = await client
+      .from('lykn_user_synthesis_profile')
+      .select('narrative, themes, signals, updated_at, intake_completed_at')
+      .eq('user_id', userId)
+      .maybeSingle();
+    if (error || !row) {
+      userModelSectionCache.set(userId, { text: '', at: Date.now() });
+      return '';
+    }
+    const text = formatUserModelRow(row);
+    userModelSectionCache.set(userId, { text, at: Date.now() });
+    return text;
+  } catch (e) {
+    console.warn('⚠️ User model fetch:', e?.message || e);
+    return '';
+  }
+}
+
+async function runUserProfileLlmAndUpsert(userId, authHeader, opts = {}) {
+  if (!process.env.OPENAI_API_KEY) return { ok: false, reason: 'no_openai' };
+
+  if (!opts.force) {
+    const last = lastProfileLlmAt.get(userId) || 0;
+    if (Date.now() - last < PROFILE_LLM_THROTTLE_MS) {
+      return { ok: true, skipped: true, reason: 'throttled' };
+    }
+  }
+
+  const client = supabaseAdmin || createSynthesisUserClient(authHeader);
+  if (!client) return { ok: false, reason: 'no_db' };
+
+  const { data: rows, error: memErr } = await client
+    .from('ai_conversation_memory')
+    .select('user_message, assistant_message, surface, surface_title, created_at')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: false })
+    .limit(50);
+
+  if (memErr) {
+    console.warn('⚠️ Profile refresh memory fetch:', memErr.message);
+    return { ok: false, reason: 'fetch_failed' };
+  }
+
+  const { data: existing } = await client
+    .from('lykn_user_synthesis_profile')
+    .select('narrative, themes, signals, intake_completed_at')
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  const exchanges = (rows || []).slice().reverse();
+  if (exchanges.length < 2 && !String(existing?.narrative || '').trim()) {
+    return { ok: true, skipped: true, reason: 'insufficient_data' };
+  }
+
+  let exchangeText = '';
+  for (const ex of exchanges.slice(-40)) {
+    const label = ex.surface_title ? `${ex.surface} "${ex.surface_title}"` : String(ex.surface || '');
+    exchangeText += `\n--- (${label || 'chat'}) ---\nUser: ${String(ex.user_message || '').slice(0, 1500)}\nAssistant: ${String(ex.assistant_message || '').slice(0, 1500)}\n`;
+  }
+
+  const existingStr = existing
+    ? JSON.stringify({ narrative: existing.narrative, themes: existing.themes, signals: existing.signals }).slice(0, 3000)
+    : '';
+
+  const sys = `You update a compact "user model" for a creative workspace AI. Output ONLY valid JSON with:
+- narrative: string, max 700 chars, third person ("They..."), plain text, summarizing who this user is as a thinker/creator and what they care about lately.
+- themes: array of 4-12 short labels (topics they return to).
+- signals: object with optional keys recurring_topics, vocabulary, reasoning_style, goals (each a short string or array of short strings). Keep concise.
+
+Refine the previous model using new evidence; do not invent facts not supported by the exchanges.`;
+
+  const userMsg = `Previous model (merge/refine; may be empty):\n${existingStr || 'none'}\n\nRecent exchanges (batch, chronological):\n${exchangeText.slice(0, 28000)}`;
+
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      temperature: 0.25,
+      max_tokens: 1400,
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: sys },
+        { role: 'user', content: userMsg },
+      ],
+    }),
+  });
+
+  if (!res.ok) {
+    console.warn('⚠️ Profile LLM HTTP', res.status);
+    return { ok: false, reason: 'llm_http' };
+  }
+
+  const data = await res.json();
+  const raw = data?.choices?.[0]?.message?.content;
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { ok: false, reason: 'parse_failed' };
+  }
+
+  const narrative = String(parsed.narrative || '').trim().slice(0, 1200);
+  const themes = Array.isArray(parsed.themes)
+    ? parsed.themes.map((t) => String(t).trim()).filter(Boolean).slice(0, 15)
+    : [];
+  const signals =
+    parsed.signals && typeof parsed.signals === 'object' && !Array.isArray(parsed.signals) ? parsed.signals : {};
+
+  if (!narrative && themes.length === 0 && Object.keys(signals).length === 0) {
+    return { ok: true, skipped: true, reason: 'empty_model' };
+  }
+
+  const upsertPayload = {
+    user_id: userId,
+    narrative: narrative || null,
+    themes,
+    signals,
+    model_version: 1,
+    updated_at: new Date().toISOString(),
+    intake_completed_at: existing?.intake_completed_at ?? null,
+  };
+
+  const upOk = await applyUserSynthesisProfileUpsert(client, userId, upsertPayload);
+  if (!upOk) return { ok: false, reason: 'upsert_failed' };
+
+  console.log(`👤 User synthesis profile updated for ${String(userId).slice(0, 8)}…`);
+  return { ok: true, updated: true };
 }
 
 // ============================================
@@ -303,6 +886,24 @@ const describeLimiter = rateLimit({
   legacyHeaders: false,
   keyGenerator: (req) => req.user?.id || req.ip,
   message: { error: 'Describe rate limit exceeded — try again in a minute' },
+});
+
+const synthesisLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 24,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.user?.id || req.ip,
+  message: { error: 'Synthesis reindex rate limit — try again shortly' },
+});
+
+const profileRefreshLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 8,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.user?.id || req.ip,
+  message: { error: 'Profile refresh rate limit — try again later' },
 });
 
 app.use('/api/', globalLimiter);
@@ -680,7 +1281,7 @@ app.get('/api/ai/models', (req, res) => {
 });
 
 // Budget constants — mirrors src/lib/ai/promptBuilder.ts CONTEXT_BUDGETS
-const AI_BUDGETS = { canvasTotal: 14000, projectSummary: 2000, workspaceContext: 2000, conversation: 8000, userPrompt: 3000, mediaContext: 8000 };
+const AI_BUDGETS = { canvasTotal: 14000, projectSummary: 2000, workspaceContext: 28000, conversation: 8000, userPrompt: 3000, mediaContext: 8000 };
 
 // Conversation compressor — mirrors compressConversation() in src/lib/ai/promptBuilder.ts
 const compressConversation = (msgs, fullCount = 6, maxChars = AI_BUDGETS.conversation) => {
@@ -705,6 +1306,523 @@ const compressConversation = (msgs, fullCount = 6, maxChars = AI_BUDGETS.convers
   return joined.length > maxChars ? `${joined.slice(0, maxChars)}…` : joined;
 };
 
+app.post('/api/synthesis/reindex', requireAuth, synthesisLimiter, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    if (!process.env.OPENAI_API_KEY) {
+      return res.status(503).json({ error: 'Embeddings not configured' });
+    }
+    const { sourceType, sourceId, text, metadata = {} } = req.body || {};
+    if (!SYNTHESIS_ALLOWED_SOURCES.has(String(sourceType))) {
+      return res.status(400).json({ error: 'Invalid sourceType' });
+    }
+    const sid = String(sourceId || '').trim();
+    if (!sid || sid.length > 200) return res.status(400).json({ error: 'Invalid sourceId' });
+    const chunks = chunkTextForSynthesis(String(text || ''));
+    if (chunks.length === 0) {
+      if (supabaseAdmin) {
+        await deleteSynthesisChunksForSource(supabaseAdmin, userId, sourceType, sid);
+      } else {
+        const uc = createSynthesisUserClient(req.headers.authorization);
+        if (!uc) return res.status(503).json({ error: 'Database not configured' });
+        await deleteSynthesisChunksForSource(uc, userId, sourceType, sid);
+      }
+      return res.json({ ok: true, chunks: 0, cleared: true });
+    }
+    const meta = metadata && typeof metadata === 'object' ? metadata : {};
+    const n = await replaceSynthesisChunks(userId, req.headers.authorization, sourceType, sid, chunks, meta);
+    console.log(`📚 Synthesis reindexed ${sourceType}/${sid}: ${n} chunk(s)`);
+    return res.json({ ok: true, chunks: n });
+  } catch (e) {
+    console.error('❌ Synthesis reindex:', e?.message || e);
+    return res.status(500).json({ error: 'Reindex failed' });
+  }
+});
+
+app.post('/api/synthesis/purge', requireAuth, synthesisLimiter, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const { sourceType, sourceId } = req.body || {};
+    if (!SYNTHESIS_ALLOWED_SOURCES.has(String(sourceType))) {
+      return res.status(400).json({ error: 'Invalid sourceType' });
+    }
+    const sid = String(sourceId || '').trim();
+    if (!sid || sid.length > 200) return res.status(400).json({ error: 'Invalid sourceId' });
+    if (supabaseAdmin) {
+      await deleteSynthesisChunksForSource(supabaseAdmin, userId, sourceType, sid);
+    } else {
+      const uc = createSynthesisUserClient(req.headers.authorization);
+      if (!uc) return res.status(503).json({ error: 'Database not configured' });
+      await deleteSynthesisChunksForSource(uc, userId, sourceType, sid);
+    }
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('❌ Synthesis purge:', e?.message || e);
+    return res.status(500).json({ error: 'Purge failed' });
+  }
+});
+
+app.post('/api/synthesis/refresh-profile', requireAuth, profileRefreshLimiter, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const out = await runUserProfileLlmAndUpsert(userId, req.headers.authorization);
+    return res.json(out);
+  } catch (e) {
+    console.error('❌ Synthesis refresh-profile:', e?.message || e);
+    return res.status(500).json({ error: 'refresh_failed' });
+  }
+});
+
+app.get('/api/synthesis/profile/status', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const client = supabaseAdmin || createSynthesisUserClient(req.headers.authorization);
+    if (!client) return res.status(503).json({ error: 'Database not configured' });
+    const { data, error } = await client
+      .from('lykn_user_synthesis_profile')
+      .select('intake_completed_at, narrative')
+      .eq('user_id', userId)
+      .maybeSingle();
+    if (error) return res.status(500).json({ error: error.message });
+    const intake_completed_at = data?.intake_completed_at
+      ? new Date(data.intake_completed_at).toISOString()
+      : null;
+    const has_narrative = Boolean(String(data?.narrative || '').trim());
+    return res.json({ intake_completed_at, has_narrative });
+  } catch (e) {
+    console.error('❌ Synthesis profile status:', e?.message || e);
+    return res.status(500).json({ error: 'status_failed' });
+  }
+});
+
+/**
+ * POST body: { answers: { role?, focus?, tools?, constraints?, thinkingStyle? }, force?: boolean }
+ * Idempotent while intake_completed_at is set unless force is true.
+ */
+app.post('/api/synthesis/intake', requireAuth, profileRefreshLimiter, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const force = Boolean(body.force);
+    const answers = body.answers && typeof body.answers === 'object' && !Array.isArray(body.answers) ? body.answers : null;
+    if (!answers) {
+      return res.status(400).json({ error: 'Invalid body: answers object required' });
+    }
+    const out = await runIntakeProfileSynthesisAndUpsert(userId, answers, req.headers.authorization, { force });
+    if (!out.ok) {
+      if (out.reason === 'no_openai') return res.status(503).json({ error: 'LLM not configured' });
+      if (out.reason === 'no_db') return res.status(503).json({ error: 'Database not configured' });
+      if (out.reason === 'empty_answers') return res.status(400).json({ error: 'At least one answer field is required' });
+      if (out.reason === 'empty_model') return res.status(502).json({ error: 'Model returned empty profile' });
+      return res.status(500).json({ error: out.reason || 'intake_failed' });
+    }
+    if (!out.updated) {
+      return res.json({ ok: true, updated: false, reason: out.reason || 'skipped' });
+    }
+    return res.json({ ok: true, updated: true });
+  } catch (e) {
+    console.error('❌ Synthesis intake:', e?.message || e);
+    return res.status(500).json({ error: 'intake_failed' });
+  }
+});
+
+/**
+ * Post-save: LLM summary + signals on notes row, then re-embed vault_note for retrieval.
+ * Requires migration 025 (ai_summary, ai_signals on notes).
+ */
+app.post('/api/vault/enrich-note', requireAuth, synthesisLimiter, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const noteId = String(req.body?.noteId || '').trim();
+    if (!noteId) return res.status(400).json({ error: 'noteId required' });
+    if (!process.env.OPENAI_API_KEY) return res.status(503).json({ error: 'LLM not configured' });
+
+    const client = supabaseAdmin || createSynthesisUserClient(req.headers.authorization);
+    if (!client) return res.status(503).json({ error: 'Database not configured' });
+
+    const { data: note, error: nErr } = await client
+      .from('notes')
+      .select('id, title, content, user_id')
+      .eq('id', noteId)
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (nErr) return res.status(500).json({ error: nErr.message });
+    if (!note) return res.status(404).json({ error: 'Note not found' });
+
+    const stripped = backfillStripAttachments(note.content);
+    const llmInput = `Title: ${String(note.title || '').trim()}\n\n${stripped.slice(0, 12000)}`;
+
+    const sys = `You compress vault items for search and UI. Output ONLY valid JSON:
+{"summary":"2-5 sentences: what this item is, topics, and type (document, link, media, bookmark, etc.)","signals":{"themes":["short labels"],"entities":["names or products if any"]}}
+Use empty arrays if unknown. Be factual; infer only from the text.`;
+
+    const ores = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        temperature: 0.2,
+        max_tokens: 600,
+        response_format: { type: 'json_object' },
+        messages: [
+          { role: 'system', content: sys },
+          { role: 'user', content: llmInput },
+        ],
+      }),
+    });
+
+    if (!ores.ok) {
+      console.warn('⚠️ vault enrich LLM HTTP', ores.status);
+      return res.status(502).json({ error: 'enrich_llm_failed' });
+    }
+
+    const odata = await ores.json();
+    let parsed;
+    try {
+      parsed = JSON.parse(odata?.choices?.[0]?.message?.content || '{}');
+    } catch {
+      return res.status(502).json({ error: 'enrich_parse_failed' });
+    }
+
+    const summary = String(parsed.summary || '').trim().slice(0, 2000);
+    const signals =
+      parsed.signals && typeof parsed.signals === 'object' && !Array.isArray(parsed.signals)
+        ? parsed.signals
+        : {};
+
+    const { error: upErr } = await client
+      .from('notes')
+      .update({
+        ai_summary: summary || null,
+        ai_signals: signals,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', noteId)
+      .eq('user_id', userId);
+
+    if (upErr) {
+      const msg = upErr.message || '';
+      if (msg.includes('ai_summary') || msg.includes('ai_signals') || upErr.code === 'PGRST204') {
+        return res.status(503).json({
+          error: 'notes_ai_columns_missing',
+          hint: 'Apply migration 025_notes_ai_summary_signals.sql',
+        });
+      }
+      return res.status(500).json({ error: msg });
+    }
+
+    const baseText = backfillVaultText(note.title, note.content);
+    const embedRaw = summary ? `Summary (AI):\n${summary}\n\n${baseText}` : baseText;
+    const chunks = chunkTextForSynthesis(embedRaw);
+    if (!chunks.length) {
+      return res.json({ ok: true, chunks: 0, enriched: true });
+    }
+
+    const n = await replaceSynthesisChunks(userId, req.headers.authorization, 'vault_note', noteId, chunks, {
+      title: note.title,
+      vaultEnriched: true,
+    });
+
+    return res.json({ ok: true, chunks: n, enriched: true });
+  } catch (e) {
+    console.error('❌ vault enrich-note:', e?.message || e);
+    return res.status(500).json({ error: 'enrich_failed' });
+  }
+});
+
+function verifyBackfillSecret(req) {
+  const expected = process.env.BACKFILL_SECRET;
+  if (!expected || String(expected).length < 8) return false;
+  const auth = req.headers.authorization || '';
+  const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+  if (!token) return false;
+  try {
+    const a = Buffer.from(token, 'utf8');
+    const b = Buffer.from(String(expected), 'utf8');
+    if (a.length !== b.length) return false;
+    return crypto.timingSafeEqual(a, b);
+  } catch {
+    return false;
+  }
+}
+
+const backfillSleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function backfillStripAttachments(content) {
+  return String(content || '').replace(/\[ATTACHMENTS_JSON:[\s\S]*$/, '').trim();
+}
+
+function backfillVaultText(title, content) {
+  const t = String(title || '').trim();
+  const body = backfillStripAttachments(content);
+  const parts = [t ? `Title: ${t}` : '', body].filter(Boolean);
+  return parts.join('\n\n').slice(0, 120_000);
+}
+
+function backfillTake(s, max) {
+  const x = String(s || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return x.length <= max ? x : `${x.slice(0, max)}…`;
+}
+
+/** Mirrors src/lib/synthesis/sourceText.ts snapshotToSynthesisText for server-side backfill. */
+function backfillSnapshotToText(snapshot) {
+  const lines = [];
+  const title = String(snapshot?.title || '').trim();
+  if (title) lines.push(`Board: ${title}`);
+  const blocks = snapshot?.blocks || {};
+  const order = Array.isArray(snapshot?.blockOrder) ? snapshot.blockOrder : Object.keys(blocks);
+  for (const id of order.slice(0, 120)) {
+    const b = blocks[id];
+    if (!b) continue;
+    const type = String(b.type || '');
+    if (type === 'text') {
+      const fmt = String(b.format || 'plain');
+      const c = backfillTake(String(b.content || ''), 4000);
+      if (c) lines.push(`[text ${fmt}] ${c}`);
+    } else if (type === 'create') {
+      const mode = String(b.mode || '').toLowerCase();
+      const data = b.data || {};
+      if (mode === 'video') {
+        const url = String(data.url || b.url || '');
+        const vid = String(data.videoId || b.videoId || '');
+        if (url || vid) lines.push(`[video] ${vid || url}`);
+      } else if (mode === 'embed' || mode === 'file') {
+        lines.push(
+          `[file] ${backfillTake(String(data.name || data.title || ''), 200)} ${backfillTake(String(data.url || ''), 500)}`,
+        );
+      } else if (mode === 'image' || mode === 'generated') {
+        lines.push(`[image] ${backfillTake(String(data.title || data.name || ''), 200)}`);
+      } else {
+        const tx = backfillTake(String(data.title || data.content || mode || ''), 1500);
+        if (tx) lines.push(`[create ${mode}] ${tx}`);
+      }
+    } else if (type === 'youtube' || type === 'link') {
+      lines.push(`[${type}] ${backfillTake(String(b.url || (b.data && b.data.url) || ''), 800)}`);
+    } else if (type === 'image') {
+      lines.push(`[image] ${backfillTake(String(b.src || ''), 300)}`);
+    } else {
+      const c = backfillTake(String(b.content || (b.data && b.data.content) || ''), 2000);
+      if (c) lines.push(`[${type}] ${c}`);
+    }
+  }
+  const wires = Array.isArray(snapshot?.wireConnections) ? snapshot.wireConnections : [];
+  if (wires.length) {
+    lines.push(
+      `Connections: ${wires
+        .slice(0, 40)
+        .map((w) => `${w.fromId}->${w.toId}`)
+        .join('; ')}`,
+    );
+  }
+  return lines.join('\n').slice(0, 120_000);
+}
+
+async function collectBackfillUserIds(singleUserId) {
+  if (singleUserId && String(singleUserId).trim()) return [String(singleUserId).trim()];
+  const set = new Set();
+  const add = (rows, key) => {
+    for (const r of rows || []) {
+      if (r && r[key]) set.add(String(r[key]));
+    }
+  };
+  const { data: n } = await supabaseAdmin.from('notes').select('user_id');
+  add(n, 'user_id');
+  const { data: b } = await supabaseAdmin.from('omnia_boards').select('user_id');
+  add(b, 'user_id');
+  const { data: m } = await supabaseAdmin.from('ai_conversation_memory').select('user_id');
+  add(m, 'user_id');
+  return [...set];
+}
+
+app.post('/api/synthesis/backfill', async (req, res) => {
+  if (!verifyBackfillSecret(req)) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  if (!supabaseAdmin) {
+    return res.status(503).json({ error: 'SUPABASE_SERVICE_ROLE_KEY required for backfill' });
+  }
+  if (!process.env.OPENAI_API_KEY) {
+    return res.status(503).json({ error: 'OPENAI_API_KEY required for backfill' });
+  }
+
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const userIdFilter = body.userId ? String(body.userId).trim() : '';
+  const refreshProfile = Boolean(body.refreshProfile);
+  const allSources = ['vault_note', 'grid_board', 'conversation_exchange'];
+  let sources = Array.isArray(body.sources) && body.sources.length ? body.sources.map((s) => String(s)) : allSources;
+  sources = sources.filter((s) => allSources.includes(s));
+  if (!sources.length) sources = allSources;
+
+  const errors = [];
+  let usersProcessed = 0;
+  let chunksWritten = 0;
+  let profileRuns = 0;
+
+  try {
+    const userIds = await collectBackfillUserIds(userIdFilter);
+    if (!userIds.length) {
+      return res.json({ ok: true, usersProcessed: 0, chunksWritten: 0, errors: [], message: 'no_users_found' });
+    }
+
+    for (const uid of userIds) {
+      usersProcessed += 1;
+      console.log(`📊 Backfill: start user ${String(uid).slice(0, 8)}… sources=${sources.join(',')}`);
+
+      if (sources.includes('vault_note')) {
+        let from = 0;
+        const page = 200;
+        for (;;) {
+          const { data: notes, error: nErr } = await supabaseAdmin
+            .from('notes')
+            .select('id, title, content')
+            .eq('user_id', uid)
+            .range(from, from + page - 1);
+          if (nErr) {
+            errors.push({ userId: uid, source: 'vault_note', sourceId: '*', error: nErr.message });
+            break;
+          }
+          if (!notes?.length) break;
+          for (const note of notes) {
+            try {
+              const text = backfillVaultText(note.title, note.content);
+              const chunks = chunkTextForSynthesis(text);
+              if (!chunks.length) continue;
+              const n = await replaceSynthesisChunks(uid, null, 'vault_note', String(note.id), chunks, {
+                backfill: true,
+                title: note.title,
+              });
+              chunksWritten += n;
+            } catch (e) {
+              errors.push({
+                userId: uid,
+                source: 'vault_note',
+                sourceId: String(note.id),
+                error: e?.message || String(e),
+              });
+            }
+            await backfillSleep(50);
+          }
+          if (notes.length < page) break;
+          from += page;
+        }
+      }
+
+      if (sources.includes('grid_board')) {
+        const { data: boards, error: bErr } = await supabaseAdmin
+          .from('omnia_boards')
+          .select('id, title')
+          .eq('user_id', uid);
+        if (bErr) {
+          errors.push({ userId: uid, source: 'grid_board', sourceId: '*', error: bErr.message });
+        } else {
+          for (const br of boards || []) {
+            try {
+              const { data: stRows } = await supabaseAdmin
+                .from('omnia_board_states')
+                .select('state')
+                .eq('board_id', br.id)
+                .order('updated_at', { ascending: false })
+                .limit(1);
+              const stRow = Array.isArray(stRows) && stRows[0] ? stRows[0] : null;
+              const snap = { ...(stRow?.state || {}), title: br.title || stRow?.state?.title || 'Untitled' };
+              const text = backfillSnapshotToText(snap);
+              const chunks = chunkTextForSynthesis(text);
+              if (!chunks.length) continue;
+              const n = await replaceSynthesisChunks(uid, null, 'grid_board', String(br.id), chunks, {
+                backfill: true,
+                title: br.title,
+              });
+              chunksWritten += n;
+            } catch (e) {
+              errors.push({
+                userId: uid,
+                source: 'grid_board',
+                sourceId: String(br.id),
+                error: e?.message || String(e),
+              });
+            }
+            await backfillSleep(50);
+          }
+        }
+      }
+
+      if (sources.includes('conversation_exchange')) {
+        let cfrom = 0;
+        const cpage = 200;
+        for (;;) {
+          const { data: mems, error: mErr } = await supabaseAdmin
+            .from('ai_conversation_memory')
+            .select('id, user_message, assistant_message')
+            .eq('user_id', uid)
+            .range(cfrom, cfrom + cpage - 1);
+          if (mErr) {
+            errors.push({ userId: uid, source: 'conversation_exchange', sourceId: '*', error: mErr.message });
+            break;
+          }
+          if (!mems?.length) break;
+          for (const row of mems) {
+            try {
+              const text = `User:\n${String(row.user_message || '').slice(0, 8000)}\n\nAssistant:\n${String(row.assistant_message || '').slice(0, 8000)}`;
+              const chunks = chunkTextForSynthesis(text);
+              if (!chunks.length) continue;
+              const n = await replaceSynthesisChunks(uid, null, 'conversation_exchange', String(row.id), chunks, {
+                backfill: true,
+              });
+              chunksWritten += n;
+            } catch (e) {
+              errors.push({
+                userId: uid,
+                source: 'conversation_exchange',
+                sourceId: String(row.id),
+                error: e?.message || String(e),
+              });
+            }
+            await backfillSleep(50);
+          }
+          if (mems.length < cpage) break;
+          cfrom += cpage;
+        }
+      }
+
+      if (refreshProfile) {
+        try {
+          const out = await runUserProfileLlmAndUpsert(uid, null, { force: true });
+          if (out.updated) profileRuns += 1;
+        } catch (e) {
+          errors.push({ userId: uid, source: 'refresh_profile', sourceId: '-', error: e?.message || String(e) });
+        }
+        await backfillSleep(100);
+      }
+
+      console.log(`📊 Backfill: done user ${String(uid).slice(0, 8)}… cumulative_chunks=${chunksWritten}`);
+    }
+
+    return res.json({
+      ok: true,
+      usersProcessed,
+      chunksWritten,
+      profileRefreshesAttempted: refreshProfile ? usersProcessed : 0,
+      profileRefreshesUpdated: profileRuns,
+      errors,
+    });
+  } catch (e) {
+    console.error('❌ Synthesis backfill:', e?.message || e);
+    return res.status(500).json({ error: 'backfill_failed', detail: e?.message, errors });
+  }
+});
+
 app.post('/api/ai/invoke', requireAuth, aiLimiter, checkAiUsageLimit, async (req, res) => {
   try {
     const normalizedModel = normalizeRequestedModel(req.body?.model);
@@ -721,7 +1839,7 @@ app.post('/api/ai/invoke', requireAuth, aiLimiter, checkAiUsageLimit, async (req
       imageUrlPrefixes: incomingImageUrls.map(u => String(u || '').slice(0, 60)),
     });
     
-    const { intent, text, returnActions, context, knowledgeBase, projectId, conversation, imageUrls: rawImageUrls, userPrompt, responseLength, hasFocusedBricks, skipWebSearch, workspaceContext } = req.body;
+    const { intent, text, returnActions, context, knowledgeBase, projectId, conversation, conversationMemory, imageUrls: rawImageUrls, userPrompt, responseLength, hasFocusedBricks, skipWebSearch, workspaceContext } = req.body;
     const model = normalizedModel;
     const imageUrls = (Array.isArray(rawImageUrls) ? rawImageUrls : [])
       .map((u) => String(u || '').trim())
@@ -946,7 +2064,7 @@ ${t}
         : "- Match response length to the complexity of the question. Short for simple, detailed for complex.";
 
       const userPromptSection = userPrompt && String(userPrompt).trim()
-        ? `[USER_PREFERENCES]\nThe user has set these personal instructions — always follow them:\n${String(userPrompt).trim().slice(0, 1000)}`
+        ? `[USER_PREFERENCES]\nThe user has set these personal instructions — always follow them:\n${String(userPrompt).trim().slice(0, AI_BUDGETS.userPrompt)}`
         : "";
 
       return [
@@ -1027,6 +2145,8 @@ ${t}
         "- [BOARD_CONTEXT]: The current board the user is on — its blocks, content, and wire connections between bricks. If a [CONNECTIONS] section is present, it shows which bricks the user explicitly wired together — treat connected bricks as contextually related (the user linked them to show a relationship, data flow, or logical grouping).",
         "- [PROJECT_KNOWLEDGE]: The user's project files, folders, other boards, and mindmaps.",
         "- [WORKSPACE_CONTEXT]: ALL of the user's other boards (titles + content summaries) AND their entire Vault (all saved notes, files, links, videos, images).",
+        "- [USER_MODEL] (if present): Periodically updated themes and style summary from past chats — use for tone, not as facts.",
+        "- [SYNTHESIS_RETRIEVAL] (if present): Semantic matches from their embedded workspace index.",
         "- [CONVERSATION]: The full conversation history, including YOUR OWN previous responses.",
         "",
         "=== CONVERSATION MEMORY (CRITICAL) ===",
@@ -1035,6 +2155,11 @@ ${t}
         "When the user answers a question YOU asked, connect their answer to YOUR question. Never act like you forgot what you said.",
         "When the user references something from earlier in the conversation, look it up in [CONVERSATION] and respond accordingly.",
         "Treat the conversation as a continuous thread — every message builds on what came before.",
+        "",
+        "If a [CONVERSATION_MEMORY] section is present, it contains your PAST exchanges with this user from OTHER grids, projects, and The Vault.",
+        "Use it to maintain continuity across surfaces — if the user says 'remember when we talked about X' or 'like I mentioned before', look it up in [CONVERSATION_MEMORY].",
+        "Each memory entry is labeled with where it happened (e.g. Grid \"Marketing Plan\", Project \"App Launch\", The Vault) so you can reference the context naturally.",
+        "Prefer [CONVERSATION] (current session) over [CONVERSATION_MEMORY] (past sessions) when both cover the same topic.",
         "=== END CONVERSATION MEMORY ===",
         "",
         "=== PROMPT ISOLATION (CRITICAL — READ THIS) ===",
@@ -1076,6 +2201,9 @@ ${t}
         "If [WORKSPACE_CONTEXT] is present below, it contains the user's real boards and real Vault items. Read them. Use them. Reference them by name when relevant.",
         "If the user asks 'do I have anything saved about X' or 'what's in my vault' — LOOK AT [WORKSPACE_CONTEXT] and answer from it.",
         "If the user asks about other boards — LOOK AT [WORKSPACE_CONTEXT] and tell them what you see.",
+        String(wsCtx || "").includes("DETAILED VAULT")
+          ? "When DETAILED VAULT appears in [WORKSPACE_CONTEXT], it matches the in-app Vault chat listing: per-item types, URLs, extracted or article text, tags, and user notes on attachments. Use it to answer about saved content. Search thematically (topics, ideas) — not only exact keywords. User notes on items are high-signal."
+          : "",
         "",
         "ABSOLUTELY FORBIDDEN — never say any of these:",
         "- 'I don't have access to your files/notes/media/accounts'",
@@ -1160,6 +2288,7 @@ ${t}
         `[INTENT]\n${String(input?.intent || "ask").trim().toLowerCase() || "ask"}`,
         input?.projectId ? `[PROJECT_ID]\n${String(input.projectId)}` : "",
         convo ? `[CONVERSATION]\n${convo}` : "",
+        conversationMemory ? `[CONVERSATION_MEMORY — past exchanges from other grids/projects/vault]\n${String(conversationMemory).slice(0, 6000)}` : "",
         contextText ? `[BOARD_CONTEXT]\n${contextText}` : "",
         kb ? `[PROJECT_KNOWLEDGE]\n${kb}` : "",
         wsCtx ? `[WORKSPACE_CONTEXT]\nBelow are the user's OTHER boards and their entire Vault contents. This is real data.\n${wsCtx}` : "",
@@ -1239,10 +2368,18 @@ ${t}
     const userText = String(text || prompt || "");
     const searchText = pureUserMessage || userText;
     const hasContextForSearch = Boolean(context) || Boolean(knowledgeBase) || Boolean(workspaceContext);
-    const [scrapedContent, searchResults] = await Promise.all([
+    const [scrapedContent, searchResults, synthesisRetrieval, userModelSection] = await Promise.all([
       scrapeUrlsFromText(searchText),
       skipWebSearch ? Promise.resolve("") : runWebSearchIfNeeded(searchText, { hasFocusedBricks: Boolean(hasFocusedBricks), hasContext: hasContextForSearch }),
+      !wantsActions && isChatIntent
+        ? fetchSynthesisRetrievalSection(req.headers.authorization, pureUserMessage || searchText)
+        : Promise.resolve(""),
+      !wantsActions && isChatIntent
+        ? fetchUserModelSection(req.headers.authorization, req.user?.id)
+        : Promise.resolve(""),
     ]);
+    if (userModelSection) prompt += "\n\n" + userModelSection;
+    if (synthesisRetrieval) prompt += "\n\n" + synthesisRetrieval;
     if (scrapedContent) prompt += "\n\n" + scrapedContent;
     if (searchResults) prompt += "\n\n" + searchResults;
 
@@ -1615,7 +2752,7 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
     const normalizedModel = normalizeRequestedModel(req.body?.model);
     const incomingImageUrls = Array.isArray(req.body?.imageUrls) ? req.body.imageUrls : [];
     const imageUrls = incomingImageUrls.slice(0, 4);
-    let { prompt, text, intent, context, knowledgeBase, projectId, conversation, userPrompt, responseLength, hasFocusedBricks, skipWebSearch, workspaceContext } = req.body;
+    let { prompt, text, intent, context, knowledgeBase, projectId, conversation, conversationMemory, userPrompt, responseLength, hasFocusedBricks, skipWebSearch, workspaceContext } = req.body;
     let model = normalizedModel;
     console.log('[LYKN-STREAM] workspaceContext received:', workspaceContext ? `${String(workspaceContext).length} chars` : 'EMPTY/MISSING');
 
@@ -1697,6 +2834,13 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
       const wsCtx = String(input?.workspaceContext || "").trim().slice(0, AI_BUDGETS.workspaceContext);
       const convo = compressConversation(input?.conversation);
       const hasFocusedBricks = Boolean(input?.hasFocusedBricks);
+      const conversationMemoryText = input?.conversationMemory
+        ? String(input.conversationMemory).slice(0, 6000)
+        : '';
+      const userPromptSection =
+        input?.userPrompt && String(input.userPrompt).trim()
+          ? `[USER_PREFERENCES]\nThe user has set these personal instructions — always follow them:\n${String(input.userPrompt).trim().slice(0, AI_BUDGETS.userPrompt)}`
+          : '';
 
       return [
         "SYSTEM",
@@ -1733,6 +2877,11 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
         "The [CONVERSATION] section below contains the FULL conversation history between you and the user in this session.",
         "You MUST read and remember everything in it — including your OWN previous responses and any questions YOU asked.",
         "When the user answers a question you asked, connect their answer to the question you asked. Never act like you forgot what you said.",
+        "",
+        "If a [CONVERSATION_MEMORY] section is present, it contains your PAST exchanges with this user from OTHER grids, projects, and The Vault.",
+        "Use it to maintain continuity across surfaces — if the user says 'remember when we talked about X' or 'like I mentioned before', look it up in [CONVERSATION_MEMORY].",
+        "Each memory entry is labeled with where it happened (e.g. Grid \"Marketing Plan\", Project \"App Launch\", The Vault) so you can reference the context naturally.",
+        "Prefer [CONVERSATION] (current session) over [CONVERSATION_MEMORY] (past sessions) when both cover the same topic.",
         "=== END CONVERSATION MEMORY ===",
         "",
         "=== PROMPT ISOLATION (CRITICAL) ===",
@@ -1760,6 +2909,8 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
         "- [CONTEXT]: The current board the user is on — its blocks, content, and wire connections between bricks. If a [CONNECTIONS] section is present, it shows which bricks the user explicitly wired together — treat connected bricks as contextually related (the user linked them to show a relationship, data flow, or logical grouping).",
         "- [KNOWLEDGE]: The user's project files, folders, other boards in the project, and mindmaps.",
         "- [WORKSPACE_CONTEXT]: ALL of the user's other boards (titles and content summaries) AND their entire Vault (all saved notes, files, links, videos, images).",
+        "- [USER_MODEL] (if present): A periodically updated summary of this user's themes, style, and interests from past chats — use for tone and continuity, not as factual ground truth.",
+        "- [SYNTHESIS_RETRIEVAL] (if present): Semantically matched snippets from their embedded workspace index.",
         "- [CONVERSATION]: The full conversation history including your own responses.",
         "",
         "The user's workspace has a saved-content area called 'The Vault'. When speaking to the user, ALWAYS call it 'The Vault' — never 'media page'.",
@@ -1767,6 +2918,9 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
         "If [WORKSPACE_CONTEXT] is present below, it contains the user's real boards and real Vault items. Read them. Use them. Reference them by name when relevant.",
         "If the user asks 'do I have anything saved about X' or 'what's in my vault' — LOOK AT [WORKSPACE_CONTEXT] and answer based on what you see there.",
         "If the user asks about other boards — LOOK AT [WORKSPACE_CONTEXT] and tell them what you see.",
+        String(wsCtx || "").includes("DETAILED VAULT")
+          ? "When DETAILED VAULT appears in [WORKSPACE_CONTEXT], it matches the in-app Vault chat listing: per-item types, URLs, extracted or article text, tags, and user notes on attachments. Use it to answer about saved content. Search thematically (topics, ideas) — not only exact keywords. User notes on items are high-signal."
+          : "",
         "",
         "ABSOLUTELY FORBIDDEN — never say any of these:",
         "- 'I don't have access to your files/notes/media/accounts'",
@@ -1799,12 +2953,17 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
         "- General principle: Never say 'I can't do that.' Tell the user HOW to do it and offer to help.",
         "=== END TOOL SUGGESTIONS ===",
         "",
+        userPromptSection,
+        "",
         "Cross-workspace awareness:",
         "- [WORKSPACE_CONTEXT] has the user's other boards and Vault items. If you notice a meaningful connection, add at the END of your response:",
         "  [AI_CONNECTION:title|sourceType|reason]",
         "- sourceType = 'board' or 'media'. Up to 3 per response. Only meaningful connections. Do NOT mention markers in your visible text.",
         "",
         convo ? `[CONVERSATION]\n${convo}` : "",
+        conversationMemoryText
+          ? `[CONVERSATION_MEMORY — past exchanges from other grids/projects/vault]\n${conversationMemoryText}`
+          : '',
         ctx ? `[CONTEXT]\n${ctx}` : "",
         kb ? `[KNOWLEDGE]\n${kb}` : "",
         wsCtx ? `[WORKSPACE_CONTEXT]\nBelow are the user's OTHER boards and their entire Vault contents. This is real data.\n${wsCtx}` : "",
@@ -1816,7 +2975,19 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
     const normalizedIntent = String(intent || "").trim().toLowerCase();
     const isChatIntent = normalizedIntent === "ask" || normalizedIntent === "chat" || normalizedIntent === "question";
     if (isChatIntent) {
-      prompt = buildLyknStreamPrompt({ prompt, text, context, knowledgeBase: kbText, workspaceContext, conversation, projectId, intent: normalizedIntent || "ask", hasFocusedBricks: Boolean(hasFocusedBricks) });
+      prompt = buildLyknStreamPrompt({
+        prompt,
+        text,
+        context,
+        knowledgeBase: kbText,
+        workspaceContext,
+        conversation,
+        conversationMemory,
+        userPrompt,
+        projectId,
+        intent: normalizedIntent || 'ask',
+        hasFocusedBricks: Boolean(hasFocusedBricks),
+      });
     }
 
     // Scrape any URLs the user pasted, and run web search in parallel.
@@ -1824,10 +2995,18 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
     const userText = String(text || prompt || "");
     const streamSearchText = streamPureUserMessage || userText;
     const hasContextForStreamSearch = Boolean(context) || Boolean(knowledgeBase) || Boolean(workspaceContext);
-    const [scrapedContent, searchResults] = await Promise.all([
+    const [scrapedContent, searchResults, synthesisRetrieval, userModelSection] = await Promise.all([
       scrapeUrlsFromText(streamSearchText),
       skipWebSearch ? Promise.resolve("") : runWebSearchIfNeeded(streamSearchText, { hasFocusedBricks: Boolean(hasFocusedBricks), hasContext: hasContextForStreamSearch }),
+      isChatIntent
+        ? fetchSynthesisRetrievalSection(req.headers.authorization, streamPureUserMessage || userText)
+        : Promise.resolve(""),
+      isChatIntent
+        ? fetchUserModelSection(req.headers.authorization, req.user?.id)
+        : Promise.resolve(""),
     ]);
+    if (userModelSection) prompt += "\n\n" + userModelSection;
+    if (synthesisRetrieval) prompt += "\n\n" + synthesisRetrieval;
     if (scrapedContent) prompt += "\n\n" + scrapedContent;
     if (searchResults) prompt += "\n\n" + searchResults;
 
@@ -3033,6 +4212,148 @@ app.get('/api/unfurl', requireAuth, async (req, res) => {
       // Fall through to generic unfurl if oEmbed fails
     }
 
+    // oEmbed for Instagram posts / reels
+    const isInstagram = /^https?:\/\/(www\.)?instagram\.com\/(p|reel|reels|tv)\//i.test(url);
+    if (isInstagram) {
+      const metaToken = process.env.META_APP_TOKEN;
+      if (metaToken) {
+        const oembedUrl = `https://graph.facebook.com/v21.0/instagram_oembed?url=${encodeURIComponent(url)}&access_token=${metaToken}&maxwidth=550&omitscript=true`;
+        const ctrl2 = new AbortController();
+        const t2 = setTimeout(() => ctrl2.abort(), 8000);
+        try {
+          const oRes = await fetch(oembedUrl, { signal: ctrl2.signal });
+          clearTimeout(t2);
+          if (oRes.ok) {
+            const oe = await oRes.json();
+            const embedHtml = String(oe.html || '');
+            const authorName = String(oe.author_name || '');
+            const title = authorName || 'Instagram Post';
+            const isReel = /\/(reel|reels)\//i.test(url);
+            console.log(`📸 oEmbed (Instagram): ${title}`);
+            return res.json({
+              url,
+              title,
+              description: String(oe.title || '').slice(0, 2000),
+              image: String(oe.thumbnail_url || ''),
+              favicon: 'https://www.instagram.com/favicon.ico',
+              siteName: 'Instagram',
+              articleText: '',
+              oembedHtml: embedHtml,
+              oembedType: 'instagram',
+              socialContentType: isReel ? 'reel' : 'post',
+              authorName,
+              authorHandle: '',
+              thumbnailWidth: Number(oe.thumbnail_width) || 0,
+              thumbnailHeight: Number(oe.thumbnail_height) || 0,
+            });
+          } else {
+            const errBody = await oRes.text().catch(() => '');
+            const needsReview = errBody.includes('reviewed and approved');
+            if (needsReview) {
+              console.warn('📸 Instagram oEmbed: App needs "Meta oEmbed Read" review. Using OG fallback. See: https://developers.facebook.com/docs/apps/review');
+            } else {
+              console.warn(`📸 Instagram oEmbed ${oRes.status}: ${errBody.slice(0, 300)}`);
+            }
+          }
+        } catch (igErr) {
+          clearTimeout(t2);
+          console.warn('Instagram oEmbed failed, falling through:', igErr.message);
+        }
+      }
+      // Fall through to generic unfurl if no token or oEmbed fails
+    }
+
+    // oEmbed for TikTok videos (public, no auth required)
+    const isTikTok = /^https?:\/\/((www\.|m\.)?tiktok\.com\/@[^/]+\/(video|photo)\/|vm\.tiktok\.com\/|(www\.)?tiktok\.com\/t\/)/i.test(url);
+    if (isTikTok) {
+      const oembedUrl = `https://www.tiktok.com/oembed?url=${encodeURIComponent(url)}`;
+      const ctrl3 = new AbortController();
+      const t3 = setTimeout(() => ctrl3.abort(), 8000);
+      try {
+        const oRes = await fetch(oembedUrl, { signal: ctrl3.signal });
+        clearTimeout(t3);
+        if (oRes.ok) {
+          const oe = await oRes.json();
+          const embedHtml = String(oe.html || '');
+          const authorName = String(oe.author_name || '');
+          const authorHandle = String(oe.author_unique_id || '');
+          const title = oe.title ? String(oe.title).slice(0, 200) : (authorName ? `${authorName} on TikTok` : 'TikTok Video');
+          console.log(`🎵 oEmbed (TikTok): ${title}`);
+          return res.json({
+            url,
+            title,
+            description: String(oe.title || '').slice(0, 2000),
+            image: String(oe.thumbnail_url || ''),
+            favicon: 'https://www.tiktok.com/favicon.ico',
+            siteName: 'TikTok',
+            articleText: '',
+            oembedHtml: embedHtml,
+            oembedType: 'tiktok',
+            socialContentType: 'video',
+            authorName,
+            authorHandle: authorHandle ? `@${authorHandle}` : '',
+            thumbnailWidth: Number(oe.thumbnail_width) || 0,
+            thumbnailHeight: Number(oe.thumbnail_height) || 0,
+          });
+        }
+      } catch (ttErr) {
+        clearTimeout(t3);
+        console.warn('TikTok oEmbed failed, falling through:', ttErr.message);
+      }
+      // Fall through to generic unfurl
+    }
+
+    // oEmbed for Facebook posts / videos / reels
+    const isFacebook = /^https?:\/\/((www\.|m\.|web\.)?facebook\.com\/.+\/(posts|videos|reel|watch)|fb\.watch\/)/i.test(url);
+    if (isFacebook) {
+      const metaToken = process.env.META_APP_TOKEN;
+      if (metaToken) {
+        const isFbVideo = /\/(videos|reel|watch)\b/i.test(url) || /^https?:\/\/fb\.watch\//i.test(url);
+        const endpoint = isFbVideo ? 'oembed_video' : 'oembed_post';
+        const oembedUrl = `https://graph.facebook.com/v21.0/${endpoint}?url=${encodeURIComponent(url)}&access_token=${metaToken}&omitscript=true`;
+        const ctrl4 = new AbortController();
+        const t4 = setTimeout(() => ctrl4.abort(), 8000);
+        try {
+          const oRes = await fetch(oembedUrl, { signal: ctrl4.signal });
+          clearTimeout(t4);
+          if (oRes.ok) {
+            const oe = await oRes.json();
+            const embedHtml = String(oe.html || '');
+            const authorName = String(oe.author_name || '');
+            const title = authorName ? `${authorName} on Facebook` : 'Facebook Post';
+            const isFbReel = /\/reel\//i.test(url);
+            console.log(`📘 oEmbed (Facebook): ${title}`);
+            return res.json({
+              url,
+              title,
+              description: '',
+              image: '',
+              favicon: 'https://www.facebook.com/favicon.ico',
+              siteName: 'Facebook',
+              articleText: '',
+              oembedHtml: embedHtml,
+              oembedType: 'facebook',
+              socialContentType: isFbReel ? 'reel' : (isFbVideo ? 'video' : 'post'),
+              authorName,
+              authorHandle: '',
+            });
+          } else {
+            const errBody = await oRes.text().catch(() => '');
+            const needsReview = errBody.includes('reviewed and approved');
+            if (needsReview) {
+              console.warn('📘 Facebook oEmbed: App needs "Meta oEmbed Read" review. Using OG fallback. See: https://developers.facebook.com/docs/apps/review');
+            } else {
+              console.warn(`📘 Facebook oEmbed ${oRes.status}: ${errBody.slice(0, 300)}`);
+            }
+          }
+        } catch (fbErr) {
+          clearTimeout(t4);
+          console.warn('Facebook oEmbed failed, falling through:', fbErr.message);
+        }
+      }
+      // Fall through to generic unfurl
+    }
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 8000);
     const response = await fetch(url, {
@@ -3078,9 +4399,16 @@ app.get('/api/unfurl', requireAuth, async (req, res) => {
       .trim()
       .slice(0, 8000);
 
-    console.log(`🔗 Unfurled: ${title} (${finalUrl})`);
+    // Detect social platform for OG fallback tagging (when oEmbed was unavailable)
+    const socialPlatformTag =
+      /instagram\.com\/(p|reel|reels|tv)\//i.test(url) ? 'instagram' :
+      /tiktok\.com/i.test(url) ? 'tiktok' :
+      /(facebook\.com\/.+\/(posts|videos|reel|watch)|fb\.watch\/)/i.test(url) ? 'facebook' :
+      '';
 
-    res.json({ url: finalUrl, title, description, image, favicon, siteName, articleText });
+    console.log(`🔗 Unfurled: ${title} (${finalUrl})${socialPlatformTag ? ` [${socialPlatformTag} OG fallback]` : ''}`);
+
+    res.json({ url: finalUrl, title, description, image, favicon, siteName, articleText, ...(socialPlatformTag ? { oembedType: socialPlatformTag } : {}) });
   } catch (err) {
     console.error('❌ Unfurl error:', err.message);
     res.status(500).json({ error: `Failed to unfurl URL: ${err.message}` });
@@ -3450,6 +4778,8 @@ if (process.env.NODE_ENV !== 'test') {
     console.log(`→ YouTube API: ${process.env.YOUTUBE_API_KEY ? '✅ Enabled' : '❌ Disabled'}`);
     console.log(`→ Pinterest: ${process.env.PINTEREST_CLIENT_ID ? '✅ Enabled' : '❌ Disabled'}`);
     console.log(`→ Instagram: ${process.env.INSTAGRAM_CLIENT_ID ? '✅ Enabled' : '❌ Disabled'}`);
+    console.log(`→ Meta oEmbed (IG/FB): ${process.env.META_APP_TOKEN ? '✅ Enabled' : '⚪ Disabled (set META_APP_TOKEN)'}`);
+    console.log(`→ TikTok oEmbed: ✅ Enabled (public API)`);
     console.log(`→ AI Models:`);
     console.log(`   - OpenAI: ${process.env.OPENAI_API_KEY ? '✅' : '❌'}`);
     console.log(`   - Anthropic: ${process.env.ANTHROPIC_API_KEY ? '✅' : '❌'}`);

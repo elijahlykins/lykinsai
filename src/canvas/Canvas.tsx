@@ -7,6 +7,7 @@ import { useCanvasStore } from "@/store/canvasStore";
 import { isInViewport } from "@/canvas/utils/isInViewport";
 import { snapToGrid } from "@/canvas/utils/snap";
 import { extractYouTubeVideoId } from "@/canvas/utils/youtube";
+import { detectSocialPlatform, isSocialEmbedType } from "@/canvas/utils/socialEmbed";
 import { YouTubeBlock } from "@/canvas/blocks/YouTubeBlock";
 import { ImageBlock } from "@/canvas/blocks/ImageBlock";
 import { LinkBlock } from "@/canvas/blocks/LinkBlock";
@@ -19,8 +20,10 @@ import ConnectionWires from "./ConnectionWires";
 import type { WireSide } from "@/store/canvasStore";
 import { useThinkingStatus } from "@/hooks/useThinkingStatus";
 import { getAiPrefs } from "@/lib/ai-prefs";
+import { afterVaultNoteSaved } from "@/lib/vault/afterVaultSave";
 import { extractTextFromFile, isDocumentFile } from "@/lib/extract-text";
 import { supabase } from "@/lib/supabase";
+import { purgeVaultNoteEmbeddings } from "@/lib/synthesis/queueReindex";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { useUsageGate } from "@/lib/useUsageGate";
 import UpgradeModal from "@/components/UpgradeModal";
@@ -111,6 +114,43 @@ function processVaultDrop(pending: { title: string; content: string; attachments
       st.addYouTubeBlockAt({ x: wx, y: wy }, { url: ytUrl, videoId: extractedVid });
       window.dispatchEvent(new CustomEvent("omnia_save_to_media", { detail: { url: ytUrl, name: `YouTube — ${extractedVid}`, fileType: "youtube" } }));
     }
+    return;
+  }
+
+  // Social embeds (Instagram / TikTok / Facebook) → LinkBlock with oEmbed data
+  const socialAttach = attachments.find((a: any) =>
+    isSocialEmbedType(a.oembedType) || isSocialEmbedType(a.type) || detectSocialPlatform(String(a.url || ""))
+  );
+  if (socialAttach?.url) {
+    const st = useCanvasStore.getState();
+    const g = Math.max(1, Math.floor(st.gridSize || 24));
+    const canvasEl = document.querySelector<HTMLElement>("[data-omnia-canvas]");
+    const rect = canvasEl?.getBoundingClientRect();
+    const localX = rect ? clientX - rect.left : clientX;
+    const localY = rect ? clientY - rect.top : clientY;
+    const scrollTop = canvasEl?.scrollTop || 0;
+    const wx = Math.round(localX / g) * g;
+    const wy = Math.round((scrollTop + localY) / g) * g;
+    const platform = socialAttach.oembedType || socialAttach.type || detectSocialPlatform(socialAttach.url) || "instagram";
+    st.addBlock({
+      type: "create",
+      mode: "embed",
+      x: wx,
+      y: wy,
+      width: g * 14,
+      height: g * 20,
+      content: "",
+      data: {
+        url: socialAttach.url,
+        oembedHtml: socialAttach.oembedHtml || "",
+        oembedType: platform,
+        ogTitle: socialAttach.title || socialAttach.name || "",
+        ogImage: socialAttach.image || socialAttach.thumbnail_url || "",
+        authorName: socialAttach.authorName || "",
+        authorHandle: socialAttach.authorHandle || "",
+      },
+    } as any);
+    window.dispatchEvent(new CustomEvent("omnia_save_to_media", { detail: { url: socialAttach.url, name: socialAttach.title || platform, fileType: platform } }));
     return;
   }
 
@@ -592,11 +632,17 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       return;
     }
 
-    const { error } = await supabase.from("notes").insert(row);
+    const { data: inserted, error } = await supabase.from("notes").insert(row).select("id").single();
     if (error) console.warn("[Canvas] Failed to save to media:", error.message);
     else {
       mediaDedupCache.current.add(dedupKey);
       console.log("[Canvas] Saved to media:", row.title);
+      if (inserted?.id) {
+        afterVaultNoteSaved(row.user_id, inserted.id, {
+          title: row.title,
+          content: row.content,
+        });
+      }
     }
   }, []);
 
@@ -756,6 +802,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
           if (cancelled) return;
           const batch = dupeIds.slice(i, i + BATCH);
           await supabase.from("notes").delete().in("id", batch).eq("user_id", user.id);
+          purgeVaultNoteEmbeddings(batch);
         }
         console.log("[Canvas] Duplicate media cleanup complete");
       } catch (err) {
@@ -3550,6 +3597,16 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
           if (!blk) return;
           const patch: any = { data: { ...(blk.data || {}), [field]: storageUrl, storagePath, storageBucket: "user-files" } };
           st.updateBlock(blockId as any, patch);
+          window.dispatchEvent(new CustomEvent("omnia_canvas_file_stored", {
+            detail: {
+              fileName: file.name || `file.${ext}`,
+              fileUrl: storageUrl,
+              storagePath,
+              storageBucket: "user-files",
+              size: file.size,
+              mimeType: file.type || "application/octet-stream",
+            },
+          }));
         } catch { /* background — don't block UI */ }
       };
 
@@ -3727,6 +3784,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       const u = String(url || "").trim();
       if (!u) return;
       if (isDuplicateOnCanvas({ url: u, src: u })) return;
+      window.dispatchEvent(new CustomEvent("omnia_canvas_link_stored", { detail: { url: u } }));
       const base = getInsertWorld(clientX, clientY);
       const wx = snapToGrid(base.x, gridSize);
       const wy = snapToGrid(base.y, gridSize);
@@ -3738,6 +3796,39 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         const id = addYouTubeBlockAt({ x: wx, y: wy }, { url: u, videoId: vid || "" });
         if (containerId) updateBlock(id, { containerId } as any);
         window.dispatchEvent(new CustomEvent("omnia_chat_drop_attachments", { detail: { attachments: [{ id: crypto.randomUUID(), type: "youtube", name: `YouTube — ${vid || "video"}`, url: u, videoId: vid || "" }] } }));
+        return;
+      }
+      // Social media embeds — create block immediately, async unfurl fills oEmbed data
+      const socialPlatform = detectSocialPlatform(u);
+      if (socialPlatform) {
+        const isVertical = /\/(reel|reels)\//i.test(u) || socialPlatform === "tiktok";
+        const bw = isVertical ? gridSize * 14 : gridSize * 16;
+        const bh = isVertical ? gridSize * 22 : gridSize * 14;
+        const b = createCreateBlockSafe(wx, wy, "embed", { url: u, oembedType: socialPlatform, name: `${socialPlatform} embed` }, bw, bh);
+        if (containerId) (b as any).containerId = containerId;
+        addBlock(b);
+        (async () => {
+          try {
+            const { API_BASE_URL } = await import("@/lib/api-config");
+            const res = await fetch(`${API_BASE_URL}/api/unfurl?url=${encodeURIComponent(u)}`);
+            if (!res.ok) return;
+            const meta = await res.json();
+            updateBlock(b.id, {
+              data: {
+                ...(b as any).data,
+                ogTitle: meta.title || "",
+                ogDescription: meta.description || "",
+                ogImage: meta.image || "",
+                ogSiteName: meta.siteName || "",
+                ogFavicon: meta.favicon || "",
+                oembedType: meta.oembedType || socialPlatform,
+                oembedHtml: meta.oembedHtml || "",
+                authorName: meta.authorName || "",
+                authorHandle: meta.authorHandle || "",
+              },
+            } as any);
+          } catch { /* unfurl is best-effort */ }
+        })();
         return;
       }
       if (kind === "image") {

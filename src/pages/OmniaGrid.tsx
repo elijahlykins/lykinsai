@@ -17,6 +17,7 @@ import { getBlockDefinition } from "@/canvas/blockSystem/definitions";
 import type { UniversalBlockType } from "@/canvas/blockSystem/types";
 import { createDatabaseBlockData } from "@/canvas/blockSystem/notionModel";
 import { extractYouTubeVideoId } from "@/canvas/utils/youtube";
+import { detectSocialPlatform, isSocialEmbedType } from "@/canvas/utils/socialEmbed";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useThinkingStatus } from "@/hooks/useThinkingStatus";
@@ -24,8 +25,30 @@ import { getStructuredPasteFromEvent } from "@/lib/pasteFromClipboard";
 import { getAiPrefs } from "@/lib/ai-prefs";
 import { buildTieredCanvasContext } from "@/lib/ai/buildCanvasContext";
 import { getVaultSidebarWidth } from "@/hooks/useViewportTier";
+import { saveFileToVault, saveLinkToVault } from "@/lib/saveToVault";
+import { afterVaultNoteSaved } from "@/lib/vault/afterVaultSave";
+import { fetchNotesForVaultAi, buildVaultDetailForGridAi, type VaultAiNoteRow } from "@/lib/vault/vaultContentsForAi";
+import { CONTEXT_BUDGETS } from "@/lib/ai/promptBuilder";
+import NotesPanel from "@/components/notes/NotesPanel";
+import { saveExchange, getMemoryForPrompt, invalidateMemoryCache } from "@/lib/conversationMemory";
+import { scheduleSynthesisReindex } from "@/lib/synthesis/queueReindex";
+import { snapshotToSynthesisText } from "@/lib/synthesis/sourceText";
 
 const TASK_LINE_RE = /^\s*(?:[-*]\s+)?\[([ xX])\]\s+(.+)$/;
+
+function tiptapJsonToPlainText(node: any): string {
+  if (!node || typeof node !== "object") return "";
+  let text = "";
+  if (node.type === "text") return node.text || "";
+  if (Array.isArray(node.content)) {
+    for (const child of node.content) {
+      text += tiptapJsonToPlainText(child);
+    }
+  }
+  const block = node.type === "paragraph" || node.type === "heading" || node.type === "listItem" || node.type === "taskItem" || node.type === "blockquote";
+  if (block) text += "\n";
+  return text;
+}
 
 const flattenNodeText = (node: any): string => {
   if (node == null || typeof node === "boolean") return "";
@@ -427,6 +450,7 @@ export default function OmniaGridPage() {
   const DialogTitleAny = DialogTitle as any;
   const DialogDescriptionAny = DialogDescription as any;
   const [projectId, setProjectId] = useState<string | null>(null);
+  const [projectName, setProjectName] = useState<string | null>(null);
   const [projectFolders, setProjectFolders] = useState<Array<{ id: string; name: string; parentId: string | null }>>([]);
   const [projectFiles, setProjectFiles] = useState<
     Array<{ id: string; name: string; path: string; folderId: string | null; kind: string; url: string }>
@@ -559,6 +583,8 @@ export default function OmniaGridPage() {
   const lastSavedTitleRef = useRef<string>("");
   const titleFromSaveRef = useRef(false);
   const [chatMode, setChatMode] = useState(false);
+  const [notesOpen, setNotesOpen] = useState(false);
+  const notesContentRef = useRef<any>(null);
   const [chatMessages, setChatMessages] = useState<PromptMessage[]>([]);
   const chatMessagesRef = useRef<PromptMessage[]>([]);
   const titleRef = useRef<string>("");
@@ -722,6 +748,7 @@ export default function OmniaGridPage() {
       version: SNAPSHOT_VERSION,
       chatMessages: chatMessagesRef.current,
       aiThread: aiThreadRef.current,
+      notesContent: notesContentRef.current,
     };
   }, [SNAPSHOT_VERSION, title]);
 
@@ -935,6 +962,10 @@ export default function OmniaGridPage() {
 
         reSignChatAttachments();
         restoreSavedToVaultState(boardId);
+      }
+
+      if (snapshot.notesContent && typeof snapshot.notesContent === "object") {
+        notesContentRef.current = snapshot.notesContent;
       }
 
       const hasBlocks = blocks && Object.keys(blocks).length > 0;
@@ -2596,6 +2627,17 @@ export default function OmniaGridPage() {
         titleFromSaveRef.current = true;
         try { localStorage.removeItem(`omnia_draft_${boardId}`); } catch { /* ignore */ }
         window.dispatchEvent(new Event("lykinsai_boards_changed"));
+        try {
+          const embedText = snapshotToSynthesisText(snapshot as Parameters<typeof snapshotToSynthesisText>[0]);
+          scheduleSynthesisReindex({
+            sourceType: "grid_board",
+            sourceId: boardId,
+            text: embedText,
+            metadata: { title: savedTitle },
+          });
+        } catch {
+          /* synthesis embed is best-effort */
+        }
       }
     } catch (err) {
       console.error("[LYKN] saveSnapshot error:", err);
@@ -2761,10 +2803,17 @@ export default function OmniaGridPage() {
       const pid = data?.project_id || null;
       setProjectId(pid);
       if (!pid) {
+        setProjectName(null);
         setProjectFolders([]);
         setProjectFiles([]);
         return;
       }
+      const { data: proj } = await supabase
+        .from("omnia_projects")
+        .select("name")
+        .eq("id", pid)
+        .maybeSingle();
+      if (!cancelled) setProjectName(proj?.name || null);
       try {
         const raw = localStorage.getItem(`project:${pid}`);
         if (!raw) {
@@ -2785,6 +2834,120 @@ export default function OmniaGridPage() {
       cancelled = true;
     };
   }, [boardId, user?.id]);
+
+  // Auto-sync: files/links dropped on the canvas → save to project + vault
+  useEffect(() => {
+    if (!user?.id) return;
+
+    const classifyMime = (mime: string, name: string): string => {
+      const ext = (name || "").split(".").pop()?.toLowerCase() || "";
+      if (mime.startsWith("image/") || /^(png|jpe?g|webp|gif|svg|heic|heif|bmp)$/.test(ext)) return "image";
+      if (mime.startsWith("video/") || /^(mp4|mov|webm|avi|mkv)$/.test(ext)) return "video";
+      if (mime.startsWith("audio/") || /^(mp3|wav|ogg|flac|aac|m4a)$/.test(ext)) return "audio";
+      if (mime === "application/pdf" || ext === "pdf") return "pdf";
+      return "file";
+    };
+
+    const onFileStored = (e: Event) => {
+      const { fileName, fileUrl, storagePath, storageBucket, size, mimeType } =
+        (e as CustomEvent).detail || {};
+      if (!fileName || !fileUrl) return;
+
+      const kind = classifyMime(mimeType || "", fileName);
+
+      if (projectId) {
+        setProjectFiles((prev) => {
+          const isDupe = prev.some(
+            (f) => f.name === fileName || (storagePath && f.path === storagePath)
+          );
+          if (isDupe) return prev;
+
+          const entry = {
+            id: `file-${Date.now()}-${Math.random()}`,
+            name: fileName,
+            path: storagePath || fileName,
+            folderId: null,
+            kind,
+            url: fileUrl,
+          };
+          const next = [entry, ...prev];
+          try {
+            const raw = localStorage.getItem(`project:${projectId}`);
+            const parsed = raw ? JSON.parse(raw) : {};
+            localStorage.setItem(
+              `project:${projectId}`,
+              JSON.stringify({
+                folders: parsed?.folders || projectFolders,
+                files: next,
+                activeFolderId: parsed?.activeFolderId ?? null,
+              })
+            );
+          } catch { /* ignore */ }
+          return next;
+        });
+      }
+
+      saveFileToVault({
+        userId: user!.id,
+        filename: fileName,
+        fileType: kind,
+        fileUrl,
+        storagePath,
+        storageBucket,
+        fileSize: size || 0,
+        mimeType,
+        projectName: projectName || undefined,
+      }).catch(() => {});
+    };
+
+    const onLinkStored = (e: Event) => {
+      const { url } = (e as CustomEvent).detail || {};
+      if (!url) return;
+
+      if (projectId) {
+        setProjectFiles((prev) => {
+          const isDupe = prev.some((f) => f.url === url);
+          if (isDupe) return prev;
+
+          const entry = {
+            id: `file-${Date.now()}-${Math.random()}`,
+            name: url,
+            path: url,
+            folderId: null,
+            kind: "link",
+            url,
+          };
+          const next = [entry, ...prev];
+          try {
+            const raw = localStorage.getItem(`project:${projectId}`);
+            const parsed = raw ? JSON.parse(raw) : {};
+            localStorage.setItem(
+              `project:${projectId}`,
+              JSON.stringify({
+                folders: parsed?.folders || projectFolders,
+                files: next,
+                activeFolderId: parsed?.activeFolderId ?? null,
+              })
+            );
+          } catch { /* ignore */ }
+          return next;
+        });
+      }
+
+      saveLinkToVault({
+        userId: user!.id,
+        url,
+        projectName: projectName || undefined,
+      }).catch(() => {});
+    };
+
+    window.addEventListener("omnia_canvas_file_stored", onFileStored);
+    window.addEventListener("omnia_canvas_link_stored", onLinkStored);
+    return () => {
+      window.removeEventListener("omnia_canvas_file_stored", onFileStored);
+      window.removeEventListener("omnia_canvas_link_stored", onLinkStored);
+    };
+  }, [user?.id, projectId, projectName, projectFolders]);
 
   useEffect(() => {
     if (!boardId || !user?.id) return;
@@ -2850,13 +3013,16 @@ export default function OmniaGridPage() {
     } catch { /* quota */ }
   }, [boardId, savedMediaUrls, savedYouTubeIds]);
 
+  // Knowledge base is project-scoped; workspace summary (vault + other boards) must load even without a project.
   useEffect(() => {
     if (!projectId) return;
     refreshKnowledgeBase(projectId);
-    if (user?.id) {
-      refreshWorkspaceSummary(user.id, boardId || undefined);
-    }
-  }, [projectId, boardId, user?.id, refreshKnowledgeBase, refreshWorkspaceSummary]);
+  }, [projectId, refreshKnowledgeBase]);
+
+  useEffect(() => {
+    if (!user?.id) return;
+    refreshWorkspaceSummary(user.id, boardId || undefined);
+  }, [user?.id, boardId, refreshWorkspaceSummary]);
 
   useEffect(() => {
     if (!aiSuggestions.length) return;
@@ -3137,17 +3303,28 @@ export default function OmniaGridPage() {
       }];
       const noteContent = `AI-generated image${promptText ? ` — "${promptText.slice(0, 100)}"` : ""}\n\n[View Image](${fileUrl})\n\n[ATTACHMENTS_JSON:${JSON.stringify(attachment)}]`;
 
-      const { error } = await supabase.from("notes").insert({
-        user_id: user.id,
-        title: filename,
-        content: noteContent,
-      });
+      const { data: ins, error } = await supabase
+        .from("notes")
+        .insert({
+          user_id: user.id,
+          title: filename,
+          content: noteContent,
+        })
+        .select("id")
+        .single();
       if (error) console.warn("[LYKN] Failed to save AI image note:", error.message);
-      else console.log(`[LYKN] AI image saved to media: ${filename} (${uploaded ? "uploaded to storage" : "direct URL"})`);
+      else {
+        console.log(`[LYKN] AI image saved to media: ${filename} (${uploaded ? "uploaded to storage" : "direct URL"})`);
+        if (ins?.id) {
+          afterVaultNoteSaved(user.id, ins.id, { title: filename, content: noteContent }, {
+            excludeBoardId: routeBoardId || boardId || undefined,
+          });
+        }
+      }
     } catch (err) {
       console.warn("[LYKN] Error saving AI image note to media:", err);
     }
-  }, [user?.id]);
+  }, [user?.id, routeBoardId, boardId]);
 
   const saveYouTubeToMedia = useCallback(async (videoId: string, url: string) => {
     if (!user?.id || !videoId) return;
@@ -3164,16 +3341,25 @@ export default function OmniaGridPage() {
         thumbnail,
       }];
       const noteContent = `${title}\n\n[Watch on YouTube](${watchUrl})\n\n[ATTACHMENTS_JSON:${JSON.stringify(attachment)}]`;
-      const { error } = await supabase.from("notes").insert({
-        user_id: user.id,
-        title,
-        content: noteContent,
-      });
+      const { data: ins, error } = await supabase
+        .from("notes")
+        .insert({
+          user_id: user.id,
+          title,
+          content: noteContent,
+        })
+        .select("id")
+        .single();
       if (error) console.warn("[LYKN] Failed to save YouTube note:", error.message);
+      else if (ins?.id) {
+        afterVaultNoteSaved(user.id, ins.id, { title, content: noteContent }, {
+          excludeBoardId: routeBoardId || boardId || undefined,
+        });
+      }
     } catch (err) {
       console.warn("[LYKN] Error saving YouTube to media:", err);
     }
-  }, [user?.id]);
+  }, [user?.id, routeBoardId, boardId]);
 
   const saveLinkToMedia = useCallback(async (linkUrl: string) => {
     if (!user?.id || !linkUrl) return;
@@ -3198,17 +3384,29 @@ export default function OmniaGridPage() {
         authorHandle: meta.authorHandle || "",
       }];
       const noteContent = `${meta.title || linkUrl}\n\n[ATTACHMENTS_JSON:${JSON.stringify(attachment)}]`;
-      const { error } = await supabase.from("notes").insert({
-        user_id: user.id,
-        title: meta.title || linkUrl,
-        content: noteContent,
-      });
+      const { data: ins, error } = await supabase
+        .from("notes")
+        .insert({
+          user_id: user.id,
+          title: meta.title || linkUrl,
+          content: noteContent,
+        })
+        .select("id")
+        .single();
       if (error) console.warn("[LYKN] Failed to save link note:", error.message);
-      else console.log(`[LYKN] Link saved to media: ${meta.title || linkUrl}`);
+      else {
+        console.log(`[LYKN] Link saved to media: ${meta.title || linkUrl}`);
+        if (ins?.id) {
+          afterVaultNoteSaved(user.id, ins.id, {
+            title: meta.title || linkUrl,
+            content: noteContent,
+          }, { excludeBoardId: routeBoardId || boardId || undefined });
+        }
+      }
     } catch (err) {
       console.warn("[LYKN] Error saving link to media:", err);
     }
-  }, [user?.id]);
+  }, [user?.id, routeBoardId, boardId]);
 
   const saveAttachmentToMedia = useCallback(async (url: string, name: string, mediaType: "image" | "video" | "audio" | "file") => {
     if (!user?.id || !url) return;
@@ -3254,13 +3452,22 @@ export default function OmniaGridPage() {
         mimeType,
       }];
       const noteContent = `${filename}\n\n[View](${fileUrl})\n\n[ATTACHMENTS_JSON:${JSON.stringify(attachment)}]`;
-      await supabase.from("notes").insert({
-        user_id: user.id,
-        title: filename,
-        content: noteContent,
-      });
+      const { data: ins } = await supabase
+        .from("notes")
+        .insert({
+          user_id: user.id,
+          title: filename,
+          content: noteContent,
+        })
+        .select("id")
+        .single();
+      if (ins?.id) {
+        afterVaultNoteSaved(user.id, ins.id, { title: filename, content: noteContent }, {
+          excludeBoardId: routeBoardId || boardId || undefined,
+        });
+      }
     } catch { /* ignore */ }
-  }, [user?.id]);
+  }, [user?.id, routeBoardId, boardId]);
 
   const handleChatSend = async () => {
     const text = chatInput.trim();
@@ -3424,7 +3631,11 @@ export default function OmniaGridPage() {
       }
       conversationArray.push({ role: "user", content: cappedText });
 
-      const canvasContext = buildCanvasContext();
+      let canvasContext = buildCanvasContext();
+      const notesText = tiptapJsonToPlainText(notesContentRef.current).trim();
+      if (notesText) {
+        canvasContext += `\n\n[GRID NOTES]\n${notesText}`;
+      }
       const kbText = getKnowledgeBaseContext();
 
       const wantsMediaPull = /\b(pull\s*in|bring\s*in|fetch|grab|get|show\s*me|add)\b.*\b(from\s*(my\s*)?(media|saved|library|files)|that\s*(image|photo|video|pdf|file|doc|link|note)\s*(i|I)\s*saved|saved\s*(content|files|media|stuff)|from\s*media)\b/i.test(text)
@@ -3592,6 +3803,22 @@ export default function OmniaGridPage() {
         content: m.content.length > 1500 ? m.content.slice(0, 1500) + "…" : m.content,
       }));
       const wsContext = getCachedWorkspaceSummary();
+      const [memoryText, vaultNotesForAi] = await Promise.all([
+        user?.id ? getMemoryForPrompt(user.id, routeBoardId || boardId || null) : Promise.resolve(""),
+        user?.id ? fetchNotesForVaultAi(user.id) : Promise.resolve([] as VaultAiNoteRow[]),
+      ]);
+      let workspaceContextStr = (wsContext?.full || "").slice(0, CONTEXT_BUDGETS.workspaceContext);
+      try {
+        if (vaultNotesForAi.length > 0) {
+          const { block: vaultBlock } = buildVaultDetailForGridAi(vaultNotesForAi);
+          const boardsOnly = wsContext?.boards || "";
+          if (vaultBlock) {
+            workspaceContextStr = [vaultBlock, boardsOnly].filter(Boolean).join("\n\n").slice(0, CONTEXT_BUDGETS.workspaceContext);
+          }
+        }
+      } catch (e) {
+        console.warn("[OmniaGrid] Vault detail for AI failed; using compact workspace summary only.", e);
+      }
       const requestBody = {
         model: selectedModel,
         prompt: prompt.slice(0, 16000),
@@ -3600,7 +3827,8 @@ export default function OmniaGridPage() {
         context: (canvasContext || "").slice(0, 14000),
         knowledgeBase: (kbText || "").slice(0, 2000),
         conversation: truncatedConversation,
-        workspaceContext: (wsContext?.full || "").slice(0, 2000),
+        conversationMemory: memoryText || undefined,
+        workspaceContext: workspaceContextStr,
         projectId,
         boardId: routeBoardId || boardId || undefined,
         hasFocusedBricks,
@@ -3639,6 +3867,7 @@ export default function OmniaGridPage() {
             await typeResponseIntoChat(promptId, assistantText);
             aiThreadRef.current.push({ role: "assistant", content: assistantText });
             if (aiThreadRef.current.length > 40) aiThreadRef.current = aiThreadRef.current.slice(-40);
+            if (user?.id) { invalidateMemoryCache(); saveExchange(user.id, "grid", routeBoardId || boardId || null, titleRef.current || null, cappedText, assistantText); }
             if (responseBlockId && typeof updateBlock === "function") {
               const normalized = normalizeAiTextForBlock(assistantText);
               const curBlk2: any = useCanvasStore.getState().blocks?.[responseBlockId];
@@ -3835,6 +4064,7 @@ export default function OmniaGridPage() {
         setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: finalDisplayText, sources, aiYouTubeUrls: ytResult.urls.length ? ytResult.urls : undefined, aiWebLinks: webLinks1.length ? webLinks1 : undefined } : m)));
         aiThreadRef.current.push({ role: "assistant", content: textWithoutConnections });
         if (aiThreadRef.current.length > 40) aiThreadRef.current = aiThreadRef.current.slice(-40);
+        if (user?.id) { invalidateMemoryCache(); saveExchange(user.id, "grid", routeBoardId || boardId || null, titleRef.current || null, cappedText, textWithoutConnections); }
         if (responseBlockId && typeof updateBlock === "function") {
           const normalized = normalizeAiTextForBlock(finalDisplayText);
           const curBlk3: any = useCanvasStore.getState().blocks?.[responseBlockId];
@@ -3949,6 +4179,7 @@ export default function OmniaGridPage() {
         setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, sources: sources2, aiYouTubeUrls: ytResult2.urls.length ? ytResult2.urls : undefined, aiWebLinks: webLinks2.length ? webLinks2 : undefined } : m)));
         aiThreadRef.current.push({ role: "assistant", content: textWithoutConnections2 });
         if (aiThreadRef.current.length > 40) aiThreadRef.current = aiThreadRef.current.slice(-40);
+        if (user?.id) { invalidateMemoryCache(); saveExchange(user.id, "grid", routeBoardId || boardId || null, titleRef.current || null, cappedText, textWithoutConnections2); }
         if (responseBlockId) {
           await typeIntoAiResponseBlock(String(responseBlockId), finalDisplayText2);
           if (sources2.length > 0) attachSourcesToBlock(String(responseBlockId), sources2);
@@ -4164,7 +4395,7 @@ export default function OmniaGridPage() {
   }, []);
 
   const canvasFileBlocks = useMemo(() => {
-    if (!chatMode) return [];
+    if (!chatMode && !notesOpen) return [];
     const st = useCanvasStore.getState();
     const ids = Array.isArray(st.blockOrder) ? st.blockOrder : [];
     const items: { id: string; type: string; name: string; url: string; thumbUrl: string; videoId?: string; content?: string; isAi?: boolean }[] = [];
@@ -4232,7 +4463,7 @@ export default function OmniaGridPage() {
     }
     const attachedBlockIds = new Set(focusedChatAttachments.map((a) => a.canvasBlockId).filter(Boolean));
     return attachedBlockIds.size > 0 ? items.filter((item) => !attachedBlockIds.has(item.id)) : items;
-  }, [chatMode, blocks, blockOrder, focusedChatAttachments]);
+  }, [chatMode, notesOpen, blocks, blockOrder, focusedChatAttachments]);
 
   const removeFocusedAttachment = useCallback((id: string) => {
     setFocusedChatAttachments((prev) => prev.filter((a) => a.id !== id));
@@ -4880,6 +5111,15 @@ export default function OmniaGridPage() {
               return;
             }
 
+            // Social embeds (Instagram / TikTok / Facebook) → dispatch as link (addUrlAsBlock handles sizing + unfurl)
+            const socialAttach = attachments.find((a: any) =>
+              isSocialEmbedType(a.oembedType) || isSocialEmbedType(a.type) || detectSocialPlatform(String(a.url || ""))
+            );
+            if (socialAttach?.url) {
+              window.dispatchEvent(new CustomEvent("omnia_attach_link", { detail: { url: socialAttach.url, clientX: cx, clientY: cy } }));
+              return;
+            }
+
             // Images → file pipeline (same as dragging from desktop)
             if (imageAttach?.url) {
               if (imageAttach.url.startsWith("data:image/")) {
@@ -5057,7 +5297,7 @@ export default function OmniaGridPage() {
       {/* Side rail chat (canvas mode — toggled open via button or canvas interaction) */}
       {!chatMode && chatRailVisible && (
         <div
-          className={`fixed bottom-0 flex flex-col bg-white/40 backdrop-blur-sm border-l border-black/10 transition-[right] duration-300 ${isMobileGrid ? "z-[80] inset-x-0 border-l-0" : "z-[64]"}`}
+          className={`fixed bottom-0 flex flex-col bg-white/40 backdrop-blur-sm border-l border-black/10 transition-[right] duration-300 ${isMobileGrid ? "z-[80] inset-x-0 border-l-0" : notesOpen ? "z-[69]" : "z-[64]"}`}
           style={{
             top: isMobileGrid ? 0 : "var(--header-height, 4.9rem)",
             right: isMobileGrid ? undefined : (showVaultSidebar ? `${vaultSidebarWidthPx}px` : "0px"),
@@ -6303,6 +6543,83 @@ export default function OmniaGridPage() {
       )}
 
       <UpgradeModal modal={upgradeModal} onDismiss={dismissUpgradeModal} />
+
+      {/* Notes panel — bottom drawer */}
+      {!chatMode && (
+        <NotesPanel
+          open={notesOpen}
+          onOpenChange={setNotesOpen}
+          content={notesContentRef.current}
+          onContentChange={(json: any) => { notesContentRef.current = json; }}
+          hasLeftRail={canvasFileBlocks.length > 0 && !isMobileGrid}
+        />
+      )}
+
+      {/* Left brick rail when notes panel is open */}
+      {notesOpen && !chatMode && canvasFileBlocks.length > 0 && !isMobileGrid && (
+        <div
+          className="fixed z-[69] w-[13.75rem] overflow-y-auto scrollbar-hide p-3 space-y-2 bg-white/20 backdrop-blur-sm border-r border-black/5 transition-all duration-300"
+          style={{
+            top: "50%",
+            bottom: 0,
+            left: "var(--sidebar-offset, 0px)",
+          }}
+        >
+          <p className="text-[0.625rem] font-semibold uppercase tracking-wider text-black/40 px-1 mb-1">Grid Files</p>
+          <div className="flex flex-col gap-2">
+            {canvasFileBlocks.map((item) => (
+              <div
+                key={item.id}
+                className="relative rounded-xl overflow-hidden bg-black/5 border border-white/30 transition-all group"
+              >
+                {item.type === "youtube" && item.thumbUrl ? (
+                  <div className="aspect-video relative">
+                    <img src={item.thumbUrl} alt={item.name} className="w-full h-full object-cover" draggable={false} />
+                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                      <div className="w-7 h-5 bg-red-600 rounded flex items-center justify-center"><Play className="w-2.5 h-2.5 text-white ml-px" fill="white" /></div>
+                    </div>
+                  </div>
+                ) : item.type === "image" && item.thumbUrl ? (
+                  <div className="aspect-square">
+                    <img src={item.thumbUrl} alt={item.name} className="w-full h-full object-cover" draggable={false} />
+                  </div>
+                ) : item.type === "video" ? (
+                  <div className="aspect-video bg-black flex items-center justify-center">
+                    <Play className="w-5 h-5 text-white/60" />
+                  </div>
+                ) : item.type === "audio" ? (
+                  <div className="aspect-square flex items-center justify-center bg-white/30">
+                    <Music className="w-5 h-5 text-black/40" />
+                  </div>
+                ) : item.type === "pdf" ? (
+                  <div className="aspect-square flex items-center justify-center bg-white/30">
+                    <FileText className="w-5 h-5 text-black/40" />
+                  </div>
+                ) : item.type === "note" ? (
+                  <>
+                    <div className="glass-text-card relative rounded-lg p-2.5 min-h-[3rem]">
+                      {item.isAi && <div className="pointer-events-none absolute inset-0 rounded-lg" style={{ background: "rgba(0,0,0,0.035)" }} />}
+                      <p className="relative text-[0.6875rem] leading-relaxed text-black/80 whitespace-pre-wrap break-words" style={{ display: "-webkit-box", WebkitLineClamp: 8, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{item.content || ""}</p>
+                    </div>
+                    <div className="px-1.5 py-1">
+                      <span className="text-[9px] text-black/50 leading-tight line-clamp-1 break-all">{item.isAi ? "AI Response" : item.name}</span>
+                    </div>
+                  </>
+                ) : (
+                  <div className="aspect-square flex items-center justify-center bg-white/30">
+                    <Link2 className="w-5 h-5 text-black/40" />
+                  </div>
+                )}
+                {item.type !== "note" && (
+                  <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent px-1.5 pb-1 pt-3">
+                    <span className="text-[9px] text-white leading-tight line-clamp-2 break-all">{item.name}</span>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

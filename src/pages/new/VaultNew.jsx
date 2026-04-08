@@ -4,6 +4,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import {
   Check,
   ChevronDown,
+  ChevronRight,
   ChevronUp,
   Clock,
   ExternalLink,
@@ -29,6 +30,8 @@ import {
   Upload,
   Video,
   X,
+  GripVertical,
+  Copy,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/SupabaseAuth";
@@ -39,12 +42,17 @@ import DragDropFileUpload from "@/components/files/DragDropFileUpload";
 import { useUsageGate } from "@/lib/useUsageGate";
 import UpgradeModal from "@/components/UpgradeModal";
 import { extractYouTubeVideoId, getYouTubeEmbedUrl } from "@/canvas/utils/youtube";
+import { detectSocialPlatform, isSocialEmbedType, isVerticalSocialContent } from "@/canvas/utils/socialEmbed";
+import { SocialEmbedInline } from "@/canvas/blocks/SocialEmbedBlock";
 import LoadingScreen from "@/components/LoadingScreen";
 import { getAiPrefs } from "@/lib/ai-prefs";
+import { saveExchange, getMemoryForPrompt, invalidateMemoryCache } from "@/lib/conversationMemory";
+import { purgeVaultNoteEmbeddings } from "@/lib/synthesis/queueReindex";
 import { motion } from "framer-motion";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useThinkingStatus } from "@/hooks/useThinkingStatus";
+import { splitResponseIntoChunks, normalizeChecklistSyntax, flattenNodeText, handleChunkDragStart } from "@/lib/chatChunks";
 
 function stripAttachmentJsonMarker(content) {
   if (!content) return "";
@@ -119,6 +127,10 @@ function parseAttachmentsFromNote(note) {
 function resolveAttachmentType(attachment = {}) {
   const url = String(attachment.url || "");
   const name = String(attachment.name || "");
+
+  if (isSocialEmbedType(attachment.oembedType)) return attachment.oembedType;
+  const socialPlatform = detectSocialPlatform(url);
+  if (socialPlatform) return socialPlatform;
 
   if (attachment.type === "bookmark" || attachment.type === "link" || attachment.siteName || attachment.articleText) return "bookmark";
   if (url.includes("youtube.com") || url.includes("youtu.be")) return "youtube";
@@ -418,6 +430,13 @@ function getAttachmentHeightClass(card) {
     return "h-44 md:h-52 xl:h-60"; // 1/4 (wide)
   }
 
+  // Social media embeds — vertical content (Reels, TikTok) is taller
+  if (type === "instagram" || type === "tiktok" || type === "facebook") {
+    const socialUrl = String(card?.attachment?.url || "");
+    if (isVerticalSocialContent(socialUrl)) return "h-[28rem] md:h-[36rem] xl:h-[44rem]";
+    return "h-80 md:h-[26rem] xl:h-[32rem]";
+  }
+
   // Fallback by content type when dimensions are not present.
   if (type === "image") return "h-auto";
   if (type === "video" || type === "youtube") return "h-auto";
@@ -472,18 +491,20 @@ export default function VaultNew() {
   const [hasMoreNotes, setHasMoreNotes] = useState(true);
   const [isLoadingMoreNotes, setIsLoadingMoreNotes] = useState(false);
   const [resolvedAttachmentUrls, setResolvedAttachmentUrls] = useState({});
+  const [failedImageIds, setFailedImageIds] = useState(new Set());
   // projects fetched via React Query above
   const [openCardMenuId, setOpenCardMenuId] = useState(null);
   const [openCardMenuPlacement, setOpenCardMenuPlacement] = useState("down");
   const [openCardMenuRect, setOpenCardMenuRect] = useState(null);
   const [openAttachmentNotesCardId, setOpenAttachmentNotesCardId] = useState(null);
-  const [openAttachmentNoteComposerCardId, setOpenAttachmentNoteComposerCardId] = useState(null);
-  const [attachmentNoteComposerPosition, setAttachmentNoteComposerPosition] = useState(null);
   const [attachmentNoteDraft, setAttachmentNoteDraft] = useState("");
-  const [attachmentNoteDraftSavedId, setAttachmentNoteDraftSavedId] = useState(null);
   const [isCardActionBusy, setIsCardActionBusy] = useState(false);
   const [quickNoteContent, setQuickNoteContent] = useState("");
   const [isQuickNoteSaving, setIsQuickNoteSaving] = useState(false);
+  const [copiedMsgId, setCopiedMsgId] = useState(null);
+  const [assistantTaskChecks, setAssistantTaskChecks] = useState({});
+  const [chatChunkDragOver, setChatChunkDragOver] = useState(false);
+  const chatChunkDragDepthRef = useRef(0);
   const [showSaveLink, setShowSaveLink] = useState(false);
   const [saveLinkUrl, setSaveLinkUrl] = useState("");
   const [saveLinkPreview, setSaveLinkPreview] = useState(null);
@@ -506,11 +527,13 @@ export default function VaultNew() {
   const lastHoverTargetRef = useRef(null);
   const loadMoreRef = useRef(null);
   const cardMenuRef = useRef(null);
-  const notesPopoverRef = useRef(null);
   const noteComposerRef = useRef(null);
   const assistantIndexRef = useRef(null);
   const chatScrollRef = useRef(null);
+  const chatUserScrolledUpRef = useRef(false);
   const chatInputRef = useRef(null);
+  const [expandedAiMsgIds, setExpandedAiMsgIds] = useState(new Set());
+  const prevMsgCountRef = useRef(0);
   const signedUrlCacheRef = useRef(new Map());
 
   const CHAT_RAIL_DEFAULT_WIDTH = 340;
@@ -553,14 +576,162 @@ export default function VaultNew() {
     },
     [chatRailWidthPx, clampChatRailWidth]
   );
-  const lastAutoSavedAttachmentNoteTextRef = useRef("");
   const MEMORY_PAGE_SIZE = 100;
 
-  useEffect(() => {
-    if (chatScrollRef.current) {
-      chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+  const getCollapsedPreview = useCallback((text) => {
+    const clean = text.replace(/[#*_`~>\[\]()!|]/g, "").replace(/\n+/g, " ").trim();
+    return clean.length > 120 ? clean.slice(0, 117) + "..." : clean;
+  }, []);
+
+  const toggleAiExpanded = useCallback((msgId) => {
+    setExpandedAiMsgIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(msgId)) next.delete(msgId);
+      else next.add(msgId);
+      return next;
+    });
+  }, []);
+
+  const updateTaskCheck = useCallback((msgId, taskKey, checked) => {
+    setAssistantTaskChecks((prev) => ({
+      ...prev,
+      [msgId]: { ...(prev[msgId] || {}), [taskKey]: checked },
+    }));
+  }, []);
+
+  const buildChatMarkdownComponents = useCallback((msgId) => ({
+    h1: ({ children }) => <h1 className="text-xl font-semibold mt-3 mb-2">{children}</h1>,
+    h2: ({ children }) => <h2 className="text-lg font-semibold mt-3 mb-2">{children}</h2>,
+    h3: ({ children }) => <h3 className="text-base font-semibold mt-2.5 mb-1.5">{children}</h3>,
+    p: ({ children }) => <p className="my-1.5 whitespace-pre-wrap">{children}</p>,
+    ul: ({ children }) => <ul className="my-2 list-disc pl-5 space-y-1">{children}</ul>,
+    ol: ({ children }) => <ol className="my-2 list-decimal pl-5 space-y-1">{children}</ol>,
+    li: ({ children }) => {
+      const raw = flattenNodeText(children).trim();
+      const match = raw.match(/^\[( |x|X)\]\s+(.+)$/);
+      if (!match) return <li className="leading-relaxed">{children}</li>;
+      const defaultChecked = String(match[1]).toLowerCase() === "x";
+      const taskText = match[2];
+      const taskKey = raw;
+      const checked = assistantTaskChecks[msgId]?.[taskKey] ?? defaultChecked;
+      return (
+        <li className={`list-none ml-[-1.25rem] flex items-start gap-2 leading-relaxed ${checked ? "opacity-60" : ""}`}>
+          <input
+            type="checkbox"
+            className="mt-[0.28rem] shrink-0 accent-blue-500"
+            checked={checked}
+            onChange={(e) => updateTaskCheck(msgId, taskKey, e.target.checked)}
+          />
+          <span className={checked ? "line-through" : ""}>{taskText}</span>
+        </li>
+      );
+    },
+    strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
+    blockquote: ({ children }) => <blockquote className="border-l-2 border-black/20 pl-3 my-2 text-black/70 italic">{children}</blockquote>,
+    code: ({ children, className }) => {
+      const isBlock = className?.startsWith("language-");
+      if (isBlock) return <pre className="rounded-lg bg-black/5 p-3 my-2 overflow-x-auto text-[0.85em]"><code>{children}</code></pre>;
+      return <code className="rounded bg-black/10 px-1.5 py-0.5 text-[0.85em]">{children}</code>;
+    },
+    pre: ({ children }) => <>{children}</>,
+    table: ({ children }) => <div className="my-3 overflow-x-auto"><table className="w-full border-collapse text-sm">{children}</table></div>,
+    thead: ({ children }) => <thead className="border-b border-black/20">{children}</thead>,
+    tbody: ({ children }) => <tbody>{children}</tbody>,
+    tr: ({ children }) => <tr className="border-b border-black/10">{children}</tr>,
+    th: ({ children }) => <th className="text-left px-3 py-2 font-semibold">{children}</th>,
+    td: ({ children }) => <td className="px-3 py-2">{children}</td>,
+  }), [assistantTaskChecks, updateTaskCheck]);
+
+  const saveChunkAsQuickNote = useCallback((text) => {
+    setQuickNoteContent(text);
+    setShowQuickNote(true);
+  }, []);
+
+  const handleMainDragEnter = useCallback((e) => {
+    if (e.dataTransfer.types.includes("application/x-omnia-chat-response")) {
+      e.preventDefault();
+      chatChunkDragDepthRef.current += 1;
+      setChatChunkDragOver(true);
     }
-  }, [chatMessages]);
+  }, []);
+
+  const handleMainDragOver = useCallback((e) => {
+    if (e.dataTransfer.types.includes("application/x-omnia-chat-response")) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+    }
+  }, []);
+
+  const handleMainDragLeave = useCallback((e) => {
+    if (e.dataTransfer.types.includes("application/x-omnia-chat-response")) {
+      e.preventDefault();
+      chatChunkDragDepthRef.current = Math.max(0, chatChunkDragDepthRef.current - 1);
+      if (chatChunkDragDepthRef.current === 0) setChatChunkDragOver(false);
+    }
+  }, []);
+
+  const handleMainDrop = useCallback(async (e) => {
+    const chatText = e.dataTransfer.getData("application/x-omnia-chat-response");
+    if (!chatText || !user?.id) {
+      setChatChunkDragOver(false);
+      chatChunkDragDepthRef.current = 0;
+      return;
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    setChatChunkDragOver(false);
+    chatChunkDragDepthRef.current = 0;
+    if (!(await checkVaultLimit())) return;
+    try {
+      const { data: insertedNote, error } = await supabase
+        .from("notes")
+        .insert({
+          user_id: user.id,
+          title: "Quick Note",
+          content: chatText,
+        })
+        .select("id, title, content, created_at, updated_at")
+        .single();
+      if (error || !insertedNote?.id) throw error || new Error("Save failed");
+      setNotes((prev) => [insertedNote, ...prev]);
+      incrementVaultCount();
+    } catch (err) {
+      setNotesError("Couldn't save the dropped note. Please try again.");
+    }
+  }, [user?.id, checkVaultLimit, incrementVaultCount]);
+
+  const chatIsNearBottom = useCallback((threshold = 80) => {
+    const el = chatScrollRef.current;
+    if (!el) return true;
+    return el.scrollHeight - el.scrollTop - el.clientHeight <= threshold;
+  }, []);
+
+  useEffect(() => {
+    const el = chatScrollRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      chatUserScrolledUpRef.current = !chatIsNearBottom();
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [showChat, chatIsNearBottom]);
+
+  useEffect(() => {
+    if (!showChat) return;
+    if (chatUserScrolledUpRef.current) return;
+    const el = chatScrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [chatMessages, isChatLoading, showChat]);
+
+  useEffect(() => {
+    const count = chatMessages.length;
+    if (count > prevMsgCountRef.current && count > 0) {
+      const latest = chatMessages[count - 1];
+      if (latest?.id) setExpandedAiMsgIds(new Set([latest.id]));
+    }
+    prevMsgCountRef.current = count;
+  }, [chatMessages.length]);
 
   const mergeUploadedNotes = useCallback((incoming = []) => {
     if (!Array.isArray(incoming) || incoming.length === 0) return;
@@ -741,15 +912,9 @@ export default function VaultNew() {
       if (cardMenuRef.current && !cardMenuRef.current.contains(event.target)) {
         setOpenCardMenuId(null);
       }
-      if (notesPopoverRef.current && !notesPopoverRef.current.contains(event.target)) {
-        setOpenAttachmentNotesCardId(null);
-      }
       if (noteComposerRef.current && !noteComposerRef.current.contains(event.target)) {
-        setOpenAttachmentNoteComposerCardId(null);
-        setAttachmentNoteComposerPosition(null);
+        setOpenAttachmentNotesCardId(null);
         setAttachmentNoteDraft("");
-        setAttachmentNoteDraftSavedId(null);
-        lastAutoSavedAttachmentNoteTextRef.current = "";
       }
       if (tagPickerRef.current && !tagPickerRef.current.contains(event.target)) {
         setTagPickerCardId(null);
@@ -994,7 +1159,11 @@ export default function VaultNew() {
   const resolveSignedUrlForCard = useCallback(async (card) => {
     if (!card || card.kind !== "attachment") return;
     const target = parseStorageTarget(card.attachment || {});
-    if (!target?.path || !target?.bucket) return;
+    if (!target?.path || !target?.bucket) {
+      console.warn("[Vault] Cannot resolve storage path for card:", card.id, card.attachment?.name, "url:", card.attachment?.url?.slice(0, 80));
+      setFailedImageIds((prev) => new Set(prev).add(card.id));
+      return;
+    }
     const cacheKey = `${target.bucket}:${target.path}`;
     if (signedUrlCacheRef.current.has(cacheKey)) {
       setResolvedAttachmentUrls((prev) => {
@@ -1004,7 +1173,7 @@ export default function VaultNew() {
       return;
     }
     try {
-      const { data } = await supabase.storage
+      const { data, error } = await supabase.storage
         .from(target.bucket)
         .createSignedUrl(target.path, 60 * 60 * 24 * 7);
       if (data?.signedUrl) {
@@ -1012,8 +1181,9 @@ export default function VaultNew() {
         setResolvedAttachmentUrls((prev) => ({ ...prev, [card.id]: data.signedUrl }));
         return;
       }
-    } catch {
-      // signed URL failed — fall through to public URL
+      if (error) console.warn("[Vault] Signed URL error for", target.path, error.message);
+    } catch (err) {
+      console.warn("[Vault] Signed URL exception for", target.path, err);
     }
     try {
       const { data: pubData } = supabase.storage.from(target.bucket).getPublicUrl(target.path);
@@ -1022,7 +1192,8 @@ export default function VaultNew() {
         setResolvedAttachmentUrls((prev) => ({ ...prev, [card.id]: pubData.publicUrl }));
       }
     } catch {
-      // mark failed so the observer can retry on next cycle
+      console.warn("[Vault] Public URL fallback also failed for", target.path);
+      setFailedImageIds((prev) => new Set(prev).add(card.id));
       visibleCardIdsRef.current.delete(card.id);
     }
   }, []);
@@ -1047,7 +1218,7 @@ export default function VaultNew() {
     if (urlResolveDrainingRef.current) return;
     urlResolveDrainingRef.current = true;
     while (urlResolveQueueRef.current.length > 0) {
-      const batch = urlResolveQueueRef.current.splice(0, 4);
+      const batch = urlResolveQueueRef.current.splice(0, 8);
       await Promise.allSettled(batch.map((card) => resolveSignedUrlForCard(card)));
     }
     urlResolveDrainingRef.current = false;
@@ -1086,6 +1257,23 @@ export default function VaultNew() {
       urlResolveObserverRef.current = null;
     };
   }, [vaultCards, user?.id, resolveSignedUrlForCard, drainUrlResolveQueue]);
+
+  const eagerResolveRunRef = useRef(false);
+  useEffect(() => {
+    if (!user?.id || vaultCards.length === 0 || eagerResolveRunRef.current) return;
+    eagerResolveRunRef.current = true;
+    const attachmentCards = vaultCards.filter(
+      (c) => c.kind === "attachment" && !resolvedAttachmentUrls[c.id]
+    ).slice(0, 16);
+    if (attachmentCards.length === 0) return;
+    for (const card of attachmentCards) {
+      if (!visibleCardIdsRef.current.has(card.id)) {
+        visibleCardIdsRef.current.add(card.id);
+        urlResolveQueueRef.current.push(card);
+      }
+    }
+    drainUrlResolveQueue();
+  }, [vaultCards, user?.id, drainUrlResolveQueue, resolvedAttachmentUrls]);
 
   const visibleCards = useMemo(() => {
     return vaultCards.filter((card) => card.kind !== "chat-preview");
@@ -1301,6 +1489,7 @@ export default function VaultNew() {
     const typeLabels = {
       image: "Images", video: "Videos", youtube: "YouTube", audio: "Audio",
       pdf: "PDFs", spreadsheet: "Spreadsheets", bookmark: "Links", file: "Files",
+      instagram: "Instagram", tiktok: "TikTok", facebook: "Facebook",
       "quick-note": "Quick Notes", "chat-preview": "Chats",
     };
     const groups = {};
@@ -1666,12 +1855,14 @@ export default function VaultNew() {
     const text = chatInput.trim();
     if (!text || isChatLoading) return;
 
+    chatUserScrolledUpRef.current = false;
     setChatInput("");
     setIsChatLoading(true);
+    const asstId = `msg-${Date.now()}`;
     setChatMessages((prev) => {
       const idx = prev.length + 1;
       assistantIndexRef.current = idx;
-      return [...prev, { role: "user", content: text }, { role: "assistant", content: "" }];
+      return [...prev, { role: "user", content: text }, { role: "assistant", content: "", id: asstId }];
     });
 
     try {
@@ -1679,6 +1870,8 @@ export default function VaultNew() {
         .slice(-12)
         .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
         .join("\n");
+
+      const memoryText = user?.id ? await getMemoryForPrompt(user.id) : "";
 
       const vaultItems = orderedVisibleCards.slice(0, 40).map((card) => {
         const date = card.dateLabel || "unknown date";
@@ -1766,6 +1959,7 @@ GUIDELINES:
 
 Conversation so far:
 ${history || "(none)"}
+${memoryText ? `\n[CONVERSATION MEMORY — your past exchanges with this user across all surfaces]\n${memoryText}` : ""}
 
 User: ${text}`;
 
@@ -1818,6 +2012,10 @@ User: ${text}`;
               if (next[idx]) next[idx] = { ...next[idx], content: current, ...(done ? { tagActions: { applied, tags: newTagNames } } : {}) };
               return next;
             });
+            if (!chatUserScrolledUpRef.current) {
+              const el = chatScrollRef.current;
+              if (el) el.scrollTop = el.scrollHeight;
+            }
             if (!done) window.setTimeout(tick, 18);
           };
           tick();
@@ -1841,11 +2039,16 @@ User: ${text}`;
               if (next[idx]) next[idx] = { ...next[idx], content: current };
               return next;
             });
+            if (!chatUserScrolledUpRef.current) {
+              const el = chatScrollRef.current;
+              if (el) el.scrollTop = el.scrollHeight;
+            }
             if (i < words.length) window.setTimeout(tick, 18);
           };
           tick();
         }
       }
+      if (user?.id) { invalidateMemoryCache(); saveExchange(user.id, "vault", null, null, text, aiText); }
     } catch {
       const idx = assistantIndexRef.current;
       if (idx != null) {
@@ -1865,6 +2068,45 @@ User: ${text}`;
     const resolvedUrl = resolvedAttachmentUrls[card.id] || attachment.url;
 
     if (type === "image") {
+      const storageTarget = parseStorageTarget(attachment || {});
+      const isStorageBacked = !!(storageTarget?.bucket && storageTarget?.path);
+      const hasResolvedUrl = !!resolvedAttachmentUrls[card.id];
+      const hasFailed = failedImageIds.has(card.id);
+
+      if (isStorageBacked && !hasResolvedUrl && !hasFailed) {
+        return (
+          <div className={`w-full ${tileHeightClass || "h-44"} rounded-2xl bg-white/5 animate-pulse flex items-center justify-center`}>
+            <Loader2 className="w-6 h-6 text-white/20 animate-spin" />
+          </div>
+        );
+      }
+
+      if (hasFailed) {
+        return (
+          <div className={`w-full ${tileHeightClass || "h-44"} rounded-2xl bg-black/5 dark:bg-white/5 flex flex-col items-center justify-center gap-2 px-3`}>
+            <FileText className="w-8 h-8 text-black/20 dark:text-white/20" />
+            <span className="text-xs text-black/40 dark:text-white/40 text-center truncate max-w-full">{title}</span>
+            <button
+              type="button"
+              className="text-[0.625rem] font-medium text-blue-500 hover:text-blue-600 transition-colors"
+              onClick={(e) => {
+                e.stopPropagation();
+                setFailedImageIds((prev) => { const next = new Set(prev); next.delete(card.id); return next; });
+                signedUrlCacheRef.current.delete(`${storageTarget?.bucket || "user-files"}:${storageTarget?.path || ""}`);
+                setResolvedAttachmentUrls((prev) => { const next = { ...prev }; delete next[card.id]; return next; });
+                if (isStorageBacked) {
+                  visibleCardIdsRef.current.delete(card.id);
+                  urlResolveQueueRef.current.push(card);
+                  drainUrlResolveQueue();
+                }
+              }}
+            >
+              Try again
+            </button>
+          </div>
+        );
+      }
+
       return (
         <img
           src={resolvedUrl}
@@ -1874,18 +2116,33 @@ User: ${text}`;
           draggable={false}
           onError={(e) => {
             const img = e.currentTarget;
-            if (img && !img.dataset.retried) {
-              img.dataset.retried = "1";
+            const retryCount = parseInt(img.dataset.retryCount || "0", 10);
+            if (retryCount < 2) {
+              img.dataset.retryCount = String(retryCount + 1);
               const target = parseStorageTarget(attachment || {});
               if (target?.bucket && target?.path) {
+                const cacheKey = `${target.bucket}:${target.path}`;
+                signedUrlCacheRef.current.delete(cacheKey);
                 supabase.storage
                   .from(target.bucket)
                   .createSignedUrl(target.path, 60 * 60 * 24 * 7)
                   .then(({ data }) => {
-                    if (data?.signedUrl) img.src = data.signedUrl;
+                    if (data?.signedUrl) {
+                      img.src = data.signedUrl;
+                      signedUrlCacheRef.current.set(cacheKey, data.signedUrl);
+                      setResolvedAttachmentUrls((prev) => ({ ...prev, [card.id]: data.signedUrl }));
+                    } else {
+                      setFailedImageIds((prev) => new Set(prev).add(card.id));
+                    }
                   })
-                  .catch(() => {});
+                  .catch(() => {
+                    setFailedImageIds((prev) => new Set(prev).add(card.id));
+                  });
+              } else {
+                setFailedImageIds((prev) => new Set(prev).add(card.id));
               }
+            } else {
+              setFailedImageIds((prev) => new Set(prev).add(card.id));
             }
           }}
         />
@@ -1894,6 +2151,17 @@ User: ${text}`;
 
     if (type === "video") {
       const videoMime = attachment.mimeType || "video/mp4";
+      const videoStorageTarget = parseStorageTarget(attachment || {});
+      const videoIsStorageBacked = !!(videoStorageTarget?.bucket && videoStorageTarget?.path);
+
+      if (videoIsStorageBacked && !resolvedAttachmentUrls[card.id]) {
+        return (
+          <div className={`w-full ${tileHeightClass || "h-44"} rounded-2xl bg-black/10 animate-pulse flex items-center justify-center`}>
+            <Loader2 className="w-6 h-6 text-white/20 animate-spin" />
+          </div>
+        );
+      }
+
       return (
         <video
           key={resolvedUrl}
@@ -1928,6 +2196,25 @@ User: ${text}`;
             title={title || "PDF preview"}
             className="w-full h-full border-0"
             draggable={false}
+          />
+        </div>
+      );
+    }
+
+    if (type === "instagram" || type === "tiktok" || type === "facebook") {
+      const socialOembedHtml = String(attachment.oembedHtml || "");
+      const socialUrl = String(attachment.url || resolvedUrl || "");
+      return (
+        <div className={`w-full ${tileHeightClass} rounded-2xl overflow-hidden`} draggable={false}>
+          <SocialEmbedInline
+            platform={type}
+            oembedHtml={socialOembedHtml}
+            url={socialUrl}
+            thumbnailUrl={attachment.image || attachment.thumbnail_url || ""}
+            title={attachment.title || title || ""}
+            authorName={attachment.authorName || ""}
+            authorHandle={attachment.authorHandle || ""}
+            compact={isEmbeddedMode}
           />
         </div>
       );
@@ -2179,6 +2466,7 @@ User: ${text}`;
       const idx = Number(card.attachmentIndex);
       if (!Number.isFinite(idx) || idx < 0 || idx >= attachments.length || attachments.length <= 1) {
         await supabase.from("notes").delete().eq("id", card.noteId).eq("user_id", user.id);
+        purgeVaultNoteEmbeddings(card.noteId);
         setNotes((prev) => prev.filter((n) => String(n?.id) !== String(card.noteId)));
       } else {
         const nextAttachments = attachments.filter((_, i) => i !== idx);
@@ -2235,6 +2523,7 @@ User: ${text}`;
     setIsCardActionBusy(true);
     try {
       await supabase.from("notes").delete().eq("id", card.noteId).eq("user_id", user.id);
+      purgeVaultNoteEmbeddings(card.noteId);
       setNotes((prev) => prev.filter((n) => String(n?.id) !== String(card.noteId)));
       removeCardFromProjects(card);
       setOpenCardMenuId(null);
@@ -2267,6 +2556,9 @@ User: ${text}`;
         video: "video",
         pdf: "pdf",
         youtube: "link",
+        instagram: "link",
+        tiktok: "link",
+        facebook: "link",
         "quick-note": "text",
       };
       const kind = kindByType[card.type || card.kind] || "file";
@@ -2334,6 +2626,9 @@ User: ${text}`;
         video: "video",
         pdf: "pdf",
         youtube: "link",
+        instagram: "link",
+        tiktok: "link",
+        facebook: "link",
         "quick-note": "text",
       };
       const kind = kindByType[card.type || card.kind] || "file";
@@ -2376,20 +2671,8 @@ User: ${text}`;
 
       const target = attachments[idx] || {};
       const existingNotes = parseAttachmentNotes(target);
-      const activeDraftId = attachmentNoteDraftSavedId || crypto.randomUUID();
-      const existingIdx = existingNotes.findIndex((n) => String(n.id) === String(activeDraftId));
-      const nextDraftNote = {
-        id: activeDraftId,
-        text,
-        created_at:
-          existingIdx >= 0
-            ? existingNotes[existingIdx]?.created_at || new Date().toISOString()
-            : new Date().toISOString(),
-      };
-      const nextAttachmentNotes =
-        existingIdx >= 0
-          ? existingNotes.map((item, i) => (i === existingIdx ? nextDraftNote : item))
-          : [...existingNotes, nextDraftNote];
+      const newNote = { id: crypto.randomUUID(), text, created_at: new Date().toISOString() };
+      const nextAttachmentNotes = [...existingNotes, newNote];
       const nextAttachments = attachments.slice();
       nextAttachments[idx] = { ...target, notes: nextAttachmentNotes };
       const nextContent = withAttachmentJsonMarker(note.content || "", nextAttachments);
@@ -2428,35 +2711,14 @@ User: ${text}`;
               : n
           )
         );
-        setAttachmentNoteDraftSavedId(activeDraftId);
-        lastAutoSavedAttachmentNoteTextRef.current = text;
-        setOpenAttachmentNotesCardId(card.id);
         return true;
       }
       return false;
     } finally {
       setIsCardActionBusy(false);
     }
-  }, [attachmentNoteDraftSavedId, notes, user?.id]);
+  }, [notes, user?.id]);
 
-  const composerCard = useMemo(
-    () =>
-      vaultCards.find(
-        (card) => card.kind === "attachment" && String(card.id) === String(openAttachmentNoteComposerCardId)
-      ) || null,
-    [vaultCards, openAttachmentNoteComposerCardId]
-  );
-
-  useEffect(() => {
-    if (!composerCard) return;
-    const text = attachmentNoteDraft.trim();
-    if (!text) return;
-    if (text === lastAutoSavedAttachmentNoteTextRef.current) return;
-    const timer = window.setTimeout(() => {
-      void addAttachmentNote(composerCard, text);
-    }, 450);
-    return () => window.clearTimeout(timer);
-  }, [addAttachmentNote, attachmentNoteDraft, composerCard]);
 
   const confirmAndDeleteAttachment = useCallback((card) => {
     if (!card) return;
@@ -2466,28 +2728,6 @@ User: ${text}`;
     void removeAttachmentFromNote(card);
   }, [removeAttachmentFromNote]);
 
-  const openAttachmentComposerForCard = useCallback((cardId, anchorRect = null) => {
-    const articleEl = document.querySelector(`[data-vault-card-id="${String(cardId)}"]`);
-    const rect = anchorRect || articleEl?.getBoundingClientRect();
-    const panelWidth = 380;
-    const fallbackLeft = Math.max(12, Math.round(window.innerWidth * 0.55));
-    const fallbackTop = Math.max(12, Math.round(window.innerHeight * 0.2));
-
-    let left = rect ? rect.right + 12 : fallbackLeft;
-    const top = rect ? Math.max(8, rect.top) : fallbackTop;
-
-    if (left + panelWidth > window.innerWidth - 12) {
-      left = rect ? Math.max(12, rect.left - panelWidth - 12) : Math.max(12, window.innerWidth - panelWidth - 12);
-    }
-
-    setOpenAttachmentNoteComposerCardId(cardId);
-    setAttachmentNoteComposerPosition({ left, top });
-    setOpenAttachmentNotesCardId(null);
-    setOpenCardMenuId(null);
-    setAttachmentNoteDraft("");
-    setAttachmentNoteDraftSavedId(null);
-    lastAutoSavedAttachmentNoteTextRef.current = "";
-  }, []);
 
   const openCardMenuForAnchor = useCallback((cardId, anchorEl) => {
     const menuEstimatedHeight = 320;
@@ -2664,7 +2904,20 @@ User: ${text}`;
       <main
         className={`relative z-20 mx-auto w-full px-4 sm:px-6 lg:px-8 ${isEmbeddedMode ? "pt-6" : "pt-24"} pb-16 transition-[margin-right,max-width] duration-300`}
         style={{ transform: "translateZ(0)", marginRight: showChat && !isMobileChat ? `${chatRailWidthPx}px` : 0, maxWidth: showChat && !isMobileChat ? `calc(100% - ${chatRailWidthPx}px)` : "1560px" }}
+        onDragEnter={handleMainDragEnter}
+        onDragOver={handleMainDragOver}
+        onDragLeave={handleMainDragLeave}
+        onDrop={handleMainDrop}
       >
+        {chatChunkDragOver && (
+          <div className="fixed inset-0 z-[60] pointer-events-none flex items-center justify-center">
+            <div className="absolute inset-0 bg-blue-500/5 border-2 border-dashed border-blue-400/40 rounded-3xl m-4" />
+            <div className="relative bg-white/90 backdrop-blur-sm rounded-2xl px-6 py-4 shadow-lg border border-blue-300/50 flex items-center gap-3">
+              <StickyNote className="w-5 h-5 text-amber-500" />
+              <span className="text-sm font-medium text-black/70">Drop to save as Quick Note</span>
+            </div>
+          </div>
+        )}
         <section className="mb-6">
           {isEmbeddedMode ? (
             <div className="space-y-3">
@@ -3289,7 +3542,7 @@ User: ${text}`;
                         ? getYouTubeOffsetClass(card.id)
                         : ""
                     } ${
-                      openAttachmentNoteComposerCardId === card.id
+                      openAttachmentNotesCardId === card.id
                         ? "z-[310]"
                         : "z-0"
                     }`}
@@ -3307,34 +3560,12 @@ User: ${text}`;
                               e.stopPropagation();
                               setOpenAttachmentNotesCardId((prev) => (prev === card.id ? null : card.id));
                             }}
-                            className="absolute top-2 right-2 h-6 min-w-6 px-1 rounded-full glass-control text-[0.6875rem] font-semibold flex items-center justify-center gap-1 z-[125]"
+                            className="absolute top-2 right-2 h-6 min-w-6 px-1.5 rounded-full bg-white/70 backdrop-blur-md border border-white/60 text-[0.6875rem] font-semibold flex items-center justify-center gap-1 z-[125] shadow-sm"
                             title="View file notes"
                           >
                             <MessageSquare className="w-3 h-3" />
                             <span>{parseAttachmentNotes(card.attachment).length}</span>
                           </button>
-                        )}
-                        {openAttachmentNotesCardId === card.id && (
-                          <div
-                            ref={notesPopoverRef}
-                            className="absolute top-10 right-2 w-64 max-w-[calc(100vw-2rem)] rounded-2xl border border-white/60 bg-white/85 dark:bg-[#171515]/85 backdrop-blur-xl shadow-lg p-2 z-[130]"
-                            data-no-drag="true"
-                            draggable={false}
-                            onPointerDown={(e) => e.stopPropagation()}
-                            onMouseDown={(e) => e.stopPropagation()}
-                          >
-                            <div className="px-2 py-1 text-[0.6875rem] font-medium text-black/60">File notes</div>
-                            <div className="max-h-44 overflow-y-auto scrollbar-hide space-y-1">
-                              {parseAttachmentNotes(card.attachment).map((note) => (
-                                <div key={note.id} className="rounded-md px-2 py-2 bg-black/5">
-                                  <p className="text-xs text-black/85 whitespace-pre-wrap break-words">{note.text}</p>
-                                  <p className="mt-1 text-[0.625rem] text-black/50">
-                                    {note.created_at ? formatDate(note.created_at) : ""}
-                                  </p>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
                         )}
                         {card.tags?.length > 0 && (
                           <div className="mt-1.5 flex flex-wrap gap-1 px-1" data-no-drag="true">
@@ -3346,26 +3577,86 @@ User: ${text}`;
                           </div>
                         )}
                         <div className="mt-2 flex justify-end px-1" data-no-drag="true">
-                          <button
-                            type="button"
-                            data-no-drag="true"
-                            draggable={false}
-                            onPointerDown={(e) => e.stopPropagation()}
-                            onMouseDown={(e) => e.stopPropagation()}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setOpenAttachmentNotesCardId(null);
-                              if (openCardMenuId === card.id) {
-                                setOpenCardMenuId(null);
-                                return;
-                              }
-                              openCardMenuForAnchor(card.id, e.currentTarget);
-                            }}
-                            className="px-1 py-0.5 text-black/75 hover:text-black leading-none text-base font-semibold"
-                            title="Actions"
-                          >
-                            <MoreHorizontal className="w-4 h-4" />
-                          </button>
+                          <div className="relative" ref={openAttachmentNotesCardId === card.id ? noteComposerRef : null}>
+                            <button
+                              type="button"
+                              data-no-drag="true"
+                              draggable={false}
+                              onPointerDown={(e) => e.stopPropagation()}
+                              onMouseDown={(e) => e.stopPropagation()}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (openCardMenuId === card.id) {
+                                  setOpenCardMenuId(null);
+                                  return;
+                                }
+                                openCardMenuForAnchor(card.id, e.currentTarget);
+                              }}
+                              className="px-1 py-0.5 text-black/75 hover:text-black leading-none text-base font-semibold"
+                              title="Actions"
+                            >
+                              <MoreHorizontal className="w-4 h-4" />
+                            </button>
+                            {openAttachmentNotesCardId === card.id && (
+                              <div
+                                className="absolute right-0 bottom-full mb-2 w-64 rounded-2xl border border-white/60 bg-white/85 backdrop-blur-xl shadow-2xl p-3 z-[140]"
+                                data-no-drag="true"
+                                draggable={false}
+                                onPointerDown={(e) => e.stopPropagation()}
+                                onMouseDown={(e) => e.stopPropagation()}
+                              >
+                                <div className="text-[0.6875rem] font-medium text-black/60 mb-2">Add a note</div>
+                                <textarea
+                                  value={attachmentNoteDraft}
+                                  onChange={(e) => setAttachmentNoteDraft(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter" && !e.shiftKey && attachmentNoteDraft.trim()) {
+                                      e.preventDefault();
+                                      void addAttachmentNote(card, attachmentNoteDraft);
+                                      setAttachmentNoteDraft("");
+                                      setOpenAttachmentNotesCardId(null);
+                                    }
+                                  }}
+                                  placeholder="Write a note about this file…"
+                                  className="w-full rounded-lg border border-black/10 bg-white/70 px-2.5 py-2 text-xs outline-none resize-none placeholder:text-black/40"
+                                  rows={3}
+                                  autoFocus
+                                />
+                                <div className="flex items-center justify-between mt-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => { setOpenAttachmentNotesCardId(null); setAttachmentNoteDraft(""); }}
+                                    className="text-[0.6875rem] text-black/50 hover:text-black/70"
+                                  >
+                                    Cancel
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      if (attachmentNoteDraft.trim()) {
+                                        void addAttachmentNote(card, attachmentNoteDraft);
+                                        setAttachmentNoteDraft("");
+                                        setOpenAttachmentNotesCardId(null);
+                                      }
+                                    }}
+                                    disabled={!attachmentNoteDraft.trim()}
+                                    className="rounded-lg bg-blue-500 text-white text-[0.6875rem] font-medium px-3 py-1 disabled:opacity-40 hover:bg-blue-600 transition-colors"
+                                  >
+                                    Save
+                                  </button>
+                                </div>
+                                {parseAttachmentNotes(card.attachment).length > 0 && (
+                                  <div className="mt-3 border-t border-black/10 pt-2 max-h-32 overflow-y-auto scrollbar-hide space-y-1.5">
+                                    {parseAttachmentNotes(card.attachment).map((note) => (
+                                      <div key={note.id} className="rounded-md bg-black/5 px-2 py-1.5">
+                                        <p className="text-xs text-black/80 whitespace-pre-wrap break-words">{note.text}</p>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </>
                     ) : card.kind === "chat-preview" ? (
@@ -3464,9 +3755,15 @@ User: ${text}`;
           onClick={() => setShowChat(false)}
         />
       )}
+      {showChat && isMobileChat && (
+        <div
+          className="fixed inset-0 z-[63] bg-black/20 backdrop-blur-[2px]"
+          onClick={() => setShowChat(false)}
+        />
+      )}
       {showChat && (
         <div
-          className={`fixed bottom-0 flex flex-col bg-white/40 backdrop-blur-sm border-l border-black/10 ${isMobileChat ? "z-[80] inset-x-0 border-l-0" : "z-[64]"}`}
+          className={`fixed bottom-0 flex flex-col bg-white/40 backdrop-blur-sm border-l border-black/10 transition-[right] duration-300 ${isMobileChat ? "z-[80] inset-x-0 border-l-0" : "z-[64]"}`}
           style={{
             top: isMobileChat ? 0 : "var(--header-height, 4.9rem)",
             right: isMobileChat ? undefined : 0,
@@ -3474,81 +3771,105 @@ User: ${text}`;
             animation: "chatRailSlideIn 350ms cubic-bezier(0.22,1,0.36,1) both",
           }}
         >
-          {/* Resize handle (desktop only) */}
           {!isMobileChat && (
             <div className="absolute left-0 top-0 bottom-0 w-3 -translate-x-1/2 cursor-col-resize z-[70] pointer-events-auto" onPointerDown={handleStartChatResize} title="Drag to resize chat" />
           )}
-
-          {/* Header */}
-          <div className="flex items-center justify-between px-3 py-2 border-b border-black/10">
-            <div className="flex items-center gap-2 text-xs font-semibold text-black/80">
-              <MessageSquare className="w-3.5 h-3.5" />
-              Vault Assistant
+          {isMobileChat && (
+            <div className="flex items-center justify-between px-3 py-2 border-b border-black/10 shrink-0">
+              <div className="flex items-center gap-2 text-xs font-semibold text-black/80">
+                <MessageSquare className="w-3.5 h-3.5" />
+                Chat
+              </div>
+              <button type="button" onClick={() => setShowChat(false)} className="h-6 w-6 rounded-full flex items-center justify-center text-black/40 hover:text-red-500 hover:bg-red-500/10 transition-colors">
+                <X className="w-3 h-3" />
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={() => setShowChat(false)}
-              className="h-6 w-6 rounded-full flex items-center justify-center text-black/40 hover:text-red-500 hover:bg-red-500/10 transition-colors"
-            >
-              <X className="w-3 h-3" />
-            </button>
-          </div>
-
-          {/* Messages */}
+          )}
           <div ref={chatScrollRef} className="flex-1 overflow-y-auto scrollbar-hide p-3 space-y-3">
             {isChatLoading && (
               <div className="text-[0.6875rem] text-black/60 px-1 flex items-center gap-2" aria-live="polite">
-                <Loader2 className="w-3 h-3 animate-spin" />
+                <div className="brick-spinner" />
                 {thinkingStatus}
               </div>
             )}
-            {chatMessages.length === 0 && !isChatLoading && (
-              <div className="flex flex-col items-center justify-center text-center py-12 text-black/40 space-y-3">
-                <div className="w-12 h-12 rounded-full bg-blue-50 flex items-center justify-center">
-                  <MessageSquare className="w-6 h-6 text-blue-500" />
-                </div>
-                <p className="text-xs">Ask me anything about your vault.</p>
-              </div>
-            )}
             {chatMessages.map((msg, idx) => (
-              <div key={idx} className={`flex flex-col ${msg.role === "user" ? "items-end" : "items-start"}`}>
+              <div key={msg.id || idx} className={`flex flex-col ${msg.role === "user" ? "items-end" : "items-start"}`}>
                 {msg.role === "user" ? (
-                  <div className="max-w-[90%] rounded-2xl rounded-br-md px-3 py-2 text-xs leading-relaxed text-white bg-black/70 shadow-sm">
-                    {msg.content}
-                  </div>
-                ) : (
-                  <div
-                    draggable
-                    onDragStart={(e) => {
-                      e.dataTransfer.setData("text/plain", msg.content);
-                      e.dataTransfer.effectAllowed = "copy";
-                    }}
-                    className="max-w-[90%] rounded-2xl rounded-bl-md px-3 py-2 text-xs leading-relaxed border bg-white/70 border-white/70 text-black/85 cursor-grab active:cursor-grabbing hover:bg-white/90 transition-colors"
-                    title="Drag to insert"
-                  >
-                    <ReactMarkdown
-                      remarkPlugins={[remarkGfm]}
-                      components={{
-                        h1: ({ children }) => <h1 className="text-base font-semibold mt-2 mb-1">{children}</h1>,
-                        h2: ({ children }) => <h2 className="text-sm font-semibold mt-2 mb-1">{children}</h2>,
-                        h3: ({ children }) => <h3 className="text-xs font-semibold mt-1.5 mb-1">{children}</h3>,
-                        p: ({ children }) => <p className="my-1 whitespace-pre-wrap">{children}</p>,
-                        ul: ({ children }) => <ul className="my-1.5 list-disc pl-4 space-y-0.5">{children}</ul>,
-                        ol: ({ children }) => <ol className="my-1.5 list-decimal pl-4 space-y-0.5">{children}</ol>,
-                        li: ({ children }) => <li className="leading-relaxed">{children}</li>,
-                        strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
-                        code: ({ children }) => (
-                          <code className="rounded bg-black/10 px-1 py-0.5 text-[0.8em]">{children}</code>
-                        ),
-                        a: ({ href, children }) => (
-                          <a href={href} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline font-medium">{children}</a>
-                        ),
-                      }}
-                    >
-                      {msg.content || ""}
+                  <div className="max-w-[94%] rounded-2xl rounded-br-md px-3 py-2 text-xs leading-relaxed text-black/90 border border-white/55 bg-[linear-gradient(135deg,rgba(255,255,255,0.32),rgba(255,255,255,0.16))] backdrop-blur-xl shadow-[0_10px_28px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.35)] [&_table]:text-[0.6875rem] [&_td]:py-1 [&_th]:py-1">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={buildChatMarkdownComponents(msg.id)}>
+                      {normalizeChecklistSyntax(msg.content || "")}
                     </ReactMarkdown>
                   </div>
-                )}
+                ) : (() => {
+                  const isExpanded = msg.id ? expandedAiMsgIds.has(msg.id) : true;
+                  return (
+                    <div className="self-start max-w-[94%] mt-1.5">
+                      {msg.id && (
+                        <button
+                          type="button"
+                          className="w-full flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-white/50 bg-white/40 backdrop-blur-sm hover:bg-white/60 transition-all text-left group/collapse"
+                          onClick={() => toggleAiExpanded(msg.id)}
+                        >
+                          <ChevronRight className={`w-3 h-3 text-black/40 flex-shrink-0 transition-transform duration-200 ${isExpanded ? "rotate-90" : ""}`} />
+                          {!isExpanded && (
+                            <span className="text-[0.6875rem] text-black/60 truncate leading-tight flex-1">
+                              {getCollapsedPreview(msg.content || "")}
+                            </span>
+                          )}
+                          {isExpanded && (
+                            <span className="text-[0.6875rem] text-black/40 font-medium flex-1">AI Response</span>
+                          )}
+                        </button>
+                      )}
+                      <div className={msg.id ? `overflow-hidden transition-all duration-200 ease-in-out ${isExpanded ? "max-h-[5000px] opacity-100 mt-1" : "max-h-0 opacity-0"}` : ""}>
+                        <div className="space-y-1">
+                          {(() => {
+                            const chunks = splitResponseIntoChunks(msg.content || "");
+                            const isSingle = chunks.length <= 1;
+                            return (
+                              <>
+                                {chunks.map((chunk, ci) => (
+                                  <div key={`${msg.id}-chunk-${ci}`} className="group/chunk relative">
+                                    <div
+                                      draggable
+                                      onDragStart={(e) => handleChunkDragStart(e, chunk)}
+                                      className={`rounded-xl px-3 py-1.5 text-xs leading-relaxed break-words border text-black/85 cursor-grab active:cursor-grabbing transition-all ${isSingle ? "bg-white/70 border-white/70 rounded-2xl rounded-bl-md" : "bg-white/50 border-white/40 hover:bg-white/70 hover:border-blue-300/40 hover:shadow-sm"}`}
+                                    >
+                                      <div className={`absolute -left-5 top-1/2 -translate-y-1/2 opacity-0 group-hover/chunk:opacity-100 transition-opacity ${isSingle ? "hidden" : ""}`}>
+                                        <GripVertical className="w-3 h-3 text-blue-400/60" />
+                                      </div>
+                                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={buildChatMarkdownComponents(msg.id)}>
+                                        {normalizeChecklistSyntax(chunk)}
+                                      </ReactMarkdown>
+                                    </div>
+                                    {!isSingle && (
+                                      <button
+                                        type="button"
+                                        title="Save this section as quick note"
+                                        className="absolute -right-1 top-0.5 opacity-0 group-hover/chunk:opacity-100 transition-opacity p-0.5 rounded text-amber-400/70 hover:text-amber-500 hover:bg-amber-500/10"
+                                        onClick={() => saveChunkAsQuickNote(chunk)}
+                                      >
+                                        <StickyNote className="w-2.5 h-2.5" />
+                                      </button>
+                                    )}
+                                  </div>
+                                ))}
+                              </>
+                            );
+                          })()}
+                          <div className="flex items-center gap-0.5 px-1">
+                            <button type="button" title="Save full response as quick note" className="p-1 rounded-md text-black/30 hover:text-amber-500 hover:bg-amber-500/10 transition-colors" onClick={() => saveChunkAsQuickNote(msg.content || "")}>
+                              <StickyNote className="w-3 h-3" />
+                            </button>
+                            <button type="button" title="Copy" className={`p-1 rounded-md transition-colors ${copiedMsgId === msg.id ? "text-blue-500 bg-blue-500/10" : "text-black/30 hover:text-black/60 hover:bg-black/5"}`} onClick={() => { void navigator.clipboard.writeText(msg.content || ""); setCopiedMsgId(msg.id); setTimeout(() => setCopiedMsgId((cur) => cur === msg.id ? null : cur), 2000); }}>
+                              {copiedMsgId === msg.id ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             ))}
             {chatMessages.length > 0 && (() => {
@@ -3563,8 +3884,6 @@ User: ${text}`;
               ) : null;
             })()}
           </div>
-
-          {/* Input */}
           <div className="p-2 pb-2">
             <div className="glass-control rounded-2xl px-2 py-1.5 w-full">
               <div className="flex items-center gap-1.5">
@@ -3619,48 +3938,6 @@ User: ${text}`;
         />
       )}
 
-      {openAttachmentNoteComposerCardId && composerCard && attachmentNoteComposerPosition && (
-        <div
-          ref={noteComposerRef}
-          className="fixed group pointer-events-auto w-[380px] max-w-[92vw] min-h-[360px] max-h-[86vh] glass-control rounded-2xl shadow-lg p-3 z-[340]"
-          style={{ left: `${attachmentNoteComposerPosition.left}px`, top: `${attachmentNoteComposerPosition.top}px` }}
-          onPointerDown={(e) => e.stopPropagation()}
-          onMouseDown={(e) => e.stopPropagation()}
-        >
-          <div className="relative h-full">
-            <div className="absolute top-3 right-3 z-20 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
-              <button
-                type="button"
-                className="h-5 w-5 text-black/70 hover:text-red-500 flex items-center justify-center"
-                onClick={() => {
-                  setOpenAttachmentNoteComposerCardId(null);
-                  setAttachmentNoteComposerPosition(null);
-                  setOpenAttachmentNotesCardId(composerCard.id);
-                  setAttachmentNoteDraft("");
-                  setAttachmentNoteDraftSavedId(null);
-                  lastAutoSavedAttachmentNoteTextRef.current = "";
-                }}
-                title="Close"
-              >
-                <X className="w-3 h-3" />
-              </button>
-            </div>
-            <textarea
-              value={attachmentNoteDraft}
-              onChange={(e) => setAttachmentNoteDraft(e.target.value)}
-              placeholder=""
-              className="h-full w-full min-h-[340px] resize-none rounded-lg bg-transparent border border-white/35 px-3 py-3 text-sm text-black outline-none"
-              onPointerDown={(e) => e.stopPropagation()}
-            />
-            {!attachmentNoteDraft.trim() && (
-              <div className="pointer-events-none absolute inset-0 px-6 py-6 text-sm text-black/45 select-none">
-                <div>Write your quick note...</div>
-                <div className="mt-2 text-[0.6875rem] text-black/50">Auto-saves as you type (empty notes are not saved).</div>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
 
       {showSaveLink && (
         <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/20 backdrop-blur-sm" onClick={() => { setShowSaveLink(false); setSaveLinkUrl(""); setSaveLinkPreview(null); }}>
@@ -3822,9 +4099,8 @@ User: ${text}`;
                     type="button"
                     disabled={isCardActionBusy}
                     onClick={() => {
-                      const articleEl = document.querySelector(`[data-vault-card-id="${menuCard.id}"]`);
-                      const rect = articleEl?.getBoundingClientRect() || null;
-                      openAttachmentComposerForCard(menuCard.id, rect);
+                      setOpenAttachmentNotesCardId(menuCard.id);
+                      setAttachmentNoteDraft("");
                       setOpenCardMenuId(null);
                     }}
                     className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 disabled:opacity-60 flex items-center gap-2"

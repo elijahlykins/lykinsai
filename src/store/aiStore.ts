@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { getProjectKnowledgeBase, projectSummaryForAI } from "@/lib/projectKnowledgeBase";
 import { getSelectedAiModel } from "@/lib/ai-model";
+import { getAiPrefs } from "@/lib/ai-prefs";
 import type { WorkspaceSummary } from "@/lib/workspaceContext";
 
 export type AiSuggestion = {
@@ -160,6 +161,7 @@ export const useAiStore = create<AiState>()(
         intent: "suggest",
         knowledgeBase: kbText || "",
         projectId,
+        ...getAiPrefs(),
       };
       const res = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
         method: "POST",
@@ -204,6 +206,7 @@ export const useAiStore = create<AiState>()(
             returnActions: true,
             knowledgeBase: kbText || "",
             projectId,
+            ...getAiPrefs(),
           }),
         });
         if (!res.ok) {
@@ -239,6 +242,7 @@ export const useAiStore = create<AiState>()(
           intent: "summarize",
           knowledgeBase: kbText || "",
           projectId,
+          ...getAiPrefs(),
         }),
       });
       if (!res.ok) {

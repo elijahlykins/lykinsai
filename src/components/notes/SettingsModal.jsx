@@ -5,6 +5,7 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSepa
 import { Button } from '@/components/ui/button';
 import { Save, LogOut, User, Globe, MessageSquare } from 'lucide-react';
 
+import AboutYouSection from '@/components/intake/AboutYouSection';
 import { useAuth } from '@/lib/SupabaseAuth';
 import { supabase } from '@/lib/supabase';
 
@@ -243,6 +244,8 @@ export default function SettingsModal({ isOpen, onClose }) {
               This is added to every AI conversation so it knows your preferences.
             </p>
           </div>
+
+          {user ? <AboutYouSection isOpen={isOpen} /> : null}
 
           {/* Settings */}
           <div className="space-y-3">

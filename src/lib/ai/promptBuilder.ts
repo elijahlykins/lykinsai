@@ -12,7 +12,7 @@ export const CONTEXT_BUDGETS = {
   compactSummary: 2000,
   canvasTotal: 14000,
   projectSummary: 2000,
-  workspaceContext: 2000,
+  workspaceContext: 28000,
   conversation: 8000,
   userPrompt: 3000,
   mediaContext: 8000,

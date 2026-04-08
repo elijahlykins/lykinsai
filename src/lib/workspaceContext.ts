@@ -35,6 +35,19 @@ function parseAttachments(content: string): any[] {
   } catch { return []; }
 }
 
+/** User-written notes on a vault attachment (same shape as VaultNew `parseAttachmentNotes`). */
+function collectAttachmentUserNoteTexts(attachments: any[]): string[] {
+  const out: string[] = [];
+  for (const att of attachments) {
+    const raw = Array.isArray(att?.notes) ? att.notes : [];
+    for (const item of raw) {
+      const text = String(item?.text || "").trim();
+      if (text) out.push(text);
+    }
+  }
+  return out;
+}
+
 function resolveAttachType(att: any): string {
   const url = String(att?.url || "");
   const name = String(att?.name || "");
@@ -121,7 +134,7 @@ export async function fetchWorkspaceSummaries(
         .limit(20),
       supabase
         .from("notes")
-        .select("id, title, content, updated_at")
+        .select("id, title, content, updated_at, ai_summary, tags")
         .eq("user_id", userId)
         .order("updated_at", { ascending: false })
         .limit(25),
@@ -173,16 +186,25 @@ export async function fetchWorkspaceSummaries(
   const notes = (notesResult.data || []).slice(0, 25);
   const noteLines = notes.map((n: any) => {
     const title = truncate(String(n.title || "Untitled"), 60);
-    const content = truncate(stripAttachmentMarker(n.content || ""), 100);
+    const summaryBit = n.ai_summary ? String(n.ai_summary).trim() : "";
+    const content = truncate(
+      summaryBit || stripAttachmentMarker(n.content || ""),
+      summaryBit ? 160 : 100,
+    );
     const tags = Array.isArray(n.tags) ? n.tags.slice(0, 3).join(", ") : "";
     const attachments = parseAttachments(n.content || "");
     const attTypes = attachments.map((a: any, i: number) => {
       const t = resolveAttachType(a);
       return `${t}[${i}]`;
     });
+    const userNoteTexts = collectAttachmentUserNoteTexts(attachments);
+    const userNotesBlurb =
+      userNoteTexts.length > 0 ? truncate(userNoteTexts.join(" | "), 500) : "";
     const parts = [`- "${title}" (id=${n.id})`];
     if (attTypes.length > 0) parts.push(`files: ${attTypes.join(", ")}`);
-    if (content) parts.push(content);
+    if (userNotesBlurb) parts.push(`user notes: ${userNotesBlurb}`);
+    if (summaryBit) parts.push(`summary: ${content}`);
+    else if (content) parts.push(content);
     if (tags) parts.push(`[${tags}]`);
     return parts.join(" — ");
   });
@@ -195,11 +217,20 @@ export async function fetchWorkspaceSummaries(
     ? `MEDIA PAGE ITEMS (${noteLines.length}):\n${noteLines.join("\n")}`
     : "";
 
-  const full = [boardsText, mediaText].filter(Boolean).join("\n\n");
+  // Vault / media first so client `.slice(0, 2000)` does not drop it when OTHER BOARDS is large.
+  const full = [mediaText, boardsText].filter(Boolean).join("\n\n");
 
   console.log("[LYKN-WS] Workspace context size:", full.length, "chars. Boards section:", boardsText.length, "chars. Media section:", mediaText.length, "chars");
 
   const result = { boards: boardsText, media: mediaText, full };
   wsCache.set(cacheKey, { ts: Date.now(), data: result });
   return result;
+}
+
+/** Call after vault notes change so the next AI request gets fresh board/vault listings. */
+export function invalidateWorkspaceSummaryCache(userId: string) {
+  if (!userId) return;
+  for (const key of wsCache.keys()) {
+    if (key.startsWith(`${userId}:`)) wsCache.delete(key);
+  }
 }

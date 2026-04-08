@@ -3,6 +3,8 @@ import { ExternalLink, FileText, Globe, Link as LinkIcon, Music2, Video } from "
 import { useCanvasStore } from "@/store/canvasStore";
 import { snapToGrid } from "@/canvas/utils/snap";
 import { BlockHoverToolbar } from "./BlockHoverToolbar";
+import { detectSocialPlatform, isSocialEmbedType } from "@/canvas/utils/socialEmbed";
+import { SocialEmbedInline } from "./SocialEmbedBlock";
 
 type DragState = {
   pointerId: number;
@@ -59,7 +61,9 @@ function extensionFromName(name: string) {
   return String(name || "").split(".").pop()?.toLowerCase() || "";
 }
 
-function inferPreviewKind(url: string, mimeHint: string, nameHint: string) {
+function inferPreviewKind(url: string, mimeHint: string, nameHint: string, oembedType?: string) {
+  if (isSocialEmbedType(oembedType)) return "social-embed";
+  if (detectSocialPlatform(url)) return "social-embed";
   const mime = String(mimeHint || "").toLowerCase();
   const ext = extensionFromName(nameHint || fileNameFromUrl(url));
   if (mime.startsWith("image/") || ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif", "heic", "heif"].includes(ext)) return "image";
@@ -104,7 +108,8 @@ export const LinkBlock = memo(function LinkBlock({ id, onMinimize, onMenu }: { i
   if (!url) return null;
 
   const host = safeHostname(url);
-  const previewKind = inferPreviewKind(url, mime, name);
+  const oembedType = isCreate ? String(data.oembedType || "") : "";
+  const previewKind = inferPreviewKind(url, mime, name, oembedType);
   const snapSize = (n: number) => {
     const g = Math.max(1, Math.floor(gridSize || 24));
     return Math.max(g, snapToGrid(n, g));
@@ -388,6 +393,17 @@ export const LinkBlock = memo(function LinkBlock({ id, onMinimize, onMenu }: { i
               title={name || "PDF"}
               className="w-full h-full border-0 bg-white"
               onPointerDown={(e) => e.stopPropagation()}
+            />
+          )}
+          {previewKind === "social-embed" && (
+            <SocialEmbedInline
+              platform={oembedType || detectSocialPlatform(url) || "instagram"}
+              oembedHtml={String(data.oembedHtml || "")}
+              url={url}
+              thumbnailUrl={String(data.ogImage || data.image || "")}
+              title={String(data.ogTitle || "")}
+              authorName={String(data.authorName || "")}
+              authorHandle={String(data.authorHandle || "")}
             />
           )}
           {previewKind === "link" && (() => {

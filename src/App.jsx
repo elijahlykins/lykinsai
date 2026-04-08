@@ -6,6 +6,8 @@ import { queryClientInstance } from '@/lib/query-client';
 import { BrowserRouter as Router, Route, Routes, useLocation, Navigate } from 'react-router-dom';
 import PageNotFound from './lib/PageNotFound';
 import { SupabaseAuthProvider, useAuth } from '@/lib/SupabaseAuth';
+import { IntakeProvider } from '@/context/IntakeContext';
+import IntakeModal from '@/components/intake/IntakeModal';
 import LoadingScreen from "@/components/LoadingScreen";
 
 // ✅ CORRECT IMPORTS (no spaces, match your filenames)
@@ -62,6 +64,7 @@ function AppShell() {
   return (
     <>
       {!isEmbeddedVault && !isLoginPage && <AppSidebar />}
+      {!isEmbeddedVault && !isLoginPage && user && <IntakeModal />}
       <div className={isLoginPage ? "" : "app-content"}>
         <Routes>
           <Route path="/login" element={<Login />} />
@@ -152,8 +155,10 @@ function App() {
   return (
     <QueryClientProvider client={queryClientInstance}>
       <SupabaseAuthProvider>
-        <AppRoutes />
-        <Toaster />
+        <IntakeProvider>
+          <AppRoutes />
+          <Toaster />
+        </IntakeProvider>
       </SupabaseAuthProvider>
     </QueryClientProvider>
   );
