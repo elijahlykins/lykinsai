@@ -5652,7 +5652,7 @@ export default function OmniaGridPage() {
       {/* Side rail chat (canvas mode — toggled open via button or canvas interaction) */}
       {!chatMode && chatRailVisible && (
         <div
-          className={`fixed bottom-0 flex flex-col bg-white/40 backdrop-blur-sm border-l border-black/10 transition-[right] duration-300 ${
+          className={`fixed bottom-0 flex flex-col bg-transparent border-l border-black/5 dark:border-white/5 transition-[right] duration-300 ${
             notesOpen ? "z-[232]" : isMobileGrid ? "z-[80] inset-x-0 border-l-0" : "z-[64]"
           } ${isMobileGrid ? "inset-x-0 border-l-0" : ""}`}
           style={{
