@@ -105,7 +105,7 @@ export function canUseActiveBrickLogic() {
   return Boolean(BRICK_BEHAVIOR.enableLogic);
 }
 
-function BrickTextSurface(props: {
+const BrickTextSurface = React.memo(function BrickTextSurface(props: {
   shell: BrickShellModel;
   isTyping: boolean;
   onTypingChange?: (id: string, value: string, meta?: { isPaste?: boolean; exitList?: boolean; formattedHtml?: string }) => void;
@@ -1184,7 +1184,20 @@ function BrickTextSurface(props: {
       return null;
     })()
   );
-}
+}, (prev, next) => {
+  if (prev.isTyping !== next.isTyping) return false;
+  const ps = prev.shell, ns = next.shell;
+  return ps.id === ns.id
+    && ps.content === ns.content
+    && ps.width === ns.width
+    && ps.height === ns.height
+    && ps.textVariant === ns.textVariant
+    && ps.brickScale === ns.brickScale
+    && ps.listType === ns.listType
+    && ps.brickColor === ns.brickColor
+    && ps.textColor === ns.textColor
+    && ps.isAiResponseBubble === ns.isAiResponseBubble;
+});
 
 export function renderBrickShell(block: Block | any, key: string, opts?: BrickShellRenderOptions) {
   const shell = toBrickShellModel(block);
@@ -1207,16 +1220,25 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
     const maxWidth = Math.max(minWidth, Math.floor(Number(opts?.resizeMaxWidth || grid * 60)));
 
     const z = Math.max(0.1, Number(opts?.canvasZoom) || 1);
+    let resizeRaf = 0;
+    let lastWidth = startWidth;
     const onMove = (ev: PointerEvent) => {
       if (ev.pointerId !== pointerId) return;
       const deltaX = (Number(ev.clientX || 0) - startX) / z;
       const rawWidth = startWidth + deltaX;
       const snapped = Math.round(rawWidth / grid) * grid;
-      const nextWidth = Math.max(minWidth, Math.min(maxWidth, snapped));
-      opts?.onResizeWidth?.(shell.id, nextWidth);
+      lastWidth = Math.max(minWidth, Math.min(maxWidth, snapped));
+      if (!resizeRaf) {
+        resizeRaf = requestAnimationFrame(() => {
+          resizeRaf = 0;
+          opts?.onResizeWidth?.(shell.id, lastWidth);
+        });
+      }
     };
     const onEnd = (ev: PointerEvent) => {
       if (ev.pointerId !== pointerId) return;
+      if (resizeRaf) { cancelAnimationFrame(resizeRaf); resizeRaf = 0; }
+      opts?.onResizeWidth?.(shell.id, lastWidth);
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onEnd);
       window.removeEventListener("pointercancel", onEnd);
@@ -1239,16 +1261,25 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
     const grid = Math.max(1, Math.floor(Number(opts?.resizeGridSize || BRICK_BEHAVIOR.gridSize)));
     const minHeight = grid;
     const z = Math.max(0.1, Number(opts?.canvasZoom) || 1);
+    let resizeRaf = 0;
+    let lastHeight = startHeight;
     const onMove = (ev: PointerEvent) => {
       if (ev.pointerId !== pointerId) return;
       const deltaY = (Number(ev.clientY || 0) - startY) / z;
       const rawHeight = startHeight + deltaY;
       const snapped = Math.round(rawHeight / grid) * grid;
-      const nextHeight = Math.max(minHeight, snapped);
-      opts?.onResizeHeight?.(shell.id, nextHeight);
+      lastHeight = Math.max(minHeight, snapped);
+      if (!resizeRaf) {
+        resizeRaf = requestAnimationFrame(() => {
+          resizeRaf = 0;
+          opts?.onResizeHeight?.(shell.id, lastHeight);
+        });
+      }
     };
     const onEnd = (ev: PointerEvent) => {
       if (ev.pointerId !== pointerId) return;
+      if (resizeRaf) { cancelAnimationFrame(resizeRaf); resizeRaf = 0; }
+      opts?.onResizeHeight?.(shell.id, lastHeight);
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onEnd);
       window.removeEventListener("pointercancel", onEnd);
@@ -1270,18 +1301,27 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
     const currentScale = Math.max(0.25, Number(shell.brickScale || 1));
     const grid = Math.max(1, Math.floor(Number(opts?.resizeGridSize || BRICK_BEHAVIOR.gridSize)));
     const z = Math.max(0.1, Number(opts?.canvasZoom) || 1);
+    let scaleRaf = 0;
+    let lastScale = currentScale, lastW = startWidth, lastH = startHeight;
     const onMove = (ev: PointerEvent) => {
       if (ev.pointerId !== pointerId) return;
       const deltaX = (Number(ev.clientX || 0) - startX) / z;
       const deltaY = (Number(ev.clientY || 0) - startY) / z;
-      const nextWidth = Math.max(grid * 4, Math.round((startWidth + deltaX) / grid) * grid);
-      const nextHeight = Math.max(grid, Math.round((startHeight + deltaY) / grid) * grid);
-      const widthRatio = nextWidth / startWidth;
-      const nextScale = Math.max(0.5, Math.min(4, currentScale * widthRatio));
-      opts?.onCornerScale?.(shell.id, nextScale, nextWidth, nextHeight);
+      lastW = Math.max(grid * 4, Math.round((startWidth + deltaX) / grid) * grid);
+      lastH = Math.max(grid, Math.round((startHeight + deltaY) / grid) * grid);
+      const widthRatio = lastW / startWidth;
+      lastScale = Math.max(0.5, Math.min(4, currentScale * widthRatio));
+      if (!scaleRaf) {
+        scaleRaf = requestAnimationFrame(() => {
+          scaleRaf = 0;
+          opts?.onCornerScale?.(shell.id, lastScale, lastW, lastH);
+        });
+      }
     };
     const onEnd = (ev: PointerEvent) => {
       if (ev.pointerId !== pointerId) return;
+      if (scaleRaf) { cancelAnimationFrame(scaleRaf); scaleRaf = 0; }
+      opts?.onCornerScale?.(shell.id, lastScale, lastW, lastH);
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onEnd);
       window.removeEventListener("pointercancel", onEnd);

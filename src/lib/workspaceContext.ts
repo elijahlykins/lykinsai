@@ -184,6 +184,20 @@ export async function fetchWorkspaceSummaries(
   });
 
   const notes = (notesResult.data || []).slice(0, 25);
+
+  const tagMap: Record<string, number> = {};
+  for (const n of notes) {
+    const tags = Array.isArray((n as any).tags) ? (n as any).tags : [];
+    for (const t of tags) {
+      const tag = String(t).trim();
+      if (tag) tagMap[tag] = (tagMap[tag] || 0) + 1;
+    }
+  }
+  const tagSummaryEntries = Object.entries(tagMap).sort((a, b) => b[1] - a[1]);
+  const tagSummaryStr = tagSummaryEntries.length
+    ? tagSummaryEntries.map(([t, c]) => `${t} (${c})`).join(", ")
+    : "";
+
   const noteLines = notes.map((n: any) => {
     const title = truncate(String(n.title || "Untitled"), 60);
     const summaryBit = n.ai_summary ? String(n.ai_summary).trim() : "";
@@ -213,8 +227,12 @@ export async function fetchWorkspaceSummaries(
     ? `OTHER BOARDS (${boardLines.length}):\n${boardLines.join("\n")}`
     : "";
 
-  const mediaText = noteLines.length > 0
-    ? `MEDIA PAGE ITEMS (${noteLines.length}):\n${noteLines.join("\n")}`
+  const mediaHeader = noteLines.length > 0
+    ? `VAULT ITEMS (${noteLines.length}):`
+    : "";
+  const tagLine = tagSummaryStr ? `Tags in use: ${tagSummaryStr}` : "";
+  const mediaText = mediaHeader
+    ? [mediaHeader, tagLine, noteLines.join("\n")].filter(Boolean).join("\n")
     : "";
 
   // Vault / media first so client `.slice(0, 2000)` does not drop it when OTHER BOARDS is large.

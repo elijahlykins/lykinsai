@@ -1912,6 +1912,28 @@ export default function VaultNew() {
       const existingTags = allTags.map((t) => t.name);
       const existingTagStr = existingTags.length ? existingTags.join(", ") : "(none yet)";
 
+      const tagDirLines = [];
+      if (allTags.length > 0) {
+        const tagToCards = {};
+        orderedVisibleCards.forEach((card) => {
+          (card.tags || []).forEach((t) => {
+            const tag = String(t).trim();
+            if (!tag) return;
+            if (!tagToCards[tag]) tagToCards[tag] = [];
+            tagToCards[tag].push({ noteId: card.noteId, title: String(card.title || "Untitled").slice(0, 60) });
+          });
+        });
+        const sorted = Object.entries(tagToCards).sort((a, b) => b[1].length - a[1].length);
+        for (const [tag, items] of sorted) {
+          const refs = items.slice(0, 8).map((n) => `"${n.title}" {noteId:${n.noteId}}`).join(", ");
+          const overflow = items.length > 8 ? ` +${items.length - 8} more` : "";
+          tagDirLines.push(`#${tag} (${items.length}): ${refs}${overflow}`);
+        }
+      }
+      const tagDirBlock = tagDirLines.length
+        ? `\nTAG DIRECTORY — every tag with its items:\n${tagDirLines.join("\n")}\n`
+        : "";
+
       const prompt = `You are the Vault Assistant — the AI helper inside The Vault, a personal collection space within LYKN where users save and organise their files, images, videos, links, notes, and ideas.
 
 YOUR ROLE:
@@ -1926,7 +1948,7 @@ Below is the user's Vault content (${totalCount} items total, showing up to 40).
 Each item has a {noteId:...} identifier you can reference when applying tag actions.
 
 EXISTING TAGS IN USE: ${existingTagStr}
-
+${tagDirBlock}
 === VAULT CONTENTS ===
 ${vaultItems || "(The Vault is empty)"}
 === END VAULT CONTENTS ===

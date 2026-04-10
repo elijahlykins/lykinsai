@@ -6,11 +6,14 @@ export function isInViewport(
   viewport: { width: number; height: number },
   margin = 400
 ) {
-  const effectiveMargin = margin / Math.max(camera.zoom, 0.1);
-  const left = (block.x - camera.x) * camera.zoom;
-  const top = (block.y - camera.y) * camera.zoom;
-  const right = left + block.width * camera.zoom;
-  const bottom = top + block.height * camera.zoom;
+  const zoom = Number.isFinite(camera.zoom) ? Math.max(camera.zoom, 0.01) : 1;
+  const cx = Number.isFinite(camera.x) ? camera.x : 0;
+  const cy = Number.isFinite(camera.y) ? camera.y : 0;
+  const effectiveMargin = margin / Math.max(zoom, 0.1);
+  const left = (block.x - cx) * zoom;
+  const top = (block.y - cy) * zoom;
+  const right = left + block.width * zoom;
+  const bottom = top + block.height * zoom;
 
   return (
     right > -effectiveMargin &&

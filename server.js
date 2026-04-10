@@ -140,6 +140,27 @@ function needsWebSearch(text, opts = {}) {
   return false;
 }
 
+// ---- Auto enrichment classifier: 'none' | 'light' | 'full' ----
+const GREETING_PATTERN = /^(hi|hello|hey|yo|sup|good\s+(morning|afternoon|evening)|thanks|thank\s*you|ok(ay)?|sure|yes|no|yep|nope|got\s*it|cool|nice|great|awesome|perfect|sounds?\s*good|never\s*mind|nvm|lol|haha|hmm+|wow|bye|gn|gm)\b/i;
+const LAYOUT_COMMAND_PATTERN = /\b(move|resize|arrange|organize|sort|align|group|ungroup|stack|tile|spread|grid|snap|place|position|reorder|swap|flip|rotate|duplicate|delete|remove|clear|undo|redo)\s+(the\s+)?(block|brick|card|item|image|element|box|note)s?\b/i;
+const BOARD_ACTION_PATTERN = /\b(make\s+(it|this|that)\s+(bigger|smaller|larger|red|blue|green|bold|italic)|change\s+(the\s+)?(color|size|font|title|name)|rename|set\s+(the\s+)?title)\b/i;
+const SHORT_REPLY_MAX_WORDS = 5;
+
+function classifyEnrichment(text, opts = {}) {
+  if (!text) return 'none';
+  const t = String(text).trim();
+  if (t.length < 3) return 'none';
+  if (GREETING_PATTERN.test(t)) return 'none';
+  if (LAYOUT_COMMAND_PATTERN.test(t)) return 'none';
+  if (BOARD_ACTION_PATTERN.test(t)) return 'none';
+  const wordCount = t.split(/\s+/).length;
+  if (wordCount <= SHORT_REPLY_MAX_WORDS && !t.includes('?') && !/\b(what|how|why|where|when|who|which|explain|describe|tell|find|search|show|compare)\b/i.test(t)) return 'none';
+
+  if (needsWebSearch(t, opts)) return 'full';
+
+  return 'light';
+}
+
 async function runWebSearchIfNeeded(text, opts = {}) {
   if (!needsWebSearch(text, opts)) return "";
   try {
@@ -274,6 +295,39 @@ async function requireAuth(req, res, next) {
   } catch {
     return res.status(401).json({ error: 'Auth verification failed' });
   }
+}
+
+// ============================================
+// UTILITY — deterministic hash for AI caching
+// ============================================
+function sha256(input) {
+  return crypto.createHash('sha256').update(String(input || '')).digest('hex');
+}
+
+// ============================================
+// UTILITY — split assembled prompt into system + user for provider caching
+// ============================================
+const PROMPT_SECTION_MARKERS = [
+  '[USER_PREFERENCES]', '[INTENT]', '[CONVERSATION]', '[CONVERSATION_MEMORY',
+  '[WORKSPACE_CONTEXT]', '[REQUEST_CONTEXT]', '[FULL_CONTEXT]',
+  '[PROJECT_KNOWLEDGE]', '[PROJECT_ID]', '[BOARD_CONTEXT]', '[CONTEXT]',
+  '[ATTACHED_IMAGES]', '[LATEST_USER_MESSAGE]', '[USER]',
+];
+
+function splitPromptForProvider(fullPrompt) {
+  if (!fullPrompt) return { system: '', user: fullPrompt || '' };
+  let splitIdx = fullPrompt.length;
+  for (const m of PROMPT_SECTION_MARKERS) {
+    const idx = fullPrompt.indexOf(m);
+    if (idx >= 0 && idx < splitIdx) splitIdx = idx;
+  }
+  if (splitIdx === 0 || splitIdx >= fullPrompt.length) {
+    return { system: '', user: fullPrompt };
+  }
+  return {
+    system: fullPrompt.slice(0, splitIdx).trimEnd(),
+    user: fullPrompt.slice(splitIdx).trimStart(),
+  };
 }
 
 // ============================================
@@ -1200,23 +1254,25 @@ const parseOpenAIResponsesText = (data) => {
   return '';
 };
 
-const invokeOpenAIModel = async (model, prompt, imageUrls = []) => {
+const invokeOpenAIModel = async (model, promptInput, imageUrls = []) => {
   const headers = {
     'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
     'Content-Type': 'application/json',
   };
 
+  const { system: sysPrompt, user: userPrompt } = typeof promptInput === 'string'
+    ? splitPromptForProvider(promptInput)
+    : promptInput;
+  const fullPromptText = sysPrompt ? `${sysPrompt}\n\n${userPrompt}` : userPrompt;
   const hasImages = imageUrls.length > 0;
 
   if (!hasImages) {
+    const responsesBody = { model, input: userPrompt, max_output_tokens: 8192 };
+    if (sysPrompt) responsesBody.instructions = sysPrompt;
     const responsesRes = await fetch('https://api.openai.com/v1/responses', {
       method: 'POST',
       headers,
-      body: JSON.stringify({
-        model,
-        input: prompt,
-        max_output_tokens: 2048,
-      }),
+      body: JSON.stringify(responsesBody),
     });
 
     if (responsesRes.ok) {
@@ -1225,7 +1281,7 @@ const invokeOpenAIModel = async (model, prompt, imageUrls = []) => {
       if (responseText) {
         const usage = data.usage
           ? { input_tokens: data.usage.input_tokens || 0, output_tokens: data.usage.output_tokens || 0 }
-          : { input_tokens: estimateTokens(prompt), output_tokens: estimateTokens(responseText) };
+          : { input_tokens: estimateTokens(fullPromptText), output_tokens: estimateTokens(responseText) };
         return { text: responseText, usage };
       }
     } else {
@@ -1234,19 +1290,17 @@ const invokeOpenAIModel = async (model, prompt, imageUrls = []) => {
     }
   }
 
-  const contentParts = [{ type: 'text', text: prompt }];
-  for (const url of imageUrls) {
-    contentParts.push({ type: 'image_url', image_url: { url } });
-  }
+  const messages = [];
+  if (sysPrompt) messages.push({ role: 'system', content: sysPrompt });
+  const userContent = hasImages
+    ? [{ type: 'text', text: userPrompt }, ...imageUrls.map(url => ({ type: 'image_url', image_url: { url } }))]
+    : userPrompt;
+  messages.push({ role: 'user', content: userContent });
 
   const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers,
-    body: JSON.stringify({
-      model,
-      messages: [{ role: 'user', content: hasImages ? contentParts : prompt }],
-      max_completion_tokens: 2048,
-    }),
+    body: JSON.stringify({ model, messages, max_completion_tokens: 8192 }),
   });
 
   if (!openaiRes.ok) {
@@ -1498,7 +1552,7 @@ app.post('/api/vault/enrich-note', requireAuth, synthesisLimiter, async (req, re
 
     const { data: note, error: nErr } = await client
       .from('notes')
-      .select('id, title, content, user_id')
+      .select('id, title, content, user_id, ai_summary, ai_content_hash')
       .eq('id', noteId)
       .eq('user_id', userId)
       .maybeSingle();
@@ -1507,6 +1561,13 @@ app.post('/api/vault/enrich-note', requireAuth, synthesisLimiter, async (req, re
     if (!note) return res.status(404).json({ error: 'Note not found' });
 
     const stripped = backfillStripAttachments(note.content);
+    const contentHash = sha256(stripped.slice(0, 12000));
+
+    // ── Skip LLM if content unchanged since last enrichment ──
+    if (note.ai_content_hash === contentHash && note.ai_summary) {
+      return res.json({ ok: true, skipped: true, reason: 'content_unchanged' });
+    }
+
     const llmInput = `Title: ${String(note.title || '').trim()}\n\n${stripped.slice(0, 12000)}`;
 
     const sys = `You compress vault items for search and UI. Output ONLY valid JSON:
@@ -1555,6 +1616,7 @@ Use empty arrays if unknown. Be factual; infer only from the text.`;
       .update({
         ai_summary: summary || null,
         ai_signals: signals,
+        ai_content_hash: contentHash,
         updated_at: new Date().toISOString(),
       })
       .eq('id', noteId)
@@ -1562,10 +1624,10 @@ Use empty arrays if unknown. Be factual; infer only from the text.`;
 
     if (upErr) {
       const msg = upErr.message || '';
-      if (msg.includes('ai_summary') || msg.includes('ai_signals') || upErr.code === 'PGRST204') {
+      if (msg.includes('ai_summary') || msg.includes('ai_signals') || msg.includes('ai_content_hash') || upErr.code === 'PGRST204') {
         return res.status(503).json({
           error: 'notes_ai_columns_missing',
-          hint: 'Apply migration 025_notes_ai_summary_signals.sql',
+          hint: 'Apply migration 025_notes_ai_summary_signals.sql and 026_ai_caching_layer.sql',
         });
       }
       return res.status(500).json({ error: msg });
@@ -1982,6 +2044,49 @@ app.post('/api/ai/invoke', requireAuth, aiLimiter, checkAiUsageLimit, async (req
       }
     };
 
+    const repairTruncatedJson = (text) => {
+      let s = String(text || "").trim();
+      if (!s.startsWith("{")) return null;
+
+      const tryRepair = (input) => {
+        let t = input;
+        // Strip trailing incomplete tokens: commas, colons, partial keys/values
+        t = t.replace(/,\s*$/, "");
+        t = t.replace(/,\s*"[^"]*$/, "");    // trailing incomplete key like ,"blo
+        t = t.replace(/:\s*$/, ": null");      // trailing colon with no value
+        t = t.replace(/:\s*"[^"]*$/, ': ""'); // trailing incomplete string value
+
+        let braces = 0, brackets = 0, inStr = false, esc = false;
+        for (let i = 0; i < t.length; i++) {
+          const c = t[i];
+          if (esc) { esc = false; continue; }
+          if (c === '\\' && inStr) { esc = true; continue; }
+          if (c === '"') { inStr = !inStr; continue; }
+          if (inStr) continue;
+          if (c === '{') braces++;
+          else if (c === '}') braces--;
+          else if (c === '[') brackets++;
+          else if (c === ']') brackets--;
+        }
+        if (inStr) t += '"';
+        for (let i = 0; i < brackets; i++) t += "]";
+        for (let i = 0; i < braces; i++) t += "}";
+        return safeJsonParse(t, null);
+      };
+
+      // Try direct repair first, then progressively strip more trailing content
+      let parsed = tryRepair(s);
+      if (!parsed) {
+        const lastComma = s.lastIndexOf(",");
+        if (lastComma > 0) parsed = tryRepair(s.slice(0, lastComma));
+      }
+      if (parsed && typeof parsed === "object") {
+        console.log("[JSON-repair] Successfully repaired truncated JSON");
+        return parsed;
+      }
+      return null;
+    };
+
     const extractFirstJsonObject = (text) => {
       const raw = String(text ?? "").trim();
       if (!raw) return null;
@@ -1997,6 +2102,11 @@ app.post('/api/ai/invoke', requireAuth, aiLimiter, checkAiUsageLimit, async (req
         const slice = candidate.slice(first, last + 1);
         const parsed = safeJsonParse(slice, null);
         if (parsed && typeof parsed === "object") return parsed;
+      }
+      // Attempt to repair truncated JSON (e.g., from token limit cutoff)
+      if (first >= 0) {
+        const repaired = repairTruncatedJson(candidate.slice(first));
+        if (repaired) return repaired;
       }
       return null;
     };
@@ -2346,6 +2456,24 @@ ${t}
         "- Respond with as much detail as the topic warrants. Always finish your thought completely.",
         "- You may combine text, YouTube URLs, and other content in a single response. Do not limit yourself to one format.",
         "",
+        "=== WRITING STYLE (CRITICAL) ===",
+        "Write to match how the user thinks, not how a general audience reads. Prioritize clarity and directness over completeness. Never pad a response to seem thorough.",
+        "",
+        "Banned phrases — never use these: 'dive into', 'delve', 'navigate the complexities of', 'it's important to note', 'it's worth mentioning', 'certainly', 'without further ado', 'have you ever wondered'. Never use 'It's not just X, it's Y' parallelism structures. No colon-titled headers (e.g. 'Clarity: Why It Matters'). No blogging sign-offs or clichés of any kind.",
+        "",
+        "Sentence structure: Mix length deliberately. Short sentences land harder. Use them after a complex idea or when you want emphasis. Don't default to uniform medium-length sentences throughout a response.",
+        "",
+        "Voice: Don't hedge unless genuinely uncertain. If uncertain, say what specifically is uncertain — don't hide behind 'typically', 'might', 'could potentially', or 'in many cases'. Commit to a claim or flag the actual gap in confidence.",
+        "",
+        "Lists: Only use bullet points or numbered lists when the content is genuinely list-like. If a thought flows naturally as prose, write it as prose. Never open a response with a list.",
+        "",
+        "Em dashes: Use sparingly. One per response at most. If you find yourself reaching for one, rewrite the sentence instead.",
+        "",
+        "Format: Match response length to the complexity of the request. Short question gets a short answer. Don't structure everything with headers and subheaders — use them only when the response is long enough to need navigation.",
+        "",
+        "Tone: Direct. No throat-clearing, no preamble, no restating the question. Start on the answer. Speak to the user, not at them.",
+        "=== END WRITING STYLE ===",
+        "",
         "Cross-workspace awareness:",
         "- The [WORKSPACE_CONTEXT] section below contains REAL data from the user's workspace — their other boards (titles + content) and their entire Vault (notes, files, links, videos, images). This is actual user data, not hypothetical.",
         "- You can see, reference, and draw connections from all of it.",
@@ -2376,13 +2504,13 @@ ${t}
     const wantsActions = Boolean(returnActions);
     let wantsActionsUserText = '';
     if (wantsActions) {
-      const ctx = String(context || "").trim().slice(0, 2000);
+      const ctx = String(context || "").trim().slice(0, 14000);
       const userText = String(text || "").trim() || String(prompt || "").trim();
       wantsActionsUserText = userText;
       const userIntent = String(intent || "question").trim().toLowerCase();
       prompt = [
         "You are an assistant embedded in a block-based grid editor.",
-        "When helpful, you may request that the app creates blocks by returning actions.",
+        "When helpful, you may request that the app creates blocks or moves/resizes existing blocks by returning actions.",
         "",
         "Return ONLY a JSON object (no markdown, no extra text) shaped like:",
         '{ "assistant": "string", "follow_up_questions": ["string"], "actions": [ ... ] }',
@@ -2393,25 +2521,104 @@ ${t}
         "- If the user explicitly asks to create/make/add a paper/doc, you MUST include {\"type\":\"create_sheet\"}.",
         "- If the user explicitly asks to create/make/add a spreadsheet/table/budget/tracker, you MUST include {\"type\":\"create_spreadsheet\"}.",
         "- If the user explicitly asks to create/make/add a todo/checklist/list, you MUST include {\"type\":\"create_list\"}.",
+        "- If the user asks to move, rearrange, organize, align, group, spread out, or lay out blocks, you MUST include move_block or move_blocks actions with computed coordinates. NEVER just say you organized them — you must actually include the move actions.",
+        "- If the user asks to delete, remove, clear, trash, or get rid of blocks, you MUST include delete_block actions with the correct block IDs from the grid context. Match blocks by their label/content/type to find the right IDs. If the user says 'delete everything' or 'clear the board', include ALL block IDs.",
+        "- If the user asks to edit, update, change, modify, rewrite, or fix content in an existing block, you MUST include the appropriate update action (update_text_block, update_spreadsheet, or update_list) with the correct blockId from the grid context. Match blocks by their label/content/type.",
+        "- If the user mentions the 'notes page', 'notes panel', 'notes', or 'note pad' and asks to write, edit, draft, add, or compose content there, use update_notes (to replace) or append_notes (to add to existing). The grid context includes [GRID NOTES — current content] showing what's already in the notes. Write well-structured content with headings, lists, and paragraphs as appropriate.",
+        "- You can combine multiple action types in a single response (e.g., create a spreadsheet AND update a text block AND delete another block AND write in the notes).",
         "- Otherwise, only include actions when the user clearly needs a structured block (paper/doc -> sheet, data/table/budget -> spreadsheet, tasks -> todo list). If unsure, ask a follow-up question instead of creating blocks.",
         "- If no block is needed, return an empty actions array.",
         "",
         "Supported actions (allowlist):",
-        '- { "type": "create_sheet" }',
-        '- { "type": "create_spreadsheet", "rows": 30, "cols": 20, "cells": { "0,0": "Header" } }',
-        '- { "type": "create_spreadsheet", "rows": 30, "cols": 20, "cells2d": [["A","B"],["1","2"]], "startRow": 0, "startCol": 0 }',
-        '- { "type": "create_list", "listType": "todo"|"bulleted"|"numbered", "items": ["one","two"] }',
-        '- { "type": "create_design_board" }',
+        "",
+        "CREATE actions:",
+        '- { "type": "create_sheet" } — blank paper/document',
+        '- { "type": "create_sheet", "title": "My Paper", "content": "body text" } — paper with initial content',
+        '- { "type": "create_spreadsheet", "rows": 30, "cols": 20, "cells": { "0,0": "Header" } } — spreadsheet with cell map',
+        '- { "type": "create_spreadsheet", "rows": 30, "cols": 20, "cells2d": [["A","B"],["1","2"]], "startRow": 0, "startCol": 0 } — spreadsheet with 2D array',
+        '- { "type": "create_list", "listType": "todo"|"bulleted"|"numbered", "items": ["one","two"] } — list block',
+        '- { "type": "create_design_board" } — freeform design canvas',
+        '- { "type": "create_task_board", "title": "Board Name", "columns": [{"title":"To Do","cards":["task1"]},{"title":"In Progress","cards":[]},{"title":"Done","cards":[]}] } — kanban board',
+        '- { "type": "create_code_block", "language": "python"|"javascript"|"typescript"|"sql"|etc, "content": "code here" } — code block',
+        '- { "type": "create_universal_block", "data": { "content": "text", "textVariant": "h1"|"h2"|"body", "listType": "none"|"bulleted"|"numbered"|"checklist"|"toggle", "brickColor": "#hex", "textColor": "#hex" } } — universal text brick (headings, lists, quotes, body text)',
+        "",
+        "EDIT actions:",
+        '- { "type": "update_text_block", "blockId": "<id>", "content": "new full text" } — replace text content of a brick/sheet',
+        '- { "type": "update_text_block", "blockId": "<id>", "append": "additional text" } — append text to a brick/sheet',
+        '- { "type": "update_text_block", "blockId": "<id>", "data": { "textVariant": "h1" } } — change brick style (h1/h2/body/listType/colors)',
+        '- { "type": "update_spreadsheet", "blockId": "<id>", "cells": { "0,0": "new value", "1,2": "updated" } } — update specific cells in a spreadsheet',
+        '- { "type": "update_spreadsheet", "blockId": "<id>", "cells2d": [["A","B"],["1","2"]], "startRow": 0, "startCol": 0 } — overwrite region of a spreadsheet',
+        '- { "type": "update_list", "blockId": "<id>", "items": ["replaced item 1","replaced item 2"] } — replace all list items',
+        '- { "type": "update_list", "blockId": "<id>", "append": ["new item 1","new item 2"] } — append items to a list',
+        "",
+        "MOVE / RESIZE actions:",
+        '- { "type": "move_block", "blockId": "<id>", "x": <newX>, "y": <newY> } — move to absolute world-pixel coordinates (snapped to grid)',
+        '- { "type": "move_block", "blockId": "<id>", "dx": <deltaX>, "dy": <deltaY> } — move by relative offset in pixels',
+        '- { "type": "move_blocks", "moves": [{ "blockId": "<id>", "x": <x>, "y": <y> }, ...] } — batch-move multiple blocks',
+        '- { "type": "resize_block", "blockId": "<id>", "width": <w>, "height": <h> } — resize (world pixels, snapped to grid)',
+        "",
+        "DELETE actions:",
+        '- { "type": "delete_block", "blockId": "<id>" } — delete a single block',
+        '- { "type": "delete_block", "blockIds": ["<id1>", "<id2>", ...] } — delete multiple blocks',
+        "",
+        "NOTES actions (for the grid's Notes page/panel):",
+        '- { "type": "update_notes", "content": "Full replacement text with\\nline breaks" } — replace ALL notes content',
+        '- { "type": "append_notes", "content": "Text to add at the end" } — append to existing notes',
+        "  Notes content supports plain text with markdown-like formatting: # Heading 1, ## Heading 2, ### Heading 3, - bullet items, 1. numbered items.",
+        "",
+        "Move/resize rules:",
+        "- The grid context below includes EVERY block's id, x, y, w, h in world pixels. Use those values to calculate new positions.",
+        "- Grid cell size is 24px. All positions MUST be multiples of 24 for clean alignment.",
+        "- To move a block to the right by ~200px, use dx: 192 (8 grid cells × 24). To move down ~100px, use dy: 96 (4 cells × 24).",
+        "- When the user says 'move X to the right/left/up/down', use relative dx/dy. When they say 'put X next to Y', compute absolute x/y from Y's position.",
+        "- You can combine move_block with other actions in the same response.",
+        "",
+        "ORGANIZING / ARRANGING blocks:",
+        "- When the user asks to 'organize', 'arrange', 'clean up', 'lay out', or 'sort' blocks, you MUST generate move_blocks actions with calculated coordinates for EVERY block that needs to move.",
+        "- Read all blocks from the grid context, decide on a logical layout (e.g., group by type, arrange in rows/columns, cluster related items), and compute absolute x/y positions for each block.",
+        "- Use the blocks' current w (width) and h (height) to space them properly. Leave a gap of 24-48px between blocks.",
+        "- **VIEWPORT CENTERING (CRITICAL)**: The grid context includes 'Viewport center: x=NNN y=NNN' and optionally 'Viewport size: WxH'. This is where the user is currently looking. You MUST center your layout around the viewport center, NOT around (0,0). Calculate the total layout bounding box first, then offset all positions so the layout's center aligns with the viewport center. For example, if the viewport center is x=2000 y=1500 and your layout is 1200px wide and 900px tall, start placing blocks at x=(2000-600)=1400 y=(1500-450)=1050.",
+        "- Common layout patterns:",
+        "  • Grid layout: arrange blocks in rows and columns, wrapping to the next row when a row gets too wide (e.g., 1200px). Center the grid around viewport center.",
+        "  • Grouped layout: cluster related blocks together (e.g., all images in one area, all text in another), with group labels implied by spacing.",
+        "  • Horizontal row: place blocks side by side with consistent gaps, centered on viewport center.",
+        "  • Vertical column: stack blocks top to bottom, centered horizontally on viewport center x.",
+        "- ALWAYS use move_blocks (batch) when moving 2+ blocks. Include ALL blocks that need repositioning.",
+        "- Use each block's actual id from the grid context. Do NOT invent block IDs.",
+        "",
+        "EDITING / UPDATING blocks:",
+        "- When the user asks to edit, change, update, rewrite, rename, fix, or modify a block's content, find the block by matching its label/content/type in the grid context.",
+        "- For text bricks and sheets: use update_text_block with 'content' to replace, or 'append' to add. Use 'data' to change style (textVariant, listType, colors).",
+        "- For spreadsheets: use update_spreadsheet with 'cells' (key-value map like '0,0':'value') or 'cells2d' (2D array) to update cells.",
+        "- For lists: use update_list with 'items' to replace all items, or 'append' to add new items to the end.",
+        "- You can combine edits with creates, moves, and deletes in one response.",
         "",
         "Examples:",
         '- If user says "I need to write a paper", include actions: [{"type":"create_sheet"}].',
         '- If user says "make me a budget spreadsheet", include actions: [{"type":"create_spreadsheet","rows":30,"cols":6}].',
         '- If user says "I need a todo list", include actions: [{"type":"create_list","listType":"todo","items":["..."]}].',
+        '- If user says "move that text block to the right", include actions: [{"type":"move_block","blockId":"<the block id>","dx":240,"dy":0}].',
+        '- If user says "put X next to Y", read Y\'s x+w to compute X\'s new x, and use Y\'s y for the same row.',
+        '- If user says "make it bigger", include actions: [{"type":"resize_block","blockId":"<id>","width":<newW>,"height":<newH>}].',
+        '- If user says "delete that image" or "remove the budget spreadsheet", find the matching block ID and include actions: [{"type":"delete_block","blockId":"<the block id>"}].',
+        '- If user says "delete everything" or "clear the board", include actions: [{"type":"delete_block","blockIds":["<id1>","<id2>","<id3>",...]}] with ALL block IDs from the grid context.',
+        '- If user says "change the heading to say Project Plan", find the heading block and include actions: [{"type":"update_text_block","blockId":"<id>","content":"Project Plan"}].',
+        '- If user says "add a row to my spreadsheet with Q2 data", include actions: [{"type":"update_spreadsheet","blockId":"<id>","cells":{"5,0":"Q2","5,1":"1500","5,2":"2300"}}].',
+        '- If user says "add milk and eggs to my grocery list", include actions: [{"type":"update_list","blockId":"<id>","append":["milk","eggs"]}].',
+        '- If user says "rewrite my todo list", include actions: [{"type":"update_list","blockId":"<id>","items":["new item 1","new item 2"]}].',
+        '- If user says "make a kanban for my project", include actions: [{"type":"create_task_board","title":"Project Board","columns":[{"title":"To Do","cards":["Research","Design"]},{"title":"In Progress","cards":[]},{"title":"Done","cards":[]}]}].',
+        '- If user says "add a Python code block", include actions: [{"type":"create_code_block","language":"python","content":"# Your code here\\n"}].',
+        '- If user says "create a heading that says Welcome", include actions: [{"type":"create_universal_block","data":{"content":"Welcome","textVariant":"h1"}}].',
+        '- If user says "write a project summary in the notes page", include actions: [{"type":"update_notes","content":"# Project Summary\\n\\nThis project aims to...\\n\\n## Key Goals\\n\\n- Goal 1\\n- Goal 2"}].',
+        '- If user says "add meeting notes to the notes page", include actions: [{"type":"append_notes","content":"\\n## Meeting Notes — Today\\n\\n- Discussed timeline\\n- Agreed on milestones"}].',
+        '- If user says "clear the notes page" or "rewrite the notes", use update_notes with the new or empty content.',
+        '- If user says "organize everything" and viewport center is x=2000 y=1500, compute a clean grid centered there:',
+        '  actions: [{"type":"move_blocks","moves":[{"blockId":"abc","x":1400,"y":1050},{"blockId":"def","x":1688,"y":1050},{"blockId":"ghi","x":1400,"y":1386},...]}]',
         "",
         "If the user mentions writing a paper/essay/report/document, prefer {\"type\":\"create_sheet\"}.",
         "If the user mentions a spreadsheet/table/budget/tracker, prefer {\"type\":\"create_spreadsheet\"}.",
         "",
-        ctx ? `Grid context:\n${ctx}\n` : "",
+        ctx ? `Grid context (use these block IDs and positions):\n${ctx}\n` : "",
         `Intent: ${userIntent}`,
         "",
         `User text:\n${userText}`,
@@ -2435,18 +2642,27 @@ ${t}
       });
     }
 
-    // Scrape any URLs the user pasted, and run web search in parallel.
-    // Use the pure user message for search detection so conversation history doesn't trigger false positives.
+    // Auto-classify enrichment tier based on query content
     const userText = String(text || prompt || "");
     const searchText = pureUserMessage || userText;
     const hasContextForSearch = Boolean(context) || Boolean(knowledgeBase) || Boolean(workspaceContext);
+    const enrichTier = (wantsActions || !isChatIntent)
+      ? 'none'
+      : classifyEnrichment(pureUserMessage || text, { hasFocusedBricks: Boolean(hasFocusedBricks), hasContext: hasContextForSearch });
+    if (enrichTier === 'none') console.log('⚡ No enrichment needed — simple query / action');
+    else if (enrichTier === 'light') console.log('💡 Light enrichment — synthesis + user model (no web)');
+    else console.log('🔬 Full enrichment — synthesis, user model, web search, URL scraping');
+    const skipScrape    = enrichTier !== 'full';
+    const skipSearch    = skipWebSearch || enrichTier !== 'full';
+    const skipSynthesis = enrichTier === 'none';
+    const skipUserModel = enrichTier === 'none';
     const [scrapedContent, searchResults, synthesisRetrieval, userModelSection] = await Promise.all([
-      scrapeUrlsFromText(searchText),
-      skipWebSearch ? Promise.resolve("") : runWebSearchIfNeeded(searchText, { hasFocusedBricks: Boolean(hasFocusedBricks), hasContext: hasContextForSearch }),
-      !wantsActions && isChatIntent
+      skipScrape ? Promise.resolve("") : scrapeUrlsFromText(searchText),
+      skipSearch ? Promise.resolve("") : runWebSearchIfNeeded(searchText, { hasFocusedBricks: Boolean(hasFocusedBricks), hasContext: hasContextForSearch }),
+      !skipSynthesis
         ? fetchSynthesisRetrievalSection(req.headers.authorization, pureUserMessage || searchText)
         : Promise.resolve(""),
-      !wantsActions && isChatIntent
+      !skipUserModel
         ? fetchUserModelSection(req.headers.authorization, req.user?.id)
         : Promise.resolve(""),
     ]);
@@ -2470,8 +2686,12 @@ ${t}
       }
     }
 
-    if (imageUrls.length > 0) {
-      console.log(`🖼️ Sending ${imageUrls.length} image(s) to ${actualModel}`);
+    // Skip sending images when AI only needs to compute block positions (organize/move/resize)
+    const effectiveImageUrls = wantsActions ? [] : imageUrls;
+    if (wantsActions && imageUrls.length > 0) {
+      console.log(`⚡ Skipping ${imageUrls.length} image(s) for action-only request (faster)`);
+    } else if (effectiveImageUrls.length > 0) {
+      console.log(`🖼️ Sending ${effectiveImageUrls.length} image(s) to ${actualModel}`);
     }
 
     let responseText = '';
@@ -2485,7 +2705,7 @@ ${t}
           error: 'OpenAI API key not configured. Please set OPENAI_API_KEY in your .env file.' 
         });
       }
-      const openAIResult = await invokeOpenAIModel(actualModel, prompt, imageUrls);
+      const openAIResult = await invokeOpenAIModel(actualModel, prompt, effectiveImageUrls);
       responseText = openAIResult.text;
       usageData = openAIResult.usage;
 
@@ -2502,9 +2722,10 @@ ${t}
         console.log(`🔁 Anthropic model alias: ${actualModel} -> ${anthropicModel}`);
       }
 
+      const { system: claudeSys, user: claudeUser } = splitPromptForProvider(prompt);
       const anthropicContent = [];
-      anthropicContent.push({ type: 'text', text: prompt });
-      for (const url of imageUrls) {
+      anthropicContent.push({ type: 'text', text: claudeUser });
+      for (const url of effectiveImageUrls) {
         try {
           if (url.startsWith('data:image/')) {
             const match = url.match(/^data:(image\/[^;]+);base64,(.+)$/);
@@ -2525,18 +2746,23 @@ ${t}
         }
       }
 
+      const anthropicBody = {
+        model: anthropicModel,
+        messages: [{ role: 'user', content: effectiveImageUrls.length > 0 ? anthropicContent : claudeUser }],
+        max_tokens: wantsActions ? 8192 : 4096,
+      };
+      if (claudeSys) {
+        anthropicBody.system = [{ type: 'text', text: claudeSys, cache_control: { type: 'ephemeral' } }];
+      }
       const anthropicRes = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: {
           'x-api-key': process.env.ANTHROPIC_API_KEY,
           'anthropic-version': '2023-06-01',
+          'anthropic-beta': 'prompt-caching-2024-07-31',
           'content-type': 'application/json'
         },
-        body: JSON.stringify({
-          model: anthropicModel,
-          messages: [{ role: 'user', content: imageUrls.length > 0 ? anthropicContent : prompt }],
-          max_tokens: 4096
-        })
+        body: JSON.stringify(anthropicBody)
       });
 
       if (!anthropicRes.ok) {
@@ -2579,8 +2805,9 @@ ${t}
       console.log(`   API Key: ${process.env.GOOGLE_API_KEY ? 'SET (' + process.env.GOOGLE_API_KEY.substring(0, 10) + '...)' : 'NOT SET'}`);
       
       // Try v1beta first (free tier compatible), then fallback to v1 if needed
-      const geminiParts = [{ text: prompt }];
-      for (const url of imageUrls) {
+      const { system: gemSys, user: gemUser } = splitPromptForProvider(prompt);
+      const geminiParts = [{ text: gemUser }];
+      for (const url of effectiveImageUrls) {
         try {
           if (url.startsWith('data:image/')) {
             const match = url.match(/^data:(image\/[^;]+);base64,(.+)$/);
@@ -2611,10 +2838,13 @@ ${t}
             parts: geminiParts
           }],
           generationConfig: {
-            maxOutputTokens: 2048,
+            maxOutputTokens: wantsActions ? 8192 : 4096,
             temperature: 0.7
           }
       };
+      if (gemSys) {
+        requestBody.systemInstruction = { parts: [{ text: gemSys }] };
+      }
       
       let geminiRes;
       let apiVersion = 'v1beta';
@@ -2689,7 +2919,9 @@ ${t}
       }
       
       const data = await geminiRes.json();
-      console.log('✅ Gemini API Response received');
+      const finishReason = data.candidates?.[0]?.finishReason || 'unknown';
+      console.log(`✅ Gemini API Response received (finishReason=${finishReason})`);
+      if (finishReason === 'MAX_TOKENS') console.warn('⚠️ Gemini response was truncated by token limit!');
       responseText = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
       usageData = extractGeminiUsage(data);
       
@@ -2721,14 +2953,18 @@ ${t}
         });
       }
 
-      let grokContent = prompt;
-      if (imageUrls.length > 0) {
-        const parts = [{ type: 'text', text: prompt }];
-        for (const url of imageUrls) {
+      const { system: grokSys, user: grokUser } = splitPromptForProvider(prompt);
+      const grokMessages = [];
+      if (grokSys) grokMessages.push({ role: 'system', content: grokSys });
+      let grokContent = grokUser;
+      if (effectiveImageUrls.length > 0) {
+        const parts = [{ type: 'text', text: grokUser }];
+        for (const url of effectiveImageUrls) {
           parts.push({ type: 'image_url', image_url: { url } });
         }
         grokContent = parts;
       }
+      grokMessages.push({ role: 'user', content: grokContent });
 
       const grokRes = await fetch('https://api.x.ai/v1/chat/completions', {
         method: 'POST',
@@ -2738,8 +2974,8 @@ ${t}
         },
         body: JSON.stringify({
           model: grokModel,
-          messages: [{ role: 'user', content: grokContent }],
-          max_tokens: 4096
+          messages: grokMessages,
+          max_tokens: wantsActions ? 8192 : 4096
         })
       });
 
@@ -2792,6 +3028,8 @@ ${t}
       let actions = Array.isArray(parsed?.actions) ? parsed.actions : [];
       const followUpsRaw = parsed?.follow_up_questions ?? parsed?.followUpQuestions ?? parsed?.followUps;
       const followUpQuestions = Array.isArray(followUpsRaw) ? followUpsRaw.map((x) => String(x || "").trim()).filter(Boolean).slice(0, 6) : [];
+
+      console.log(`[Actions] parsed=${!!parsed} actions=${actions.length} types=${actions.map(a => a?.type).join(',')} responseLen=${String(responseText || '').length}${!parsed ? ` rawResponse=${String(responseText || '').slice(0, 500)}` : ''}`);
 
       // Deterministic fallback (old editor behavior): if the model didn't return actions,
       // infer block creation from the user request so blocks still get created.
@@ -3040,6 +3278,24 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
         "- General principle: Never say 'I can't do that.' Tell the user HOW to do it and offer to help.",
         "=== END TOOL SUGGESTIONS ===",
         "",
+        "=== WRITING STYLE (CRITICAL) ===",
+        "Write to match how the user thinks, not how a general audience reads. Prioritize clarity and directness over completeness. Never pad a response to seem thorough.",
+        "",
+        "Banned phrases — never use these: 'dive into', 'delve', 'navigate the complexities of', 'it's important to note', 'it's worth mentioning', 'certainly', 'without further ado', 'have you ever wondered'. Never use 'It's not just X, it's Y' parallelism structures. No colon-titled headers (e.g. 'Clarity: Why It Matters'). No blogging sign-offs or clichés of any kind.",
+        "",
+        "Sentence structure: Mix length deliberately. Short sentences land harder. Use them after a complex idea or when you want emphasis. Don't default to uniform medium-length sentences throughout a response.",
+        "",
+        "Voice: Don't hedge unless genuinely uncertain. If uncertain, say what specifically is uncertain — don't hide behind 'typically', 'might', 'could potentially', or 'in many cases'. Commit to a claim or flag the actual gap in confidence.",
+        "",
+        "Lists: Only use bullet points or numbered lists when the content is genuinely list-like. If a thought flows naturally as prose, write it as prose. Never open a response with a list.",
+        "",
+        "Em dashes: Use sparingly. One per response at most. If you find yourself reaching for one, rewrite the sentence instead.",
+        "",
+        "Format: Match response length to the complexity of the request. Short question gets a short answer. Don't structure everything with headers and subheaders — use them only when the response is long enough to need navigation.",
+        "",
+        "Tone: Direct. No throat-clearing, no preamble, no restating the question. Start on the answer. Speak to the user, not at them.",
+        "=== END WRITING STYLE ===",
+        "",
         userPromptSection,
         "",
         "Cross-workspace awareness:",
@@ -3077,18 +3333,27 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
       });
     }
 
-    // Scrape any URLs the user pasted, and run web search in parallel.
-    // Use the pure user message so conversation history doesn't trigger false positives.
+    // Auto-classify enrichment tier based on query content
     const userText = String(text || prompt || "");
     const streamSearchText = streamPureUserMessage || userText;
     const hasContextForStreamSearch = Boolean(context) || Boolean(knowledgeBase) || Boolean(workspaceContext);
+    const streamEnrichTier = !isChatIntent
+      ? 'none'
+      : classifyEnrichment(streamPureUserMessage || text, { hasFocusedBricks: Boolean(hasFocusedBricks), hasContext: hasContextForStreamSearch });
+    if (streamEnrichTier === 'none') console.log('⚡ Stream: No enrichment — simple query / non-chat');
+    else if (streamEnrichTier === 'light') console.log('💡 Stream: Light enrichment — synthesis + user model (no web)');
+    else console.log('🔬 Stream: Full enrichment — synthesis, user model, web search, URL scraping');
+    const streamSkipScrape    = streamEnrichTier !== 'full';
+    const streamSkipSearch    = skipWebSearch || streamEnrichTier !== 'full';
+    const streamSkipSynthesis = streamEnrichTier === 'none';
+    const streamSkipUserModel = streamEnrichTier === 'none';
     const [scrapedContent, searchResults, synthesisRetrieval, userModelSection] = await Promise.all([
-      scrapeUrlsFromText(streamSearchText),
-      skipWebSearch ? Promise.resolve("") : runWebSearchIfNeeded(streamSearchText, { hasFocusedBricks: Boolean(hasFocusedBricks), hasContext: hasContextForStreamSearch }),
-      isChatIntent
+      streamSkipScrape ? Promise.resolve("") : scrapeUrlsFromText(streamSearchText),
+      streamSkipSearch ? Promise.resolve("") : runWebSearchIfNeeded(streamSearchText, { hasFocusedBricks: Boolean(hasFocusedBricks), hasContext: hasContextForStreamSearch }),
+      !streamSkipSynthesis
         ? fetchSynthesisRetrievalSection(req.headers.authorization, streamPureUserMessage || userText)
         : Promise.resolve(""),
-      isChatIntent
+      !streamSkipUserModel
         ? fetchUserModelSection(req.headers.authorization, req.user?.id)
         : Promise.resolve(""),
     ]);
@@ -3175,18 +3440,19 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
       const ab = makeProviderAbort();
       let openaiRes;
       try {
-        let openaiContent = prompt;
-        if (imageUrls.length > 0) {
-          const parts = [{ type: 'text', text: prompt }];
-          for (const url of imageUrls) parts.push({ type: 'image_url', image_url: { url } });
-          openaiContent = parts;
-        }
+        const { system: oaiSys, user: oaiUser } = splitPromptForProvider(prompt);
+        const oaiMessages = [];
+        if (oaiSys) oaiMessages.push({ role: 'system', content: oaiSys });
+        const userContent = imageUrls.length > 0
+          ? [{ type: 'text', text: oaiUser }, ...imageUrls.map(u => ({ type: 'image_url', image_url: { url: u } }))]
+          : oaiUser;
+        oaiMessages.push({ role: 'user', content: userContent });
         openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
           method: 'POST',
           headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({
             model: actualModel,
-            messages: [{ role: 'user', content: openaiContent }],
+            messages: oaiMessages,
             max_completion_tokens: 4096,
             stream: true,
           }),
@@ -3231,9 +3497,10 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
       const ab = makeProviderAbort();
       let anthropicRes;
       try {
-        let claudeContent = prompt;
+        const { system: strmClaudeSys, user: strmClaudeUser } = splitPromptForProvider(prompt);
+        let claudeContent = strmClaudeUser;
         if (imageUrls.length > 0) {
-          const parts = [{ type: 'text', text: prompt }];
+          const parts = [{ type: 'text', text: strmClaudeUser }];
           for (const url of imageUrls) {
             if (url.startsWith('data:image/')) {
               const match = url.match(/^data:(image\/[^;]+);base64,(.+)$/);
@@ -3244,19 +3511,24 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
           }
           claudeContent = parts;
         }
+        const strmClaudeBody = {
+          model: anthropicModel,
+          messages: [{ role: 'user', content: claudeContent }],
+          max_tokens: 4096,
+          stream: true,
+        };
+        if (strmClaudeSys) {
+          strmClaudeBody.system = [{ type: 'text', text: strmClaudeSys, cache_control: { type: 'ephemeral' } }];
+        }
         anthropicRes = await fetch('https://api.anthropic.com/v1/messages', {
           method: 'POST',
           headers: {
             'x-api-key': process.env.ANTHROPIC_API_KEY,
             'anthropic-version': '2023-06-01',
+            'anthropic-beta': 'prompt-caching-2024-07-31',
             'content-type': 'application/json',
           },
-          body: JSON.stringify({
-            model: anthropicModel,
-            messages: [{ role: 'user', content: claudeContent }],
-            max_tokens: 4096,
-            stream: true,
-          }),
+          body: JSON.stringify(strmClaudeBody),
           signal: ab.signal,
         });
         ab.clear();
@@ -3300,7 +3572,8 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
       const ab = makeProviderAbort();
       let geminiRes;
       try {
-        const geminiParts = [{ text: prompt }];
+        const { system: strmGemSys, user: strmGemUser } = splitPromptForProvider(prompt);
+        const geminiParts = [{ text: strmGemUser }];
         for (const url of imageUrls) {
           try {
             if (url.startsWith('data:image/')) {
@@ -3316,15 +3589,19 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
             }
           } catch (imgErr) { console.warn('⚠️ Stream: failed to fetch image for Gemini:', imgErr.message); }
         }
+        const strmGemBody = {
+          contents: [{ parts: geminiParts }],
+          generationConfig: { maxOutputTokens: 4096, temperature: 0.7 },
+        };
+        if (strmGemSys) {
+          strmGemBody.systemInstruction = { parts: [{ text: strmGemSys }] };
+        }
         geminiRes = await fetch(
           `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:streamGenerateContent?alt=sse&key=${process.env.GOOGLE_API_KEY}`,
           {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              contents: [{ parts: geminiParts }],
-              generationConfig: { maxOutputTokens: 4096, temperature: 0.7 },
-            }),
+            body: JSON.stringify(strmGemBody),
             signal: ab.signal,
           }
         );
@@ -3365,18 +3642,22 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
       let grokRes;
       try {
         console.log(`📡 Calling xAI Grok: ${actualModel}...`);
-        let grokContent = prompt;
+        const { system: strmGrokSys, user: strmGrokUser } = splitPromptForProvider(prompt);
+        const strmGrokMsgs = [];
+        if (strmGrokSys) strmGrokMsgs.push({ role: 'system', content: strmGrokSys });
+        let grokContent = strmGrokUser;
         if (imageUrls.length > 0) {
-          const parts = [{ type: 'text', text: prompt }];
+          const parts = [{ type: 'text', text: strmGrokUser }];
           for (const url of imageUrls) parts.push({ type: 'image_url', image_url: { url } });
           grokContent = parts;
         }
+        strmGrokMsgs.push({ role: 'user', content: grokContent });
         grokRes = await fetch('https://api.x.ai/v1/chat/completions', {
           method: 'POST',
           headers: { 'Authorization': `Bearer ${process.env.XAI_API_KEY}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({
             model: actualModel,
-            messages: [{ role: 'user', content: grokContent }],
+            messages: strmGrokMsgs,
             max_tokens: 4096,
             stream: true,
           }),
@@ -3734,9 +4015,27 @@ app.post('/api/ai/describe-image', requireAuth, describeLimiter, async (req, res
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) return res.status(500).json({ error: 'OPENAI_API_KEY not configured' });
 
-    let messages;
+    const userId = req.user?.id;
     const isVisual = url && !url.startsWith('data:') && /image|video/i.test(fileType || '');
+    const cacheInput = isVisual ? url : [text.slice(0, 6000), fileType, fileName].join('|');
+    const urlHash = sha256(cacheInput);
 
+    // ── Cache lookup ──
+    if (userId && supabaseAdmin) {
+      try {
+        const { data: cached } = await supabaseAdmin
+          .from('ai_description_cache')
+          .select('description')
+          .eq('user_id', userId)
+          .eq('url_hash', urlHash)
+          .maybeSingle();
+        if (cached?.description) {
+          return res.json({ description: cached.description, cached: true });
+        }
+      } catch { /* cache miss — proceed to LLM */ }
+    }
+
+    let messages;
     if (isVisual) {
       messages = [{
         role: 'user',
@@ -3774,6 +4073,18 @@ app.post('/api/ai/describe-image', requireAuth, describeLimiter, async (req, res
 
     const data = await openaiRes.json();
     const description = data.choices?.[0]?.message?.content?.trim() || '';
+
+    // ── Cache write (fire-and-forget) ──
+    if (description && userId && supabaseAdmin) {
+      supabaseAdmin.from('ai_description_cache').upsert({
+        user_id: userId,
+        url_hash: urlHash,
+        url: (isVisual ? url : (fileName || fileType || '')).slice(0, 2000),
+        description,
+        model: 'gpt-4o-mini',
+      }, { onConflict: 'user_id,url_hash' }).then(() => {}).catch(() => {});
+    }
+
     return res.json({ description });
   } catch (error) {
     console.error('❌ describe-image error:', error.message);
@@ -3847,6 +4158,53 @@ app.post('/api/ai/transcribe', requireAuth, aiLimiter, checkAiUsageLimit, upload
     return res.status(500).json({
       error: `Transcription failed: ${error?.message || 'Unknown error'}`,
     });
+  }
+});
+
+// ──────────────────────────────────────────────────
+// Conversation summarization — compress older turns to save tokens
+// ──────────────────────────────────────────────────
+app.post('/api/ai/summarize-conversation', requireAuth, aiLimiter, async (req, res) => {
+  try {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) return res.status(503).json({ error: 'LLM not configured' });
+
+    const messages = req.body?.messages;
+    if (!Array.isArray(messages) || messages.length < 4) {
+      return res.status(400).json({ error: 'Need at least 4 messages to summarize' });
+    }
+
+    const formatted = messages
+      .slice(0, 40)
+      .map(m => `${String(m.role || 'user').toUpperCase()}: ${String(m.content || '').slice(0, 800)}`)
+      .join('\n');
+
+    const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        temperature: 0.3,
+        max_tokens: 400,
+        messages: [
+          {
+            role: 'system',
+            content: 'Summarize this conversation in 2-4 sentences. Capture: the main topics discussed, any decisions or conclusions reached, and any pending questions. Be factual and concise. Output only the summary, nothing else.',
+          },
+          { role: 'user', content: formatted },
+        ],
+      }),
+    });
+
+    if (!openaiRes.ok) {
+      return res.status(502).json({ error: 'summarize_failed' });
+    }
+    const data = await openaiRes.json();
+    const summary = data.choices?.[0]?.message?.content?.trim() || '';
+    return res.json({ summary });
+  } catch (error) {
+    console.error('❌ summarize-conversation error:', error?.message);
+    return res.status(500).json({ error: 'Summarization failed' });
   }
 });
 
@@ -4185,8 +4543,47 @@ app.post('/api/whisper/transcribe', requireAuth, aiLimiter, upload.single('file'
     }
     const filename = req.file.originalname || 'upload.webm';
     const mime = req.file.mimetype || 'audio/webm';
+    const userId = req.user?.id;
+    const contentHash = sha256(req.file.buffer);
+
+    // ── Cache lookup ──
+    if (userId && supabaseAdmin) {
+      try {
+        const { data: cached } = await supabaseAdmin
+          .from('ai_transcription_cache')
+          .select('transcript, duration_sec')
+          .eq('user_id', userId)
+          .eq('content_hash', contentHash)
+          .maybeSingle();
+        if (cached?.transcript) {
+          console.log(`[Whisper API] Cache hit for ${filename} (${contentHash.slice(0, 12)}…)`);
+          return res.json({
+            transcript: cached.transcript,
+            segments: [],
+            duration: cached.duration_sec || 0,
+            language: '',
+            model: 'whisper-1',
+            cached: true,
+          });
+        }
+      } catch { /* cache miss — proceed to Whisper */ }
+    }
+
     console.log(`[Whisper API] Transcribing uploaded file: ${filename} (${(req.file.size / 1024 / 1024).toFixed(1)}MB, ${mime})`);
     const result = await transcribeBuffer(req.file.buffer, filename, mime);
+
+    // ── Cache write (fire-and-forget) ──
+    if (result.transcript && userId && supabaseAdmin) {
+      supabaseAdmin.from('ai_transcription_cache').upsert({
+        user_id: userId,
+        content_hash: contentHash,
+        filename: filename.slice(0, 500),
+        transcript: result.transcript,
+        duration_sec: result.duration || null,
+        model: 'whisper-1',
+      }, { onConflict: 'user_id,content_hash' }).then(() => {}).catch(() => {});
+    }
+
     return res.json(result);
   } catch (error) {
     console.error('[Whisper API] Error:', error.message);

@@ -47,7 +47,6 @@ type ResizeState = {
 
 export const ImageBlock = memo(function ImageBlock({ id, onMinimize, onMenu }: { id: string; onMinimize?: (id: string) => void; onMenu?: (id: string, rect: DOMRect) => void }) {
   const block = useCanvasStore((s) => s.blocks[id]);
-  const allBlocks = useCanvasStore((s) => s.blocks);
   const selectBlocks = useCanvasStore((s) => s.selectBlocks);
   const toggleSelect = useCanvasStore((s) => s.toggleSelect);
   const isSelected = useCanvasStore((s) => s.selectedIds.includes(id));
@@ -189,7 +188,7 @@ export const ImageBlock = memo(function ImageBlock({ id, onMinimize, onMenu }: {
     let maxH = Number.POSITIVE_INFINITY;
     const containerId = String((block as any)?.containerId || "");
     if (containerId) {
-      const container: any = (allBlocks as any)?.[containerId];
+      const container: any = (useCanvasStore.getState().blocks as any)?.[containerId];
       if (container && String(container.type || "") === "create") {
         const cRight = Number(container.x || 0) + Number(container.width || 0);
         const cBottom = Number(container.y || 0) + Number(container.height || 0);
@@ -510,13 +509,26 @@ export const ImageBlock = memo(function ImageBlock({ id, onMinimize, onMenu }: {
         <span style={{ width: 16, height: 2, borderRadius: 1, background: "rgba(0,0,0,0.25)" }} />
       </div>
 
-      <div className={`glass-block overflow-hidden ${isSelected ? "omnia-selected-glass" : ""}`} style={{ width: "100%", height: "100%" }}>
+      <div className={`glass-block overflow-hidden ${isSelected ? "omnia-selected-glass" : ""}`} style={{ width: "100%", height: "100%", position: "relative" }}>
         <img
           src={src}
           alt=""
           className="w-full h-full object-cover object-center select-none pointer-events-none"
           draggable={false}
+          onError={(e) => {
+            const img = e.currentTarget;
+            img.style.display = "none";
+            const fallback = img.nextElementSibling as HTMLElement | null;
+            if (fallback) fallback.style.display = "flex";
+          }}
         />
+        <div
+          className="w-full h-full flex-col items-center justify-center bg-black/5 text-black/40 gap-1.5 select-none"
+          style={{ display: "none", position: "absolute", inset: 0 }}
+        >
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><path d="m21 15-5-5L5 21" /></svg>
+          <span className="text-[10px] opacity-60">Image unavailable</span>
+        </div>
       </div>
 
       {/* Resize handles (simple + modern) */}

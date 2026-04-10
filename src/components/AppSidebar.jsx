@@ -237,13 +237,13 @@ export default function AppSidebar() {
               signInWithOAuth("google");
             }
           }}
-          className="flex items-center gap-2 rounded-full glass-text-card px-2 py-1 text-[0.6875rem] text-black/70 hover:bg-blue-500/15 transition-colors"
+          className="flex items-center gap-1.5 rounded-full bg-white/70 dark:bg-white/10 backdrop-blur-md border border-black/8 dark:border-white/10 pl-1 pr-3 py-1 text-[0.6875rem] text-black/70 dark:text-white/70 hover:bg-white/90 dark:hover:bg-white/15 shadow-sm transition-colors"
           title={user ? "Sign out" : "Sign in"}
         >
-          <div className="h-6 w-6 rounded-full glass-text-card text-[0.6875rem] font-semibold text-black/70 flex items-center justify-center">
+          <div className="h-6 w-6 rounded-full bg-blue-500/15 dark:bg-blue-400/20 text-[0.6875rem] font-semibold text-blue-600 dark:text-blue-400 flex items-center justify-center flex-shrink-0">
             {user?.email ? user.email.charAt(0).toUpperCase() : "?"}
           </div>
-          <span className="pr-1">{user ? "Signed in" : "Sign in"}</span>
+          <span>{user ? "Signed in" : "Sign in"}</span>
         </button>
       </div>
 
@@ -258,7 +258,7 @@ export default function AppSidebar() {
         </div>
 
         <div className="px-2 pt-2">
-          <div className="flex items-center gap-2 rounded-xl border border-black/10 bg-transparent px-2 py-1.5 text-[0.6875rem] text-black/60">
+          <div className="flex items-center gap-2 rounded-xl border border-transparent bg-transparent px-2 py-1.5 text-[0.6875rem] text-black/60">
             <SearchIcon className="w-3.5 h-3.5" />
             <input
               placeholder="Search"

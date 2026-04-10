@@ -10,7 +10,9 @@ export const VAULT_AI_MAX_CARD_LINES = 40;
 
 const NOTES_COLUMN_SETS = [
   "id, title, content, attachments, tags, created_at, updated_at, source",
+  "id, title, content, attachments, tags, created_at, updated_at",
   "id, title, content, tags, created_at, updated_at, source",
+  "id, title, content, tags, created_at, updated_at",
   "id, title, content, attachments, created_at, updated_at",
   "id, title, content, created_at, updated_at",
 ] as const;
@@ -429,6 +431,34 @@ function collectAllTagsFromNotes(notes: VaultAiNoteRow[]): string {
   return sorted.length ? sorted.map(([t]) => t).join(", ") : "(none yet)";
 }
 
+/** Builds a TAG DIRECTORY mapping each tag to its associated note IDs and titles. */
+function buildTagDirectory(notes: VaultAiNoteRow[]): string {
+  const tagIndex: Record<string, { id: string; title: string }[]> = {};
+  for (const note of notes) {
+    const tags = Array.isArray(note.tags) ? (note.tags as string[]) : [];
+    if (tags.length === 0) continue;
+    const id = String(note.id || "");
+    const title = String(note.title || "Untitled").slice(0, 60);
+    for (const raw of tags) {
+      const tag = String(raw).trim();
+      if (!tag) continue;
+      if (!tagIndex[tag]) tagIndex[tag] = [];
+      tagIndex[tag].push({ id, title });
+    }
+  }
+  const sorted = Object.entries(tagIndex).sort((a, b) => b[1].length - a[1].length);
+  if (sorted.length === 0) return "";
+  const lines = sorted.map(([tag, items]) => {
+    const refs = items
+      .slice(0, 8)
+      .map((n) => `"${n.title}" {noteId:${n.id}}`)
+      .join(", ");
+    const overflow = items.length > 8 ? ` +${items.length - 8} more` : "";
+    return `#${tag} (${items.length}): ${refs}${overflow}`;
+  });
+  return `TAG DIRECTORY — every tag with its items:\n${lines.join("\n")}`;
+}
+
 export function buildVaultDetailForGridAi(
   notes: VaultAiNoteRow[],
   opts?: { maxLines?: number },
@@ -437,9 +467,16 @@ export function buildVaultDetailForGridAi(
   const cards = buildVaultCardsForAiChat(notes);
   const totalCardCount = cards.length;
   const existingTagsStr = collectAllTagsFromNotes(notes);
+  const tagDir = buildTagDirectory(notes);
   const lines = cards.slice(0, maxLines).map(formatVaultCardLineForAi);
   const block = lines.length
-    ? `DETAILED VAULT — same listing as Vault chat (${totalCardCount} cards from recent notes; showing up to ${maxLines}). Existing tags in use: ${existingTagsStr}.\n${lines.join("\n")}`
+    ? [
+        `DETAILED VAULT — same listing as Vault chat (${totalCardCount} cards from recent notes; showing up to ${maxLines}). Existing tags in use: ${existingTagsStr}.`,
+        tagDir,
+        lines.join("\n"),
+      ]
+        .filter(Boolean)
+        .join("\n\n")
     : "";
   return { block, totalCardCount, existingTagsStr };
 }

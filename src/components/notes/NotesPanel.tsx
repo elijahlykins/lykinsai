@@ -21,6 +21,85 @@ import {
 } from "./notesDropInsert";
 import { StickyNote, ChevronDown } from "lucide-react";
 
+/* ── streaming helpers ── */
+
+function countNodeWords(node: any): number {
+  if (!node) return 0;
+  if (node.type === "text")
+    return (node.text || "").split(/\s+/).filter(Boolean).length;
+  if (Array.isArray(node.content))
+    return node.content.reduce((s: number, c: any) => s + countNodeWords(c), 0);
+  return 0;
+}
+
+function truncateNodeAtWords(
+  node: any,
+  maxWords: number,
+): { node: any; used: number } | null {
+  if (!node || maxWords <= 0) return null;
+
+  if (node.type === "text") {
+    const parts = (node.text || "").split(/(\s+)/);
+    let count = 0;
+    let result = "";
+    for (const part of parts) {
+      if (/\S/.test(part)) {
+        count++;
+        if (count > maxWords) break;
+      }
+      result += part;
+    }
+    return { node: { ...node, text: result }, used: Math.min(count, maxWords) };
+  }
+
+  if (Array.isArray(node.content) && node.content.length > 0) {
+    const newContent: any[] = [];
+    let remaining = maxWords;
+    let totalUsed = 0;
+    for (const child of node.content) {
+      if (remaining <= 0) break;
+      const childWords = countNodeWords(child);
+      if (childWords <= remaining) {
+        newContent.push(child);
+        remaining -= childWords;
+        totalUsed += childWords;
+      } else {
+        const truncated = truncateNodeAtWords(child, remaining);
+        if (truncated) {
+          newContent.push(truncated.node);
+          totalUsed += truncated.used;
+        }
+        remaining = 0;
+      }
+    }
+    return { node: { ...node, content: newContent }, used: totalUsed };
+  }
+
+  return { node, used: 0 };
+}
+
+function buildPartialContent(nodes: any[], wordLimit: number): any[] {
+  const result: any[] = [];
+  let remaining = wordLimit;
+  for (const node of nodes) {
+    if (remaining <= 0) break;
+    const words = countNodeWords(node);
+    if (words === 0) {
+      result.push(node);
+      continue;
+    }
+    if (words <= remaining) {
+      result.push(node);
+      remaining -= words;
+    } else {
+      const t = truncateNodeAtWords(node, remaining);
+      if (t) result.push(t.node);
+      remaining = 0;
+    }
+  }
+  return result;
+}
+
 const SlashCommands = Extension.create({
   name: "slashCommands",
 
@@ -129,6 +208,9 @@ export default function NotesPanel({ open, onOpenChange, content, onContentChang
   const [dragActive, setDragActive] = useState(false);
   const startY = useRef(0);
   const startH = useRef(0);
+  const notesStreamTimerRef = useRef<number | null>(null);
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const [isStreaming, setIsStreaming] = useState(false);
 
   useEffect(() => {
     heightVhRef.current = heightVh;
@@ -183,6 +265,94 @@ export default function NotesPanel({ open, onOpenChange, content, onContentChang
     window.addEventListener("omnia_notes_insert_vault", onVaultInsert as EventListener);
     return () => window.removeEventListener("omnia_notes_insert_vault", onVaultInsert as EventListener);
   }, [open]);
+
+  useEffect(() => {
+    const cancelStream = () => {
+      if (notesStreamTimerRef.current) {
+        clearInterval(notesStreamTimerRef.current);
+        notesStreamTimerRef.current = null;
+      }
+      setIsStreaming(false);
+    };
+
+    const onAiUpdate = (e: Event) => {
+      const ed = editorRef.current;
+      if (!ed) return;
+      const detail = (e as CustomEvent).detail;
+      if (!detail) return;
+      const action = String(detail.action || "set");
+      const tiptapDoc = detail.tiptapDoc;
+      const shouldStream = detail.stream === true;
+
+      cancelStream();
+
+      if (!shouldStream) {
+        if (action === "set" && tiptapDoc) {
+          ed.commands.setContent(tiptapDoc);
+          onContentChange(ed.getJSON());
+        } else if (action === "append" && tiptapDoc) {
+          const endPos = ed.state.doc.content.size;
+          const nodes = Array.isArray(tiptapDoc?.content) ? tiptapDoc.content : [];
+          for (const node of nodes) {
+            ed.commands.insertContentAt(endPos, node);
+          }
+          onContentChange(ed.getJSON());
+        }
+        return;
+      }
+
+      const fullNodes = Array.isArray(tiptapDoc?.content) ? tiptapDoc.content : [];
+      const totalWords = fullNodes.reduce((s: number, n: any) => s + countNodeWords(n), 0);
+
+      if (totalWords === 0) {
+        if (action === "set") ed.commands.setContent(tiptapDoc);
+        onContentChange(ed.getJSON());
+        return;
+      }
+
+      const existingContent = action === "append" ? (ed.getJSON()?.content || []) : [];
+
+      if (action === "set") {
+        ed.commands.setContent({ type: "doc", content: [{ type: "paragraph" }] });
+      }
+
+      setIsStreaming(true);
+      ed.setEditable(false);
+
+      let wordTarget = 0;
+      const WORDS_PER_TICK = 3;
+      const TICK_MS = 30;
+
+      notesStreamTimerRef.current = window.setInterval(() => {
+        if (!editorRef.current) { cancelStream(); return; }
+        wordTarget += WORDS_PER_TICK;
+        const partial = buildPartialContent(fullNodes, Math.min(wordTarget, totalWords));
+        editorRef.current.commands.setContent({
+          type: "doc",
+          content: [...existingContent, ...partial],
+        });
+
+        const sc = scrollContainerRef.current;
+        if (sc) sc.scrollTop = sc.scrollHeight;
+
+        if (wordTarget >= totalWords) {
+          cancelStream();
+          editorRef.current.commands.setContent({
+            type: "doc",
+            content: [...existingContent, ...fullNodes],
+          });
+          editorRef.current.setEditable(true);
+          onContentChange(editorRef.current.getJSON());
+        }
+      }, TICK_MS);
+    };
+
+    window.addEventListener("omnia_notes_ai_update", onAiUpdate as EventListener);
+    return () => {
+      window.removeEventListener("omnia_notes_ai_update", onAiUpdate as EventListener);
+      cancelStream();
+    };
+  }, [onContentChange]);
 
   const isFullBleed = heightVh >= FULLSCREEN_FROM_VH;
   /** Match focused chat: editor clears the fixed left “Grid Files” column whenever the rail is shown */
@@ -333,6 +503,7 @@ export default function NotesPanel({ open, onOpenChange, content, onContentChang
 
         {/* Editor area */}
         <div
+          ref={scrollContainerRef}
           className="flex-1 overflow-y-auto scrollbar-hide py-4 pb-[max(1rem,env(safe-area-inset-bottom))]"
           style={{
             paddingLeft: editorPadLeft,
@@ -341,6 +512,9 @@ export default function NotesPanel({ open, onOpenChange, content, onContentChang
         >
           <div className="mx-auto max-w-2xl min-h-[min(60vh,480px)]">
             <EditorContent editor={editor} />
+            {isStreaming && (
+              <span className="inline-block w-[2px] h-[1.1em] bg-black/50 ml-0.5 align-text-bottom animate-pulse" />
+            )}
           </div>
         </div>
       </div>

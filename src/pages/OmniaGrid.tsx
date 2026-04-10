@@ -3,7 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { Canvas } from "@/canvas/Canvas";
 import { useCanvasStore } from "@/store/canvasStore";
 import type { Block } from "@/canvas/types";
-import { ChevronDown, ChevronUp, ChevronRight, Plus, Link as LinkIcon, Image as ImageIcon, Zap, MessageSquare, Mic, BookOpen, X, Clock, Edit2, Folder as FolderIcon, Link2, MoreHorizontal, PanelRightClose, PanelRight, StickyNote, Play, FileText, Music, Video, Share2, Download, Copy, Check, RefreshCw, ThumbsUp, ThumbsDown, Square, Sparkles, Save, Globe, GripVertical, LayoutGrid, ArrowUp } from "lucide-react";
+import { ChevronDown, ChevronUp, ChevronRight, Plus, Link as LinkIcon, Image as ImageIcon, MessageSquare, Mic, BookOpen, X, Clock, Edit2, Folder as FolderIcon, Link2, MoreHorizontal, PanelRightClose, PanelRight, StickyNote, Play, FileText, Music, Video, Share2, Download, Copy, Check, RefreshCw, ThumbsUp, ThumbsDown, Square, Sparkles, Save, Globe, GripVertical, LayoutGrid, ArrowUp } from "lucide-react";
 import DraggableQuickNote from "@/components/notes/DraggableQuickNote";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -23,7 +23,7 @@ import remarkGfm from "remark-gfm";
 import { useThinkingStatus } from "@/hooks/useThinkingStatus";
 import { getStructuredPasteFromEvent } from "@/lib/pasteFromClipboard";
 import { getAiPrefs } from "@/lib/ai-prefs";
-import { buildTieredCanvasContext } from "@/lib/ai/buildCanvasContext";
+import { buildTieredCanvasContext, buildActionCanvasContext } from "@/lib/ai/buildCanvasContext";
 import { getVaultSidebarWidth } from "@/hooks/useViewportTier";
 import { saveFileToVault, saveLinkToVault } from "@/lib/saveToVault";
 import { afterVaultNoteSaved } from "@/lib/vault/afterVaultSave";
@@ -153,6 +153,8 @@ type CreateAction =
   | { type: "create_youtube_block"; url?: string; title?: string }
   | { type: "create_database_relation"; fromDatabaseName?: string; toDatabaseName?: string; relationType?: "one-to-one" | "one-to-many" | "many-to-many"; rollup?: { property?: string; aggregation?: "sum" | "count" | "average" } }
   | { type: "delete_block"; blockId?: string; blockIds?: string[] }
+  | { type: "update_notes"; content: string | object }
+  | { type: "append_notes"; content: string | object }
   | { type: string; [key: string]: any };
 
 type OrchestratorResult = {
@@ -507,14 +509,93 @@ function OmniaGridModelSelectMenuBody() {
   );
 }
 
+const OmniaChatBarToolbar = React.memo(function OmniaChatBarToolbar({
+  compact, onSend, chatInput, isChatLoading, isDictating, isTranscribing,
+  selectedModel, persistSelectedModel,
+  handleOpenAttachments, handleStopAi, handleDictateToggle,
+}: {
+  compact?: boolean;
+  onSend: () => void | Promise<void>;
+  chatInput: string;
+  isChatLoading: boolean;
+  isDictating: boolean;
+  isTranscribing: boolean;
+  selectedModel: string;
+  persistSelectedModel: (v: string) => void;
+  handleOpenAttachments: () => void;
+  handleStopAi: () => void;
+  handleDictateToggle: () => void;
+}) {
+  const sendDisabled = !chatInput.trim() || isChatLoading || isDictating || isTranscribing;
+  const modelTriggerCls = compact
+    ? "omnia-neu-chat-toolbar-select-trigger h-8 !w-auto max-w-[7rem] min-w-0 shrink rounded-lg border-0 bg-transparent text-[0.625rem] px-1 font-medium text-black/75 shadow-none dark:text-white/80 !justify-start gap-0 overflow-hidden [&>span]:truncate [&>svg]:w-3 [&>svg]:h-3 [&>svg]:opacity-40 [&>svg]:shrink-0"
+    : "omnia-neu-chat-toolbar-select-trigger h-9 !w-auto max-w-[9rem] min-w-0 shrink rounded-lg border-0 bg-transparent text-xs px-1.5 font-medium text-black/75 shadow-none dark:text-white/80 !justify-start gap-0 overflow-hidden [&>span]:truncate [&>svg]:w-3.5 [&>svg]:h-3.5 [&>svg]:opacity-40 [&>svg]:shrink-0";
+  const iconBtn = compact ? "h-8 w-8" : "h-9 w-9";
+  const iconSm = compact ? "w-3 h-3" : "w-3.5 h-3.5";
+  const dropdownCls = "glass-control border border-white/25 dark:border-white/10 bg-white/35 dark:bg-white/10 backdrop-blur-xl shadow-lg";
+
+  return (
+    <div className={`flex items-center gap-1.5 ${compact ? "pt-0.5" : "pt-1"}`}>
+      <Select value={selectedModel} onValueChange={persistSelectedModel}>
+        <SelectTrigger className={modelTriggerCls}>
+          <SelectValue placeholder="Model" />
+        </SelectTrigger>
+        <SelectContent
+          side="top"
+          align="start"
+          className={`${dropdownCls} max-h-[min(28rem,70vh)] overflow-y-auto w-[min(92vw,18rem)]`}
+        >
+          <OmniaGridModelSelectMenuBody />
+        </SelectContent>
+      </Select>
+      <div className="flex-1 min-w-[4px]" aria-hidden />
+      <button
+        type="button"
+        onClick={handleOpenAttachments}
+        className={`${iconBtn} omnia-neu-chat-icon-plain flex items-center justify-center text-black/80 dark:text-white/85 shrink-0`}
+        title="Add attachments"
+      >
+        <Plus className={iconSm} />
+      </button>
+      {isChatLoading ? (
+        <button
+          type="button"
+          onClick={handleStopAi}
+          className={`${iconBtn} omnia-neu-chat-icon-plain flex items-center justify-center shrink-0`}
+          title="Stop generating"
+        >
+          <Square className={`${compact ? "w-2.5 h-2.5" : "w-3 h-3"} text-red-600 dark:text-red-400`} fill="currentColor" />
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={handleDictateToggle}
+          className={`${iconBtn} omnia-neu-chat-icon-plain flex items-center justify-center shrink-0 ${isDictating ? "ring-1 ring-blue-400/40 rounded-lg" : ""}`}
+          title={isDictating ? "Stop recording" : "Dictate"}
+        >
+          <Mic className={`${iconSm} text-black/75 dark:text-white/80 ${isDictating ? "text-blue-600 dark:text-blue-400" : ""}`} />
+        </button>
+      )}
+      <button
+        type="button"
+        onClick={() => void onSend()}
+        disabled={sendDisabled}
+        className={`${iconBtn} omnia-neu-chat-send-btn flex items-center justify-center shrink-0 ${sendDisabled ? "opacity-40 cursor-not-allowed" : "text-blue-600 dark:text-blue-400"}`}
+        title="Send"
+      >
+        <ArrowUp className={iconSm} strokeWidth={2.25} />
+      </button>
+    </div>
+  );
+});
+
 export default function OmniaGridPage() {
   const SNAPSHOT_VERSION = 2;
   const nav = useNavigate();
   const { boardId: routeBoardId } = useParams<{ boardId?: string }>();
   const { user } = useAuth();
   const { checkVaultLimit, incrementVaultCount, upgradeModal, dismissUpgradeModal } = useUsageGate();
-  const blocks = useCanvasStore((s) => s.blocks);
-  const blockOrder = useCanvasStore((s) => s.blockOrder);
+  const blockCount = useCanvasStore((s) => s.blockOrder.length);
   const addTextBlockAt = useCanvasStore((s) => s.addTextBlockAt);
   const addListBlockAt = useCanvasStore((s) => s.addListBlockAt);
   const setListItems = useCanvasStore((s) => s.setListItems);
@@ -725,6 +806,8 @@ export default function OmniaGridPage() {
   const activeAiAbortRef = useRef<AbortController | null>(null);
   const lastAiResponseBlockRef = useRef<string | null>(null);
   const aiThreadRef = useRef<Array<{ role: "user" | "assistant"; content: string }>>([]);
+  const convoSummaryRef = useRef<string>("");
+  const convoTurnsSinceSummaryRef = useRef(0);
 
   useEffect(() => {
     return () => { activeAiAbortRef.current?.abort(); };
@@ -817,6 +900,27 @@ export default function OmniaGridPage() {
   useEffect(() => {
     chatMessagesRef.current = chatMessages;
   }, [chatMessages]);
+
+  const SUMMARIZE_EVERY_N_TURNS = 8;
+  const maybeRunConversationSummary = useCallback(async () => {
+    convoTurnsSinceSummaryRef.current += 1;
+    if (convoTurnsSinceSummaryRef.current < SUMMARIZE_EVERY_N_TURNS) return;
+    const thread = aiThreadRef.current;
+    if (thread.length < 8) return;
+    convoTurnsSinceSummaryRef.current = 0;
+    try {
+      const { API_BASE_URL } = await import("@/lib/api-config");
+      const res = await fetch(`${API_BASE_URL}/api/ai/summarize-conversation`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: thread.slice(0, -4) }),
+      });
+      if (res.ok) {
+        const { summary } = await res.json();
+        if (summary) convoSummaryRef.current = summary;
+      }
+    } catch { /* background — don't interrupt the user */ }
+  }, []);
 
   useEffect(() => {
     const count = chatMessages.length;
@@ -1005,6 +1109,34 @@ export default function OmniaGridPage() {
       const g = Number.isFinite(snapshot.gridSize) ? Number(snapshot.gridSize) : gridSize;
       const wires = Array.isArray(snapshot.wireConnections) ? snapshot.wireConnections : [];
       loadBlocks(blocks, { camera, gridSize: g, wireConnections: wires });
+
+      const st = useCanvasStore.getState();
+      const loadedOrder = st.blockOrder;
+      const isDefaultCamera = camera.x === 0 && camera.y === 0;
+      if (loadedOrder.length > 0 && isDefaultCamera) {
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const id of loadedOrder) {
+          const b = st.blocks[id] as any;
+          if (!b) continue;
+          minX = Math.min(minX, Number(b.x) || 0);
+          minY = Math.min(minY, Number(b.y) || 0);
+          maxX = Math.max(maxX, (Number(b.x) || 0) + (Number(b.width) || 0));
+          maxY = Math.max(maxY, (Number(b.y) || 0) + (Number(b.height) || 0));
+        }
+        if (minX < Infinity) {
+          const vpW = window.innerWidth || 1280;
+          const vpH = window.innerHeight || 800;
+          const z = camera.zoom || 1;
+          const cx = (minX + maxX) / 2;
+          const cy = (minY + maxY) / 2;
+          st.setCamera({ x: cx - vpW / (2 * z), y: cy - vpH / (2 * z), zoom: z });
+        }
+      } else if (loadedOrder.length === 0) {
+        const vpW = window.innerWidth || 1280;
+        const vpH = window.innerHeight || 800;
+        st.setCamera({ x: -vpW / 2, y: -vpH / 2, zoom: 1 });
+      }
+
       if (snapshot.title) setTitle(String(snapshot.title));
 
       // Re-resolve storage URLs for blocks whose base64 was stripped on save
@@ -1176,13 +1308,22 @@ export default function OmniaGridPage() {
       const startX = e.clientX;
       const startWidth = chatRailWidthPx;
 
+      let rafId = 0;
+      let lastNext = startWidth;
       const onMove = (ev: PointerEvent) => {
         const dx = startX - ev.clientX;
         const vw = window.innerWidth || viewportWidth || 1280;
-        const next = clampChatRailWidth(startWidth + dx, vw);
-        setChatRailWidthManual(next);
+        lastNext = clampChatRailWidth(startWidth + dx, vw);
+        if (!rafId) {
+          rafId = requestAnimationFrame(() => {
+            rafId = 0;
+            setChatRailWidthManual(lastNext);
+          });
+        }
       };
       const onUp = () => {
+        if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+        setChatRailWidthManual(lastNext);
         window.removeEventListener("pointermove", onMove, true);
         window.removeEventListener("pointerup", onUp, true);
         window.removeEventListener("pointercancel", onUp, true);
@@ -1756,6 +1897,23 @@ export default function OmniaGridPage() {
       return url ? "link" : "text";
     };
 
+    const SUPABASE_SIGNED_RE = /supabase\.co\/storage\//;
+    const resolveAttUrl = async (att: any): Promise<string> => {
+      const raw = String(att?.url || "").trim();
+      const sPath = String(att?.storagePath || "").trim();
+      const sBucket = String(att?.storageBucket || att?.bucket || "user-files").trim();
+      if (sPath) {
+        const needsResign = !raw || SUPABASE_SIGNED_RE.test(raw);
+        if (needsResign) {
+          try {
+            const { data } = await supabase.storage.from(sBucket).createSignedUrl(sPath, 60 * 60 * 24 * 7);
+            if (data?.signedUrl) return data.signedUrl;
+          } catch { /* fall through to raw url */ }
+        }
+      }
+      return raw;
+    };
+
     let pulled = 0;
     for (const pull of pulls) {
       const note = notesData[pull.noteId];
@@ -1788,9 +1946,12 @@ export default function OmniaGridPage() {
 
       const att = attachments[pull.attIndex] || attachments[0];
       if (!att) continue;
-      const url = String(att.url || "").trim();
+      const url = await resolveAttUrl(att);
+      if (!url) { console.warn("[LYKN] Media pull: no usable URL for note", pull.noteId); continue; }
       const type = resolveType(att);
       const blockId = `create-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      const storageMeta: Record<string, string> = {};
+      if (att.storagePath) { storageMeta.storagePath = att.storagePath; storageMeta.storageBucket = att.storageBucket || att.bucket || "user-files"; }
 
       if (type === "youtube") {
         const vid = att.videoId || extractYouTubeVideoId(url) || "";
@@ -1798,19 +1959,19 @@ export default function OmniaGridPage() {
         st.addYouTubeBlockAt({ x: p.x, y: p.y }, { url, videoId: vid });
       } else if (type === "image") {
         const p = mediaPos(g * 12, g * 12);
-        st.addBlock({ id: blockId, type: "create" as const, mode: "image", x: p.x, y: p.y, width: g * 12, height: g * 12, data: { src: url, name: att.name || "Image" }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
+        st.addBlock({ id: blockId, type: "create" as const, mode: "image", x: p.x, y: p.y, width: g * 12, height: g * 12, data: { src: url, name: att.name || "Image", ...storageMeta }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
       } else if (type === "video") {
         const p = mediaPos(g * 16, g * 10);
-        st.addBlock({ id: blockId, type: "create" as const, mode: "video", x: p.x, y: p.y, width: g * 16, height: g * 10, data: { url, mime: att.mime || "video/mp4", name: att.name || "Video" }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
+        st.addBlock({ id: blockId, type: "create" as const, mode: "video", x: p.x, y: p.y, width: g * 16, height: g * 10, data: { url, mime: att.mime || "video/mp4", name: att.name || "Video", ...storageMeta }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
       } else if (type === "audio") {
         const p = mediaPos(g * 14, g * 4);
-        st.addBlock({ id: blockId, type: "create" as const, mode: "embed", x: p.x, y: p.y, width: g * 14, height: g * 4, data: { url, mime: att.mime || "audio/mpeg", name: att.name || "Audio", dataUrl: url }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
+        st.addBlock({ id: blockId, type: "create" as const, mode: "embed", x: p.x, y: p.y, width: g * 14, height: g * 4, data: { url, mime: att.mime || "audio/mpeg", name: att.name || "Audio", dataUrl: url, ...storageMeta }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
       } else if (type === "pdf") {
         const p = mediaPos(g * 16, g * 14);
-        st.addBlock({ id: blockId, type: "create" as const, mode: "embed", x: p.x, y: p.y, width: g * 16, height: g * 14, data: { url, mime: "application/pdf", name: att.name || "PDF", dataUrl: url }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
+        st.addBlock({ id: blockId, type: "create" as const, mode: "embed", x: p.x, y: p.y, width: g * 16, height: g * 14, data: { url, mime: "application/pdf", name: att.name || "PDF", dataUrl: url, ...storageMeta }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
       } else {
         const p = mediaPos(g * 14, g * 6);
-        st.addBlock({ id: blockId, type: "create" as const, mode: "embed", x: p.x, y: p.y, width: g * 14, height: g * 6, data: { url, name: att.name || note.title || "File", dataUrl: url }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
+        st.addBlock({ id: blockId, type: "create" as const, mode: "embed", x: p.x, y: p.y, width: g * 14, height: g * 6, data: { url, name: att.name || note.title || "File", dataUrl: url, ...storageMeta }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
       }
       pulled++;
     }
@@ -2232,6 +2393,7 @@ export default function OmniaGridPage() {
   const applyProjectActions = useCallback((actions: CreateAction[]) => {
     const list = Array.isArray(actions) ? actions : [];
     if (!list.length) return { created: 0, failures: [] as string[] };
+    console.log("[LYKN] applyProjectActions:", list.length, "actions:", list.map((a: any) => a?.type).join(", "));
     const st = useCanvasStore.getState() as any;
     const g = Math.max(1, Math.floor(st.gridSize || 24));
     const vw = window.innerWidth || 1280;
@@ -2373,6 +2535,56 @@ export default function OmniaGridPage() {
           } as any);
         };
 
+        if (type === "update_notes" || type === "append_notes") {
+          const rawContent = (raw as any)?.content;
+          if (!rawContent) { failures.push(`${type}: missing content`); continue; }
+          const textToTiptapDoc = (text: string) => {
+            const lines = text.split("\n");
+            const nodes: any[] = [];
+            for (const line of lines) {
+              if (line.trim()) {
+                const trimmed = line.trim();
+                if (/^#{1,3}\s/.test(trimmed)) {
+                  const level = (trimmed.match(/^#+/) as string[])[0].length;
+                  const heading = trimmed.replace(/^#+\s*/, "");
+                  nodes.push({ type: "heading", attrs: { level: Math.min(level, 3) }, content: [{ type: "text", text: heading }] });
+                } else if (/^[-*]\s/.test(trimmed)) {
+                  nodes.push({ type: "bulletList", content: [{ type: "listItem", content: [{ type: "paragraph", content: [{ type: "text", text: trimmed.replace(/^[-*]\s*/, "") }] }] }] });
+                } else if (/^\d+\.\s/.test(trimmed)) {
+                  nodes.push({ type: "orderedList", content: [{ type: "listItem", content: [{ type: "paragraph", content: [{ type: "text", text: trimmed.replace(/^\d+\.\s*/, "") }] }] }] });
+                } else {
+                  nodes.push({ type: "paragraph", content: [{ type: "text", text: line }] });
+                }
+              } else {
+                nodes.push({ type: "paragraph" });
+              }
+            }
+            if (!nodes.length) nodes.push({ type: "paragraph" });
+            return { type: "doc", content: nodes };
+          };
+
+          let tiptapDoc: any;
+          if (typeof rawContent === "string") {
+            tiptapDoc = textToTiptapDoc(rawContent);
+          } else if (rawContent && typeof rawContent === "object" && rawContent.type === "doc") {
+            tiptapDoc = rawContent;
+          } else {
+            tiptapDoc = textToTiptapDoc(String(rawContent));
+          }
+
+          if (type === "update_notes") {
+            notesContentRef.current = tiptapDoc;
+          }
+          setNotesOpen(true);
+          setTimeout(() => {
+            window.dispatchEvent(new CustomEvent("omnia_notes_ai_update", {
+              detail: { action: type === "append_notes" ? "append" : "set", tiptapDoc, stream: true },
+            }));
+          }, 200);
+          created += 1;
+          continue;
+        }
+
         if (type === "delete_block") {
           const ids: string[] = [];
           if ((raw as any)?.blockId) ids.push(String((raw as any).blockId));
@@ -2385,6 +2597,81 @@ export default function OmniaGridPage() {
             created += validIds.length;
           } else {
             failures.push("delete_block: no matching block IDs found on the Grid");
+          }
+          continue;
+        }
+
+        if (type === "move_block" || type === "move_blocks") {
+          const moves: Array<{ blockId: string; x?: number; y?: number; dx?: number; dy?: number }> = [];
+          if ((raw as any)?.blockId) {
+            moves.push({ blockId: String((raw as any).blockId), x: (raw as any)?.x, y: (raw as any)?.y, dx: (raw as any)?.dx, dy: (raw as any)?.dy });
+          }
+          if (Array.isArray((raw as any)?.moves)) {
+            for (const m of (raw as any).moves) {
+              if (m?.blockId) moves.push({ blockId: String(m.blockId), x: m?.x, y: m?.y, dx: m?.dx, dy: m?.dy });
+            }
+          }
+
+          const STAGGER_MS = 35;
+          const TRANSITION_DURATION_MS = 450;
+
+          // Pre-add CSS transitions to all target block elements for smooth animation
+          const animatingEls: HTMLElement[] = [];
+          for (const m of moves) {
+            const el = document.querySelector(`[data-block-id="${m.blockId}"]`) as HTMLElement | null;
+            if (el) {
+              el.style.transition = `left ${TRANSITION_DURATION_MS}ms cubic-bezier(0.25, 0.46, 0.45, 0.94), top ${TRANSITION_DURATION_MS}ms cubic-bezier(0.25, 0.46, 0.45, 0.94)`;
+              animatingEls.push(el);
+            }
+          }
+
+          // Apply moves with staggered timing for a visual cascade effect
+          moves.forEach((m, i) => {
+            const delay = i * STAGGER_MS;
+            const apply = () => {
+              const block = (useCanvasStore.getState() as any).blocks?.[m.blockId] as any;
+              if (!block) { failures.push(`move_block: block ${m.blockId} not found`); return; }
+              const curX = Math.floor(block.x || 0);
+              const curY = Math.floor(block.y || 0);
+              let newX = curX;
+              let newY = curY;
+              if (m.x != null) newX = Math.round(Number(m.x) / g) * g;
+              if (m.y != null) newY = Math.round(Number(m.y) / g) * g;
+              if (m.dx != null) newX = curX + Math.round(Number(m.dx) / g) * g;
+              if (m.dy != null) newY = curY + Math.round(Number(m.dy) / g) * g;
+              st.updateBlock(m.blockId, { x: newX, y: newY } as any);
+            };
+            if (delay === 0) apply();
+            else setTimeout(apply, delay);
+            created += 1;
+          });
+
+          // Clean up transitions after all animations complete
+          const totalDuration = moves.length * STAGGER_MS + TRANSITION_DURATION_MS + 50;
+          setTimeout(() => {
+            for (const el of animatingEls) {
+              el.style.transition = "";
+            }
+          }, totalDuration);
+
+          continue;
+        }
+
+        if (type === "resize_block") {
+          const blockId = String((raw as any)?.blockId || "");
+          const block = st.blocks?.[blockId] as any;
+          if (!block) { failures.push(`resize_block: block ${blockId} not found`); continue; }
+          const patch: any = {};
+          if ((raw as any)?.width != null) patch.width = Math.round(Number((raw as any).width) / g) * g;
+          if ((raw as any)?.height != null) patch.height = Math.round(Number((raw as any).height) / g) * g;
+          if (Object.keys(patch).length) {
+            const el = document.querySelector(`[data-block-id="${blockId}"]`) as HTMLElement | null;
+            if (el) {
+              el.style.transition = "left 450ms ease-out, top 450ms ease-out, width 450ms ease-out, height 450ms ease-out";
+              setTimeout(() => { el.style.transition = ""; }, 550);
+            }
+            st.updateBlock(blockId, patch);
+            created += 1;
           }
           continue;
         }
@@ -2413,8 +2700,89 @@ export default function OmniaGridPage() {
           continue;
         }
 
-        if (type !== "create_universal_block" && type !== "create_youtube_block") {
-          failures.push(`Skipped legacy action in brick mode: ${type}`);
+        if (type === "update_spreadsheet") {
+          const blockId = String((raw as any)?.blockId || "");
+          const block = st.blocks?.[blockId] as any;
+          if (!block) {
+            failures.push("update_spreadsheet: block not found");
+            continue;
+          }
+          const existing = String(block?.content || "");
+          let parsedSheet: any = null;
+          try { parsedSheet = JSON.parse(existing); } catch { parsedSheet = null; }
+          if (!parsedSheet) {
+            failures.push("update_spreadsheet: block is not a spreadsheet");
+            continue;
+          }
+          const cellMap = { ...(parsedSheet?.cells || {}) } as Record<string, string>;
+          const cellsObj = (raw as any)?.cells;
+          const cells2d = Array.isArray((raw as any)?.cells2d) ? (raw as any).cells2d : null;
+          if (cellsObj && typeof cellsObj === "object" && !Array.isArray(cellsObj)) {
+            for (const [k, v] of Object.entries(cellsObj)) {
+              const norm = normalizeCellKey(String(k));
+              if (!norm) continue;
+              cellMap[norm] = String(v ?? "");
+            }
+          }
+          if (cells2d) {
+            const startRow = Number((raw as any)?.startRow || 0);
+            const startCol = Number((raw as any)?.startCol || 0);
+            for (let r = 0; r < cells2d.length; r += 1) {
+              const row = Array.isArray(cells2d[r]) ? cells2d[r] : [];
+              for (let c = 0; c < row.length; c += 1) {
+                if (row[c] == null) continue;
+                cellMap[`${startRow + r},${startCol + c}`] = String(row[c]);
+              }
+            }
+          }
+          const newRows = Math.max(parsedSheet.rows || 0, Number((raw as any)?.rows || 0));
+          const newCols = Math.max(parsedSheet.cols || 0, Number((raw as any)?.cols || 0));
+          st.updateBlock(blockId, {
+            content: JSON.stringify({ ...parsedSheet, rows: newRows, cols: newCols, cells: cellMap }),
+          } as any);
+          created += 1;
+          continue;
+        }
+
+        if (type === "update_list") {
+          const blockId = String((raw as any)?.blockId || "");
+          const block = st.blocks?.[blockId] as any;
+          if (!block) {
+            failures.push("update_list: block not found");
+            continue;
+          }
+          const newItems = Array.isArray((raw as any)?.items) ? (raw as any).items : null;
+          const appendItems = Array.isArray((raw as any)?.append) ? (raw as any).append : null;
+          if (newItems) {
+            st.setListItems(
+              blockId,
+              newItems.map((text: string) => ({ id: `li-${Date.now()}-${Math.random()}`, text: String(text || "") }))
+            );
+            created += 1;
+          } else if (appendItems) {
+            const curItems = Array.isArray(block?.data?.items) ? [...block.data.items] : [];
+            const merged = [
+              ...curItems,
+              ...appendItems.map((text: string) => ({ id: `li-${Date.now()}-${Math.random()}`, text: String(text || "") })),
+            ];
+            st.setListItems(blockId, merged);
+            created += 1;
+          }
+          if ((raw as any)?.listType) {
+            st.updateBlock(blockId, { data: { ...(block?.data || {}), listType: (raw as any).listType } } as any);
+          }
+          continue;
+        }
+
+        const allowedTypes = new Set([
+          "create_universal_block", "create_youtube_block", "create_sheet",
+          "create_spreadsheet", "create_list", "todo_list", "bulleted_list", "numbered_list",
+          "create_design_board", "brainstorm", "create_task_board",
+          "create_code_block", "create_code_project", "create_database_relation",
+          "update_spreadsheet", "update_list",
+        ]);
+        if (!allowedTypes.has(type)) {
+          failures.push(`Skipped unsupported action: ${type}`);
           continue;
         }
 
@@ -2432,7 +2800,7 @@ export default function OmniaGridPage() {
           continue;
         }
 
-        if (false && (type === "create_sheet" || type === "paper_outline" || type === "create_paper")) {
+        if (type === "create_sheet" || type === "paper_outline" || type === "create_paper") {
           const title = String((raw as any)?.title || "").trim();
           const body = String((raw as any)?.content || (raw as any)?.outline || "").trim();
           const content = [title ? `# ${title}` : "", body].filter(Boolean).join("\n\n");
@@ -2606,6 +2974,8 @@ export default function OmniaGridPage() {
         failures.push(`Failed action: ${String((raw as any)?.type || "unknown")}`);
       }
     }
+    if (failures.length) console.warn("[LYKN] Action failures:", failures);
+    console.log("[LYKN] applyProjectActions complete:", created, "applied,", failures.length, "failed");
     return { created, failures };
   }, []);
 
@@ -4065,10 +4435,13 @@ export default function OmniaGridPage() {
       // The server's buildLyknStreamPrompt uses `text` for the user message — if we only send
       // the raw question as `text`, the server throws away the transcript.
       const textForServer = hasVideoTranscript ? prompt.slice(0, 16000) : cappedText;
-      const truncatedConversation = conversationArray.slice(-8).map((m) => ({
+      const recentConvo = conversationArray.slice(-8).map((m) => ({
         ...m,
         content: m.content.length > 1500 ? m.content.slice(0, 1500) + "…" : m.content,
       }));
+      const truncatedConversation = convoSummaryRef.current
+        ? [{ role: "system", content: `[CONVERSATION_SUMMARY]\n${convoSummaryRef.current}` }, ...recentConvo]
+        : recentConvo;
       const wsContext = getCachedWorkspaceSummary();
       const [memoryText, vaultNotesForAi] = await Promise.all([
         user?.id ? getMemoryForPrompt(user.id, routeBoardId || boardId || null) : Promise.resolve(""),
@@ -4111,14 +4484,55 @@ export default function OmniaGridPage() {
         return blk?.type === "text" && !isImgBlock(blk);
       });
 
-      if (hasFocusedTextBricks && !editImageUrl) {
-        setChatStatusText("Editing bricks...");
+      const hasBlocks = Object.keys(st.blocks || {}).length > 0;
+      const wantsBlockManipulation = /\b(move|rearrange|reposition|reorganize|arrange|align|swap|shift|place|put|drag|relocate|organize|spread|stack|line up|layout|lay out|center|scatter|space out|group together|side by side|resize|make.*(bigger|smaller|wider|taller|narrower|shorter)|delete|remove|trash|clear|get rid of|clean up)\b/i.test(cappedText)
+        && hasBlocks;
+      const wantsBlockEdit = /\b(edit|update|change|modify|rewrite|rename|set|fill in|populate|write in|add.*(to|into|in)|append|replace|fix|correct)\b/i.test(cappedText) && hasBlocks;
+      const wantsBlockCreate = /\b(create|make|build|add|start|new|insert)\b/i.test(cappedText)
+        && /\b(sheet|paper|doc|document|spreadsheet|table|budget|tracker|list|todo|checklist|task\s*board|kanban|design\s*board|code\s*block|heading|h1|h2|quote|callout|brick)\b/i.test(cappedText);
+      const wantsNotesAction = /\b(notes?\s*(page|panel|section|pad|area)?)\b/i.test(cappedText)
+        && /\b(edit|update|change|modify|write|rewrite|add|append|clear|set|fill|put|type|draft|compose|replace|delete|remove)\b/i.test(cappedText);
+      const wantsActionPath = wantsBlockManipulation || wantsBlockEdit || wantsBlockCreate || wantsNotesAction;
+
+      const wantsDelete = /\b(delete|remove|trash|clear|get rid of)\b/i.test(cappedText);
+      if ((hasFocusedTextBricks || wantsActionPath) && !editImageUrl) {
+        const statusMsg = wantsNotesAction ? "Writing notes..."
+          : wantsDelete ? "Removing blocks..."
+          : wantsBlockEdit ? "Editing blocks..."
+          : wantsBlockCreate ? "Creating blocks..."
+          : wantsBlockManipulation && !hasFocusedTextBricks ? "Arranging blocks..."
+          : "Editing bricks...";
+        setChatStatusText(statusMsg);
         try {
+          // Build a compact context with ALL blocks for action requests so the AI
+          // can organize/move every block and knows the viewport center
+          let actionContext: string | undefined;
+          if (wantsActionPath) {
+            const stNow = useCanvasStore.getState() as any;
+            const camNow = stNow.camera || { x: 0, y: 0 };
+            const vwNow = window.innerWidth || 1280;
+            const vhNow = window.innerHeight || 800;
+            actionContext = buildActionCanvasContext({
+              blocks: stNow.blocks as Record<string, any>,
+              blockOrder: Array.isArray(stNow.blockOrder) ? stNow.blockOrder : [],
+              viewportCenter: { x: (camNow.x || 0) + vwNow / 2, y: (camNow.y || 0) + vhNow / 2 },
+              viewportSize: { w: vwNow, h: vhNow },
+            });
+            const notesPlain = tiptapJsonToPlainText(notesContentRef.current).trim();
+            if (notesPlain || wantsNotesAction) {
+              actionContext += `\n\n[GRID NOTES — current content]\n${notesPlain || "(empty — no content yet)"}`;
+            }
+          }
           const invokeTimeout = setTimeout(() => sendAbort.abort(), 120000);
           const res = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ ...requestBody, returnActions: true, text: cappedText }),
+            body: JSON.stringify({
+              ...requestBody,
+              returnActions: true,
+              text: cappedText,
+              ...(actionContext ? { context: actionContext } : {}),
+            }),
             signal: sendAbort.signal,
           });
           clearTimeout(invokeTimeout);
@@ -4128,12 +4542,16 @@ export default function OmniaGridPage() {
               String((data as any)?.response || (data as any)?.assistant || "").trim()
             ) || "Done.";
             const actions = Array.isArray((data as any)?.actions) ? (data as any).actions : [];
+            console.log("[LYKN] Block manipulation response:", { actionsCount: actions.length, types: actions.map((a: any) => a?.type), assistantPreview: assistantText.slice(0, 100) });
             if (actions.length) {
               applyProjectActions(actions);
+            } else {
+              console.warn("[LYKN] AI said it would arrange blocks but returned 0 actions");
             }
             await typeResponseIntoChat(promptId, assistantText);
             aiThreadRef.current.push({ role: "assistant", content: assistantText });
             if (aiThreadRef.current.length > 40) aiThreadRef.current = aiThreadRef.current.slice(-40);
+            maybeRunConversationSummary();
             if (user?.id) { invalidateMemoryCache(); saveExchange(user.id, "grid", routeBoardId || boardId || null, titleRef.current || null, cappedText, assistantText); }
             if (responseBlockId && typeof updateBlock === "function") {
               const normalized = normalizeAiTextForBlock(assistantText);
@@ -4361,6 +4779,7 @@ export default function OmniaGridPage() {
         setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: finalDisplayText, sources, aiYouTubeUrls: ytResult.urls.length ? ytResult.urls : undefined, aiWebLinks: webLinks1.length ? webLinks1 : undefined } : m)));
         aiThreadRef.current.push({ role: "assistant", content: textAfterTags });
         if (aiThreadRef.current.length > 40) aiThreadRef.current = aiThreadRef.current.slice(-40);
+        maybeRunConversationSummary();
         if (user?.id) { invalidateMemoryCache(); saveExchange(user.id, "grid", routeBoardId || boardId || null, titleRef.current || null, cappedText, textWithoutConnections); }
         if (responseBlockId && typeof updateBlock === "function") {
           const normalized = normalizeAiTextForBlock(finalDisplayText);
@@ -4477,6 +4896,7 @@ export default function OmniaGridPage() {
         setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, sources: sources2, aiYouTubeUrls: ytResult2.urls.length ? ytResult2.urls : undefined, aiWebLinks: webLinks2.length ? webLinks2 : undefined } : m)));
         aiThreadRef.current.push({ role: "assistant", content: textAfterTags2 });
         if (aiThreadRef.current.length > 40) aiThreadRef.current = aiThreadRef.current.slice(-40);
+        maybeRunConversationSummary();
         if (user?.id) { invalidateMemoryCache(); saveExchange(user.id, "grid", routeBoardId || boardId || null, titleRef.current || null, cappedText, textAfterTags2); }
         if (responseBlockId) {
           await typeIntoAiResponseBlock(String(responseBlockId), finalDisplayText2);
@@ -4778,7 +5198,7 @@ export default function OmniaGridPage() {
     }
     const attachedBlockIds = new Set(focusedChatAttachments.map((a) => a.canvasBlockId).filter(Boolean));
     return attachedBlockIds.size > 0 ? items.filter((item) => !attachedBlockIds.has(item.id)) : items;
-  }, [chatMode, notesOpen, blocks, blockOrder, focusedChatAttachments]);
+  }, [chatMode, notesOpen, blockCount, focusedChatAttachments]);
 
   const removeFocusedAttachment = useCallback((id: string) => {
     setFocusedChatAttachments((prev) => prev.filter((a) => a.id !== id));
@@ -5179,68 +5599,11 @@ export default function OmniaGridPage() {
       });
   }, [chatInput, isDictating]);
 
-  function OmniaChatBarToolbar({ compact, onSend }: { compact?: boolean; onSend: () => void | Promise<void> }) {
-    const sendDisabled = !chatInput.trim() || isChatLoading || isDictating || isTranscribing;
-    const triggerCls = compact
-      ? "omnia-neu-chat-toolbar-select-trigger h-8 max-w-[6.5rem] min-w-0 shrink-0 rounded-lg border-0 bg-transparent text-[0.625rem] px-1.5 font-medium text-black/75 shadow-none dark:text-white/80 [&>span]:truncate"
-      : "omnia-neu-chat-toolbar-select-trigger h-9 max-w-[9rem] sm:max-w-[10rem] min-w-0 shrink-0 rounded-lg border-0 bg-transparent text-xs font-medium text-black/75 shadow-none dark:text-white/80 [&>span]:truncate";
-    const iconBtn = compact ? "h-8 w-8" : "h-9 w-9";
-    const iconSm = compact ? "w-3 h-3" : "w-3.5 h-3.5";
-
-    return (
-      <div className={`flex items-center gap-2 ${compact ? "pt-0.5" : "pt-1"}`}>
-        <Select value={selectedModel} onValueChange={persistSelectedModel}>
-          <SelectTrigger className={triggerCls}>
-            <SelectValue placeholder="Model" />
-          </SelectTrigger>
-          <SelectContent
-            side="top"
-            align="start"
-            className="glass-control border border-white/25 dark:border-white/10 bg-white/35 dark:bg-white/10 backdrop-blur-xl shadow-lg max-h-[min(28rem,70vh)] overflow-y-auto w-[min(92vw,18rem)]"
-          >
-            <OmniaGridModelSelectMenuBody />
-          </SelectContent>
-        </Select>
-        <div className="flex-1 min-w-[4px]" aria-hidden />
-        <button
-          type="button"
-          onClick={handleOpenAttachments}
-          className={`${iconBtn} omnia-neu-chat-icon-plain flex items-center justify-center text-black/80 dark:text-white/85 shrink-0`}
-          title="Add attachments"
-        >
-          <Plus className={iconSm} />
-        </button>
-        {isChatLoading ? (
-          <button
-            type="button"
-            onClick={handleStopAi}
-            className={`${iconBtn} omnia-neu-chat-icon-plain flex items-center justify-center shrink-0`}
-            title="Stop generating"
-          >
-            <Square className={`${compact ? "w-2.5 h-2.5" : "w-3 h-3"} text-red-600 dark:text-red-400`} fill="currentColor" />
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={handleDictateToggle}
-            className={`${iconBtn} omnia-neu-chat-icon-plain flex items-center justify-center shrink-0 ${isDictating ? "ring-1 ring-blue-400/40 rounded-lg" : ""}`}
-            title={isDictating ? "Stop recording" : "Dictate"}
-          >
-            <Mic className={`${iconSm} text-black/75 dark:text-white/80 ${isDictating ? "text-blue-600 dark:text-blue-400" : ""}`} />
-          </button>
-        )}
-        <button
-          type="button"
-          onClick={() => void onSend()}
-          disabled={sendDisabled}
-          className={`${iconBtn} omnia-neu-chat-send-btn flex items-center justify-center shrink-0 ${sendDisabled ? "opacity-40 cursor-not-allowed" : "text-blue-600 dark:text-blue-400"}`}
-          title="Send"
-        >
-          <ArrowUp className={iconSm} strokeWidth={2.25} />
-        </button>
-      </div>
-    );
-  }
+  const chatBarToolbarProps = useMemo(() => ({
+    chatInput, isChatLoading, isDictating, isTranscribing,
+    selectedModel, persistSelectedModel,
+    handleOpenAttachments, handleStopAi, handleDictateToggle,
+  }), [chatInput, isChatLoading, isDictating, isTranscribing, selectedModel, persistSelectedModel, handleOpenAttachments, handleStopAi, handleDictateToggle]);
 
   return (
     <div className="w-full h-[100svh] relative overflow-hidden omnia-grid-bg">
@@ -5636,7 +5999,7 @@ export default function OmniaGridPage() {
                   className="w-full min-h-[3.25rem] max-h-[180px] omnia-neu-chat-field px-3 py-2 text-xs leading-4 text-black dark:text-white placeholder:text-black/50 dark:placeholder:text-white/45 outline-none resize-none scrollbar-hide"
                 />
               )}
-              <OmniaChatBarToolbar onSend={handleCenterAskSend} />
+              <OmniaChatBarToolbar onSend={handleCenterAskSend} {...chatBarToolbarProps} />
             </div>
           </div>
         </div>
@@ -5891,7 +6254,7 @@ export default function OmniaGridPage() {
                   className="w-full min-h-[2.75rem] max-h-[160px] omnia-neu-chat-field px-2.5 py-1.5 text-[0.6875rem] leading-4 text-black dark:text-white placeholder:text-black/50 dark:placeholder:text-white/45 outline-none resize-none scrollbar-hide"
                 />
               )}
-              <OmniaChatBarToolbar compact onSend={handleChatSend} />
+              <OmniaChatBarToolbar compact onSend={handleChatSend} {...chatBarToolbarProps} />
             </div>
           </div>
         </div>
@@ -6004,7 +6367,7 @@ export default function OmniaGridPage() {
                       className="w-full min-h-[3.25rem] max-h-[180px] omnia-neu-chat-field px-3 py-2 text-xs leading-4 text-black dark:text-white placeholder:text-black/50 dark:placeholder:text-white/45 outline-none resize-none scrollbar-hide"
                     />
                   )}
-                  <OmniaChatBarToolbar onSend={handleChatSend} />
+                  <OmniaChatBarToolbar onSend={handleChatSend} {...chatBarToolbarProps} />
                 </div>
               </div>
             </div>
@@ -6389,7 +6752,7 @@ export default function OmniaGridPage() {
                       className="w-full min-h-[3.25rem] max-h-[180px] omnia-neu-chat-field px-3 py-2 text-xs leading-4 text-black dark:text-white placeholder:text-black/50 dark:placeholder:text-white/45 outline-none resize-none scrollbar-hide"
                     />
                   )}
-                  <OmniaChatBarToolbar onSend={handleChatSend} />
+                  <OmniaChatBarToolbar onSend={handleChatSend} {...chatBarToolbarProps} />
                 </div>
               </div>
             </div>

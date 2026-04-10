@@ -111,8 +111,10 @@ function processVaultDrop(pending: { title: string; content: string; attachments
       const localX = rect ? clientX - rect.left : clientX;
       const localY = rect ? clientY - rect.top : clientY;
       const scrollTop = canvasEl?.scrollTop || 0;
-      const wx = Math.round(localX / g) * g;
-      const wy = Math.round((scrollTop + localY) / g) * g;
+      const scrollLeft = canvasEl?.scrollLeft || 0;
+      const z = st.camera?.zoom || 1;
+      const wx = Math.round(((scrollLeft + localX) / z - 5000) / g) * g;
+      const wy = Math.round(((scrollTop + localY) / z - 5000) / g) * g;
       st.addYouTubeBlockAt({ x: wx, y: wy }, { url: ytUrl, videoId: extractedVid });
       window.dispatchEvent(new CustomEvent("omnia_save_to_media", { detail: { url: ytUrl, name: `YouTube — ${extractedVid}`, fileType: "youtube" } }));
     }
@@ -131,8 +133,10 @@ function processVaultDrop(pending: { title: string; content: string; attachments
     const localX = rect ? clientX - rect.left : clientX;
     const localY = rect ? clientY - rect.top : clientY;
     const scrollTop = canvasEl?.scrollTop || 0;
-    const wx = Math.round(localX / g) * g;
-    const wy = Math.round((scrollTop + localY) / g) * g;
+    const scrollLeft = canvasEl?.scrollLeft || 0;
+    const z = st.camera?.zoom || 1;
+    const wx = Math.round(((scrollLeft + localX) / z - 5000) / g) * g;
+    const wy = Math.round(((scrollTop + localY) / z - 5000) / g) * g;
     const platform = socialAttach.oembedType || socialAttach.type || detectSocialPlatform(socialAttach.url) || "instagram";
     st.addBlock({
       type: "create",
@@ -196,8 +200,10 @@ function processVaultDrop(pending: { title: string; content: string; attachments
       const localX = rect ? clientX - rect.left : clientX;
       const localY = rect ? clientY - rect.top : clientY;
       const scrollTop = canvasEl?.scrollTop || 0;
-      const wx = Math.round(localX / g) * g;
-      const wy = Math.round((scrollTop + localY) / g) * g;
+      const scrollLeft = canvasEl?.scrollLeft || 0;
+      const z = st.camera?.zoom || 1;
+      const wx = Math.round(((scrollLeft + localX) / z - 5000) / g) * g;
+      const wy = Math.round(((scrollTop + localY) / z - 5000) / g) * g;
       const title = String(pdfAttach.name || pdfAttach.title || "PDF").trim();
       const combined = `# ${title}\n\n${pdfText}`;
       const charsPerLine = Math.max(1, Math.floor((g * 16 * 0.85) / 8));
@@ -246,8 +252,10 @@ function processVaultDrop(pending: { title: string; content: string; attachments
       const localX = rect ? clientX - rect.left : clientX;
       const localY = rect ? clientY - rect.top : clientY;
       const scrollTop = canvasEl?.scrollTop || 0;
-      const wx = Math.round(localX / g) * g;
-      const wy = Math.round((scrollTop + localY) / g) * g;
+      const scrollLeft = canvasEl?.scrollLeft || 0;
+      const z = st.camera?.zoom || 1;
+      const wx = Math.round(((scrollLeft + localX) / z - 5000) / g) * g;
+      const wy = Math.round(((scrollTop + localY) / z - 5000) / g) * g;
       const rows = Math.max(Number(spreadsheetAttach.rows) || 10, 5);
       const cols = Math.max(Number(spreadsheetAttach.cols) || 5, 3);
       const ssId = st.addSpreadsheetBlockAt({ x: wx, y: wy }, { rows, cols });
@@ -546,7 +554,7 @@ function makeDuplicateId(prefix = "b") {
 
 const NODE_LINGER_MS = 600;
 
-function ConnectionNodeOverlay({
+const ConnectionNodeOverlay = React.memo(function ConnectionNodeOverlay({
   blockId,
   x,
   y,
@@ -606,9 +614,36 @@ function ConnectionNodeOverlay({
       )}
     </div>
   );
-}
+});
 
-export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatusText = "" }: CanvasProps) {
+const CanvasBlock = React.memo(function CanvasBlock({
+  id, isTyping, isActivated, isRaised, isMinimized,
+  isDictating, isTranscribing, isHoveredSpecial,
+  isAiThinking, thinkingStatusText, renderRef,
+}: {
+  id: string;
+  isTyping: boolean;
+  isActivated: boolean;
+  isRaised: boolean;
+  isMinimized: boolean;
+  isDictating: boolean;
+  isTranscribing: boolean;
+  isHoveredSpecial: boolean;
+  isAiThinking: boolean;
+  thinkingStatusText: string;
+  renderRef: React.MutableRefObject<any>;
+}) {
+  const b = useCanvasStore((s) => s.blocks[id]);
+  const gridSize = useCanvasStore((s) => s.gridSize);
+  if (!b) return null;
+  return renderRef.current(id, b, gridSize, {
+    isTyping, isActivated, isRaised, isMinimized,
+    isDictating, isTranscribing, isHoveredSpecial,
+    isAiThinking, thinkingStatusText,
+  });
+});
+
+export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatusText = "" }: CanvasProps) {
   const { user } = useAuth();
   const { checkVaultLimit, incrementVaultCount, upgradeModal, dismissUpgradeModal } = useUsageGate();
 
@@ -817,6 +852,9 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
   type PressTarget = { kind: "cell" | "brick"; key: string };
   type GridRange = { minX: number; maxX: number; minY: number; maxY: number };
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const blockRenderRef = useRef<any>(null);
+  const hoverRafRef = useRef<number>(0);
+  const scrollCameraRafRef = useRef<number>(0);
   const [wheelZoomMode, setWheelZoomMode] = useState(() => {
     try { return localStorage.getItem("lykn_wheel_zoom_mode") === "true"; } catch { return false; }
   });
@@ -975,6 +1013,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
     startClientY: number;
     snapshot: Array<{ id: string; x: number; y: number }>;
   }>({ active: false, moved: false, pointerId: null, startWorldX: 0, startWorldY: 0, startClientX: 0, startClientY: 0, snapshot: [] });
+  const autoScrollRef = useRef<{ rafId: number; lastClientX: number; lastClientY: number }>({ rafId: 0, lastClientX: 0, lastClientY: 0 });
   const heldShapeDeleteRef = useRef<{ active: boolean; pointerId: number | null; keys: string[] }>({
     active: false,
     pointerId: null,
@@ -983,6 +1022,16 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
   const suppressBrickClickRef = useRef(false);
   const [liveDragOffset, setLiveDragOffset] = useState<{ ids: string[]; dx: number; dy: number } | null>(null);
   const floatingBrickRef = useRef<{ active: boolean; ids: string[] }>({ active: false, ids: [] });
+  const marqueeRef = useRef<{
+    active: boolean;
+    pointerId: number | null;
+    startClientX: number;
+    startClientY: number;
+    startWorldX: number;
+    startWorldY: number;
+    moved: boolean;
+  }>({ active: false, pointerId: null, startClientX: 0, startClientY: 0, startWorldX: 0, startWorldY: 0, moved: false });
+  const [marqueeRect, setMarqueeRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const lastShapeCellClickRef = useRef<{ key: string; at: number }>({ key: "", at: 0 });
 
   const [aiPanel, setAiPanel] = useState<{
@@ -1509,14 +1558,27 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
   const ZOOM_MIN = 0.2;
   const ZOOM_MAX = 3;
   const ZOOM_FACTOR = 1.06;
+  const SURFACE_ORIGIN_PAD = 5000;
   const applyZoom = useCallback((next: number) => {
     const clamped = Math.round(Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, next)) * 100) / 100;
-    canvasZoomRef.current = clamped;
-    setCanvasZoom(clamped);
     const el = containerRef.current;
-    const left = el ? el.scrollLeft : 0;
-    const top = el ? el.scrollTop : 0;
-    setCamera({ x: left / clamped, y: top / clamped, zoom: clamped });
+    const oldZoom = canvasZoomRef.current || 1;
+    if (el) {
+      const rect = el.getBoundingClientRect();
+      const centerX = rect.width / 2;
+      const centerY = rect.height / 2;
+      const worldX = (el.scrollLeft + centerX) / oldZoom;
+      const worldY = (el.scrollTop + centerY) / oldZoom;
+      const targetLeft = worldX * clamped - centerX;
+      const targetTop = worldY * clamped - centerY;
+      canvasZoomRef.current = clamped;
+      pendingZoomScrollRef.current = { left: targetLeft, top: targetTop, zoom: clamped };
+      setCanvasZoom(clamped);
+    } else {
+      canvasZoomRef.current = clamped;
+      setCanvasZoom(clamped);
+      setCamera({ x: -SURFACE_ORIGIN_PAD, y: -SURFACE_ORIGIN_PAD, zoom: clamped });
+    }
   }, [setCamera]);
 
   const makeCreateBlockLocal = (x: number, y: number, mode: string, data: Record<string, any>, width: number, height: number) => ({
@@ -1578,12 +1640,21 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       const left = el.scrollLeft || 0;
       const top = el.scrollTop || 0;
       scrollPosRef.current = { left, top };
-      const z = canvasZoomRef.current;
-      setCamera({ x: left / z, y: top / z, zoom: z });
+      if (scrollCameraRafRef.current) return;
+      scrollCameraRafRef.current = requestAnimationFrame(() => {
+        scrollCameraRafRef.current = 0;
+        const l = el.scrollLeft || 0;
+        const t = el.scrollTop || 0;
+        const z = canvasZoomRef.current;
+        setCamera({ x: l / z - SURFACE_ORIGIN_PAD, y: t / z - SURFACE_ORIGIN_PAD, zoom: z });
+      });
     };
     onScroll();
     el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll as any);
+    return () => {
+      el.removeEventListener("scroll", onScroll as any);
+      if (scrollCameraRafRef.current) cancelAnimationFrame(scrollCameraRafRef.current);
+    };
   }, [setCamera]);
 
   // Sync local zoom & scroll from store camera when it diverges (snapshot restore).
@@ -1597,13 +1668,13 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
     const el = containerRef.current;
     if (el) {
       const zNow = canvasZoomRef.current;
-      const currentY = zNow > 0 ? el.scrollTop / zNow : 0;
+      const currentY = zNow > 0 ? el.scrollTop / zNow - SURFACE_ORIGIN_PAD : 0;
       if (Math.abs(camera.y - currentY) > 5) {
-        el.scrollTop = camera.y * zNow;
+        el.scrollTop = (camera.y + SURFACE_ORIGIN_PAD) * zNow;
       }
-      const currentX = zNow > 0 ? el.scrollLeft / zNow : 0;
+      const currentX = zNow > 0 ? el.scrollLeft / zNow - SURFACE_ORIGIN_PAD : 0;
       if (Math.abs(camera.x - currentX) > 5) {
-        el.scrollLeft = camera.x * zNow;
+        el.scrollLeft = (camera.x + SURFACE_ORIGIN_PAD) * zNow;
       }
     }
   }, [camera.zoom, camera.x, camera.y]);
@@ -1664,7 +1735,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
     el.scrollTop = pending.top;
     const finalLeft = Math.max(0, el.scrollLeft);
     const finalTop = Math.max(0, el.scrollTop);
-    setCamera({ x: finalLeft / pending.zoom, y: finalTop / pending.zoom, zoom: pending.zoom });
+    setCamera({ x: finalLeft / pending.zoom - SURFACE_ORIGIN_PAD, y: finalTop / pending.zoom - SURFACE_ORIGIN_PAD, zoom: pending.zoom });
   }, [canvasZoom, setCamera]);
 
   // Middle mouse button panning: press scroll wheel to grab-pan the canvas.
@@ -1940,7 +2011,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
             ? clientToWorld(last.x, last.y)
             : rect
               ? clientToWorld(rect.left + rect.width / 2, rect.top + rect.height / 3)
-              : { x: scrollPosRef.current.left || 0, y: scrollPosRef.current.top || 0 };
+              : { x: (scrollPosRef.current.left || 0) / (canvasZoomRef.current || 1) - SURFACE_ORIGIN_PAD, y: (scrollPosRef.current.top || 0) / (canvasZoomRef.current || 1) - SURFACE_ORIGIN_PAD };
         const x = snapToGrid(world.x, gridSize);
         const y = snapToGrid(world.y, gridSize);
         const mode = key === "d" ? "drawing" : key === "g" ? "generated" : key === "i" ? "image" : "empty";
@@ -2209,7 +2280,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
           ? clientToWorld(last.x, last.y)
           : rect
             ? clientToWorld(rect.left + rect.width / 2, rect.top + rect.height / 3)
-            : { x: scrollPosRef.current.left || 0, y: scrollPosRef.current.top || 0 };
+            : { x: (scrollPosRef.current.left || 0) / (canvasZoomRef.current || 1) - SURFACE_ORIGIN_PAD, y: (scrollPosRef.current.top || 0) / (canvasZoomRef.current || 1) - SURFACE_ORIGIN_PAD };
       if (key === "r") createShapeBlockAt(world.x, world.y, "rectangle");
       if (key === "o") createShapeBlockAt(world.x, world.y, "ellipse");
       if (key === "l") createShapeBlockAt(world.x, world.y, e.shiftKey ? "arrow" : "line");
@@ -2351,8 +2422,8 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
     const localY = clientY - rect.top;
     const z = canvasZoomRef.current || 1;
     return {
-      x: (el.scrollLeft + localX) / z,
-      y: (el.scrollTop + localY) / z,
+      x: (el.scrollLeft + localX) / z - SURFACE_ORIGIN_PAD,
+      y: (el.scrollTop + localY) / z - SURFACE_ORIGIN_PAD,
     };
   }
 
@@ -3097,10 +3168,64 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       }
       return false;
     };
+    const EDGE_ZONE = 60;
+    const MAX_SCROLL_SPEED = 18;
+    const applyDragTransforms = () => {
+      const d = groupDragRef.current;
+      if (!d.active || !d.moved) return;
+      const z = canvasZoomRef.current || 1;
+      const dx = (autoScrollRef.current.lastClientX - d.startClientX) / z;
+      const dy = (autoScrollRef.current.lastClientY - d.startClientY) / z;
+      for (const s of d.snapshot) {
+        const blockEl = document.querySelector(`[data-canvas-block][data-block-id="${s.id}"]`) as HTMLElement | null;
+        if (blockEl) {
+          blockEl.style.transition = "none";
+          blockEl.style.transform = `translate(${dx}px, ${dy}px)`;
+        }
+      }
+      const wires = useCanvasStore.getState().wireConnections;
+      if (wires && wires.length) {
+        setLiveDragOffset({ ids: d.snapshot.map((s) => s.id), dx, dy });
+      }
+    };
+    const tickAutoScroll = () => {
+      const d = groupDragRef.current;
+      if (!d.active || !d.moved) { autoScrollRef.current.rafId = 0; return; }
+      const el = containerRef.current;
+      if (!el) { autoScrollRef.current.rafId = 0; return; }
+      const rect = el.getBoundingClientRect();
+      const cx = autoScrollRef.current.lastClientX;
+      const cy = autoScrollRef.current.lastClientY;
+      let sx = 0, sy = 0;
+      const dl = cx - rect.left;
+      const dr = rect.right - cx;
+      const dt = cy - rect.top;
+      const db = rect.bottom - cy;
+      if (dl < EDGE_ZONE && dl >= 0) sx = -MAX_SCROLL_SPEED * Math.pow(1 - dl / EDGE_ZONE, 1.5);
+      else if (dr < EDGE_ZONE && dr >= 0) sx = MAX_SCROLL_SPEED * Math.pow(1 - dr / EDGE_ZONE, 1.5);
+      if (dt < EDGE_ZONE && dt >= 0) sy = -MAX_SCROLL_SPEED * Math.pow(1 - dt / EDGE_ZONE, 1.5);
+      else if (db < EDGE_ZONE && db >= 0) sy = MAX_SCROLL_SPEED * Math.pow(1 - db / EDGE_ZONE, 1.5);
+      if (sx || sy) {
+        const prevLeft = el.scrollLeft;
+        const prevTop = el.scrollTop;
+        el.scrollLeft += sx;
+        el.scrollTop += sy;
+        const actualDx = el.scrollLeft - prevLeft;
+        const actualDy = el.scrollTop - prevTop;
+        if (actualDx || actualDy) {
+          d.startClientX -= actualDx;
+          d.startClientY -= actualDy;
+          applyDragTransforms();
+        }
+      }
+      autoScrollRef.current.rafId = requestAnimationFrame(tickAutoScroll);
+    };
     const onMove = (e: PointerEvent) => {
       const d = groupDragRef.current;
       if (!d.active) return;
       if (d.pointerId != null && e.pointerId !== d.pointerId) return;
+      autoScrollRef.current.lastClientX = e.clientX;
+      autoScrollRef.current.lastClientY = e.clientY;
       const z = canvasZoomRef.current || 1;
       const dx = (e.clientX - d.startClientX) / z;
       const dy = (e.clientY - d.startClientY) / z;
@@ -3108,6 +3233,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         const screenManhattan = Math.abs(e.clientX - d.startClientX) + Math.abs(e.clientY - d.startClientY);
         if (screenManhattan < Math.max(3, Math.floor(gridSize / 5))) return;
         d.moved = true;
+        containerRef.current?.setAttribute("data-dragging", "");
         window.getSelection()?.removeAllRanges();
         setHoveredSpecialBlockId(null);
         const draggedIds = d.snapshot.map((s) => s.id).filter(Boolean);
@@ -3116,23 +3242,26 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
           setRaisedBrickIds(draggedIds);
           setTypingBlockId(null);
         }
+        if (!autoScrollRef.current.rafId) {
+          autoScrollRef.current.rafId = requestAnimationFrame(tickAutoScroll);
+        }
       }
       const overTrash = isOverTrash(e.clientX, e.clientY);
       setTrashHover(overTrash);
       syncTrashHoldDuringDrag(overTrash);
-      // Smooth follow during drag; grid snap happens on pointer up only.
-      for (const s of d.snapshot) {
-        const el = document.querySelector(`[data-canvas-block][data-block-id="${s.id}"]`) as HTMLElement | null;
-        if (el) el.style.transform = `translate(${dx}px, ${dy}px)`;
-      }
-      setLiveDragOffset({ ids: d.snapshot.map((s) => s.id), dx, dy });
+      applyDragTransforms();
     };
     const onUp = (e: PointerEvent) => {
+      if (autoScrollRef.current.rafId) {
+        cancelAnimationFrame(autoScrollRef.current.rafId);
+        autoScrollRef.current.rafId = 0;
+      }
       const d = groupDragRef.current;
       if (!d.active) return;
       if (d.pointerId != null && e.pointerId !== d.pointerId) return;
       const moved = d.moved;
       const snapshot = d.snapshot;
+      containerRef.current?.removeAttribute("data-dragging");
 
       const overTrash = isOverTrash(e.clientX, e.clientY);
       const trashHoldOk = trashHoldStartAtRef.current != null && performance.now() - trashHoldStartAtRef.current >= CANVAS_TRASH_HOLD_MS;
@@ -3190,8 +3319,119 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       window.removeEventListener("pointermove", onMove, true);
       window.removeEventListener("pointerup", onUp, true);
       window.removeEventListener("pointercancel", onUp, true);
+      if (autoScrollRef.current.rafId) {
+        cancelAnimationFrame(autoScrollRef.current.rafId);
+        autoScrollRef.current.rafId = 0;
+      }
     };
   }, [gridSize, moveBlocksFromSnapshot, pushHistory, clearTrashHold, syncTrashHoldDuringDrag]);
+
+  // ── Marquee (drag-select) ─────────────────────────────────────────
+  const marqueeClientToWorldRef = useRef(clientToWorld);
+  marqueeClientToWorldRef.current = clientToWorld;
+  const marqueeFindBlockRef = useRef(findBlockAtCell);
+  marqueeFindBlockRef.current = findBlockAtCell;
+  const marqueeDropEmptyRef = useRef(dropEmptyTypingBlockIfNeeded);
+  marqueeDropEmptyRef.current = dropEmptyTypingBlockIfNeeded;
+  const marqueeFocusBrickRef = useRef(focusBrickInputById);
+  marqueeFocusBrickRef.current = focusBrickInputById;
+  useEffect(() => {
+    const DRAG_THRESHOLD = 5;
+
+    const hitTest = (sx: number, sy: number, sw: number, sh: number) => {
+      const st = useCanvasStore.getState();
+      const hit: string[] = [];
+      for (const id of st.blockOrder) {
+        const b: any = st.blocks[id];
+        if (!b) continue;
+        const bx = Number(b.x || 0);
+        const by = Number(b.y || 0);
+        const bw = Number(b.width || 0);
+        const bh = Number(b.height || 0);
+        if (bx + bw > sx && bx < sx + sw && by + bh > sy && by < sy + sh) {
+          hit.push(id);
+        }
+      }
+      return hit;
+    };
+
+    const blockSelect = (e: Event) => {
+      if (marqueeRef.current.active && marqueeRef.current.moved) e.preventDefault();
+    };
+
+    const onMove = (e: PointerEvent) => {
+      const m = marqueeRef.current;
+      if (!m.active) return;
+      if (m.pointerId != null && e.pointerId !== m.pointerId) return;
+
+      const screenDist = Math.abs(e.clientX - m.startClientX) + Math.abs(e.clientY - m.startClientY);
+      if (!m.moved && screenDist < DRAG_THRESHOLD) return;
+      if (!m.moved) {
+        m.moved = true;
+        window.getSelection()?.removeAllRanges();
+      }
+
+      const world = marqueeClientToWorldRef.current(e.clientX, e.clientY);
+      const x = Math.min(m.startWorldX, world.x);
+      const y = Math.min(m.startWorldY, world.y);
+      const w = Math.abs(world.x - m.startWorldX);
+      const h = Math.abs(world.y - m.startWorldY);
+      setMarqueeRect({ x, y, w, h });
+
+      const hit = hitTest(x, y, w, h);
+      setActivatedBrickIds(hit);
+      setRaisedBrickIds(hit);
+    };
+
+    const onUp = (e: PointerEvent) => {
+      const m = marqueeRef.current;
+      if (!m.active) return;
+      if (m.pointerId != null && e.pointerId !== m.pointerId) return;
+      const didDrag = m.moved;
+      marqueeRef.current = { active: false, pointerId: null, startClientX: 0, startClientY: 0, startWorldX: 0, startWorldY: 0, moved: false };
+      setMarqueeRect(null);
+
+      if (didDrag) {
+        const world = marqueeClientToWorldRef.current(e.clientX, e.clientY);
+        const x = Math.min(m.startWorldX, world.x);
+        const y = Math.min(m.startWorldY, world.y);
+        const w = Math.abs(world.x - m.startWorldX);
+        const h = Math.abs(world.y - m.startWorldY);
+        const hit = hitTest(x, y, w, h);
+        if (hit.length) {
+          setActivatedBrickIds(hit);
+          setRaisedBrickIds(hit);
+          selectBlocks(hit as any);
+          floatingBrickRef.current = { active: true, ids: hit };
+        } else {
+          setActivatedBrickIds([]);
+          setRaisedBrickIds([]);
+        }
+      } else {
+        const g = useCanvasStore.getState().gridSize || 24;
+        const sx = snapToGrid(m.startWorldX, g);
+        const sy = snapToGrid(m.startWorldY, g);
+        const existingId = marqueeFindBlockRef.current(sx, sy);
+        const id = existingId || addTextBlockAt({ x: sx, y: sy }, { width: g, height: g, content: "", format: "plain" } as any);
+        marqueeDropEmptyRef.current(id);
+        setActivatedBrickIds([]);
+        setRaisedBrickIds([]);
+        setTypingBlockId(id);
+        marqueeFocusBrickRef.current(id);
+      }
+    };
+
+    document.addEventListener("selectstart", blockSelect, true);
+    window.addEventListener("pointermove", onMove, true);
+    window.addEventListener("pointerup", onUp, true);
+    window.addEventListener("pointercancel", onUp, true);
+    return () => {
+      document.removeEventListener("selectstart", blockSelect, true);
+      window.removeEventListener("pointermove", onMove, true);
+      window.removeEventListener("pointerup", onUp, true);
+      window.removeEventListener("pointercancel", onUp, true);
+    };
+  }, [selectBlocks, addTextBlockAt]);
 
   // Floating brick: double-click lifts visually; click anywhere or Escape to drop.
   useEffect(() => {
@@ -3323,7 +3563,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         st.updateBlock(id as any, { width: w, height: h } as any);
       }
       requestAnimationFrame(() => {
-        const top = Math.max(0, Math.floor((b.y || 0) - (rect.height - (b.height || 0)) / 2));
+        const top = Math.max(0, Math.floor((b.y || 0) + SURFACE_ORIGIN_PAD - (rect.height - (b.height || 0)) / 2));
         el.scrollTop = top;
       });
     };
@@ -3653,7 +3893,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       const last = lastPointerClientRef.current;
       if (last && rect) return clientToWorld(last.x, last.y);
       if (rect) return clientToWorld(rect.left + rect.width / 2, rect.top + rect.height / 3);
-      return { x: scrollPosRef.current.left || 0, y: scrollPosRef.current.top || 0 };
+      return { x: (scrollPosRef.current.left || 0) / (canvasZoomRef.current || 1) - SURFACE_ORIGIN_PAD, y: (scrollPosRef.current.top || 0) / (canvasZoomRef.current || 1) - SURFACE_ORIGIN_PAD };
     };
 
     const isDuplicateOnCanvas = (check: { url?: string; videoId?: string; src?: string; name?: string; content?: string }): boolean => {
@@ -5100,10 +5340,15 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       const el = containerRef.current?.querySelector(`[data-block-id="${rid}"]`) as HTMLElement | null;
       if (!el) continue;
       if (el.hasAttribute("data-brick-shell")) continue;
-      el.style.transition = "transform 0.15s cubic-bezier(0.34,1.56,0.64,1), box-shadow 0.15s ease";
-      el.style.transform = "translateY(-8px) scale(1.02)";
-      el.style.boxShadow = "0 20px 36px rgba(0,0,0,0.30)";
-      el.style.zIndex = "40";
+      if (groupDragRef.current.moved) {
+        el.style.boxShadow = "0 20px 36px rgba(0,0,0,0.30)";
+        el.style.zIndex = "40";
+      } else {
+        el.style.transition = "transform 0.15s cubic-bezier(0.34,1.56,0.64,1), box-shadow 0.15s ease";
+        el.style.transform = "translateY(-8px) scale(1.02)";
+        el.style.boxShadow = "0 20px 36px rgba(0,0,0,0.30)";
+        el.style.zIndex = "40";
+      }
     }
     prevRaisedRef.current = raisedBrickIds;
   }, [raisedBrickIds]);
@@ -5284,33 +5529,39 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       }}
       onPointerMove={(e) => {
         if (middlePanRef.current?.active) return;
-        const el = containerRef.current;
-        if (!el) return;
         lastPointerClientRef.current = { x: e.clientX, y: e.clientY };
-        const t = e.target as Element | null;
-        const blockEl = t?.closest?.("[data-block-id]") as HTMLElement | null;
-        const overMenuZone = Boolean(t?.closest?.("[data-block-menu-zone]"));
-        const overBlock = Boolean(t?.closest?.("[data-canvas-block]"));
-        if (!groupDragRef.current.moved) {
-          if (blockEl) {
-            const bid = blockEl.getAttribute("data-block-id") || "";
-            setHoveredSpecialBlockId((prev) => prev === bid ? prev : bid);
-          } else if (!overMenuZone) {
-            setHoveredSpecialBlockId((prev) => prev ? null : prev);
+        if (groupDragRef.current.active || gridShapeDragRef.current.active) return;
+        const clientX = e.clientX, clientY = e.clientY;
+        const target = e.target as Element | null;
+        const blockEl = target?.closest?.("[data-block-id]") as HTMLElement | null;
+        const overMenuZone = Boolean(target?.closest?.("[data-block-menu-zone]"));
+        const overBlock = Boolean(target?.closest?.("[data-canvas-block]"));
+        if (hoverRafRef.current) return;
+        hoverRafRef.current = requestAnimationFrame(() => {
+          hoverRafRef.current = 0;
+          if (!containerRef.current) return;
+          if (!groupDragRef.current.moved) {
+            if (blockEl) {
+              const bid = blockEl.getAttribute("data-block-id") || "";
+              setHoveredSpecialBlockId((prev) => prev === bid ? prev : bid);
+            } else if (!overMenuZone) {
+              setHoveredSpecialBlockId((prev) => prev ? null : prev);
+            }
           }
-        }
-        if (overBlock) {
-          if (hoverCell) setHoverCell(null);
-          return;
-        }
-        const world = clientToWorld(e.clientX, e.clientY);
-        const sx = snapToGrid(world.x, gridSize);
-        const sy = snapToGrid(world.y, gridSize);
-        setHoverCell((prev) => (prev && prev.x === sx && prev.y === sy ? prev : { x: sx, y: sy }));
+          if (overBlock) {
+            setHoverCell((prev) => prev ? null : prev);
+            return;
+          }
+          const world = clientToWorld(clientX, clientY);
+          const sx = snapToGrid(world.x, gridSize);
+          const sy = snapToGrid(world.y, gridSize);
+          setHoverCell((prev) => (prev && prev.x === sx && prev.y === sy ? prev : { x: sx, y: sy }));
+        });
       }}
       onPointerLeave={() => { setHoverCell(null); setHoveredSpecialBlockId(null); }}
       onPointerDown={(e) => {
         if (e.button === 1) return;
+        if (e.button !== 0) return;
         const el = containerRef.current;
         if (!el) return;
         const t = e.target as Element | null;
@@ -5320,7 +5571,6 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
         window.dispatchEvent(new CustomEvent("omnia_canvas_interact"));
         commitShapeCellEditorByKey();
         setTypingShapeCellKey(null);
-        // Keep canvas focused so '/' works after clicking.
         el.focus();
         clearSelection();
         const world = clientToWorld(e.clientX, e.clientY);
@@ -5338,8 +5588,6 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
             pairShiftTargets(shiftAnchor, target);
           }
         } else {
-          // Preserve previously built multi-cell shapes; remove transient single-cell press
-          // because typing should be represented by the brick itself (not a second grid layer).
           const persistedRanges = activatedGridRanges.filter((r) => rangeCellCount(r) > 1);
           const persistedKeys = activatedGridCellKeys.filter((k) => keyInRanges(k, persistedRanges));
           setActivatedGridCellKeys(persistedKeys);
@@ -5349,16 +5597,16 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
           setRaisedBrickIds([]);
           setShiftLinkedGridSelection(false);
           setShiftAnchor(target);
-        }
-        if (!e.shiftKey) {
-          const existingId = findBlockAtCell(sx, sy);
-          const id = existingId || addTextBlockAt({ x: sx, y: sy }, { width: gridSize, height: gridSize, content: "", format: "plain" } as any);
-          dropEmptyTypingBlockIfNeeded(id);
-          // Typing should be visually neutral (no blue selection ring while editing).
-          setActivatedBrickIds([]);
-          setRaisedBrickIds([]);
-          setTypingBlockId(id);
-          focusBrickInputById(id);
+
+          marqueeRef.current = {
+            active: true,
+            pointerId: e.pointerId,
+            startClientX: e.clientX,
+            startClientY: e.clientY,
+            startWorldX: world.x,
+            startWorldY: world.y,
+            moved: false,
+          };
         }
         if (!ENABLE_BRICK_LOGIC) return;
       }}
@@ -5549,27 +5797,42 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       <div
         className="absolute left-0 top-0"
         style={{
-          width: `${surface.width * canvasZoom}px`,
-          height: `${surface.height * canvasZoom}px`,
+          width: `${(surface.width + SURFACE_ORIGIN_PAD) * canvasZoom}px`,
+          height: `${(surface.height + SURFACE_ORIGIN_PAD) * canvasZoom}px`,
         }}
       >
       <div
         style={{
           width: `${surface.width}px`,
           height: `${surface.height}px`,
-          transform: `scale(${canvasZoom})`,
+          transform: `scale(${canvasZoom}) translate(${SURFACE_ORIGIN_PAD}px, ${SURFACE_ORIGIN_PAD}px)`,
           transformOrigin: "top left",
           willChange: "transform",
           backfaceVisibility: "hidden",
         }}
       >
 
+        {marqueeRect && (
+          <div
+            className="omnia-marquee-select"
+            style={{
+              position: "absolute",
+              left: `${marqueeRect.x}px`,
+              top: `${marqueeRect.y}px`,
+              width: `${marqueeRect.w}px`,
+              height: `${marqueeRect.h}px`,
+              zIndex: 9999,
+              pointerEvents: "none",
+            }}
+          />
+        )}
+
         {deleteZoneOpen && (
           <div
             className="absolute z-50"
             style={{
-              left: `${Math.max(0, surface.width - Math.min(160, Math.max(96, Math.floor((viewport.width / (canvasZoom || 1) || surface.width) * 0.2))))}px`,
-              top: `${(scrollPosRef.current.top || 0) / (canvasZoom || 1)}px`,
+              left: `${Math.max(0, surface.width - Math.min(160, Math.max(96, Math.floor((viewport.width / (canvasZoom || 1) || surface.width) * 0.2))) - SURFACE_ORIGIN_PAD)}px`,
+              top: `${(scrollPosRef.current.top || 0) / (canvasZoom || 1) - SURFACE_ORIGIN_PAD}px`,
               width: `${Math.min(160, Math.max(96, Math.floor((viewport.width / (canvasZoom || 1) || surface.width) * 0.2)))}px`,
               height: `${(viewport.height || 0) / (canvasZoom || 1)}px`,
               pointerEvents: "none",
@@ -5866,9 +6129,8 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
           });
         })()}
 
-        {visibleIds.map((id) => {
-          const b = blocks[id];
-          if (!b) return null;
+        {(() => {
+          const renderBlock = (id: string, b: any, gridSize: number, state: { isTyping: boolean; isActivated: boolean; isRaised: boolean; isMinimized: boolean; isDictating: boolean; isTranscribing: boolean; isHoveredSpecial: boolean; isAiThinking: boolean; thinkingStatusText: string }) => {
 
           const isAiResponseBubble = Boolean((b as any)?.data?.aiResponseBubble);
           const blockContent = String((b as any)?.content || "");
@@ -5897,7 +6159,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
             !embedMime.startsWith("audio/") &&
             embedMime !== "application/pdf";
 
-          if (minimizedIds.has(id) && typingBlockId !== id) {
+          if (state.isMinimized) {
             const bType = String((b as any).type || "text");
             const bData = (b as any).data && typeof (b as any).data === "object" ? (b as any).data : {};
             const content = String(bData.content ?? (b as any).content ?? "").trim();
@@ -6119,7 +6381,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
                   onPointerEnter={() => setHoveredSpecialBlockId(id)}
                   onPointerLeave={() => setHoveredSpecialBlockId((prev) => prev === id ? null : prev)}
                 >
-                  {hoveredSpecialBlockId === id && (
+                  {state.isHoveredSpecial && (
                     <button
                       className="absolute flex items-center justify-center w-6 h-6 rounded-md hover:bg-black/8 dark:hover:bg-white/12 transition-opacity"
                       style={{ top: 2, left: 3 }}
@@ -6205,9 +6467,9 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
               )
             : null;
           const brickEl = renderBrickShell(b as any, id, {
-            isActivated: typingBlockId === id ? false : activatedBrickIds.includes(id),
-            isRaised: typingBlockId === id ? false : raisedBrickIds.includes(id),
-            isTyping: typingBlockId === id,
+            isActivated: state.isActivated,
+            isRaised: state.isRaised,
+            isTyping: state.isTyping,
             enableWidthResize: isTextBrick || isAiResponseBubble || hasRichMarkdown,
             extraContent: sourcesExtraContent,
             resizeGridSize: gridSize,
@@ -6527,13 +6789,13 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
             onConnectionDragStart: handleConnectionDragStart,
           });
 
-          if (dictatingBlockId === id || dictateTranscribingBlockId === id) {
+          if (state.isDictating || state.isTranscribing) {
             const bx = Number((b as any).x || 0);
             const by = Number((b as any).y || 0);
             const bw = Number((b as any).width || gridSize);
             const bh = Number((b as any).height || gridSize);
-            const isRecording = dictatingBlockId === id;
-            const isTranscribing = dictateTranscribingBlockId === id && !isRecording;
+            const isRecording = state.isDictating;
+            const isTranscribing = state.isTranscribing && !isRecording;
             return (
               <React.Fragment key={id}>
                 {brickEl}
@@ -6576,7 +6838,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
             );
           }
 
-          if (isAiResponseBubble && isAiThinking) {
+          if (isAiResponseBubble && state.isAiThinking) {
             const brickContent = String((b as any)?.data?.content ?? (b as any)?.content ?? "").trim();
             const isStillPlaceholder = !brickContent || /^AI is thinking/i.test(brickContent);
 
@@ -6629,7 +6891,7 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
                           wordBreak: "break-word",
                         }}
                       >
-                        {thinkingStatusText || "AI is thinking…"}
+                        {state.thinkingStatusText || "AI is thinking…"}
                       </span>
                     </div>
                   </>
@@ -6639,7 +6901,25 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
           }
 
           return brickEl;
-        })}
+          };
+          blockRenderRef.current = renderBlock;
+          return visibleIds.map((id) => (
+            <CanvasBlock
+              key={id}
+              id={id}
+              isTyping={typingBlockId === id}
+              isActivated={typingBlockId === id ? false : activatedBrickIds.includes(id)}
+              isRaised={typingBlockId === id ? false : raisedBrickIds.includes(id)}
+              isMinimized={minimizedIds.has(id) && typingBlockId !== id}
+              isDictating={dictatingBlockId === id}
+              isTranscribing={dictateTranscribingBlockId === id}
+              isHoveredSpecial={hoveredSpecialBlockId === id}
+              isAiThinking={isAiThinking}
+              thinkingStatusText={thinkingStatusText}
+              renderRef={blockRenderRef}
+            />
+          ));
+        })()}
 
         <ConnectionWires
           blocks={blocks as any}
@@ -7201,5 +7481,5 @@ export function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatu
       <UpgradeModal modal={upgradeModal} onDismiss={dismissUpgradeModal} />
     </div>
   );
-}
+});
 

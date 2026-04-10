@@ -666,7 +666,9 @@ export const useCanvasStore = create<CanvasState>()(
     setCamera: (patch) => {
       set((state) => {
         state.camera = { ...state.camera, ...patch };
-        state.camera.zoom = clamp(state.camera.zoom, 0.2, 3);
+        if (!Number.isFinite(state.camera.x)) state.camera.x = 0;
+        if (!Number.isFinite(state.camera.y)) state.camera.y = 0;
+        state.camera.zoom = Number.isFinite(state.camera.zoom) ? clamp(state.camera.zoom, 0.2, 3) : 1;
       });
     },
 
@@ -743,7 +745,7 @@ export const useCanvasStore = create<CanvasState>()(
           const nx = s.x + dx;
           const ny = s.y + dy;
           const rawX = snap ? snapToGrid(nx, grid) : nx;
-          const nextX = Math.max(0, (b as any).type === "create" ? rawX : Math.floor(rawX));
+          const nextX = (b as any).type === "create" ? rawX : Math.floor(rawX);
           const nextY = snap ? snapToGrid(ny, grid) : ny;
           const bounded = clampWithinContainer({ state, block: b, x: nextX, y: nextY });
           const prevX = Math.floor((b as any).x || 0);

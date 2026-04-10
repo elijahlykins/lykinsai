@@ -339,11 +339,15 @@ export function buildTieredCanvasContext(params: {
   }
 
   // ── Assemble ─────────────────────────────────────────────────────────
+  const vpLine = viewportCenter
+    ? `Viewport center: x=${Math.round(viewportCenter.x)} y=${Math.round(viewportCenter.y)}`
+    : "";
   lines.push(
     "[BOARD_OVERVIEW]",
     `Total: ${totalBlocks} blocks | Showing: ${shownBlocks} | Hidden: ${hiddenBlocks}`,
     `Types: ${typeSummary}`,
     `Wires: ${validWires.length} connections | Spatial groups: ${clusterLines.length}`,
+    ...(vpLine ? [vpLine] : []),
     "",
   );
 
@@ -440,6 +444,53 @@ export function buildTieredCanvasContext(params: {
       "These blocks were on the board earlier but have since been deleted by the user. Do not reference them as if they still exist.",
       ...deletedLines,
     );
+  }
+
+  return lines.join("\n");
+}
+
+/**
+ * Compact context for action-only requests (organize, move, resize).
+ * Includes EVERY block with minimal metadata so the AI can compute layouts.
+ */
+export function buildActionCanvasContext(params: {
+  blocks: Record<string, any>;
+  blockOrder: string[];
+  viewportCenter: { x: number; y: number };
+  viewportSize: { w: number; h: number };
+}): string {
+  const { blocks, blockOrder, viewportCenter, viewportSize } = params;
+  const allIds = Array.isArray(blockOrder) ? blockOrder : [];
+  const lines: string[] = [];
+
+  const typeFreq: Record<string, number> = {};
+  for (const id of allIds) {
+    const b = blocks[id];
+    if (!b) continue;
+    const et = effectiveType(b);
+    typeFreq[et] = (typeFreq[et] || 0) + 1;
+  }
+  const typeSummary = Object.entries(typeFreq)
+    .sort((a, b) => b[1] - a[1])
+    .map(([t, n]) => `${n} ${t}`)
+    .join(", ");
+
+  const totalBlocks = allIds.filter((id) => !!blocks[id]).length;
+
+  lines.push(
+    "[BOARD_OVERVIEW]",
+    `Total: ${totalBlocks} blocks | Types: ${typeSummary}`,
+    `Viewport center: x=${Math.round(viewportCenter.x)} y=${Math.round(viewportCenter.y)} | Viewport size: ${viewportSize.w}x${viewportSize.h}`,
+    "",
+    "[ALL_BLOCKS]",
+  );
+
+  for (const id of allIds) {
+    const b = blocks[id];
+    if (!b) continue;
+    const et = effectiveType(b);
+    const label = take(b?.content || b?.data?.title || b?.data?.name || b?.data?.src || "", 40);
+    lines.push(`- id=${id} type=${et} x=${Math.floor(b.x || 0)} y=${Math.floor(b.y || 0)} w=${Math.floor(b.width || 0)} h=${Math.floor(b.height || 0)}${label ? ` label="${label}"` : ""}`);
   }
 
   return lines.join("\n");

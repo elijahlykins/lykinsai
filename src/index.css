@@ -413,6 +413,11 @@ body.sidebar-push .app-content {
   padding-left: 12rem;
 }
 
+body.sidebar-push .app-content > .omnia-grid-bg {
+  width: 100vw;
+  margin-left: calc(-1 * var(--sidebar-width));
+}
+
 /* Embedded vault pullout: make iframe document transparent */
 html.embedded-vault-mode,
 html.embedded-vault-mode body,
@@ -815,6 +820,12 @@ body.embedded-vault-mode .app-content {
       inset 0 0 26px rgba(110, 200, 255, 0.12),
       inset 0 0 10px rgba(110, 200, 255, 0.08);
     transition: box-shadow 140ms ease, border-color 140ms ease;
+  }
+
+  /* Kill ALL transitions on blocks while dragging to prevent glitchy competing animations */
+  [data-omnia-canvas][data-dragging] [data-canvas-block],
+  [data-omnia-canvas][data-dragging] [data-canvas-block] > * {
+    transition: none !important;
   }
 }
 
@@ -1637,4 +1648,18 @@ input[type="color"].color-circle::-moz-color-swatch {
 @keyframes omnia-border-trace-loop {
   0%   { --omnia-border-trace: 0deg; }
   100% { --omnia-border-trace: 360deg; }
+}
+
+/* ── Marquee drag-select rectangle ─────────────────────────────────── */
+.omnia-marquee-select {
+  border: 1.5px solid rgba(59, 130, 246, 0.7);
+  background: rgba(59, 130, 246, 0.08);
+  border-radius: 3px;
+  backdrop-filter: blur(1px);
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.15);
+}
+.dark .omnia-marquee-select {
+  border-color: rgba(96, 165, 250, 0.65);
+  background: rgba(96, 165, 250, 0.1);
+  box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.18);
 }
