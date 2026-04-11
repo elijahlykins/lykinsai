@@ -150,8 +150,141 @@ async function fetchDescription(videoId, youtubeApiKey) {
 
 async function fetchYoutubeTranscriptSegments(videoId) {
   const fetchTranscript = testAdapters.fetchTranscriptImpl || YoutubeTranscript.fetchTranscript.bind(YoutubeTranscript);
-  const data = await fetchTranscript(videoId);
-  return normalizeSegments(data, "auto");
+  try {
+    const data = await fetchTranscript(videoId);
+    const segs = normalizeSegments(data, "auto");
+    if (segs.length) return segs;
+  } catch {
+    // youtube-transcript package failed — try innertube fallback
+  }
+  return fetchTranscriptViaInnertube(videoId);
+}
+
+const INNERTUBE_WEB_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
+const INNERTUBE_ANDROID_KEY = "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w";
+
+async function innertubePlayerRequest(videoId, client = "WEB") {
+  const fetchFn = getFetch();
+  const clients = {
+    WEB: { clientName: "WEB", clientVersion: "2.20241120.01.00", apiKey: INNERTUBE_WEB_KEY },
+    ANDROID: { clientName: "ANDROID", clientVersion: "19.09.37", androidSdkVersion: 30, apiKey: INNERTUBE_ANDROID_KEY },
+    TV: { clientName: "TVHTML5_SIMPLY_EMBEDDED_PLAYER", clientVersion: "2.0", apiKey: INNERTUBE_WEB_KEY },
+  };
+  const c = clients[client] || clients.WEB;
+  const body = {
+    videoId,
+    context: {
+      client: {
+        clientName: c.clientName,
+        clientVersion: c.clientVersion,
+        ...(c.androidSdkVersion ? { androidSdkVersion: c.androidSdkVersion } : {}),
+        hl: "en",
+        gl: "US",
+      },
+    },
+    playbackContext: { contentPlaybackContext: { signatureTimestamp: 20073 } },
+  };
+  const url = `https://www.youtube.com/youtubei/v1/player?key=${c.apiKey}&prettyPrint=false`;
+  const res = await fetchFn(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "User-Agent": client === "ANDROID"
+        ? "com.google.android.youtube/19.09.37 (Linux; U; Android 12; US) gzip"
+        : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) return null;
+  return res.json().catch(() => null);
+}
+
+async function fetchTranscriptViaInnertube(videoId) {
+  for (const client of ["WEB", "TV", "ANDROID"]) {
+    try {
+      const data = await innertubePlayerRequest(videoId, client);
+      const tracks = data?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+      if (!Array.isArray(tracks) || !tracks.length) continue;
+      const enTrack = tracks.find((t) => String(t.languageCode || "").startsWith("en"))
+        || tracks.find((t) => t.kind === "asr")
+        || tracks[0];
+      if (!enTrack?.baseUrl) continue;
+
+      const fetchFn = getFetch();
+      const ttUrl = `${enTrack.baseUrl}&fmt=json3`;
+      const ttRes = await fetchFn(ttUrl);
+      if (!ttRes.ok) continue;
+      const ttData = await ttRes.json().catch(() => null);
+      if (!ttData?.events) continue;
+
+      const segments = ttData.events
+        .filter((e) => e.segs && e.tStartMs != null)
+        .map((e) => {
+          const text = (e.segs || []).map((s) => String(s.utf8 || "")).join("").trim();
+          const startMs = Number(e.tStartMs || 0);
+          const durMs = Number(e.dDurationMs || 0);
+          return {
+            startSec: startMs / 1000,
+            endSec: (startMs + durMs) / 1000,
+            text,
+            source: enTrack.kind === "asr" ? "auto" : "manual",
+            confidence: enTrack.kind === "asr" ? 0.78 : 0.92,
+          };
+        })
+        .filter((s) => s.text);
+      if (segments.length) {
+        console.log(`[Innertube] Got ${segments.length} caption segments for ${videoId} via ${client}`);
+        return segments;
+      }
+    } catch (err) {
+      console.warn(`[Innertube] ${client} caption fetch failed for ${videoId}:`, err?.message);
+    }
+  }
+  return [];
+}
+
+async function downloadAudioViaInnertube(videoId) {
+  for (const client of ["ANDROID", "TV", "WEB"]) {
+    try {
+      const data = await innertubePlayerRequest(videoId, client);
+      const adaptive = Array.isArray(data?.streamingData?.adaptiveFormats) ? data.streamingData.adaptiveFormats : [];
+      const muxed = Array.isArray(data?.streamingData?.formats) ? data.streamingData.formats : [];
+      const allFormats = [...adaptive, ...muxed];
+      const audioFormats = allFormats
+        .filter((f) => f.mimeType && f.mimeType.startsWith("audio/") && f.url)
+        .sort((a, b) => (a.bitrate || 0) - (b.bitrate || 0));
+      if (!audioFormats.length) continue;
+
+      const target = audioFormats[0];
+      const contentLength = Number(target.contentLength || 0);
+      if (contentLength > 25 * 1024 * 1024) {
+        console.warn(`[Innertube] Audio too large (${(contentLength / 1024 / 1024).toFixed(1)}MB), skipping`);
+        continue;
+      }
+
+      const sizeMBLabel = contentLength ? `${(contentLength / 1024 / 1024).toFixed(1)}MB` : "unknown size";
+      console.log(`[Innertube] Downloading audio for ${videoId} via ${client} (${target.mimeType}, ${sizeMBLabel})`);
+      const fetchFn = getFetch();
+      const audioRes = await fetchFn(target.url, {
+        headers: {
+          "User-Agent": client === "ANDROID"
+            ? "com.google.android.youtube/19.09.37 (Linux; U; Android 12; US) gzip"
+            : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
+          Range: "bytes=0-",
+        },
+      });
+      if (!audioRes.ok && audioRes.status !== 206) continue;
+
+      const buf = await streamToBuffer(audioRes.body);
+      if (buf.length > 0) {
+        console.log(`[Innertube] Downloaded ${(buf.length / 1024 / 1024).toFixed(1)}MB audio for ${videoId}`);
+        return buf;
+      }
+    } catch (err) {
+      console.warn(`[Innertube] ${client} audio download failed for ${videoId}:`, err?.message);
+    }
+  }
+  return null;
 }
 
 function makeDescriptionSegments(description) {
@@ -219,21 +352,32 @@ async function streamToBuffer(stream) {
 async function downloadAudioYtDlp(videoId) {
   const outPath = join(tmpdir(), `lykn-audio-${videoId}-${Date.now()}.webm`);
   const url = `https://www.youtube.com/watch?v=${videoId}`;
-  try {
-    await execFileAsync("yt-dlp", [
-      "-f", "worstaudio[ext=webm]/worstaudio/bestaudio",
-      "--no-playlist",
-      "--no-warnings",
-      "-o", outPath,
-      url,
-    ], { timeout: 90000 });
-    const buf = await readFile(outPath);
-    await unlink(outPath).catch(() => {});
-    return buf;
-  } catch (err) {
-    await unlink(outPath).catch(() => {});
-    throw err;
+
+  const strategies = [
+    ["-f", "worstaudio[ext=webm]/worstaudio/bestaudio[filesize<25M]/bestaudio"],
+    ["-f", "worstaudio/bestaudio", "--extractor-args", "youtube:player_client=web"],
+    ["-f", "worstaudio/bestaudio", "--extractor-args", "youtube:player_client=android"],
+    ["-x", "--audio-format", "mp3", "--audio-quality", "9"],
+  ];
+
+  for (const fmtArgs of strategies) {
+    try {
+      await unlink(outPath).catch(() => {});
+      await execFileAsync("yt-dlp", [
+        ...fmtArgs,
+        "--no-playlist",
+        "--no-warnings",
+        "-o", outPath,
+        url,
+      ], { timeout: 90000 });
+      const buf = await readFile(outPath);
+      await unlink(outPath).catch(() => {});
+      if (buf && buf.length > 0) return buf;
+    } catch {
+      await unlink(outPath).catch(() => {});
+    }
   }
+  throw new Error(`yt-dlp: all download strategies failed for ${videoId}`);
 }
 
 async function downloadAudioYtdlCore(videoId) {
@@ -250,13 +394,13 @@ async function downloadAudioYtdlCore(videoId) {
   return audioBuffer;
 }
 
-async function sendToWhisperAPI(audioBuffer, apiKey) {
+async function sendToWhisperAPI(audioBuffer, apiKey, filename = "audio.webm", mimeType = "audio/webm") {
   const boundary = `----WhisperBoundary${Date.now()}`;
   const fieldParts = [];
   fieldParts.push(`--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nwhisper-1\r\n`);
   fieldParts.push(`--${boundary}\r\nContent-Disposition: form-data; name="response_format"\r\n\r\nverbose_json\r\n`);
   fieldParts.push(`--${boundary}\r\nContent-Disposition: form-data; name="language"\r\n\r\nen\r\n`);
-  const fileHeader = `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="audio.webm"\r\nContent-Type: audio/webm\r\n\r\n`;
+  const fileHeader = `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: ${mimeType}\r\n\r\n`;
   const tail = `\r\n--${boundary}--\r\n`;
   const preFile = Buffer.from(fieldParts.join("") + fileHeader, "utf-8");
   const postFile = Buffer.from(tail, "utf-8");
@@ -307,8 +451,18 @@ async function tryOpenAIWhisper(videoId) {
       }
     }
 
+    // Fall back to innertube direct audio download (no external binary needed)
     if (!audioBuffer || !audioBuffer.length) {
-      console.warn(`[Whisper] No audio downloaded for ${videoId}`);
+      try {
+        console.log(`[Whisper] Trying innertube audio download for ${videoId}...`);
+        audioBuffer = await downloadAudioViaInnertube(videoId);
+      } catch (err) {
+        console.warn(`[Whisper] innertube audio failed for ${videoId}:`, err?.message || err);
+      }
+    }
+
+    if (!audioBuffer || !audioBuffer.length) {
+      console.warn(`[Whisper] No audio downloaded for ${videoId} (tried yt-dlp, ytdl-core, innertube)`);
       whisperFailCache.set(videoId, Date.now());
       return null;
     }
@@ -438,7 +592,9 @@ export async function getTranscriptPriority(videoId, options = {}) {
     // fall through to whisper/description
   }
 
+  let whisperAttempted = false;
   if (!skipWhisper) {
+    whisperAttempted = true;
     const whisperResult = await whisperHybridTranscribe({ videoId: id, quality: "standard" });
     if (whisperResult?.segments?.length) {
       const segs = whisperResult.segments.map((s) => ({ ...s, source: "whisper_full", confidence: Math.max(0.62, Number(s.confidence || 0.72)) }));
@@ -464,6 +620,7 @@ export async function getTranscriptPriority(videoId, options = {}) {
     const value = {
       videoId: id,
       source: "description_fallback",
+      whisperAttempted,
       transcript: description,
       segments,
       captionTracks: tracks,
@@ -777,6 +934,15 @@ export async function answerVideoQuestion(videoId, question, opts = {}) {
     usedRetranscription: Boolean(refined),
     ocr,
   };
+}
+
+export function clearCacheForVideo(videoId) {
+  const id = String(videoId || "").trim();
+  if (!id) return;
+  for (const key of transcriptCache.keys()) {
+    if (key.includes(id)) transcriptCache.delete(key);
+  }
+  whisperFailCache.delete(id);
 }
 
 export function __clearYoutubeQaCachesForTests() {

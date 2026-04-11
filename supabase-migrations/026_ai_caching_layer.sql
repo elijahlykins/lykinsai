@@ -27,19 +27,22 @@ CREATE INDEX IF NOT EXISTS idx_ai_description_cache_lookup
 
 ALTER TABLE ai_description_cache ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Users read own description cache" ON ai_description_cache;
 CREATE POLICY "Users read own description cache"
   ON ai_description_cache FOR SELECT TO authenticated
   USING (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users insert own description cache" ON ai_description_cache;
 CREATE POLICY "Users insert own description cache"
   ON ai_description_cache FOR INSERT TO authenticated
   WITH CHECK (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users delete own description cache" ON ai_description_cache;
 CREATE POLICY "Users delete own description cache"
   ON ai_description_cache FOR DELETE TO authenticated
   USING (auth.uid() = user_id);
 
--- Service-role bypass (server writes on behalf of the user)
+DROP POLICY IF EXISTS "Service role full access to description cache" ON ai_description_cache;
 CREATE POLICY "Service role full access to description cache"
   ON ai_description_cache FOR ALL TO service_role
   USING (true) WITH CHECK (true);
@@ -65,18 +68,22 @@ CREATE INDEX IF NOT EXISTS idx_ai_transcription_cache_lookup
 
 ALTER TABLE ai_transcription_cache ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Users read own transcription cache" ON ai_transcription_cache;
 CREATE POLICY "Users read own transcription cache"
   ON ai_transcription_cache FOR SELECT TO authenticated
   USING (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users insert own transcription cache" ON ai_transcription_cache;
 CREATE POLICY "Users insert own transcription cache"
   ON ai_transcription_cache FOR INSERT TO authenticated
   WITH CHECK (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users delete own transcription cache" ON ai_transcription_cache;
 CREATE POLICY "Users delete own transcription cache"
   ON ai_transcription_cache FOR DELETE TO authenticated
   USING (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Service role full access to transcription cache" ON ai_transcription_cache;
 CREATE POLICY "Service role full access to transcription cache"
   ON ai_transcription_cache FOR ALL TO service_role
   USING (true) WITH CHECK (true);

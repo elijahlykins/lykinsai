@@ -142,7 +142,8 @@ function resolveAttachmentType(attachment = {}) {
   if (url.startsWith("data:video/")) return "video";
   if (url.startsWith("data:audio/")) return "audio";
 
-  const extMatch = (url.split("/").pop() || name).match(/\.([^.]+)$/);
+  const urlNoQuery = url.split("?")[0];
+  const extMatch = (urlNoQuery.split("/").pop() || name).match(/\.([^.]+)$/);
   const ext = extMatch ? extMatch[1].toLowerCase() : "";
 
   if (["jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "heic", "heif", "tiff"].includes(ext)) return "image";
@@ -205,8 +206,23 @@ function parseStorageTarget(attachment = {}) {
 }
 
 function buildTextExcerpt(htmlOrText = "") {
-  const noHtml = String(htmlOrText).replace(/<[^>]+>/g, " ");
-  return noHtml.replace(/\s+/g, " ").trim();
+  let text = String(htmlOrText);
+  text = text.replace(/<[^>]+>/g, " ");
+  text = text.replace(/\[([^\]]*)\]\([^)]+\)/g, "$1");
+  text = text.replace(/https?:\/\/[^\s)>\]]+/g, "");
+  text = text.replace(/File uploaded:\s*/i, "");
+  text = text.replace(/Type:\s*\w+/i, "");
+  text = text.replace(/Size:\s*[\d.]+ [A-Z]+/i, "");
+  text = text.replace(/\[ATTACHMENTS_JSON:[^\]]*\]/g, "");
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function sanitizeCardTitle(raw = "") {
+  const s = String(raw).trim();
+  if (/^https?:\/\//i.test(s)) {
+    try { return new URL(s).hostname.replace(/^www\./, ""); } catch { return "Saved Item"; }
+  }
+  return s || "Untitled";
 }
 
 function parseAttachmentNotes(attachment = {}) {
@@ -479,6 +495,7 @@ export default function VaultNew() {
   const vaultQueryClient = useQueryClient();
   const [notes, setNotes] = useState([]);
   const [isLoadingNotes, setIsLoadingNotes] = useState(true);
+  const [vaultReady, setVaultReady] = useState(false);
   const [notesError, setNotesError] = useState("");
   const [topPanelOpen, setTopPanelOpen] = useState(false);
   const [showChat, setShowChat] = useState(false);
@@ -493,6 +510,7 @@ export default function VaultNew() {
   const [isLoadingMoreNotes, setIsLoadingMoreNotes] = useState(false);
   const [resolvedAttachmentUrls, setResolvedAttachmentUrls] = useState({});
   const [failedImageIds, setFailedImageIds] = useState(new Set());
+  const imageRetryCountsRef = useRef(new Map());
   // projects fetched via React Query above
   const [openCardMenuId, setOpenCardMenuId] = useState(null);
   const [openCardMenuPlacement, setOpenCardMenuPlacement] = useState("down");
@@ -819,6 +837,9 @@ export default function VaultNew() {
     }
 
     setIsLoadingNotes(true);
+    setVaultReady(false);
+    eagerResolveRunRef.current = false;
+    initialCardIdsRef.current = null;
     setNotesError("");
     notesCursorRef.current = null;
     try {
@@ -976,7 +997,7 @@ export default function VaultNew() {
         String(note?.source || "").toLowerCase() === "quick_note" ||
         (String(note?.title || "").trim().toLowerCase() === "quick note" && attachments.length === 0);
       const excerpt = isStandaloneQuickNote
-        ? String(cleanContent || "").replace(/\r\n/g, "\n").trim()
+        ? buildTextExcerpt(String(cleanContent || "").replace(/\r\n/g, "\n"))
         : buildTextExcerpt(cleanContent);
 
       const noteTags = Array.isArray(note.tags) ? note.tags : [];
@@ -991,8 +1012,8 @@ export default function VaultNew() {
           attachmentIndex: idx,
           type,
           attachment,
-          title: attachment.name || note.title || "Untitled",
-          parentTitle: note.title || "Untitled note",
+          title: sanitizeCardTitle(attachment.name || note.title),
+          parentTitle: sanitizeCardTitle(note.title || "Untitled note"),
           noteExcerpt,
           dateLabel,
           tags: noteTags,
@@ -1161,7 +1182,10 @@ export default function VaultNew() {
     if (!card || card.kind !== "attachment") return;
     const target = parseStorageTarget(card.attachment || {});
     if (!target?.path || !target?.bucket) {
-      console.warn("[Vault] Cannot resolve storage path for card:", card.id, card.attachment?.name, "url:", card.attachment?.url?.slice(0, 80));
+      const rawUrl = String(card.attachment?.url || "").trim();
+      if (rawUrl && (rawUrl.startsWith("data:") || rawUrl.startsWith("blob:") || !rawUrl.includes("supabase.co/storage/"))) {
+        return;
+      }
       setFailedImageIds((prev) => new Set(prev).add(card.id));
       return;
     }
@@ -1173,6 +1197,7 @@ export default function VaultNew() {
       });
       return;
     }
+    let objectNotFound = false;
     try {
       const { data, error } = await supabase.storage
         .from(target.bucket)
@@ -1182,21 +1207,40 @@ export default function VaultNew() {
         setResolvedAttachmentUrls((prev) => ({ ...prev, [card.id]: data.signedUrl }));
         return;
       }
-      if (error) console.warn("[Vault] Signed URL error for", target.path, error.message);
+      if (error) {
+        objectNotFound = /not found/i.test(error.message || "");
+        if (!objectNotFound) console.warn("[Vault] Signed URL error for", target.path, error.message);
+      }
     } catch (err) {
       console.warn("[Vault] Signed URL exception for", target.path, err);
     }
-    try {
-      const { data: pubData } = supabase.storage.from(target.bucket).getPublicUrl(target.path);
-      if (pubData?.publicUrl) {
-        signedUrlCacheRef.current.set(cacheKey, pubData.publicUrl);
-        setResolvedAttachmentUrls((prev) => ({ ...prev, [card.id]: pubData.publicUrl }));
+    if (!objectNotFound) {
+      try {
+        const { API_BASE_URL } = await import("@/lib/api-config");
+        const session = (await supabase.auth.getSession())?.data?.session;
+        const token = session?.access_token;
+        if (token) {
+          const resp = await fetch(`${API_BASE_URL}/api/storage/signed-url`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ storagePath: target.path, bucket: target.bucket }),
+          });
+          if (resp.ok) {
+            const { signedUrl } = await resp.json();
+            if (signedUrl) {
+              signedUrlCacheRef.current.set(cacheKey, signedUrl);
+              setResolvedAttachmentUrls((prev) => ({ ...prev, [card.id]: signedUrl }));
+              return;
+            }
+          }
+        }
+      } catch (err) {
+        console.warn("[Vault] Server-side signed URL fallback failed for", target.path, err);
       }
-    } catch {
-      console.warn("[Vault] Public URL fallback also failed for", target.path);
-      setFailedImageIds((prev) => new Set(prev).add(card.id));
-      visibleCardIdsRef.current.delete(card.id);
     }
+    imageRetryCountsRef.current.set(card.id, 99);
+    setFailedImageIds((prev) => new Set(prev).add(card.id));
+    visibleCardIdsRef.current.delete(card.id);
   }, []);
 
   const cardElementsRef = useRef(new Map());
@@ -1215,14 +1259,18 @@ export default function VaultNew() {
   const urlResolveQueueRef = useRef([]);
   const urlResolveDrainingRef = useRef(false);
 
+  const drainPromiseRef = useRef(null);
   const drainUrlResolveQueue = useCallback(async () => {
-    if (urlResolveDrainingRef.current) return;
+    if (urlResolveDrainingRef.current) return drainPromiseRef.current;
     urlResolveDrainingRef.current = true;
-    while (urlResolveQueueRef.current.length > 0) {
-      const batch = urlResolveQueueRef.current.splice(0, 8);
-      await Promise.allSettled(batch.map((card) => resolveSignedUrlForCard(card)));
-    }
-    urlResolveDrainingRef.current = false;
+    drainPromiseRef.current = (async () => {
+      while (urlResolveQueueRef.current.length > 0) {
+        const batch = urlResolveQueueRef.current.splice(0, 20);
+        await Promise.allSettled(batch.map((card) => resolveSignedUrlForCard(card)));
+      }
+      urlResolveDrainingRef.current = false;
+    })();
+    return drainPromiseRef.current;
   }, [resolveSignedUrlForCard]);
 
   useEffect(() => {
@@ -1261,24 +1309,36 @@ export default function VaultNew() {
 
   const eagerResolveRunRef = useRef(false);
   useEffect(() => {
-    if (!user?.id || vaultCards.length === 0 || eagerResolveRunRef.current) return;
+    if (!user?.id || isLoadingNotes || eagerResolveRunRef.current) return;
+    if (vaultCards.length === 0) { setVaultReady(true); return; }
     eagerResolveRunRef.current = true;
     const attachmentCards = vaultCards.filter(
-      (c) => c.kind === "attachment" && !resolvedAttachmentUrls[c.id]
-    ).slice(0, 16);
-    if (attachmentCards.length === 0) return;
-    for (const card of attachmentCards) {
-      if (!visibleCardIdsRef.current.has(card.id)) {
-        visibleCardIdsRef.current.add(card.id);
-        urlResolveQueueRef.current.push(card);
-      }
+      (c) => c.kind === "attachment"
+    );
+    if (attachmentCards.length === 0) {
+      setVaultReady(true);
+      return;
     }
-    drainUrlResolveQueue();
-  }, [vaultCards, user?.id, drainUrlResolveQueue, resolvedAttachmentUrls]);
+    for (const card of attachmentCards) {
+      visibleCardIdsRef.current.add(card.id);
+      urlResolveQueueRef.current.push(card);
+    }
+    const safetyTimer = setTimeout(() => setVaultReady(true), 8000);
+    drainUrlResolveQueue().then(() => {
+      clearTimeout(safetyTimer);
+      setVaultReady(true);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vaultCards, user?.id, isLoadingNotes, drainUrlResolveQueue]);
 
   const visibleCards = useMemo(() => {
     return vaultCards.filter((card) => card.kind !== "chat-preview");
   }, [vaultCards]);
+
+  const initialCardIdsRef = useRef(null);
+  if (vaultReady && initialCardIdsRef.current === null) {
+    initialCardIdsRef.current = new Set(vaultCards.map((c) => c.id));
+  }
 
   const backfillDescribedRef = useRef(new Set());
   const backfillRunningRef = useRef(false);
@@ -1291,9 +1351,15 @@ export default function VaultNew() {
         card.kind === "attachment" &&
         card.noteId &&
         !card.attachment?.aiDescription &&
-        !backfillDescribedRef.current.has(card.id)
+        !backfillDescribedRef.current.has(card.id) &&
+        !failedImageIds.has(card.id)
     );
     if (undescribed.length === 0) return;
+
+    const pendingAttachments = vaultCards.filter(
+      (c) => c.kind === "attachment" && !resolvedAttachmentUrls[c.id] && !failedImageIds.has(c.id) && visibleCardIdsRef.current.has(c.id)
+    );
+    if (pendingAttachments.length > 0) return;
 
     let cancelled = false;
     backfillRunningRef.current = true;
@@ -1308,6 +1374,8 @@ export default function VaultNew() {
 
         const att = card.attachment || {};
         const isVisual = card.type === "image" || card.type === "video";
+        const hasResolvedUrl = !!resolvedAttachmentUrls[card.id];
+        if (isVisual && !hasResolvedUrl) continue;
         const rawUrl = resolvedAttachmentUrls[card.id] || att.url || "";
         const imageUrl = isVisual && rawUrl && !rawUrl.startsWith("data:") ? rawUrl : undefined;
         const textContent = att.extractedText || att.articleText || att.description || "";
@@ -1316,9 +1384,12 @@ export default function VaultNew() {
         if (!imageUrl && !textContent && !fileName) continue;
 
         try {
+          const session = (await supabase.auth.getSession())?.data?.session;
+          const token = session?.access_token;
+          if (!token) continue;
           const res = await fetch(`${API_BASE_URL}/api/ai/describe-image`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
             body: JSON.stringify({
               imageUrl,
               textContent: textContent ? textContent.slice(0, 5000) : undefined,
@@ -1381,7 +1452,7 @@ export default function VaultNew() {
     })();
 
     return () => { cancelled = true; backfillRunningRef.current = false; };
-  }, [vaultCards, user?.id, isLoadingNotes, resolvedAttachmentUrls]);
+  }, [vaultCards, user?.id, isLoadingNotes, resolvedAttachmentUrls, failedImageIds]);
 
   const filteredVisibleCards = useMemo(() => {
     let cards = visibleCards;
@@ -2109,58 +2180,78 @@ User: ${text}`;
           <div className={`w-full ${tileHeightClass || "h-44"} rounded-2xl bg-black/5 dark:bg-white/5 flex flex-col items-center justify-center gap-2 px-3`}>
             <FileText className="w-8 h-8 text-black/20 dark:text-white/20" />
             <span className="text-xs text-black/40 dark:text-white/40 text-center truncate max-w-full">{title}</span>
-            <button
-              type="button"
-              className="text-[0.625rem] font-medium text-blue-500 hover:text-blue-600 transition-colors"
-              onClick={(e) => {
-                e.stopPropagation();
-                setFailedImageIds((prev) => { const next = new Set(prev); next.delete(card.id); return next; });
-                signedUrlCacheRef.current.delete(`${storageTarget?.bucket || "user-files"}:${storageTarget?.path || ""}`);
-                setResolvedAttachmentUrls((prev) => { const next = { ...prev }; delete next[card.id]; return next; });
-                if (isStorageBacked) {
+            {isStorageBacked && (
+              <button
+                type="button"
+                className="text-[0.625rem] font-medium text-blue-500 hover:text-blue-600 transition-colors"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  imageRetryCountsRef.current.delete(card.id);
+                  setFailedImageIds((prev) => { const next = new Set(prev); next.delete(card.id); return next; });
+                  signedUrlCacheRef.current.delete(`${storageTarget?.bucket || "user-files"}:${storageTarget?.path || ""}`);
+                  setResolvedAttachmentUrls((prev) => { const next = { ...prev }; delete next[card.id]; return next; });
                   visibleCardIdsRef.current.delete(card.id);
                   urlResolveQueueRef.current.push(card);
                   drainUrlResolveQueue();
-                }
-              }}
-            >
-              Try again
-            </button>
+                }}
+              >
+                Try again
+              </button>
+            )}
           </div>
         );
       }
 
       return (
         <img
+          key={resolvedUrl}
           src={resolvedUrl}
           alt={title}
           className="w-full h-auto max-h-[42rem] rounded-2xl"
           loading="lazy"
           draggable={false}
-          onError={(e) => {
-            const img = e.currentTarget;
-            const retryCount = parseInt(img.dataset.retryCount || "0", 10);
+          onError={() => {
+            const retryCount = imageRetryCountsRef.current.get(card.id) || 0;
             if (retryCount < 2) {
-              img.dataset.retryCount = String(retryCount + 1);
+              imageRetryCountsRef.current.set(card.id, retryCount + 1);
               const target = parseStorageTarget(attachment || {});
               if (target?.bucket && target?.path) {
                 const cacheKey = `${target.bucket}:${target.path}`;
                 signedUrlCacheRef.current.delete(cacheKey);
-                supabase.storage
-                  .from(target.bucket)
-                  .createSignedUrl(target.path, 60 * 60 * 24 * 7)
-                  .then(({ data }) => {
+                const delay = (retryCount + 1) * 800;
+                setTimeout(async () => {
+                  try {
+                    const { data } = await supabase.storage
+                      .from(target.bucket)
+                      .createSignedUrl(target.path, 60 * 60 * 24 * 7);
                     if (data?.signedUrl) {
-                      img.src = data.signedUrl;
                       signedUrlCacheRef.current.set(cacheKey, data.signedUrl);
                       setResolvedAttachmentUrls((prev) => ({ ...prev, [card.id]: data.signedUrl }));
-                    } else {
-                      setFailedImageIds((prev) => new Set(prev).add(card.id));
+                      return;
                     }
-                  })
-                  .catch(() => {
-                    setFailedImageIds((prev) => new Set(prev).add(card.id));
-                  });
+                  } catch { /* fall through to server fallback */ }
+                  try {
+                    const { API_BASE_URL } = await import("@/lib/api-config");
+                    const session = (await supabase.auth.getSession())?.data?.session;
+                    const token = session?.access_token;
+                    if (token) {
+                      const resp = await fetch(`${API_BASE_URL}/api/storage/signed-url`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                        body: JSON.stringify({ storagePath: target.path, bucket: target.bucket }),
+                      });
+                      if (resp.ok) {
+                        const { signedUrl } = await resp.json();
+                        if (signedUrl) {
+                          signedUrlCacheRef.current.set(cacheKey, signedUrl);
+                          setResolvedAttachmentUrls((prev) => ({ ...prev, [card.id]: signedUrl }));
+                          return;
+                        }
+                      }
+                    }
+                  } catch { /* exhausted */ }
+                  setFailedImageIds((prev) => new Set(prev).add(card.id));
+                }, delay);
               } else {
                 setFailedImageIds((prev) => new Set(prev).add(card.id));
               }
@@ -2771,7 +2862,7 @@ User: ${text}`;
     setOpenCardMenuId(cardId);
   }, []);
 
-  if ((loading || isLoadingNotes) && user) {
+  if ((loading || isLoadingNotes || !vaultReady) && user) {
     return <LoadingScreen isLoading={true} />;
   }
 
@@ -3197,8 +3288,8 @@ User: ${text}`;
           </div>
         )}
 
-        {!loading && !isLoadingNotes && user && !notesError && (
-          <>
+        {!loading && !isLoadingNotes && vaultReady && user && !notesError && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.35, ease: "easeOut" }}>
             {orderedVisibleCards.length === 0 ? (
               <div className="flex flex-col items-start gap-4">
                 <div className="break-inside-avoid mb-5 rounded-2xl border-2 border-dashed border-blue-500/30 p-6 flex flex-col items-center justify-center text-center w-full sm:w-64 min-h-[160px] gap-3">
@@ -3254,7 +3345,7 @@ User: ${text}`;
                     <div className={isEmbeddedMode ? "grid grid-cols-2 gap-3" : "grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4"}>
                       {cards.map((card) => (
                         <motion.article
-                          initial={{ opacity: 0, scale: 0.97 }}
+                          initial={initialCardIdsRef.current?.has(card.id) ? false : { opacity: 0, scale: 0.97 }}
                           animate={{ opacity: 1, scale: 1 }}
                           transition={{ duration: 0.15 }}
                           key={`${tagName}-${card.id}`}
@@ -3373,7 +3464,7 @@ User: ${text}`;
                       <div className={isEmbeddedMode ? "grid grid-cols-2 gap-3" : "grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4"}>
                         {cards.map((card) => (
                           <motion.article
-                            initial={{ opacity: 0, scale: 0.97 }}
+                            initial={initialCardIdsRef.current?.has(card.id) ? false : { opacity: 0, scale: 0.97 }}
                             animate={{ opacity: 1, scale: 1 }}
                             transition={{ duration: 0.15 }}
                             key={`${typeName}-${card.id}`}
@@ -3516,7 +3607,7 @@ User: ${text}`;
                 )}
                 {orderedVisibleCards.map((card) => (
                   <motion.article
-                    initial={{ opacity: 0, scale: 0.97 }}
+                    initial={initialCardIdsRef.current?.has(card.id) ? false : { opacity: 0, scale: 0.97 }}
                     animate={{ opacity: 1, scale: 1 }}
                     transition={{ duration: 0.2, ease: "easeOut" }}
                     key={card.id}
@@ -3768,7 +3859,7 @@ User: ${text}`;
             {isLoadingMoreNotes && (
               <div className="mt-4 text-xs text-black/60">Loading more memories...</div>
             )}
-          </>
+          </motion.div>
         )}
       </main>
 

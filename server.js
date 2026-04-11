@@ -15,6 +15,7 @@ import { createClient } from '@supabase/supabase-js';
 import { Resend } from 'resend';
 import {
   answerVideoQuestion,
+  clearCacheForVideo,
   getTranscriptPriority,
   localizeQuestion,
   retranscribeSegment,
@@ -210,6 +211,62 @@ async function runWebSearchIfNeeded(text, opts = {}) {
   }
 }
 
+// ---- YouTube search enrichment ----
+const VIDEO_REQUEST_PATTERNS = /\b(show\s+me\s+a\s+video|find\s+(?:me\s+)?a\s+video|youtube\s+video|play\s+(?:a\s+)?video|video\s+(?:about|on|for|of|tutorial|explaining|showing)|tutorial\s+(?:video|on|for|about)|watch\s+(?:a\s+)?video|how[\s-]?to\s+video|bring\s+(?:in\s+)?a\s+video|pull\s+up\s+a\s+video|embed\s+(?:a\s+)?video|give\s+me\s+a\s+video|recommend\s+(?:a\s+)?video|suggest\s+(?:a\s+)?video|any\s+(?:good\s+)?videos?\s+(?:about|on|for)|video\s+recommendation|video\s+suggestion)\b/i;
+const IMPLICIT_VIDEO_PATTERNS = /\b(show\s+me\s+how|how\s+do\s+(?:i|you)|how\s+to|teach\s+me|walk\s+me\s+through|demonstrate|step[\s-]?by[\s-]?step)\b/i;
+
+function needsYouTubeSearch(text) {
+  if (!text || !process.env.YOUTUBE_API_KEY) return false;
+  const t = String(text).trim();
+  if (t.length < 8) return false;
+  if (GREETING_PATTERN.test(t)) return false;
+  if (LAYOUT_COMMAND_PATTERN.test(t)) return false;
+  if (BOARD_ACTION_PATTERN.test(t)) return false;
+  if (VIDEO_REQUEST_PATTERNS.test(t)) return true;
+  if (IMPLICIT_VIDEO_PATTERNS.test(t) && /\b(video|youtube|watch|tutorial)\b/i.test(t)) return true;
+  return false;
+}
+
+function buildYouTubeSearchQuery(text) {
+  let q = String(text || "").trim();
+  q = q.replace(/\b(show\s+me|find\s+me|give\s+me|pull\s+up|bring\s+in|embed|play|recommend|suggest)\s+(a\s+)?/gi, "");
+  q = q.replace(/\b(video|youtube|videos)\b/gi, "").trim();
+  if (q.length < 3) q = String(text).trim();
+  return q.slice(0, 120);
+}
+
+async function runYouTubeSearchIfNeeded(text) {
+  if (!needsYouTubeSearch(text)) return "";
+  try {
+    const query = buildYouTubeSearchQuery(text);
+    console.log(`🎬 YouTube search: "${query.slice(0, 80)}"`);
+    const apiUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(query)}&maxResults=5&type=video&videoEmbeddable=true&key=${process.env.YOUTUBE_API_KEY}`;
+    const response = await fetch(apiUrl, {
+      headers: { 'Referer': process.env.FRONTEND_URL || 'https://lykinsai-1.onrender.com' },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!response.ok) {
+      console.warn(`⚠️ YouTube search failed: ${response.status}`);
+      return "";
+    }
+    const data = await response.json();
+    const items = Array.isArray(data.items) ? data.items.slice(0, 5) : [];
+    if (items.length === 0) return "";
+    const formatted = items.map((item, i) => {
+      const id = item.id?.videoId;
+      const title = item.snippet?.title || "Untitled";
+      const channel = item.snippet?.channelTitle || "";
+      const desc = (item.snippet?.description || "").slice(0, 120);
+      return `${i + 1}. "${title}" by ${channel} — https://www.youtube.com/watch?v=${id} — ${desc}`;
+    }).join("\n");
+    console.log(`✅ YouTube search returned ${items.length} result(s)`);
+    return `[YOUTUBE_SEARCH_RESULTS]\nThe following are REAL YouTube videos found via search. You MUST use URLs from this list when including YouTube videos. Do NOT invent or guess YouTube URLs — only use the exact URLs provided here.\n${formatted}`;
+  } catch (err) {
+    console.warn("⚠️ YouTube search error:", err.message);
+    return "";
+  }
+}
+
 // ✅ MANUAL CORS (bypasses any cors package issues)
 // Allow requests from localhost (development), Vercel (frontend), and Render
 app.use((req, res, next) => {
@@ -302,6 +359,30 @@ async function requireAuth(req, res, next) {
 // ============================================
 function sha256(input) {
   return crypto.createHash('sha256').update(String(input || '')).digest('hex');
+}
+
+// ── Lightweight in-memory TTL cache (avoids repeat LLM calls across page reloads) ──
+const _memCaches = {};
+function memCache(namespace, { maxSize = 256, ttlMs = 30 * 60 * 1000 } = {}) {
+  if (_memCaches[namespace]) return _memCaches[namespace];
+  const store = new Map();
+  const api = {
+    get(key) {
+      const entry = store.get(key);
+      if (!entry) return undefined;
+      if (Date.now() - entry.ts > ttlMs) { store.delete(key); return undefined; }
+      return entry.value;
+    },
+    set(key, value) {
+      if (store.size >= maxSize) {
+        const oldest = store.keys().next().value;
+        store.delete(oldest);
+      }
+      store.set(key, { value, ts: Date.now() });
+    },
+  };
+  _memCaches[namespace] = api;
+  return api;
 }
 
 // ============================================
@@ -915,12 +996,17 @@ const globalLimiter = rateLimit({
   message: { error: 'Too many requests, slow down' },
 });
 
+const userOrIpKey = (req) => req.user?.id || req.ip;
+
+const rlValidateOff = { keyGeneratorIpFallback: false };
+
 const aiLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 30,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => req.user?.id || req.ip,
+  keyGenerator: userOrIpKey,
+  validate: rlValidateOff,
   message: { error: 'AI rate limit exceeded — try again in a minute' },
 });
 
@@ -929,7 +1015,8 @@ const generationLimiter = rateLimit({
   max: 10,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => req.user?.id || req.ip,
+  keyGenerator: userOrIpKey,
+  validate: rlValidateOff,
   message: { error: 'Generation rate limit exceeded — try again in a minute' },
 });
 
@@ -938,7 +1025,8 @@ const describeLimiter = rateLimit({
   max: 60,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => req.user?.id || req.ip,
+  keyGenerator: userOrIpKey,
+  validate: rlValidateOff,
   message: { error: 'Describe rate limit exceeded — try again in a minute' },
 });
 
@@ -947,7 +1035,8 @@ const synthesisLimiter = rateLimit({
   max: 24,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => req.user?.id || req.ip,
+  keyGenerator: userOrIpKey,
+  validate: rlValidateOff,
   message: { error: 'Synthesis reindex rate limit — try again shortly' },
 });
 
@@ -956,7 +1045,8 @@ const profileRefreshLimiter = rateLimit({
   max: 8,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => req.user?.id || req.ip,
+  keyGenerator: userOrIpKey,
+  validate: rlValidateOff,
   message: { error: 'Profile refresh rate limit — try again later' },
 });
 
@@ -1581,7 +1671,7 @@ Use empty arrays if unknown. Be factual; infer only from the text.`;
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'gpt-4o-mini',
+        model: 'gpt-4.1-nano',
         temperature: 0.2,
         max_tokens: 600,
         response_format: { type: 'json_object' },
@@ -1598,6 +1688,18 @@ Use empty arrays if unknown. Be factual; infer only from the text.`;
     }
 
     const odata = await ores.json();
+
+    getOrCreateSession(userId, req.body?.boardId).then((session) => {
+      const usage = extractOpenAIUsage(odata);
+      logAiUsage({
+        sessionId: session?.id, userId, actionType: 'chat_short',
+        model: 'gpt-4.1-nano', provider: 'openai',
+        inputTokens: usage.input_tokens || estimateTokens(llmInput),
+        outputTokens: usage.output_tokens || estimateTokens(odata?.choices?.[0]?.message?.content || ''),
+        metadata: { endpoint: 'enrich-note', noteId },
+      });
+    }).catch(() => {});
+
     let parsed;
     try {
       parsed = JSON.parse(odata?.choices?.[0]?.message?.content || '{}');
@@ -2439,7 +2541,8 @@ ${t}
         "- The user watches it right here — no need to leave the workspace.",
         "- When to embed: user asks for a video, tutorial, explainer, or visual demo, or a video would genuinely help illustrate what you're explaining.",
         "- Combine video with your text explanation — give both, not just one.",
-        "- Prefer well-known, high-quality videos. Briefly describe what each video covers.",
+        "- CRITICAL: If [YOUTUBE_SEARCH_RESULTS] are provided below, you MUST pick URLs exclusively from that list. These are verified, real videos. Do NOT invent or guess YouTube URLs from memory — they will be broken links.",
+        "- If no [YOUTUBE_SEARCH_RESULTS] are provided and you want to suggest a video, describe what the user should search for instead of including a URL you're not certain about.",
         "- NEVER say 'click this link' or 'open in a browser.' The video plays inline automatically.",
         "",
         "=== SECURITY (ABSOLUTE — NO EXCEPTIONS) ===",
@@ -2656,7 +2759,8 @@ ${t}
     const skipSearch    = skipWebSearch || enrichTier !== 'full';
     const skipSynthesis = enrichTier === 'none';
     const skipUserModel = enrichTier === 'none';
-    const [scrapedContent, searchResults, synthesisRetrieval, userModelSection] = await Promise.all([
+    const skipYouTube   = enrichTier === 'none' || !needsYouTubeSearch(pureUserMessage || searchText);
+    const [scrapedContent, searchResults, synthesisRetrieval, userModelSection, youtubeResults] = await Promise.all([
       skipScrape ? Promise.resolve("") : scrapeUrlsFromText(searchText),
       skipSearch ? Promise.resolve("") : runWebSearchIfNeeded(searchText, { hasFocusedBricks: Boolean(hasFocusedBricks), hasContext: hasContextForSearch }),
       !skipSynthesis
@@ -2665,11 +2769,13 @@ ${t}
       !skipUserModel
         ? fetchUserModelSection(req.headers.authorization, req.user?.id)
         : Promise.resolve(""),
+      skipYouTube ? Promise.resolve("") : runYouTubeSearchIfNeeded(pureUserMessage || searchText),
     ]);
     if (userModelSection) prompt += "\n\n" + userModelSection;
     if (synthesisRetrieval) prompt += "\n\n" + synthesisRetrieval;
     if (scrapedContent) prompt += "\n\n" + scrapedContent;
     if (searchResults) prompt += "\n\n" + searchResults;
+    if (youtubeResults) prompt += "\n\n" + youtubeResults;
 
     // Handle unified-auto mode - prefer free tier (Gemini Flash) if available, else GPT-4o, else GPT-3.5
     let actualModel = model;
@@ -3000,6 +3106,58 @@ ${t}
       responseText = 'No response generated. Please try again or check your API keys.';
     }
 
+    // Validate YouTube URLs in the response — replace hallucinated ones with real search results
+    if (process.env.YOUTUBE_API_KEY && !wantsActions) {
+      const ytUrlRe = /https?:\/\/(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/shorts\/)([\w-]{11})/g;
+      const foundUrls = [];
+      let ytMatch;
+      while ((ytMatch = ytUrlRe.exec(responseText)) !== null) {
+        foundUrls.push({ full: ytMatch[0], videoId: ytMatch[1], index: ytMatch.index });
+      }
+      if (foundUrls.length > 0) {
+        const validationResults = await Promise.all(
+          foundUrls.map(async ({ videoId }) => {
+            try {
+              const checkUrl = `https://www.googleapis.com/youtube/v3/videos?part=id&id=${videoId}&key=${process.env.YOUTUBE_API_KEY}`;
+              const checkRes = await fetch(checkUrl, { signal: AbortSignal.timeout(5000) });
+              if (!checkRes.ok) return { videoId, valid: false };
+              const checkData = await checkRes.json();
+              return { videoId, valid: Array.isArray(checkData.items) && checkData.items.length > 0 };
+            } catch {
+              return { videoId, valid: false };
+            }
+          })
+        );
+        const invalidIds = new Set(validationResults.filter(r => !r.valid).map(r => r.videoId));
+        if (invalidIds.size > 0) {
+          console.warn(`⚠️ Found ${invalidIds.size} invalid YouTube video ID(s) in AI response: ${[...invalidIds].join(', ')}`);
+          const searchQuery = buildYouTubeSearchQuery(pureUserMessage || searchText);
+          let replacementUrl = "";
+          try {
+            const fallbackUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(searchQuery)}&maxResults=1&type=video&videoEmbeddable=true&key=${process.env.YOUTUBE_API_KEY}`;
+            const fallbackRes = await fetch(fallbackUrl, { signal: AbortSignal.timeout(5000) });
+            if (fallbackRes.ok) {
+              const fallbackData = await fallbackRes.json();
+              const topResult = fallbackData.items?.[0];
+              if (topResult?.id?.videoId) {
+                replacementUrl = `https://www.youtube.com/watch?v=${topResult.id.videoId}`;
+              }
+            }
+          } catch { /* best-effort */ }
+          for (const badId of invalidIds) {
+            const badPattern = new RegExp(`https?:\\/\\/(?:www\\.)?(?:youtube\\.com\\/watch\\?v=|youtu\\.be\\/|youtube\\.com\\/embed\\/|youtube\\.com\\/shorts\\/)${badId.replace(/[-]/g, '\\-')}`, 'g');
+            if (replacementUrl) {
+              responseText = responseText.replace(badPattern, replacementUrl);
+              console.log(`🔄 Replaced invalid YouTube ID ${badId} with ${replacementUrl}`);
+            } else {
+              responseText = responseText.replace(badPattern, '');
+              console.log(`🗑️ Removed invalid YouTube URL with ID ${badId}`);
+            }
+          }
+        }
+      }
+    }
+
     // Fire-and-forget usage logging
     if (usageData.input_tokens === 0 && usageData.output_tokens === 0) {
       usageData = { input_tokens: estimateTokens(prompt), output_tokens: estimateTokens(responseText) };
@@ -3255,7 +3413,7 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
         "",
         "CAPABILITIES — You can produce rich, multi-modal output:",
         "- Text with formatting (headings, bullets, numbered lists, checklists with [ ], toggle lists, callout quotes).",
-        "- YouTube video embeds: include a YouTube URL and it becomes a playable embedded video. NEVER say you can't show videos.",
+        "- YouTube video embeds: include a YouTube URL and it becomes a playable embedded video. NEVER say you can't show videos. CRITICAL: If [YOUTUBE_SEARCH_RESULTS] are provided, you MUST use URLs from that list — never invent YouTube URLs.",
         "- Image generation from descriptions.",
         "- Media pull-in: pull ANY file from the user's Vault onto the current board (images, videos, audio, PDFs, documents, links — all types).",
         "  In [WORKSPACE_CONTEXT], media items show: \"title\" (id=<noteId>) — files: <type>[<index>]",
@@ -3347,7 +3505,8 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
     const streamSkipSearch    = skipWebSearch || streamEnrichTier !== 'full';
     const streamSkipSynthesis = streamEnrichTier === 'none';
     const streamSkipUserModel = streamEnrichTier === 'none';
-    const [scrapedContent, searchResults, synthesisRetrieval, userModelSection] = await Promise.all([
+    const streamSkipYouTube   = streamEnrichTier === 'none' || !needsYouTubeSearch(streamPureUserMessage || streamSearchText);
+    const [scrapedContent, searchResults, synthesisRetrieval, userModelSection, youtubeResults] = await Promise.all([
       streamSkipScrape ? Promise.resolve("") : scrapeUrlsFromText(streamSearchText),
       streamSkipSearch ? Promise.resolve("") : runWebSearchIfNeeded(streamSearchText, { hasFocusedBricks: Boolean(hasFocusedBricks), hasContext: hasContextForStreamSearch }),
       !streamSkipSynthesis
@@ -3356,11 +3515,13 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
       !streamSkipUserModel
         ? fetchUserModelSection(req.headers.authorization, req.user?.id)
         : Promise.resolve(""),
+      streamSkipYouTube ? Promise.resolve("") : runYouTubeSearchIfNeeded(streamPureUserMessage || streamSearchText),
     ]);
     if (userModelSection) prompt += "\n\n" + userModelSection;
     if (synthesisRetrieval) prompt += "\n\n" + synthesisRetrieval;
     if (scrapedContent) prompt += "\n\n" + scrapedContent;
     if (searchResults) prompt += "\n\n" + searchResults;
+    if (youtubeResults) prompt += "\n\n" + youtubeResults;
 
     let actualModel = model;
     if (model === 'unified-auto') {
@@ -3982,7 +4143,7 @@ app.post('/api/ai/vault-search', requireAuth, aiLimiter, async (req, res) => {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'gpt-4o-mini',
+        model: 'gpt-4.1-nano',
         messages: [{ role: 'user', content: prompt }],
         max_tokens: 4096,
         temperature: 0.1,
@@ -3997,10 +4158,46 @@ app.post('/api/ai/vault-search', requireAuth, aiLimiter, async (req, res) => {
 
     const data = await openaiRes.json();
     const response = data.choices?.[0]?.message?.content?.trim() || '[]';
+
+    getOrCreateSession(req.user?.id, req.body?.boardId).then((session) => {
+      const usage = extractOpenAIUsage(data);
+      logAiUsage({
+        sessionId: session?.id, userId: req.user?.id, actionType: 'chat_short',
+        model: 'gpt-4.1-nano', provider: 'openai',
+        inputTokens: usage.input_tokens || estimateTokens(prompt),
+        outputTokens: usage.output_tokens || estimateTokens(response),
+      });
+    }).catch(() => {});
+
     return res.json({ response });
   } catch (error) {
     console.error('❌ vault-search error:', error.message);
     return res.status(500).json({ error: 'Search failed' });
+  }
+});
+
+app.post('/api/storage/signed-url', requireAuth, async (req, res) => {
+  try {
+    if (!supabaseAdmin) return res.status(503).json({ error: 'Storage service unavailable' });
+    const { storagePath, bucket } = req.body || {};
+    const path = String(storagePath || '').trim();
+    const bkt = String(bucket || 'user-files').trim();
+    if (!path) return res.status(400).json({ error: 'Missing storagePath' });
+
+    const userId = req.user?.id;
+    if (userId && !path.startsWith(`${userId}/`)) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const { data, error } = await supabaseAdmin.storage
+      .from(bkt)
+      .createSignedUrl(path, 60 * 60 * 24 * 7);
+    if (error || !data?.signedUrl) {
+      return res.status(404).json({ error: error?.message || 'Could not create signed URL' });
+    }
+    res.json({ signedUrl: data.signedUrl });
+  } catch (err) {
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -4059,10 +4256,12 @@ app.post('/api/ai/describe-image', requireAuth, describeLimiter, async (req, res
       }];
     }
 
+    const describeModel = isVisual ? 'gpt-4o-mini' : 'gpt-4.1-nano';
+
     const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'gpt-4o-mini', messages, max_tokens: 300 }),
+      body: JSON.stringify({ model: describeModel, messages, max_tokens: 300 }),
     });
 
     if (!openaiRes.ok) {
@@ -4074,6 +4273,17 @@ app.post('/api/ai/describe-image', requireAuth, describeLimiter, async (req, res
     const data = await openaiRes.json();
     const description = data.choices?.[0]?.message?.content?.trim() || '';
 
+    getOrCreateSession(req.user?.id, req.body?.boardId).then((session) => {
+      const usage = extractOpenAIUsage(data);
+      logAiUsage({
+        sessionId: session?.id, userId: req.user?.id,
+        actionType: isVisual ? 'image_analysis' : 'chat_short',
+        model: describeModel, provider: 'openai',
+        inputTokens: usage.input_tokens || estimateTokens(cacheInput),
+        outputTokens: usage.output_tokens || estimateTokens(description),
+      });
+    }).catch(() => {});
+
     // ── Cache write (fire-and-forget) ──
     if (description && userId && supabaseAdmin) {
       supabaseAdmin.from('ai_description_cache').upsert({
@@ -4081,7 +4291,7 @@ app.post('/api/ai/describe-image', requireAuth, describeLimiter, async (req, res
         url_hash: urlHash,
         url: (isVisual ? url : (fileName || fileType || '')).slice(0, 2000),
         description,
-        model: 'gpt-4o-mini',
+        model: describeModel,
       }, { onConflict: 'user_id,url_hash' }).then(() => {}).catch(() => {});
     }
 
@@ -4179,11 +4389,16 @@ app.post('/api/ai/summarize-conversation', requireAuth, aiLimiter, async (req, r
       .map(m => `${String(m.role || 'user').toUpperCase()}: ${String(m.content || '').slice(0, 800)}`)
       .join('\n');
 
+    const summaryCache = memCache('convo-summary');
+    const cacheKey = sha256(formatted);
+    const cached = summaryCache.get(cacheKey);
+    if (cached) return res.json({ summary: cached, cached: true });
+
     const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'gpt-4o-mini',
+        model: 'gpt-4.1-nano',
         temperature: 0.3,
         max_tokens: 400,
         messages: [
@@ -4201,10 +4416,88 @@ app.post('/api/ai/summarize-conversation', requireAuth, aiLimiter, async (req, r
     }
     const data = await openaiRes.json();
     const summary = data.choices?.[0]?.message?.content?.trim() || '';
+
+    if (summary) summaryCache.set(cacheKey, summary);
+
+    getOrCreateSession(req.user?.id, req.body?.boardId).then((session) => {
+      const usage = extractOpenAIUsage(data);
+      logAiUsage({
+        sessionId: session?.id, userId: req.user?.id, actionType: 'chat_short',
+        model: 'gpt-4.1-nano', provider: 'openai',
+        inputTokens: usage.input_tokens || estimateTokens(formatted),
+        outputTokens: usage.output_tokens || estimateTokens(summary),
+      });
+    }).catch(() => {});
+
     return res.json({ summary });
   } catch (error) {
     console.error('❌ summarize-conversation error:', error?.message);
     return res.status(500).json({ error: 'Summarization failed' });
+  }
+});
+
+// ──────────────────────────────────────────────────
+// Auto-name grid — cheapest model, fire-and-forget from client
+// ──────────────────────────────────────────────────
+app.post('/api/ai/name-grid', requireAuth, aiLimiter, async (req, res) => {
+  try {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) return res.status(503).json({ error: 'LLM not configured' });
+
+    const content = String(req.body?.content || '').trim();
+    if (!content || content.length < 10) {
+      return res.status(400).json({ error: 'Not enough content to name' });
+    }
+
+    const snippet = content.slice(0, 1500);
+
+    const nameCache = memCache('grid-name');
+    const cacheKey = sha256(snippet);
+    const cached = nameCache.get(cacheKey);
+    if (cached) return res.json({ title: cached, cached: true });
+
+    const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-4.1-nano',
+        temperature: 0.4,
+        max_tokens: 30,
+        messages: [
+          {
+            role: 'system',
+            content: 'You name documents. Given content from a visual grid/board, reply with ONLY a short title (2-5 words). No quotes, no punctuation, no explanation. Just the title.',
+          },
+          { role: 'user', content: snippet },
+        ],
+      }),
+    });
+
+    if (!openaiRes.ok) {
+      return res.status(502).json({ error: 'naming_failed' });
+    }
+    const data = await openaiRes.json();
+    const raw = data.choices?.[0]?.message?.content?.trim() || '';
+    const title = raw.replace(/^["']+|["']+$/g, '').trim().slice(0, 60);
+    if (!title) return res.status(502).json({ error: 'empty_title' });
+
+    nameCache.set(cacheKey, title);
+    console.log('[LYKN] Auto-named grid:', title);
+
+    getOrCreateSession(req.user?.id).then((session) => {
+      const usage = extractOpenAIUsage(data);
+      logAiUsage({
+        sessionId: session?.id, userId: req.user?.id, actionType: 'chat_short',
+        model: 'gpt-4.1-nano', provider: 'openai',
+        inputTokens: usage.input_tokens || estimateTokens(snippet),
+        outputTokens: usage.output_tokens || estimateTokens(raw),
+      });
+    }).catch(() => {});
+
+    return res.json({ title });
+  } catch (error) {
+    console.error('❌ name-grid error:', error?.message);
+    return res.status(500).json({ error: 'Naming failed' });
   }
 });
 
@@ -4442,10 +4735,14 @@ app.get('/api/youtube/video', requireAuth, async (req, res) => {
 
 app.get('/api/youtube/transcript', requireAuth, async (req, res) => {
   try {
-    const { id, fast } = req.query;
+    const { id, fast, retryWhisper } = req.query;
     
     if (!id) {
       return res.status(400).json({ error: 'Missing video ID parameter (id)' });
+    }
+
+    if (retryWhisper === '1' || retryWhisper === 'true') {
+      clearCacheForVideo(String(id));
     }
     
     const transcript = await getTranscriptPriority(String(id), {
@@ -4456,6 +4753,7 @@ app.get('/api/youtube/transcript', requireAuth, async (req, res) => {
       transcript: transcript.transcript,
       segments: transcript.segments,
       source: transcript.source,
+      whisperAttempted: Boolean(transcript.whisperAttempted),
       videoId: id,
       captionTracks: transcript.captionTracks || [],
     });

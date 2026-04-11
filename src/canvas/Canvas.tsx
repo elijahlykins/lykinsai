@@ -7048,7 +7048,10 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
                         attachments = [{ type: "youtube", url: ytUrl, name: noteTitle }];
                       } else if (bType === "create" && (bMode === "image" || bMode === "generated")) {
                         noteTitle = blockName || "Image";
-                        attachments = [{ type: "image", url: src || url, name: noteTitle }];
+                        const imgUrl = src || url;
+                        const imgAtt: any = { type: "image", url: imgUrl, name: noteTitle };
+                        if (data.storagePath) { imgAtt.storagePath = data.storagePath; imgAtt.storageBucket = data.storageBucket || "user-files"; }
+                        attachments = [imgAtt];
                       } else if (bType === "create" && (bMode === "embed" || bMode === "link")) {
                         const ogTitle = String(data.ogTitle || "").trim();
                         const ogDesc = String(data.ogDescription || "").trim();

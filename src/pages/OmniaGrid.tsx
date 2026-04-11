@@ -765,6 +765,7 @@ export default function OmniaGridPage() {
   const lastSaveTimeRef = useRef<string | null>(null);
   const lastSavedTitleRef = useRef<string>("");
   const titleFromSaveRef = useRef(false);
+  const autoNameAttemptedRef = useRef(false);
   const [chatMode, setChatMode] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
   const notesContentRef = useRef<any>(EMPTY_NOTES_TIPTAP_DOC);
@@ -797,6 +798,7 @@ export default function OmniaGridPage() {
   const dictationTimerRef = useRef<number | null>(null);
   const aiTypingRunRef = useRef(0);
   const chatTypingTimerRef = useRef<number | null>(null);
+  const chatTypingPendingRef = useRef<{ promptId: string; fullText: string; resolve: () => void } | null>(null);
   const streamTargetTextRef = useRef("");
   const streamDisplayedLenRef = useRef(0);
   const streamTypingRafRef = useRef<number | null>(null);
@@ -854,6 +856,7 @@ export default function OmniaGridPage() {
         url: string;
         transcript: string;
         segments: Array<{ startSec: number; endSec: number; text: string }>;
+        source?: string;
       }
     >
   >({});
@@ -1471,11 +1474,12 @@ export default function OmniaGridPage() {
             })
             .filter((s: any) => s.text)
             .slice(0, 900);
+          const tSource = String((tJson as any)?.source || "").toLowerCase();
           const transcriptText = String((tJson as any)?.transcript || "").trim();
-          const hasTranscript = Boolean(transcriptText || segments.length);
-          const effectiveTranscript = hasTranscript ? transcriptText : fallbackDescription.slice(0, 4000);
+          const isRealTranscript = Boolean((transcriptText || segments.length) && tSource !== "description_fallback");
+          const effectiveTranscript = isRealTranscript ? transcriptText : (transcriptText || fallbackDescription).slice(0, 4000);
           const effectiveSegments =
-            hasTranscript || !fallbackDescription
+            isRealTranscript || !fallbackDescription
               ? segments
               : fallbackDescription
                   .split(/\n+/)
@@ -1493,6 +1497,7 @@ export default function OmniaGridPage() {
             url: video.url,
             transcript: effectiveTranscript,
             segments: effectiveSegments,
+            source: isRealTranscript ? tSource : "description_fallback",
           };
           youtubeTranscriptCacheRef.current[video.videoId] = data;
         }
@@ -1511,7 +1516,11 @@ export default function OmniaGridPage() {
         const matched = tokenSet.size ? scored.filter((x) => x.score > 0) : scored;
         const picked = (matched.length ? matched : scored).slice(0, 8);
         const lines = picked.map((p) => `- [${formatSec(p.startSec)}-${formatSec(p.endSec)}] ${p.text}`);
-        sections.push(`Video: ${data.title} (${video.videoId})\n${lines.join("\n")}`);
+        const isDesc = data.source === "description_fallback";
+        const header = isDesc
+          ? `Video: ${data.title} (${video.videoId}) [description only — no transcript available]`
+          : `Video: ${data.title} (${video.videoId})`;
+        sections.push(`${header}\n${lines.join("\n")}`);
       }
       return sections.join("\n\n");
     },
@@ -1524,7 +1533,7 @@ export default function OmniaGridPage() {
   }, []);
   const isVideoQuestion = useCallback((s: string) => {
     const t = String(s || "").toLowerCase();
-    return /(video|youtube|clip|summari[sz]e.*video|explain.*video|talk.*about.*video|what.*video.*about|what.*youtube.*about|what.*does.*he.*say|what.*does.*she.*say|what.*do.*they.*say|what.*is.*this.*about|what.*are.*they.*talking|what.*is.*he.*talking|what.*is.*she.*talking|summarize\s+this|explain\s+this|break\s+this\s+down|what.*main\s+point|key\s+takeaway|transcript|what.*saying|what.*said|watch|recap|overview\s+of\s+this)/i.test(t);
+    return /(video|youtube|clip|short|reel|summari[sz]e.*video|explain.*video|talk.*about.*video|what.*video.*about|what.*youtube.*about|what.*does.*he.*say|what.*does.*she.*say|what.*do.*they.*say|what.*is.*this.*about|what.*are.*they.*talking|what.*is.*he.*talking|what.*is.*she.*talking|summarize\s+this|explain\s+this|break\s+this\s+down|what.*main\s+point|key\s+takeaway|transcri(?:be|pt|ption)|what.*saying|what.*said|watch|recap|overview\s+of\s+this)/i.test(t);
   }, []);
   const sanitizeAssistantResponse = useCallback((s: string) => {
     return String(s || "").trim();
@@ -1745,23 +1754,55 @@ export default function OmniaGridPage() {
     return responseText.replace(/\s*\[TAG_NOTES:[^\]]*\]/g, "").trimEnd();
   }, [user?.id]);
 
-  const extractAndEmbedYouTubeUrls = useCallback((
+  const validateYouTubeVideoId = useCallback(async (videoId: string): Promise<boolean> => {
+    try {
+      const res = await fetch(`/api/youtube/video?id=${encodeURIComponent(videoId)}`, {
+        headers: user?.token ? { Authorization: `Bearer ${user.token}` } : {},
+        signal: AbortSignal.timeout(5000),
+      });
+      return res.ok;
+    } catch {
+      return true; // optimistic on network errors
+    }
+  }, [user?.token]);
+
+  const extractAndEmbedYouTubeUrls = useCallback(async (
     aiText: string,
     promptId: string,
     responseBlockId: string | null,
-  ): { urls: { url: string; videoId: string }[]; cleanText: string } => {
+  ): Promise<{ urls: { url: string; videoId: string }[]; cleanText: string }> => {
     const ytUrlRegex = /https?:\/\/(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/shorts\/)([\w-]{11})/g;
-    const urls: { url: string; videoId: string }[] = [];
+    const candidates: { url: string; videoId: string }[] = [];
     const seen = new Set<string>();
     let match: RegExpExecArray | null;
     while ((match = ytUrlRegex.exec(aiText)) !== null) {
       const videoId = match[1];
       if (videoId && !seen.has(videoId)) {
         seen.add(videoId);
-        urls.push({ url: match[0], videoId });
+        candidates.push({ url: match[0], videoId });
       }
     }
-    if (!urls.length) return { urls: [], cleanText: aiText };
+    if (!candidates.length) return { urls: [], cleanText: aiText };
+
+    const validResults = await Promise.all(
+      candidates.map(async (c) => ({ ...c, valid: await validateYouTubeVideoId(c.videoId) }))
+    );
+    const urls = validResults.filter((r) => r.valid);
+    const invalidIds = new Set(validResults.filter((r) => !r.valid).map((r) => r.videoId));
+
+    let cleanText = aiText;
+    if (invalidIds.size > 0) {
+      console.warn(`[YouTube] Removed ${invalidIds.size} invalid video(s):`, [...invalidIds]);
+      for (const badId of invalidIds) {
+        cleanText = cleanText.replace(
+          new RegExp(`https?://(?:www\\.)?(?:youtube\\.com/watch\\?v=|youtu\\.be/|youtube\\.com/embed/|youtube\\.com/shorts/)${badId.replace(/[-]/g, '\\-')}[^\\s]*`, 'g'),
+          ''
+        );
+      }
+      cleanText = cleanText.replace(/\n{3,}/g, '\n\n').trim();
+    }
+
+    if (!urls.length) return { urls: [], cleanText };
 
     const st = useCanvasStore.getState() as any;
     const g = Math.max(1, Math.floor(st.gridSize || 24));
@@ -1795,8 +1836,8 @@ export default function OmniaGridPage() {
       m.id === promptId ? { ...m, aiYouTubeUrls: urls } : m
     ));
 
-    return { urls, cleanText: aiText };
-  }, []);
+    return { urls, cleanText };
+  }, [validateYouTubeVideoId]);
 
   const extractWebLinksFromText = useCallback((text: string): string[] => {
     const urlRe = /https?:\/\/[^\s<>"')\]]+/gi;
@@ -3148,6 +3189,44 @@ export default function OmniaGridPage() {
         } catch {
           /* synthesis embed is best-effort */
         }
+
+        // Auto-name: if title is still the default and the board has content, ask AI for a name
+        console.log("[LYKN] Auto-name check:", { savedTitle, attempted: autoNameAttemptedRef.current, blockCount: Object.keys(raw.blocks || {}).length });
+        if (savedTitle === "New Grid" && !autoNameAttemptedRef.current) {
+          const contentText = snapshotToSynthesisText(raw as Parameters<typeof snapshotToSynthesisText>[0]);
+          const stripped = contentText.replace(/^Board:.*\n?/, "").trim();
+          console.log("[LYKN] Auto-name content length:", stripped.length, "preview:", stripped.slice(0, 100));
+          if (stripped.length >= 10) {
+            autoNameAttemptedRef.current = true;
+            (async () => {
+              try {
+                const { API_BASE_URL } = await import("@/lib/api-config");
+                console.log("[LYKN] Auto-name fetching:", `${API_BASE_URL}/api/ai/name-grid`);
+                const resp = await fetch(`${API_BASE_URL}/api/ai/name-grid`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ content: stripped }),
+                });
+                if (!resp.ok) {
+                  console.warn("[LYKN] Auto-name request failed:", resp.status, await resp.text().catch(() => ""));
+                  return;
+                }
+                const data = await resp.json();
+                const newTitle = String(data?.title || "").trim();
+                if (!newTitle) { console.warn("[LYKN] Auto-name returned empty title"); return; }
+                console.log("[LYKN] Auto-named grid:", newTitle);
+                setTitle(newTitle);
+                titleRef.current = newTitle;
+                lastSavedTitleRef.current = newTitle;
+                titleFromSaveRef.current = true;
+                await supabase.from("omnia_boards").update({ title: newTitle }).eq("id", boardId);
+                window.dispatchEvent(new Event("lykinsai_boards_changed"));
+              } catch (e) {
+                console.warn("[LYKN] Auto-name error:", e);
+              }
+            })();
+          }
+        }
       }
     } catch (err) {
       console.error("[LYKN] saveSnapshot error:", err);
@@ -3175,6 +3254,7 @@ export default function OmniaGridPage() {
     let cancelled = false;
     const loadBoard = async () => {
       hydratedRef.current = false;
+      autoNameAttemptedRef.current = false;
       let id: string | null = null;
       try {
         const existing = routeBoardId || localStorage.getItem("omnia_board_id");
@@ -3492,6 +3572,8 @@ export default function OmniaGridPage() {
       saveTimerRef.current = null;
       if (chatTypingTimerRef.current) window.clearInterval(chatTypingTimerRef.current);
       chatTypingTimerRef.current = null;
+      chatTypingPendingRef.current = null;
+      if (streamTypingRafRef.current) { clearTimeout(streamTypingRafRef.current); streamTypingRafRef.current = null; }
     };
   }, [boardId, buildSnapshot, markProjectDirty, projectId, user?.id]);
 
@@ -3752,15 +3834,22 @@ export default function OmniaGridPage() {
         window.clearInterval(chatTypingTimerRef.current);
         chatTypingTimerRef.current = null;
       }
+      const prev = chatTypingPendingRef.current;
+      if (prev) {
+        setChatMessages((msgs) => msgs.map((m) => (m.id === prev.promptId ? { ...m, aiResponse: prev.fullText } : m)));
+        prev.resolve();
+        chatTypingPendingRef.current = null;
+      }
       const words = fullText.split(/(\s+)/);
       let idx = 0;
       const WORDS_PER_TICK = 3;
       const TICK_MS = 30;
-      setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: "" } : m)));
+      chatTypingPendingRef.current = { promptId, fullText, resolve };
+      setChatMessages((msgs) => msgs.map((m) => (m.id === promptId ? { ...m, aiResponse: "" } : m)));
       chatTypingTimerRef.current = window.setInterval(() => {
         idx += WORDS_PER_TICK;
         const partial = words.slice(0, idx).join("");
-        setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: partial } : m)));
+        setChatMessages((msgs) => msgs.map((m) => (m.id === promptId ? { ...m, aiResponse: partial } : m)));
         if (!chatUserScrolledUpRef.current) {
           const el = chatScrollRef.current;
           if (el) { chatProgrammaticScrollRef.current = true; el.scrollTop = el.scrollHeight; }
@@ -3768,7 +3857,8 @@ export default function OmniaGridPage() {
         if (idx >= words.length) {
           if (chatTypingTimerRef.current) window.clearInterval(chatTypingTimerRef.current);
           chatTypingTimerRef.current = null;
-          setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: fullText } : m)));
+          chatTypingPendingRef.current = null;
+          setChatMessages((msgs) => msgs.map((m) => (m.id === promptId ? { ...m, aiResponse: fullText } : m)));
           resolve();
         }
       }, TICK_MS);
@@ -3995,9 +4085,17 @@ export default function OmniaGridPage() {
     if (!text || isChatLoading || isSendingRef.current) return;
     chatUserScrolledUpRef.current = false;
     if (streamTypingRafRef.current) { clearTimeout(streamTypingRafRef.current); streamTypingRafRef.current = null; }
+    if (streamTypingRafRef.current) { clearTimeout(streamTypingRafRef.current); streamTypingRafRef.current = null; }
     streamTargetTextRef.current = "";
     streamDisplayedLenRef.current = 0;
     streamPromptIdRef.current = null;
+    if (chatTypingTimerRef.current) { window.clearInterval(chatTypingTimerRef.current); chatTypingTimerRef.current = null; }
+    const pendingType = chatTypingPendingRef.current;
+    if (pendingType) {
+      setChatMessages((prev) => prev.map((m) => (m.id === pendingType.promptId ? { ...m, aiResponse: pendingType.fullText } : m)));
+      pendingType.resolve();
+      chatTypingPendingRef.current = null;
+    }
     window.setTimeout(() => chatPanelInputRef.current?.focus(), 0);
 
     const now = Date.now();
@@ -4046,9 +4144,30 @@ export default function OmniaGridPage() {
           const tRes = await fetch(`${apiBase}/api/youtube/transcript?id=${encodeURIComponent(att.videoId)}`, { signal: sendAbort.signal });
           clearTimeout(attTimeout);
           if (tRes.ok) {
-            const tData = await tRes.json();
+            const tData = await tRes.json() as any;
             const t = String(tData?.transcript || "").trim();
-            if (t) att.transcript = t;
+            const tSource = String(tData?.source || "").toLowerCase();
+            if (t && tSource === "description_fallback") {
+              // Retry with Whisper before accepting description
+              if (!sendAbort.signal.aborted) {
+                setChatStatusText("No captions — transcribing audio...");
+                const retryRes = await fetch(`${apiBase}/api/youtube/transcript?id=${encodeURIComponent(att.videoId)}&retryWhisper=1`, { signal: sendAbort.signal }).catch(() => null);
+                if (retryRes && retryRes.ok) {
+                  const retryData = await retryRes.json() as any;
+                  const retrySource = String(retryData?.source || "").toLowerCase();
+                  const retryT = String(retryData?.transcript || "").trim();
+                  if (retryT && retrySource !== "description_fallback") {
+                    att.transcript = retryT;
+                  } else {
+                    att.transcript = `[VIDEO DESCRIPTION — not a transcript of spoken audio]\n${t}`;
+                  }
+                } else {
+                  att.transcript = `[VIDEO DESCRIPTION — not a transcript of spoken audio]\n${t}`;
+                }
+              }
+            } else if (t) {
+              att.transcript = t;
+            }
           }
         } catch { /* continue without transcript */ }
         continue;
@@ -4070,6 +4189,14 @@ export default function OmniaGridPage() {
               const mimeType = att.mime || att.url.split(";")[0].split(":")[1] || "audio/webm";
               const ext = mimeType.split("/")[1] || "webm";
               formData.append("file", new Blob([bytes], { type: mimeType }), att.name || `upload.${ext}`);
+            }
+          } else if (att.url && att.url.startsWith("http")) {
+            const blobResp = await fetch(att.url, { signal: sendAbort.signal });
+            if (blobResp.ok) {
+              const blob = await blobResp.blob();
+              const mimeType = att.mime || blob.type || (attType === "audio" ? "audio/webm" : "video/mp4");
+              const ext = mimeType.split("/")[1] || (attType === "audio" ? "webm" : "mp4");
+              formData.append("file", blob, att.name || `upload.${ext}`);
             }
           }
           if (formData.has("file") && !sendAbort.signal.aborted) {
@@ -4178,7 +4305,11 @@ export default function OmniaGridPage() {
           const preview = cached.transcript.length > 2000
             ? cached.transcript.slice(0, 2000) + "…"
             : cached.transcript;
-          canvasContext += `\n\n[FOCUSED VIDEO TRANSCRIPT — id=${fid} videoId=${resolvedVid}]\n${cached.title || "YouTube Video"}\n${preview}`;
+          const isDesc = cached.source === "description_fallback";
+          const label = isDesc
+            ? `[FOCUSED VIDEO DESCRIPTION — id=${fid} videoId=${resolvedVid} — This is the video's description/metadata, NOT a transcript of its spoken audio]`
+            : `[FOCUSED VIDEO TRANSCRIPT — id=${fid} videoId=${resolvedVid}]`;
+          canvasContext += `\n\n${label}\n${cached.title || "YouTube Video"}\n${preview}`;
         }
       }
 
@@ -4210,7 +4341,7 @@ export default function OmniaGridPage() {
         if (!blk) return false;
         const t = String(blk.type || "").toLowerCase();
         const m = String(blk.mode || blk.data?.mode || "").toLowerCase();
-        return t === "youtube" || (t === "create" && m === "video");
+        return t === "youtube" || t === "video" || (t === "create" && (m === "video" || m === "audio"));
       });
 
       // Find ALL YouTube videos on the board (not just visible ones) + chat attachments
@@ -4252,35 +4383,72 @@ export default function OmniaGridPage() {
       let youtubeGrounding = "";
       const needsFullTranscript = asksAboutVideo || isBrickAction || hasFocusedVideo;
       console.log("[LYKN] Video detection:", { asksAboutVideo, isBrickAction, hasFocusedVideo, needsFullTranscript, boardVideos: boardVideos.length, attachedYT: attachedYouTubeVideos.length, allYT: allYouTubeVideos.length, videoIds: allYouTubeVideos.map(v => v.videoId) });
+      let youtubeTranscriptSource = "";
       if (needsFullTranscript && allYouTubeVideos.length > 0 && !sendAbort.signal.aborted) {
         const targetVideo = allYouTubeVideos[0];
         setChatStatusText("Fetching video transcript...");
         try {
           const tTimeout = setTimeout(() => { if (!sendAbort.signal.aborted) sendAbort.abort(); }, 120000);
-          const tRes = await fetch(
+          let tRes = await fetch(
             `${API_BASE_URL}/api/youtube/transcript?id=${encodeURIComponent(targetVideo.videoId)}`,
             { signal: sendAbort.signal }
           ).catch(() => null);
           clearTimeout(tTimeout);
-          const tJson = tRes && tRes.ok ? await tRes.json().catch(() => ({})) : {};
-          const fullTranscript = String((tJson as any)?.transcript || "").trim();
+          let tJson: any = tRes && tRes.ok ? await tRes.json().catch(() => ({})) : {};
+          let transcriptSource = String(tJson?.source || "").toLowerCase();
+
+          // If we only got the description, retry with Whisper forced
+          let whisperWasAttempted = Boolean(tJson?.whisperAttempted);
+          if (transcriptSource === "description_fallback" && !sendAbort.signal.aborted) {
+            setChatStatusText("No captions found — transcribing video audio...");
+            const retryTimeout = setTimeout(() => { if (!sendAbort.signal.aborted) sendAbort.abort(); }, 120000);
+            const retryRes = await fetch(
+              `${API_BASE_URL}/api/youtube/transcript?id=${encodeURIComponent(targetVideo.videoId)}&retryWhisper=1`,
+              { signal: sendAbort.signal }
+            ).catch(() => null);
+            clearTimeout(retryTimeout);
+            if (retryRes && retryRes.ok) {
+              const retryJson: any = await retryRes.json().catch(() => ({}));
+              const retrySource = String(retryJson?.source || "").toLowerCase();
+              whisperWasAttempted = whisperWasAttempted || Boolean(retryJson?.whisperAttempted);
+              if (retrySource !== "description_fallback" && String(retryJson?.transcript || "").trim()) {
+                tJson = retryJson;
+                transcriptSource = retrySource;
+              }
+            }
+          }
+
+          youtubeTranscriptSource = transcriptSource;
+          const fullTranscript = String(tJson?.transcript || "").trim();
           if (fullTranscript) {
             youtubeTranscriptCacheRef.current[targetVideo.videoId] = {
               fetchedAt: Date.now(),
               title: targetVideo.title || `YouTube ${targetVideo.videoId}`,
               url: targetVideo.url,
               transcript: fullTranscript,
-              segments: Array.isArray((tJson as any)?.segments) ? (tJson as any).segments : [],
+              segments: Array.isArray(tJson?.segments) ? tJson.segments : [],
+              source: transcriptSource,
             };
             const safeTranscript =
               fullTranscript.length > 12000
                 ? fullTranscript.slice(0, 10000) + "\n...[transcript truncated — " + Math.round(fullTranscript.length / 1000) + "k total chars]"
                 : fullTranscript;
-            youtubeGrounding = `Video: ${targetVideo.title || targetVideo.videoId}\nFull transcript:\n${safeTranscript}`;
-            setChatStatusText("Transcript ready — generating response...");
+            if (transcriptSource === "description_fallback") {
+              const whisperNote = whisperWasAttempted
+                ? "Audio transcription was attempted using Whisper speech-to-text but the audio could not be downloaded from YouTube."
+                : "No audio transcription was attempted.";
+              youtubeGrounding = `Video: ${targetVideo.title || targetVideo.videoId}\n${whisperNote}\nVideo description (this is NOT a transcript of spoken audio — it is only the video's description/metadata):\n${safeTranscript}`;
+              setChatStatusText("Transcription failed — only description available...");
+            } else {
+              youtubeGrounding = `Video: ${targetVideo.title || targetVideo.videoId}\nFull transcript:\n${safeTranscript}`;
+              setChatStatusText("Transcript ready — generating response...");
+            }
           } else {
+            const whisperNote = whisperWasAttempted
+              ? " Audio transcription was attempted but failed."
+              : "";
             setChatStatusText("No transcript available — answering from metadata...");
-            youtubeGrounding = `Video: ${targetVideo.title || targetVideo.videoId} (${targetVideo.url})\n(No transcript available)`;
+            youtubeGrounding = `Video: ${targetVideo.title || targetVideo.videoId} (${targetVideo.url})\n(No transcript or description available.${whisperNote})`;
           }
         } catch {
           if (!sendAbort.signal.aborted) {
@@ -4293,20 +4461,35 @@ export default function OmniaGridPage() {
         youtubeGrounding = await buildYouTubeGrounding(API_BASE_URL, text, sendAbort.signal);
       }
 
-      // Transcribe focused uploaded (non-YouTube) video/audio blocks via Whisper
+      // Transcribe uploaded (non-YouTube) video/audio blocks via Whisper.
+      // Focused blocks always get transcribed; when the user asks about video
+      // content we also scan all canvas blocks so no uploaded video is missed.
       let uploadedVideoTranscript = "";
       if (!sendAbort.signal.aborted) {
-        for (const fid of earlyFocusedIds) {
-          const blk: any = (useCanvasStore.getState().blocks as any)?.[fid];
+        const focusedSet = new Set(earlyFocusedIds);
+        const st0 = useCanvasStore.getState();
+        const allBlockIds: string[] = Array.isArray(st0.blockOrder) ? st0.blockOrder as string[] : [];
+        const scanIds = needsFullTranscript
+          ? [...earlyFocusedIds, ...allBlockIds.filter((id) => !focusedSet.has(id))]
+          : earlyFocusedIds;
+        const transcribedUrls = new Set<string>();
+        const MAX_WHISPER_BLOCKS = 3;
+        let whisperCount = 0;
+        for (const fid of scanIds) {
+          if (sendAbort.signal.aborted || whisperCount >= MAX_WHISPER_BLOCKS) break;
+          const blk: any = (st0.blocks as any)?.[fid];
           if (!blk) continue;
           const t = String(blk.type || "").toLowerCase();
           const m = String(blk.mode || blk.data?.mode || "").toLowerCase();
-          if (!(t === "create" && m === "video")) continue;
+          const isUploadedVideo = (t === "create" && m === "video") || t === "video";
+          const isUploadedAudio = (t === "create" && m === "audio") || t === "audio";
+          if (!isUploadedVideo && !isUploadedAudio) continue;
           const vid = String(blk.videoId || blk.data?.videoId || "");
           const rawUrl = String(blk.url || blk.data?.url || "");
           const resolvedVid = vid || extractYouTubeVideoId(rawUrl) || "";
           if (resolvedVid) continue; // YouTube block — already handled above
-          if (!rawUrl) continue;
+          if (!rawUrl || transcribedUrls.has(rawUrl)) continue;
+          transcribedUrls.add(rawUrl);
           try {
             setChatStatusText("Transcribing uploaded video...");
             const resp = await fetch(rawUrl, { signal: sendAbort.signal });
@@ -4326,6 +4509,7 @@ export default function OmniaGridPage() {
               const wData = await wRes.json();
               const tr = String(wData?.transcript || "").trim();
               if (tr) {
+                whisperCount++;
                 const safeTr = tr.length > 10000
                   ? tr.slice(0, 10000) + "\n...[transcript truncated]"
                   : tr;
@@ -4338,9 +4522,11 @@ export default function OmniaGridPage() {
 
       const userTextCapped = text.length > 3000 ? text.slice(0, 3000) + "…" : text;
       const videoTranscriptBlock = youtubeGrounding
-        ? (youtubeGrounding.includes("Full transcript:")
-            ? `[VIDEO TRANSCRIPT — Use this to answer the user's question about the video. Do NOT say you cannot access the video. The transcript below IS the video's content.]\n${youtubeGrounding}`
-            : `YouTube transcript context:\n${youtubeGrounding}`)
+        ? (youtubeTranscriptSource === "description_fallback"
+            ? `[VIDEO DESCRIPTION ONLY — The text below is the video's description metadata, NOT a transcript of its spoken audio. We attempted to transcribe the audio (captions + Whisper speech-to-text) but could not obtain a transcript — likely because the audio could not be downloaded from YouTube for this video. Do NOT treat this as what was said in the video. If the user asks to transcribe or asks what was said, explain that you attempted automatic transcription but it failed for this video, and you only have the description.]\n${youtubeGrounding}`
+            : youtubeGrounding.includes("Full transcript:")
+              ? `[VIDEO TRANSCRIPT — Use this to answer the user's question about the video. Do NOT say you cannot access the video. The transcript below IS the video's content.]\n${youtubeGrounding}`
+              : `YouTube transcript context:\n${youtubeGrounding}`)
         : "";
       const uploadedVideoBlock = uploadedVideoTranscript
         ? `[UPLOADED VIDEO TRANSCRIPT — Use this to answer the user's question about the video. The transcript below IS the video's spoken content.]\n${uploadedVideoTranscript.trim()}`
@@ -4614,7 +4800,10 @@ export default function OmniaGridPage() {
           try {
             while (true) {
               const { done, value } = await reader.read();
-              if (done) break;
+              if (done) {
+                sseBuffer += decoder.decode(undefined, { stream: false });
+                break;
+              }
               clearTimeout(inactivityTimer);
               inactivityTimer = setTimeout(() => { reader.cancel(); sendAbort.abort(); }, STREAM_INACTIVITY_MS);
               sseBuffer += decoder.decode(value, { stream: true });
@@ -4689,7 +4878,7 @@ export default function OmniaGridPage() {
                       streamPromptIdRef.current = promptId;
                     }
                     accumulated += parsed.t;
-                    const visibleText = accumulated.replace(/\n*(?:Sources?|References?):?\s*\n[\s\S]*$/i, "").replace(/\s*\[TAG_NOTES:[^\]]*\]/g, "").trimEnd();
+                    const visibleText = accumulated.replace(/\n+(?:Sources?|References?):?\s*\n[\s\S]*$/i, "").replace(/\s*\[TAG_NOTES:[^\]]*\]/g, "").trimEnd();
                     streamTargetTextRef.current = visibleText;
                     if (responseBlockId && typeof updateBlock === "function") {
                       const normalized = normalizeAiTextForBlock(visibleText);
@@ -4725,6 +4914,18 @@ export default function OmniaGridPage() {
                     }
                   }
                 } catch {}
+              }
+            }
+            if (sseBuffer.trim()) {
+              const trimmed = sseBuffer.trim();
+              if (trimmed.startsWith("data: ")) {
+                const payload = trimmed.slice(6);
+                if (payload !== "[DONE]") {
+                  try {
+                    const parsed = JSON.parse(payload);
+                    if (parsed.t) accumulated += parsed.t;
+                  } catch {}
+                }
               }
             }
           } catch {
@@ -4772,9 +4973,10 @@ export default function OmniaGridPage() {
         }
         const textAfterTags = await extractAndApplyTagActions(textWithoutConnections);
         const { cleanText: displayText, sources } = extractSourceLinks(textAfterTags);
-        const ytResult = extractAndEmbedYouTubeUrls(displayText, promptId, responseBlockId);
-        const mediaResult = await extractAndEmbedMediaItems(displayText, responseBlockId);
-        const finalDisplayText = mediaResult.pulled > 0 ? mediaResult.cleanText : displayText;
+        const ytResult = await extractAndEmbedYouTubeUrls(displayText, promptId, responseBlockId);
+        const textAfterYt = ytResult.cleanText || displayText;
+        const mediaResult = await extractAndEmbedMediaItems(textAfterYt, responseBlockId);
+        const finalDisplayText = mediaResult.pulled > 0 ? mediaResult.cleanText : textAfterYt;
         const webLinks1 = extractWebLinksFromText(finalDisplayText);
         setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: finalDisplayText, sources, aiYouTubeUrls: ytResult.urls.length ? ytResult.urls : undefined, aiWebLinks: webLinks1.length ? webLinks1 : undefined } : m)));
         aiThreadRef.current.push({ role: "assistant", content: textAfterTags });
@@ -4888,9 +5090,10 @@ export default function OmniaGridPage() {
         }
         const textAfterTags2 = await extractAndApplyTagActions(textWithoutConnections2);
         const { cleanText: displayText2, sources: sources2 } = extractSourceLinks(textAfterTags2);
-        const ytResult2 = extractAndEmbedYouTubeUrls(displayText2, promptId, responseBlockId);
-        const mediaResult2 = await extractAndEmbedMediaItems(displayText2, responseBlockId);
-        const finalDisplayText2 = mediaResult2.pulled > 0 ? mediaResult2.cleanText : displayText2;
+        const ytResult2 = await extractAndEmbedYouTubeUrls(displayText2, promptId, responseBlockId);
+        const textAfterYt2 = ytResult2.cleanText || displayText2;
+        const mediaResult2 = await extractAndEmbedMediaItems(textAfterYt2, responseBlockId);
+        const finalDisplayText2 = mediaResult2.pulled > 0 ? mediaResult2.cleanText : textAfterYt2;
         await typeResponseIntoChat(promptId, finalDisplayText2);
         const webLinks2 = extractWebLinksFromText(finalDisplayText2);
         setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, sources: sources2, aiYouTubeUrls: ytResult2.urls.length ? ytResult2.urls : undefined, aiWebLinks: webLinks2.length ? webLinks2 : undefined } : m)));
@@ -4928,6 +5131,20 @@ export default function OmniaGridPage() {
   const handleStopAi = useCallback(() => {
     activeAiAbortRef.current?.abort();
     activeAiAbortRef.current = null;
+    if (streamTypingRafRef.current) { clearTimeout(streamTypingRafRef.current); streamTypingRafRef.current = null; }
+    if (streamPromptIdRef.current && streamDisplayedLenRef.current < streamTargetTextRef.current.length) {
+      setChatMessages((prev) => prev.map((m) => (m.id === streamPromptIdRef.current ? { ...m, aiResponse: streamTargetTextRef.current } : m)));
+    }
+    streamTargetTextRef.current = "";
+    streamDisplayedLenRef.current = 0;
+    streamPromptIdRef.current = null;
+    if (chatTypingTimerRef.current) { window.clearInterval(chatTypingTimerRef.current); chatTypingTimerRef.current = null; }
+    const pending = chatTypingPendingRef.current;
+    if (pending) {
+      setChatMessages((prev) => prev.map((m) => (m.id === pending.promptId ? { ...m, aiResponse: pending.fullText } : m)));
+      pending.resolve();
+      chatTypingPendingRef.current = null;
+    }
     setIsChatLoading(false);
     isSendingRef.current = false;
     setChatFlowMode("idle");
@@ -5707,10 +5924,9 @@ export default function OmniaGridPage() {
       </div>
 
       <div
-        className={`h-full transition-[width,margin-right] duration-300 ${chatMode ? "invisible pointer-events-none" : ""}`}
+        className={`h-full transition-[margin-right] duration-300 ${chatMode ? "invisible pointer-events-none" : ""}`}
         style={{
           marginRight: isMobileGrid ? 0 : `${chatRailWidthPx + (showVaultSidebar ? vaultSidebarWidthPx : 0)}px`,
-          width: isMobileGrid ? "100%" : `calc(100% - ${chatRailWidthPx + (showVaultSidebar ? vaultSidebarWidthPx : 0)}px)`,
         }}
       >
         <Canvas liveAIMode={false} isAiThinking={isChatLoading} thinkingStatusText={thinkingStatus} />

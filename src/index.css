@@ -413,10 +413,8 @@ body.sidebar-push .app-content {
   padding-left: 12rem;
 }
 
-body.sidebar-push .app-content > .omnia-grid-bg {
-  width: 100vw;
-  margin-left: calc(-1 * var(--sidebar-width));
-}
+/* Background gradient behind sidebar handled by body background; no margin-left
+   shift on the grid container — let padding-left on .app-content push content. */
 
 /* Embedded vault pullout: make iframe document transparent */
 html.embedded-vault-mode,
@@ -603,19 +601,9 @@ body.embedded-vault-mode .app-content {
       0 0 0 3px rgba(120,160,255,0.12);
   }
 
-  /* Omnia Grid page background */
+  /* Omnia Grid page — transparent so the body's standard bloom background shows through */
   .omnia-grid-bg {
-    background:
-      radial-gradient(ellipse 80% 60% at 50% 0%, rgba(220, 230, 255, 0.35), transparent 65%),
-      radial-gradient(ellipse 60% 50% at 80% 100%, rgba(200, 215, 255, 0.20), transparent 60%),
-      linear-gradient(180deg, #ffffff 0%, #f4f5f7 100%);
-  }
-
-  .dark .omnia-grid-bg {
-    background:
-      radial-gradient(ellipse 80% 60% at 50% 0%, rgba(60, 80, 140, 0.15), transparent 65%),
-      radial-gradient(ellipse 60% 50% at 80% 100%, rgba(50, 70, 120, 0.10), transparent 60%),
-      linear-gradient(180deg, #1a1a1e 0%, #111114 100%);
+    background: transparent;
   }
 
   /* Omnia Grid — neumorphic chat composer (raised shell; input co-planar, not inset) */
