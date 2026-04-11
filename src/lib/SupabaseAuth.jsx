@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState } from 'react';
+import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 
 const AuthContext = createContext();
@@ -7,6 +7,8 @@ export function SupabaseAuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [authError, setAuthError] = useState(null);
+  const signOutTimerRef = useRef(null);
+  const recoveryInFlightRef = useRef(false);
 
   useEffect(() => {
     let isMounted = true;
@@ -16,18 +18,36 @@ export function SupabaseAuthProvider({ children }) {
         if (!isMounted) return;
 
         if (session?.user) {
+          if (signOutTimerRef.current) {
+            clearTimeout(signOutTimerRef.current);
+            signOutTimerRef.current = null;
+          }
           setUser(session.user);
           return;
         }
 
-        // On SIGNED_OUT or null-session events, attempt one recovery before
-        // clearing the user — covers transient refresh failures and stale tabs.
+        // Debounce sign-out: wait 1.5s before clearing the user to avoid
+        // cascading logouts from transient token-refresh failures.  If a
+        // valid session arrives in the meantime the timer is cancelled above.
         if (event === 'SIGNED_OUT' || event === 'TOKEN_REFRESHED') {
+          if (recoveryInFlightRef.current) return;
+          recoveryInFlightRef.current = true;
+
           try {
             const { data } = await supabase.auth.getSession();
-            if (isMounted) setUser(data?.session?.user || null);
-          } catch {
-            if (isMounted) setUser(null);
+            if (!isMounted) return;
+            if (data?.session?.user) {
+              setUser(data.session.user);
+              return;
+            }
+          } catch { /* fall through to debounced sign-out */ }
+          finally { recoveryInFlightRef.current = false; }
+
+          if (!signOutTimerRef.current) {
+            signOutTimerRef.current = setTimeout(() => {
+              signOutTimerRef.current = null;
+              if (isMounted) setUser(null);
+            }, 1500);
           }
           return;
         }
@@ -97,6 +117,7 @@ export function SupabaseAuthProvider({ children }) {
     return () => {
       isMounted = false;
       subscription.unsubscribe();
+      if (signOutTimerRef.current) clearTimeout(signOutTimerRef.current);
     };
   }, []);
 

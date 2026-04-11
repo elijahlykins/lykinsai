@@ -11,14 +11,27 @@ supabase.auth.onAuthStateChange((_event, session) => {
   tokenExpiresAt = (session?.expires_at ?? 0) * 1000;
 });
 
+let refreshPromise: Promise<string | null> | null = null;
+
 async function getToken(): Promise<string | null> {
-  // 30s buffer before actual expiry avoids using a token that's about to die
   if (cachedToken && Date.now() < tokenExpiresAt - 30_000) return cachedToken;
 
-  const { data } = await supabase.auth.getSession();
-  cachedToken = data?.session?.access_token ?? null;
-  tokenExpiresAt = (data?.session?.expires_at ?? 0) * 1000;
-  return cachedToken;
+  // Deduplicate concurrent getSession calls so vault's parallel fetches
+  // don't each trigger their own auth refresh at the same time.
+  if (refreshPromise) return refreshPromise;
+  refreshPromise = (async () => {
+    try {
+      const { data } = await supabase.auth.getSession();
+      cachedToken = data?.session?.access_token ?? null;
+      tokenExpiresAt = (data?.session?.expires_at ?? 0) * 1000;
+      return cachedToken;
+    } catch {
+      return cachedToken;
+    } finally {
+      refreshPromise = null;
+    }
+  })();
+  return refreshPromise;
 }
 
 /**
