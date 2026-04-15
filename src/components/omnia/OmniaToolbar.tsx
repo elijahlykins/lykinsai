@@ -91,7 +91,7 @@ const OmniaToolbar = React.memo(function OmniaToolbar({
                 </SelectTrigger>
                 <SelectContent
                   align="end"
-                  className="glass-control border border-white/16 dark:border-white/8 bg-white/22 dark:bg-white/8 backdrop-blur-md shadow-md max-h-[min(28rem,70vh)] overflow-y-auto"
+                  className="z-[250] glass-control border border-white/16 dark:border-white/8 bg-white/22 dark:bg-white/8 backdrop-blur-md shadow-md max-h-[min(28rem,70vh)] overflow-y-auto"
                 >
                   {modelSelectMenu}
                 </SelectContent>
