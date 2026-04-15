@@ -91,7 +91,9 @@ function describeBlock(
   ) {
     const name = take(b?.name || b?.data?.name, 80);
     const mime = take(b?.mime || b?.data?.mime, 60);
-    return `${base} kind=file${name ? ` name="${name}"` : ""}${mime ? ` mime=${mime}` : ""}`;
+    const extracted = b?.data?.extractedText ? take(b.data.extractedText, cl) : "";
+    const isCard = b?.data?.displayMode === "link-card";
+    return `${base} kind=file${isCard ? " display=link-card" : ""}${name ? ` name="${name}"` : ""}${mime ? ` mime=${mime}` : ""}${extracted ? `\n--- file content ---\n${extracted}\n---` : ""}`;
   }
 
   if (b?.type === "link") {
@@ -450,17 +452,21 @@ export function buildTieredCanvasContext(params: {
 }
 
 /**
- * Compact context for action-only requests (organize, move, resize).
- * Includes EVERY block with minimal metadata so the AI can compute layouts.
+ * Compact context for action-only requests (organize, move, resize, edit).
+ * Includes EVERY block with metadata so the AI can compute layouts and identify blocks.
+ * Focused bricks get full content so the AI knows what "this brick" refers to.
  */
 export function buildActionCanvasContext(params: {
   blocks: Record<string, any>;
   blockOrder: string[];
   viewportCenter: { x: number; y: number };
   viewportSize: { w: number; h: number };
+  focusedBrickIds?: string[];
+  wireConnections?: Array<{ id: string; fromId: string; toId: string; fromSide?: string; toSide?: string }>;
 }): string {
-  const { blocks, blockOrder, viewportCenter, viewportSize } = params;
+  const { blocks, blockOrder, viewportCenter, viewportSize, focusedBrickIds, wireConnections } = params;
   const allIds = Array.isArray(blockOrder) ? blockOrder : [];
+  const focusedSet = new Set((focusedBrickIds || []).slice(0, 5));
   const lines: string[] = [];
 
   const typeFreq: Record<string, number> = {};
@@ -482,15 +488,44 @@ export function buildActionCanvasContext(params: {
     `Total: ${totalBlocks} blocks | Types: ${typeSummary}`,
     `Viewport center: x=${Math.round(viewportCenter.x)} y=${Math.round(viewportCenter.y)} | Viewport size: ${viewportSize.w}x${viewportSize.h}`,
     "",
-    "[ALL_BLOCKS]",
   );
+
+  if (focusedSet.size > 0) {
+    lines.push(
+      "[USER_FOCUS]",
+      focusedSet.size === 1
+        ? "The user has raised/selected this brick. When they say 'this brick', 'this block', 'it', or 'this', they mean the [FOCUSED] block below. Use its blockId for any update/edit actions."
+        : `The user has raised/selected ${focusedSet.size} bricks. 'These', 'them', 'this' etc. refer to the [FOCUSED] blocks below.`,
+      "",
+    );
+    for (const id of focusedSet) {
+      const b = blocks[id];
+      if (!b) continue;
+      lines.push(describeBlock(b, id, { contentLen: 2000, focused: true }));
+    }
+    lines.push("");
+  }
+
+  lines.push("[ALL_BLOCKS]");
 
   for (const id of allIds) {
     const b = blocks[id];
     if (!b) continue;
+    if (focusedSet.has(id)) continue;
     const et = effectiveType(b);
-    const label = take(b?.content || b?.data?.title || b?.data?.name || b?.data?.src || "", 40);
-    lines.push(`- id=${id} type=${et} x=${Math.floor(b.x || 0)} y=${Math.floor(b.y || 0)} w=${Math.floor(b.width || 0)} h=${Math.floor(b.height || 0)}${label ? ` label="${label}"` : ""}`);
+    const data = b?.data && typeof b.data === "object" ? b.data : {};
+    const variant = data.textVariant && data.textVariant !== "body" ? ` variant=${data.textVariant}` : "";
+    const listType = data.listType && data.listType !== "none" ? ` listType=${data.listType}` : "";
+    const label = take(b?.content || b?.data?.title || b?.data?.name || b?.data?.src || "", 120);
+    lines.push(`- id=${id} type=${et} x=${Math.floor(b.x || 0)} y=${Math.floor(b.y || 0)} w=${Math.floor(b.width || 0)} h=${Math.floor(b.height || 0)}${variant}${listType}${label ? ` content="${label}"` : ""}`);
+  }
+
+  const wires = Array.isArray(wireConnections) ? wireConnections.filter((w) => blocks[w.fromId] && blocks[w.toId]) : [];
+  if (wires.length > 0) {
+    lines.push("", "[CONNECTIONS]");
+    for (const w of wires) {
+      lines.push(`  ${w.fromId} --[${w.fromSide || "?"}→${w.toSide || "?"}]--> ${w.toId}`);
+    }
   }
 
   return lines.join("\n");

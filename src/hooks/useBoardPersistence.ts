@@ -5,6 +5,7 @@ import { useCanvasStore } from "@/store/canvasStore";
 import type { Block } from "@/canvas/types";
 import { snapshotToSynthesisText } from "@/lib/synthesis/sourceText";
 import { scheduleSynthesisReindex } from "@/lib/synthesis/queueReindex";
+import type { NotePage } from "@/components/notes/NotesPanel";
 
 const SNAPSHOT_VERSION = 2;
 
@@ -13,12 +14,30 @@ export const EMPTY_NOTES_TIPTAP_DOC: { type: string; content: unknown[] } = {
   content: [{ type: "paragraph" }],
 };
 
+export function makeDefaultNotesPages(): NotePage[] {
+  return [{ id: crypto.randomUUID(), title: "Page 1", content: { ...EMPTY_NOTES_TIPTAP_DOC } }];
+}
+
 function isValidNotesTiptapDoc(v: unknown): v is { type: string; content: unknown[] } {
   return Boolean(
     v && typeof v === "object" &&
     (v as { type?: string }).type === "doc" &&
     Array.isArray((v as { content?: unknown }).content)
   );
+}
+
+function isValidNotesPages(v: unknown): v is NotePage[] {
+  return Array.isArray(v) && v.length > 0 && v.every(
+    (p: any) => p && typeof p === "object" && typeof p.id === "string" && typeof p.title === "string",
+  );
+}
+
+function migrateNotesContent(snapshot: any): NotePage[] {
+  if (isValidNotesPages(snapshot.notesPages)) return snapshot.notesPages;
+  if (isValidNotesTiptapDoc(snapshot.notesContent)) {
+    return [{ id: crypto.randomUUID(), title: "Page 1", content: snapshot.notesContent }];
+  }
+  return makeDefaultNotesPages();
 }
 
 export interface UseBoardPersistenceParams {
@@ -30,7 +49,9 @@ export interface UseBoardPersistenceParams {
   chatMessages: any[];
   chatMessagesRef: MutableRefObject<any[]>;
   aiThreadRef: MutableRefObject<Array<{ role: "user" | "assistant"; content: string }>>;
-  notesContentRef: MutableRefObject<any>;
+  notesPagesRef: MutableRefObject<NotePage[]>;
+  setNotesPages: Dispatch<SetStateAction<NotePage[]>>;
+  setActiveNotePageId: Dispatch<SetStateAction<string>>;
   setChatMessages: Dispatch<SetStateAction<any[]>>;
   setChatRailOpen: Dispatch<SetStateAction<boolean>>;
   setChatRailVisible: Dispatch<SetStateAction<boolean>>;
@@ -46,7 +67,7 @@ export interface UseBoardPersistenceParams {
 export function useBoardPersistence(params: UseBoardPersistenceParams) {
   const {
     routeBoardId, userId, gridSize, loadBlocks, reset,
-    chatMessages, chatMessagesRef, aiThreadRef, notesContentRef,
+    chatMessages, chatMessagesRef, aiThreadRef, notesPagesRef, setNotesPages, setActiveNotePageId,
     setChatMessages, setChatRailOpen, setChatRailVisible, setChatMode,
     reSignChatAttachments, restoreSavedToVaultState,
     onCanvasChange, onDraftEffectCleanup,
@@ -67,19 +88,27 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
   /* ------------------------------------------------------------------ */
   const titleRef = useRef<string>("");
   const lastSavedTitleRef = useRef<string>("");
-  const titleFromSaveRef = useRef(false);
-  const autoNameAttemptedRef = useRef(false);
+  const userRenamedRef = useRef(false);
+  const autoNamingInFlightRef = useRef(false);
   const hydratedRef = useRef(false);
   const saveTimerRef = useRef<number | null>(null);
   const savingRef = useRef(false);
   const lastSaveTimeRef = useRef<string | null>(null);
 
   /* ------------------------------------------------------------------ */
+  /*  Tracked title setter — syncs ref immediately so save callbacks     */
+  /*  never read a stale closure value.                                  */
+  /* ------------------------------------------------------------------ */
+  const setTitleTracked = useCallback((val: string) => {
+    titleRef.current = val;
+    setTitle(val);
+  }, []);
+
+  /* ------------------------------------------------------------------ */
   /*  Title → localStorage sync                                          */
   /* ------------------------------------------------------------------ */
   useEffect(() => {
     try { localStorage.setItem("omnia_title", title); } catch { /* ignore */ }
-    titleRef.current = title;
   }, [title]);
 
   /* ------------------------------------------------------------------ */
@@ -87,7 +116,8 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
   /* ------------------------------------------------------------------ */
   const buildSnapshot = useCallback(() => {
     const st = useCanvasStore.getState();
-    const resolvedTitle = (title && String(title).trim()) ? String(title).trim() : "New Grid";
+    const current = titleRef.current;
+    const resolvedTitle = (current && String(current).trim()) ? String(current).trim() : "New Grid";
     return {
       blocks: st.blocks,
       blockOrder: st.blockOrder,
@@ -98,10 +128,10 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
       version: SNAPSHOT_VERSION,
       chatMessages: chatMessagesRef.current,
       aiThread: aiThreadRef.current,
-      notesContent: notesContentRef.current,
+      notesPages: notesPagesRef.current,
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [title]);
+  }, []);
 
   /* ------------------------------------------------------------------ */
   /*  applySnapshot                                                      */
@@ -207,7 +237,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
         st.setCamera({ x: -vpW / 2, y: -vpH / 2, zoom: 1 });
       }
 
-      if (snapshot.title) setTitle(String(snapshot.title));
+      if (snapshot.title) setTitleTracked(String(snapshot.title));
 
       (async () => {
         const innerSt = useCanvasStore.getState();
@@ -270,9 +300,10 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
         restoreSavedToVaultState(boardId);
       }
 
-      notesContentRef.current = isValidNotesTiptapDoc(snapshot.notesContent)
-        ? snapshot.notesContent
-        : EMPTY_NOTES_TIPTAP_DOC;
+      const restoredPages = migrateNotesContent(snapshot);
+      notesPagesRef.current = restoredPages;
+      setNotesPages(restoredPages);
+      setActiveNotePageId(restoredPages[0].id);
 
       const hasBlocks = blocks && Object.keys(blocks).length > 0;
       if (hasBlocks) {
@@ -426,7 +457,6 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
       if (!updateRes.error && stateSaveOk) {
         lastSaveTimeRef.current = now;
         lastSavedTitleRef.current = savedTitle;
-        titleFromSaveRef.current = true;
         try { localStorage.removeItem(`omnia_draft_${boardId}`); } catch { /* ignore */ }
         window.dispatchEvent(new Event("lykinsai_boards_changed"));
         try {
@@ -440,42 +470,57 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
         } catch {
           /* synthesis embed is best-effort */
         }
+      }
 
-        console.log("[LYKN] Auto-name check:", { savedTitle, attempted: autoNameAttemptedRef.current, blockCount: Object.keys(raw.blocks || {}).length });
-        if (savedTitle === "New Grid" && !autoNameAttemptedRef.current) {
-          const contentText = snapshotToSynthesisText(raw as Parameters<typeof snapshotToSynthesisText>[0]);
-          const stripped = contentText.replace(/^Board:.*\n?/, "").trim();
-          console.log("[LYKN] Auto-name content length:", stripped.length, "preview:", stripped.slice(0, 100));
-          if (stripped.length >= 10) {
-            autoNameAttemptedRef.current = true;
-            (async () => {
-              try {
-                const { API_BASE_URL } = await import("@/lib/api-config");
-                console.log("[LYKN] Auto-name fetching:", `${API_BASE_URL}/api/ai/name-grid`);
-                const resp = await fetch(`${API_BASE_URL}/api/ai/name-grid`, {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ content: stripped }),
-                });
-                if (!resp.ok) {
-                  console.warn("[LYKN] Auto-name request failed:", resp.status, await resp.text().catch(() => ""));
-                  return;
-                }
-                const data = await resp.json();
-                const newTitle = String(data?.title || "").trim();
-                if (!newTitle) { console.warn("[LYKN] Auto-name returned empty title"); return; }
-                console.log("[LYKN] Auto-named grid:", newTitle);
-                setTitle(newTitle);
-                titleRef.current = newTitle;
-                lastSavedTitleRef.current = newTitle;
-                titleFromSaveRef.current = true;
-                await supabase.from("omnia_boards").update({ title: newTitle }).eq("id", boardId);
-                window.dispatchEvent(new Event("lykinsai_boards_changed"));
-              } catch (e) {
-                console.warn("[LYKN] Auto-name error:", e);
+      // Auto-naming runs independently of save success
+      console.log("[LYKN] Auto-name check:", { savedTitle, userRenamed: userRenamedRef.current, inFlight: autoNamingInFlightRef.current, blockCount: Object.keys(raw.blocks || {}).length });
+      if (savedTitle === "New Grid" && !userRenamedRef.current && !autoNamingInFlightRef.current) {
+        const blockText = snapshotToSynthesisText(raw as Parameters<typeof snapshotToSynthesisText>[0]);
+        const stripped = blockText.replace(/^Board:.*\n?/, "").trim();
+
+        const chatMsgs: any[] = Array.isArray(raw.chatMessages) ? raw.chatMessages : [];
+        const chatSnippets: string[] = [];
+        for (const m of chatMsgs.slice(0, 6)) {
+          const userText = String(m?.content || m?.text || "").trim();
+          if (userText && m?.role !== "system") chatSnippets.push(userText.slice(0, 300));
+        }
+        const chatText = chatSnippets.join(" ").trim();
+        const combined = [stripped, chatText].filter(Boolean).join("\n").trim();
+        console.log("[LYKN] Auto-name content length:", combined.length, "preview:", combined.slice(0, 120));
+        if (combined.length >= 10) {
+          autoNamingInFlightRef.current = true;
+          const capturedBoardId = boardId;
+          (async () => {
+            try {
+              const { API_BASE_URL } = await import("@/lib/api-config");
+              console.log("[LYKN] Auto-name fetching:", `${API_BASE_URL}/api/ai/name-grid`);
+              const resp = await fetch(`${API_BASE_URL}/api/ai/name-grid`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ content: combined }),
+              });
+              if (!resp.ok) {
+                console.warn("[LYKN] Auto-name request failed:", resp.status, await resp.text().catch(() => ""));
+                return;
               }
-            })();
-          }
+              const data = await resp.json();
+              const newTitle = String(data?.title || "").trim();
+              if (!newTitle) { console.warn("[LYKN] Auto-name returned empty title"); return; }
+              if (userRenamedRef.current) {
+                console.log("[LYKN] Auto-name skipped — user renamed during request");
+                return;
+              }
+              console.log("[LYKN] Auto-named grid:", newTitle);
+              setTitleTracked(newTitle);
+              lastSavedTitleRef.current = newTitle;
+              await supabase.from("omnia_boards").update({ title: newTitle }).eq("id", capturedBoardId);
+              window.dispatchEvent(new Event("lykinsai_boards_changed"));
+            } catch (e) {
+              console.warn("[LYKN] Auto-name error:", e);
+            } finally {
+              autoNamingInFlightRef.current = false;
+            }
+          })();
         }
       }
     } catch (err) {
@@ -491,17 +536,18 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
   /* ------------------------------------------------------------------ */
   const commitBoardTitle = useCallback(async () => {
     if (!boardId || !userId) return;
-    const next = String(title || "").trim() || "New Grid";
+    const next = String(titleRef.current || "").trim() || "New Grid";
     if (next === lastSavedTitleRef.current) return;
     lastSavedTitleRef.current = next;
-    setTitle(next);
+    setTitleTracked(next);
+    if (next !== "New Grid") userRenamedRef.current = true;
     await supabase
       .from("omnia_boards")
       .update({ title: next, updated_at: new Date().toISOString() })
       .eq("id", boardId)
       .eq("user_id", userId);
     window.dispatchEvent(new Event("lykinsai_boards_changed"));
-  }, [boardId, title, userId]);
+  }, [boardId, setTitleTracked, userId]);
 
   /* ------------------------------------------------------------------ */
   /*  Board load effect                                                  */
@@ -511,8 +557,10 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
     let cancelled = false;
     const loadBoard = async () => {
       hydratedRef.current = false;
-      autoNameAttemptedRef.current = false;
+      userRenamedRef.current = false;
+      autoNamingInFlightRef.current = false;
       let id: string | null = null;
+      let loadedTitle = "New Grid";
       try {
         const existing = routeBoardId || localStorage.getItem("omnia_board_id");
         if (existing) {
@@ -524,8 +572,9 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
             .maybeSingle();
           if (data?.id) {
             id = data.id;
-            if (data.title) setTitle(String(data.title));
-            lastSavedTitleRef.current = String(data.title || "New Grid");
+            loadedTitle = String(data.title || "New Grid");
+            if (data.title) setTitleTracked(loadedTitle);
+            lastSavedTitleRef.current = loadedTitle;
           }
         }
       } catch {
@@ -542,8 +591,9 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
             .maybeSingle();
           if (recent?.id) {
             id = recent.id;
-            if (recent.title) setTitle(String(recent.title));
-            lastSavedTitleRef.current = String(recent.title || "New Grid");
+            loadedTitle = String(recent.title || "New Grid");
+            if (recent.title) setTitleTracked(loadedTitle);
+            lastSavedTitleRef.current = loadedTitle;
             localStorage.setItem("omnia_board_id", id!);
           }
         } catch {
@@ -559,7 +609,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
             .maybeSingle();
           if (insertErr) console.error("[LYKN] Board insert error:", insertErr.message);
           id = data?.id || null;
-          if (data?.title) setTitle(String(data.title));
+          if (data?.title) setTitleTracked(String(data.title));
           lastSavedTitleRef.current = String(data?.title || "New Grid");
           if (id) localStorage.setItem("omnia_board_id", id);
         } catch (insertCatch) {
@@ -567,6 +617,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
         }
       }
       if (cancelled) return;
+      if (loadedTitle !== "New Grid") userRenamedRef.current = true;
       setBoardId(id);
       if (!id) {
         hydratedRef.current = true;
@@ -632,7 +683,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
             camera: { x: 0, y: 0, zoom: 1 },
             gridSize: 24,
             wireConnections: [],
-            notesContent: EMPTY_NOTES_TIPTAP_DOC,
+            notesPages: makeDefaultNotesPages(),
           });
         }
         try { localStorage.removeItem(`omnia_draft_${id}`); } catch { /* ignore */ }
@@ -651,7 +702,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
             camera: { x: 0, y: 0, zoom: 1 },
             gridSize: 24,
             wireConnections: [],
-            notesContent: EMPTY_NOTES_TIPTAP_DOC,
+            notesPages: makeDefaultNotesPages(),
           });
         } catch { /* last resort — at least mark hydrated so the UI is usable */ }
       }
@@ -723,6 +774,25 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boardId, chatMessages]);
+
+  /* ------------------------------------------------------------------ */
+  /*  Trigger auto-name save shortly after first chat messages arrive    */
+  /* ------------------------------------------------------------------ */
+  useEffect(() => {
+    if (!boardId || !userId || !hydratedRef.current) return;
+    if (userRenamedRef.current) return;
+    const currentTitle = String(titleRef.current || "").trim();
+    if (currentTitle && currentTitle !== "New Grid") return;
+    if (chatMessages.length < 1) return;
+    const timer = setTimeout(() => {
+      if (!savingRef.current && hydratedRef.current && !userRenamedRef.current) {
+        savingRef.current = false;
+        saveSnapshot();
+      }
+    }, 3_000);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boardId, chatMessages.length, saveSnapshot, userId]);
 
   /* ------------------------------------------------------------------ */
   /*  Vault saved sets persist effect                                    */
@@ -802,7 +872,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
   return {
     boardId,
     title,
-    setTitle,
+    setTitle: setTitleTracked,
     titleRef,
     savingRef,
     saveSnapshot,

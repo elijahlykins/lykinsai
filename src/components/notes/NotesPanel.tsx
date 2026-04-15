@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useEditor, EditorContent, ReactRenderer, Extension } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
@@ -7,6 +8,9 @@ import TaskItem from "@tiptap/extension-task-item";
 import { Table, TableRow, TableCell, TableHeader } from "@tiptap/extension-table";
 import Image from "@tiptap/extension-image";
 import Youtube from "@tiptap/extension-youtube";
+import Highlight from "@tiptap/extension-highlight";
+import { TextStyle } from "@tiptap/extension-text-style";
+import Color from "@tiptap/extension-color";
 import Suggestion from "@tiptap/suggestion";
 import { WebEmbed } from "./webEmbedExtension";
 import type { SuggestionOptions } from "@tiptap/suggestion";
@@ -19,7 +23,13 @@ import {
   hasNotesDropHintTypes,
   hasExternalNotesDropPayload,
 } from "./notesDropInsert";
-import { StickyNote, ChevronDown } from "lucide-react";
+import { StickyNote, ChevronDown, Plus, X, Highlighter, Type as TypeIcon, Brain, ListCollapse, Search } from "lucide-react";
+
+export interface NotePage {
+  id: string;
+  title: string;
+  content: any;
+}
 
 /* ── streaming helpers ── */
 
@@ -187,19 +197,19 @@ const SlashCommands = Extension.create({
 interface NotesPanelProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  content: any;
-  onContentChange: (json: any) => void;
+  pages: NotePage[];
+  activePageId: string;
+  onActivePageChange: (id: string) => void;
+  onPagesChange: (pages: NotePage[]) => void;
   hasLeftRail?: boolean;
 }
 
 const MIN_HEIGHT_VH = 20;
 const MAX_HEIGHT_VH = 100;
-/** Below this height (vh) on release, the sheet closes */
 const DISMISS_BELOW_VH = 22;
-/** When sheet is this tall or more, treat as full-screen (no left rail gutter; square top corners) */
 const FULLSCREEN_FROM_VH = 94;
 
-export default function NotesPanel({ open, onOpenChange, content, onContentChange, hasLeftRail }: NotesPanelProps) {
+export default function NotesPanel({ open, onOpenChange, pages, activePageId, onActivePageChange, onPagesChange, hasLeftRail }: NotesPanelProps) {
   const editorRef = useRef<TiptapEditor | null>(null);
   const contentInitialised = useRef(false);
   const [heightVh, setHeightVh] = useState(MAX_HEIGHT_VH);
@@ -211,8 +221,62 @@ export default function NotesPanel({ open, onOpenChange, content, onContentChang
   const notesStreamTimerRef = useRef<number | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
+
+  const activePage = pages.find((p) => p.id === activePageId) || pages[0];
+  const content = activePage?.content;
+
+  const onContentChange = useCallback(
+    (json: any) => {
+      const updated = pages.map((p) =>
+        p.id === activePageId ? { ...p, content: json } : p,
+      );
+      onPagesChange(updated);
+    },
+    [pages, activePageId, onPagesChange],
+  );
+
   const onContentChangeRef = useRef(onContentChange);
   useEffect(() => { onContentChangeRef.current = onContentChange; }, [onContentChange]);
+
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const renameInputRef = useRef<HTMLInputElement | null>(null);
+
+  const addPage = useCallback(() => {
+    const id = crypto.randomUUID();
+    const newPage: NotePage = {
+      id,
+      title: `Page ${pages.length + 1}`,
+      content: { type: "doc", content: [{ type: "paragraph" }] },
+    };
+    onPagesChange([...pages, newPage]);
+    onActivePageChange(id);
+  }, [pages, onPagesChange, onActivePageChange]);
+
+  const removePage = useCallback(
+    (id: string) => {
+      if (pages.length <= 1) return;
+      const idx = pages.findIndex((p) => p.id === id);
+      const next = pages.filter((p) => p.id !== id);
+      onPagesChange(next);
+      if (activePageId === id) {
+        const newIdx = Math.min(idx, next.length - 1);
+        onActivePageChange(next[newIdx].id);
+      }
+    },
+    [pages, activePageId, onPagesChange, onActivePageChange],
+  );
+
+  const commitRename = useCallback(() => {
+    if (!renamingId) return;
+    const trimmed = renameValue.trim();
+    if (trimmed) {
+      onPagesChange(
+        pages.map((p) => (p.id === renamingId ? { ...p, title: trimmed } : p)),
+      );
+    }
+    setRenamingId(null);
+  }, [renamingId, renameValue, pages, onPagesChange]);
 
   useEffect(() => {
     heightVhRef.current = heightVh;
@@ -360,6 +424,109 @@ export default function NotesPanel({ open, onOpenChange, content, onContentChang
   /** Match focused chat: editor clears the fixed left “Grid Files” column whenever the rail is shown */
   const editorPadLeft = hasLeftRail && open ? "calc(13.75rem + 1.5rem)" : "1.5rem";
 
+  /* ── Selection toolbar (mirrors Canvas brick toolbar) ── */
+  const [selToolbar, setSelToolbar] = useState<{
+    visible: boolean;
+    x: number;
+    y: number;
+    text: string;
+    highlightSub: boolean;
+    textColorSub: boolean;
+  }>({ visible: false, x: 0, y: 0, text: "", highlightSub: false, textColorSub: false });
+  const selToolbarRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onSel = () => {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed || !sel.toString().trim()) {
+        if (selToolbarRef.current?.matches(":hover")) return;
+        setSelToolbar((s) => (s.visible ? { ...s, visible: false, highlightSub: false, textColorSub: false } : s));
+        return;
+      }
+      const anchor = sel.anchorNode;
+      if (!anchor) return;
+      const notesRoot = (anchor instanceof Element ? anchor : anchor.parentElement)?.closest?.("[data-omnia-notes-root]") as HTMLElement | null;
+      if (!notesRoot) {
+        setSelToolbar((s) => (s.visible ? { ...s, visible: false, highlightSub: false, textColorSub: false } : s));
+        return;
+      }
+      const range = sel.getRangeAt(0);
+      const rect = range.getBoundingClientRect();
+      if (rect.width === 0 && rect.height === 0) return;
+      setSelToolbar((s) => ({
+        visible: true,
+        x: rect.left + rect.width / 2,
+        y: rect.top - 10,
+        text: sel.toString(),
+        highlightSub: s.visible ? s.highlightSub : false,
+        textColorSub: s.visible ? s.textColorSub : false,
+      }));
+    };
+    document.addEventListener("selectionchange", onSel);
+    return () => document.removeEventListener("selectionchange", onSel);
+  }, [open]);
+
+  const selToolbarHighlightColors = useMemo(() => [
+    { label: "Default", value: "" },
+    { label: "Blue", value: "rgba(59,130,246,0.40)" },
+    { label: "Green", value: "rgba(22,163,74,0.40)" },
+    { label: "Amber", value: "rgba(217,119,6,0.40)" },
+    { label: "Red", value: "rgba(220,38,38,0.40)" },
+    { label: "Purple", value: "rgba(124,58,237,0.40)" },
+    { label: "Pink", value: "rgba(219,39,119,0.40)" },
+    { label: "Teal", value: "rgba(15,118,110,0.40)" },
+  ], []);
+
+  const selToolbarTextColors = useMemo(() => [
+    { label: "Default", value: "" },
+    { label: "Blue", value: "#3B82F6" },
+    { label: "Green", value: "#16A34A" },
+    { label: "Amber", value: "#D97706" },
+    { label: "Red", value: "#DC2626" },
+    { label: "Purple", value: "#7C3AED" },
+    { label: "Pink", value: "#DB2777" },
+    { label: "Teal", value: "#0F766E" },
+    { label: "White", value: "#FFFFFF" },
+    { label: "Black", value: "#000000" },
+  ], []);
+
+  const applyNoteHighlight = useCallback((color: string) => {
+    const ed = editorRef.current;
+    if (!ed) return;
+    if (color) {
+      ed.chain().focus().setHighlight({ color }).run();
+    } else {
+      ed.chain().focus().unsetHighlight().run();
+    }
+    setSelToolbar((s) => ({ ...s, visible: false, highlightSub: false, textColorSub: false }));
+  }, []);
+
+  const applyNoteTextColor = useCallback((color: string) => {
+    const ed = editorRef.current;
+    if (!ed) return;
+    if (color) {
+      ed.chain().focus().setColor(color).run();
+    } else {
+      ed.chain().focus().unsetColor().run();
+    }
+    setSelToolbar((s) => ({ ...s, visible: false, highlightSub: false, textColorSub: false }));
+  }, []);
+
+  const dispatchNoteSelectionAiAction = useCallback((action: string, prompt: string) => {
+    const text = selToolbar.text;
+    if (!text.trim()) return;
+    window.dispatchEvent(new CustomEvent("omnia_ai_brick_action", {
+      detail: {
+        blockId: "notes-selection",
+        action,
+        prompt: `${prompt}\n\nSelected text:\n"${text}"`,
+      },
+    }));
+    window.getSelection()?.removeAllRanges();
+    setSelToolbar((s) => ({ ...s, visible: false, highlightSub: false, textColorSub: false }));
+  }, [selToolbar.text]);
+
   const editor = useEditor({
     extensions: [
       StarterKit.configure({
@@ -384,6 +551,9 @@ export default function NotesPanel({ open, onOpenChange, content, onContentChang
         controls: true,
         allowFullscreen: true,
       }),
+      Highlight.configure({ multicolor: true }),
+      TextStyle,
+      Color,
       WebEmbed,
       SlashCommands,
     ],
@@ -422,8 +592,23 @@ export default function NotesPanel({ open, onOpenChange, content, onContentChang
     editorRef.current = editor;
   }, [editor]);
 
+  const prevActivePageRef = useRef(activePageId);
+
   useEffect(() => {
     if (!editor) return;
+
+    const pageChanged = prevActivePageRef.current !== activePageId;
+    prevActivePageRef.current = activePageId;
+
+    if (pageChanged && open) {
+      if (content && typeof content === "object" && content.type) {
+        editor.commands.setContent(content);
+      } else {
+        editor.commands.setContent({ type: "doc", content: [{ type: "paragraph" }] });
+      }
+      return;
+    }
+
     if (open && !contentInitialised.current) {
       if (content && typeof content === "object" && content.type) {
         editor.commands.setContent(content);
@@ -433,7 +618,7 @@ export default function NotesPanel({ open, onOpenChange, content, onContentChang
     if (!open) {
       contentInitialised.current = false;
     }
-  }, [editor, open, content]);
+  }, [editor, open, content, activePageId]);
 
   return (
     <>
@@ -486,19 +671,92 @@ export default function NotesPanel({ open, onOpenChange, content, onContentChang
           </div>
         </div>
 
-        {/* Header — only shown when panel is open */}
+        {/* Header — Notes label + inline page tabs */}
         {open && (
-          <div className="flex-shrink-0 flex items-center px-6 pb-3 pt-1 border-b border-black/6 dark:border-white/6 gap-3">
+          <div
+            className="flex-shrink-0 flex items-center border-b border-black/6 dark:border-white/6 gap-3 py-1"
+            style={{ paddingLeft: editorPadLeft, paddingRight: "1.5rem" }}
+          >
+            {/* Close / title */}
             <button
               type="button"
               onClick={() => onOpenChange(false)}
-              className="flex items-center justify-center w-6 h-6 rounded-md text-black/35 dark:text-white/35 hover:text-black/60 dark:hover:text-white/60 hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
+              className="flex-shrink-0 flex items-center justify-center w-6 h-6 rounded-md text-black/35 dark:text-white/35 hover:text-black/60 dark:hover:text-white/60 hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
             >
               <ChevronDown className="w-4 h-4" />
             </button>
-            <div className="flex items-center gap-2">
+            <div className="flex-shrink-0 flex items-center gap-2">
               <StickyNote className="w-4 h-4 text-black/40 dark:text-white/40" />
               <h3 className="text-sm font-semibold text-black/70 dark:text-white/70">Notes</h3>
+            </div>
+
+            {/* Divider */}
+            <div className="flex-shrink-0 w-px h-4 bg-black/8 dark:bg-white/10" />
+
+            {/* Page tabs — scrollable row inline with header */}
+            <div className="flex items-center gap-0.5 overflow-x-auto scrollbar-hide min-w-0">
+              {pages.map((page) => {
+                const isActive = page.id === activePageId;
+                const isRenaming = renamingId === page.id;
+                return (
+                  <div
+                    key={page.id}
+                    className={`group relative flex-shrink-0 flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md cursor-pointer select-none transition-colors ${
+                      isActive
+                        ? "bg-black/6 dark:bg-white/8 text-black/80 dark:text-white/80"
+                        : "text-black/40 dark:text-white/40 hover:text-black/60 dark:hover:text-white/60 hover:bg-black/4 dark:hover:bg-white/4"
+                    }`}
+                    onClick={() => {
+                      if (!isRenaming) onActivePageChange(page.id);
+                    }}
+                    onDoubleClick={() => {
+                      setRenamingId(page.id);
+                      setRenameValue(page.title);
+                      setTimeout(() => renameInputRef.current?.select(), 0);
+                    }}
+                  >
+                    {isRenaming ? (
+                      <input
+                        ref={renameInputRef}
+                        className="w-20 bg-transparent border-b border-black/20 dark:border-white/20 outline-none text-xs"
+                        value={renameValue}
+                        onChange={(e) => setRenameValue(e.target.value)}
+                        onBlur={commitRename}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") commitRename();
+                          if (e.key === "Escape") setRenamingId(null);
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                        autoFocus
+                      />
+                    ) : (
+                      <span className="truncate max-w-[8rem]">{page.title}</span>
+                    )}
+
+                    {pages.length > 1 && !isRenaming && (
+                      <button
+                        type="button"
+                        className="opacity-0 group-hover:opacity-100 flex items-center justify-center w-4 h-4 rounded hover:bg-black/10 dark:hover:bg-white/10 transition-all"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          removePage(page.id);
+                        }}
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+
+              {/* Add page */}
+              <button
+                type="button"
+                onClick={addPage}
+                className="flex-shrink-0 flex items-center justify-center w-6 h-6 rounded-md text-black/30 dark:text-white/30 hover:text-black/60 dark:hover:text-white/60 hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
+              >
+                <Plus className="w-3.5 h-3.5" />
+              </button>
             </div>
           </div>
         )}
@@ -520,6 +778,134 @@ export default function NotesPanel({ open, onOpenChange, content, onContentChang
           </div>
         </div>
       </div>
+
+      {/* ── Text-selection floating toolbar (same as Canvas bricks) ── */}
+      {selToolbar.visible && createPortal(
+        <div
+          ref={selToolbarRef}
+          className="fixed z-[9999] flex flex-col items-center"
+          style={{
+            left: `${selToolbar.x}px`,
+            top: `${selToolbar.y}px`,
+            transform: "translate(-50%, -100%)",
+            animation: "selToolbarFadeIn 0.12s ease-out",
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.preventDefault()}
+        >
+          <div className="flex items-stretch rounded-lg overflow-hidden border border-white/30 dark:border-white/10 bg-[linear-gradient(145deg,rgba(255,255,255,0.82),rgba(245,247,255,0.78))] dark:bg-[linear-gradient(145deg,rgba(40,40,50,0.92),rgba(30,30,38,0.88))] shadow-lg backdrop-blur-md">
+            {!selToolbar.highlightSub && !selToolbar.textColorSub && (
+              <>
+                <button
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium text-black/75 dark:text-white/80 hover:bg-black/8 dark:hover:bg-white/10 transition-colors whitespace-nowrap"
+                  title="Highlight"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => setSelToolbar((s) => ({ ...s, highlightSub: true, textColorSub: false }))}
+                >
+                  <Highlighter className="w-3.5 h-3.5" />
+                  <span>Highlight</span>
+                </button>
+                <div className="w-px bg-black/10 dark:bg-white/10 my-1" />
+                <button
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium text-black/75 dark:text-white/80 hover:bg-black/8 dark:hover:bg-white/10 transition-colors whitespace-nowrap"
+                  title="Text Color"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => setSelToolbar((s) => ({ ...s, textColorSub: true, highlightSub: false }))}
+                >
+                  <TypeIcon className="w-3.5 h-3.5" />
+                  <span>Color</span>
+                </button>
+                <div className="w-px bg-black/10 dark:bg-white/10 my-1" />
+                <button
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-500/10 dark:hover:bg-blue-400/10 transition-colors whitespace-nowrap"
+                  title="AI Analyze"
+                  onClick={() => dispatchNoteSelectionAiAction("ai-analyse", "Analyse this text. Strengths, weaknesses, opportunities, risks — bullet points only, max 6 bullets. No fluff.")}
+                >
+                  <Brain className="w-3.5 h-3.5" />
+                  <span>Analyze</span>
+                </button>
+                <div className="w-px bg-black/10 dark:bg-white/10 my-1" />
+                <button
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-500/10 dark:hover:bg-blue-400/10 transition-colors whitespace-nowrap"
+                  title="AI Summarize"
+                  onClick={() => dispatchNoteSelectionAiAction("ai-summary", "Summarize this in 2-3 sentences max. Core concept, value prop, who it's for. Nothing else.")}
+                >
+                  <ListCollapse className="w-3.5 h-3.5" />
+                  <span>Summarize</span>
+                </button>
+                <div className="w-px bg-black/10 dark:bg-white/10 my-1" />
+                <button
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-500/10 dark:hover:bg-blue-400/10 transition-colors whitespace-nowrap"
+                  title="AI Search"
+                  onClick={() => dispatchNoteSelectionAiAction("ai-search", "Search for related information, context, and insights about this topic. Provide relevant findings.")}
+                >
+                  <Search className="w-3.5 h-3.5" />
+                  <span>Search</span>
+                </button>
+              </>
+            )}
+
+            {selToolbar.highlightSub && (
+              <div className="flex flex-col min-w-[160px]">
+                <button
+                  className="flex items-center gap-2 px-3 py-1.5 text-[12px] text-black/50 dark:text-white/60 hover:bg-black/8 dark:hover:bg-white/10 transition-colors"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => setSelToolbar((s) => ({ ...s, highlightSub: false }))}
+                >
+                  <ChevronDown className="w-3 h-3 rotate-90" />
+                  <span>Highlight Color</span>
+                </button>
+                <div className="mx-2 my-1 h-px bg-black/8 dark:bg-white/8" />
+                <div className="grid grid-cols-5 gap-1.5 px-3 py-2">
+                  {selToolbarHighlightColors.map((c) => (
+                    <button
+                      key={c.label}
+                      className="w-7 h-7 rounded-lg border border-black/15 dark:border-white/15 hover:scale-110 transition-transform flex items-center justify-center"
+                      style={{ background: c.value || "linear-gradient(145deg, rgba(255,255,255,0.34), rgba(255,255,255,0.18))" }}
+                      title={c.label}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => applyNoteHighlight(c.value)}
+                    >
+                      {!c.value && <span className="text-[9px] text-black/40 dark:text-white/40">∅</span>}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {selToolbar.textColorSub && (
+              <div className="flex flex-col min-w-[160px]">
+                <button
+                  className="flex items-center gap-2 px-3 py-1.5 text-[12px] text-black/50 dark:text-white/60 hover:bg-black/8 dark:hover:bg-white/10 transition-colors"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => setSelToolbar((s) => ({ ...s, textColorSub: false }))}
+                >
+                  <ChevronDown className="w-3 h-3 rotate-90" />
+                  <span>Text Color</span>
+                </button>
+                <div className="mx-2 my-1 h-px bg-black/8 dark:bg-white/8" />
+                <div className="grid grid-cols-5 gap-1.5 px-3 py-2">
+                  {selToolbarTextColors.map((c) => (
+                    <button
+                      key={c.label}
+                      className="w-7 h-7 rounded-lg border border-black/15 dark:border-white/15 hover:scale-110 transition-transform flex items-center justify-center"
+                      style={{ background: c.value || "transparent" }}
+                      title={c.label}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => applyNoteTextColor(c.value)}
+                    >
+                      {!c.value && <span className="text-[9px] text-black/40 dark:text-white/40">∅</span>}
+                      {c.value && <span className="text-[11px] font-bold" style={{ color: c.value, textShadow: "0 1px 2px rgba(0,0,0,0.3)" }}>A</span>}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+          <div className="w-2 h-2 rotate-45 bg-white/95 dark:bg-[rgba(35,35,42,0.95)] border-r border-b border-white/50 dark:border-white/10 -mt-1" style={{ boxShadow: "2px 2px 4px rgba(0,0,0,0.08)" }} />
+        </div>,
+        document.body
+      )}
     </>
   );
 }

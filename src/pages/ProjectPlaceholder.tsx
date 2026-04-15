@@ -263,15 +263,15 @@ export default function ProjectPlaceholder() {
       );
     },
     strong: ({ children }: any) => <strong className="font-semibold">{children}</strong>,
-    blockquote: ({ children }: any) => <blockquote className="border-l-2 border-black/20 pl-3 my-2 text-black/70 italic">{children}</blockquote>,
+    blockquote: ({ children }: any) => <blockquote className="border-l-2 border-black/20 dark:border-white/20 pl-3 my-2 text-black/70 dark:text-white/70 italic">{children}</blockquote>,
     code: ({ children, className }: any) => {
       const isBlock = className?.startsWith("language-");
-      if (isBlock) return <pre className="rounded-lg bg-black/5 p-3 my-2 overflow-x-auto text-[0.85em]"><code>{children}</code></pre>;
-      return <code className="rounded bg-black/10 px-1.5 py-0.5 text-[0.85em]">{children}</code>;
+      if (isBlock) return <pre className="rounded-lg bg-black/5 dark:bg-white/10 p-3 my-2 overflow-x-auto text-[0.85em]"><code>{children}</code></pre>;
+      return <code className="rounded bg-black/10 dark:bg-white/10 px-1.5 py-0.5 text-[0.85em]">{children}</code>;
     },
     pre: ({ children }: any) => <>{children}</>,
     table: ({ children }: any) => <div className="my-3 overflow-x-auto"><table className="w-full border-collapse text-sm">{children}</table></div>,
-    thead: ({ children }: any) => <thead className="border-b border-black/20">{children}</thead>,
+    thead: ({ children }: any) => <thead className="border-b border-black/20 dark:border-white/20">{children}</thead>,
     tbody: ({ children }: any) => <tbody>{children}</tbody>,
     tr: ({ children }: any) => <tr className="border-b border-black/10">{children}</tr>,
     th: ({ children }: any) => <th className="text-left px-3 py-2 font-semibold">{children}</th>,
@@ -1344,9 +1344,9 @@ export default function ProjectPlaceholder() {
 
     const noPreview = (
       <div className="flex flex-col items-center gap-3 py-10 text-center">
-        <FileIcon className="w-10 h-10 text-black/30" />
-        <p className="text-sm text-black/60">{file.name}</p>
-        <p className="text-xs text-black/40">Preview not available.{displayUrl ? " Click download to view." : ""}</p>
+        <FileIcon className="w-10 h-10 text-black/30 dark:text-white/30" />
+        <p className="text-sm text-black/60 dark:text-white/60">{file.name}</p>
+        <p className="text-xs text-black/40 dark:text-white/40">Preview not available.{displayUrl ? " Click download to view." : ""}</p>
         {displayUrl && (
           <a href={displayUrl} download={file.name} className="text-xs text-blue-600 underline mt-1">
             Download file
@@ -1376,7 +1376,7 @@ export default function ProjectPlaceholder() {
         <iframe
           title={file.name}
           src={displayUrl}
-          className="w-full h-[60vh] rounded-lg border border-white/40 bg-white/60"
+          className="w-full h-[60vh] rounded-lg border border-white/40 dark:border-white/10 bg-white/60 dark:bg-white/10"
         />
       );
     }
@@ -1388,14 +1388,14 @@ export default function ProjectPlaceholder() {
           <iframe
             title="YouTube"
             src={embedUrl}
-            className="w-full h-[60vh] rounded-lg border border-white/40 bg-white/60"
+            className="w-full h-[60vh] rounded-lg border border-white/40 dark:border-white/10 bg-white/60 dark:bg-white/10"
             allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
             allowFullScreen
           />
         );
       }
       return (
-        <div className="text-sm text-black/70">
+        <div className="text-sm text-black/70 dark:text-white/70">
           <a href={file.url} target="_blank" rel="noreferrer" className="underline">Open YouTube link</a>
         </div>
       );
@@ -1602,7 +1602,7 @@ INSTRUCTIONS:
 
   return (
     <div
-      className="min-h-screen bg-transparent text-black relative"
+      className="min-h-screen bg-transparent text-black dark:text-white relative"
       onDragEnter={(e) => {
         e.preventDefault();
         if (e.dataTransfer.types.includes("application/x-omnia-chat-response")) {
@@ -1634,13 +1634,13 @@ INSTRUCTIONS:
       {chatChunkDragOver && (
         <div className="fixed inset-0 z-[60] pointer-events-none flex items-center justify-center">
           <div className="absolute inset-0 bg-blue-500/5 border-2 border-dashed border-blue-400/40 rounded-3xl m-4" />
-          <div className="relative bg-white/65 backdrop-blur-sm rounded-2xl px-6 py-4 shadow-md border border-blue-300/30 flex items-center gap-3">
+          <div className="relative bg-white/65 dark:bg-white/10 backdrop-blur-sm rounded-2xl px-6 py-4 shadow-md border border-blue-300/30 dark:border-blue-400/20 flex items-center gap-3">
             <StickyNote className="w-5 h-5 text-amber-500" />
-            <span className="text-sm font-medium text-black/70">Drop to save as Quick Note</span>
+            <span className="text-sm font-medium text-black/70 dark:text-white/70">Drop to save as Quick Note</span>
           </div>
         </div>
       )}
-      <header className="fixed top-0 left-0 z-30 bg-white/40 backdrop-blur-sm" style={{ right: showChat && !isMobileChat ? `${chatRailWidthPx}px` : 0, transition: "right 350ms cubic-bezier(0.22,1,0.36,1)" }}>
+      <header className="fixed top-0 left-0 z-30 bg-white/40 dark:bg-transparent backdrop-blur-sm" style={{ right: showChat && !isMobileChat ? `${chatRailWidthPx}px` : 0, transition: "right 350ms cubic-bezier(0.22,1,0.36,1)" }}>
         <div className="mx-auto w-full max-w-[100rem] px-3 sm:px-6 py-3 sm:py-4 flex items-center">
           <div className="hidden md:block w-[13rem] lg:w-[17.5rem] xl:w-[21.25rem] shrink-0" />
           <div className="text-base sm:text-lg font-semibold shrink-0">
@@ -1659,7 +1659,7 @@ INSTRUCTIONS:
                   }
                 }}
                 autoFocus
-                className="w-full max-w-[17.5rem] sm:max-w-[26.25rem] bg-white/45 border border-white/30 rounded-lg px-3 py-1 text-base sm:text-lg font-semibold outline-none"
+                className="w-full max-w-[17.5rem] sm:max-w-[26.25rem] bg-white/45 dark:bg-white/10 border border-white/30 dark:border-white/10 rounded-lg px-3 py-1 text-base sm:text-lg font-semibold outline-none dark:text-white"
               />
             ) : (
               <button
@@ -1668,7 +1668,7 @@ INSTRUCTIONS:
                   setDraftTitle(projectName);
                   setIsEditingTitle(true);
                 }}
-                className="rounded-lg px-2 py-1 hover:bg-white/40 transition-colors"
+                className="rounded-lg px-2 py-1 hover:bg-white/40 dark:hover:bg-white/10 transition-colors"
                 title="Rename project"
               >
                 {projectName}
@@ -1687,7 +1687,7 @@ INSTRUCTIONS:
           <button
             type="button"
             onClick={() => setTopPanelOpen((v) => !v)}
-            className="rounded-full w-9 h-9 hover:bg-black/10 transition-colors touch-manipulation flex items-center justify-center"
+            className="rounded-full w-9 h-9 hover:bg-black/10 dark:hover:bg-white/10 transition-colors touch-manipulation flex items-center justify-center"
             title={topPanelOpen ? "Hide panel" : "Show panel"}
           >
             {topPanelOpen ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
@@ -1702,7 +1702,7 @@ INSTRUCTIONS:
                 </SelectTrigger>
                 <SelectContent
                   align="end"
-                  className="glass-control border border-white/16 bg-white/22 backdrop-blur-md shadow-md overflow-hidden"
+                  className="glass-control border border-white/16 dark:border-white/8 bg-white/22 dark:bg-white/8 backdrop-blur-md shadow-md overflow-hidden"
                 >
                   <SelectGroup>
                     <SelectLabel>Latest</SelectLabel>
@@ -1776,23 +1776,23 @@ INSTRUCTIONS:
                 </SelectContent>
               </Select>
 
-              <div className="w-px h-4 bg-black/10 mx-1" />
+              <div className="w-px h-4 bg-black/10 dark:bg-white/10 mx-1" />
 
               <button
                 type="button"
                 onClick={() => setShowVaultSidebar((v) => !v)}
-                className="rounded-full w-9 h-9 p-0 hover:bg-black/10 transition-colors touch-manipulation flex items-center justify-center"
+                className="rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/10 transition-colors touch-manipulation flex items-center justify-center"
                 title={showVaultSidebar ? "Hide media sidebar" : "Add media"}
               >
                 {showVaultSidebar ? <PanelRightClose className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
               </button>
 
-              <div className="w-px h-4 bg-black/10 mx-1" />
+              <div className="w-px h-4 bg-black/10 dark:bg-white/10 mx-1" />
 
               <button
                 type="button"
                 onClick={() => setShowChat((v) => !v)}
-                className="rounded-full w-9 h-9 p-0 hover:bg-black/10 transition-colors touch-manipulation flex items-center justify-center"
+                className="rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/10 transition-colors touch-manipulation flex items-center justify-center"
                 title={showChat ? "Hide chat" : "Open chat"}
               >
                 <MessageSquare className="w-4 h-4" />
@@ -1812,14 +1812,14 @@ INSTRUCTIONS:
               { label: "Chats", value: chatMessages.filter((m) => m.role === "user").length, color: "#60a5fa" },
               { label: "Connections", value: 0, color: "#93c5fd" },
             ].map((stat) => (
-              <div key={stat.label} className="rounded-xl border border-white/25 bg-white/25 backdrop-blur-sm p-3 text-center">
+              <div key={stat.label} className="rounded-xl border border-white/25 dark:border-white/10 bg-white/25 dark:bg-transparent backdrop-blur-sm p-3 text-center">
                 <div className="text-xl font-bold" style={{ color: stat.color }}>{stat.value}</div>
-                <div className="text-[0.6875rem] text-black/50 mt-0.5">{stat.label}</div>
+                <div className="text-[0.6875rem] text-black/50 dark:text-white/50 mt-0.5">{stat.label}</div>
               </div>
             ))}
           </div>
 
-          <div className="rounded-xl border border-white/25 bg-white/20 backdrop-blur-sm p-4">
+          <div className="rounded-xl border border-white/25 dark:border-white/10 bg-white/20 dark:bg-transparent backdrop-blur-sm p-4">
             <div className="text-xs font-semibold mb-3">Content Breakdown</div>
             <div className="space-y-2.5">
               {[
@@ -1831,8 +1831,8 @@ INSTRUCTIONS:
                 { label: "Other", value: files.filter((f) => f.kind === "file").length, max: Math.max(files.length, 1), color: "#bfdbfe" },
               ].map((bar) => (
                 <div key={bar.label} className="flex items-center gap-2">
-                  <span className="text-[0.6875rem] text-black/60 w-16 shrink-0">{bar.label}</span>
-                  <div className="flex-1 h-4 rounded-full bg-black/5 overflow-hidden">
+                  <span className="text-[0.6875rem] text-black/60 dark:text-white/60 w-16 shrink-0">{bar.label}</span>
+                  <div className="flex-1 h-4 rounded-full bg-black/5 dark:bg-white/10 overflow-hidden">
                     <div
                       className="h-full rounded-full transition-all duration-500"
                       style={{ width: `${Math.max((bar.value / bar.max) * 100, bar.value > 0 ? 8 : 0)}%`, backgroundColor: bar.color }}
@@ -1844,7 +1844,7 @@ INSTRUCTIONS:
             </div>
           </div>
 
-          <div className="rounded-xl border border-white/25 bg-white/20 backdrop-blur-sm p-4">
+          <div className="rounded-xl border border-white/25 dark:border-white/10 bg-white/20 dark:bg-transparent backdrop-blur-sm p-4">
             <div className="text-xs font-semibold mb-3">Weekly Activity</div>
             <div className="flex items-end gap-1.5 h-20">
               {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((day, i) => {
@@ -1852,20 +1852,17 @@ INSTRUCTIONS:
                 return (
                   <div key={day} className="flex-1 flex flex-col items-center gap-1">
                     <div
-                      className="w-full rounded-md transition-all duration-500"
-                      style={{
-                        height: `${heights[i]}%`,
-                        backgroundColor: i === new Date().getDay() - 1 ? "#3b82f6" : "rgba(0,0,0,0.08)",
-                      }}
+                      className={`w-full rounded-md transition-all duration-500 ${i === new Date().getDay() - 1 ? "bg-blue-500" : "bg-black/[0.08] dark:bg-white/[0.15]"}`}
+                      style={{ height: `${heights[i]}%` }}
                     />
-                    <span className="text-[9px] text-black/40">{day}</span>
+                    <span className="text-[9px] text-black/40 dark:text-white/40">{day}</span>
                   </div>
                 );
               })}
             </div>
           </div>
 
-          <div className="rounded-xl border border-white/25 bg-white/20 backdrop-blur-sm p-4">
+          <div className="rounded-xl border border-white/25 dark:border-white/10 bg-white/20 dark:bg-transparent backdrop-blur-sm p-4">
             <div className="flex items-center justify-between mb-2">
               <div className="text-xs font-semibold">Team Space</div>
               <span className="text-[0.625rem] font-medium text-blue-500/70 bg-blue-500/10 px-2 py-0.5 rounded-full">Coming soon</span>
@@ -1894,12 +1891,12 @@ INSTRUCTIONS:
                 </svg>
               </button>
             </div>
-            <div className="text-[0.6875rem] text-black/50 mt-2">
+            <div className="text-[0.6875rem] text-black/50 dark:text-white/50 mt-2">
               {user?.user_metadata?.full_name || user?.email || "1 member"}
             </div>
           </div>
 
-          <div className="rounded-xl border border-white/25 bg-white/20 backdrop-blur-sm p-4">
+          <div className="rounded-xl border border-white/25 dark:border-white/10 bg-white/20 dark:bg-transparent backdrop-blur-sm p-4">
             <div className="text-xs font-semibold mb-2">Storage Used</div>
             {(() => {
               const totalBytes = files.reduce((sum, f) => sum + (f.size || 0), 0);
@@ -1913,12 +1910,12 @@ INSTRUCTIONS:
               };
               return (
                 <>
-                  <div className="relative h-2 rounded-full bg-black/5 overflow-hidden mt-3">
+                  <div className="relative h-2 rounded-full bg-black/5 dark:bg-white/10 overflow-hidden mt-3">
                     <div className="h-full rounded-full bg-blue-500 transition-all" style={{ width: `${pct}%` }} />
                   </div>
                   <div className="flex items-center justify-between mt-2">
-                    <span className="text-[0.6875rem] text-black/50">{fmt(totalBytes)}</span>
-                    <span className="text-[0.6875rem] text-black/40">of 10 GB</span>
+                    <span className="text-[0.6875rem] text-black/50 dark:text-white/50">{fmt(totalBytes)}</span>
+                    <span className="text-[0.6875rem] text-black/40 dark:text-white/40">of 10 GB</span>
                   </div>
                 </>
               );
@@ -1926,22 +1923,22 @@ INSTRUCTIONS:
           </div>
 
           {vaultTags.length > 0 && (
-            <div className="rounded-xl border border-white/25 bg-white/20 backdrop-blur-sm p-4">
+            <div className="rounded-xl border border-white/25 dark:border-white/10 bg-white/20 dark:bg-transparent backdrop-blur-sm p-4">
               <div className="flex items-center gap-2 mb-3">
-                <Tag className="w-3.5 h-3.5 text-black/60" />
+                <Tag className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
                 <div className="text-xs font-semibold">Import from Vault</div>
               </div>
-              <p className="text-[0.6875rem] text-black/50 mb-3">Move all items with a tag into this project.</p>
+              <p className="text-[0.6875rem] text-black/50 dark:text-white/50 mb-3">Move all items with a tag into this project.</p>
               <div className="max-h-44 overflow-y-auto scrollbar-hide space-y-1">
                 {vaultTags.map((tag) => (
                   <button
                     key={tag.name}
                     type="button"
                     onClick={() => void importTagToProject(tag.name)}
-                    className="w-full flex items-center justify-between gap-2 px-2 py-1.5 text-left text-xs hover:bg-black/5 rounded-md transition-colors"
+                    className="w-full flex items-center justify-between gap-2 px-2 py-1.5 text-left text-xs hover:bg-black/5 dark:hover:bg-white/5 rounded-md transition-colors"
                   >
-                    <span className="truncate text-black/70">{tag.name}</span>
-                    <span className="text-[0.625rem] text-black/35 shrink-0">{tag.count}</span>
+                    <span className="truncate text-black/70 dark:text-white/70">{tag.name}</span>
+                    <span className="text-[0.625rem] text-black/35 dark:text-white/35 shrink-0">{tag.count}</span>
                   </button>
                 ))}
               </div>
@@ -1956,7 +1953,7 @@ INSTRUCTIONS:
             <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
               <div className="min-w-0">
                 <h2 className="text-base sm:text-lg font-semibold">Grids</h2>
-                <p className="text-[0.6875rem] sm:text-xs text-black/60">
+                <p className="text-[0.6875rem] sm:text-xs text-black/60 dark:text-white/60">
                   Create and organize grids inside this project.
                 </p>
               </div>
@@ -1966,12 +1963,12 @@ INSTRUCTIONS:
               <button
                 type="button"
                 onClick={handleCreateBoard}
-                className="rounded-xl border-2 border-dashed border-black/15 bg-white/30 hover:bg-white/50 hover:border-black/25 backdrop-blur-md p-4 flex flex-col items-center justify-center gap-2 transition-all h-[88px]"
+                className="rounded-xl border-2 border-dashed border-black/15 dark:border-white/15 bg-white/30 dark:bg-transparent hover:bg-white/50 dark:hover:bg-white/5 hover:border-black/25 dark:hover:border-white/25 backdrop-blur-md p-4 flex flex-col items-center justify-center gap-2 transition-all h-[88px]"
               >
-                <div className="w-9 h-9 rounded-lg bg-white/60 border border-white/70 flex items-center justify-center">
-                  <Plus className="w-5 h-5 text-black/50" />
+                <div className="w-9 h-9 rounded-lg bg-white/60 dark:bg-white/10 border border-white/70 dark:border-white/15 flex items-center justify-center">
+                  <Plus className="w-5 h-5 text-black/50 dark:text-white/50" />
                 </div>
-                <span className="text-xs font-medium text-black/60">Create new grid</span>
+                <span className="text-xs font-medium text-black/60 dark:text-white/60">Create new grid</span>
               </button>
 
               {filteredBoards.map((board) => (
@@ -1982,10 +1979,10 @@ INSTRUCTIONS:
                       localStorage.setItem("omnia_board_id", board.id);
                       nav(`/grid/${board.id}`);
                     }}
-                    className="w-full h-[88px] rounded-xl border border-white/30 bg-white/30 hover:bg-white/45 backdrop-blur-sm p-4 shadow-md text-left transition-all flex flex-col justify-center"
+                    className="w-full h-[88px] rounded-xl border border-white/30 dark:border-white/10 bg-white/30 dark:bg-transparent hover:bg-white/45 dark:hover:bg-white/5 backdrop-blur-sm p-4 shadow-md dark:shadow-none text-left transition-all flex flex-col justify-center"
                   >
                     <div className="text-sm font-semibold truncate">{board.title}</div>
-                    <div className="mt-1 text-xs text-black/50">Grid</div>
+                    <div className="mt-1 text-xs text-black/50 dark:text-white/50">Grid</div>
                   </button>
                   <div className="absolute top-2 right-2 z-20 opacity-0 group-hover:opacity-100 transition-opacity">
                     <div className="relative" ref={openBoardMenuId === board.id ? boardMenuRef : null}>
@@ -1995,20 +1992,20 @@ INSTRUCTIONS:
                           e.stopPropagation();
                           setOpenBoardMenuId((prev) => (prev === board.id ? null : board.id));
                         }}
-                        className="px-1 py-0.5 text-black/60 hover:text-black transition-colors"
+                        className="px-1 py-0.5 text-black/60 dark:text-white/60 hover:text-black dark:hover:text-white transition-colors"
                         aria-label="Grid actions"
                       >
                         <MoreHorizontal className="w-4 h-4" />
                       </button>
                       {openBoardMenuId === board.id && (
-                        <div className="absolute right-0 mt-2 w-48 rounded-xl border border-white/30 bg-white/55 backdrop-blur-sm shadow-md p-2 z-50">
+                        <div className="absolute right-0 mt-2 w-48 rounded-xl border border-white/30 dark:border-white/10 bg-white/55 dark:bg-neutral-900/90 backdrop-blur-sm shadow-md p-2 z-50">
                           <button
                             type="button"
                             onClick={() => {
                               handleRenameBoard(board);
                               setOpenBoardMenuId(null);
                             }}
-                            className="w-full text-left text-xs px-2 py-2 rounded-lg hover:bg-black/5"
+                            className="w-full text-left text-xs px-2 py-2 rounded-lg hover:bg-black/5 dark:hover:bg-white/5"
                           >
                             Rename
                           </button>
@@ -2018,24 +2015,24 @@ INSTRUCTIONS:
                               setMoveBoardId(board.id);
                               setOpenBoardMenuId(null);
                             }}
-                            className="w-full text-left text-xs px-2 py-2 rounded-lg hover:bg-black/5"
+                            className="w-full text-left text-xs px-2 py-2 rounded-lg hover:bg-black/5 dark:hover:bg-white/5"
                           >
                             Move to project
                           </button>
                           <button
                             type="button"
-                            className="w-full text-left text-xs px-2 py-2 rounded-lg hover:bg-black/5"
+                            className="w-full text-left text-xs px-2 py-2 rounded-lg hover:bg-black/5 dark:hover:bg-white/5"
                           >
                             Add team members
                           </button>
-                          <div className="my-1 h-px bg-black/10" />
+                          <div className="my-1 h-px bg-black/10 dark:bg-white/10" />
                           <button
                             type="button"
                             onClick={() => {
                               handleDeleteBoard(board);
                               setOpenBoardMenuId(null);
                             }}
-                            className="w-full text-left text-xs px-2 py-2 rounded-lg hover:bg-black/5 text-red-600"
+                            className="w-full text-left text-xs px-2 py-2 rounded-lg hover:bg-black/5 dark:hover:bg-white/5 text-red-600"
                           >
                             Delete
                           </button>
@@ -2050,7 +2047,7 @@ INSTRUCTIONS:
 
           {localFileTags.length > 0 && (
             <div className="flex flex-wrap items-center gap-2" style={{ minHeight: 1, transform: "translateZ(0)" }}>
-              <Tag className="w-3.5 h-3.5 text-black/35 shrink-0" />
+              <Tag className="w-3.5 h-3.5 text-black/35 dark:text-white/35 shrink-0" />
               {localFileTags.map((tag) => {
                 const active = selectedTagFilter === tag.name;
                 return (
@@ -2061,12 +2058,12 @@ INSTRUCTIONS:
                     className={`inline-flex items-center gap-1 rounded-full font-medium transition-all ${
                       active
                         ? "bg-blue-500 text-white shadow-sm"
-                        : "glass-control text-black/65 hover:text-black/85"
+                        : "glass-control text-black/65 dark:text-white/65 hover:text-black/85 dark:hover:text-white/85"
                     }`}
                     style={{ fontSize: 11, lineHeight: 1, height: 22, paddingLeft: 8, paddingRight: 8 }}
                   >
                     {tag.name}
-                    <span className={`text-[0.625rem] ${active ? "text-white/70" : "text-black/35"}`}>
+                    <span className={`text-[0.625rem] ${active ? "text-white/70" : "text-black/35 dark:text-white/35"}`}>
                       {tag.count}
                     </span>
                   </button>
@@ -2089,19 +2086,19 @@ INSTRUCTIONS:
             <div className="flex items-center justify-between mb-4">
               <div className="min-w-0">
                 <h2 className="text-base sm:text-lg font-semibold">All Files</h2>
-                <p className="text-[0.6875rem] sm:text-xs text-black/60">
+                <p className="text-[0.6875rem] sm:text-xs text-black/60 dark:text-white/60">
                   All media and documents in this project.
                 </p>
               </div>
-              <span className="text-[0.6875rem] text-black/50">{allFilesForCollage.length} file{allFilesForCollage.length !== 1 ? "s" : ""}</span>
+              <span className="text-[0.6875rem] text-black/50 dark:text-white/50">{allFilesForCollage.length} file{allFilesForCollage.length !== 1 ? "s" : ""}</span>
             </div>
             {allFilesForCollage.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-16 text-center">
-                <div className="w-16 h-16 rounded-2xl bg-white/40 border border-white/50 flex items-center justify-center mb-3">
-                  <ImageIcon className="w-7 h-7 text-black/30" />
+                <div className="w-16 h-16 rounded-2xl bg-white/40 dark:bg-white/10 border border-white/50 dark:border-white/10 flex items-center justify-center mb-3">
+                  <ImageIcon className="w-7 h-7 text-black/30 dark:text-white/30" />
                 </div>
-                <p className="text-sm text-black/50">No files yet</p>
-                <p className="text-xs text-black/40 mt-1">Drop files anywhere to add them</p>
+                <p className="text-sm text-black/50 dark:text-white/50">No files yet</p>
+                <p className="text-xs text-black/40 dark:text-white/40 mt-1">Drop files anywhere to add them</p>
               </div>
             ) : (
               <div className="columns-1 sm:columns-2 xl:columns-3 gap-5">
@@ -2116,14 +2113,14 @@ INSTRUCTIONS:
                   const displayUrl = resolvedUrls[file.id] || file.url;
 
                   const fallbackCard = (icon: React.ReactNode, label: string, subtitle?: string) => (
-                    <div className="rounded-2xl border border-white/20 bg-white/18 backdrop-blur-sm p-4" draggable={false}>
+                    <div className="rounded-2xl border border-white/20 dark:border-white/10 bg-white/18 dark:bg-transparent backdrop-blur-sm p-4" draggable={false}>
                       <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-xl bg-white/50 border border-white/60 flex items-center justify-center shrink-0">
+                        <div className="w-10 h-10 rounded-xl bg-white/50 dark:bg-white/10 border border-white/60 dark:border-white/10 flex items-center justify-center shrink-0">
                           {icon}
                         </div>
                         <div className="min-w-0 flex-1">
-                          <p className="text-xs font-medium text-black/85 truncate">{label}</p>
-                          {subtitle && <p className="text-[0.6875rem] text-black/55 mt-0.5 truncate">{subtitle}</p>}
+                          <p className="text-xs font-medium text-black/85 dark:text-white/85 truncate">{label}</p>
+                          {subtitle && <p className="text-[0.6875rem] text-black/55 dark:text-white/55 mt-0.5 truncate">{subtitle}</p>}
                         </div>
                       </div>
                     </div>
@@ -2131,7 +2128,7 @@ INSTRUCTIONS:
 
                   const renderMediaContent = () => {
                     if (isImage) {
-                      if (!displayUrl) return fallbackCard(<ImageIcon className="w-5 h-5 text-black/40" />, file.name, "Image");
+                      if (!displayUrl) return fallbackCard(<ImageIcon className="w-5 h-5 text-black/40 dark:text-white/40" />, file.name, "Image");
                       return (
                         <div className="relative">
                           <img
@@ -2148,7 +2145,7 @@ INSTRUCTIONS:
                             }}
                           />
                           <div data-fallback="" style={{ display: "none" }}>
-                            {fallbackCard(<ImageIcon className="w-5 h-5 text-black/40" />, file.name, "Image")}
+                            {fallbackCard(<ImageIcon className="w-5 h-5 text-black/40 dark:text-white/40" />, file.name, "Image")}
                           </div>
                         </div>
                       );
@@ -2174,7 +2171,7 @@ INSTRUCTIONS:
                     }
 
                     if (isVideo) {
-                      if (!displayUrl) return fallbackCard(<Video className="w-5 h-5 text-black/40" />, file.name, "Video");
+                      if (!displayUrl) return fallbackCard(<Video className="w-5 h-5 text-black/40 dark:text-white/40" />, file.name, "Video");
                       return (
                         <video
                           src={displayUrl}
@@ -2188,15 +2185,15 @@ INSTRUCTIONS:
 
                     if (isAudio) {
                       return (
-                        <div className="rounded-2xl border border-white/20 bg-white/18 backdrop-blur-sm p-3 space-y-3">
-                          <div className="flex items-center gap-2 text-black/80">
+                        <div className="rounded-2xl border border-white/20 dark:border-white/10 bg-white/18 dark:bg-transparent backdrop-blur-sm p-3 space-y-3">
+                          <div className="flex items-center gap-2 text-black/80 dark:text-white/80">
                             <Music className="w-4 h-4" />
                             <span className="text-xs font-medium truncate">{file.name}</span>
                           </div>
                           {displayUrl ? (
                             <audio src={displayUrl} controls className="w-full h-10" preload="metadata" />
                           ) : (
-                            <p className="text-[0.6875rem] text-black/50">Audio file</p>
+                            <p className="text-[0.6875rem] text-black/50 dark:text-white/50">Audio file</p>
                           )}
                         </div>
                       );
@@ -2205,7 +2202,7 @@ INSTRUCTIONS:
                     if (isPdf) {
                       if (displayUrl) {
                         return (
-                          <div className="w-full h-80 rounded-2xl overflow-hidden bg-white/40 border border-white/50">
+                          <div className="w-full h-80 rounded-2xl overflow-hidden bg-white/40 dark:bg-white/10 border border-white/50 dark:border-white/10">
                             <iframe
                               src={displayUrl}
                               title={file.name}
@@ -2231,15 +2228,15 @@ INSTRUCTIONS:
                     if (file.kind === "doc") {
                       if (file.content) {
                         return (
-                          <div className="rounded-2xl border border-white/20 bg-white/18 backdrop-blur-sm p-4" draggable={false}>
-                            <div className="flex items-center gap-2 text-black/70 mb-2">
+                          <div className="rounded-2xl border border-white/20 dark:border-white/10 bg-white/18 dark:bg-transparent backdrop-blur-sm p-4" draggable={false}>
+                            <div className="flex items-center gap-2 text-black/70 dark:text-white/70 mb-2">
                               <StickyNote className="w-4 h-4" />
                               <span className="text-xs font-medium">Quick Note</span>
                             </div>
                             <div className="max-h-56 overflow-y-auto scrollbar-hide">
-                              <p className="text-sm text-black/70 whitespace-pre-wrap break-words">{file.content}</p>
+                              <p className="text-sm text-black/70 dark:text-white/70 whitespace-pre-wrap break-words">{file.content}</p>
                             </div>
-                            <div className="mt-3 text-[0.6875rem] text-black/55 flex items-center gap-1">
+                            <div className="mt-3 text-[0.6875rem] text-black/55 dark:text-white/55 flex items-center gap-1">
                               <Clock className="w-3 h-3" />
                               <span>{file.name}</span>
                             </div>
@@ -2256,8 +2253,8 @@ INSTRUCTIONS:
                     if (file.kind === "spreadsheet" && file.spreadsheetData) {
                       const { rows, cols, cells } = file.spreadsheetData;
                       return (
-                        <div className="rounded-2xl border border-white/20 bg-white/18 backdrop-blur-sm overflow-hidden" draggable={false}>
-                          <div className="flex items-center gap-2 text-black/70 px-3 py-2 border-b border-black/10">
+                        <div className="rounded-2xl border border-white/20 dark:border-white/10 bg-white/18 dark:bg-transparent backdrop-blur-sm overflow-hidden" draggable={false}>
+                          <div className="flex items-center gap-2 text-black/70 dark:text-white/70 px-3 py-2 border-b border-black/10 dark:border-white/10">
                             <Table className="w-4 h-4" />
                             <span className="text-xs font-medium truncate">{file.name}</span>
                           </div>
@@ -2269,7 +2266,7 @@ INSTRUCTIONS:
                                     {Array.from({ length: cols }, (_, c) => (
                                       <td
                                         key={c}
-                                        className="border border-black/15 px-2 py-1.5 align-top bg-white/50 min-w-[4rem] max-w-[14rem] break-words"
+                                        className="border border-black/15 dark:border-white/15 px-2 py-1.5 align-top bg-white/50 dark:bg-transparent min-w-[4rem] max-w-[14rem] break-words"
                                         title={cells[`${r},${c}`]}
                                       >
                                         {cells[`${r},${c}`] ?? "\u00A0"}
@@ -2293,7 +2290,7 @@ INSTRUCTIONS:
                     }
 
                     return fallbackCard(
-                      <FileIcon className="w-5 h-5 text-black/40" />,
+                      <FileIcon className="w-5 h-5 text-black/40 dark:text-white/40" />,
                       file.name,
                       "File"
                     );
@@ -2325,7 +2322,7 @@ INSTRUCTIONS:
                       {file.tags && file.tags.length > 0 && (
                         <div className="mt-1.5 flex flex-wrap gap-1 px-1">
                           {file.tags.map((t) => (
-                            <span key={t} className="inline-flex items-center rounded-full bg-black/5 text-[7px] leading-none px-2 py-px font-medium text-black/55">
+                            <span key={t} className="inline-flex items-center rounded-full bg-black/5 dark:bg-white/10 text-[7px] leading-none px-2 py-px font-medium text-black/55 dark:text-white/55">
                               {t}
                             </span>
                           ))}
@@ -2339,7 +2336,7 @@ INSTRUCTIONS:
                             e.stopPropagation();
                             setNoteComposerFileId((prev) => (prev === file.id ? null : file.id));
                           }}
-                          className="absolute top-2 right-2 h-6 min-w-6 px-1.5 rounded-full bg-white/45 backdrop-blur-sm border border-white/30 text-[0.6875rem] font-semibold flex items-center justify-center gap-1 z-[125] shadow-sm"
+                          className="absolute top-2 right-2 h-6 min-w-6 px-1.5 rounded-full bg-white/45 dark:bg-white/10 backdrop-blur-sm border border-white/30 dark:border-white/10 text-[0.6875rem] font-semibold flex items-center justify-center gap-1 z-[125] shadow-sm"
                           title="View file notes"
                         >
                           <MessageSquare className="w-3 h-3" />
@@ -2356,14 +2353,14 @@ INSTRUCTIONS:
                               setOpenFileMenuId((prev) => (prev === file.id ? null : file.id));
                             }}
                             onMouseDown={(e) => e.stopPropagation()}
-                            className="px-1 py-0.5 text-black/75 hover:text-black leading-none text-base font-semibold"
+                            className="px-1 py-0.5 text-black/75 dark:text-white/75 hover:text-black dark:hover:text-white leading-none text-base font-semibold"
                             title="File actions"
                           >
                             <MoreHorizontal className="w-4 h-4" />
                           </button>
                           {openFileMenuId === file.id && (
                             <div
-                              className="absolute right-0 bottom-full mb-2 w-48 rounded-2xl border border-white/30 bg-white/60 backdrop-blur-md shadow-lg p-2 z-[130]"
+                              className="absolute right-0 bottom-full mb-2 w-48 rounded-2xl border border-white/30 dark:border-white/10 bg-white/60 dark:bg-neutral-900/90 backdrop-blur-md shadow-lg p-2 z-[130]"
                               onMouseDown={(e) => e.stopPropagation()}
                             >
                               <button
@@ -2372,7 +2369,7 @@ INSTRUCTIONS:
                                   e.stopPropagation();
                                   handleRenameFile(file);
                                 }}
-                                className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 flex items-center gap-2"
+                                className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 dark:hover:bg-white/5 flex items-center gap-2"
                               >
                                 <Pencil className="w-3.5 h-3.5" />
                                 Rename
@@ -2382,13 +2379,13 @@ INSTRUCTIONS:
                                   href={file.url}
                                   download={file.name}
                                   onClick={() => setOpenFileMenuId(null)}
-                                  className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 flex items-center gap-2"
+                                  className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 dark:hover:bg-white/5 flex items-center gap-2"
                                 >
                                   <Download className="w-3.5 h-3.5" />
                                   Download
                                 </a>
                               )}
-                              <div className="my-1 h-px bg-black/10" />
+                              <div className="my-1 h-px bg-black/10 dark:bg-white/10" />
                               <button
                                 type="button"
                                 onClick={(e) => {
@@ -2396,7 +2393,7 @@ INSTRUCTIONS:
                                   setTagPickerFileId(file.id);
                                   setOpenFileMenuId(null);
                                 }}
-                                className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 flex items-center gap-2"
+                                className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 dark:hover:bg-white/5 flex items-center gap-2"
                               >
                                 <Tag className="w-3.5 h-3.5" />
                                 Tags
@@ -2408,19 +2405,19 @@ INSTRUCTIONS:
                                   setNoteComposerFileId(file.id);
                                   setOpenFileMenuId(null);
                                 }}
-                                className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 flex items-center gap-2"
+                                className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 dark:hover:bg-white/5 flex items-center gap-2"
                               >
                                 <StickyNote className="w-3.5 h-3.5" />
                                 Note
                               </button>
-                              <div className="my-1 h-px bg-black/10" />
+                              <div className="my-1 h-px bg-black/10 dark:bg-white/10" />
                               <button
                                 type="button"
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   handleDeleteFile(file.id);
                                 }}
-                                className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 flex items-center gap-2 text-red-600"
+                                className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 dark:hover:bg-white/5 flex items-center gap-2 text-red-600"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
                                 Delete
@@ -2430,10 +2427,10 @@ INSTRUCTIONS:
                           {noteComposerFileId === file.id && (
                             <div
                               ref={noteComposerRef}
-                              className="absolute right-0 bottom-full mb-2 w-64 rounded-2xl border border-white/30 bg-white/60 backdrop-blur-md shadow-lg p-3 z-[140]"
+                              className="absolute right-0 bottom-full mb-2 w-64 rounded-2xl border border-white/30 dark:border-white/10 bg-white/60 dark:bg-neutral-900/90 backdrop-blur-md shadow-lg p-3 z-[140]"
                               onMouseDown={(e) => e.stopPropagation()}
                             >
-                              <div className="text-[0.6875rem] font-medium text-black/60 mb-2">Add a note</div>
+                              <div className="text-[0.6875rem] font-medium text-black/60 dark:text-white/60 mb-2">Add a note</div>
                               <textarea
                                 value={noteComposerText}
                                 onChange={(e) => setNoteComposerText(e.target.value)}
@@ -2446,7 +2443,7 @@ INSTRUCTIONS:
                                   }
                                 }}
                                 placeholder="Write a note about this file…"
-                                className="w-full rounded-lg border border-black/10 bg-white/70 px-2.5 py-2 text-xs outline-none resize-none placeholder:text-black/40"
+                                className="w-full rounded-lg border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/10 px-2.5 py-2 text-xs outline-none resize-none placeholder:text-black/40 dark:placeholder:text-white/40 dark:text-white"
                                 rows={3}
                                 autoFocus
                               />
@@ -2454,7 +2451,7 @@ INSTRUCTIONS:
                                 <button
                                   type="button"
                                   onClick={() => { setNoteComposerFileId(null); setNoteComposerText(""); }}
-                                  className="text-[0.6875rem] text-black/50 hover:text-black/70"
+                                  className="text-[0.6875rem] text-black/50 dark:text-white/50 hover:text-black/70 dark:hover:text-white/70"
                                 >
                                   Cancel
                                 </button>
@@ -2474,10 +2471,10 @@ INSTRUCTIONS:
                                 </button>
                               </div>
                               {(file.notes || []).length > 0 && (
-                                <div className="mt-3 border-t border-black/10 pt-2 max-h-32 overflow-y-auto scrollbar-hide space-y-1.5">
+                                <div className="mt-3 border-t border-black/10 dark:border-white/10 pt-2 max-h-32 overflow-y-auto scrollbar-hide space-y-1.5">
                                   {(file.notes || []).map((note, i) => (
-                                    <div key={i} className="rounded-md bg-black/5 px-2 py-1.5">
-                                      <p className="text-xs text-black/80 whitespace-pre-wrap break-words">{note}</p>
+                                    <div key={i} className="rounded-md bg-black/5 dark:bg-white/10 px-2 py-1.5">
+                                      <p className="text-xs text-black/80 dark:text-white/80 whitespace-pre-wrap break-words">{note}</p>
                                     </div>
                                   ))}
                                 </div>
@@ -2487,10 +2484,10 @@ INSTRUCTIONS:
                           {tagPickerFileId === file.id && (
                             <div
                               ref={tagPickerRef}
-                              className="absolute right-0 bottom-full mb-2 w-56 rounded-2xl border border-white/30 bg-white/60 backdrop-blur-md shadow-lg p-2 z-[140]"
+                              className="absolute right-0 bottom-full mb-2 w-56 rounded-2xl border border-white/30 dark:border-white/10 bg-white/60 dark:bg-neutral-900/90 backdrop-blur-md shadow-lg p-2 z-[140]"
                               onMouseDown={(e) => e.stopPropagation()}
                             >
-                              <div className="px-1 py-1 text-[0.6875rem] font-medium text-black/60 mb-1">Tags</div>
+                              <div className="px-1 py-1 text-[0.6875rem] font-medium text-black/60 dark:text-white/60 mb-1">Tags</div>
                               <div className="mb-2">
                                 <input
                                   type="text"
@@ -2503,7 +2500,7 @@ INSTRUCTIONS:
                                     }
                                   }}
                                   placeholder="Add or search tags…"
-                                  className="w-full rounded-lg border border-black/10 bg-white/70 px-2 py-1.5 text-xs outline-none placeholder:text-black/40"
+                                  className="w-full rounded-lg border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/10 px-2 py-1.5 text-xs outline-none placeholder:text-black/40 dark:placeholder:text-white/40 dark:text-white"
                                   autoFocus
                                 />
                               </div>
@@ -2518,13 +2515,13 @@ INSTRUCTIONS:
                                       key={tag.name}
                                       type="button"
                                       onClick={() => toggleFileTag(file.id, tag.name)}
-                                      className="w-full flex items-center gap-2 px-2 py-1.5 text-left text-xs hover:bg-black/5 rounded-md"
+                                      className="w-full flex items-center gap-2 px-2 py-1.5 text-left text-xs hover:bg-black/5 dark:hover:bg-white/5 rounded-md"
                                     >
-                                      <div className={`w-3.5 h-3.5 rounded flex items-center justify-center shrink-0 ${active ? "bg-blue-500 text-white" : "border border-black/20"}`}>
+                                      <div className={`w-3.5 h-3.5 rounded flex items-center justify-center shrink-0 ${active ? "bg-blue-500 text-white" : "border border-black/20 dark:border-white/20"}`}>
                                         {active && <Check className="w-2.5 h-2.5" />}
                                       </div>
-                                      <span className={`flex-1 truncate ${active ? "font-medium" : "text-black/65"}`}>{tag.name}</span>
-                                      <span className="text-[0.625rem] text-black/30">{tag.count}</span>
+                                      <span className={`flex-1 truncate ${active ? "font-medium" : "text-black/65 dark:text-white/65"}`}>{tag.name}</span>
+                                      <span className="text-[0.625rem] text-black/30 dark:text-white/30">{tag.count}</span>
                                     </button>
                                   );
                                 })}
@@ -2535,7 +2532,7 @@ INSTRUCTIONS:
                                       addNewTagToFile(file.id, newTagInput);
                                       setNewTagInput("");
                                     }}
-                                    className="w-full flex items-center gap-2 px-2 py-1.5 text-left text-xs hover:bg-black/5 rounded-md text-blue-600"
+                                    className="w-full flex items-center gap-2 px-2 py-1.5 text-left text-xs hover:bg-black/5 dark:hover:bg-white/5 rounded-md text-blue-600 dark:text-blue-400"
                                   >
                                     <Plus className="w-3.5 h-3.5" />
                                     Create "{newTagInput.trim()}"
@@ -2557,7 +2554,7 @@ INSTRUCTIONS:
 
       {isDragging && (
         <div className="fixed inset-0 z-[90] bg-black/30 backdrop-blur-sm flex items-center justify-center">
-          <div className="rounded-2xl border border-white/30 bg-white/45 backdrop-blur-sm px-6 py-4 text-sm text-black/70 shadow-md">
+          <div className="rounded-2xl border border-white/30 dark:border-white/10 bg-white/45 dark:bg-white/10 backdrop-blur-sm px-6 py-4 text-sm text-black/70 dark:text-white/70 shadow-md">
             Drop files to add them to the current folder
           </div>
         </div>
@@ -2565,9 +2562,9 @@ INSTRUCTIONS:
 
       {selectedFile && (
         <div className="fixed inset-0 z-[95] bg-black/40 backdrop-blur-sm flex items-center justify-center">
-          <div className="rounded-2xl border border-white/30 bg-white/55 backdrop-blur-sm p-4 shadow-lg w-[min(900px,94vw)]">
+          <div className="rounded-2xl border border-white/30 dark:border-white/10 bg-white/55 dark:bg-neutral-900/90 backdrop-blur-sm p-4 shadow-lg w-[min(900px,94vw)]">
             <div className="flex items-center justify-between mb-3">
-              <div className="text-sm font-semibold text-black/70 truncate">{selectedFile.name}</div>
+              <div className="text-sm font-semibold text-black/70 dark:text-white/70 truncate">{selectedFile.name}</div>
               <button
                 type="button"
                 onClick={() => setSelectedFile(null)}
@@ -2582,7 +2579,7 @@ INSTRUCTIONS:
       )}
 
       <Dialog open={!!moveBoardId} onOpenChange={(open) => !open && setMoveBoardId(null)}>
-        <DialogContent className="rounded-2xl border border-white/30 bg-[#f2f2f7]/65 backdrop-blur-md text-black shadow-lg">
+        <DialogContent className="rounded-2xl border border-white/30 dark:border-white/10 bg-[#f2f2f7]/65 dark:bg-neutral-900/90 backdrop-blur-md text-black dark:text-white shadow-lg">
           <DialogHeader>
             <DialogTitle>Move grid</DialogTitle>
           </DialogHeader>
@@ -2594,13 +2591,13 @@ INSTRUCTIONS:
                   key={p.id}
                   type="button"
                   onClick={() => handleMoveBoard(moveBoardId as string, p.id)}
-                  className="w-full text-left text-sm px-3 py-2 rounded-xl bg-white/35 border border-white/30 backdrop-blur-sm hover:opacity-90"
+                  className="w-full text-left text-sm px-3 py-2 rounded-xl bg-white/35 dark:bg-white/10 border border-white/30 dark:border-white/10 backdrop-blur-sm hover:opacity-90"
                 >
                   {p.name}
                 </button>
               ))}
             {(allProjects as Array<{ id: string; name: string }>).filter((p) => p.id !== projectId).length === 0 && (
-              <div className="text-sm text-black/60">No other projects available.</div>
+              <div className="text-sm text-black/60 dark:text-white/60">No other projects available.</div>
             )}
           </div>
         </DialogContent>
@@ -2614,7 +2611,7 @@ INSTRUCTIONS:
       )}
       {showChat && (
         <div
-          className={`fixed bottom-0 flex flex-col bg-white/40 backdrop-blur-sm border-l border-black/10 transition-[right] duration-300 ${isMobileChat ? "z-[80] inset-x-0 border-l-0" : "z-[64]"}`}
+          className={`fixed bottom-0 flex flex-col bg-white/40 dark:bg-transparent backdrop-blur-sm border-l border-black/10 dark:border-white/10 transition-[right] duration-300 ${isMobileChat ? "z-[80] inset-x-0 border-l-0" : "z-[64]"}`}
           style={{
             top: isMobileChat ? 0 : "var(--header-height, 4.9rem)",
             right: isMobileChat ? undefined : 0,
@@ -2626,12 +2623,12 @@ INSTRUCTIONS:
             <div className="absolute left-0 top-0 bottom-0 w-3 -translate-x-1/2 cursor-col-resize z-[70] pointer-events-auto" onPointerDown={handleStartChatResize} title="Drag to resize chat" />
           )}
           {isMobileChat && (
-            <div className="flex items-center justify-between px-3 py-2 border-b border-black/10 shrink-0">
-              <div className="flex items-center gap-2 text-xs font-semibold text-black/80">
+              <div className="flex items-center justify-between px-3 py-2 border-b border-black/10 dark:border-white/10 shrink-0">
+              <div className="flex items-center gap-2 text-xs font-semibold text-black/80 dark:text-white/80">
                 <MessageSquare className="w-3.5 h-3.5" />
                 Chat
               </div>
-              <button type="button" onClick={() => setShowChat(false)} className="h-6 w-6 rounded-full flex items-center justify-center text-black/40 hover:text-red-500 hover:bg-red-500/10 transition-colors">
+              <button type="button" onClick={() => setShowChat(false)} className="h-6 w-6 rounded-full flex items-center justify-center text-black/40 dark:text-white/40 hover:text-red-500 hover:bg-red-500/10 transition-colors">
                 <X className="w-3 h-3" />
               </button>
             </div>
@@ -2640,7 +2637,7 @@ INSTRUCTIONS:
             {chatMessages.map((msg: any, idx: number) => (
               <div key={msg.id || idx} className={`flex flex-col ${msg.role === "user" ? "items-end" : "items-start"}`}>
                 {msg.role === "user" ? (
-                  <div className="max-w-[94%] rounded-2xl rounded-br-md px-3 py-2 text-xs leading-relaxed text-black/90 border border-white/30 bg-[linear-gradient(135deg,rgba(255,255,255,0.14),rgba(255,255,255,0.06))] backdrop-blur-md shadow-[0_4px_14px_rgba(0,0,0,0.06)] [&_table]:text-[0.6875rem] [&_td]:py-1 [&_th]:py-1">
+                  <div className="max-w-[94%] rounded-2xl rounded-br-md px-3 py-2 text-xs leading-relaxed text-black/90 dark:text-white/90 border border-white/30 dark:border-white/10 bg-[linear-gradient(135deg,rgba(255,255,255,0.14),rgba(255,255,255,0.06))] dark:bg-white/5 backdrop-blur-md shadow-[0_4px_14px_rgba(0,0,0,0.06)] [&_table]:text-[0.6875rem] [&_td]:py-1 [&_th]:py-1">
                     <ReactMarkdown remarkPlugins={[remarkGfm]} components={buildChatMarkdownComponents(msg.id)}>
                       {normalizeChecklistSyntax(msg.content || "")}
                     </ReactMarkdown>
@@ -2652,17 +2649,17 @@ INSTRUCTIONS:
                       {msg.id && (
                         <button
                           type="button"
-                          className="w-full flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-white/50 bg-white/40 backdrop-blur-sm hover:bg-white/60 transition-all text-left group/collapse"
+                          className="w-full flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-white/50 dark:border-white/10 bg-white/40 dark:bg-transparent backdrop-blur-sm hover:bg-white/60 dark:hover:bg-white/5 transition-all text-left group/collapse"
                           onClick={() => toggleAiExpanded(msg.id)}
                         >
-                          <ChevronRight className={`w-3 h-3 text-black/40 flex-shrink-0 transition-transform duration-200 ${isExpanded ? "rotate-90" : ""}`} />
+                          <ChevronRight className={`w-3 h-3 text-black/40 dark:text-white/40 flex-shrink-0 transition-transform duration-200 ${isExpanded ? "rotate-90" : ""}`} />
                           {!isExpanded && (
-                            <span className="text-[0.6875rem] text-black/60 truncate leading-tight flex-1">
+                            <span className="text-[0.6875rem] text-black/60 dark:text-white/60 truncate leading-tight flex-1">
                               {getCollapsedPreview(msg.content || "")}
                             </span>
                           )}
                           {isExpanded && (
-                            <span className="text-[0.6875rem] text-black/40 font-medium flex-1">AI Response</span>
+                            <span className="text-[0.6875rem] text-black/40 dark:text-white/40 font-medium flex-1">AI Response</span>
                           )}
                         </button>
                       )}
@@ -2678,7 +2675,7 @@ INSTRUCTIONS:
                                     <div
                                       draggable
                                       onDragStart={(e: React.DragEvent) => handleChunkDragStart(e, chunk)}
-                                      className={`rounded-xl px-3 py-1.5 text-xs leading-relaxed break-words border text-black/85 cursor-grab active:cursor-grabbing transition-all ${isSingle ? "bg-white/45 border-white/40 rounded-2xl rounded-bl-md" : "bg-white/30 border-white/25 hover:bg-white/45 hover:border-blue-300/40 hover:shadow-sm"}`}
+                                      className={`rounded-xl px-3 py-1.5 text-xs leading-relaxed break-words border text-black/85 dark:text-white/85 cursor-grab active:cursor-grabbing transition-all ${isSingle ? "bg-white/45 dark:bg-transparent border-white/40 dark:border-white/10 rounded-2xl rounded-bl-md" : "bg-white/30 dark:bg-transparent border-white/25 dark:border-white/10 hover:bg-white/45 dark:hover:bg-white/5 hover:border-blue-300/40 hover:shadow-sm"}`}
                                     >
                                       <div className={`absolute -left-5 top-1/2 -translate-y-1/2 opacity-0 group-hover/chunk:opacity-100 transition-opacity ${isSingle ? "hidden" : ""}`}>
                                         <GripVertical className="w-3 h-3 text-blue-400/60" />
@@ -2703,10 +2700,10 @@ INSTRUCTIONS:
                             );
                           })()}
                           <div className="flex items-center gap-0.5 px-1">
-                            <button type="button" title="Save full response as quick note" className="p-1 rounded-md text-black/30 hover:text-amber-500 hover:bg-amber-500/10 transition-colors" onClick={() => saveChunkAsQuickNote(msg.content || "")}>
+                            <button type="button" title="Save full response as quick note" className="p-1 rounded-md text-black/30 dark:text-white/30 hover:text-amber-500 hover:bg-amber-500/10 transition-colors" onClick={() => saveChunkAsQuickNote(msg.content || "")}>
                               <StickyNote className="w-3 h-3" />
                             </button>
-                            <button type="button" title="Copy" className={`p-1 rounded-md transition-colors ${copiedMsgId === msg.id ? "text-blue-500 bg-blue-500/10" : "text-black/30 hover:text-black/60 hover:bg-black/5"}`} onClick={() => { void navigator.clipboard.writeText(msg.content || ""); setCopiedMsgId(msg.id); setTimeout(() => setCopiedMsgId((cur) => cur === msg.id ? null : cur), 2000); }}>
+                            <button type="button" title="Copy" className={`p-1 rounded-md transition-colors ${copiedMsgId === msg.id ? "text-blue-500 bg-blue-500/10" : "text-black/30 dark:text-white/30 hover:text-black/60 dark:hover:text-white/60 hover:bg-black/5 dark:hover:bg-white/5"}`} onClick={() => { void navigator.clipboard.writeText(msg.content || ""); setCopiedMsgId(msg.id); setTimeout(() => setCopiedMsgId((cur) => cur === msg.id ? null : cur), 2000); }}>
                               {copiedMsgId === msg.id ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
                             </button>
                           </div>
@@ -2719,7 +2716,7 @@ INSTRUCTIONS:
             ))}
             {isChatLoading && (
               <div className="flex flex-col items-end w-full">
-                <div className="max-w-[94%] text-[0.6875rem] text-black/60 px-1 flex items-center justify-end gap-2" aria-live="polite">
+                <div className="max-w-[94%] text-[0.6875rem] text-black/60 dark:text-white/60 px-1 flex items-center justify-end gap-2" aria-live="polite">
                   <div className="brick-spinner" />
                   {thinkingStatus}
                 </div>

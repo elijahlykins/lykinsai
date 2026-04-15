@@ -567,21 +567,33 @@ function chunkTextForSynthesis(raw) {
 
 async function openAiEmbedMany(strings) {
   if (!process.env.OPENAI_API_KEY || !strings.length) return null;
+  const MAX_RETRIES = 5;
   const all = [];
   for (let i = 0; i < strings.length; i += SYNTHESIS_EMBED_BATCH) {
     const batch = strings.slice(i, i + SYNTHESIS_EMBED_BATCH);
-    const res = await fetch('https://api.openai.com/v1/embeddings', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'text-embedding-3-small',
-        dimensions: 1536,
-        input: batch,
-      }),
-    });
+    let res;
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      res = await fetch('https://api.openai.com/v1/embeddings', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'text-embedding-3-small',
+          dimensions: 1536,
+          input: batch,
+        }),
+      });
+      if (res.status === 429) {
+        const retryAfter = parseInt(res.headers.get('retry-after'), 10);
+        const delayMs = retryAfter > 0 ? retryAfter * 1000 : Math.min(1000 * 2 ** attempt, 30000);
+        console.warn(`⏳ Synthesis embed 429 — retry ${attempt + 1}/${MAX_RETRIES} in ${(delayMs / 1000).toFixed(1)}s`);
+        await new Promise(r => setTimeout(r, delayMs));
+        continue;
+      }
+      break;
+    }
     if (!res.ok) {
       console.warn('⚠️ Synthesis batch embed HTTP', res.status);
       return null;
@@ -2625,44 +2637,92 @@ ${t}
       wantsActionsUserText = userText;
       const userIntent = String(intent || "question").trim().toLowerCase();
       prompt = [
-        "You are an assistant embedded in a block-based grid editor.",
+        "You are an assistant embedded in a block-based grid editor called LYKN. You have FULL CONTROL over the grid — you can create, edit, move, resize, delete, and organize ANY block on the user's board.",
         "When helpful, you may request that the app creates blocks or moves/resizes existing blocks by returning actions.",
         "",
-        "Return ONLY a JSON object (no markdown, no extra text) shaped like:",
+        "Return ONLY a valid JSON object (no markdown fences, no extra text before or after) shaped like:",
         '{ "assistant": "string", "follow_up_questions": ["string"], "actions": [ ... ] }',
         "",
+        "RESPONSE FORMAT — ABSOLUTE RULES:",
+        "- Your ENTIRE response must be a single JSON object. Nothing else.",
+        "- Blocks are created ONLY via the 'actions' array. NEVER write block-creation markup, pseudo-code, or placeholder syntax in the 'assistant' text.",
+        "- NEVER output [CREATE_BLOCK:...], [BLOCK:...], ```json blocks describing blocks, or any invented inline syntax in the assistant text. These do NOTHING — the app cannot parse them. The ONLY way to create blocks is through the 'actions' array.",
+        "- The 'assistant' text is shown to the user as a chat message. It should be conversational — describe what you're doing, not HOW you're doing it internally.",
+        "- Do NOT apologize for past mistakes or say 'let me try again' — just return the correct JSON with the right actions.",
+        "",
+        "BLOCK PLACEMENT — CRITICAL:",
+        "- When you create multiple blocks in one response, they are placed SEQUENTIALLY top-to-bottom in the order you list them in the actions array. The FIRST block appears near the user's viewport center, and each subsequent block appears directly below the previous one.",
+        "- This means the ORDER of your actions array determines the visual layout. Put the most important/top-level block first (e.g., heading before body text, title before content).",
+        "- Think about logical document flow: heading → subheading → body → list → supporting content.",
+        "- You can optionally include 'x' and 'y' (world-pixel coordinates, multiples of 24) on any create action to place it at a specific position. If omitted, sequential auto-placement is used.",
+        "",
+        "FOCUSED BLOCKS — CRITICAL:",
+        "- The grid context may include a [USER_FOCUS] section with blocks marked [FOCUSED]. This means the user has double-pressed / raised that brick.",
+        "- When a block is [FOCUSED], the user's message refers to THAT specific block. 'This brick', 'this', 'it', 'edit this', 'change this', 'make this', 'update this' ALL refer to the focused block.",
+        "- You MUST use the focused block's id as the blockId in any update/edit/color/move/delete action. Do NOT ask which block — the focused block IS the answer.",
+        "- If the user asks to edit/rewrite/change the focused block, use update_text_block with blockId from the [FOCUSED] block and new content.",
+        "- If no block is focused and the user says 'this', match by content/label/type from the grid context.",
+        "",
+        "INTENT — think about WHY:",
+        "- Before creating blocks, think about what the user is trying to BUILD. Are they making a document? A dashboard? A brainstorm? A project plan?",
+        "- Match the block types to their intent: a project plan might need a heading + task board + notes; a brainstorm might need several text bricks; a document needs a sheet.",
+        "- Explain in the 'assistant' text what you're building and why, so the user understands the structure.",
+        "",
         "Rules:",
-        "- The assistant text should be helpful, natural, and coaching (walk the user through the idea).",
+        "- The assistant text should be helpful, natural, and coaching (walk the user through the idea). Explain what blocks you're creating and why.",
         "- If the user is ideating or unclear, ask 2-4 follow-up questions in follow_up_questions.",
         "- If the user explicitly asks to create/make/add a paper/doc, you MUST include {\"type\":\"create_sheet\"}.",
-        "- If the user explicitly asks to create/make/add a spreadsheet/table/budget/tracker, you MUST include {\"type\":\"create_spreadsheet\"}.",
-        "- If the user explicitly asks to create/make/add a todo/checklist/list, you MUST include {\"type\":\"create_list\"}.",
-        "- If the user asks to move, rearrange, organize, align, group, spread out, or lay out blocks, you MUST include move_block or move_blocks actions with computed coordinates. NEVER just say you organized them — you must actually include the move actions.",
+        "- If the user asks for a table, comparison, chart, or structured data display, use {\"type\":\"create_table\"} with headers and rows — this creates a visual table on the grid.",
+        "- Only use {\"type\":\"create_spreadsheet\"} when the user explicitly says 'spreadsheet' or needs formulas, data entry, or a large data grid (budget, tracker, etc.).",
+        "- If the user explicitly asks to create/make/add a todo/checklist/list, you MUST include {\"type\":\"create_list\"} with listType AND items. ALWAYS populate the items array with real content — never create an empty list.",
+        "- If the user asks to create a heading (h1/h2/h3), you MUST include {\"type\":\"create_heading\",\"level\":1,\"content\":\"...\"}.",
+        "- If the user asks to create a text block/brick/card/sticky note, you MUST include {\"type\":\"create_text\",\"content\":\"...\"}.",
+        "- If the user asks to create a quote or callout, you MUST include {\"type\":\"create_quote\",\"content\":\"...\"}.",
+        "- If the user asks to create a toggle or collapsible section, you MUST include {\"type\":\"create_toggle\",\"content\":\"...\"}.",
+        "- If the user asks to create a kanban/task board, you MUST include {\"type\":\"create_task_board\"} with columns.",
+        "- If the user asks to create a code block, you MUST include {\"type\":\"create_code_block\"} with language and content.",
+        "- If the user asks to create a design board/canvas, you MUST include {\"type\":\"create_design_board\"}.",
+        "- If the user asks to create a media/image/video/embed block, you MUST include {\"type\":\"create_media\"} or the specific variant.",
+        "- You have FULL ABILITY to create ANY type of brick on the grid. NEVER tell the user you cannot create a block — just do it by including the right action.",
+        "- If the user asks to move, rearrange, organize, align, group, spread out, or lay out blocks, you MUST include move_block, move_blocks, or organize_grid actions. NEVER just say you organized them — you must actually include the actions.",
+        "- If the user asks to connect, wire, link, or relate blocks, you MUST include connect_blocks actions with the correct block IDs. If they ask to disconnect or unlink, include remove_connection or disconnect_blocks.",
+        "- If the user asks to color, paint, highlight, theme, or style a brick's background or text, use color_block. You MUST use ONLY the predefined color palette values below — do NOT use arbitrary hex values.",
+        "- If the user asks to organize, tidy, clean up, auto-layout, or sort the grid/board, you can use {\"type\":\"organize_grid\",\"strategy\":\"grid\"} to auto-arrange all blocks, OR use move_blocks for precise positioning.",
         "- If the user asks to delete, remove, clear, trash, or get rid of blocks, you MUST include delete_block actions with the correct block IDs from the grid context. Match blocks by their label/content/type to find the right IDs. If the user says 'delete everything' or 'clear the board', include ALL block IDs.",
         "- If the user asks to edit, update, change, modify, rewrite, or fix content in an existing block, you MUST include the appropriate update action (update_text_block, update_spreadsheet, or update_list) with the correct blockId from the grid context. Match blocks by their label/content/type.",
         "- If the user mentions the 'notes page', 'notes panel', 'notes', or 'note pad' and asks to write, edit, draft, add, or compose content there, use update_notes (to replace) or append_notes (to add to existing). The grid context includes [GRID NOTES — current content] showing what's already in the notes. Write well-structured content with headings, lists, and paragraphs as appropriate.",
         "- You can combine multiple action types in a single response (e.g., create a spreadsheet AND update a text block AND delete another block AND write in the notes).",
         "- CONVERSATION CONTEXT (CRITICAL): The [CONVERSATION HISTORY] section below contains recent chat messages including YOUR OWN previous responses. When the user says 'put that in the notes', 'write those in the notes page', 'add what you just wrote', etc., find the referenced content in the conversation history and include it VERBATIM in your update_notes or append_notes action. You MUST reproduce the actual content from the conversation — do NOT ask the user to repeat it or say you don't have it.",
-        "- Otherwise, only include actions when the user clearly needs a structured block (paper/doc -> sheet, data/table/budget -> spreadsheet, tasks -> todo list). If unsure, ask a follow-up question instead of creating blocks.",
-        "- If no block is needed, return an empty actions array.",
+        "- When the user asks to create, make, add, or build something on the grid, ALWAYS include the appropriate action(s). Be proactive — if their request implies blocks (e.g., 'help me plan a project'), create them (heading + task board + list).",
+        "- If the user is just asking a question or chatting, return an empty actions array. But if they ask for ANY type of block or content on the grid, create it.",
         "",
         "Supported actions (allowlist):",
         "",
-        "CREATE actions:",
+        "CREATE actions — brick types (you can create ANY of these when the user asks):",
         '- { "type": "create_sheet" } — blank paper/document',
         '- { "type": "create_sheet", "title": "My Paper", "content": "body text" } — paper with initial content',
-        '- { "type": "create_spreadsheet", "rows": 30, "cols": 20, "cells": { "0,0": "Header" } } — spreadsheet with cell map',
-        '- { "type": "create_spreadsheet", "rows": 30, "cols": 20, "cells2d": [["A","B"],["1","2"]], "startRow": 0, "startCol": 0 } — spreadsheet with 2D array',
-        '- { "type": "create_list", "listType": "todo"|"bulleted"|"numbered", "items": ["one","two"] } — list block',
+        '- { "type": "create_table", "headers": ["Name","Role","Status"], "rows": [["Alice","Dev","Active"],["Bob","Design","Active"]] } — visual markdown table (use this for most tables). cols defaults to 3.',
+        '- { "type": "create_spreadsheet", "rows": 30, "cols": 20, "cells": { "0,0": "Header" } } — data spreadsheet (use only when user needs formulas, large data entry, or says "spreadsheet")',
+        '- { "type": "create_spreadsheet", "rows": 30, "cols": 20, "cells2d": [["A","B"],["1","2"]], "startRow": 0, "startCol": 0 } — data spreadsheet with 2D array',
+        '- { "type": "create_list", "listType": "todo"|"bulleted"|"numbered", "items": ["item one","item two","item three"] } — list block. ALWAYS include items with actual content.',
         '- { "type": "create_design_board" } — freeform design canvas',
         '- { "type": "create_task_board", "title": "Board Name", "columns": [{"title":"To Do","cards":["task1"]},{"title":"In Progress","cards":[]},{"title":"Done","cards":[]}] } — kanban board',
         '- { "type": "create_code_block", "language": "python"|"javascript"|"typescript"|"sql"|etc, "content": "code here" } — code block',
-        '- { "type": "create_universal_block", "data": { "content": "text", "textVariant": "h1"|"h2"|"body", "listType": "none"|"bulleted"|"numbered"|"checklist"|"toggle", "brickColor": "#hex", "textColor": "#hex" } } — universal text brick (headings, lists, quotes, body text)',
+        '- { "type": "create_heading", "level": 1|2|3, "content": "Heading text" } — heading brick (h1/h2/h3). You can also use "create_h1", "create_h2", "create_h3" as shortcuts.',
+        '- { "type": "create_text", "content": "Any text content", "format": "rich"|"plain"|"markdown" } — generic text brick. Also accepts "create_brick", "create_text_block", "create_card", "create_sticky".',
+        '- { "type": "create_quote", "content": "Quote or callout text" } — callout/quote brick (also "create_callout")',
+        '- { "type": "create_toggle", "content": "Collapsible section content" } — toggle/collapsible brick',
+        '- { "type": "create_media", "url": "https://...", "mode": "image"|"video", "name": "file name" } — media/embed brick (also "create_embed", "create_image_block", "create_video_block")',
+        '- { "type": "create_youtube_block", "url": "https://youtube.com/watch?v=..." } — embedded YouTube video',
+        '- { "type": "create_universal_block", "data": { "content": "text", "textVariant": "h1"|"h2"|"body", "listType": "none"|"bulleted"|"numbered"|"checklist"|"toggle", "brickColor": "<palette value>", "textColor": "<palette value>" } } — universal text brick (headings, lists, quotes, body text). Colors must use the predefined palette values from the COLOR / STYLE section.',
+        "",
+        "ORGANIZE / AUTO-LAYOUT actions:",
+        '- { "type": "organize_grid", "strategy": "grid"|"column"|"vertical", "columns": 3 } — auto-arrange all blocks on the grid into a clean layout. Use this when the user asks to organize, tidy, clean up, or auto-layout the board. Strategy "grid" arranges in rows/columns (default), "column"/"vertical" stacks vertically.',
         "",
         "EDIT actions:",
-        '- { "type": "update_text_block", "blockId": "<id>", "content": "new full text" } — replace text content of a brick/sheet',
-        '- { "type": "update_text_block", "blockId": "<id>", "append": "additional text" } — append text to a brick/sheet',
-        '- { "type": "update_text_block", "blockId": "<id>", "data": { "textVariant": "h1" } } — change brick style (h1/h2/body/listType/colors)',
+        '- { "type": "update_text_block", "blockId": "<id>", "content": "new full text" } — replace ALL text content of a brick/sheet. ALWAYS include content when editing text.',
+        '- { "type": "update_text_block", "blockId": "<id>", "append": "additional text" } — append text to end of a brick/sheet',
+        '- { "type": "update_text_block", "blockId": "<id>", "content": "same or new text", "data": { "textVariant": "h1" } } — change brick style AND content. Always include content OR append — never send update_text_block with only data.',
         '- { "type": "update_spreadsheet", "blockId": "<id>", "cells": { "0,0": "new value", "1,2": "updated" } } — update specific cells in a spreadsheet',
         '- { "type": "update_spreadsheet", "blockId": "<id>", "cells2d": [["A","B"],["1","2"]], "startRow": 0, "startCol": 0 } — overwrite region of a spreadsheet',
         '- { "type": "update_list", "blockId": "<id>", "items": ["replaced item 1","replaced item 2"] } — replace all list items',
@@ -2673,6 +2733,48 @@ ${t}
         '- { "type": "move_block", "blockId": "<id>", "dx": <deltaX>, "dy": <deltaY> } — move by relative offset in pixels',
         '- { "type": "move_blocks", "moves": [{ "blockId": "<id>", "x": <x>, "y": <y> }, ...] } — batch-move multiple blocks',
         '- { "type": "resize_block", "blockId": "<id>", "width": <w>, "height": <h> } — resize (world pixels, snapped to grid)',
+        "",
+        "COLOR / STYLE actions:",
+        '- { "type": "color_block", "blockId": "<id>", "brickColor": "<value>", "textColor": "<value>" } — set background and/or text color on a brick.',
+        '- { "type": "color_block", "blockIds": ["<id1>","<id2>"], "brickColor": "<value>" } — color multiple bricks at once.',
+        '- To remove a color (reset to default), set the value to "" or null.',
+        "",
+        "ALLOWED BRICK BACKGROUND COLORS (brickColor) — use these EXACT values:",
+        '  Default (clear) → ""',
+        '  Blue    → "rgba(59,130,246,0.18)"',
+        '  Green   → "rgba(22,163,74,0.18)"',
+        '  Amber   → "rgba(217,119,6,0.18)"',
+        '  Red     → "rgba(220,38,38,0.18)"',
+        '  Purple  → "rgba(124,58,237,0.18)"',
+        '  Pink    → "rgba(219,39,119,0.18)"',
+        '  Teal    → "rgba(15,118,110,0.18)"',
+        "",
+        "ALLOWED TEXT COLORS (textColor) — use these EXACT values:",
+        '  Default → ""',
+        '  Blue    → "#3B82F6"',
+        '  Green   → "#16A34A"',
+        '  Amber   → "#D97706"',
+        '  Red     → "#DC2626"',
+        '  Purple  → "#7C3AED"',
+        '  Pink    → "#DB2777"',
+        '  Teal    → "#0F766E"',
+        "",
+        "When the user says a color name, map it to the closest palette value above. For example: 'red' → Red, 'yellow'/'gold' → Amber, 'cyan'/'turquoise' → Teal, 'violet'/'lavender' → Purple, 'magenta'/'rose' → Pink. NEVER use colors outside these palettes.",
+        "",
+        "CONNECTION / WIRE actions:",
+        '- { "type": "connect_blocks", "fromId": "<id>", "toId": "<id>", "fromSide": "<side>", "toSide": "<side>" } — draw a wire connecting two blocks. Sides: "top", "right", "bottom", "left".',
+        '- { "type": "remove_connection", "fromId": "<id>", "toId": "<id>" } — remove the wire between two blocks',
+        '- { "type": "disconnect_blocks", "fromId": "<id>" } — remove ALL wires connected to a block',
+        "",
+        "WIRE SIDE SELECTION — choose sides based on the spatial positions of the blocks (use x, y, w, h from the grid context):",
+        "- If block B is to the RIGHT of block A → fromSide='right', toSide='left'",
+        "- If block B is to the LEFT of block A → fromSide='left', toSide='right'",
+        "- If block B is BELOW block A → fromSide='bottom', toSide='top'",
+        "- If block B is ABOVE block A → fromSide='top', toSide='bottom'",
+        "- If block B is diagonally down-right → fromSide='right', toSide='left' (or 'bottom'/'top' if mostly vertical)",
+        "- Use the block center positions to decide: centerX = x + w/2, centerY = y + h/2. Compare the horizontal vs vertical distance between centers — use the axis with the LARGER distance to pick sides.",
+        "- Do NOT always default to top→bottom. Use the actual layout to pick the most natural direction for the wire.",
+        "- If you omit fromSide/toSide, the system will auto-compute them from block positions — but it's better to specify them yourself for clarity.",
         "",
         "DELETE actions:",
         '- { "type": "delete_block", "blockId": "<id>" } — delete a single block',
@@ -2703,17 +2805,29 @@ ${t}
         "- ALWAYS use move_blocks (batch) when moving 2+ blocks. Include ALL blocks that need repositioning.",
         "- Use each block's actual id from the grid context. Do NOT invent block IDs.",
         "",
-        "EDITING / UPDATING blocks:",
-        "- When the user asks to edit, change, update, rewrite, rename, fix, or modify a block's content, find the block by matching its label/content/type in the grid context.",
-        "- For text bricks and sheets: use update_text_block with 'content' to replace, or 'append' to add. Use 'data' to change style (textVariant, listType, colors).",
+        "EDITING / UPDATING blocks (CRITICAL):",
+        "- When the user asks to edit, change, update, rewrite, rename, fix, or modify a block, you MUST include an update action with the correct blockId. NEVER just describe the change — always include the action.",
+        "- **CONTENT IS REQUIRED**: When editing/rewriting text, you MUST include 'content' with the FULL new text for the block. An update_text_block without 'content' does NOTHING useful — it will be rejected. Always provide the complete replacement text, not just the blockId.",
+        "- **FOCUSED BLOCKS**: If the grid context includes [USER_FOCUS] with a [FOCUSED] block, that is the block the user is referring to when they say 'this brick', 'this block', 'it', 'this', 'edit this', etc. Use its blockId for the update action.",
+        "- For text bricks and sheets: use update_text_block with 'content' (full replacement text) or 'append' (text to add). Use 'data' to change style: {\"textVariant\":\"h1\"|\"h2\"|\"body\", \"listType\":\"none\"|\"bullet\"|\"numbered\"|\"todo\"|\"toggle\"|\"quote\", \"brickColor\":\"<palette value>\", \"textColor\":\"<palette value>\"}. Colors must use the predefined palette values from the COLOR / STYLE section.",
         "- For spreadsheets: use update_spreadsheet with 'cells' (key-value map like '0,0':'value') or 'cells2d' (2D array) to update cells.",
         "- For lists: use update_list with 'items' to replace all items, or 'append' to add new items to the end.",
-        "- You can combine edits with creates, moves, and deletes in one response.",
+        "- For code blocks: use update_code_block with 'content' and optional 'language'.",
+        "- You can combine edits with creates, moves, deletes, and connections in one response.",
+        "",
+        "CONNECTIONS / WIRES:",
+        "- When the user asks to connect, wire, link, or relate blocks, use connect_blocks with the block IDs from the grid context.",
+        "- ALWAYS look at block positions (x, y, w, h) to determine the best fromSide and toSide. Wires should feel natural — use horizontal sides (right/left) for blocks that are side-by-side, vertical sides (bottom/top) for blocks stacked above/below, and diagonal combinations (e.g. right→top, bottom→left) when blocks are offset.",
+        "- The grid context [CONNECTIONS] section shows existing wires. Don't create duplicates.",
+        "- When building flowcharts, diagrams, or process maps, create the blocks AND the connections in the same response.",
+        "- To disconnect, use remove_connection with fromId+toId, or disconnect_blocks with fromId to clear all wires from a block.",
         "",
         "Examples:",
         '- If user says "I need to write a paper", include actions: [{"type":"create_sheet"}].',
+        '- If user says "make a table comparing features", include actions: [{"type":"create_table","headers":["Feature","Plan A","Plan B"],"rows":[["Price","$10","$20"],["Storage","5GB","50GB"]]}].',
         '- If user says "make me a budget spreadsheet", include actions: [{"type":"create_spreadsheet","rows":30,"cols":6}].',
-        '- If user says "I need a todo list", include actions: [{"type":"create_list","listType":"todo","items":["..."]}].',
+        '- If user says "I need a todo list", include actions: [{"type":"create_list","listType":"todo","items":["First task","Second task","Third task"]}].',
+        '- If user says "make a grocery list", include actions: [{"type":"create_list","listType":"bulleted","items":["Milk","Eggs","Bread"]}].',
         '- If user says "move that text block to the right", include actions: [{"type":"move_block","blockId":"<the block id>","dx":240,"dy":0}].',
         '- If user says "put X next to Y", read Y\'s x+w to compute X\'s new x, and use Y\'s y for the same row.',
         '- If user says "make it bigger", include actions: [{"type":"resize_block","blockId":"<id>","width":<newW>,"height":<newH>}].',
@@ -2723,9 +2837,25 @@ ${t}
         '- If user says "add a row to my spreadsheet with Q2 data", include actions: [{"type":"update_spreadsheet","blockId":"<id>","cells":{"5,0":"Q2","5,1":"1500","5,2":"2300"}}].',
         '- If user says "add milk and eggs to my grocery list", include actions: [{"type":"update_list","blockId":"<id>","append":["milk","eggs"]}].',
         '- If user says "rewrite my todo list", include actions: [{"type":"update_list","blockId":"<id>","items":["new item 1","new item 2"]}].',
+        '- If user says "connect the heading to the list", find both block IDs and include actions: [{"type":"connect_blocks","fromId":"<heading-id>","toId":"<list-id>","fromSide":"bottom","toSide":"top"}].',
+        '- If user says "make a flowchart with 3 steps", create blocks AND wires: actions: [{"type":"create_text","content":"Step 1"},{"type":"create_text","content":"Step 2"},{"type":"create_text","content":"Step 3"}] — then after blocks are created, the user can ask to connect them.',
+        '- If user says "disconnect everything from the heading", include actions: [{"type":"disconnect_blocks","fromId":"<heading-id>"}].',
+        '- If user says "make the heading red", find the heading block and include actions: [{"type":"color_block","blockId":"<id>","textColor":"#DC2626"}].',
+        '- If user says "give this brick a blue background", include actions: [{"type":"color_block","blockId":"<id>","brickColor":"rgba(59,130,246,0.18)"}].',
+        '- If user says "color all the bricks green", include actions: [{"type":"color_block","blockIds":["<id1>","<id2>",...],"brickColor":"rgba(22,163,74,0.18)"}].',
+        '- If user says "reset the colors", include actions: [{"type":"color_block","blockId":"<id>","brickColor":"","textColor":""}].',
         '- If user says "make a kanban for my project", include actions: [{"type":"create_task_board","title":"Project Board","columns":[{"title":"To Do","cards":["Research","Design"]},{"title":"In Progress","cards":[]},{"title":"Done","cards":[]}]}].',
         '- If user says "add a Python code block", include actions: [{"type":"create_code_block","language":"python","content":"# Your code here\\n"}].',
-        '- If user says "create a heading that says Welcome", include actions: [{"type":"create_universal_block","data":{"content":"Welcome","textVariant":"h1"}}].',
+        '- If user says "create a heading that says Welcome", include actions: [{"type":"create_heading","level":1,"content":"Welcome"}].',
+        '- If user says "add a subheading", include actions: [{"type":"create_heading","level":2,"content":"Subheading"}].',
+        '- If user says "make a text block with my bio", include actions: [{"type":"create_text","content":"Your bio text here..."}].',
+        '- If user says "add a quote block", include actions: [{"type":"create_quote","content":"The quote text here"}].',
+        '- If user says "create a toggle section", include actions: [{"type":"create_toggle","content":"Collapsible content here"}].',
+        '- If user says "add a task board for my sprint", include actions: [{"type":"create_task_board","title":"Sprint Board","columns":[{"title":"Backlog","cards":["Task 1"]},{"title":"In Progress","cards":[]},{"title":"Done","cards":[]}]}].',
+        '- If user says "create a design board", include actions: [{"type":"create_design_board"}].',
+        '- If user says "tidy up my board" or "organize the grid", include actions: [{"type":"organize_grid","strategy":"grid"}].',
+        '- If user says "help me plan a project", create a structured set: actions: [{"type":"create_heading","level":1,"content":"Project Plan"},{"type":"create_text","content":"Overview and goals..."},{"type":"create_task_board","title":"Project Tasks","columns":[{"title":"To Do","cards":["Research","Design","Build"]},{"title":"In Progress","cards":[]},{"title":"Done","cards":[]}]}]. These will appear stacked top-to-bottom in this order.',
+        '- If user says "create a notes section", create: [{"type":"create_heading","level":1,"content":"Notes"},{"type":"create_text","content":""}]. The heading appears on top, the text block below it.',
         '- If user says "write a project summary in the notes page", include actions: [{"type":"update_notes","content":"# Project Summary\\n\\nThis project aims to...\\n\\n## Key Goals\\n\\n- Goal 1\\n- Goal 2"}].',
         '- If user says "add meeting notes to the notes page", include actions: [{"type":"append_notes","content":"\\n## Meeting Notes — Today\\n\\n- Discussed timeline\\n- Agreed on milestones"}].',
         '- If user says "clear the notes page" or "rewrite the notes", use update_notes with the new or empty content.',
@@ -2734,7 +2864,7 @@ ${t}
         '  actions: [{"type":"move_blocks","moves":[{"blockId":"abc","x":1400,"y":1050},{"blockId":"def","x":1688,"y":1050},{"blockId":"ghi","x":1400,"y":1386},...]}]',
         "",
         "If the user mentions writing a paper/essay/report/document, prefer {\"type\":\"create_sheet\"}.",
-        "If the user mentions a spreadsheet/table/budget/tracker, prefer {\"type\":\"create_spreadsheet\"}.",
+        "If the user mentions a table/comparison/chart, prefer {\"type\":\"create_table\"}. Only use create_spreadsheet when they say 'spreadsheet' or need formulas/data entry.",
         "",
         ctx ? `Grid context (use these block IDs and positions):\n${ctx}\n` : "",
         conversationMemory ? `[CONVERSATION MEMORY]\n${String(conversationMemory).slice(0, 2000)}` : "",
@@ -3237,20 +3367,78 @@ ${t}
 
       console.log(`[Actions] parsed=${!!parsed} actions=${actions.length} types=${actions.map(a => a?.type).join(',')} responseLen=${String(responseText || '').length}${!parsed ? ` rawResponse=${String(responseText || '').slice(0, 500)}` : ''}`);
 
-      // Deterministic fallback (old editor behavior): if the model didn't return actions,
+      // Rescue: if the AI wrote [CREATE_BLOCK:...] inline markup instead of using actions,
+      // parse those into real actions and strip them from the assistant text.
+      if (!actions.length) {
+        const blockMarkupRe = /\[CREATE_BLOCK:\s*(\{[^]*?\})\s*\]/g;
+        let rescued = [];
+        let m;
+        while ((m = blockMarkupRe.exec(assistant)) !== null) {
+          try {
+            const obj = JSON.parse(m[1]);
+            const bType = String(obj.type || "text").toLowerCase();
+            const content = String(obj.content || "").trim();
+            const actionType = bType === "heading" || bType === "h1" ? "create_heading"
+              : bType === "h2" ? "create_h2"
+              : bType === "h3" ? "create_h3"
+              : bType === "quote" || bType === "callout" ? "create_quote"
+              : bType === "list" || bType === "todo" ? "create_list"
+              : bType === "code" ? "create_code_block"
+              : bType === "sheet" || bType === "paper" || bType === "document" ? "create_sheet"
+              : bType === "spreadsheet" ? "create_spreadsheet"
+              : bType === "table" ? "create_table"
+              : "create_text";
+            const action = { type: actionType, content };
+            if (obj.position?.x != null) action.x = Number(obj.position.x);
+            if (obj.position?.y != null) action.y = Number(obj.position.y);
+            if (bType === "heading" || bType === "h1") action.level = 1;
+            if (bType === "h2") action.level = 2;
+            if (bType === "h3") action.level = 3;
+            rescued.push(action);
+          } catch { /* skip unparseable */ }
+        }
+        if (rescued.length) {
+          actions = rescued;
+          console.log(`[Actions] Rescued ${rescued.length} actions from [CREATE_BLOCK:...] markup`);
+        }
+      }
+
+      // Strip any [CREATE_BLOCK:...] markup from the assistant text shown to the user
+      let cleanAssistant = assistant
+        .replace(/\[CREATE_BLOCK:\s*\{[^]*?\}\s*\]/g, "")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+
+      // Deterministic fallback: if the model didn't return actions,
       // infer block creation from the user request so blocks still get created.
       if (!actions.length) {
         const s = String(wantsActionsUserText || "").toLowerCase();
-        const wants = /\b(create|make|build|add|start|setup|set up|need|want|would like)\b/i.test(s);
+        const wants = /\b(create|make|build|add|start|setup|set up|need|want|would like|place|put|drop|insert|generate)\b/i.test(s);
         const wantsSheet = /\b(paper|essay|report|document)\b/i.test(s) || /\bwrite\s+(a|an|the)\b/i.test(s);
-        const wantsSpreadsheet = /\b(spreadsheet|table|budget|tracker)\b/i.test(s);
+        const wantsTable = /\b(table|comparison|chart)\b/i.test(s) && !/\b(spreadsheet)\b/i.test(s);
+        const wantsSpreadsheet = /\b(spreadsheet|budget|tracker)\b/i.test(s);
         const wantsList = /\b(todo|to-?do|checklist|tasks|list)\b/i.test(s);
+        const wantsHeading = /\b(heading|h1|h2|h3)\b/i.test(s);
+        const wantsQuote = /\b(quote|callout)\b/i.test(s);
+        const wantsCode = /\b(code\s*block)\b/i.test(s);
+        const wantsTaskBoard = /\b(task\s*board|kanban)\b/i.test(s);
+        const wantsDesignBoard = /\b(design\s*board|design\s*canvas)\b/i.test(s);
+        const wantsTextBrick = /\b(text\s*(?:block|brick)|card|sticky\s*note|brick)\b/i.test(s);
+        const wantsOrganize = /\b(organize|tidy|clean\s*up|auto[- ]?(?:layout|arrange)|sort\s*(?:the|my)?\s*(?:grid|board|bricks|blocks))\b/i.test(s);
         if (wants && wantsSheet) actions = [{ type: "create_sheet" }];
+        else if (wants && wantsTable) actions = [{ type: "create_table", headers: ["Column 1", "Column 2", "Column 3"], rows: [["", "", ""]] }];
         else if (wants && wantsSpreadsheet) actions = [{ type: "create_spreadsheet", rows: 30, cols: 10 }];
-        else if (wants && wantsList) actions = [{ type: "create_list", listType: "todo", items: [""] }];
+        else if (wants && wantsList) actions = [{ type: "create_list", listType: "todo", items: ["Task 1", "Task 2", "Task 3"] }];
+        else if (wants && wantsHeading) actions = [{ type: "create_heading", level: /h2/i.test(s) ? 2 : /h3/i.test(s) ? 3 : 1, content: "" }];
+        else if (wants && wantsQuote) actions = [{ type: "create_quote", content: "" }];
+        else if (wants && wantsCode) actions = [{ type: "create_code_block", language: "plaintext", content: "" }];
+        else if (wants && wantsTaskBoard) actions = [{ type: "create_task_board", title: "Task Board", columns: [{ title: "To Do", cards: [] }, { title: "In Progress", cards: [] }, { title: "Done", cards: [] }] }];
+        else if (wants && wantsDesignBoard) actions = [{ type: "create_design_board" }];
+        else if (wants && wantsTextBrick) actions = [{ type: "create_text", content: "" }];
+        else if (wantsOrganize) actions = [{ type: "organize_grid", strategy: "grid" }];
       }
 
-      return res.json({ response: assistant, actions, followUpQuestions });
+      return res.json({ response: cleanAssistant || assistant, actions, followUpQuestions });
     }
 
     res.json({ response: responseText });
@@ -3383,7 +3571,9 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
         "=== END SECURITY ===",
         "",
         hasFocusedBricks ? "=== FOCUSED BRICKS (CRITICAL) ===" : "",
-        hasFocusedBricks ? "The user has raised one or more bricks (e.g. by double-pressing). Their message refers specifically to those brick(s). In [CONTEXT], blocks marked [FOCUSED] are the target. Answer only about those focused brick(s) unless they clearly ask about something else." : "",
+        hasFocusedBricks ? "The user has double-pressed / raised one or more bricks, which means they are actively focused on those specific brick(s). Their message refers specifically to those brick(s)." : "",
+        hasFocusedBricks ? "In [CONTEXT], blocks marked [FOCUSED] are the target. 'This', 'this brick', 'this block', 'it', 'these' ALL refer to the focused block(s)." : "",
+        hasFocusedBricks ? "You MUST acknowledge the focused brick in your response — reference its content, title, or topic directly so the user knows you see what they're looking at. Answer only about those focused brick(s) unless they clearly ask about something else." : "",
         hasFocusedBricks ? "=== END FOCUSED BRICKS ===" : "",
         hasFocusedBricks ? "" : "",
         imageUrls.length > 0 ? `=== VISION (CRITICAL) ===` : "",

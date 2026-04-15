@@ -15,6 +15,7 @@ import Login from "./pages/Login";
 import OmniaGrid from "./pages/OmniaGrid";
 import ProjectPlaceholder from "./pages/ProjectPlaceholder";
 import Settings from "./pages/Settings";
+import MindMap from "./pages/MindMap";
 import AppSidebar from "./components/AppSidebar";
 import VaultNew from "./pages/new/VaultNew";
 import VaultChatNew from "./pages/new/VaultChatNew";
@@ -76,6 +77,7 @@ function AppShell() {
             <Route path="/project/:projectId" element={<ProtectedRoute><ProjectPlaceholder /></ProtectedRoute>} />
             <Route path="/omnia" element={<ProtectedRoute><OmniaGrid /></ProtectedRoute>} />
             <Route path="/vault" element={<ProtectedRoute><VaultNew /></ProtectedRoute>} />
+            <Route path="/mindmap" element={<ProtectedRoute><MindMap /></ProtectedRoute>} />
             <Route
               path="/tag-management"
               element={

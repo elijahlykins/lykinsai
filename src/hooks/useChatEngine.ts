@@ -20,6 +20,7 @@ import {
   type OrchestratorResult,
   type ChatSendParams,
 } from "@/lib/ai/chatSendOrchestrator";
+import { markdownToTiptap } from "@/lib/markdownToTiptap";
 
 export type { PromptMessage, FocusedChatAttachment, CreateAction, OrchestratorResult };
 
@@ -56,7 +57,7 @@ export interface UseChatEngineDeps {
   title: string;
   titleRef: React.MutableRefObject<string>;
   selectedModel: string;
-  notesContentRef: React.MutableRefObject<any>;
+  notesPagesRef: React.MutableRefObject<Array<{ id: string; title: string; content: any }>>;
   projectId: string | null;
   gridSize: number;
   viewportWidth: number;
@@ -227,7 +228,7 @@ function findSmartPlacement(opts: {
 export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   const {
     boardId, routeBoardId, user, title, titleRef, selectedModel,
-    notesContentRef, projectId, gridSize, viewportWidth, chatMode, chatRailVisible,
+    notesPagesRef, projectId, gridSize, viewportWidth, chatMode, chatRailVisible,
     chatMessages, setChatMessages, chatMessagesRef, aiThreadRef,
     convoSummaryRef, convoTurnsSinceSummaryRef,
     updateBlock, deleteBlock, addTextBlockAt, addListBlockAt, setListItems,
@@ -815,9 +816,99 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     const g = Math.max(1, Math.floor(st.gridSize || 24));
     const vw = window.innerWidth || 1280; const vh = window.innerHeight || 800;
     let created = 0; const failures: string[] = [];
-    const getPos = (bw: number, bh: number) => {
+    const gap = g * 2;
+
+    // Sequential placement cursor: first create block finds a good start,
+    // subsequent creates flow downward so multi-block batches stay grouped.
+    let cursorX: number | null = null;
+    let cursorY: number | null = null;
+    let cursorColMaxW = 0;
+    let cursorStartX: number | null = null;
+    const maxColHeight = vh * 0.8;
+    let cursorColTop: number | null = null;
+
+    // Track all created block IDs so we can scroll to show them afterward
+    const createdBlockIds: string[] = [];
+
+    // Estimate block height accounting for word-wrap (no DOM context available)
+    const estimateHeight = (content: string, widthPx: number, variant: "h1" | "h2" | "body" = "body"): number => {
+      if (!content || !content.trim()) return g * 2;
+      const charW = variant === "h1" ? 19 : variant === "h2" ? 12 : 6.5;
+      const lineH = variant === "h1" ? 3 : variant === "h2" ? 2 : 1;
+      const pad = 16;
+      const availW = Math.max(charW * 4, widthPx - pad);
+      const lines = content.split("\n");
+      let wrapped = 0;
+      for (const line of lines) {
+        if (!line.trim()) { wrapped += 1; continue; }
+        const estW = line.length * charW;
+        wrapped += Math.max(1, Math.ceil(estW / availW));
+      }
+      const rows = wrapped * lineH;
+      return Math.max(g * 2, (rows + 1) * g);
+    };
+
+    const getPos = (bw: number, bh: number, explicitX?: number, explicitY?: number) => {
+      if (explicitX != null && explicitY != null) {
+        const px = Math.round(explicitX / g) * g;
+        const py = Math.round(explicitY / g) * g;
+        return { x: px, y: py };
+      }
+      if (cursorX != null && cursorY != null) {
+        const px = cursorX;
+        const py = cursorY;
+        cursorColMaxW = Math.max(cursorColMaxW, bw);
+        cursorY = py + bh + gap;
+        if (cursorColTop != null && cursorY - cursorColTop > maxColHeight) {
+          cursorX = (cursorStartX ?? px) + cursorColMaxW + gap;
+          cursorY = cursorColTop;
+          cursorColMaxW = 0;
+        }
+        return { x: px, y: py };
+      }
+
+      // First block: anchor to the user's current viewport center
       const cur = useCanvasStore.getState() as any;
-      return findSmartPlacement({ blockW: bw, blockH: bh, gridSize: g, camera: cur.camera || { x: 0, y: 0, zoom: 1 }, viewportW: vw, viewportH: vh, railWidth: 0, existingBlocks: Object.values(cur.blocks || {}).filter(Boolean) as any[] });
+      const cam = cur.camera || { x: 0, y: 0, zoom: 1 };
+      const z = Math.max(0.1, cam.zoom || 1);
+      const vpCenterX = (cam.x || 0) + (vw / z) / 2;
+      const vpCenterY = (cam.y || 0) + (vh / z) / 2;
+      // Start slightly above center so the batch flows into view naturally
+      const startX = Math.round((vpCenterX - bw / 2) / g) * g;
+      const startY = Math.round((vpCenterY - vh / z * 0.3) / g) * g;
+
+      // Nudge away from direct overlaps with existing blocks
+      const existingBlocks = Object.values(cur.blocks || {}).filter(Boolean) as any[];
+      const overlaps = (px: number, py: number, pw: number, ph: number) =>
+        existingBlocks.some((r: any) => px < (r.x || 0) + (r.width || g) + gap && px + pw > (r.x || 0) - gap && py < (r.y || 0) + (r.height || g) + gap && py + ph > (r.y || 0) - gap);
+
+      let posX = startX, posY = startY;
+      if (overlaps(posX, posY, bw, bh)) {
+        // Try shifting right, then below, staying near viewport center
+        const nudges = [
+          { dx: bw + gap, dy: 0 }, { dx: -(bw + gap), dy: 0 },
+          { dx: 0, dy: bh + gap }, { dx: bw + gap, dy: bh + gap },
+          { dx: -(bw + gap), dy: bh + gap }, { dx: 0, dy: -(bh + gap) },
+        ];
+        let found = false;
+        for (const { dx, dy } of nudges) {
+          const nx = Math.round((startX + dx) / g) * g;
+          const ny = Math.round((startY + dy) / g) * g;
+          if (!overlaps(nx, ny, bw, bh)) { posX = nx; posY = ny; found = true; break; }
+        }
+        if (!found) {
+          // Fall back to findSmartPlacement but it should be rare
+          const pos = findSmartPlacement({ blockW: bw, blockH: bh, gridSize: g, camera: cam, viewportW: vw, viewportH: vh, railWidth: 0, existingBlocks });
+          posX = pos.x; posY = pos.y;
+        }
+      }
+
+      cursorX = posX;
+      cursorY = posY + bh + gap;
+      cursorStartX = posX;
+      cursorColTop = posY;
+      cursorColMaxW = bw;
+      return { x: posX, y: posY };
     };
     for (const raw of list) {
       try {
@@ -829,13 +920,9 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
           setTimeout(() => {
             let tiptapDoc: any;
             if (typeof rawContent === "string") {
-              const lines = rawContent.split("\n");
-              const nodes: any[] = [];
-              for (const line of lines) { if (line.trim()) nodes.push({ type: "paragraph", content: [{ type: "text", text: line }] }); else nodes.push({ type: "paragraph" }); }
-              if (!nodes.length) nodes.push({ type: "paragraph" });
-              tiptapDoc = { type: "doc", content: nodes };
+              tiptapDoc = markdownToTiptap(rawContent);
             } else if (rawContent?.type === "doc") { tiptapDoc = rawContent; }
-            else { tiptapDoc = { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: String(rawContent) }] }] }; }
+            else { tiptapDoc = markdownToTiptap(String(rawContent)); }
             window.dispatchEvent(new CustomEvent("omnia_notes_ai_update", { detail: { action: type === "append_notes" ? "append" : "set", tiptapDoc, stream: true } }));
           }, 200);
           created += 1; continue;
@@ -849,46 +936,255 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
           else failures.push("delete_block: no matching block IDs found");
           continue;
         }
+        const rawX = Number.isFinite((raw as any)?.x) ? Number((raw as any).x) : undefined;
+        const rawY = Number.isFinite((raw as any)?.y) ? Number((raw as any).y) : undefined;
         if (type === "create_sheet" || type === "paper_outline" || type === "create_paper") {
           const t2 = String((raw as any)?.title || "").trim();
           const body = String((raw as any)?.content || (raw as any)?.outline || "").trim();
           const content = [t2 ? `# ${t2}` : "", body].filter(Boolean).join("\n\n");
-          const pos = getPos(g * 14, g * 10);
-          st.addSheetBlockAt({ x: pos.x, y: pos.y }, { content });
+          const w = g * 14;
+          const h = Math.max(g * 8, estimateHeight(content, w));
+          const pos = getPos(w, h, rawX, rawY);
+          const bid = st.addSheetBlockAt({ x: pos.x, y: pos.y }, { content, width: w, height: h });
+          if (bid) createdBlockIds.push(bid);
           created++; continue;
         }
         if (type === "create_spreadsheet") {
           const rows = Math.max(1, Math.min(1000, Number((raw as any)?.rows || 30)));
           const cols = Math.max(1, Math.min(100, Number((raw as any)?.cols || 20)));
-          const pos = getPos(g * 14, g * 10);
-          st.addSpreadsheetBlockAt({ x: pos.x, y: pos.y }, { rows, cols });
+          const pos = getPos(g * 14, g * 10, rawX, rawY);
+          const bid = st.addSpreadsheetBlockAt({ x: pos.x, y: pos.y }, { rows, cols });
+          if (bid) createdBlockIds.push(bid);
           created++; continue;
         }
-        if (type === "create_list" || type === "todo_list" || type === "bulleted_list" || type === "numbered_list") {
+        if (type === "create_table") {
+          const colCount = Math.max(2, Math.min(10, Number((raw as any)?.cols || (raw as any)?.columns || 3)));
+          const headers = Array.isArray((raw as any)?.headers)
+            ? (raw as any).headers.map((h: any) => String(h || "").trim())
+            : Array.from({ length: colCount }, (_, i) => `Column ${i + 1}`);
+          const rowData = Array.isArray((raw as any)?.rows) ? (raw as any).rows : [];
+          const headerRow = "| " + headers.join(" | ") + " |";
+          const dividerRow = "| " + headers.map(() => "----------").join(" | ") + " |";
+          const dataRows = rowData.length
+            ? rowData.map((row: any) => {
+                const cells = Array.isArray(row) ? row : [String(row || "")];
+                while (cells.length < headers.length) cells.push("");
+                return "| " + cells.map((c: any) => String(c || "")).join(" | ") + " |";
+              }).join("\n")
+            : "| " + headers.map(() => "").join(" | ") + " |";
+          const mdTable = [headerRow, dividerRow, dataRows].join("\n");
+          const w = Math.max(g * 12, g * headers.length * 4);
+          const h = Math.max(g * 4, g * (rowData.length + 3));
+          const pos = getPos(w, h, rawX, rawY);
+          const bid = st.addTextBlockAt({ x: pos.x, y: pos.y }, { width: w, height: h, content: mdTable, format: "rich" });
+          if (bid) {
+            st.updateBlock(bid, { data: { textVariant: "body", listType: "none" } } as any);
+            createdBlockIds.push(bid);
+          }
+          created++; continue;
+        }
+        if (type === "create_list" || type === "todo_list" || type === "bulleted_list" || type === "numbered_list" || type === "create_checklist") {
           const requested = String((raw as any)?.listType || "");
-          const listType = requested === "numbered" || type === "numbered_list" ? "numbered" : requested === "bulleted" || type === "bulleted_list" ? "bulleted" : "todo";
-          const pos = getPos(g * 10, g * 6);
-          const id = st.addListBlockAt({ x: pos.x, y: pos.y }, { listType });
-          const items = Array.isArray((raw as any)?.items) ? (raw as any).items : String((raw as any)?.content || "").split(/\n+/).map((s: string) => s.replace(/^\s*[-*]\s*/, "").trim()).filter(Boolean);
-          if (items.length) st.setListItems(id, items.map((text2: string) => ({ id: `li-${Date.now()}-${Math.random()}`, text: text2 })));
+          const listType = requested === "numbered" || type === "numbered_list" ? "numbered"
+            : requested === "bulleted" || type === "bulleted_list" ? "bullet"
+            : "todo";
+          const items: string[] = Array.isArray((raw as any)?.items)
+            ? (raw as any).items.map((it: any) => typeof it === "string" ? it : String(it?.text || ""))
+            : String((raw as any)?.content || "").split(/\n+/).map((s: string) => s.replace(/^\s*[-*•]\s*/, "").replace(/^\s*\d+\.\s*/, "").replace(/^\s*\[.?\]\s*/, "").trim()).filter(Boolean);
+          if (!items.length) items.push("");
+          const content = listType === "todo"
+            ? items.map((t: string) => `[ ] ${t}`).join("\n")
+            : listType === "bullet"
+            ? items.map((t: string) => `• ${t}`).join("\n")
+            : items.map((t: string, i: number) => `${i + 1}. ${t}`).join("\n");
+          const w = g * 10;
+          const blockH = estimateHeight(content, w);
+          const pos = getPos(w, blockH, rawX, rawY);
+          const bid = st.addTextBlockAt({ x: pos.x, y: pos.y }, { width: w, height: blockH, content, format: "rich" });
+          if (bid) {
+            st.updateBlock(bid, { data: { textVariant: "body", listType } } as any);
+            createdBlockIds.push(bid);
+          }
           created++; continue;
         }
         if (type === "create_code_block" || type === "create_code_project") {
           const lang = String((raw as any)?.language || "plaintext").trim().toLowerCase() || "plaintext";
           const content = String((raw as any)?.content || "").trim();
-          const pos = getPos(g * 14, g * 7);
-          st.addCodeBlockAt({ x: pos.x, y: pos.y }, { width: g * 14, height: g * 7, language: lang, content });
+          const w = g * 14;
+          const h = Math.max(g * 4, estimateHeight(content, w));
+          const pos = getPos(w, h, rawX, rawY);
+          const bid = st.addCodeBlockAt({ x: pos.x, y: pos.y }, { width: w, height: h, language: lang, content });
+          if (bid) createdBlockIds.push(bid);
           created++; continue;
         }
         if (type === "create_youtube_block") {
           const rawUrl = String((raw as any)?.url || "").trim();
           const videoId = extractYouTubeVideoId(rawUrl) || "";
           if (rawUrl || videoId) {
-            const pos = getPos(g * 12, g * 8);
-            st.addYouTubeBlockAt({ x: pos.x, y: pos.y }, { url: rawUrl || `https://www.youtube.com/watch?v=${videoId}`, videoId });
+            const pos = getPos(g * 12, g * 8, rawX, rawY);
+            const bid = st.addYouTubeBlockAt({ x: pos.x, y: pos.y }, { url: rawUrl || `https://www.youtube.com/watch?v=${videoId}`, videoId });
+            if (bid) createdBlockIds.push(bid);
             created++;
           } else failures.push("create_youtube_block: missing url");
           continue;
+        }
+        if (type === "create_heading" || type === "create_h1" || type === "create_h2" || type === "create_h3") {
+          const level = type === "create_h3" || (raw as any)?.level === 3 ? 3 : type === "create_h2" || (raw as any)?.level === 2 ? 2 : 1;
+          const content = String((raw as any)?.content || (raw as any)?.text || "").trim();
+          const variant = level <= 1 ? "h1" : "h2";
+          const w = g * 10;
+          const h = estimateHeight(content, w, variant);
+          const pos = getPos(w, h, rawX, rawY);
+          const bid = st.addTextBlockAt({ x: pos.x, y: pos.y }, { width: w, height: h, content, format: "rich" });
+          if (bid) {
+            st.updateBlock(bid, { data: { textVariant: variant, listType: "none" } } as any);
+            createdBlockIds.push(bid);
+          }
+          created++; continue;
+        }
+        if (type === "create_quote" || type === "create_callout") {
+          const content = String((raw as any)?.content || (raw as any)?.text || "").trim();
+          const cleanContent = content.split("\n").map((l: string) => l.replace(/^>\s*/, "")).join("\n");
+          const w = g * 10;
+          const h = estimateHeight(cleanContent, w);
+          const pos = getPos(w, h, rawX, rawY);
+          const bid = st.addTextBlockAt({ x: pos.x, y: pos.y }, { width: w, height: h, content: cleanContent, format: "rich" });
+          if (bid) {
+            st.updateBlock(bid, { data: { textVariant: "body", listType: "quote" } } as any);
+            createdBlockIds.push(bid);
+          }
+          created++; continue;
+        }
+        if (type === "create_text" || type === "create_brick" || type === "create_text_block" || type === "create_card" || type === "create_sticky") {
+          const content = String((raw as any)?.content || (raw as any)?.text || "").trim();
+          const w = Number.isFinite((raw as any)?.width) ? Math.round(Number((raw as any).width) / g) * g : g * 8;
+          const h = Number.isFinite((raw as any)?.height) ? Math.round(Number((raw as any).height) / g) * g : estimateHeight(content, w);
+          const pos = getPos(w, h, rawX, rawY);
+          const bid = st.addTextBlockAt({ x: pos.x, y: pos.y }, { width: w, height: h, content, format: "rich" });
+          if (bid) {
+            st.updateBlock(bid, { data: { textVariant: "body", listType: "none" } } as any);
+            createdBlockIds.push(bid);
+          }
+          created++; continue;
+        }
+        if (type === "create_toggle" || type === "create_toggle_list") {
+          const rawContent = String((raw as any)?.content || (raw as any)?.text || "").trim();
+          const items: string[] = Array.isArray((raw as any)?.items)
+            ? (raw as any).items.map((it: any) => typeof it === "string" ? it : String(it?.text || ""))
+            : rawContent.split("\n").filter(Boolean);
+          const content = items.map((t: string) => {
+            if (/^[▶▼▸▾▷▽]/.test(t)) return t;
+            return `▷\uFE0E ${t}`;
+          }).join("\n");
+          const w = g * 10;
+          const h = estimateHeight(content, w);
+          const pos = getPos(w, h, rawX, rawY);
+          const bid = st.addTextBlockAt({ x: pos.x, y: pos.y }, { width: w, height: h, content, format: "rich" });
+          if (bid) {
+            st.updateBlock(bid, { data: { textVariant: "body", listType: "toggle" } } as any);
+            createdBlockIds.push(bid);
+          }
+          created++; continue;
+        }
+        if (type === "create_design_board") {
+          const title = String((raw as any)?.title || "").trim();
+          const seedText = String((raw as any)?.seedText || (raw as any)?.content || "").trim();
+          const pos = getPos(g * 16, g * 12, rawX, rawY);
+          const bid = `create-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+          const b: any = {
+            id: bid,
+            type: "create", mode: "design",
+            x: pos.x, y: pos.y, width: g * 16, height: g * 12,
+            data: { title, board: { elements: [] }, seedText },
+            createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+          };
+          st.addBlock(b);
+          createdBlockIds.push(bid);
+          created++; continue;
+        }
+        if (type === "create_task_board" || type === "create_kanban") {
+          const title = String((raw as any)?.title || "Task Board").trim();
+          const columns = Array.isArray((raw as any)?.columns)
+            ? (raw as any).columns
+            : [{ title: "To Do", tasks: [] }, { title: "In Progress", tasks: [] }, { title: "Done", tasks: [] }];
+          const pos = getPos(g * 18, g * 12, rawX, rawY);
+          const bid = `create-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+          const b: any = {
+            id: bid,
+            type: "create", mode: "taskboard",
+            x: pos.x, y: pos.y, width: g * 18, height: g * 12,
+            data: { title, columns },
+            createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+          };
+          st.addBlock(b);
+          createdBlockIds.push(bid);
+          created++; continue;
+        }
+        if (type === "create_media" || type === "create_embed" || type === "create_image_block" || type === "create_video_block") {
+          const url = String((raw as any)?.url || (raw as any)?.src || "").trim();
+          const mode = type === "create_video_block" ? "video" : type === "create_image_block" ? "image" : (raw as any)?.mode || "image";
+          const pos = getPos(g * 12, g * 10, rawX, rawY);
+          const bid = `create-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+          const b: any = {
+            id: bid,
+            type: "create", mode,
+            x: pos.x, y: pos.y, width: g * 12, height: g * 10,
+            data: { src: url, url, name: String((raw as any)?.name || (raw as any)?.title || "").trim() },
+            createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+          };
+          st.addBlock(b);
+          createdBlockIds.push(bid);
+          created++; continue;
+        }
+        if (type === "organize_grid" || type === "auto_organize" || type === "auto_layout") {
+          const allBlocks = Object.values(st.blocks || {}).filter(Boolean) as any[];
+          if (!allBlocks.length) { failures.push("organize_grid: no blocks on grid"); continue; }
+          const strategy = String((raw as any)?.strategy || "grid").toLowerCase();
+          const gap = g * 2;
+          const colWidth = g * 14;
+          const sorted = [...allBlocks].sort((a: any, b: any) => {
+            const typeOrder: Record<string, number> = { text: 0, create: 1 };
+            const ta = typeOrder[a.type] ?? 2;
+            const tb = typeOrder[b.type] ?? 2;
+            if (ta !== tb) return ta - tb;
+            return String(a.content || a.data?.title || "").localeCompare(String(b.content || b.data?.title || ""));
+          });
+          const cam = st.camera || { x: 0, y: 0, zoom: 1 };
+          const startX = Math.round(((cam.x || 0) + 100) / g) * g;
+          const startY = Math.round(((cam.y || 0) + 100) / g) * g;
+          if (strategy === "column" || strategy === "vertical") {
+            let curY = startY;
+            sorted.forEach((blk: any, i: number) => {
+              setTimeout(() => {
+                st.updateBlock(blk.id, { x: startX, y: curY });
+              }, i * 30);
+              curY += Math.max(g * 2, Math.floor(blk.height || g)) + gap;
+            });
+          } else {
+            const maxCols = Math.max(1, (raw as any)?.columns || Math.ceil(Math.sqrt(sorted.length)));
+            let curX = startX;
+            let curY = startY;
+            let colIdx = 0;
+            let colMaxH = 0;
+            sorted.forEach((blk: any, i: number) => {
+              const bw = Math.max(g, Math.floor(blk.width || g));
+              const bh = Math.max(g, Math.floor(blk.height || g));
+              setTimeout(() => {
+                st.updateBlock(blk.id, { x: curX, y: curY });
+              }, i * 30);
+              colMaxH = Math.max(colMaxH, bh);
+              colIdx++;
+              if (colIdx >= maxCols) {
+                colIdx = 0;
+                curX = startX;
+                curY += colMaxH + gap;
+                colMaxH = 0;
+              } else {
+                curX += Math.max(colWidth, bw) + gap;
+              }
+            });
+          }
+          created += allBlocks.length; continue;
         }
         if (type === "move_block" || type === "move_blocks") {
           const moves: Array<{ blockId: string; x?: number; y?: number; dx?: number; dy?: number }> = [];
@@ -907,20 +1203,203 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
           if (Object.keys(patch).length) { st.updateBlock(blockId, patch); created++; }
           continue;
         }
-        if (type === "update_text_block") {
+        if (type === "update_text_block" || type === "update_block" || type === "edit_block") {
           const blockId = String((raw as any)?.blockId || "");
           const block = st.blocks?.[blockId] as any;
-          if (!block || block.type !== "text") { failures.push("update_text_block: not found"); continue; }
+          if (!block) { failures.push("update_text_block: block not found"); continue; }
+          const patch: any = {};
+          const existingData = block?.data && typeof block.data === "object" ? { ...block.data } : {};
+          let contentChanged = false;
+          let dataChanged = false;
+          if ((raw as any)?.content != null) {
+            patch.content = String((raw as any).content);
+            contentChanged = true;
+          } else if (typeof (raw as any)?.append === "string") {
+            const cur2 = String(block?.content || "");
+            patch.content = cur2 + (cur2.endsWith("\n") ? "" : "\n") + (raw as any).append;
+            contentChanged = true;
+          }
+          if ((raw as any)?.data && typeof (raw as any).data === "object") {
+            const d = (raw as any).data;
+            if (d.textVariant) { existingData.textVariant = d.textVariant; dataChanged = true; }
+            if (d.listType) { existingData.listType = d.listType; dataChanged = true; }
+            if (d.brickColor !== undefined) { existingData.brickColor = d.brickColor || undefined; dataChanged = true; }
+            if (d.textColor !== undefined) { existingData.textColor = d.textColor || undefined; dataChanged = true; }
+            if (dataChanged) patch.data = existingData;
+          }
+          if (!contentChanged && !dataChanged) {
+            failures.push("update_text_block: no content or data changes provided");
+            continue;
+          }
+          if ((contentChanged || dataChanged) && !existingData.userResized) {
+            const finalContent = patch.content ?? String(block.content || "");
+            const variant = (existingData.textVariant || "body") as "h1" | "h2" | "body";
+            const blockW = Math.max(g * 4, Number(block.width || g * 8));
+            patch.height = estimateHeight(finalContent, blockW, variant);
+          }
+          st.updateBlock(blockId, patch);
+          created++;
+          continue;
+        }
+        if (type === "update_list") {
+          const blockId = String((raw as any)?.blockId || "");
+          const block = st.blocks?.[blockId] as any;
+          if (!block) { failures.push("update_list: block not found"); continue; }
+          const existingData = block?.data && typeof block.data === "object" ? { ...block.data } : {};
+          const listType = String(existingData.listType || (raw as any)?.listType || "bullet");
+          let items: string[] = [];
+          if (Array.isArray((raw as any)?.items)) {
+            items = (raw as any).items.map((it: any) => typeof it === "string" ? it : String(it?.text || ""));
+          }
+          if (Array.isArray((raw as any)?.append)) {
+            const existing = String(block.content || "").split("\n").map((l: string) => l.replace(/^\s*[-•*]\s*/, "").replace(/^\s*\d+\.\s*/, "").replace(/^\s*\[.?\]\s*/, "").trim()).filter(Boolean);
+            const appended = (raw as any).append.map((it: any) => typeof it === "string" ? it : String(it?.text || ""));
+            items = [...existing, ...appended];
+          }
+          if (!items.length) { failures.push("update_list: no items"); continue; }
+          const content = listType === "todo"
+            ? items.map((t: string) => `[ ] ${t}`).join("\n")
+            : listType === "bullet"
+            ? items.map((t: string) => `• ${t}`).join("\n")
+            : items.map((t: string, i: number) => `${i + 1}. ${t}`).join("\n");
+          const blockW = Math.max(g * 4, Number(block.width || g * 10));
+          const h = estimateHeight(content, blockW);
+          const patch: any = { content, height: h };
+          if (!existingData.listType) patch.data = { ...existingData, listType, textVariant: "body" };
+          st.updateBlock(blockId, patch);
+          created++; continue;
+        }
+        if (type === "update_spreadsheet") {
+          const blockId = String((raw as any)?.blockId || (raw as any)?.target === "last" ? Object.keys(st.blocks || {}).reverse().find((id) => { const b = (st.blocks as any)?.[id]; return b?.format === "table"; }) : "");
+          const block = st.blocks?.[blockId] as any;
+          if (!block) { failures.push("update_spreadsheet: block not found"); continue; }
+          try {
+            const sheetData = typeof block.content === "string" ? JSON.parse(block.content) : block.content;
+            const cells = sheetData?.cells || {};
+            if ((raw as any)?.cells && typeof (raw as any).cells === "object") {
+              for (const [key, val] of Object.entries((raw as any).cells)) {
+                cells[key] = String(val ?? "");
+              }
+            }
+            if (Array.isArray((raw as any)?.cells2d)) {
+              const startRow = Number((raw as any)?.startRow || 0);
+              const startCol = Number((raw as any)?.startCol || 0);
+              (raw as any).cells2d.forEach((row: any[], ri: number) => {
+                if (!Array.isArray(row)) return;
+                row.forEach((val: any, ci: number) => {
+                  cells[`${startRow + ri},${startCol + ci}`] = String(val ?? "");
+                });
+              });
+            }
+            sheetData.cells = cells;
+            st.updateBlock(blockId, { content: JSON.stringify(sheetData) });
+            created++;
+          } catch { failures.push("update_spreadsheet: parse error"); }
+          continue;
+        }
+        if (type === "update_code_block") {
+          const blockId = String((raw as any)?.blockId || "");
+          const block = st.blocks?.[blockId] as any;
+          if (!block) { failures.push("update_code_block: block not found"); continue; }
           const patch: any = {};
           if ((raw as any)?.content != null) patch.content = String((raw as any).content);
-          else if (typeof (raw as any)?.append === "string") { const cur2 = String(block?.content || ""); patch.content = cur2 + (cur2.endsWith("\n") ? "" : "\n") + (raw as any).append; }
+          else if (typeof (raw as any)?.append === "string") {
+            const cur2 = String(block?.content || "");
+            patch.content = cur2 + (cur2.endsWith("\n") ? "" : "\n") + (raw as any).append;
+          }
+          if ((raw as any)?.language) {
+            const data = block?.data && typeof block.data === "object" ? { ...block.data } : {};
+            data.language = String((raw as any).language);
+            patch.data = data;
+          }
+          const finalContent = patch.content ?? String(block.content || "");
+          const blockW = Math.max(g * 4, Number(block.width || g * 14));
+          patch.height = Math.max(g * 4, estimateHeight(finalContent, blockW));
           if (Object.keys(patch).length) { st.updateBlock(blockId, patch); created++; }
           continue;
+        }
+        if (type === "color_block" || type === "set_color" || type === "color_brick") {
+          const ids: string[] = [];
+          if ((raw as any)?.blockId) ids.push(String((raw as any).blockId));
+          if (Array.isArray((raw as any)?.blockIds)) for (const bid of (raw as any).blockIds) ids.push(String(bid));
+          if (!ids.length) { failures.push("color_block: missing blockId"); continue; }
+          const brickColor = (raw as any)?.brickColor ?? (raw as any)?.backgroundColor ?? (raw as any)?.background ?? undefined;
+          const textColor = (raw as any)?.textColor ?? (raw as any)?.color ?? (raw as any)?.fontColor ?? undefined;
+          for (const blockId of ids) {
+            const block = st.blocks?.[blockId] as any;
+            if (!block) continue;
+            const data = block?.data && typeof block.data === "object" ? { ...block.data } : {};
+            if (brickColor !== undefined) data.brickColor = brickColor || undefined;
+            if (textColor !== undefined) data.textColor = textColor || undefined;
+            st.updateBlock(blockId, { data } as any);
+            created++;
+          }
+          continue;
+        }
+        if (type === "connect_blocks" || type === "add_wire" || type === "create_connection") {
+          const fromId = String((raw as any)?.fromId || (raw as any)?.from || "");
+          const toId = String((raw as any)?.toId || (raw as any)?.to || "");
+          if (!fromId || !toId) { failures.push("connect_blocks: missing fromId or toId"); continue; }
+          const fromBlock = st.blocks?.[fromId] as any;
+          const toBlock = st.blocks?.[toId] as any;
+          if (!fromBlock) { failures.push(`connect_blocks: fromId "${fromId}" not found`); continue; }
+          if (!toBlock) { failures.push(`connect_blocks: toId "${toId}" not found`); continue; }
+          const validSides = ["top", "right", "bottom", "left"];
+          const aiFromSide = String((raw as any)?.fromSide || "");
+          const aiToSide = String((raw as any)?.toSide || "");
+          let fromSide: string;
+          let toSide: string;
+          if (validSides.includes(aiFromSide) && validSides.includes(aiToSide)) {
+            fromSide = aiFromSide;
+            toSide = aiToSide;
+          } else {
+            const fCx = (fromBlock.x || 0) + (fromBlock.width || 0) / 2;
+            const fCy = (fromBlock.y || 0) + (fromBlock.height || 0) / 2;
+            const tCx = (toBlock.x || 0) + (toBlock.width || 0) / 2;
+            const tCy = (toBlock.y || 0) + (toBlock.height || 0) / 2;
+            const dx = tCx - fCx;
+            const dy = tCy - fCy;
+            if (Math.abs(dx) >= Math.abs(dy)) {
+              fromSide = dx >= 0 ? "right" : "left";
+              toSide = dx >= 0 ? "left" : "right";
+            } else {
+              fromSide = dy >= 0 ? "bottom" : "top";
+              toSide = dy >= 0 ? "top" : "bottom";
+            }
+          }
+          st.addWireConnection({ fromId, toId, fromSide: fromSide as any, toSide: toSide as any });
+          created++; continue;
+        }
+        if (type === "remove_connection" || type === "remove_wire" || type === "disconnect_blocks") {
+          const fromId = String((raw as any)?.fromId || (raw as any)?.from || "");
+          const toId = String((raw as any)?.toId || (raw as any)?.to || "");
+          const wireId = String((raw as any)?.wireId || (raw as any)?.connectionId || "");
+          if (wireId) {
+            st.removeWireConnection(wireId);
+            created++; continue;
+          }
+          if (fromId && toId) {
+            const wire = st.wireConnections.find((w: any) => (w.fromId === fromId && w.toId === toId) || (w.fromId === toId && w.toId === fromId));
+            if (wire) { st.removeWireConnection(wire.id); created++; }
+            else failures.push("disconnect_blocks: no matching connection found");
+            continue;
+          }
+          if (fromId) { st.clearWireConnectionsForBlock(fromId); created++; continue; }
+          failures.push("disconnect_blocks: missing fromId/toId or wireId"); continue;
         }
         // Fallback for unknown types
         failures.push(`Unsupported action: ${type || "unknown"}`);
       } catch { failures.push(`Failed action: ${String((raw as any)?.type || "unknown")}`); }
     }
+
+    // Scroll the first created block into view so the user always sees what was built
+    if (createdBlockIds.length) {
+      requestAnimationFrame(() => {
+        window.dispatchEvent(new CustomEvent("omnia_fit_block", { detail: { id: createdBlockIds[0] } }));
+      });
+      setTimeout(() => window.dispatchEvent(new Event("omnia_flush_save")), 500);
+    }
+
     return { created, failures };
   }, [setNotesOpen]);
 
@@ -992,7 +1471,17 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
             };
             return fn(node);
           },
-          notesContent: notesContentRef.current,
+          notesContent: (() => {
+            const pages = notesPagesRef.current;
+            if (!pages || pages.length === 0) return { type: "doc", content: [{ type: "paragraph" }] };
+            if (pages.length === 1) return pages[0].content;
+            const merged: any[] = [];
+            for (const p of pages) {
+              merged.push({ type: "heading", attrs: { level: 2 }, content: [{ type: "text", text: p.title }] });
+              if (p.content?.content) merged.push(...p.content.content);
+            }
+            return { type: "doc", content: merged };
+          })(),
           titleRef,
         },
         youtube: {

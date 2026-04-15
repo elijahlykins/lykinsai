@@ -18,6 +18,7 @@ import type { UniversalBlockType } from "@/canvas/blockSystem/types";
 import { createDatabaseBlockData } from "@/canvas/blockSystem/notionModel";
 import { extractYouTubeVideoId } from "@/canvas/utils/youtube";
 import { detectSocialPlatform, isSocialEmbedType } from "@/canvas/utils/socialEmbed";
+import { promptFileDropMode } from "@/lib/fileDropModePrompt";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useThinkingStatus } from "@/hooks/useThinkingStatus";
@@ -37,9 +38,10 @@ import OmniaToolbar from "@/components/omnia/OmniaToolbar";
 import OmniaCenterWelcome from "@/components/omnia/OmniaCenterWelcome";
 import OmniaToasts from "@/components/omnia/OmniaToasts";
 import OmniaVaultOverlay from "@/components/omnia/OmniaVaultOverlay";
+import FileDropModeDialog from "@/components/omnia/FileDropModeDialog";
 import OmniaSideRail from "@/components/omnia/OmniaSideRail";
 import OmniaFocusedChat from "@/components/omnia/OmniaFocusedChat";
-import { useBoardPersistence, EMPTY_NOTES_TIPTAP_DOC } from "@/hooks/useBoardPersistence";
+import { useBoardPersistence, makeDefaultNotesPages } from "@/hooks/useBoardPersistence";
 import { useChatEngine } from "@/hooks/useChatEngine";
 
 const TASK_LINE_RE = /^\s*(?:[-*]\s+)?\[([ xX])\]\s+(.+)$/;
@@ -594,6 +596,13 @@ export default function OmniaGridPage() {
   const { user } = useAuth();
   const { checkVaultLimit, incrementVaultCount, upgradeModal, dismissUpgradeModal } = useUsageGate();
   const blockCount = useCanvasStore((s) => s.blockOrder.length);
+  const blockUrlSignature = useCanvasStore((s) =>
+    s.blockOrder.map((id) => {
+      const b = s.blocks[id] as any;
+      if (!b) return "";
+      return (b.src || "") + (b.url || "") + (b.data?.src || "") + (b.data?.url || "");
+    }).join("\n")
+  );
   const addTextBlockAt = useCanvasStore((s) => s.addTextBlockAt);
   const addListBlockAt = useCanvasStore((s) => s.addListBlockAt);
   const setListItems = useCanvasStore((s) => s.setListItems);
@@ -665,9 +674,23 @@ export default function OmniaGridPage() {
     }
   }, []);
   const [chatMode, setChatMode] = useState(false);
-  const [notesOpen, setNotesOpen] = useState(false);
-  const notesContentRef = useRef<any>(EMPTY_NOTES_TIPTAP_DOC);
-  const handleNotesContentChange = useCallback((json: any) => { notesContentRef.current = json; }, []);
+  const [notesOpen, setNotesOpenRaw] = useState(false);
+  const [notesGridFilesHidden, setNotesGridFilesHidden] = useState(false);
+  const setNotesOpen = useCallback((v: boolean | ((prev: boolean) => boolean)) => {
+    setNotesOpenRaw((prev) => {
+      const next = typeof v === "function" ? v(prev) : v;
+      if (next && !prev) setNotesGridFilesHidden(false);
+      return next;
+    });
+  }, []);
+  const defaultPages = useRef(makeDefaultNotesPages()).current;
+  const notesPagesRef = useRef(defaultPages);
+  const [notesPages, setNotesPages] = useState(defaultPages);
+  const [activeNotePageId, setActiveNotePageId] = useState(defaultPages[0].id);
+  const handleNotesPagesChange = useCallback((pages: typeof defaultPages) => {
+    notesPagesRef.current = pages;
+    setNotesPages(pages);
+  }, []);
   const [chatRailOpen, setChatRailOpen] = useState(false);
   const [chatRailVisible, setChatRailVisible] = useState(false);
   const [centerChatLeaving, setCenterChatLeaving] = useState(false);
@@ -835,7 +858,9 @@ export default function OmniaGridPage() {
     chatMessages,
     chatMessagesRef,
     aiThreadRef,
-    notesContentRef,
+    notesPagesRef,
+    setNotesPages: handleNotesPagesChange,
+    setActiveNotePageId: setActiveNotePageId,
     setChatMessages,
     setChatRailOpen,
     setChatRailVisible,
@@ -862,7 +887,7 @@ export default function OmniaGridPage() {
   /* ------------------------------------------------------------------ */
   const chatEngine = useChatEngine({
     boardId, routeBoardId, user, title, titleRef, selectedModel,
-    notesContentRef, projectId: projectId ?? null, gridSize, viewportWidth,
+    notesPagesRef, projectId: projectId ?? null, gridSize, viewportWidth,
     chatMode, chatRailVisible,
     chatMessages, setChatMessages, chatMessagesRef, aiThreadRef,
     convoSummaryRef, convoTurnsSinceSummaryRef,
@@ -1807,7 +1832,7 @@ export default function OmniaGridPage() {
     }
     const attachedBlockIds = new Set(focusedChatAttachments.map((a) => a.canvasBlockId).filter(Boolean));
     return attachedBlockIds.size > 0 ? items.filter((item) => !attachedBlockIds.has(item.id)) : items;
-  }, [chatMode, notesOpen, blockCount, focusedChatAttachments]);
+  }, [chatMode, notesOpen, blockCount, blockUrlSignature, focusedChatAttachments]);
 
 
 
@@ -2226,32 +2251,43 @@ export default function OmniaGridPage() {
     );
     if (pdfAttach) {
       const pdfText = String(pdfAttach.pdfText || pdfAttach.extractedText || "").trim();
+      const pdfTitle = String(pdfAttach.name || pdfAttach.title || "PDF").trim();
       if (pdfText) {
-        const st = useCanvasStore.getState();
-        const g = Math.max(1, Math.floor(st.gridSize || 24));
-        const canvasEl = document.querySelector<HTMLElement>(".overflow-auto.overscroll-contain");
-        const rect = canvasEl?.getBoundingClientRect();
-        const localX = rect ? cx - rect.left : cx;
-        const localY = rect ? cy - rect.top : cy;
-        const wx = Math.round(localX / g) * g;
-        const wy = Math.round((Number(st.camera?.y || 0) + localY) / g) * g;
-        const pdfTitle = String(pdfAttach.name || pdfAttach.title || "PDF").trim();
-        const combined = `# ${pdfTitle}\n\n${pdfText}`;
-        const charsPerLine = Math.max(1, Math.floor((g * 16 * 0.85) / 8));
-        const wrappedLines = combined.split("\n").reduce((sum: number, line: string) => sum + Math.max(1, Math.ceil(line.length / charsPerLine)), 0);
-        const height = Math.max(g * 6, Math.min(g * 30, wrappedLines * 22 + 32));
-        st.addTextBlockAt({ x: wx, y: wy }, { width: g * 16, height, content: combined, format: "plain" });
+        (async () => {
+          const dropMode = await promptFileDropMode(pdfTitle, "pdf");
+          const st = useCanvasStore.getState();
+          const g = Math.max(1, Math.floor(st.gridSize || 24));
+          const canvasEl = document.querySelector<HTMLElement>(".overflow-auto.overscroll-contain");
+          const rect = canvasEl?.getBoundingClientRect();
+          const localX = rect ? cx - rect.left : cx;
+          const localY = rect ? cy - rect.top : cy;
+          const wx = Math.round(localX / g) * g;
+          const wy = Math.round((Number(st.camera?.y || 0) + localY) / g) * g;
+
+          if (dropMode === "link") {
+            st.addBlock({
+              type: "create", mode: "embed", x: wx, y: wy, width: g * 10, height: g * 3, content: "",
+              data: { url: pdfAttach.url || "", mime: "application/pdf", name: pdfTitle, displayMode: "link-card", extractedText: pdfText },
+            } as any);
+          } else {
+            const combined = `# ${pdfTitle}\n\n${pdfText}`;
+            const charsPerLine = Math.max(1, Math.floor((g * 16 * 0.85) / 8));
+            const wrappedLines = combined.split("\n").reduce((sum: number, line: string) => sum + Math.max(1, Math.ceil(line.length / charsPerLine)), 0);
+            const height = Math.max(g * 6, Math.min(g * 30, wrappedLines * 22 + 32));
+            st.addTextBlockAt({ x: wx, y: wy }, { width: g * 16, height, content: combined, format: "plain" });
+          }
+        })();
         return;
       }
       if (pdfAttach.url) {
         const pdfUrl = String(pdfAttach.url);
-        const pdfName = String(pdfAttach.name || pdfAttach.title || "document.pdf").trim();
+        const pdfName = pdfTitle.endsWith(".pdf") ? pdfTitle : `${pdfTitle}.pdf`;
         (async () => {
           try {
             const resp = await fetch(pdfUrl);
             if (resp.ok) {
               const blob = await resp.blob();
-              const file = new File([blob], pdfName.endsWith(".pdf") ? pdfName : `${pdfName}.pdf`, { type: "application/pdf" });
+              const file = new File([blob], pdfName, { type: "application/pdf" });
               window.dispatchEvent(new CustomEvent("omnia_attach_files", { detail: { files: [file], clientX: cx, clientY: cy } }));
               return;
             }
@@ -2871,6 +2907,7 @@ export default function OmniaGridPage() {
       )}
 
       <UpgradeModal modal={upgradeModal} onDismiss={dismissUpgradeModal} />
+      <FileDropModeDialog />
 
       {/* Notes panel — bottom drawer */}
       {!chatMode && (
@@ -2878,14 +2915,16 @@ export default function OmniaGridPage() {
           key={boardId || "__no_board"}
           open={notesOpen}
           onOpenChange={setNotesOpen}
-          content={notesContentRef.current}
-          onContentChange={handleNotesContentChange}
-          hasLeftRail={canvasFileBlocks.length > 0 && !isMobileGrid}
+          pages={notesPages}
+          activePageId={activeNotePageId}
+          onActivePageChange={setActiveNotePageId}
+          onPagesChange={handleNotesPagesChange}
+          hasLeftRail={canvasFileBlocks.length > 0 && !isMobileGrid && !notesGridFilesHidden}
         />
       )}
 
       {/* Left “Grid Files” rail when notes open — same geometry + drag as focused chat */}
-      {notesOpen && !chatMode && canvasFileBlocks.length > 0 && !isMobileGrid && (
+      {notesOpen && !chatMode && canvasFileBlocks.length > 0 && !isMobileGrid && !notesGridFilesHidden && (
         <div
           className="fixed bottom-0 z-[221] w-[13.75rem] overflow-y-auto scrollbar-hide px-3 pb-3 pt-4 space-y-2 bg-white/80 dark:bg-[#1e1e1e]/90 backdrop-blur-md border-r border-black/8 dark:border-white/8 transition-all duration-300"
           style={{
@@ -2893,7 +2932,17 @@ export default function OmniaGridPage() {
             left: "var(--sidebar-offset, 0px)",
           }}
         >
-          <p className="text-[0.625rem] font-semibold uppercase tracking-wider text-black/40 dark:text-white/40 px-1 mb-1">Grid Files</p>
+          <div className="flex items-center justify-between px-1 mb-1">
+            <p className="text-[0.625rem] font-semibold uppercase tracking-wider text-black/40 dark:text-white/40">Grid Files</p>
+            <button
+              type="button"
+              onClick={() => setNotesGridFilesHidden(true)}
+              className="h-6 w-6 rounded-full hover:bg-black/10 dark:hover:bg-white/15 transition-colors flex items-center justify-center"
+              title="Close grid files"
+            >
+              <PanelRightClose className="w-3.5 h-3.5 text-black/40 dark:text-white/40" />
+            </button>
+          </div>
           <div className="flex flex-col gap-2">
             {canvasFileBlocks.map((item) => (
               <div

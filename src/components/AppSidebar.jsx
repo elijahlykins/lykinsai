@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import ReactDOM from "react-dom";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
+  Brain,
   ChevronLeft,
   ChevronRight,
   CreditCard,
@@ -283,6 +284,14 @@ export default function AppSidebar() {
           >
             <Lock className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
             Vault
+          </button>
+          <button
+            type="button"
+            onClick={() => flushAndNavigate(nav, "/mindmap")}
+            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
+          >
+            <Brain className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
+            Mind Map
           </button>
           <button
             type="button"

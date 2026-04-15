@@ -42,13 +42,47 @@ export type FocusedChatAttachment = {
 export type CreateAction =
   | { type: "create_sheet"; content?: string; title?: string }
   | { type: "create_spreadsheet"; rows?: number; cols?: number; cells?: Record<string, string>; cells2d?: string[][] }
+  | { type: "create_table"; headers?: string[]; rows?: string[][]; cols?: number }
   | { type: "create_list"; listType?: "todo" | "bulleted" | "numbered"; items?: string[] }
   | { type: "create_design_board"; board?: any; title?: string; seedText?: string }
   | { type: "create_code_block"; language?: string; content?: string }
   | { type: "create_universal_block"; universalType?: string; name?: string; data?: Record<string, unknown> }
   | { type: "create_youtube_block"; url?: string; title?: string }
+  | { type: "create_heading"; level?: 1 | 2 | 3; content?: string }
+  | { type: "create_h1"; content?: string }
+  | { type: "create_h2"; content?: string }
+  | { type: "create_h3"; content?: string }
+  | { type: "create_quote"; content?: string }
+  | { type: "create_callout"; content?: string }
+  | { type: "create_text"; content?: string; format?: string }
+  | { type: "create_brick"; content?: string; format?: string }
+  | { type: "create_text_block"; content?: string; format?: string }
+  | { type: "create_card"; content?: string }
+  | { type: "create_toggle"; content?: string }
+  | { type: "create_task_board"; title?: string; columns?: Array<{ title: string; tasks?: string[] }> }
+  | { type: "create_kanban"; title?: string; columns?: Array<{ title: string; tasks?: string[] }> }
+  | { type: "create_media"; url?: string; mode?: string; name?: string }
+  | { type: "create_embed"; url?: string; name?: string }
+  | { type: "create_image_block"; url?: string; src?: string }
+  | { type: "create_video_block"; url?: string }
+  | { type: "organize_grid"; strategy?: "grid" | "column" | "vertical"; columns?: number }
+  | { type: "auto_organize"; strategy?: string }
+  | { type: "move_block"; blockId: string; x?: number; y?: number; dx?: number; dy?: number }
+  | { type: "move_blocks"; moves: Array<{ blockId: string; x?: number; y?: number; dx?: number; dy?: number }> }
+  | { type: "resize_block"; blockId: string; width?: number; height?: number }
+  | { type: "update_text_block"; blockId: string; content?: string; append?: string; data?: Record<string, any> }
+  | { type: "update_block"; blockId: string; content?: string; append?: string; data?: Record<string, any> }
+  | { type: "edit_block"; blockId: string; content?: string; append?: string; data?: Record<string, any> }
+  | { type: "update_list"; blockId: string; items?: string[]; append?: string[]; listType?: string }
+  | { type: "update_spreadsheet"; blockId: string; cells?: Record<string, string>; cells2d?: string[][]; startRow?: number; startCol?: number }
+  | { type: "update_code_block"; blockId: string; content?: string; append?: string; language?: string }
   | { type: "create_database_relation"; fromDatabaseName?: string; toDatabaseName?: string; relationType?: "one-to-one" | "one-to-many" | "many-to-many"; rollup?: { property?: string; aggregation?: "sum" | "count" | "average" } }
   | { type: "delete_block"; blockId?: string; blockIds?: string[] }
+  | { type: "color_block"; blockId?: string; blockIds?: string[]; brickColor?: string; textColor?: string }
+  | { type: "connect_blocks"; fromId: string; toId: string; fromSide?: string; toSide?: string }
+  | { type: "add_wire"; fromId: string; toId: string; fromSide?: string; toSide?: string }
+  | { type: "remove_connection"; fromId?: string; toId?: string; wireId?: string }
+  | { type: "disconnect_blocks"; fromId?: string; toId?: string }
   | { type: "update_notes"; content: string | object }
   | { type: "append_notes"; content: string | object }
   | { type: string; [key: string]: any };
@@ -80,6 +114,8 @@ export interface ChatSendContext {
     blockOrder: string[];
     viewportCenter: { x: number; y: number };
     viewportSize: { w: number; h: number };
+    focusedBrickIds?: string[];
+    wireConnections?: Array<{ id: string; fromId: string; toId: string; fromSide?: string; toSide?: string }>;
   }) => string;
   getKnowledgeBaseContext: () => string;
   getCachedWorkspaceSummary: () => { full?: string; media?: string; boards?: string } | null;
@@ -533,6 +569,8 @@ async function handleActionPath(
       blockOrder: Array.isArray(stNow.blockOrder) ? stNow.blockOrder : [],
       viewportCenter: { x: (camNow.x || 0) + vwNow / 2, y: (camNow.y || 0) + vhNow / 2 },
       viewportSize: { w: vwNow, h: vhNow },
+      focusedBrickIds: Array.isArray(stNow.focusedBrickIds) ? stNow.focusedBrickIds : [],
+      wireConnections: Array.isArray(stNow.wireConnections) ? stNow.wireConnections : [],
     });
     const notesPlain = p.context.tiptapJsonToPlainText(p.context.notesContent).trim();
     const wantsNotesAction = /\b(notes?\s*(page|panel|section|pad|area)?)\b/i.test(cappedText)
@@ -784,6 +822,42 @@ function uploadAiImageToStorage(p: ChatSendParams, promptId: string, imageUrl: s
 /*  Phase 6: Post-process AI response                                  */
 /* ------------------------------------------------------------------ */
 
+function rescueInlineBlockMarkup(text: string, applyActions: (actions: CreateAction[]) => any): string {
+  const re = /\[CREATE_BLOCK:\s*(\{[^]*?\})\s*\]/g;
+  const rescued: CreateAction[] = [];
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    try {
+      const obj = JSON.parse(m[1]);
+      const bType = String(obj.type || "text").toLowerCase();
+      const content = String(obj.content || "").trim();
+      const actionType = bType === "heading" || bType === "h1" ? "create_heading"
+        : bType === "h2" ? "create_h2" : bType === "h3" ? "create_h3"
+        : bType === "quote" || bType === "callout" ? "create_quote"
+        : bType === "list" || bType === "todo" ? "create_list"
+        : bType === "code" ? "create_code_block"
+        : bType === "sheet" || bType === "paper" ? "create_sheet"
+        : bType === "spreadsheet" ? "create_spreadsheet"
+        : bType === "table" ? "create_table"
+        : "create_text";
+      const action: any = { type: actionType, content };
+      if (obj.position?.x != null) action.x = Number(obj.position.x);
+      if (obj.position?.y != null) action.y = Number(obj.position.y);
+      if (bType === "heading" || bType === "h1") action.level = 1;
+      if (bType === "h2") action.level = 2;
+      if (bType === "h3") action.level = 3;
+      rescued.push(action);
+    } catch { /* skip unparseable */ }
+  }
+  if (rescued.length) {
+    applyActions(rescued);
+  }
+  return text
+    .replace(/\[CREATE_BLOCK:\s*\{[^]*?\}\s*\]/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 async function postProcessResponse(
   p: ChatSendParams,
   aiTextRaw: string,
@@ -797,6 +871,11 @@ async function postProcessResponse(
   const { analysis, postProcessing, state, canvas, typing, identity } = p;
 
   let aiText = analysis.sanitizeAssistantResponse(aiTextRaw.trim());
+
+  // Rescue any [CREATE_BLOCK:...] markup the AI may have put in the response text
+  if (aiText.includes("[CREATE_BLOCK:")) {
+    aiText = rescueInlineBlockMarkup(aiText, canvas.applyProjectActions);
+  }
   const hasYTG = Boolean(String(youtubeGrounding || "").trim() && String(youtubeGrounding || "").trim() !== "(none)");
   if (asksAboutVideo && hasYTG) {
     const fallback = analysis.buildDirectVideoAnswerFromGrounding(youtubeGrounding);
@@ -1078,21 +1157,26 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
     return blk?.type === "text" && !isImgBlock(blk);
   });
   const hasBlocks = Object.keys(st.blocks || {}).length > 0;
-  const wantsBlockManipulation = /\b(move|rearrange|reposition|reorganize|arrange|align|swap|shift|place|put|drag|relocate|organize|spread|stack|line up|layout|lay out|center|scatter|space out|group together|side by side|resize|make.*(bigger|smaller|wider|taller|narrower|shorter)|delete|remove|trash|clear|get rid of|clean up)\b/i.test(cappedText) && hasBlocks;
-  const wantsBlockEdit = /\b(edit|update|change|modify|rewrite|rename|set|fill in|populate|write in|add.*(to|into|in)|append|replace|fix|correct)\b/i.test(cappedText) && hasBlocks;
-  const wantsBlockCreate = /\b(create|make|build|add|start|new|insert)\b/i.test(cappedText) && /\b(sheet|paper|doc|document|spreadsheet|table|budget|tracker|list|todo|checklist|task\s*board|kanban|design\s*board|code\s*block|heading|h1|h2|quote|callout|brick)\b/i.test(cappedText);
+  const wantsBlockManipulation = /\b(move|rearrange|reposition|reorganize|arrange|align|swap|shift|place|put|drag|relocate|organize|spread|stack|line up|layout|lay out|center|scatter|space out|group together|side by side|resize|make.*(bigger|smaller|wider|taller|narrower|shorter)|delete|remove|trash|clear|get rid of|clean up|connect|wire|link|disconnect|unwire|unlink)\b/i.test(cappedText) && hasBlocks;
+  const wantsBlockEdit = /\b(edit|update|change|modify|rewrite|rename|set|fill in|populate|write in|add.*(to|into|in)|append|replace|fix|correct|colou?r|paint|highlight|style|theme)\b/i.test(cappedText) && hasBlocks;
+  const wantsBlockCreate = /\b(create|make|build|add|start|new|insert|place|put|drop|generate|set\s*up|spin\s*up)\b/i.test(cappedText) && /\b(sheet|paper|doc|document|spreadsheet|table|budget|tracker|list|todo|checklist|task\s*board|kanban|design\s*board|code\s*block|heading|h[1-3]|quote|callout|brick|text\s*(?:block|brick)?|card|sticky|note\s*(?:block|brick)|toggle|media|image|video|embed|voice|dictat(?:e|ion))\b/i.test(cappedText);
+  const wantsGridCreate = /\b(create|make|build|add|place|put|drop|generate|lay\s*out|set\s*up|write|draft|design|map\s*out|outline|sketch|plan|structure|diagram|flowchart|wireframe)\b/i.test(cappedText)
+    && /\b(on\s*(?:the|my|this)?\s*(?:grid|board|canvas)|(?:grid|board|canvas)\b)/i.test(cappedText);
+  const wantsOrganize = /\b(organize|sort|tidy|clean\s*up|auto[- ]?(?:layout|arrange|organize)|layout|lay\s*out|arrange|grid\s*(?:layout|organize)|group\s*(?:by|together|all)|categorize|cluster|rearrange\s*(?:everything|all|the\s*grid|my\s*(?:bricks|blocks|board)))\b/i.test(cappedText);
   const wantsNotesAction = /\b(notes?\s*(page|panel|section|pad|area)?)\b/i.test(cappedText) && /\b(edit|update|change|modify|write|rewrite|add|append|clear|set|fill|put|type|draft|compose|replace|delete|remove)\b/i.test(cappedText);
-  const wantsActionPath = wantsBlockManipulation || wantsBlockEdit || wantsBlockCreate || wantsNotesAction;
+  const wantsActionPath = wantsBlockManipulation || wantsBlockEdit || wantsBlockCreate || wantsGridCreate || wantsOrganize || wantsNotesAction;
   const wantsDelete = /\b(delete|remove|trash|clear|get rid of)\b/i.test(cappedText);
+  const focusedBrickActionIntent = hasFocusedTextBricks && /\b(edit|update|change|modify|rewrite|rename|set|fix|correct|colou?r|paint|highlight|style|theme|delete|remove|move|resize|make\s+(this|it)\s+\w|write|fill|replace|append|add\s+(to|into)|clear|format)\b/i.test(cappedText);
 
   let responseBlockId: string | null = null;
 
-  if ((hasFocusedTextBricks || wantsActionPath) && !editImageUrl) {
+  if ((focusedBrickActionIntent || wantsActionPath) && !editImageUrl) {
     const statusMsg = wantsNotesAction ? "Writing notes..."
       : wantsDelete ? "Removing blocks..."
+      : wantsOrganize ? "Organizing grid..."
       : wantsBlockEdit ? "Editing blocks..."
-      : wantsBlockCreate ? "Creating blocks..."
-      : wantsBlockManipulation && !hasFocusedTextBricks ? "Arranging blocks..."
+      : (wantsBlockCreate || wantsGridCreate) ? "Creating blocks..."
+      : wantsBlockManipulation && !focusedBrickActionIntent ? "Arranging blocks..."
       : "Editing bricks...";
     const handled = await handleActionPath(p, apiBase, requestBody, cappedText, conversationArray, promptId, responseBlockId, statusMsg);
     if (handled) return;

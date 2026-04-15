@@ -21,6 +21,7 @@ import type { WireSide } from "@/store/canvasStore";
 import { useThinkingStatus } from "@/hooks/useThinkingStatus";
 import { getAiPrefs } from "@/lib/ai-prefs";
 import { extractTextFromFile, isDocumentFile } from "@/lib/extract-text";
+import { promptFileDropMode } from "@/lib/fileDropModePrompt";
 import { supabase } from "@/lib/supabase";
 import { purgeVaultNoteEmbeddings } from "@/lib/synthesis/queueReindex";
 import { useAuth } from "@/lib/SupabaseAuth";
@@ -75,7 +76,7 @@ function dataUrlToFile(dataUrl: string, name: string): File | null {
   }
 }
 
-function processVaultDrop(pending: { title: string; content: string; attachments: any[] }, clientX: number, clientY: number) {
+async function processVaultDrop(pending: { title: string; content: string; attachments: any[] }, clientX: number, clientY: number) {
   const attachments = Array.isArray(pending.attachments) ? pending.attachments : [];
   console.log("[VAULT-DROP-CANVAS] processVaultDrop called, attachments:", attachments.map((a: any) => ({ type: a.type, url: a.url?.substring(0, 80), videoId: a.videoId })));
 
@@ -189,7 +190,9 @@ function processVaultDrop(pending: { title: string; content: string; attachments
   );
   if (pdfAttach) {
     const pdfText = String(pdfAttach.pdfText || pdfAttach.extractedText || "").trim();
+    const pdfName = String(pdfAttach.name || pdfAttach.title || "PDF").trim();
     if (pdfText) {
+      const dropMode = await promptFileDropMode(pdfName, "pdf");
       const st = useCanvasStore.getState();
       const g = Math.max(1, Math.floor(st.gridSize || 24));
       const canvasEl = document.querySelector<HTMLElement>("[data-omnia-canvas]");
@@ -201,23 +204,30 @@ function processVaultDrop(pending: { title: string; content: string; attachments
       const z = st.camera?.zoom || 1;
       const wx = Math.round(((scrollLeft + localX) / z - 5000) / g) * g;
       const wy = Math.round(((scrollTop + localY) / z - 5000) / g) * g;
-      const title = String(pdfAttach.name || pdfAttach.title || "PDF").trim();
-      const combined = `# ${title}\n\n${pdfText}`;
-      const charsPerLine = Math.max(1, Math.floor((g * 16 * 0.85) / 8));
-      const wrappedLines = combined.split("\n").reduce((sum: number, line: string) => sum + Math.max(1, Math.ceil(line.length / charsPerLine)), 0);
-      const height = Math.max(g * 6, Math.min(g * 30, wrappedLines * 22 + 32));
-      st.addTextBlockAt({ x: wx, y: wy }, { width: g * 16, height, content: combined, format: "plain" });
+
+      if (dropMode === "link") {
+        st.addBlock({
+          type: "create", mode: "embed", x: wx, y: wy, width: g * 10, height: g * 3, content: "",
+          data: { url: pdfAttach.url || "", mime: "application/pdf", name: pdfName, displayMode: "link-card", extractedText: pdfText },
+        } as any);
+      } else {
+        const combined = `# ${pdfName}\n\n${pdfText}`;
+        const charsPerLine = Math.max(1, Math.floor((g * 16 * 0.85) / 8));
+        const wrappedLines = combined.split("\n").reduce((sum: number, line: string) => sum + Math.max(1, Math.ceil(line.length / charsPerLine)), 0);
+        const height = Math.max(g * 6, Math.min(g * 30, wrappedLines * 22 + 32));
+        st.addTextBlockAt({ x: wx, y: wy }, { width: g * 16, height, content: combined, format: "plain" });
+      }
       return;
     }
     if (pdfAttach.url) {
       const pdfUrl = String(pdfAttach.url);
-      const pdfName = String(pdfAttach.name || pdfAttach.title || "document.pdf").trim();
+      const pdfFileName = pdfName.endsWith(".pdf") ? pdfName : `${pdfName}.pdf`;
       (async () => {
         try {
           const resp = await fetch(pdfUrl);
           if (resp.ok) {
             const blob = await resp.blob();
-            const file = new File([blob], pdfName.endsWith(".pdf") ? pdfName : `${pdfName}.pdf`, { type: "application/pdf" });
+            const file = new File([blob], pdfFileName, { type: "application/pdf" });
             window.dispatchEvent(new CustomEvent("omnia_attach_files", { detail: { files: [file], clientX, clientY } }));
             return;
           }
@@ -239,6 +249,7 @@ function processVaultDrop(pending: { title: string; content: string; attachments
     const ssName = String(spreadsheetAttach.name || "Spreadsheet").trim();
 
     if (spreadsheetAttach.cells && typeof spreadsheetAttach.cells === "object" && Object.keys(spreadsheetAttach.cells).length > 0) {
+      const dropMode = await promptFileDropMode(ssName, "spreadsheet");
       const st = useCanvasStore.getState();
       const g = Math.max(1, Math.floor(st.gridSize || 24));
       const canvasEl = document.querySelector<HTMLElement>("[data-omnia-canvas]");
@@ -250,11 +261,20 @@ function processVaultDrop(pending: { title: string; content: string; attachments
       const z = st.camera?.zoom || 1;
       const wx = Math.round(((scrollLeft + localX) / z - 5000) / g) * g;
       const wy = Math.round(((scrollTop + localY) / z - 5000) / g) * g;
-      const rows = Math.max(Number(spreadsheetAttach.rows) || 10, 5);
-      const cols = Math.max(Number(spreadsheetAttach.cols) || 5, 3);
-      const ssId = st.addSpreadsheetBlockAt({ x: wx, y: wy }, { rows, cols });
-      const sheetData = { version: 1, rows, cols, colWidths: Array.from({ length: cols }, () => 96), cells: spreadsheetAttach.cells };
-      st.updateBlock(ssId, { content: JSON.stringify(sheetData), data: { sourceFileName: ssName } } as any);
+
+      if (dropMode === "link") {
+        const sheetData = { version: 1, rows: spreadsheetAttach.rows || 10, cols: spreadsheetAttach.cols || 5, cells: spreadsheetAttach.cells };
+        st.addBlock({
+          type: "create", mode: "embed", x: wx, y: wy, width: g * 10, height: g * 3, content: "",
+          data: { url: ssUrl, name: ssName, displayMode: "link-card", extractedText: JSON.stringify(sheetData) },
+        } as any);
+      } else {
+        const rows = Math.max(Number(spreadsheetAttach.rows) || 10, 5);
+        const cols = Math.max(Number(spreadsheetAttach.cols) || 5, 3);
+        const ssId = st.addSpreadsheetBlockAt({ x: wx, y: wy }, { rows, cols });
+        const sheetData = { version: 1, rows, cols, colWidths: Array.from({ length: cols }, () => 96), cells: spreadsheetAttach.cells };
+        st.updateBlock(ssId, { content: JSON.stringify(sheetData), data: { sourceFileName: ssName } } as any);
+      }
       return;
     }
 
@@ -932,11 +952,14 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
     textColorSub: boolean;
   }>({ visible: false, x: 0, y: 0, text: "", blockId: null, highlightSub: false, textColorSub: false });
   const selToolbarRef = useRef<HTMLDivElement | null>(null);
+  const savedSelRangeRef = useRef<{ range: Range; text: string; blockId: string | null } | null>(null);
 
   useEffect(() => {
     const onSel = () => {
       const sel = window.getSelection();
       if (!sel || sel.isCollapsed || !sel.toString().trim()) {
+        // Don't hide if the user is interacting with the toolbar (mousedown preventDefault may not cover all browsers)
+        if (selToolbarRef.current?.matches(":hover")) return;
         setSelToolbar((s) => (s.visible ? { ...s, visible: false, highlightSub: false, textColorSub: false } : s));
         return;
       }
@@ -954,28 +977,36 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
       if (rect.width === 0 && rect.height === 0) return;
       const tx = rect.left + rect.width / 2;
       const ty = rect.top - 10;
-      setSelToolbar({ visible: true, x: tx, y: ty, text: sel.toString(), blockId: bid, highlightSub: false, textColorSub: false });
+      savedSelRangeRef.current = { range: range.cloneRange(), text: sel.toString(), blockId: bid };
+      setSelToolbar((s) => ({
+        visible: true, x: tx, y: ty, text: sel.toString(), blockId: bid,
+        highlightSub: s.visible ? s.highlightSub : false,
+        textColorSub: s.visible ? s.textColorSub : false,
+      }));
     };
     document.addEventListener("selectionchange", onSel);
     return () => document.removeEventListener("selectionchange", onSel);
   }, []);
 
   const selToolbarHighlightColors = useMemo(() => [
-    { label: "Yellow", value: "rgba(250,204,21,0.45)" },
-    { label: "Green", value: "rgba(74,222,128,0.40)" },
-    { label: "Blue", value: "rgba(96,165,250,0.40)" },
-    { label: "Pink", value: "rgba(244,114,182,0.40)" },
-    { label: "Purple", value: "rgba(167,139,250,0.40)" },
-    { label: "Orange", value: "rgba(251,146,60,0.40)" },
-    { label: "Remove", value: "" },
+    { label: "Default", value: "" },
+    { label: "Blue", value: "rgba(59,130,246,0.40)" },
+    { label: "Green", value: "rgba(22,163,74,0.40)" },
+    { label: "Amber", value: "rgba(217,119,6,0.40)" },
+    { label: "Red", value: "rgba(220,38,38,0.40)" },
+    { label: "Purple", value: "rgba(124,58,237,0.40)" },
+    { label: "Pink", value: "rgba(219,39,119,0.40)" },
+    { label: "Teal", value: "rgba(15,118,110,0.40)" },
   ], []);
   const selToolbarTextColors = useMemo(() => [
     { label: "Default", value: "" },
     { label: "Blue", value: "#3B82F6" },
     { label: "Green", value: "#16A34A" },
+    { label: "Amber", value: "#D97706" },
     { label: "Red", value: "#DC2626" },
     { label: "Purple", value: "#7C3AED" },
-    { label: "Orange", value: "#EA580C" },
+    { label: "Pink", value: "#DB2777" },
+    { label: "Teal", value: "#0F766E" },
   ], []);
 
   const isSelectionInEditable = () => {
@@ -1070,6 +1101,7 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
     if (color) {
       const mark = document.createElement("mark");
       mark.style.backgroundColor = color;
+      mark.style.color = "inherit";
       mark.style.borderRadius = "2px";
       mark.style.padding = "0 1px";
       mark.appendChild(contents);
@@ -1113,30 +1145,48 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
   }, [saveFormattedHtmlForEditor]);
 
   const applySelectionHighlight = useCallback((color: string) => {
-    const sel = window.getSelection();
-    if (!sel || sel.isCollapsed) return;
-    const selectedText = sel.toString();
-    if (isSelectionInEditable()) {
+    const saved = savedSelRangeRef.current;
+    let sel = window.getSelection();
+
+    // Try to restore selection from saved range if current is collapsed
+    if ((!sel || sel.isCollapsed) && saved) {
+      sel = window.getSelection();
+      if (sel) {
+        try { sel.removeAllRanges(); sel.addRange(saved.range); } catch { /* range may be stale */ }
+      }
+    }
+
+    if (sel && !sel.isCollapsed && isSelectionInEditable()) {
       applyHighlightToRange(color);
     } else {
-      const bid = selToolbar.blockId;
-      if (bid) {
-        enterTypingAndReselect(bid, selectedText, () => applyHighlightToRange(color));
+      const bid = selToolbar.blockId || saved?.blockId;
+      const text = sel && !sel.isCollapsed ? sel.toString() : saved?.text;
+      if (bid && text) {
+        enterTypingAndReselect(bid, text, () => applyHighlightToRange(color));
       }
     }
     setSelToolbar((s) => ({ ...s, visible: false, highlightSub: false, textColorSub: false }));
   }, [selToolbar.blockId, applyHighlightToRange]);
 
   const applySelectionTextColor = useCallback((color: string) => {
-    const sel = window.getSelection();
-    if (!sel || sel.isCollapsed) return;
-    const selectedText = sel.toString();
-    if (isSelectionInEditable()) {
+    const saved = savedSelRangeRef.current;
+    let sel = window.getSelection();
+
+    // Try to restore selection from saved range if current is collapsed
+    if ((!sel || sel.isCollapsed) && saved) {
+      sel = window.getSelection();
+      if (sel) {
+        try { sel.removeAllRanges(); sel.addRange(saved.range); } catch { /* range may be stale */ }
+      }
+    }
+
+    if (sel && !sel.isCollapsed && isSelectionInEditable()) {
       applyTextColorToRange(color);
     } else {
-      const bid = selToolbar.blockId;
-      if (bid) {
-        enterTypingAndReselect(bid, selectedText, () => applyTextColorToRange(color));
+      const bid = selToolbar.blockId || saved?.blockId;
+      const text = sel && !sel.isCollapsed ? sel.toString() : saved?.text;
+      if (bid && text) {
+        enterTypingAndReselect(bid, text, () => applyTextColorToRange(color));
       }
     }
     setSelToolbar((s) => ({ ...s, visible: false, highlightSub: false, textColorSub: false }));
@@ -1423,6 +1473,43 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
       setCamera({ x: -SURFACE_ORIGIN_PAD, y: -SURFACE_ORIGIN_PAD, zoom: clamped });
     }
   }, [setCamera]);
+
+  const fitToContent = useCallback(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const st = useCanvasStore.getState();
+    const order = st.blockOrder;
+    if (order.length === 0) return;
+
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const id of order) {
+      const b = st.blocks[id] as any;
+      if (!b) continue;
+      minX = Math.min(minX, Number(b.x) || 0);
+      minY = Math.min(minY, Number(b.y) || 0);
+      maxX = Math.max(maxX, (Number(b.x) || 0) + (Number(b.width) || 0));
+      maxY = Math.max(maxY, (Number(b.y) || 0) + (Number(b.height) || 0));
+    }
+    if (minX >= Infinity) return;
+
+    const PAD = 60;
+    const contentW = maxX - minX + PAD * 2;
+    const contentH = maxY - minY + PAD * 2;
+    const rect = el.getBoundingClientRect();
+    const vpW = rect.width;
+    const vpH = rect.height;
+    const zoomToFit = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.min(vpW / contentW, vpH / contentH)));
+    const clamped = Math.round(zoomToFit * 100) / 100;
+
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    const targetLeft = (cx + SURFACE_ORIGIN_PAD) * clamped - vpW / 2;
+    const targetTop = (cy + SURFACE_ORIGIN_PAD) * clamped - vpH / 2;
+
+    canvasZoomRef.current = clamped;
+    pendingZoomScrollRef.current = { left: targetLeft, top: targetTop, zoom: clamped };
+    setCanvasZoom(clamped);
+  }, []);
 
   const makeCreateBlockLocal = (x: number, y: number, mode: string, data: Record<string, any>, width: number, height: number) => ({
     id: `create-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
@@ -2721,19 +2808,44 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
     return nextId;
   };
   const dropEmptyTypingBlockIfNeeded = (nextTypingId?: string | null) => {
-    const prevId = typingBlockId;
-    if (!prevId || prevId === nextTypingId) return;
-    const prev: any = useCanvasStore.getState().blocks[prevId];
-    if (!prev) return;
-    const txt = String(prev?.content || "").trim();
-    if (txt.length > 0) return;
-    const x = Math.floor(Number(prev.x || 0));
-    const y = Math.floor(Number(prev.y || 0));
-    const key = cellKey(x, y);
-    deleteBlock(prevId as any);
-    setActivatedGridCellKeys((s) => withoutKeys(s, [key]));
-    setRaisedGridCellKeys((s) => withoutKeys(s, [key]));
-    setActivatedGridRanges((s) => s.filter((r) => !(r.minX === x && r.maxX === x && r.minY === y && r.maxY === y)));
+    const st = useCanvasStore.getState();
+    const allBlocks = st.blocks;
+    const keysToRemove: string[] = [];
+    const idsToRemove: string[] = [];
+    const rangesToRemove: Array<{ x: number; y: number }> = [];
+
+    for (const [id, b] of Object.entries(allBlocks)) {
+      if (!b) continue;
+      if (id === nextTypingId) continue;
+      if ((b as any).type !== "text") continue;
+      if (aiInFlightRef.current.has(id)) continue;
+      if (aiQueuedPromptRef.current.has(id)) continue;
+      if (id === dictatingBlockId || id === dictateTranscribingBlockId) continue;
+      if (Array.isArray((b as any).aiAnswers) && (b as any).aiAnswers.length) continue;
+      const txt = String((b as any).content || "").trim();
+      if (txt.length > 0) continue;
+
+      const x = Math.floor(Number((b as any).x || 0));
+      const y = Math.floor(Number((b as any).y || 0));
+      keysToRemove.push(cellKey(x, y));
+      idsToRemove.push(id);
+      rangesToRemove.push({ x, y });
+    }
+
+    if (idsToRemove.length === 0) return;
+
+    deleteBlocks(idsToRemove as any);
+    if (keysToRemove.length) {
+      setActivatedGridCellKeys((s) => withoutKeys(s, keysToRemove));
+      setRaisedGridCellKeys((s) => withoutKeys(s, keysToRemove));
+    }
+    if (rangesToRemove.length) {
+      setActivatedGridRanges((s) =>
+        s.filter((r) =>
+          !rangesToRemove.some(({ x, y }) => r.minX === x && r.maxX === x && r.minY === y && r.maxY === y)
+        )
+      );
+    }
   };
 
   useEffect(() => {
@@ -2969,6 +3081,7 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
 
         setRaisedGridCellKeys([]);
         commitShapeCellEditorByKey();
+        dropEmptyTypingBlockIfNeeded(null);
         setTypingBlockId(null);
         setActivatedBrickIds([]);
         setRaisedBrickIds([]);
@@ -3083,6 +3196,7 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
         if (draggedIds.length) {
           setActivatedBrickIds(draggedIds);
           setRaisedBrickIds(draggedIds);
+          dropEmptyTypingBlockIfNeeded(null);
           setTypingBlockId(null);
         }
         if (!autoScrollRef.current.rafId) {
@@ -3870,54 +3984,54 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
           continue;
         }
         if (mime === "application/pdf" || /\.pdf$/i.test(name)) {
+          const dropMode = await promptFileDropMode(name, "pdf");
           try {
             const { pages, pageCount } = await extractPdfPages(f);
             const previewPages = pages.length;
-            if (previewPages === 0) {
-              addPdfStatusBlock(
-                x,
-                y,
-                name,
-                "Parsed PDF but found 0 renderable pages. Falling back to embedded PDF block.",
-                containerId
-              );
-            }
             const combined = buildCombinedPdfText(name, pages);
-            const textId = addTextBlockAt(
-              { x, y },
-              {
-                width: gridSize * 16,
-                height: getPdfTextBlockHeight(combined),
-                content: combined,
-                format: "plain",
+
+            if (dropMode === "link") {
+              const b = createCreateBlockSafe(
+                x, y, "embed",
+                { url: dataUrl, mime: "application/pdf", name, displayMode: "link-card", extractedText: combined },
+                gridSize * 10, gridSize * 3
+              );
+              if (containerId) (b as any).containerId = containerId;
+              addBlock(b);
+              uploadAndReplace(b.id, f, "url");
+            } else {
+              if (previewPages === 0) {
+                addPdfStatusBlock(x, y, name, "Parsed PDF but found 0 renderable pages. Falling back to embedded PDF block.", containerId);
               }
-            );
-            if (containerId) updateBlock(textId, { containerId } as any);
-            // Success path: no extra status card needed.
+              const textId = addTextBlockAt(
+                { x, y },
+                { width: gridSize * 16, height: getPdfTextBlockHeight(combined), content: combined, format: "plain" }
+              );
+              if (containerId) updateBlock(textId, { containerId } as any);
+            }
           } catch (error: any) {
-            addPdfStatusBlock(
-              x,
-              y,
-              name,
-              `PDF couldn't be parsed directly — it's been embedded instead so you can still view it.`,
-              containerId
-            );
-            const b = createCreateBlockSafe(
-              x,
-              y,
-              "embed",
-              { url: dataUrl, mime: "application/pdf", name },
-              gridSize * 12,
-              gridSize * 8
-            );
-            if (containerId) (b as any).containerId = containerId;
-            addBlock(b);
+            if (dropMode === "link") {
+              const b = createCreateBlockSafe(
+                x, y, "embed",
+                { url: dataUrl, mime: "application/pdf", name, displayMode: "link-card" },
+                gridSize * 10, gridSize * 3
+              );
+              if (containerId) (b as any).containerId = containerId;
+              addBlock(b);
+              uploadAndReplace(b.id, f, "url");
+            } else {
+              addPdfStatusBlock(x, y, name, `PDF couldn't be parsed directly — it's been embedded instead so you can still view it.`, containerId);
+              const b = createCreateBlockSafe(x, y, "embed", { url: dataUrl, mime: "application/pdf", name }, gridSize * 12, gridSize * 8);
+              if (containerId) (b as any).containerId = containerId;
+              addBlock(b);
+            }
           }
           continue;
         }
         // Spreadsheet files → SpreadsheetBlock with real cell data
         const spreadsheetExts = new Set(["xlsx", "xls", "csv"]);
         if (spreadsheetExts.has(fileExt)) {
+          const dropMode = await promptFileDropMode(name, "spreadsheet");
           try {
             const { API_BASE_URL } = await import("@/lib/api-config");
             const formData = new FormData();
@@ -3925,13 +4039,25 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
             const ssRes = await fetch(`${API_BASE_URL}/api/files/parse-spreadsheet`, { method: "POST", body: formData });
             if (ssRes.ok) {
               const parsed = await ssRes.json();
-              const rows = Math.max(parsed.rows || 10, 5);
-              const cols = Math.max(parsed.cols || 5, 3);
-              const ssId = addSpreadsheetBlockAt({ x, y }, { rows, cols });
-              const colWidths = parsed.colWidths || Array.from({ length: cols }, () => 96);
-              const sheetData = { version: 1, rows, cols, colWidths, cells: parsed.cells || {} };
-              updateBlock(ssId, { content: JSON.stringify(sheetData), data: { sourceFileName: name } } as any);
-              if (containerId) updateBlock(ssId, { containerId } as any);
+              if (dropMode === "link") {
+                const sheetData = { version: 1, rows: parsed.rows || 10, cols: parsed.cols || 5, colWidths: parsed.colWidths || [], cells: parsed.cells || {} };
+                const b = createCreateBlockSafe(
+                  x, y, "embed",
+                  { url: dataUrl, mime: mime || "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", name, displayMode: "link-card", extractedText: JSON.stringify(sheetData) },
+                  gridSize * 10, gridSize * 3
+                );
+                if (containerId) (b as any).containerId = containerId;
+                addBlock(b);
+                uploadAndReplace(b.id, f, "url");
+              } else {
+                const rows = Math.max(parsed.rows || 10, 5);
+                const cols = Math.max(parsed.cols || 5, 3);
+                const ssId = addSpreadsheetBlockAt({ x, y }, { rows, cols });
+                const colWidths = parsed.colWidths || Array.from({ length: cols }, () => 96);
+                const sheetData = { version: 1, rows, cols, colWidths, cells: parsed.cells || {} };
+                updateBlock(ssId, { content: JSON.stringify(sheetData), data: { sourceFileName: name } } as any);
+                if (containerId) updateBlock(ssId, { containerId } as any);
+              }
               continue;
             }
           } catch (err: any) {
@@ -3940,23 +4066,30 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
         }
         // Document files (TXT, MD, JSON, HTML, RTF, DOCX, PPTX, ODT)
         if (isDocumentFile(f)) {
+          const dropMode = await promptFileDropMode(name, "document");
           try {
             const { API_BASE_URL } = await import("@/lib/api-config");
             const result = await extractTextFromFile(f, API_BASE_URL);
             if (result && result.text) {
-              const header = `📄 ${name} (${result.format.toUpperCase()})\n${"─".repeat(40)}\n`;
-              const content = header + result.text.slice(0, 50000);
-              const textId = addTextBlockAt(
-                { x, y },
-                {
-                  width: gridSize * 16,
-                  height: getPdfTextBlockHeight(content),
-                  content,
-                  format: "plain",
-                }
-              );
-              if (containerId) updateBlock(textId, { containerId } as any);
-              updateBlock(textId, { data: { extractedText: result.text, sourceFileName: name, sourceFormat: result.format } } as any);
+              if (dropMode === "link") {
+                const b = createCreateBlockSafe(
+                  x, y, "embed",
+                  { url: dataUrl, mime: mime || "application/octet-stream", name, displayMode: "link-card", extractedText: result.text, sourceFormat: result.format },
+                  gridSize * 10, gridSize * 3
+                );
+                if (containerId) (b as any).containerId = containerId;
+                addBlock(b);
+                uploadAndReplace(b.id, f, "url");
+              } else {
+                const header = `📄 ${name} (${result.format.toUpperCase()})\n${"─".repeat(40)}\n`;
+                const content = header + result.text.slice(0, 50000);
+                const textId = addTextBlockAt(
+                  { x, y },
+                  { width: gridSize * 16, height: getPdfTextBlockHeight(content), content, format: "plain" }
+                );
+                if (containerId) updateBlock(textId, { containerId } as any);
+                updateBlock(textId, { data: { extractedText: result.text, sourceFileName: name, sourceFormat: result.format } } as any);
+              }
               continue;
             }
           } catch (err: any) {
@@ -4038,39 +4171,44 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
         }
         if (mime.startsWith("audio/") || mime === "application/pdf") {
           if (mime === "application/pdf") {
+            const dropMode = await promptFileDropMode(fileName, "pdf");
             try {
               const { pages, pageCount } = await tryExtractPdfPagesFromUrl(u);
               const previewPages = pages.length;
-              if (previewPages === 0) {
-                addPdfStatusBlock(
-                  wx,
-                  wy,
-                  fileName,
-                  "URL PDF parsed but returned 0 pages. Falling back to embedded PDF block.",
-                  containerId
-                );
-              }
               const combined = buildCombinedPdfText(fileName, pages);
+
+              if (dropMode === "link") {
+                const b = createCreateBlockSafe(
+                  wx, wy, "embed",
+                  { url: u, mime: "application/pdf", name: fileName, displayMode: "link-card", extractedText: combined },
+                  gridSize * 10, gridSize * 3
+                );
+                if (containerId) (b as any).containerId = containerId;
+                addBlock(b);
+                return;
+              }
+
+              if (previewPages === 0) {
+                addPdfStatusBlock(wx, wy, fileName, "URL PDF parsed but returned 0 pages. Falling back to embedded PDF block.", containerId);
+              }
               const textId = addTextBlockAt(
                 { x: wx, y: wy },
-                {
-                  width: gridSize * 16,
-                  height: getPdfTextBlockHeight(combined),
-                  content: combined,
-                  format: "plain",
-                }
+                { width: gridSize * 16, height: getPdfTextBlockHeight(combined), content: combined, format: "plain" }
               );
               if (containerId) updateBlock(textId, { containerId } as any);
               return;
             } catch (error: any) {
-              addPdfStatusBlock(
-                wx,
-                wy,
-                fileName,
-                `Couldn't parse this PDF directly — it's been embedded instead so you can still view it.`,
-                containerId
-              );
-              // Fall through to embed fallback when URL fetch/CORS blocks parsing.
+              if (dropMode === "link") {
+                const b = createCreateBlockSafe(
+                  wx, wy, "embed",
+                  { url: u, mime: "application/pdf", name: fileName, displayMode: "link-card" },
+                  gridSize * 10, gridSize * 3
+                );
+                if (containerId) (b as any).containerId = containerId;
+                addBlock(b);
+                return;
+              }
+              addPdfStatusBlock(wx, wy, fileName, `Couldn't parse this PDF directly — it's been embedded instead so you can still view it.`, containerId);
             }
           }
           const b = createCreateBlockSafe(
@@ -4759,7 +4897,7 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
         '- { "type": "delete_block", "blockId": "block-id" }',
         '- { "type": "delete_block", "blockIds": ["id1", "id2"] }',
         "",
-        "update_text_block: Edits an existing text brick in place. blockId is REQUIRED (from Grid blocks id= field). content replaces all text; append adds to existing text. data.textVariant/listType/brickColor/textColor change formatting. Prefer update over delete+create.",
+        "update_text_block: Edits an existing text brick in place. blockId is REQUIRED (from Grid blocks id= field). ALWAYS include 'content' (full replacement text) or 'append' (text to add) — an update without content does nothing. data.textVariant/listType/brickColor/textColor change formatting. Prefer update over delete+create.",
         "delete_block: Removes blocks by ID. Only use when the user explicitly asks to remove or delete.",
         'Important: If the user is giving follow-up details after creating a spreadsheet (e.g., dimensions or values), update the last spreadsheet using "update_spreadsheet" instead of creating a new one. Only create a new spreadsheet when the user explicitly asks for a new/another spreadsheet.',
         "",
@@ -5283,6 +5421,7 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
           setRaisedBrickIds([]);
           return;
         }
+        dropEmptyTypingBlockIfNeeded(null);
         setTypingBlockId(null);
         setActivatedBrickIds(ids);
         setRaisedBrickIds(ids);
@@ -5987,6 +6126,10 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
             embedUrl &&
             !embedMime.startsWith("audio/") &&
             embedMime !== "application/pdf";
+          const isLinkCard =
+            (b as any).type === "create" &&
+            mode === "embed" &&
+            createData.displayMode === "link-card";
 
           if (state.isMinimized) {
             const bType = String((b as any).type || "text");
@@ -6004,6 +6147,11 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
             } else if (isCreateEmbedAudio) {
               icon = React.createElement("span", { className: "text-blue-400 text-[11px] leading-none" }, "♫");
               label = bName || "Audio";
+            } else if (isLinkCard) {
+              const lcMime = String(bData.mime || "");
+              const lcIcon = lcMime === "application/pdf" ? "📄" : /spreadsheet|csv|xls/i.test(lcMime) || /\.(xlsx?|csv)$/i.test(bName) ? "📊" : "📎";
+              icon = React.createElement("span", { className: "text-[11px] leading-none" }, lcIcon);
+              label = bName || "File";
             } else if (isCreateEmbedPdf) {
               icon = React.createElement("span", { className: "text-orange-400 text-[11px] leading-none" }, "▤");
               label = bName || "PDF";
@@ -6148,6 +6296,42 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
             );
             const audioBrick = renderBrickShell(b as any, id, { extraContent: audioExtra, resizeGridSize: gridSize, canvasZoom: canvasZoomRef.current, onCornerScale: (bid, _nextScale, newWidth, newHeight) => { const cur: any = (blocks as any)[bid]; if (!cur) return; const data = cur?.data && typeof cur.data === "object" ? { ...cur.data } : {}; updateBlock(bid as any, { width: Math.max(gridSize * 10, newWidth), height: Math.max(gridSize, newHeight), data: { ...data, userResized: true } } as any); }, onMinimize: toggleMinimized, onBrickMenu: handleBlockMenu, onConnectionDragStart: handleConnectionDragStart });
             return React.cloneElement(audioBrick as React.ReactElement, { key: id });
+          }
+          if (isLinkCard) {
+            const cardName = String(createData.name || "File");
+            const cardMime = String(createData.mime || "");
+            const cardIcon = cardMime === "application/pdf" ? "📄"
+              : /spreadsheet|csv|xls/i.test(cardMime) || /\.(xlsx?|csv)$/i.test(cardName) ? "📊"
+              : "📎";
+            const cardExtra = React.createElement(
+              "div",
+              {
+                className: "flex items-center gap-3 px-4 py-3 h-full cursor-grab active:cursor-grabbing select-none",
+                onDoubleClick: (ev: React.MouseEvent) => {
+                  ev.stopPropagation();
+                  const url = String(createData.url || createData.dataUrl || "");
+                  if (url) window.open(url, "_blank", "noopener");
+                },
+              },
+              React.createElement("span", { className: "text-2xl shrink-0" }, cardIcon),
+              React.createElement("div", { className: "min-w-0 flex-1" },
+                React.createElement("div", { className: "text-sm font-medium text-black/80 dark:text-white/80 truncate" }, cardName),
+                React.createElement("div", { className: "text-[0.65rem] text-black/40 dark:text-white/40 mt-0.5" },
+                  cardMime === "application/pdf" ? "PDF Document" : /spreadsheet|csv|xls/i.test(cardMime) || /\.(xlsx?|csv)$/i.test(cardName) ? "Spreadsheet" : "Document"
+                ),
+              ),
+              React.createElement("span", { className: "text-black/30 dark:text-white/30 text-xs shrink-0", title: "Double-click to open" }, "↗"),
+            );
+            const cardBrick = renderBrickShell(b as any, id, {
+              extraContent: cardExtra, resizeGridSize: gridSize, canvasZoom: canvasZoomRef.current,
+              onCornerScale: (bid, _nextScale, newWidth, newHeight) => {
+                const cur: any = (blocks as any)[bid]; if (!cur) return;
+                const data = cur?.data && typeof cur.data === "object" ? { ...cur.data } : {};
+                updateBlock(bid as any, { width: Math.max(gridSize * 6, newWidth), height: Math.max(gridSize * 2, newHeight), data: { ...data, userResized: true } } as any);
+              },
+              onMinimize: toggleMinimized, onBrickMenu: handleBlockMenu, onConnectionDragStart: handleConnectionDragStart,
+            });
+            return React.cloneElement(cardBrick as React.ReactElement, { key: id });
           }
           if (isCreateEmbedPdf) {
             const pdfName = String(createData.name || "PDF");
@@ -6317,8 +6501,16 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
               suppressBrickClickRef.current = true;
               window.setTimeout(() => { suppressBrickClickRef.current = false; }, 50);
               const nextWidth = Math.max(gridSize * 4, Math.floor(width || gridSize * 4));
-              data.userResized = true;
-              updateBlock(bid as any, { width: nextWidth, data } as any);
+              const content = String(cur.content ?? "");
+              const variant = (String(data.textVariant || "body").toLowerCase() as "body" | "h2" | "h1") || "body";
+              const brickScale = Math.max(0.5, Number(data.brickScale || 1));
+              const effectiveBaseWidth = Math.max(gridSize * 4, nextWidth / brickScale);
+              const wrappedLines = getWrappedLineCountForWidth(content, variant, effectiveBaseWidth);
+              const lineRows = lineRowsForVariant(variant);
+              const neededRows = Math.max(lineRows, wrappedLines * lineRows);
+              const scaledGrid = gridSize * brickScale;
+              const nextHeight = Math.max(gridSize, Math.ceil(neededRows * scaledGrid / gridSize) * gridSize);
+              updateBlock(bid as any, { width: nextWidth, height: nextHeight, data } as any);
             },
             onResizeHeight: (bid, height) => {
               if (!(blocks as any)[bid]) return;
@@ -6361,6 +6553,7 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
               const parsed = parseTextSlashVariant(raw, currentVariant, currentListType);
               if ((parsed as any).transform) {
                 const transform = (parsed as any).transform as string;
+                dropEmptyTypingBlockIfNeeded(bid);
                 setTypingBlockId(null);
                 if (transform === "media") {
                   const mediaData = { mode: "picker" };
@@ -6464,6 +6657,7 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
             onTypingKeyDown: (bid, e) => {
               if (e.key === "Escape") {
                 e.preventDefault();
+                dropEmptyTypingBlockIfNeeded(null);
                 setTypingBlockId(null);
                 return;
               }
@@ -7174,10 +7368,16 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
               </button>
               <button
                 className="flex items-center justify-center w-7 h-7 rounded-lg hover:bg-black/10 dark:hover:bg-white/15 transition-colors text-black/50 dark:text-white/50 hover:text-black/90 dark:hover:text-white"
-                onClick={() => applyZoom(1)}
-                title="Fit to view"
+                onClick={fitToContent}
+                title="Find my blocks"
               >
-                <Maximize className="w-3 h-3" />
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="4" />
+                  <line x1="12" y1="2" x2="12" y2="6" />
+                  <line x1="12" y1="18" x2="12" y2="22" />
+                  <line x1="2" y1="12" x2="6" y2="12" />
+                  <line x1="18" y1="12" x2="22" y2="12" />
+                </svg>
               </button>
               <div className="w-px h-4 bg-black/10 dark:bg-white/10 mx-0.5" />
               <button
@@ -7210,48 +7410,51 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
             animation: "selToolbarFadeIn 0.12s ease-out",
           }}
           onPointerDown={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.preventDefault()}
         >
-          <div className="flex items-stretch rounded-lg overflow-hidden border border-white/30 bg-[linear-gradient(145deg,rgba(255,255,255,0.82),rgba(245,247,255,0.78))] shadow-lg backdrop-blur-md">
+          <div className="flex items-stretch rounded-lg overflow-hidden border border-white/30 dark:border-white/10 bg-[linear-gradient(145deg,rgba(255,255,255,0.82),rgba(245,247,255,0.78))] dark:bg-[linear-gradient(145deg,rgba(40,40,50,0.92),rgba(30,30,38,0.88))] shadow-lg backdrop-blur-md">
             {!selToolbar.highlightSub && !selToolbar.textColorSub && (
               <>
                 <button
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium text-black/75 hover:bg-black/8 transition-colors whitespace-nowrap"
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium text-black/75 dark:text-white/80 hover:bg-black/8 dark:hover:bg-white/10 transition-colors whitespace-nowrap"
                   title="Highlight"
+                  onMouseDown={(e) => e.preventDefault()}
                   onClick={() => setSelToolbar((s) => ({ ...s, highlightSub: true, textColorSub: false }))}
                 >
                   <Highlighter className="w-3.5 h-3.5" />
                   <span>Highlight</span>
                 </button>
-                <div className="w-px bg-black/10 my-1" />
+                <div className="w-px bg-black/10 dark:bg-white/10 my-1" />
                 <button
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium text-black/75 hover:bg-black/8 transition-colors whitespace-nowrap"
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium text-black/75 dark:text-white/80 hover:bg-black/8 dark:hover:bg-white/10 transition-colors whitespace-nowrap"
                   title="Text Color"
+                  onMouseDown={(e) => e.preventDefault()}
                   onClick={() => setSelToolbar((s) => ({ ...s, textColorSub: true, highlightSub: false }))}
                 >
                   <TypeIcon className="w-3.5 h-3.5" />
                   <span>Color</span>
                 </button>
-                <div className="w-px bg-black/10 my-1" />
+                <div className="w-px bg-black/10 dark:bg-white/10 my-1" />
                 <button
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium text-blue-600 hover:bg-blue-500/10 transition-colors whitespace-nowrap"
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-500/10 dark:hover:bg-blue-400/10 transition-colors whitespace-nowrap"
                   title="AI Analyze"
                   onClick={() => dispatchSelectionAiAction("ai-analyse", "Analyse this text. Strengths, weaknesses, opportunities, risks — bullet points only, max 6 bullets. No fluff.")}
                 >
                   <Brain className="w-3.5 h-3.5" />
                   <span>Analyze</span>
                 </button>
-                <div className="w-px bg-black/10 my-1" />
+                <div className="w-px bg-black/10 dark:bg-white/10 my-1" />
                 <button
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium text-blue-600 hover:bg-blue-500/10 transition-colors whitespace-nowrap"
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-500/10 dark:hover:bg-blue-400/10 transition-colors whitespace-nowrap"
                   title="AI Summarize"
                   onClick={() => dispatchSelectionAiAction("ai-summary", "Summarize this in 2-3 sentences max. Core concept, value prop, who it's for. Nothing else.")}
                 >
                   <ListCollapse className="w-3.5 h-3.5" />
                   <span>Summarize</span>
                 </button>
-                <div className="w-px bg-black/10 my-1" />
+                <div className="w-px bg-black/10 dark:bg-white/10 my-1" />
                 <button
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium text-blue-600 hover:bg-blue-500/10 transition-colors whitespace-nowrap"
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-500/10 dark:hover:bg-blue-400/10 transition-colors whitespace-nowrap"
                   title="AI Search"
                   onClick={() => dispatchSelectionAiAction("ai-search", "Search for related information, context, and insights about this topic. Provide relevant findings.")}
                 >
@@ -7262,51 +7465,63 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
             )}
 
             {selToolbar.highlightSub && (
-              <div className="flex items-center gap-1 px-2 py-1.5">
+              <div className="flex flex-col min-w-[160px]">
                 <button
-                  className="text-[10px] text-black/50 hover:text-black/80 px-1 transition-colors"
+                  className="flex items-center gap-2 px-3 py-1.5 text-[12px] text-black/50 dark:text-white/60 hover:bg-black/8 dark:hover:bg-white/10 transition-colors"
+                  onMouseDown={(e) => e.preventDefault()}
                   onClick={() => setSelToolbar((s) => ({ ...s, highlightSub: false }))}
                 >
-                  ←
+                  <ChevronDown className="w-3 h-3 rotate-90" />
+                  <span>Highlight Color</span>
                 </button>
-                {selToolbarHighlightColors.map((c) => (
-                  <button
-                    key={c.label}
-                    className="w-5 h-5 rounded-md border border-black/15 hover:scale-125 transition-transform flex items-center justify-center"
-                    style={{ background: c.value || "transparent" }}
-                    title={c.label}
-                    onClick={() => applySelectionHighlight(c.value)}
-                  >
-                    {!c.value && <span className="text-[8px] text-black/40">∅</span>}
-                  </button>
-                ))}
+                <div className="mx-2 my-1 h-px bg-black/8 dark:bg-white/8" />
+                <div className="grid grid-cols-5 gap-1.5 px-3 py-2">
+                  {selToolbarHighlightColors.map((c) => (
+                    <button
+                      key={c.label}
+                      className="w-7 h-7 rounded-lg border border-black/15 dark:border-white/15 hover:scale-110 transition-transform flex items-center justify-center"
+                      style={{ background: c.value || "linear-gradient(145deg, rgba(255,255,255,0.34), rgba(255,255,255,0.18))" }}
+                      title={c.label}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => applySelectionHighlight(c.value)}
+                    >
+                      {!c.value && <span className="text-[9px] text-black/40 dark:text-white/40">∅</span>}
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
 
             {selToolbar.textColorSub && (
-              <div className="flex items-center gap-1 px-2 py-1.5">
+              <div className="flex flex-col min-w-[160px]">
                 <button
-                  className="text-[10px] text-black/50 hover:text-black/80 px-1 transition-colors"
+                  className="flex items-center gap-2 px-3 py-1.5 text-[12px] text-black/50 dark:text-white/60 hover:bg-black/8 dark:hover:bg-white/10 transition-colors"
+                  onMouseDown={(e) => e.preventDefault()}
                   onClick={() => setSelToolbar((s) => ({ ...s, textColorSub: false }))}
                 >
-                  ←
+                  <ChevronDown className="w-3 h-3 rotate-90" />
+                  <span>Text Color</span>
                 </button>
-                {selToolbarTextColors.map((c) => (
-                  <button
-                    key={c.label}
-                    className="w-5 h-5 rounded-md border border-black/15 hover:scale-125 transition-transform flex items-center justify-center"
-                    style={{ background: c.value || "transparent" }}
-                    title={c.label}
-                    onClick={() => applySelectionTextColor(c.value)}
-                  >
-                    {!c.value && <span className="text-[8px] text-black/40">∅</span>}
-                    {c.value && <span className="text-[10px] font-bold" style={{ color: c.value, textShadow: "0 0 2px rgba(255,255,255,0.9)" }}>A</span>}
-                  </button>
-                ))}
+                <div className="mx-2 my-1 h-px bg-black/8 dark:bg-white/8" />
+                <div className="grid grid-cols-5 gap-1.5 px-3 py-2">
+                  {selToolbarTextColors.map((c) => (
+                    <button
+                      key={c.label}
+                      className="w-7 h-7 rounded-lg border border-black/15 dark:border-white/15 hover:scale-110 transition-transform flex items-center justify-center"
+                      style={{ background: c.value || "transparent" }}
+                      title={c.label}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => applySelectionTextColor(c.value)}
+                    >
+                      {!c.value && <span className="text-[9px] text-black/40 dark:text-white/40">∅</span>}
+                      {c.value && <span className="text-[11px] font-bold" style={{ color: c.value, textShadow: "0 1px 2px rgba(0,0,0,0.3)" }}>A</span>}
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
           </div>
-          <div className="w-2 h-2 rotate-45 bg-white/95 border-r border-b border-white/50 -mt-1" style={{ boxShadow: "2px 2px 4px rgba(0,0,0,0.08)" }} />
+          <div className="w-2 h-2 rotate-45 bg-white/95 dark:bg-[rgba(35,35,42,0.95)] border-r border-b border-white/50 dark:border-white/10 -mt-1" style={{ boxShadow: "2px 2px 4px rgba(0,0,0,0.08)" }} />
         </div>,
         document.body
       )}
