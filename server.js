@@ -1175,6 +1175,19 @@ const normalizeRequestedModel = (model) => {
 const OPENAI_O_SERIES = new Set(['o3', 'o3-pro', 'o4-mini']);
 const isOpenAIModel = (m) => m.startsWith('gpt-') || OPENAI_O_SERIES.has(m);
 
+const RETRYABLE_STATUSES = new Set([429, 503, 529]);
+const isRetryableProviderError = (errMsg) =>
+  /429|rate.?limit|overloaded|529|503|too many|capacity|resource.?exhaust|quota.?exceed/i.test(errMsg);
+
+function getFallbackModels(failedModel) {
+  const fb = [];
+  if (process.env.GOOGLE_API_KEY && !failedModel.includes('gemini')) fb.push('gemini-flash-latest');
+  if (process.env.OPENAI_API_KEY && !isOpenAIModel(failedModel)) fb.push('gpt-4o');
+  if (process.env.ANTHROPIC_API_KEY && !failedModel.includes('claude')) fb.push('claude-sonnet-4-20250514');
+  if (process.env.XAI_API_KEY && !failedModel.includes('grok')) fb.push('grok-3-mini');
+  return fb;
+}
+
 const IMAGE_GEN_MODELS = new Set([
   'gpt-image-1.5', 'dall-e-3',
   'gemini-3.1-flash-image-preview',
@@ -1395,7 +1408,7 @@ const invokeOpenAIModel = async (model, promptInput, imageUrls = []) => {
 
   if (!openaiRes.ok) {
     const errorData = await openaiRes.json().catch(() => ({}));
-    throw new Error(`OpenAI: ${errorData.error?.message || openaiRes.statusText}`);
+    throw new Error(`OpenAI (${openaiRes.status}): ${errorData.error?.message || openaiRes.statusText}`);
   }
   const data = await openaiRes.json();
   const text = data.choices?.[0]?.message?.content?.trim() || '';
@@ -2629,6 +2642,7 @@ ${t}
         "- If the user asks to edit, update, change, modify, rewrite, or fix content in an existing block, you MUST include the appropriate update action (update_text_block, update_spreadsheet, or update_list) with the correct blockId from the grid context. Match blocks by their label/content/type.",
         "- If the user mentions the 'notes page', 'notes panel', 'notes', or 'note pad' and asks to write, edit, draft, add, or compose content there, use update_notes (to replace) or append_notes (to add to existing). The grid context includes [GRID NOTES — current content] showing what's already in the notes. Write well-structured content with headings, lists, and paragraphs as appropriate.",
         "- You can combine multiple action types in a single response (e.g., create a spreadsheet AND update a text block AND delete another block AND write in the notes).",
+        "- CONVERSATION CONTEXT (CRITICAL): The [CONVERSATION HISTORY] section below contains recent chat messages including YOUR OWN previous responses. When the user says 'put that in the notes', 'write those in the notes page', 'add what you just wrote', etc., find the referenced content in the conversation history and include it VERBATIM in your update_notes or append_notes action. You MUST reproduce the actual content from the conversation — do NOT ask the user to repeat it or say you don't have it.",
         "- Otherwise, only include actions when the user clearly needs a structured block (paper/doc -> sheet, data/table/budget -> spreadsheet, tasks -> todo list). If unsure, ask a follow-up question instead of creating blocks.",
         "- If no block is needed, return an empty actions array.",
         "",
@@ -2715,6 +2729,7 @@ ${t}
         '- If user says "write a project summary in the notes page", include actions: [{"type":"update_notes","content":"# Project Summary\\n\\nThis project aims to...\\n\\n## Key Goals\\n\\n- Goal 1\\n- Goal 2"}].',
         '- If user says "add meeting notes to the notes page", include actions: [{"type":"append_notes","content":"\\n## Meeting Notes — Today\\n\\n- Discussed timeline\\n- Agreed on milestones"}].',
         '- If user says "clear the notes page" or "rewrite the notes", use update_notes with the new or empty content.',
+        '- If user previously asked for a list and then says "write those in the notes page", find that list in [CONVERSATION HISTORY] and include it in actions: [{"type":"update_notes","content":"# Names\\n\\n- Alice\\n- Bob\\n- Charlie"}] (using the ACTUAL content from conversation).',
         '- If user says "organize everything" and viewport center is x=2000 y=1500, compute a clean grid centered there:',
         '  actions: [{"type":"move_blocks","moves":[{"blockId":"abc","x":1400,"y":1050},{"blockId":"def","x":1688,"y":1050},{"blockId":"ghi","x":1400,"y":1386},...]}]',
         "",
@@ -2722,6 +2737,22 @@ ${t}
         "If the user mentions a spreadsheet/table/budget/tracker, prefer {\"type\":\"create_spreadsheet\"}.",
         "",
         ctx ? `Grid context (use these block IDs and positions):\n${ctx}\n` : "",
+        conversationMemory ? `[CONVERSATION MEMORY]\n${String(conversationMemory).slice(0, 2000)}` : "",
+        (() => {
+          const msgs = Array.isArray(conversation) ? conversation : [];
+          if (!msgs.length) return "";
+          const lines = msgs
+            .slice(-14)
+            .map((m) => {
+              const role = String(m?.role || "user");
+              const limit = role === "assistant" ? 5000 : 1500;
+              const body = String(m?.content || "").slice(0, limit);
+              if (role === "system") return `[System]: ${body}`;
+              return role === "assistant" ? `Assistant: ${body}` : `User: ${body}`;
+            })
+            .join("\n");
+          return `[CONVERSATION HISTORY — recent messages. When the user says "those", "that", "what you wrote", etc., the content they mean is here. You MUST use this content in your actions.]\n${lines}`;
+        })(),
         `Intent: ${userIntent}`,
         "",
         `User text:\n${userText}`,
@@ -2803,6 +2834,12 @@ ${t}
     let responseText = '';
     let usageData = { input_tokens: 0, output_tokens: 0 };
     const boardId = req.body?.boardId || null;
+
+    // ── Provider fallback: retry with another provider on rate-limit / overload ──
+    const _invokeModels = [actualModel, ...getFallbackModels(actualModel)];
+    for (let _ii = 0; _ii < _invokeModels.length; _ii++) {
+      if (_ii > 0) { actualModel = _invokeModels[_ii]; console.log(`🔄 Invoke fallback → ${actualModel} (attempt ${_ii + 1}/${_invokeModels.length})`); }
+      try {
 
     if (isOpenAIModel(actualModel)) {
       if (!process.env.OPENAI_API_KEY) {
@@ -3100,6 +3137,17 @@ ${t}
         error: `Unsupported model: ${actualModel}. Supported models: Claude (Opus/Sonnet/Haiku), GPT (5.4/5.x/4.1/4o), o3/o4-mini, Gemini (3.x/2.5), Grok, or unified-auto` 
       });
     }
+
+    break; // provider succeeded, exit retry loop
+      } catch (_provErr) {
+        const _msg = String(_provErr?.message || '');
+        if (isRetryableProviderError(_msg) && _ii < _invokeModels.length - 1) {
+          console.warn(`⚠️ ${actualModel} rate limited: ${_msg.slice(0, 200)}, trying ${_invokeModels[_ii + 1]}…`);
+          continue;
+        }
+        throw _provErr;
+      }
+    } // end provider retry loop
 
     if (!responseText) {
       console.warn('⚠️ Empty response from AI model');
@@ -3596,8 +3644,13 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
       return { signal: ac.signal, clear: () => clearTimeout(timer) };
     };
 
+    // ── Provider fallback: retry with another provider on rate-limit / overload ──
+    const _streamModels = [actualModel, ...getFallbackModels(actualModel)];
+    for (let _si = 0; _si < _streamModels.length; _si++) {
+      if (_si > 0) { actualModel = _streamModels[_si]; console.log(`🔄 Stream fallback → ${actualModel} (attempt ${_si + 1}/${_streamModels.length})`); }
+
     if (isOpenAIModel(actualModel)) {
-      if (!process.env.OPENAI_API_KEY) return sendError('This model isn\u2019t working properly right now \u2014 try another model.');
+      if (!process.env.OPENAI_API_KEY) { if (_si < _streamModels.length - 1) continue; return sendError('This model isn\u2019t working properly right now \u2014 try another model.'); }
       const ab = makeProviderAbort();
       let openaiRes;
       try {
@@ -3621,12 +3674,15 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
         });
         ab.clear();
       } catch (e) {
+        ab.clear();
         console.error('❌ OpenAI stream fetch failed:', e.message);
+        if (_si < _streamModels.length - 1) continue;
         return sendError('This model isn\u2019t working properly right now \u2014 try another model.');
       }
       if (!openaiRes.ok) {
         const err = await openaiRes.json().catch(() => ({}));
         console.error('❌ OpenAI API error:', err?.error?.message || openaiRes.statusText);
+        if (RETRYABLE_STATUSES.has(openaiRes.status) && _si < _streamModels.length - 1) continue;
         return sendError('This model isn\u2019t working properly right now \u2014 try another model.');
       }
       streamActivity = Date.now();
@@ -3651,9 +3707,10 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
       });
       reader.on('end', () => sendDone());
       reader.on('error', () => sendError('This model isn\u2019t working properly right now \u2014 try another model.'));
+      return; // stream connected, exit handler
 
     } else if (actualModel.includes('claude')) {
-      if (!process.env.ANTHROPIC_API_KEY) return sendError('This model isn\u2019t working properly right now \u2014 try another model.');
+      if (!process.env.ANTHROPIC_API_KEY) { if (_si < _streamModels.length - 1) continue; return sendError('This model isn\u2019t working properly right now \u2014 try another model.'); }
       const anthropicModel = resolveAnthropicModel(actualModel);
       const ab = makeProviderAbort();
       let anthropicRes;
@@ -3694,12 +3751,15 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
         });
         ab.clear();
       } catch (e) {
+        ab.clear();
         console.error('❌ Anthropic stream fetch failed:', e.message);
+        if (_si < _streamModels.length - 1) continue;
         return sendError('This model isn\u2019t working properly right now \u2014 try another model.');
       }
       if (!anthropicRes.ok) {
         const err = await anthropicRes.json().catch(() => ({}));
         console.error('❌ Anthropic API error:', err?.error?.message || anthropicRes.statusText);
+        if (RETRYABLE_STATUSES.has(anthropicRes.status) && _si < _streamModels.length - 1) continue;
         return sendError('This model isn\u2019t working properly right now \u2014 try another model.');
       }
       streamActivity = Date.now();
@@ -3722,9 +3782,10 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
       });
       reader.on('end', () => sendDone());
       reader.on('error', () => sendError('This model isn\u2019t working properly right now \u2014 try another model.'));
+      return; // stream connected, exit handler
 
     } else if (actualModel.startsWith('gemini-') || actualModel.includes('gemini')) {
-      if (!process.env.GOOGLE_API_KEY) return sendError('This model isn\u2019t working properly right now \u2014 try another model.');
+      if (!process.env.GOOGLE_API_KEY) { if (_si < _streamModels.length - 1) continue; return sendError('This model isn\u2019t working properly right now \u2014 try another model.'); }
       let geminiModel = actualModel;
       if (actualModel === 'gemini-pro' || actualModel === 'gemini-1.5-flash') geminiModel = 'gemini-flash-latest';
       else if (actualModel === 'gemini-1.5-pro') geminiModel = 'gemini-pro-latest';
@@ -3768,12 +3829,15 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
         );
         ab.clear();
       } catch (e) {
+        ab.clear();
         console.error('❌ Gemini stream fetch failed:', e.message);
+        if (_si < _streamModels.length - 1) continue;
         return sendError('This model isn\u2019t working properly right now \u2014 try another model.');
       }
       if (!geminiRes.ok) {
         const err = await geminiRes.json().catch(() => ({}));
         console.error('❌ Gemini API error:', err?.error?.message || geminiRes.statusText);
+        if (RETRYABLE_STATUSES.has(geminiRes.status) && _si < _streamModels.length - 1) continue;
         return sendError('This model isn\u2019t working properly right now \u2014 try another model.');
       }
       streamActivity = Date.now();
@@ -3796,9 +3860,10 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
       });
       reader.on('end', () => sendDone());
       reader.on('error', () => sendError('This model isn\u2019t working properly right now \u2014 try another model.'));
+      return; // stream connected, exit handler
 
     } else if (actualModel.includes('grok')) {
-      if (!process.env.XAI_API_KEY) return sendError('This model isn\u2019t working properly right now \u2014 try another model.');
+      if (!process.env.XAI_API_KEY) { if (_si < _streamModels.length - 1) continue; return sendError('This model isn\u2019t working properly right now \u2014 try another model.'); }
       const ab = makeProviderAbort();
       let grokRes;
       try {
@@ -3827,12 +3892,15 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
         ab.clear();
         console.log(`✅ Grok responded: ${grokRes.status}`);
       } catch (e) {
+        ab.clear();
         console.error('❌ Grok stream fetch failed:', e.message);
+        if (_si < _streamModels.length - 1) continue;
         return sendError('This model isn\u2019t working properly right now \u2014 try another model.');
       }
       if (!grokRes.ok) {
         const err = await grokRes.json().catch(() => ({}));
         console.error('❌ Grok API error:', err);
+        if (RETRYABLE_STATUSES.has(grokRes.status) && _si < _streamModels.length - 1) continue;
         return sendError('This model isn\u2019t working properly right now \u2014 try another model.');
       }
       streamActivity = Date.now();
@@ -3857,10 +3925,11 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
       });
       reader.on('end', () => sendDone());
       reader.on('error', () => sendError('This model isn\u2019t working properly right now \u2014 try another model.'));
+      return; // stream connected, exit handler
 
-    } else {
-      return sendError('This model isn\u2019t working properly right now \u2014 try another model.');
-    }
+    } // end provider if/else
+    } // end provider fallback loop
+    sendError('All AI providers are temporarily busy \u2014 please wait a moment and try again.');
   } catch (error) {
     console.error('❌ Stream error:', error.message);
     const userMsg = 'This model isn\u2019t working properly right now \u2014 try another model.';

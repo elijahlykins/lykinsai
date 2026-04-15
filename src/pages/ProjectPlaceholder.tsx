@@ -1634,13 +1634,13 @@ INSTRUCTIONS:
       {chatChunkDragOver && (
         <div className="fixed inset-0 z-[60] pointer-events-none flex items-center justify-center">
           <div className="absolute inset-0 bg-blue-500/5 border-2 border-dashed border-blue-400/40 rounded-3xl m-4" />
-          <div className="relative bg-white/90 backdrop-blur-sm rounded-2xl px-6 py-4 shadow-lg border border-blue-300/50 flex items-center gap-3">
+          <div className="relative bg-white/65 backdrop-blur-sm rounded-2xl px-6 py-4 shadow-md border border-blue-300/30 flex items-center gap-3">
             <StickyNote className="w-5 h-5 text-amber-500" />
             <span className="text-sm font-medium text-black/70">Drop to save as Quick Note</span>
           </div>
         </div>
       )}
-      <header className="fixed top-0 left-0 z-30 bg-white/60 backdrop-blur-md" style={{ right: showChat && !isMobileChat ? `${chatRailWidthPx}px` : 0, transition: "right 350ms cubic-bezier(0.22,1,0.36,1)" }}>
+      <header className="fixed top-0 left-0 z-30 bg-white/40 backdrop-blur-sm" style={{ right: showChat && !isMobileChat ? `${chatRailWidthPx}px` : 0, transition: "right 350ms cubic-bezier(0.22,1,0.36,1)" }}>
         <div className="mx-auto w-full max-w-[100rem] px-3 sm:px-6 py-3 sm:py-4 flex items-center">
           <div className="hidden md:block w-[13rem] lg:w-[17.5rem] xl:w-[21.25rem] shrink-0" />
           <div className="text-base sm:text-lg font-semibold shrink-0">
@@ -1659,7 +1659,7 @@ INSTRUCTIONS:
                   }
                 }}
                 autoFocus
-                className="w-full max-w-[17.5rem] sm:max-w-[26.25rem] bg-white/70 border border-white/60 rounded-lg px-3 py-1 text-base sm:text-lg font-semibold outline-none"
+                className="w-full max-w-[17.5rem] sm:max-w-[26.25rem] bg-white/45 border border-white/30 rounded-lg px-3 py-1 text-base sm:text-lg font-semibold outline-none"
               />
             ) : (
               <button
@@ -1702,7 +1702,7 @@ INSTRUCTIONS:
                 </SelectTrigger>
                 <SelectContent
                   align="end"
-                  className="glass-control border border-white/25 bg-white/35 backdrop-blur-xl shadow-lg overflow-hidden"
+                  className="glass-control border border-white/16 bg-white/22 backdrop-blur-md shadow-md overflow-hidden"
                 >
                   <SelectGroup>
                     <SelectLabel>Latest</SelectLabel>
@@ -1812,14 +1812,14 @@ INSTRUCTIONS:
               { label: "Chats", value: chatMessages.filter((m) => m.role === "user").length, color: "#60a5fa" },
               { label: "Connections", value: 0, color: "#93c5fd" },
             ].map((stat) => (
-              <div key={stat.label} className="rounded-xl border border-white/50 bg-white/40 backdrop-blur-md p-3 text-center">
+              <div key={stat.label} className="rounded-xl border border-white/25 bg-white/25 backdrop-blur-sm p-3 text-center">
                 <div className="text-xl font-bold" style={{ color: stat.color }}>{stat.value}</div>
                 <div className="text-[0.6875rem] text-black/50 mt-0.5">{stat.label}</div>
               </div>
             ))}
           </div>
 
-          <div className="rounded-xl border border-white/50 bg-white/30 backdrop-blur-md p-4">
+          <div className="rounded-xl border border-white/25 bg-white/20 backdrop-blur-sm p-4">
             <div className="text-xs font-semibold mb-3">Content Breakdown</div>
             <div className="space-y-2.5">
               {[
@@ -1844,7 +1844,7 @@ INSTRUCTIONS:
             </div>
           </div>
 
-          <div className="rounded-xl border border-white/50 bg-white/30 backdrop-blur-md p-4">
+          <div className="rounded-xl border border-white/25 bg-white/20 backdrop-blur-sm p-4">
             <div className="text-xs font-semibold mb-3">Weekly Activity</div>
             <div className="flex items-end gap-1.5 h-20">
               {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((day, i) => {
@@ -1865,7 +1865,7 @@ INSTRUCTIONS:
             </div>
           </div>
 
-          <div className="rounded-xl border border-white/50 bg-white/30 backdrop-blur-md p-4">
+          <div className="rounded-xl border border-white/25 bg-white/20 backdrop-blur-sm p-4">
             <div className="flex items-center justify-between mb-2">
               <div className="text-xs font-semibold">Team Space</div>
               <span className="text-[0.625rem] font-medium text-blue-500/70 bg-blue-500/10 px-2 py-0.5 rounded-full">Coming soon</span>
@@ -1899,7 +1899,7 @@ INSTRUCTIONS:
             </div>
           </div>
 
-          <div className="rounded-xl border border-white/50 bg-white/30 backdrop-blur-md p-4">
+          <div className="rounded-xl border border-white/25 bg-white/20 backdrop-blur-sm p-4">
             <div className="text-xs font-semibold mb-2">Storage Used</div>
             {(() => {
               const totalBytes = files.reduce((sum, f) => sum + (f.size || 0), 0);
@@ -1926,7 +1926,7 @@ INSTRUCTIONS:
           </div>
 
           {vaultTags.length > 0 && (
-            <div className="rounded-xl border border-white/50 bg-white/30 backdrop-blur-md p-4">
+            <div className="rounded-xl border border-white/25 bg-white/20 backdrop-blur-sm p-4">
               <div className="flex items-center gap-2 mb-3">
                 <Tag className="w-3.5 h-3.5 text-black/60" />
                 <div className="text-xs font-semibold">Import from Vault</div>
@@ -1982,7 +1982,7 @@ INSTRUCTIONS:
                       localStorage.setItem("omnia_board_id", board.id);
                       nav(`/grid/${board.id}`);
                     }}
-                    className="w-full h-[88px] rounded-xl border border-white/60 bg-white/50 hover:bg-white/70 backdrop-blur-md p-4 shadow-lg text-left transition-all flex flex-col justify-center"
+                    className="w-full h-[88px] rounded-xl border border-white/30 bg-white/30 hover:bg-white/45 backdrop-blur-sm p-4 shadow-md text-left transition-all flex flex-col justify-center"
                   >
                     <div className="text-sm font-semibold truncate">{board.title}</div>
                     <div className="mt-1 text-xs text-black/50">Grid</div>
@@ -2001,7 +2001,7 @@ INSTRUCTIONS:
                         <MoreHorizontal className="w-4 h-4" />
                       </button>
                       {openBoardMenuId === board.id && (
-                        <div className="absolute right-0 mt-2 w-48 rounded-xl border border-white/60 bg-white/80 backdrop-blur-md shadow-xl p-2 z-50">
+                        <div className="absolute right-0 mt-2 w-48 rounded-xl border border-white/30 bg-white/55 backdrop-blur-sm shadow-md p-2 z-50">
                           <button
                             type="button"
                             onClick={() => {
@@ -2116,7 +2116,7 @@ INSTRUCTIONS:
                   const displayUrl = resolvedUrls[file.id] || file.url;
 
                   const fallbackCard = (icon: React.ReactNode, label: string, subtitle?: string) => (
-                    <div className="rounded-2xl border border-white/40 bg-white/30 backdrop-blur-md p-4" draggable={false}>
+                    <div className="rounded-2xl border border-white/20 bg-white/18 backdrop-blur-sm p-4" draggable={false}>
                       <div className="flex items-center gap-3">
                         <div className="w-10 h-10 rounded-xl bg-white/50 border border-white/60 flex items-center justify-center shrink-0">
                           {icon}
@@ -2188,7 +2188,7 @@ INSTRUCTIONS:
 
                     if (isAudio) {
                       return (
-                        <div className="rounded-2xl border border-white/40 bg-white/30 backdrop-blur-md p-3 space-y-3">
+                        <div className="rounded-2xl border border-white/20 bg-white/18 backdrop-blur-sm p-3 space-y-3">
                           <div className="flex items-center gap-2 text-black/80">
                             <Music className="w-4 h-4" />
                             <span className="text-xs font-medium truncate">{file.name}</span>
@@ -2231,7 +2231,7 @@ INSTRUCTIONS:
                     if (file.kind === "doc") {
                       if (file.content) {
                         return (
-                          <div className="rounded-2xl border border-white/40 bg-white/30 backdrop-blur-md p-4" draggable={false}>
+                          <div className="rounded-2xl border border-white/20 bg-white/18 backdrop-blur-sm p-4" draggable={false}>
                             <div className="flex items-center gap-2 text-black/70 mb-2">
                               <StickyNote className="w-4 h-4" />
                               <span className="text-xs font-medium">Quick Note</span>
@@ -2256,7 +2256,7 @@ INSTRUCTIONS:
                     if (file.kind === "spreadsheet" && file.spreadsheetData) {
                       const { rows, cols, cells } = file.spreadsheetData;
                       return (
-                        <div className="rounded-2xl border border-white/40 bg-white/30 backdrop-blur-md overflow-hidden" draggable={false}>
+                        <div className="rounded-2xl border border-white/20 bg-white/18 backdrop-blur-sm overflow-hidden" draggable={false}>
                           <div className="flex items-center gap-2 text-black/70 px-3 py-2 border-b border-black/10">
                             <Table className="w-4 h-4" />
                             <span className="text-xs font-medium truncate">{file.name}</span>
@@ -2339,7 +2339,7 @@ INSTRUCTIONS:
                             e.stopPropagation();
                             setNoteComposerFileId((prev) => (prev === file.id ? null : file.id));
                           }}
-                          className="absolute top-2 right-2 h-6 min-w-6 px-1.5 rounded-full bg-white/70 backdrop-blur-md border border-white/60 text-[0.6875rem] font-semibold flex items-center justify-center gap-1 z-[125] shadow-sm"
+                          className="absolute top-2 right-2 h-6 min-w-6 px-1.5 rounded-full bg-white/45 backdrop-blur-sm border border-white/30 text-[0.6875rem] font-semibold flex items-center justify-center gap-1 z-[125] shadow-sm"
                           title="View file notes"
                         >
                           <MessageSquare className="w-3 h-3" />
@@ -2363,7 +2363,7 @@ INSTRUCTIONS:
                           </button>
                           {openFileMenuId === file.id && (
                             <div
-                              className="absolute right-0 bottom-full mb-2 w-48 rounded-2xl border border-white/60 bg-white/85 backdrop-blur-xl shadow-2xl p-2 z-[130]"
+                              className="absolute right-0 bottom-full mb-2 w-48 rounded-2xl border border-white/30 bg-white/60 backdrop-blur-md shadow-lg p-2 z-[130]"
                               onMouseDown={(e) => e.stopPropagation()}
                             >
                               <button
@@ -2430,7 +2430,7 @@ INSTRUCTIONS:
                           {noteComposerFileId === file.id && (
                             <div
                               ref={noteComposerRef}
-                              className="absolute right-0 bottom-full mb-2 w-64 rounded-2xl border border-white/60 bg-white/85 backdrop-blur-xl shadow-2xl p-3 z-[140]"
+                              className="absolute right-0 bottom-full mb-2 w-64 rounded-2xl border border-white/30 bg-white/60 backdrop-blur-md shadow-lg p-3 z-[140]"
                               onMouseDown={(e) => e.stopPropagation()}
                             >
                               <div className="text-[0.6875rem] font-medium text-black/60 mb-2">Add a note</div>
@@ -2487,7 +2487,7 @@ INSTRUCTIONS:
                           {tagPickerFileId === file.id && (
                             <div
                               ref={tagPickerRef}
-                              className="absolute right-0 bottom-full mb-2 w-56 rounded-2xl border border-white/60 bg-white/85 backdrop-blur-xl shadow-2xl p-2 z-[140]"
+                              className="absolute right-0 bottom-full mb-2 w-56 rounded-2xl border border-white/30 bg-white/60 backdrop-blur-md shadow-lg p-2 z-[140]"
                               onMouseDown={(e) => e.stopPropagation()}
                             >
                               <div className="px-1 py-1 text-[0.6875rem] font-medium text-black/60 mb-1">Tags</div>
@@ -2557,7 +2557,7 @@ INSTRUCTIONS:
 
       {isDragging && (
         <div className="fixed inset-0 z-[90] bg-black/30 backdrop-blur-sm flex items-center justify-center">
-          <div className="rounded-2xl border border-white/60 bg-white/70 backdrop-blur-md px-6 py-4 text-sm text-black/70 shadow-xl">
+          <div className="rounded-2xl border border-white/30 bg-white/45 backdrop-blur-sm px-6 py-4 text-sm text-black/70 shadow-md">
             Drop files to add them to the current folder
           </div>
         </div>
@@ -2565,7 +2565,7 @@ INSTRUCTIONS:
 
       {selectedFile && (
         <div className="fixed inset-0 z-[95] bg-black/40 backdrop-blur-sm flex items-center justify-center">
-          <div className="rounded-2xl border border-white/60 bg-white/80 backdrop-blur-md p-4 shadow-2xl w-[min(900px,94vw)]">
+          <div className="rounded-2xl border border-white/30 bg-white/55 backdrop-blur-sm p-4 shadow-lg w-[min(900px,94vw)]">
             <div className="flex items-center justify-between mb-3">
               <div className="text-sm font-semibold text-black/70 truncate">{selectedFile.name}</div>
               <button
@@ -2582,7 +2582,7 @@ INSTRUCTIONS:
       )}
 
       <Dialog open={!!moveBoardId} onOpenChange={(open) => !open && setMoveBoardId(null)}>
-        <DialogContent className="rounded-2xl border border-white/60 bg-[#f2f2f7]/85 backdrop-blur-lg text-black shadow-2xl">
+        <DialogContent className="rounded-2xl border border-white/30 bg-[#f2f2f7]/65 backdrop-blur-md text-black shadow-lg">
           <DialogHeader>
             <DialogTitle>Move grid</DialogTitle>
           </DialogHeader>
@@ -2594,7 +2594,7 @@ INSTRUCTIONS:
                   key={p.id}
                   type="button"
                   onClick={() => handleMoveBoard(moveBoardId as string, p.id)}
-                  className="w-full text-left text-sm px-3 py-2 rounded-xl bg-white/60 border border-white/60 backdrop-blur-md hover:opacity-90"
+                  className="w-full text-left text-sm px-3 py-2 rounded-xl bg-white/35 border border-white/30 backdrop-blur-sm hover:opacity-90"
                 >
                   {p.name}
                 </button>
@@ -2640,7 +2640,7 @@ INSTRUCTIONS:
             {chatMessages.map((msg: any, idx: number) => (
               <div key={msg.id || idx} className={`flex flex-col ${msg.role === "user" ? "items-end" : "items-start"}`}>
                 {msg.role === "user" ? (
-                  <div className="max-w-[94%] rounded-2xl rounded-br-md px-3 py-2 text-xs leading-relaxed text-black/90 border border-white/55 bg-[linear-gradient(135deg,rgba(255,255,255,0.32),rgba(255,255,255,0.16))] backdrop-blur-xl shadow-[0_10px_28px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.35)] [&_table]:text-[0.6875rem] [&_td]:py-1 [&_th]:py-1">
+                  <div className="max-w-[94%] rounded-2xl rounded-br-md px-3 py-2 text-xs leading-relaxed text-black/90 border border-white/30 bg-[linear-gradient(135deg,rgba(255,255,255,0.14),rgba(255,255,255,0.06))] backdrop-blur-md shadow-[0_4px_14px_rgba(0,0,0,0.06)] [&_table]:text-[0.6875rem] [&_td]:py-1 [&_th]:py-1">
                     <ReactMarkdown remarkPlugins={[remarkGfm]} components={buildChatMarkdownComponents(msg.id)}>
                       {normalizeChecklistSyntax(msg.content || "")}
                     </ReactMarkdown>
@@ -2678,7 +2678,7 @@ INSTRUCTIONS:
                                     <div
                                       draggable
                                       onDragStart={(e: React.DragEvent) => handleChunkDragStart(e, chunk)}
-                                      className={`rounded-xl px-3 py-1.5 text-xs leading-relaxed break-words border text-black/85 cursor-grab active:cursor-grabbing transition-all ${isSingle ? "bg-white/70 border-white/70 rounded-2xl rounded-bl-md" : "bg-white/50 border-white/40 hover:bg-white/70 hover:border-blue-300/40 hover:shadow-sm"}`}
+                                      className={`rounded-xl px-3 py-1.5 text-xs leading-relaxed break-words border text-black/85 cursor-grab active:cursor-grabbing transition-all ${isSingle ? "bg-white/45 border-white/40 rounded-2xl rounded-bl-md" : "bg-white/30 border-white/25 hover:bg-white/45 hover:border-blue-300/40 hover:shadow-sm"}`}
                                     >
                                       <div className={`absolute -left-5 top-1/2 -translate-y-1/2 opacity-0 group-hover/chunk:opacity-100 transition-opacity ${isSingle ? "hidden" : ""}`}>
                                         <GripVertical className="w-3 h-3 text-blue-400/60" />
@@ -2754,7 +2754,7 @@ INSTRUCTIONS:
                   <SelectTrigger className="omnia-neu-chat-toolbar-select-trigger h-8 max-w-[6.5rem] min-w-0 shrink-0 rounded-lg border-0 bg-transparent text-[0.625rem] px-1.5 font-medium text-black/75 shadow-none dark:text-white/80 [&>span]:truncate">
                     <SelectValue placeholder="Model" />
                   </SelectTrigger>
-                  <SelectContent side="top" align="start" className="glass-control border border-white/25 dark:border-white/10 bg-white/35 dark:bg-white/10 backdrop-blur-xl shadow-lg max-h-[min(28rem,70vh)] overflow-y-auto w-[min(92vw,18rem)]">
+                  <SelectContent side="top" align="start" className="glass-control border border-white/16 dark:border-white/8 bg-white/22 dark:bg-white/8 backdrop-blur-md shadow-md max-h-[min(28rem,70vh)] overflow-y-auto w-[min(92vw,18rem)]">
                     <SelectGroup>
                       <SelectLabel>Latest</SelectLabel>
                       <SelectItem value="claude-sonnet-4-6" hint="Anthropic flagship">Claude Sonnet 4.6</SelectItem>

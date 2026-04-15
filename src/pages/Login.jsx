@@ -118,7 +118,7 @@ export default function Login() {
 
   if (showSuccess) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#fafafa]">
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-white dark:bg-[#0b0b0f]">
         <FloatingOrb className="w-96 h-96 bg-blue-400 -top-20 -left-20" />
         <FloatingOrb className="w-80 h-80 bg-violet-400 -bottom-10 -right-10" delay={2} />
         <motion.div
@@ -130,19 +130,19 @@ export default function Login() {
             initial={{ scale: 0 }}
             animate={{ scale: 1 }}
             transition={{ type: "spring", delay: 0.2 }}
-            className="w-16 h-16 mx-auto mb-6 rounded-full bg-green-100 flex items-center justify-center"
+            className="w-16 h-16 mx-auto mb-6 rounded-full bg-green-100 dark:bg-green-900/40 flex items-center justify-center"
           >
-            <svg className="w-8 h-8 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+            <svg className="w-8 h-8 text-green-600 dark:text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
             </svg>
           </motion.div>
-          <h2 className="text-2xl font-semibold text-gray-900 mb-2">Check your email</h2>
-          <p className="text-gray-500 mb-8">
-            We sent a confirmation link to <span className="font-medium text-gray-700">{email}</span>. Click the link to activate your account.
+          <h2 className="text-2xl font-semibold text-gray-900 dark:text-white mb-2">Check your email</h2>
+          <p className="text-gray-500 dark:text-gray-400 mb-8">
+            We sent a confirmation link to <span className="font-medium text-gray-700 dark:text-gray-300">{email}</span>. Click the link to activate your account.
           </p>
           <button
             onClick={() => { setShowSuccess(false); setMode("login"); }}
-            className="text-sm font-medium text-gray-900 underline underline-offset-4 hover:text-gray-600 transition-colors"
+            className="text-sm font-medium text-gray-900 dark:text-white underline underline-offset-4 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
           >
             Back to login
           </button>
@@ -152,10 +152,10 @@ export default function Login() {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex bg-[#fafafa] overflow-hidden">
-      <FloatingOrb className="w-[500px] h-[500px] bg-blue-300 -top-32 -left-32" />
-      <FloatingOrb className="w-[400px] h-[400px] bg-violet-300 top-1/2 -right-20" delay={2} />
-      <FloatingOrb className="w-[300px] h-[300px] bg-amber-200 -bottom-16 left-1/3" delay={4} />
+    <div className="fixed inset-0 z-50 flex bg-white dark:bg-[#0b0b0f] overflow-hidden">
+      <FloatingOrb className="w-[500px] h-[500px] bg-blue-300 dark:bg-blue-600 -top-32 -left-32" />
+      <FloatingOrb className="w-[400px] h-[400px] bg-violet-300 dark:bg-violet-600 top-1/2 -right-20" delay={2} />
+      <FloatingOrb className="w-[300px] h-[300px] bg-amber-200 dark:bg-amber-600 -bottom-16 left-1/3" delay={4} />
 
       {/* Left branding panel - hidden on mobile */}
       <div className="hidden lg:flex lg:w-[45%] relative items-center justify-center p-12">
@@ -165,13 +165,13 @@ export default function Login() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.6 }}
           >
-            <h1 className="text-5xl font-bold text-gray-900 tracking-tight leading-tight mb-4">
+            <h1 className="text-5xl font-bold text-gray-900 dark:text-white tracking-tight leading-tight mb-4">
               LYKN
             </h1>
-            <p className="text-2xl font-medium text-blue-500 leading-relaxed mb-6">
+            <p className="text-2xl font-medium text-blue-500 dark:text-blue-400 leading-relaxed mb-6">
               Your AI interface.
             </p>
-            <p className="text-base text-gray-500 leading-relaxed">
+            <p className="text-base text-gray-500 dark:text-gray-400 leading-relaxed">
               LYKN is your AI-powered second brain that captures, organizes, and connects everything you need in one place. Stay on top of your thoughts, projects, and schedule with intelligent tools built to work the way you think.
             </p>
           </motion.div>
@@ -188,10 +188,10 @@ export default function Login() {
         >
           {/* Mobile branding */}
           <div className="lg:hidden mb-8 text-center">
-            <span className="text-2xl font-bold text-gray-900 tracking-tight">LYKN</span>
+            <span className="text-2xl font-bold text-gray-900 dark:text-white tracking-tight">LYKN</span>
           </div>
 
-          <div className="bg-white/80 backdrop-blur-xl rounded-3xl border border-gray-200/80 shadow-xl shadow-gray-200/40 p-8 sm:p-10">
+          <div className="bg-white/55 dark:bg-white/5 backdrop-blur-md rounded-3xl border border-gray-200/50 dark:border-white/8 shadow-lg shadow-gray-200/20 dark:shadow-black/20 p-8 sm:p-10">
             <AnimatePresence mode="wait">
               <motion.div
                 key={mode}
@@ -200,10 +200,10 @@ export default function Login() {
                 exit={{ opacity: 0, x: mode === "login" ? 10 : -10 }}
                 transition={{ duration: 0.2 }}
               >
-                <h2 className="text-2xl font-semibold text-gray-900 mb-1">
+                <h2 className="text-2xl font-semibold text-gray-900 dark:text-white mb-1">
                   {mode === "login" ? "Welcome back" : "Create your account"}
                 </h2>
-                <p className="text-sm text-gray-500 mb-7">
+                <p className="text-sm text-gray-500 dark:text-gray-400 mb-7">
                   {mode === "login"
                     ? "Sign in to continue to LYKN"
                     : "Get started with your second brain"}
@@ -212,7 +212,7 @@ export default function Login() {
                 <button
                   type="button"
                   onClick={() => signInWithOAuth("google")}
-                  className="w-full flex items-center justify-center gap-3 rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm font-medium text-gray-700 hover:bg-gray-50 hover:border-gray-300 transition-all duration-200 shadow-sm"
+                  className="w-full flex items-center justify-center gap-3 rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-white/5 px-4 py-3 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/10 hover:border-gray-300 dark:hover:border-white/20 transition-all duration-200 shadow-sm"
                 >
                   <GoogleIcon />
                   Continue with Google
@@ -220,10 +220,10 @@ export default function Login() {
 
                 <div className="relative my-6">
                   <div className="absolute inset-0 flex items-center">
-                    <div className="w-full border-t border-gray-200" />
+                    <div className="w-full border-t border-gray-200 dark:border-white/10" />
                   </div>
                   <div className="relative flex justify-center text-xs">
-                    <span className="bg-white px-3 text-gray-400 font-medium">or</span>
+                    <span className="bg-white dark:bg-transparent px-3 text-gray-400 dark:text-gray-500 font-medium">or</span>
                   </div>
                 </div>
 
@@ -239,7 +239,7 @@ export default function Login() {
                         onChange={(e) => setName(e.target.value)}
                         placeholder="Full name"
                         autoComplete="name"
-                        className="w-full rounded-xl border border-gray-200 bg-gray-50/50 px-4 py-3 text-sm text-gray-900 placeholder:text-gray-400 outline-none focus:border-gray-400 focus:bg-white focus:ring-2 focus:ring-gray-100 transition-all duration-200"
+                        className="w-full rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/50 dark:bg-white/5 px-4 py-3 text-sm text-gray-900 dark:text-white placeholder:text-gray-400 dark:placeholder:text-gray-500 outline-none focus:border-gray-400 dark:focus:border-white/25 focus:bg-white dark:focus:bg-white/10 focus:ring-2 focus:ring-gray-100 dark:focus:ring-white/5 transition-all duration-200"
                       />
                     </motion.div>
                   )}
@@ -250,7 +250,7 @@ export default function Login() {
                     onKeyDown={handleKeyDown}
                     placeholder="Email address"
                     autoComplete="email"
-                    className="w-full rounded-xl border border-gray-200 bg-gray-50/50 px-4 py-3 text-sm text-gray-900 placeholder:text-gray-400 outline-none focus:border-gray-400 focus:bg-white focus:ring-2 focus:ring-gray-100 transition-all duration-200"
+                    className="w-full rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/50 dark:bg-white/5 px-4 py-3 text-sm text-gray-900 dark:text-white placeholder:text-gray-400 dark:placeholder:text-gray-500 outline-none focus:border-gray-400 dark:focus:border-white/25 focus:bg-white dark:focus:bg-white/10 focus:ring-2 focus:ring-gray-100 dark:focus:ring-white/5 transition-all duration-200"
                   />
                   <input
                     type="password"
@@ -259,7 +259,7 @@ export default function Login() {
                     onKeyDown={handleKeyDown}
                     placeholder="Password"
                     autoComplete={mode === "login" ? "current-password" : "new-password"}
-                    className="w-full rounded-xl border border-gray-200 bg-gray-50/50 px-4 py-3 text-sm text-gray-900 placeholder:text-gray-400 outline-none focus:border-gray-400 focus:bg-white focus:ring-2 focus:ring-gray-100 transition-all duration-200"
+                    className="w-full rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/50 dark:bg-white/5 px-4 py-3 text-sm text-gray-900 dark:text-white placeholder:text-gray-400 dark:placeholder:text-gray-500 outline-none focus:border-gray-400 dark:focus:border-white/25 focus:bg-white dark:focus:bg-white/10 focus:ring-2 focus:ring-gray-100 dark:focus:ring-white/5 transition-all duration-200"
                   />
 
                   <AnimatePresence>
@@ -268,12 +268,12 @@ export default function Login() {
                         initial={{ opacity: 0, y: -4 }}
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, y: -4 }}
-                        className="flex items-center gap-2 rounded-lg bg-red-50 border border-red-100 px-3 py-2.5"
+                        className="flex items-center gap-2 rounded-lg bg-red-50 dark:bg-red-950/40 border border-red-100 dark:border-red-900/50 px-3 py-2.5"
                       >
                         <svg className="w-4 h-4 text-red-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                           <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
                         </svg>
-                        <span className="text-xs text-red-700">{displayError}</span>
+                        <span className="text-xs text-red-700 dark:text-red-300">{displayError}</span>
                       </motion.div>
                     )}
                   </AnimatePresence>
@@ -281,7 +281,7 @@ export default function Login() {
                   <button
                     type="submit"
                     disabled={submitting}
-                    className="w-full rounded-xl bg-gray-900 px-4 py-3 text-sm font-medium text-white hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 shadow-sm shadow-gray-900/20 mt-1"
+                    className="w-full rounded-xl bg-gray-900 dark:bg-white px-4 py-3 text-sm font-medium text-white dark:text-gray-900 hover:bg-gray-800 dark:hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 shadow-sm shadow-gray-900/20 dark:shadow-black/20 mt-1"
                   >
                     {submitting ? (
                       <span className="flex items-center justify-center gap-2">
@@ -299,19 +299,19 @@ export default function Login() {
               </motion.div>
             </AnimatePresence>
 
-            <div className="mt-6 text-center text-sm text-gray-500">
+            <div className="mt-6 text-center text-sm text-gray-500 dark:text-gray-400">
               {mode === "login" ? "Don't have an account?" : "Already have an account?"}{" "}
               <button
                 type="button"
                 onClick={switchMode}
-                className="font-medium text-gray-900 hover:text-gray-700 transition-colors"
+                className="font-medium text-gray-900 dark:text-white hover:text-gray-700 dark:hover:text-gray-300 transition-colors"
               >
                 {mode === "login" ? "Sign up" : "Sign in"}
               </button>
             </div>
           </div>
 
-          <p className="mt-6 text-center text-xs text-gray-400">
+          <p className="mt-6 text-center text-xs text-gray-400 dark:text-gray-500">
             By continuing, you agree to LYKN's Terms of Service and Privacy Policy.
           </p>
         </motion.div>

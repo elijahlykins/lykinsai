@@ -211,6 +211,8 @@ export default function NotesPanel({ open, onOpenChange, content, onContentChang
   const notesStreamTimerRef = useRef<number | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
+  const onContentChangeRef = useRef(onContentChange);
+  useEffect(() => { onContentChangeRef.current = onContentChange; }, [onContentChange]);
 
   useEffect(() => {
     heightVhRef.current = heightVh;
@@ -289,14 +291,14 @@ export default function NotesPanel({ open, onOpenChange, content, onContentChang
       if (!shouldStream) {
         if (action === "set" && tiptapDoc) {
           ed.commands.setContent(tiptapDoc);
-          onContentChange(ed.getJSON());
+          onContentChangeRef.current(ed.getJSON());
         } else if (action === "append" && tiptapDoc) {
           const endPos = ed.state.doc.content.size;
           const nodes = Array.isArray(tiptapDoc?.content) ? tiptapDoc.content : [];
           for (const node of nodes) {
             ed.commands.insertContentAt(endPos, node);
           }
-          onContentChange(ed.getJSON());
+          onContentChangeRef.current(ed.getJSON());
         }
         return;
       }
@@ -306,7 +308,7 @@ export default function NotesPanel({ open, onOpenChange, content, onContentChang
 
       if (totalWords === 0) {
         if (action === "set") ed.commands.setContent(tiptapDoc);
-        onContentChange(ed.getJSON());
+        onContentChangeRef.current(ed.getJSON());
         return;
       }
 
@@ -342,7 +344,7 @@ export default function NotesPanel({ open, onOpenChange, content, onContentChang
             content: [...existingContent, ...fullNodes],
           });
           editorRef.current.setEditable(true);
-          onContentChange(editorRef.current.getJSON());
+          onContentChangeRef.current(editorRef.current.getJSON());
         }
       }, TICK_MS);
     };
@@ -352,7 +354,7 @@ export default function NotesPanel({ open, onOpenChange, content, onContentChang
       window.removeEventListener("omnia_notes_ai_update", onAiUpdate as EventListener);
       cancelStream();
     };
-  }, [onContentChange]);
+  }, []);
 
   const isFullBleed = heightVh >= FULLSCREEN_FROM_VH;
   /** Match focused chat: editor clears the fixed left “Grid Files” column whenever the rail is shown */
@@ -453,7 +455,7 @@ export default function NotesPanel({ open, onOpenChange, content, onContentChang
       {!open && (
         <div className="fixed bottom-0 left-1/2 -translate-x-1/2 z-[210] max-md:bottom-[env(safe-area-inset-bottom,0px)]">
           <div
-            className="w-16 h-[0.4rem] rounded-t-md bg-black/15 hover:bg-black/25 cursor-pointer select-none touch-none transition-colors py-1 box-content"
+            className="w-16 h-[0.4rem] rounded-t-md bg-black/15 dark:bg-white/15 hover:bg-black/25 dark:hover:bg-white/25 cursor-pointer select-none touch-none transition-colors py-1 box-content"
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}
             onPointerUp={onPointerUp}
@@ -465,7 +467,7 @@ export default function NotesPanel({ open, onOpenChange, content, onContentChang
       {/* Sliding notes panel — opens full viewport; drag handle down to resize / dismiss */}
       <div
         data-omnia-notes-root=""
-        className={`fixed inset-x-0 bottom-0 flex flex-col bg-white/95 backdrop-blur-xl border-black/10 shadow-2xl ${
+        className={`fixed inset-x-0 bottom-0 flex flex-col bg-white/80 dark:bg-[#1e1e1e]/90 backdrop-blur-md border-black/8 dark:border-white/8 shadow-lg ${
           isFullBleed ? "rounded-none border-t-0" : "rounded-t-2xl border-t"
         } ${open ? "z-[220]" : "z-[68]"} ${
           dragActive ? "" : "transition-[transform,height] duration-300 ease-out"
@@ -480,23 +482,23 @@ export default function NotesPanel({ open, onOpenChange, content, onContentChang
             onPointerMove={onPointerMove}
             onPointerUp={onPointerUp}
           >
-            <div className="w-8 h-1 rounded-full bg-black/15" />
+            <div className="w-8 h-1 rounded-full bg-black/15 dark:bg-white/15" />
           </div>
         </div>
 
         {/* Header — only shown when panel is open */}
         {open && (
-          <div className="flex-shrink-0 flex items-center px-6 pb-3 pt-1 border-b border-black/6 gap-3">
+          <div className="flex-shrink-0 flex items-center px-6 pb-3 pt-1 border-b border-black/6 dark:border-white/6 gap-3">
             <button
               type="button"
               onClick={() => onOpenChange(false)}
-              className="flex items-center justify-center w-6 h-6 rounded-md text-black/35 hover:text-black/60 hover:bg-black/5 transition-colors"
+              className="flex items-center justify-center w-6 h-6 rounded-md text-black/35 dark:text-white/35 hover:text-black/60 dark:hover:text-white/60 hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
             >
               <ChevronDown className="w-4 h-4" />
             </button>
             <div className="flex items-center gap-2">
-              <StickyNote className="w-4 h-4 text-black/40" />
-              <h3 className="text-sm font-semibold text-black/70">Notes</h3>
+              <StickyNote className="w-4 h-4 text-black/40 dark:text-white/40" />
+              <h3 className="text-sm font-semibold text-black/70 dark:text-white/70">Notes</h3>
             </div>
           </div>
         )}
@@ -513,7 +515,7 @@ export default function NotesPanel({ open, onOpenChange, content, onContentChang
           <div className="mx-auto max-w-2xl min-h-[min(60vh,480px)]">
             <EditorContent editor={editor} />
             {isStreaming && (
-              <span className="inline-block w-[2px] h-[1.1em] bg-black/50 ml-0.5 align-text-bottom animate-pulse" />
+              <span className="inline-block w-[2px] h-[1.1em] bg-black/50 dark:bg-white/50 ml-0.5 align-text-bottom animate-pulse" />
             )}
           </div>
         </div>

@@ -1,0 +1,811 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { Dispatch, MutableRefObject, SetStateAction } from "react";
+import { supabase } from "@/lib/supabase";
+import { useCanvasStore } from "@/store/canvasStore";
+import type { Block } from "@/canvas/types";
+import { snapshotToSynthesisText } from "@/lib/synthesis/sourceText";
+import { scheduleSynthesisReindex } from "@/lib/synthesis/queueReindex";
+
+const SNAPSHOT_VERSION = 2;
+
+export const EMPTY_NOTES_TIPTAP_DOC: { type: string; content: unknown[] } = {
+  type: "doc",
+  content: [{ type: "paragraph" }],
+};
+
+function isValidNotesTiptapDoc(v: unknown): v is { type: string; content: unknown[] } {
+  return Boolean(
+    v && typeof v === "object" &&
+    (v as { type?: string }).type === "doc" &&
+    Array.isArray((v as { content?: unknown }).content)
+  );
+}
+
+export interface UseBoardPersistenceParams {
+  routeBoardId: string | undefined;
+  userId: string | undefined;
+  gridSize: number;
+  loadBlocks: (blocks: Block[], opts?: any) => void;
+  reset: () => void;
+  chatMessages: any[];
+  chatMessagesRef: MutableRefObject<any[]>;
+  aiThreadRef: MutableRefObject<Array<{ role: "user" | "assistant"; content: string }>>;
+  notesContentRef: MutableRefObject<any>;
+  setChatMessages: Dispatch<SetStateAction<any[]>>;
+  setChatRailOpen: Dispatch<SetStateAction<boolean>>;
+  setChatRailVisible: Dispatch<SetStateAction<boolean>>;
+  setChatMode: Dispatch<SetStateAction<boolean>>;
+  reSignChatAttachments: () => void;
+  restoreSavedToVaultState: (bid: string | null) => void;
+  onCanvasChange?: () => void;
+  onDraftEffectCleanup?: () => void;
+  savedMediaUrls: Set<string>;
+  savedYouTubeIds: Set<string>;
+}
+
+export function useBoardPersistence(params: UseBoardPersistenceParams) {
+  const {
+    routeBoardId, userId, gridSize, loadBlocks, reset,
+    chatMessages, chatMessagesRef, aiThreadRef, notesContentRef,
+    setChatMessages, setChatRailOpen, setChatRailVisible, setChatMode,
+    reSignChatAttachments, restoreSavedToVaultState,
+    onCanvasChange, onDraftEffectCleanup,
+    savedMediaUrls, savedYouTubeIds,
+  } = params;
+
+  /* ------------------------------------------------------------------ */
+  /*  State                                                              */
+  /* ------------------------------------------------------------------ */
+  const [title, setTitle] = useState(() => {
+    try { return localStorage.getItem("omnia_title") || ""; }
+    catch { return ""; }
+  });
+  const [boardId, setBoardId] = useState<string | null>(null);
+
+  /* ------------------------------------------------------------------ */
+  /*  Refs                                                               */
+  /* ------------------------------------------------------------------ */
+  const titleRef = useRef<string>("");
+  const lastSavedTitleRef = useRef<string>("");
+  const titleFromSaveRef = useRef(false);
+  const autoNameAttemptedRef = useRef(false);
+  const hydratedRef = useRef(false);
+  const saveTimerRef = useRef<number | null>(null);
+  const savingRef = useRef(false);
+  const lastSaveTimeRef = useRef<string | null>(null);
+
+  /* ------------------------------------------------------------------ */
+  /*  Title → localStorage sync                                          */
+  /* ------------------------------------------------------------------ */
+  useEffect(() => {
+    try { localStorage.setItem("omnia_title", title); } catch { /* ignore */ }
+    titleRef.current = title;
+  }, [title]);
+
+  /* ------------------------------------------------------------------ */
+  /*  buildSnapshot                                                      */
+  /* ------------------------------------------------------------------ */
+  const buildSnapshot = useCallback(() => {
+    const st = useCanvasStore.getState();
+    const resolvedTitle = (title && String(title).trim()) ? String(title).trim() : "New Grid";
+    return {
+      blocks: st.blocks,
+      blockOrder: st.blockOrder,
+      camera: st.camera,
+      gridSize: st.gridSize,
+      wireConnections: st.wireConnections,
+      title: resolvedTitle,
+      version: SNAPSHOT_VERSION,
+      chatMessages: chatMessagesRef.current,
+      aiThread: aiThreadRef.current,
+      notesContent: notesContentRef.current,
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [title]);
+
+  /* ------------------------------------------------------------------ */
+  /*  applySnapshot                                                      */
+  /* ------------------------------------------------------------------ */
+  const applySnapshot = useCallback(
+    (snapshot: any) => {
+      if (!snapshot || typeof snapshot !== "object") return;
+      const blocksRecord = (snapshot.blocks && typeof snapshot.blocks === "object") ? snapshot.blocks : {};
+      const order: string[] = Array.isArray(snapshot.blockOrder)
+        ? snapshot.blockOrder.filter((id: any) => typeof id === "string" && id)
+        : Object.keys(blocksRecord);
+      const isTransientTextBrick = (b: any) => {
+        const data = (b?.data && typeof b.data === "object" ? b.data : {}) as Record<string, any>;
+        const txt = String(data.content ?? data.body ?? b?.content ?? "")
+          .trim()
+          .toLowerCase();
+        const bTitle = String(data.title || "").trim().toLowerCase();
+        const isBrickish =
+          String(b?.universalType || b?.universal?.blockType || "").toLowerCase() === "brick" ||
+          String(data.kind || "").toLowerCase() === "brick";
+        if (isBrickish && (txt === "text brick" || bTitle === "text brick")) return true;
+        const isLegacyStarter =
+          (bTitle === "workspace note" || txt.startsWith("new ") || txt.includes("workspace")) &&
+          txt.includes("click and type to edit this square");
+        return isLegacyStarter;
+      };
+      const blocks: Block[] = order
+        .map((id) => blocksRecord[id])
+        .filter((b: any) => b && typeof b === "object" && b.id)
+        .filter((b: any) => { try { return !isTransientTextBrick(b); } catch { return true; } })
+        .map((b: any) => {
+          try {
+            if (!b?.universal) return b;
+            return {
+              ...b,
+              universal: {
+                ...b.universal,
+                dataSource: {
+                  kind: b.universal?.dataSource?.kind || "none",
+                  inputs: Array.isArray(b.universal?.dataSource?.inputs) ? b.universal.dataSource.inputs : [],
+                  outputs: Array.isArray(b.universal?.dataSource?.outputs) ? b.universal.dataSource.outputs : [],
+                },
+                events: {
+                  emits: Array.isArray(b.universal?.events?.emits) ? b.universal.events.emits : [],
+                  listensTo: Array.isArray(b.universal?.events?.listensTo) ? b.universal.events.listensTo : [],
+                },
+                logic: {
+                  conditions: Array.isArray(b.universal?.logic?.conditions) ? b.universal.logic.conditions : [],
+                  filters: Array.isArray(b.universal?.logic?.filters) ? b.universal.logic.filters : [],
+                  dependencies: Array.isArray(b.universal?.logic?.dependencies) ? b.universal.logic.dependencies : [],
+                  triggers: Array.isArray(b.universal?.logic?.triggers) ? b.universal.logic.triggers : [],
+                },
+                aiContext: {
+                  purpose: String(b.universal?.aiContext?.purpose || ""),
+                  tags: Array.isArray(b.universal?.aiContext?.tags) ? b.universal.aiContext.tags : [],
+                  semanticType: String(b.universal?.aiContext?.semanticType || ""),
+                },
+                permissions: Array.isArray(b.universal?.permissions) ? b.universal.permissions : ["view", "edit", "admin"],
+                visibility: b.universal?.visibility || "visible",
+                connections: Array.isArray(b.universal?.connections) ? b.universal.connections : [],
+              },
+            };
+          } catch (blockErr) {
+            console.warn("[LYKN] Skipping corrupt block during snapshot apply:", b?.id, blockErr);
+            return null;
+          }
+        })
+        .filter(Boolean) as Block[];
+      const rawCam = snapshot.camera && typeof snapshot.camera === "object" ? snapshot.camera : {};
+      const camera = {
+        x: Number.isFinite(rawCam.x) ? rawCam.x : 0,
+        y: Number.isFinite(rawCam.y) ? rawCam.y : 0,
+        zoom: Number.isFinite(rawCam.zoom) ? Math.max(0.2, Math.min(3, rawCam.zoom)) : 1,
+      };
+      const g = Number.isFinite(snapshot.gridSize) ? Number(snapshot.gridSize) : gridSize;
+      const wires = Array.isArray(snapshot.wireConnections) ? snapshot.wireConnections : [];
+      loadBlocks(blocks, { camera, gridSize: g, wireConnections: wires });
+
+      const st = useCanvasStore.getState();
+      const loadedOrder = st.blockOrder;
+      const isDefaultCamera = camera.x === 0 && camera.y === 0;
+      if (loadedOrder.length > 0 && isDefaultCamera) {
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const id of loadedOrder) {
+          const b = st.blocks[id] as any;
+          if (!b) continue;
+          minX = Math.min(minX, Number(b.x) || 0);
+          minY = Math.min(minY, Number(b.y) || 0);
+          maxX = Math.max(maxX, (Number(b.x) || 0) + (Number(b.width) || 0));
+          maxY = Math.max(maxY, (Number(b.y) || 0) + (Number(b.height) || 0));
+        }
+        if (minX < Infinity) {
+          const vpW = window.innerWidth || 1280;
+          const vpH = window.innerHeight || 800;
+          const z = camera.zoom || 1;
+          const cx = (minX + maxX) / 2;
+          const cy = (minY + maxY) / 2;
+          st.setCamera({ x: cx - vpW / (2 * z), y: cy - vpH / (2 * z), zoom: z });
+        }
+      } else if (loadedOrder.length === 0) {
+        const vpW = window.innerWidth || 1280;
+        const vpH = window.innerHeight || 800;
+        st.setCamera({ x: -vpW / 2, y: -vpH / 2, zoom: 1 });
+      }
+
+      if (snapshot.title) setTitle(String(snapshot.title));
+
+      (async () => {
+        const innerSt = useCanvasStore.getState();
+        const pending: { id: string; blk: any; field: string }[] = [];
+        for (const id of innerSt.blockOrder) {
+          const blk: any = innerSt.blocks[id];
+          if (!blk?.data?.storagePath) continue;
+          const field = blk.type === "create" && blk.mode === "image" ? "src" : "url";
+          const current = String(blk.data[field] || "");
+          if (current && !current.startsWith("data:") && current !== "") continue;
+          pending.push({ id, blk, field });
+        }
+        if (pending.length === 0) return;
+        const results = await Promise.allSettled(
+          pending.map(({ id, blk, field }) =>
+            supabase.storage
+              .from(blk.data.storageBucket || "user-files")
+              .createSignedUrl(blk.data.storagePath, 60 * 60 * 24 * 7)
+              .then(({ data: signed }) => ({ id, blk, field, url: signed?.signedUrl }))
+          )
+        );
+        for (const r of results) {
+          if (r.status === "fulfilled" && r.value.url) {
+            const { id, blk, field, url } = r.value;
+            innerSt.updateBlock(id, { data: { ...blk.data, [field]: url } } as any);
+          }
+        }
+      })();
+
+      if (boardId) {
+        const boardChatKey = `omnia_chat_${boardId}`;
+        let chatLoaded = false;
+
+        try {
+          const chatRaw = localStorage.getItem(boardChatKey);
+          if (chatRaw) {
+            const chatData = JSON.parse(chatRaw);
+            if (Array.isArray(chatData.chatMessages) && chatData.chatMessages.length > 0) {
+              setChatMessages(chatData.chatMessages);
+              setChatRailOpen(true);
+              setChatRailVisible(true);
+              chatLoaded = true;
+            }
+            if (Array.isArray(chatData.aiThread) && chatData.aiThread.length > 0) {
+              aiThreadRef.current = chatData.aiThread;
+            }
+          }
+        } catch { /* ignore corrupt localStorage */ }
+
+        if (!chatLoaded && Array.isArray(snapshot.chatMessages) && snapshot.chatMessages.length > 0) {
+          setChatMessages(snapshot.chatMessages);
+          setChatRailOpen(true);
+          setChatRailVisible(true);
+          if (Array.isArray(snapshot.aiThread) && snapshot.aiThread.length > 0) {
+            aiThreadRef.current = snapshot.aiThread;
+          }
+        }
+
+        reSignChatAttachments();
+        restoreSavedToVaultState(boardId);
+      }
+
+      notesContentRef.current = isValidNotesTiptapDoc(snapshot.notesContent)
+        ? snapshot.notesContent
+        : EMPTY_NOTES_TIPTAP_DOC;
+
+      const hasBlocks = blocks && Object.keys(blocks).length > 0;
+      if (hasBlocks) {
+        setChatMode(false);
+        setChatRailOpen(true);
+        setChatRailVisible(true);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [boardId, gridSize, loadBlocks]
+  );
+
+  const applySnapshotRef = useRef(applySnapshot);
+  useEffect(() => { applySnapshotRef.current = applySnapshot; }, [applySnapshot]);
+
+  /* ------------------------------------------------------------------ */
+  /*  isBoardEmpty                                                       */
+  /* ------------------------------------------------------------------ */
+  const isBoardEmpty = useCallback(() => {
+    if (chatMessages.length > 0) return false;
+    if (aiThreadRef.current.length > 0) return false;
+    const st = useCanvasStore.getState();
+    const blockIds = st.blockOrder || [];
+    const blocksMap = st.blocks || {};
+    const meaningful = blockIds.filter((id: string) => {
+      const b = blocksMap[id];
+      if (!b) return false;
+      const data = (b as any)?.data && typeof (b as any).data === "object" ? (b as any).data : {};
+      const content = String(data.content ?? data.body ?? (b as any)?.content ?? "").trim();
+      const fmt = String((b as any)?.format || data.format || "").toLowerCase();
+      if (fmt === "media" || fmt === "table" || fmt === "button") return true;
+      if (content.length > 0) return true;
+      return false;
+    });
+    return meaningful.length === 0;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatMessages.length]);
+
+  /* ------------------------------------------------------------------ */
+  /*  sanitizeSnapshotForDb                                              */
+  /* ------------------------------------------------------------------ */
+  const sanitizeSnapshotForDb = useCallback((raw: any) => {
+    const BASE64_RE = /^data:[^;]+;base64,/;
+    const SIGNED_URL_RE = /supabase\.co\/storage\//;
+    const MAX_BLOCK_CONTENT_BYTES = 10_240;
+
+    const cleanBlocks: Record<string, any> = {};
+    const blocks = raw.blocks || {};
+    for (const [id, block] of Object.entries(blocks)) {
+      const b = { ...(block as any) };
+
+      if (b.data && typeof b.data === "object") {
+        const d = { ...b.data };
+        for (const key of ["src", "url", "dataUrl", "audioData", "pdfData"] as const) {
+          const val = d[key];
+          if (typeof val === "string" && (BASE64_RE.test(val) || (SIGNED_URL_RE.test(val) && d.storagePath))) {
+            d[key] = "";
+          }
+        }
+        if (typeof d.content === "string" && d.content.length > MAX_BLOCK_CONTENT_BYTES) {
+          d.content = d.content.slice(0, MAX_BLOCK_CONTENT_BYTES);
+        }
+        b.data = d;
+      }
+      if (typeof b.dataUrl === "string" && BASE64_RE.test(b.dataUrl)) b.dataUrl = "";
+
+      delete b.aiAnswers;
+      delete b.universal;
+
+      if (b.zIndex === undefined || b.zIndex === 0) delete b.zIndex;
+      if (b.locked === false) delete b.locked;
+      if (b.collapsed === false) delete b.collapsed;
+
+      cleanBlocks[id] = b;
+    }
+
+    const { history: _h, future: _f, ...rest } = raw;
+
+    const MAX_DB_CHAT = 50;
+    const sanitizedChat = Array.isArray(rest.chatMessages)
+      ? rest.chatMessages.slice(-MAX_DB_CHAT).map((m: any) => {
+          const cleaned = { ...m };
+          if (Array.isArray(cleaned.attachments)) {
+            cleaned.attachments = cleaned.attachments.map((a: any) => {
+              const c = { ...a };
+              if (typeof c.url === "string" && SIGNED_URL_RE.test(c.url)) c.url = "";
+              delete c.transcript;
+              return c;
+            });
+          }
+          if (typeof cleaned.content === "string" && cleaned.content.length > 3000) {
+            cleaned.content = cleaned.content.slice(0, 3000);
+          }
+          if (typeof cleaned.aiResponse === "string" && cleaned.aiResponse.length > 50_000) {
+            cleaned.aiResponse = cleaned.aiResponse.slice(0, 50_000);
+          }
+          return cleaned;
+        })
+      : [];
+
+    const sanitizedThread = Array.isArray(rest.aiThread)
+      ? rest.aiThread.slice(-MAX_DB_CHAT)
+      : [];
+
+    return {
+      ...rest,
+      blocks: cleanBlocks,
+      chatMessages: sanitizedChat,
+      aiThread: sanitizedThread,
+    };
+  }, []);
+
+  /* ------------------------------------------------------------------ */
+  /*  saveSnapshot                                                       */
+  /* ------------------------------------------------------------------ */
+  const saveSnapshot = useCallback(async () => {
+    if (!userId || !boardId || savingRef.current || !hydratedRef.current) return;
+    savingRef.current = true;
+    try {
+      const raw = buildSnapshot();
+      const savedTitle = (raw.title && String(raw.title).trim()) ? String(raw.title).trim() : "New Grid";
+      raw.title = savedTitle;
+      const snapshot = sanitizeSnapshotForDb(raw);
+      const now = new Date().toISOString();
+
+      const statePayload = { board_id: boardId, state: snapshot, version: raw.version || SNAPSHOT_VERSION, user_id: userId, updated_at: now };
+
+      const [updateRes, initialUpsertRes] = await Promise.all([
+        supabase.from("omnia_boards").update({ title: savedTitle, updated_at: now }).eq("id", boardId),
+        supabase.from("omnia_board_states").upsert(statePayload, { onConflict: "board_id" }),
+      ]);
+
+      let stateSaveOk = !initialUpsertRes.error;
+
+      if (initialUpsertRes.error) {
+        console.error("[LYKN] Board state save failed, attempting self-heal:", initialUpsertRes.error.message);
+        await supabase
+          .from("omnia_board_states")
+          .update({ user_id: userId })
+          .eq("board_id", boardId)
+          .is("user_id", null);
+        const retryRes = await supabase
+          .from("omnia_board_states")
+          .upsert(statePayload, { onConflict: "board_id" });
+        if (retryRes.error) console.error("[LYKN] Board state save retry failed:", retryRes.error.message);
+        else stateSaveOk = true;
+      }
+
+      if (updateRes.error) console.error("[LYKN] Board title save failed:", updateRes.error.message);
+
+      if (!updateRes.error && stateSaveOk) {
+        lastSaveTimeRef.current = now;
+        lastSavedTitleRef.current = savedTitle;
+        titleFromSaveRef.current = true;
+        try { localStorage.removeItem(`omnia_draft_${boardId}`); } catch { /* ignore */ }
+        window.dispatchEvent(new Event("lykinsai_boards_changed"));
+        try {
+          const embedText = snapshotToSynthesisText(snapshot as Parameters<typeof snapshotToSynthesisText>[0]);
+          scheduleSynthesisReindex({
+            sourceType: "grid_board",
+            sourceId: boardId,
+            text: embedText,
+            metadata: { title: savedTitle },
+          });
+        } catch {
+          /* synthesis embed is best-effort */
+        }
+
+        console.log("[LYKN] Auto-name check:", { savedTitle, attempted: autoNameAttemptedRef.current, blockCount: Object.keys(raw.blocks || {}).length });
+        if (savedTitle === "New Grid" && !autoNameAttemptedRef.current) {
+          const contentText = snapshotToSynthesisText(raw as Parameters<typeof snapshotToSynthesisText>[0]);
+          const stripped = contentText.replace(/^Board:.*\n?/, "").trim();
+          console.log("[LYKN] Auto-name content length:", stripped.length, "preview:", stripped.slice(0, 100));
+          if (stripped.length >= 10) {
+            autoNameAttemptedRef.current = true;
+            (async () => {
+              try {
+                const { API_BASE_URL } = await import("@/lib/api-config");
+                console.log("[LYKN] Auto-name fetching:", `${API_BASE_URL}/api/ai/name-grid`);
+                const resp = await fetch(`${API_BASE_URL}/api/ai/name-grid`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ content: stripped }),
+                });
+                if (!resp.ok) {
+                  console.warn("[LYKN] Auto-name request failed:", resp.status, await resp.text().catch(() => ""));
+                  return;
+                }
+                const data = await resp.json();
+                const newTitle = String(data?.title || "").trim();
+                if (!newTitle) { console.warn("[LYKN] Auto-name returned empty title"); return; }
+                console.log("[LYKN] Auto-named grid:", newTitle);
+                setTitle(newTitle);
+                titleRef.current = newTitle;
+                lastSavedTitleRef.current = newTitle;
+                titleFromSaveRef.current = true;
+                await supabase.from("omnia_boards").update({ title: newTitle }).eq("id", boardId);
+                window.dispatchEvent(new Event("lykinsai_boards_changed"));
+              } catch (e) {
+                console.warn("[LYKN] Auto-name error:", e);
+              }
+            })();
+          }
+        }
+      }
+    } catch (err) {
+      console.error("[LYKN] saveSnapshot error:", err);
+    } finally {
+      savingRef.current = false;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boardId, buildSnapshot, isBoardEmpty, userId]);
+
+  /* ------------------------------------------------------------------ */
+  /*  commitBoardTitle                                                   */
+  /* ------------------------------------------------------------------ */
+  const commitBoardTitle = useCallback(async () => {
+    if (!boardId || !userId) return;
+    const next = String(title || "").trim() || "New Grid";
+    if (next === lastSavedTitleRef.current) return;
+    lastSavedTitleRef.current = next;
+    setTitle(next);
+    await supabase
+      .from("omnia_boards")
+      .update({ title: next, updated_at: new Date().toISOString() })
+      .eq("id", boardId)
+      .eq("user_id", userId);
+    window.dispatchEvent(new Event("lykinsai_boards_changed"));
+  }, [boardId, title, userId]);
+
+  /* ------------------------------------------------------------------ */
+  /*  Board load effect                                                  */
+  /* ------------------------------------------------------------------ */
+  useEffect(() => {
+    if (!userId) return;
+    let cancelled = false;
+    const loadBoard = async () => {
+      hydratedRef.current = false;
+      autoNameAttemptedRef.current = false;
+      let id: string | null = null;
+      try {
+        const existing = routeBoardId || localStorage.getItem("omnia_board_id");
+        if (existing) {
+          const { data } = await supabase
+            .from("omnia_boards")
+            .select("id, title")
+            .eq("id", existing)
+            .eq("user_id", userId)
+            .maybeSingle();
+          if (data?.id) {
+            id = data.id;
+            if (data.title) setTitle(String(data.title));
+            lastSavedTitleRef.current = String(data.title || "New Grid");
+          }
+        }
+      } catch {
+        // ignore
+      }
+      if (!id && !routeBoardId) {
+        try {
+          const { data: recent } = await supabase
+            .from("omnia_boards")
+            .select("id, title")
+            .eq("user_id", userId)
+            .order("updated_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          if (recent?.id) {
+            id = recent.id;
+            if (recent.title) setTitle(String(recent.title));
+            lastSavedTitleRef.current = String(recent.title || "New Grid");
+            localStorage.setItem("omnia_board_id", id!);
+          }
+        } catch {
+          // ignore
+        }
+      }
+      if (!id) {
+        try {
+          const { data, error: insertErr } = await supabase
+            .from("omnia_boards")
+            .insert(routeBoardId ? { id: routeBoardId, user_id: userId, title: "New Grid" } : { user_id: userId, title: "New Grid" })
+            .select("id, title")
+            .maybeSingle();
+          if (insertErr) console.error("[LYKN] Board insert error:", insertErr.message);
+          id = data?.id || null;
+          if (data?.title) setTitle(String(data.title));
+          lastSavedTitleRef.current = String(data?.title || "New Grid");
+          if (id) localStorage.setItem("omnia_board_id", id);
+        } catch (insertCatch) {
+          console.error("[LYKN] Board creation failed:", insertCatch);
+        }
+      }
+      if (cancelled) return;
+      setBoardId(id);
+      if (!id) {
+        hydratedRef.current = true;
+        return;
+      }
+      reset();
+      setChatMessages([]);
+      aiThreadRef.current = [];
+      try {
+        let draft: any = null;
+        try {
+          const raw = localStorage.getItem(`omnia_draft_${id}`);
+          if (raw) draft = JSON.parse(raw);
+        } catch { /* ignore */ }
+
+        let remoteData: any = null;
+        let fetchFailed = false;
+        try {
+          const { data, error } = await supabase
+            .from("omnia_board_states")
+            .select("state, version, updated_at")
+            .eq("board_id", id)
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          if (error) { console.error("[LYKN] Board state fetch error:", error.message); fetchFailed = true; }
+          else remoteData = data;
+        } catch { fetchFailed = true; }
+
+        const hasDraft = draft && draft.blocks && Object.keys(draft.blocks).length > 0;
+        const hasRemote = remoteData?.state && typeof remoteData.state === "object";
+
+        let useDraft = false;
+        if (fetchFailed && hasDraft) {
+          useDraft = true;
+        } else if (hasDraft && hasRemote) {
+          const draftTs = draft._savedAt ? new Date(draft._savedAt).getTime() : 0;
+          const remoteTs = remoteData.updated_at ? new Date(remoteData.updated_at).getTime() : 0;
+          useDraft = draftTs > remoteTs;
+        } else if (hasDraft && !hasRemote) {
+          useDraft = true;
+        }
+
+        if (useDraft) {
+          applySnapshotRef.current(draft);
+        } else if (hasRemote) {
+          const snap = { ...(remoteData.state || {}), version: (remoteData as any)?.version || (remoteData.state as any)?.version || 1 };
+          try {
+            const lsCam = localStorage.getItem(`omnia_camera_${id}`);
+            if (lsCam) {
+              const parsed = JSON.parse(lsCam);
+              if (parsed && typeof parsed === "object" && Number.isFinite(parsed.zoom)) {
+                snap.camera = { ...(snap.camera || {}), ...parsed };
+              }
+            }
+          } catch { /* ignore */ }
+          applySnapshotRef.current(snap);
+        } else {
+          applySnapshotRef.current({
+            version: SNAPSHOT_VERSION,
+            blocks: {},
+            blockOrder: [],
+            camera: { x: 0, y: 0, zoom: 1 },
+            gridSize: 24,
+            wireConnections: [],
+            notesContent: EMPTY_NOTES_TIPTAP_DOC,
+          });
+        }
+        try { localStorage.removeItem(`omnia_draft_${id}`); } catch { /* ignore */ }
+      } catch (err) {
+        console.error("[LYKN] Failed to load board state:", err);
+        try {
+          localStorage.removeItem(`omnia_draft_${id}`);
+          localStorage.removeItem(`omnia_chat_${id}`);
+          localStorage.removeItem(`omnia_camera_${id}`);
+        } catch { /* ignore */ }
+        try {
+          applySnapshotRef.current({
+            version: SNAPSHOT_VERSION,
+            blocks: {},
+            blockOrder: [],
+            camera: { x: 0, y: 0, zoom: 1 },
+            gridSize: 24,
+            wireConnections: [],
+            notesContent: EMPTY_NOTES_TIPTAP_DOC,
+          });
+        } catch { /* last resort — at least mark hydrated so the UI is usable */ }
+      }
+      hydratedRef.current = true;
+
+      if (id) window.dispatchEvent(new Event("lykinsai_boards_changed"));
+    };
+    loadBoard();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeBoardId, userId]);
+
+  /* ------------------------------------------------------------------ */
+  /*  Draft subscribe effect                                             */
+  /* ------------------------------------------------------------------ */
+  useEffect(() => {
+    if (!boardId || !userId) return;
+    let draftTimer: ReturnType<typeof setTimeout> | null = null;
+    const unsubscribe = useCanvasStore.subscribe(() => {
+      onCanvasChange?.();
+      if (draftTimer) return;
+      draftTimer = setTimeout(() => {
+        draftTimer = null;
+        try {
+          const st = useCanvasStore.getState();
+          localStorage.setItem(`omnia_camera_${boardId}`, JSON.stringify(st.camera));
+          const snapshot = buildSnapshot();
+          localStorage.setItem(`omnia_draft_${boardId}`, JSON.stringify(snapshot));
+        } catch { /* quota */ }
+      }, 2000);
+    });
+    return () => {
+      unsubscribe();
+      if (draftTimer) clearTimeout(draftTimer);
+      if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+      onDraftEffectCleanup?.();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boardId, buildSnapshot, onCanvasChange, userId]);
+
+  /* ------------------------------------------------------------------ */
+  /*  Chat localStorage persist effect                                   */
+  /* ------------------------------------------------------------------ */
+  useEffect(() => {
+    if (!boardId) return;
+    const timer = setTimeout(() => {
+      try {
+        const MAX_LOCAL_CHAT = 30;
+        const SIGNED_URL_RE = /supabase\.co\/storage\//;
+        const trimmed = chatMessages.slice(-MAX_LOCAL_CHAT).map((m: any) => {
+          const cleaned = { ...m };
+          if (Array.isArray(cleaned.attachments)) {
+            cleaned.attachments = cleaned.attachments.map((a: any) => {
+              const c = { ...a };
+              if (typeof c.url === "string" && SIGNED_URL_RE.test(c.url)) c.url = "";
+              delete c.transcript;
+              return c;
+            });
+          }
+          return cleaned;
+        });
+        const thread = (aiThreadRef.current || []).slice(-MAX_LOCAL_CHAT);
+        localStorage.setItem(`omnia_chat_${boardId}`, JSON.stringify({ chatMessages: trimmed, aiThread: thread }));
+      } catch { /* quota */ }
+    }, 1500);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boardId, chatMessages]);
+
+  /* ------------------------------------------------------------------ */
+  /*  Vault saved sets persist effect                                    */
+  /* ------------------------------------------------------------------ */
+  useEffect(() => {
+    if (!boardId) return;
+    if (savedMediaUrls.size === 0 && savedYouTubeIds.size === 0) return;
+    try {
+      localStorage.setItem(`omnia_vault_saved_${boardId}`, JSON.stringify({
+        mediaUrls: [...savedMediaUrls],
+        youtubeIds: [...savedYouTubeIds],
+      }));
+    } catch { /* quota */ }
+  }, [boardId, savedMediaUrls, savedYouTubeIds]);
+
+  /* ------------------------------------------------------------------ */
+  /*  Autosave interval effect                                           */
+  /* ------------------------------------------------------------------ */
+  useEffect(() => {
+    if (!boardId || !userId) return;
+    const onBeforeUnload = () => {
+      try {
+        const snapshot = buildSnapshot();
+        (snapshot as any)._savedAt = lastSaveTimeRef.current || new Date().toISOString();
+        localStorage.setItem(`omnia_draft_${boardId}`, JSON.stringify(snapshot));
+      } catch { /* quota */ }
+      savingRef.current = false;
+      saveSnapshot();
+    };
+    const onFlushSave = () => {
+      savingRef.current = false;
+      saveSnapshot();
+    };
+    const autoSaveInterval = window.setInterval(() => {
+      if (hydratedRef.current && !savingRef.current) {
+        saveSnapshot();
+      }
+    }, 30_000);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden" && hydratedRef.current) {
+        savingRef.current = false;
+        saveSnapshot();
+      }
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    window.addEventListener("omnia_flush_save", onFlushSave);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.clearInterval(autoSaveInterval);
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      window.removeEventListener("omnia_flush_save", onFlushSave);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [boardId, buildSnapshot, saveSnapshot, userId]);
+
+  /* ------------------------------------------------------------------ */
+  /*  Save cleanup effect (on unmount / board change)                    */
+  /* ------------------------------------------------------------------ */
+  useEffect(() => {
+    if (!boardId || !userId) return;
+    return () => {
+      savingRef.current = false;
+      saveSnapshot();
+    };
+  }, [boardId, saveSnapshot, userId]);
+
+  /* ------------------------------------------------------------------ */
+  /*  Seed removal effect                                                */
+  /* ------------------------------------------------------------------ */
+  useEffect(() => {
+    try { localStorage.removeItem("omnia_seed_v2"); } catch { /* ignore */ }
+  }, []);
+
+  /* ------------------------------------------------------------------ */
+  /*  Public interface                                                   */
+  /* ------------------------------------------------------------------ */
+  return {
+    boardId,
+    title,
+    setTitle,
+    titleRef,
+    savingRef,
+    saveSnapshot,
+    commitBoardTitle,
+  };
+}

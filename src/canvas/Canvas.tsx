@@ -20,7 +20,6 @@ import ConnectionWires from "./ConnectionWires";
 import type { WireSide } from "@/store/canvasStore";
 import { useThinkingStatus } from "@/hooks/useThinkingStatus";
 import { getAiPrefs } from "@/lib/ai-prefs";
-import { afterVaultNoteSaved } from "@/lib/vault/afterVaultSave";
 import { extractTextFromFile, isDocumentFile } from "@/lib/extract-text";
 import { supabase } from "@/lib/supabase";
 import { purgeVaultNoteEmbeddings } from "@/lib/synthesis/queueReindex";
@@ -116,7 +115,6 @@ function processVaultDrop(pending: { title: string; content: string; attachments
       const wx = Math.round(((scrollLeft + localX) / z - 5000) / g) * g;
       const wy = Math.round(((scrollTop + localY) / z - 5000) / g) * g;
       st.addYouTubeBlockAt({ x: wx, y: wy }, { url: ytUrl, videoId: extractedVid });
-      window.dispatchEvent(new CustomEvent("omnia_save_to_media", { detail: { url: ytUrl, name: `YouTube — ${extractedVid}`, fileType: "youtube" } }));
     }
     return;
   }
@@ -156,7 +154,6 @@ function processVaultDrop(pending: { title: string; content: string; attachments
         authorHandle: socialAttach.authorHandle || "",
       },
     } as any);
-    window.dispatchEvent(new CustomEvent("omnia_save_to_media", { detail: { url: socialAttach.url, name: socialAttach.title || platform, fileType: platform } }));
     return;
   }
 
@@ -210,9 +207,6 @@ function processVaultDrop(pending: { title: string; content: string; attachments
       const wrappedLines = combined.split("\n").reduce((sum: number, line: string) => sum + Math.max(1, Math.ceil(line.length / charsPerLine)), 0);
       const height = Math.max(g * 6, Math.min(g * 30, wrappedLines * 22 + 32));
       st.addTextBlockAt({ x: wx, y: wy }, { width: g * 16, height, content: combined, format: "plain" });
-      if (pdfAttach.url) {
-        window.dispatchEvent(new CustomEvent("omnia_save_to_media", { detail: { url: pdfAttach.url, name: title, fileType: "pdf" } }));
-      }
       return;
     }
     if (pdfAttach.url) {
@@ -636,172 +630,21 @@ const CanvasBlock = React.memo(function CanvasBlock({
   const b = useCanvasStore((s) => s.blocks[id]);
   const gridSize = useCanvasStore((s) => s.gridSize);
   if (!b) return null;
-  return renderRef.current(id, b, gridSize, {
-    isTyping, isActivated, isRaised, isMinimized,
-    isDictating, isTranscribing, isHoveredSpecial,
-    isAiThinking, thinkingStatusText,
-  });
+  try {
+    return renderRef.current(id, b, gridSize, {
+      isTyping, isActivated, isRaised, isMinimized,
+      isDictating, isTranscribing, isHoveredSpecial,
+      isAiThinking, thinkingStatusText,
+    });
+  } catch (err) {
+    console.error(`[LYKN] Block ${id} render error:`, err);
+    return null;
+  }
 });
 
 export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatusText = "" }: CanvasProps) {
   const { user } = useAuth();
   const { checkVaultLimit, incrementVaultCount, upgradeModal, dismissUpgradeModal } = useUsageGate();
-
-  const mediaDedupCache = useRef<Set<string>>(new Set());
-
-  const insertNoteToMedia = useCallback(async (row: { user_id: string; title: string; content: string }) => {
-    if (!(await checkVaultLimit())) return;
-    const dedupKey = `${row.user_id}::${row.title}`;
-    if (mediaDedupCache.current.has(dedupKey)) {
-      console.log("[Canvas] Skipped duplicate media (cache):", row.title);
-      return;
-    }
-
-    const { data: existing } = await supabase
-      .from("notes")
-      .select("id")
-      .eq("user_id", row.user_id)
-      .eq("title", row.title)
-      .limit(1);
-    if (existing && existing.length > 0) {
-      mediaDedupCache.current.add(dedupKey);
-      console.log("[Canvas] Skipped duplicate media (db):", row.title);
-      return;
-    }
-
-    const { data: inserted, error } = await supabase.from("notes").insert(row).select("id").single();
-    if (error) console.warn("[Canvas] Failed to save to media:", error.message);
-    else {
-      mediaDedupCache.current.add(dedupKey);
-      console.log("[Canvas] Saved to media:", row.title);
-      if (inserted?.id) {
-        afterVaultNoteSaved(row.user_id, inserted.id, {
-          title: row.title,
-          content: row.content,
-        });
-      }
-    }
-  }, []);
-
-  const saveCanvasFileToMedia = useCallback(async (file: File) => {
-    if (!user?.id) return;
-    try {
-      const fileName = file.name || "file";
-      const dedupKey = `${user.id}::${fileName}`;
-      if (mediaDedupCache.current.has(dedupKey)) {
-        console.log("[Canvas] Skipped duplicate file upload (cache):", fileName);
-        return;
-      }
-
-      const fileId = crypto.randomUUID();
-      const ext = (file.name || "file").split(".").pop()?.toLowerCase() || "bin";
-      const storagePath = `${user.id}/${fileId}/original.${ext}`;
-      const mime = file.type || "application/octet-stream";
-
-      const { error: uploadError } = await supabase.storage
-        .from("user-files")
-        .upload(storagePath, file, { cacheControl: "3600", upsert: false, contentType: mime });
-      if (uploadError) { console.warn("[Canvas] Storage upload failed:", uploadError.message); return; }
-
-      let fileUrl = "";
-      const { data: signedData } = await supabase.storage
-        .from("user-files")
-        .createSignedUrl(storagePath, 60 * 60 * 24 * 7);
-      fileUrl = signedData?.signedUrl || "";
-      if (!fileUrl) {
-        const { data: pubData } = supabase.storage.from("user-files").getPublicUrl(storagePath);
-        fileUrl = pubData?.publicUrl || "";
-      }
-      if (!fileUrl) return;
-
-      let fileType = "file";
-      if (mime.startsWith("image/")) fileType = "image";
-      else if (mime.startsWith("video/")) fileType = "video";
-      else if (mime.startsWith("audio/")) fileType = "audio";
-      else if (mime === "application/pdf" || ext === "pdf") fileType = "pdf";
-
-      const attachment = [{
-        type: fileType,
-        url: fileUrl,
-        name: file.name || `file.${ext}`,
-        fileId,
-        storagePath,
-        storageBucket: "user-files",
-        size: file.size,
-        mimeType: mime,
-      }];
-      const sizeDisplay = file.size > 1024 * 1024
-        ? `${(file.size / (1024 * 1024)).toFixed(1)} MB`
-        : `${(file.size / 1024).toFixed(1)} KB`;
-      const noteContent = `File: ${file.name}\nType: ${fileType}\nSize: ${sizeDisplay}\n\n[View File](${fileUrl})\n\n[ATTACHMENTS_JSON:${JSON.stringify(attachment)}]`;
-
-      await insertNoteToMedia({
-        user_id: user.id,
-        title: file.name || `file.${ext}`,
-        content: noteContent,
-      });
-    } catch (err) {
-      console.warn("[Canvas] Error saving to media:", err);
-    }
-  }, [user?.id, insertNoteToMedia]);
-
-  const urlDedupCache = useRef<Set<string>>(new Set());
-
-  const saveUrlToMedia = useCallback(async (url: string, name: string, fileType: string) => {
-    if (!user?.id || !url || url.startsWith("data:")) return;
-    try {
-      const urlKey = `${user.id}::${url}`;
-      if (urlDedupCache.current.has(urlKey)) {
-        console.log("[Canvas] Skipped duplicate URL media (cache):", url);
-        return;
-      }
-      const { data: urlMatch } = await supabase
-        .from("notes")
-        .select("id")
-        .eq("user_id", user.id)
-        .ilike("content", `%${url}%`)
-        .limit(1);
-      if (urlMatch && urlMatch.length > 0) {
-        urlDedupCache.current.add(urlKey);
-        console.log("[Canvas] Skipped duplicate URL media (db):", url);
-        return;
-      }
-
-      const extractedVid = extractYouTubeVideoId(url);
-      const isYouTube = Boolean(extractedVid);
-      const resolvedType = isYouTube ? "youtube" : fileType;
-      const fileId = crypto.randomUUID();
-      const ext = (name || "file").split(".").pop()?.toLowerCase() || "bin";
-      const videoId = extractedVid || "";
-      const watchUrl = isYouTube
-        ? (url.includes("youtube.com/watch") || url.includes("youtu.be/") ? url : `https://www.youtube.com/watch?v=${videoId}`)
-        : url;
-      const attachment = [{
-        type: resolvedType,
-        url: watchUrl,
-        name: name || `file.${ext}`,
-        fileId,
-        ...(videoId ? { videoId } : {}),
-        storageBucket: "external",
-        size: 0,
-        mimeType: isYouTube ? "text/html" : fileType === "image" ? `image/${ext}` : fileType === "video" ? `video/${ext}` : fileType === "audio" ? `audio/${ext}` : fileType === "pdf" ? "application/pdf" : "application/octet-stream",
-      }];
-      const noteContent = `${resolvedType.charAt(0).toUpperCase() + resolvedType.slice(1)}: ${name}\n\n[View](${watchUrl})\n\n[ATTACHMENTS_JSON:${JSON.stringify(attachment)}]`;
-
-      await insertNoteToMedia({
-        user_id: user.id,
-        title: name || `${resolvedType} file`,
-        content: noteContent,
-      });
-    } catch (err) {
-      console.warn("[Canvas] Error saving URL to media:", err);
-    }
-  }, [user?.id, insertNoteToMedia]);
-
-  const saveUrlToMediaRef = useRef(saveUrlToMedia);
-  saveUrlToMediaRef.current = saveUrlToMedia;
-  const saveCanvasFileToMediaRef = useRef(saveCanvasFileToMedia);
-  saveCanvasFileToMediaRef.current = saveCanvasFileToMedia;
 
   useEffect(() => {
     if (!user?.id) return;
@@ -2880,7 +2723,7 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
   const dropEmptyTypingBlockIfNeeded = (nextTypingId?: string | null) => {
     const prevId = typingBlockId;
     if (!prevId || prevId === nextTypingId) return;
-    const prev: any = blocks[prevId];
+    const prev: any = useCanvasStore.getState().blocks[prevId];
     if (!prev) return;
     const txt = String(prev?.content || "").trim();
     if (txt.length > 0) return;
@@ -4301,30 +4144,16 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
       addTextBlockAt({ x: wx, y: wy }, { width, height, content: combined, format: "rich" });
     };
 
-    const onSaveToMedia = (e: Event) => {
-      const ce = e as CustomEvent<{ url: string; name: string; fileType: string }>;
-      if (ce.detail?.url) void saveUrlToMediaRef.current(ce.detail.url, ce.detail.name, ce.detail.fileType);
-    };
-
-    const onSaveFileToMedia = (e: Event) => {
-      const ce = e as CustomEvent<{ file: File }>;
-      if (ce.detail?.file) void saveCanvasFileToMediaRef.current(ce.detail.file);
-    };
-
     window.addEventListener("omnia_attach_files", onFiles as any);
     window.addEventListener("omnia_attach_link", onLink as any);
     window.addEventListener("omnia_attach_vault_text", onVaultText as any);
-    window.addEventListener("omnia_save_to_media", onSaveToMedia as any);
-    window.addEventListener("omnia_save_file_to_media", onSaveFileToMedia as any);
     return () => {
       window.removeEventListener("omnia_attach_files", onFiles as any);
       window.removeEventListener("omnia_attach_link", onLink as any);
       window.removeEventListener("omnia_attach_vault_text", onVaultText as any);
-      window.removeEventListener("omnia_save_to_media", onSaveToMedia as any);
-      window.removeEventListener("omnia_save_file_to_media", onSaveFileToMedia as any);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [addBlock, addTextBlockAt, addYouTubeBlockAt, createCreateBlock, gridSize, saveCanvasFileToMedia]);
+  }, [addBlock, addTextBlockAt, addYouTubeBlockAt, createCreateBlock, gridSize]);
 
   // Global drop bridge: ensures files/links dropped over overlays/iframes
   // are still forwarded into the canvas attachment pipeline.
@@ -5621,8 +5450,8 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
           <div
             className="pointer-events-auto flex items-center gap-3 px-5 py-3 rounded-2xl"
             style={{
-              background: "rgba(20, 20, 20, 0.85)",
-              backdropFilter: "blur(16px)",
+              background: "rgba(20, 20, 20, 0.65)",
+              backdropFilter: "blur(10px)",
               border: "1px solid rgba(255,255,255,0.10)",
               boxShadow: "0 8px 32px rgba(0,0,0,0.4)",
             }}
@@ -5756,7 +5585,7 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
                 createShapeBlockAt(shapePickerAnchor.worldX, shapePickerAnchor.worldY, shape.id);
                 setShapePickerOpen(false);
               }}
-              className="h-7 w-7 rounded-md border border-white/40 bg-white/60 backdrop-blur-sm flex items-center justify-center text-black/70"
+              className="h-7 w-7 rounded-md border border-white/25 bg-white/35 backdrop-blur-sm flex items-center justify-center text-black/70"
               title={shape.label}
             >
               {shape.id === "rectangle" && <div className="h-3 w-4 border border-black/70" />}
@@ -5839,7 +5668,7 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
             }}
           >
             <div
-              className="h-full w-full rounded-l-2xl border border-red-400/25 bg-red-500/12 backdrop-blur-2xl shadow-[0_0_30px_rgba(248,113,113,0.22)] flex items-center justify-center"
+              className="h-full w-full rounded-l-2xl border border-red-400/20 bg-red-500/8 backdrop-blur-md shadow-[0_0_16px_rgba(248,113,113,0.14)] flex items-center justify-center"
               style={{
                 boxShadow:
                   "inset 0 0 0 1px rgba(248,113,113,0.18), inset 0 0 26px rgba(248,113,113,0.14), 0 0 30px rgba(248,113,113,0.18)",
@@ -5905,7 +5734,7 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
                   height: `${gridSize}px`,
                   borderRadius: "0px",
                   background: "linear-gradient(145deg, rgba(255,255,255,0.62), rgba(255,255,255,0.34))",
-                  backdropFilter: "blur(8px)",
+                  backdropFilter: "blur(4px)",
                   zIndex: 5,
                   ...edge,
                 }}
@@ -5931,7 +5760,7 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
                 borderRadius: "6px",
                 border: rangeHasRaised ? "1px solid rgba(59,130,246,0.78)" : "none",
                 background: "linear-gradient(145deg, rgba(255,255,255,0.62), rgba(255,255,255,0.34))",
-                backdropFilter: "blur(8px)",
+                backdropFilter: "blur(4px)",
                 transform: rangeHasRaised ? "translateY(-6px) scale(1.01)" : "translateY(0px) scale(1)",
                 boxShadow: rangeHasRaised
                   ? "0 20px 36px rgba(0,0,0,0.30)"
@@ -5964,7 +5793,7 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
                 background: isSingleRaisedCell
                   ? "linear-gradient(145deg, rgba(255,255,255,0.62), rgba(255,255,255,0.34))"
                   : "linear-gradient(145deg, rgba(255,255,255,0.50), rgba(255,255,255,0.28))",
-                backdropFilter: "blur(8px)",
+                backdropFilter: "blur(4px)",
                 transform: isSingleRaisedCell ? "translateY(-2px) scale(1)" : "translateY(-8px) scale(1.02)",
                 borderLeft: isSingleRaisedCell ? "none" : hasL ? "none" : "1px solid rgba(59,130,246,0.78)",
                 borderRight: isSingleRaisedCell ? "none" : hasR ? "none" : "1px solid rgba(59,130,246,0.78)",
@@ -6114,7 +5943,7 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
                       overflow: "visible",
                       ...(isOrphanText ? {
                         background: "linear-gradient(145deg, rgba(255,255,255,0.62), rgba(255,255,255,0.34))",
-                        backdropFilter: "blur(8px)",
+                        backdropFilter: "blur(4px)",
                         borderRadius: "0px",
                         border: "1px solid rgba(255,255,255,0.55)",
                         boxShadow: "inset 0 1px 0 rgba(255,255,255,0.55), 0 6px 18px rgba(0,0,0,0.14)",
@@ -6512,8 +6341,9 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
               updateBlock(bid as any, { width: nextWidth, height: nextHeight, data: { ...data, brickScale: nextScale, userResized: false } } as any);
             },
             onTypingChange: (bid, raw, meta) => {
-              if (!(blocks as any)[bid]) return;
-              const cur: any = (blocks as any)[bid];
+              const latestBlocks = useCanvasStore.getState().blocks;
+              if (!(latestBlocks as any)[bid]) return;
+              const cur: any = (latestBlocks as any)[bid];
               if (!cur) return;
               const data = cur?.data && typeof cur.data === "object" ? { ...cur.data } : {};
               if (meta?.formattedHtml !== undefined) {
@@ -6682,7 +6512,7 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
               }
             },
             onTypingBlur: (bid) => {
-              const cur: any = blocks[bid];
+              const cur: any = useCanvasStore.getState().blocks[bid];
               if (!cur) return;
               const txt = String(cur.content || "").trim();
               if (!txt) {
@@ -7381,7 +7211,7 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
           }}
           onPointerDown={(e) => e.stopPropagation()}
         >
-          <div className="flex items-stretch rounded-lg overflow-hidden border border-white/50 bg-[linear-gradient(145deg,rgba(255,255,255,0.96),rgba(245,247,255,0.94))] shadow-[0_8px_32px_rgba(0,0,0,0.22)] backdrop-blur-lg">
+          <div className="flex items-stretch rounded-lg overflow-hidden border border-white/30 bg-[linear-gradient(145deg,rgba(255,255,255,0.82),rgba(245,247,255,0.78))] shadow-lg backdrop-blur-md">
             {!selToolbar.highlightSub && !selToolbar.textColorSub && (
               <>
                 <button

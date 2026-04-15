@@ -591,7 +591,7 @@ const BrickTextSurface = React.memo(function BrickTextSurface(props: {
     return React.createElement(
       "div",
       {
-        className: "px-2 py-0 tracking-[-0.01em] text-black/80 whitespace-pre-wrap break-words select-text",
+        className: "px-2 py-0 tracking-[-0.01em] text-black/80 dark:text-white/80 whitespace-pre-wrap break-words select-text",
         style: {
           overflowWrap: "anywhere",
           fontSize: `${fontSizePx}px`,
@@ -715,6 +715,10 @@ const BrickTextSurface = React.memo(function BrickTextSurface(props: {
           onBlur: (e: React.FocusEvent<HTMLDivElement>) => {
             if (aiDirtyRef.current) {
               const text = getEditorText(e.currentTarget);
+              const storeBlock: any = useCanvasStore.getState().blocks[shell.id];
+              if (storeBlock && storeBlock.content !== text) {
+                updateBlock(shell.id as any, { content: text } as any);
+              }
               onTypingChange?.(shell.id, text);
             }
             onTypingBlur?.(shell.id);
@@ -805,7 +809,7 @@ const BrickTextSurface = React.memo(function BrickTextSurface(props: {
             fontSize: `${fontSizePx}px`,
             lineHeight: `${lineHeightPx}px`,
             fontWeight,
-            color: shell.textColor || "rgba(0,0,0,0.80)",
+            color: shell.textColor || "inherit",
             userSelect: "text",
             WebkitUserSelect: "text",
           },
@@ -847,7 +851,7 @@ const BrickTextSurface = React.memo(function BrickTextSurface(props: {
             fontSize: `${fontSizePx}px`,
             lineHeight: "1.5",
             fontWeight,
-            color: shell.textColor || "rgba(0,0,0,0.80)",
+            color: shell.textColor || "inherit",
             userSelect: "text",
             WebkitUserSelect: "text",
           },
@@ -865,7 +869,7 @@ const BrickTextSurface = React.memo(function BrickTextSurface(props: {
           fontSize: `${fontSizePx}px`,
           lineHeight: `${lineHeightPx}px`,
           fontWeight,
-          color: shell.textColor || "rgba(0,0,0,0.80)",
+          color: shell.textColor || "inherit",
           userSelect: "text",
           WebkitUserSelect: "text",
         },
@@ -884,7 +888,7 @@ const BrickTextSurface = React.memo(function BrickTextSurface(props: {
           fontSize: `${fontSizePx}px`,
           lineHeight: hasMarkdown ? "1.5" : `${lineHeightPx}px`,
           fontWeight,
-          color: shell.textColor || "rgba(0,0,0,0.80)",
+          color: shell.textColor || "inherit",
           userSelect: "text",
           WebkitUserSelect: "text",
         },
@@ -1103,9 +1107,28 @@ const BrickTextSurface = React.memo(function BrickTextSurface(props: {
         const text = shell.listType === "todo" ? toStorageTodoMarkers(raw) : raw;
         const html = e.currentTarget.innerHTML;
         const hasInlineFormat = /<mark[\s>]|<span[^>]*data-sel-color/.test(html);
+        const storeBlock: any = useCanvasStore.getState().blocks[shell.id];
+        if (storeBlock && storeBlock.content !== text) {
+          const data = storeBlock.data && typeof storeBlock.data === "object" ? { ...storeBlock.data } : {};
+          if (hasInlineFormat) data.formattedHtml = html;
+          else delete data.formattedHtml;
+          updateBlock(shell.id as any, { content: text, data } as any);
+        } else if (storeBlock && hasInlineFormat) {
+          const data = storeBlock.data && typeof storeBlock.data === "object" ? { ...storeBlock.data } : {};
+          const oldHtml = data.formattedHtml;
+          if (oldHtml !== html) {
+            data.formattedHtml = html;
+            updateBlock(shell.id as any, { data } as any);
+          }
+        } else if (storeBlock && !hasInlineFormat && storeBlock.data?.formattedHtml) {
+          const data = { ...storeBlock.data };
+          delete data.formattedHtml;
+          updateBlock(shell.id as any, { data } as any);
+        }
         onTypingChange?.(shell.id, text, { formattedHtml: hasInlineFormat ? html : undefined });
         setShowSlashMenu(false);
         onTypingBlur?.(shell.id);
+        setTimeout(() => window.dispatchEvent(new Event("omnia_flush_save")), 500);
       },
     }),
     (() => {
@@ -1167,7 +1190,7 @@ const BrickTextSurface = React.memo(function BrickTextSurface(props: {
         "div",
         {
           className:
-            "min-w-[180px] rounded-md border border-white/45 bg-[linear-gradient(145deg,rgba(255,255,255,0.95),rgba(245,247,255,0.90))] shadow-[0_10px_28px_rgba(0,0,0,0.20)] backdrop-blur-md z-[9999] p-1",
+            "min-w-[180px] rounded-md border border-white/25 bg-[linear-gradient(145deg,rgba(255,255,255,0.78),rgba(245,247,255,0.72))] shadow-md backdrop-blur-sm z-[9999] p-1",
           onPointerDown: (e: any) => {
             e.preventDefault();
             e.stopPropagation();
@@ -1373,7 +1396,7 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
       "div",
       {
         className:
-          `w-full rounded border border-white/45 ${shell.brickColor ? "" : "bg-[linear-gradient(145deg,rgba(255,255,255,0.34),rgba(255,255,255,0.18))]"} backdrop-blur-[2px]${useFlexHeight ? " flex-1" : " h-full"} relative overflow-hidden`,
+          `w-full rounded border border-white/22 ${shell.brickColor ? "" : "bg-[linear-gradient(145deg,rgba(255,255,255,0.16),rgba(255,255,255,0.06))]"} backdrop-blur-[1px]${useFlexHeight ? " flex-1" : " h-full"} relative overflow-hidden`,
         style: {
           transform: isRaised
             ? (shell.isAiResponseBubble ? "translateY(-8px)" : "translateY(-8px) scale(1.02)")

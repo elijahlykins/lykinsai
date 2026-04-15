@@ -237,7 +237,7 @@ export default function AppSidebar() {
               signInWithOAuth("google");
             }
           }}
-          className="flex items-center gap-1.5 rounded-full bg-white/70 dark:bg-white/10 backdrop-blur-md border border-black/8 dark:border-white/10 pl-1 pr-3 py-1 text-[0.6875rem] text-black/70 dark:text-white/70 hover:bg-white/90 dark:hover:bg-white/15 shadow-sm transition-colors"
+          className="flex items-center gap-1.5 rounded-full bg-white/45 dark:bg-[rgba(60,60,60,0.14)] backdrop-blur-sm border border-black/6 dark:border-white/10 pl-1 pr-3 py-1 text-[0.6875rem] text-black/70 dark:text-white/70 hover:bg-white/60 dark:hover:bg-white/15 shadow-sm transition-colors"
           title={user ? "Sign out" : "Sign in"}
         >
           <div className="h-6 w-6 rounded-full bg-blue-500/15 dark:bg-blue-400/20 text-[0.6875rem] font-semibold text-blue-600 dark:text-blue-400 flex items-center justify-center flex-shrink-0">
@@ -254,15 +254,15 @@ export default function AppSidebar() {
       >
         <div className="absolute right-0 top-0 bottom-0 w-px bg-transparent pointer-events-none" />
         <div className="mt-5 flex items-center justify-between px-2 py-1">
-          <div className="text-[0.6875rem] font-semibold text-black/70">Navigation</div>
+          <div className="text-[0.6875rem] font-semibold text-black/70 dark:text-white/70">Navigation</div>
         </div>
 
         <div className="px-2 pt-2">
-          <div className="flex items-center gap-2 rounded-xl border border-transparent bg-transparent px-2 py-1.5 text-[0.6875rem] text-black/60">
+          <div className="flex items-center gap-2 rounded-xl border border-transparent bg-transparent px-2 py-1.5 text-[0.6875rem] text-black/60 dark:text-white/60">
             <SearchIcon className="w-3.5 h-3.5" />
             <input
               placeholder="Search"
-              className="w-full bg-transparent outline-none placeholder:text-black/40 text-black/70"
+              className="w-full bg-transparent outline-none placeholder:text-black/40 dark:placeholder:text-white/40 text-black/70 dark:text-white/70"
             />
           </div>
         </div>
@@ -273,7 +273,7 @@ export default function AppSidebar() {
             onClick={() => flushAndNavigate(nav, "/")}
             className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
           >
-            <LayoutGrid className="w-3.5 h-3.5 text-black/60" />
+            <LayoutGrid className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
             Grid
           </button>
           <button
@@ -281,7 +281,7 @@ export default function AppSidebar() {
             onClick={() => flushAndNavigate(nav, "/vault")}
             className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
           >
-            <Lock className="w-3.5 h-3.5 text-black/60" />
+            <Lock className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
             Vault
           </button>
           <button
@@ -292,7 +292,7 @@ export default function AppSidebar() {
             }}
             className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
           >
-            <Plus className="w-3.5 h-3.5 text-black/60" />
+            <Plus className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
             New Grid
           </button>
           <button
@@ -311,15 +311,15 @@ export default function AppSidebar() {
             }}
             className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
           >
-            <FolderPlus className="w-3.5 h-3.5 text-black/60" />
+            <FolderPlus className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
             New Project
           </button>
         </div>
 
-        <div className="mt-3 text-[0.6875rem] font-semibold text-black/70 px-2 py-1">Projects</div>
+        <div className="mt-3 text-[0.6875rem] font-semibold text-black/70 dark:text-white/70 px-2 py-1">Projects</div>
         <div className="flex flex-col gap-0.5 max-h-[28vh] overflow-y-auto scrollbar-hide pr-1">
           {projects.length === 0 ? (
-            <div className="text-[0.6875rem] text-black/50 px-2.5 py-1.5">No projects yet.</div>
+            <div className="text-[0.6875rem] text-black/50 dark:text-white/50 px-2.5 py-1.5">No projects yet.</div>
           ) : (
             projects.map((project) => {
               const isActive = location.pathname === `/project/${project.id}`;
@@ -332,7 +332,7 @@ export default function AppSidebar() {
                       isActive ? "bg-blue-500/15" : "hover:bg-blue-500/15"
                     }`}
                   >
-                    <span className={`inline-block h-1.5 w-1.5 rounded-full flex-shrink-0 ${isActive ? "bg-blue-500" : "bg-black/30"}`} />
+                    <span className={`inline-block h-1.5 w-1.5 rounded-full flex-shrink-0 ${isActive ? "bg-blue-500" : "bg-black/30 dark:bg-white/30"}`} />
                     <span className="truncate">{project.name}</span>
                   </button>
                   <button
@@ -351,7 +351,7 @@ export default function AppSidebar() {
                     }}
                     className="absolute right-1 top-1/2 -translate-y-1/2 w-5 h-5 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-blue-500/15 transition-opacity"
                   >
-                    <MoreHorizontal className="w-3 h-3 text-black/50" />
+                    <MoreHorizontal className="w-3 h-3 text-black/50 dark:text-white/50" />
                   </button>
                 </div>
               );
@@ -359,10 +359,10 @@ export default function AppSidebar() {
           )}
         </div>
 
-        <div className="mt-3 text-[0.6875rem] font-semibold text-black/70 px-2 py-1">Grids</div>
+        <div className="mt-3 text-[0.6875rem] font-semibold text-black/70 dark:text-white/70 px-2 py-1">Grids</div>
         <div className="flex flex-col gap-0.5 max-h-[28vh] overflow-y-auto scrollbar-hide pr-1">
           {boards.length === 0 ? (
-            <div className="text-[0.6875rem] text-black/50 px-2.5 py-1.5">No grids yet.</div>
+            <div className="text-[0.6875rem] text-black/50 dark:text-white/50 px-2.5 py-1.5">No grids yet.</div>
           ) : (
             boards.map((board) => {
               const isActive = location.pathname === `/grid/${board.id}`;
@@ -375,7 +375,7 @@ export default function AppSidebar() {
                       isActive ? "bg-blue-500/15" : "hover:bg-blue-500/15"
                     }`}
                   >
-                    <span className={`inline-block h-1.5 w-1.5 rounded-full flex-shrink-0 ${isActive ? "bg-blue-500" : "bg-black/30"}`} />
+                    <span className={`inline-block h-1.5 w-1.5 rounded-full flex-shrink-0 ${isActive ? "bg-blue-500" : "bg-black/30 dark:bg-white/30"}`} />
                     <span className="truncate">{board.title || "Untitled Grid"}</span>
                   </button>
                   <button
@@ -395,7 +395,7 @@ export default function AppSidebar() {
                     }}
                     className="absolute right-1 top-1/2 -translate-y-1/2 w-5 h-5 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-blue-500/15 transition-opacity"
                   >
-                    <MoreHorizontal className="w-3 h-3 text-black/50" />
+                    <MoreHorizontal className="w-3 h-3 text-black/50 dark:text-white/50" />
                   </button>
                 </div>
               );
@@ -403,14 +403,14 @@ export default function AppSidebar() {
           )}
         </div>
 
-        <div className="mt-3 text-[0.6875rem] font-semibold text-black/70 px-2 py-1">Account</div>
+        <div className="mt-3 text-[0.6875rem] font-semibold text-black/70 dark:text-white/70 px-2 py-1">Account</div>
         <div className="flex flex-col gap-1">
           <button
             type="button"
             onClick={() => flushAndNavigate(nav, "/settings")}
             className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
           >
-            <SettingsIcon className="w-3.5 h-3.5 text-black/60" />
+            <SettingsIcon className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
             Settings
           </button>
           <button
@@ -418,7 +418,7 @@ export default function AppSidebar() {
             onClick={() => flushAndNavigate(nav, "/billing")}
             className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
           >
-            <CreditCard className="w-3.5 h-3.5 text-black/60" />
+            <CreditCard className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
             Billing
           </button>
         </div>
@@ -429,7 +429,7 @@ export default function AppSidebar() {
             onClick={() => { setFeedbackType("bug"); setFeedbackOpen(true); }}
             className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
           >
-            <Bug className="w-3.5 h-3.5 text-black/60" />
+            <Bug className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
             Report Bug
           </button>
           <button
@@ -437,7 +437,7 @@ export default function AppSidebar() {
             onClick={() => { setFeedbackType("suggestion"); setFeedbackOpen(true); }}
             className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
           >
-            <Lightbulb className="w-3.5 h-3.5 text-black/60" />
+            <Lightbulb className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
             Suggestion
           </button>
 
@@ -447,7 +447,7 @@ export default function AppSidebar() {
               onClick={() => signOut()}
               className="mt-2 w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
             >
-              <LogOut className="w-3.5 h-3.5 text-black/60" />
+              <LogOut className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
               Log out
             </button>
           )}
@@ -463,7 +463,7 @@ export default function AppSidebar() {
       {menuProjectId && ReactDOM.createPortal(
         <div
           ref={projectMenuRef}
-          className="fixed z-[9999] w-44 rounded-lg border border-black/10 bg-white/95 backdrop-blur-xl shadow-lg py-1 text-[0.6875rem]"
+          className="fixed z-[9999] w-44 rounded-lg border border-black/8 dark:border-white/8 bg-white/80 dark:bg-gray-900/80 backdrop-blur-md shadow-md py-1 text-[0.6875rem]"
           style={{ top: menuProjectPos.top, left: menuProjectPos.left }}
         >
           <button
@@ -471,12 +471,12 @@ export default function AppSidebar() {
             className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-blue-500/15 transition-colors"
             onClick={() => renameProject(menuProjectId)}
           >
-            <Edit2 className="w-3 h-3 text-black/50" />
+            <Edit2 className="w-3 h-3 text-black/50 dark:text-white/50" />
             Rename
           </button>
           <button
             type="button"
-            className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-red-50 text-red-600 transition-colors"
+            className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-red-50 dark:hover:bg-red-950/40 text-red-600 dark:text-red-400 transition-colors"
             onClick={() => deleteProject(menuProjectId)}
           >
             <Trash2 className="w-3 h-3" />
@@ -489,7 +489,7 @@ export default function AppSidebar() {
       {menuBoardId && ReactDOM.createPortal(
         <div
           ref={menuRef}
-          className="fixed z-[9999] w-44 rounded-lg border border-black/10 bg-white/95 backdrop-blur-xl shadow-lg py-1 text-[0.6875rem]"
+          className="fixed z-[9999] w-44 rounded-lg border border-black/8 dark:border-white/8 bg-white/80 dark:bg-gray-900/80 backdrop-blur-md shadow-md py-1 text-[0.6875rem]"
           style={{ top: menuPos.top, left: menuPos.left }}
         >
           <button
@@ -497,7 +497,7 @@ export default function AppSidebar() {
             className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-blue-500/15 transition-colors"
             onClick={() => renameBoard(menuBoardId)}
           >
-            <Edit2 className="w-3 h-3 text-black/50" />
+            <Edit2 className="w-3 h-3 text-black/50 dark:text-white/50" />
             Rename
           </button>
           <div
@@ -516,14 +516,14 @@ export default function AppSidebar() {
               type="button"
               className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-blue-500/15 transition-colors"
             >
-              <FolderPlus className="w-3 h-3 text-black/50" />
+              <FolderPlus className="w-3 h-3 text-black/50 dark:text-white/50" />
               Add to project
-              <ChevronRight className="w-3 h-3 text-black/30 ml-auto" />
+              <ChevronRight className="w-3 h-3 text-black/30 dark:text-white/30 ml-auto" />
             </button>
             {showProjectPicker && ReactDOM.createPortal(
               <div
                 ref={pickerRef}
-                className="fixed z-[10000] w-44 rounded-lg border border-black/10 bg-white/95 backdrop-blur-xl shadow-lg py-1 text-[0.6875rem]"
+                className="fixed z-[10000] w-44 rounded-lg border border-black/8 dark:border-white/8 bg-white/80 dark:bg-gray-900/80 backdrop-blur-md shadow-md py-1 text-[0.6875rem]"
                 style={{ top: pickerPos.top, left: pickerPos.left }}
                 onMouseEnter={() => setShowProjectPicker(true)}
                 onMouseLeave={() => setShowProjectPicker(false)}
@@ -553,11 +553,11 @@ export default function AppSidebar() {
                     }
                   }}
                 >
-                  <Plus className="w-3 h-3 text-black/50" />
+                  <Plus className="w-3 h-3 text-black/50 dark:text-white/50" />
                   Create new project
                 </button>
                 {projects.length > 0 && (
-                  <div className="border-t border-black/5 mt-1 pt-1">
+                  <div className="border-t border-black/5 dark:border-white/5 mt-1 pt-1">
                     {projects.map((p) => (
                       <button
                         key={p.id}
@@ -565,7 +565,7 @@ export default function AppSidebar() {
                         className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-blue-500/15 transition-colors"
                         onClick={() => addBoardToProject(menuBoardId, p.id)}
                       >
-                        <span className="inline-block h-1.5 w-1.5 rounded-full bg-black/30 flex-shrink-0" />
+                        <span className="inline-block h-1.5 w-1.5 rounded-full bg-black/30 dark:bg-white/30 flex-shrink-0" />
                         <span className="truncate">{p.name}</span>
                       </button>
                     ))}
@@ -577,7 +577,7 @@ export default function AppSidebar() {
           </div>
           <button
             type="button"
-            className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-red-50 text-red-600 transition-colors"
+            className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-red-50 dark:hover:bg-red-950/40 text-red-600 dark:text-red-400 transition-colors"
             onClick={() => deleteBoard(menuBoardId)}
           >
             <Trash2 className="w-3 h-3" />

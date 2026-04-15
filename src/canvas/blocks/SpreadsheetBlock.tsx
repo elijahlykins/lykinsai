@@ -1111,11 +1111,11 @@ export const SpreadsheetBlock = memo(function SpreadsheetBlock({ id, onMinimize,
                 <div className="grid" style={{ gridTemplateColumns, gridAutoRows: `${rowHeight}px` }}>
                   {!hideHeaders && (
                     <>
-                      <div className="sticky top-0 left-0 z-20 bg-white/30 dark:bg-white/8 backdrop-blur-xl border-b border-r border-black/15 dark:border-white/18" />
+                      <div className="sticky top-0 left-0 z-20 bg-white/20 dark:bg-white/6 backdrop-blur-sm border-b border-r border-black/15 dark:border-white/18" />
                       {Array.from({ length: cols }).map((_, c) => (
                         <div
                           key={`h-${c}`}
-                          className="sticky top-0 z-10 bg-white/30 dark:bg-white/8 backdrop-blur-xl border-b border-black/15 dark:border-white/18 flex items-center justify-center text-xs text-gray-800 dark:text-gray-100 relative"
+                          className="sticky top-0 z-10 bg-white/20 dark:bg-white/6 backdrop-blur-sm border-b border-black/15 dark:border-white/18 flex items-center justify-center text-xs text-gray-800 dark:text-gray-100 relative"
                         >
                           {colToLetters(c)}
                           <div className="absolute right-0 top-0 h-full w-1 cursor-col-resize" onPointerDown={(e) => startColResize(e, c)} />
@@ -1126,7 +1126,7 @@ export const SpreadsheetBlock = memo(function SpreadsheetBlock({ id, onMinimize,
                   {Array.from({ length: rows }).map((_, r) => (
                     <React.Fragment key={`r-${r}`}>
                       {!hideHeaders && (
-                        <div className="sticky left-0 z-10 bg-white/30 dark:bg-white/8 backdrop-blur-xl border-r border-black/15 dark:border-white/18 flex items-center justify-center text-xs text-gray-800 dark:text-gray-100">
+                        <div className="sticky left-0 z-10 bg-white/20 dark:bg-white/6 backdrop-blur-sm border-r border-black/15 dark:border-white/18 flex items-center justify-center text-xs text-gray-800 dark:text-gray-100">
                           {r + 1}
                         </div>
                       )}
@@ -1148,7 +1148,7 @@ export const SpreadsheetBlock = memo(function SpreadsheetBlock({ id, onMinimize,
                             data-sheet-cell={`${r},${c}`}
                             className={`border-b border-black/15 dark:border-white/18 ${
                               c !== cols - 1 ? "border-r border-black/15 dark:border-white/18" : ""
-                            } ${isHeaderRow ? "bg-black/5 dark:bg-white/10" : "bg-white/22 dark:bg-white/6"} backdrop-blur-xl px-1 overflow-hidden`}
+                            } ${isHeaderRow ? "bg-black/5 dark:bg-white/10" : "bg-white/22 dark:bg-white/6"} backdrop-blur-sm px-1 overflow-hidden`}
                             style={{ cursor: "default", boxShadow: "inset 0 -1px 0 rgba(0,0,0,0.12)", ...(cellSelStyle || {}) }}
                             onClick={(e) => {
                               e.stopPropagation();

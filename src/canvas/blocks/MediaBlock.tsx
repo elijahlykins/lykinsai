@@ -145,7 +145,6 @@ export const MediaBlock = memo(function MediaBlock({ id, onMinimize, onMenu }: {
     } else {
       saveMedia({ mode: "file", src: dataUrl, fileName: file.name, mimeType: file.type });
     }
-    window.dispatchEvent(new CustomEvent("omnia_save_file_to_media", { detail: { file } }));
   };
 
   const handleUrlSubmit = () => {
@@ -162,15 +161,12 @@ export const MediaBlock = memo(function MediaBlock({ id, onMinimize, onMenu }: {
       } else {
         saveMedia({ mode: "video", url, src: url });
       }
-      window.dispatchEvent(new CustomEvent("omnia_save_to_media", { detail: { url, name: "Video", fileType: "youtube" } }));
     } else if (urlMode === "embed") {
       saveMedia({ mode: "embed", url, src: url });
       const g = gridSize || 24;
       updateBlock(id, { width: Math.max(g * 16, block.width), height: Math.max(g * 12, block.height) } as any);
-      window.dispatchEvent(new CustomEvent("omnia_save_to_media", { detail: { url, name: "Embed", fileType: "embed" } }));
     } else {
       saveMedia({ mode: "link", url, src: url });
-      window.dispatchEvent(new CustomEvent("omnia_save_to_media", { detail: { url, name: "Link", fileType: "link" } }));
     }
 
     setUrlDraft("");
@@ -446,7 +442,7 @@ export const MediaBlock = memo(function MediaBlock({ id, onMinimize, onMenu }: {
             width: "72px",
             height: "20px",
             background: "linear-gradient(180deg, rgba(255,255,255,0.72), rgba(255,255,255,0.48))",
-            backdropFilter: "blur(8px)",
+            backdropFilter: "blur(4px)",
             borderRadius: "8px 8px 0 0",
             border: "1px solid rgba(255,255,255,0.55)",
             borderBottom: "none",

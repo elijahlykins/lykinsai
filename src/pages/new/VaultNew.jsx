@@ -646,7 +646,7 @@ export default function VaultNew() {
       );
     },
     strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
-    blockquote: ({ children }) => <blockquote className="border-l-2 border-black/20 pl-3 my-2 text-black/70 italic">{children}</blockquote>,
+    blockquote: ({ children }) => <blockquote className="border-l-2 border-black/20 dark:border-white/20 pl-3 my-2 text-black/70 dark:text-white/70 italic">{children}</blockquote>,
     code: ({ children, className }) => {
       const isBlock = className?.startsWith("language-");
       if (isBlock) return <pre className="rounded-lg bg-black/5 p-3 my-2 overflow-x-auto text-[0.85em]"><code>{children}</code></pre>;
@@ -2293,7 +2293,7 @@ User: ${text}`;
     if (type === "audio") {
       return (
         <div className="p-3 space-y-3 rounded-2xl">
-          <div className="flex items-center gap-2 text-black/80">
+          <div className="flex items-center gap-2 text-black/80 dark:text-white/80">
             <Music className="w-4 h-4" />
             <span className="text-xs font-medium truncate">{title}</span>
           </div>
@@ -2370,8 +2370,8 @@ User: ${text}`;
             <div className="flex items-start gap-2 h-full">
               <Video className="w-4 h-4 mt-0.5" />
               <div className="min-w-0">
-                <p className="text-xs font-medium text-black/85 truncate">{title}</p>
-                <p className="text-[0.6875rem] text-black/55 mt-1 truncate">{attachment.url}</p>
+                <p className="text-xs font-medium text-black/85 dark:text-white/85 truncate">{title}</p>
+                <p className="text-[0.6875rem] text-black/55 dark:text-white/55 mt-1 truncate">{attachment.url}</p>
               </div>
             </div>
           </a>
@@ -2410,17 +2410,17 @@ User: ${text}`;
           >
             <div className="p-4 flex flex-col gap-2.5">
               <div className="flex items-center gap-2">
-                <svg viewBox="0 0 24 24" className="w-4 h-4 shrink-0 fill-current text-black/70" aria-hidden="true">
+                <svg viewBox="0 0 24 24" className="w-4 h-4 shrink-0 fill-current text-black/70 dark:text-white/70" aria-hidden="true">
                   <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
                 </svg>
                 <div className="min-w-0 flex-1">
-                  <span className="text-sm font-semibold text-black/85 truncate block leading-tight">{attachment.authorName || displayTitle}</span>
-                  {attachment.authorHandle && <span className="text-[0.625rem] text-black/45 truncate block leading-tight">{attachment.authorHandle}</span>}
+                  <span className="text-sm font-semibold text-black/85 dark:text-white/85 truncate block leading-tight">{attachment.authorName || displayTitle}</span>
+                  {attachment.authorHandle && <span className="text-[0.625rem] text-black/45 dark:text-white/45 truncate block leading-tight">{attachment.authorHandle}</span>}
                 </div>
                 <ExternalLink className="w-3 h-3 opacity-0 group-hover/bm:opacity-60 transition-opacity shrink-0" />
               </div>
-              <p className="text-[13px] text-black/75 leading-relaxed whitespace-pre-line line-clamp-6">{desc}</p>
-              <div className="flex items-center gap-1.5 text-black/35 pt-1.5 border-t border-black/8">
+              <p className="text-[13px] text-black/75 dark:text-white/75 leading-relaxed whitespace-pre-line line-clamp-6">{desc}</p>
+              <div className="flex items-center gap-1.5 text-black/35 dark:text-white/35 pt-1.5 border-t border-black/8 dark:border-white/8">
                 <span className="text-[0.6rem]">X (Twitter)</span>
               </div>
             </div>
@@ -2449,7 +2449,7 @@ User: ${text}`;
             </div>
           )}
           <div className="p-3.5 space-y-1.5">
-            <div className="flex items-center gap-1.5 text-black/50">
+            <div className="flex items-center gap-1.5 text-black/50 dark:text-white/50">
               {attachment.favicon ? (
                 <img src={attachment.favicon} alt="" className="w-3.5 h-3.5 rounded-sm" onError={(e) => { e.currentTarget.style.display = "none"; }} />
               ) : (
@@ -2458,10 +2458,10 @@ User: ${text}`;
               <span className="text-[0.625rem] font-medium truncate">{domain}</span>
               <ExternalLink className="w-2.5 h-2.5 ml-auto opacity-0 group-hover/bm:opacity-100 transition-opacity" />
             </div>
-            <p className="text-sm font-semibold text-black/85 leading-snug line-clamp-2">{displayTitle}</p>
-            {desc && <p className="text-xs text-black/55 leading-relaxed line-clamp-3">{desc}</p>}
+            <p className="text-sm font-semibold text-black/85 dark:text-white/85 leading-snug line-clamp-2">{displayTitle}</p>
+            {desc && <p className="text-xs text-black/55 dark:text-white/55 leading-relaxed line-clamp-3">{desc}</p>}
             {!hasImage && !desc && linkUrl && (
-              <p className="text-xs text-black/40 truncate">{linkUrl}</p>
+              <p className="text-xs text-black/40 dark:text-white/40 truncate">{linkUrl}</p>
             )}
           </div>
         </a>
@@ -2476,9 +2476,9 @@ User: ${text}`;
       const fileName = attachment.name || title || "Spreadsheet";
       return (
         <div className="rounded-2xl overflow-hidden glass-control">
-          <div className="flex items-center gap-2 px-3.5 py-2.5 border-b border-black/8">
+          <div className="flex items-center gap-2 px-3.5 py-2.5 border-b border-black/8 dark:border-white/8">
             <Table2 className="w-4 h-4 text-green-600 shrink-0" />
-            <span className="text-sm font-medium text-black/80 truncate">{fileName}</span>
+            <span className="text-sm font-medium text-black/80 dark:text-white/80 truncate">{fileName}</span>
           </div>
           {hasData ? (
             <div className="overflow-hidden">
@@ -2487,7 +2487,7 @@ User: ${text}`;
                   {Array.from({ length: totalRows }, (_, r) => (
                     <tr key={r} className={r === 0 ? "bg-black/5 font-semibold" : ""}>
                       {Array.from({ length: totalCols }, (_, c) => (
-                        <td key={c} className="px-2 py-1 border-b border-r border-black/6 text-black/70 truncate max-w-[120px]">
+                        <td key={c} className="px-2 py-1 border-b border-r border-black/6 dark:border-white/6 text-black/70 dark:text-white/70 truncate max-w-[120px]">
                           {cells[`${r},${c}`] || ""}
                         </td>
                       ))}
@@ -2496,13 +2496,13 @@ User: ${text}`;
                 </tbody>
               </table>
               {(Number(attachment.rows) > 8 || Number(attachment.cols) > 6) && (
-                <div className="px-3 py-1.5 text-[0.6rem] text-black/35 text-center">
+                <div className="px-3 py-1.5 text-[0.6rem] text-black/35 dark:text-white/35 text-center">
                   {attachment.rows} rows × {attachment.cols} cols
                 </div>
               )}
             </div>
           ) : (
-            <div className="px-3.5 py-4 text-center text-xs text-black/40">Spreadsheet file</div>
+            <div className="px-3.5 py-4 text-center text-xs text-black/40 dark:text-white/40">Spreadsheet file</div>
           )}
         </div>
       );
@@ -2521,8 +2521,8 @@ User: ${text}`;
           <div className="flex items-start gap-2 h-full">
             <FileText className="w-4 h-4 mt-0.5" />
             <div className="min-w-0">
-              <p className="text-xs font-medium text-black/85 truncate">{title}</p>
-              <p className="text-[0.6875rem] text-black/55 mt-1">{type.toUpperCase()} file</p>
+              <p className="text-xs font-medium text-black/85 dark:text-white/85 truncate">{title}</p>
+              <p className="text-[0.6875rem] text-black/55 dark:text-white/55 mt-1">{type.toUpperCase()} file</p>
             </div>
           </div>
         </a>
@@ -2534,8 +2534,8 @@ User: ${text}`;
         <div className="flex items-start gap-2 h-full">
           {type === "youtube" ? <Video className="w-4 h-4 mt-0.5" /> : <FileText className="w-4 h-4 mt-0.5" />}
           <div className="min-w-0">
-            <p className="text-xs font-medium text-black/85 truncate">{title}</p>
-            <p className="text-[0.6875rem] text-black/55 mt-1">
+            <p className="text-xs font-medium text-black/85 dark:text-white/85 truncate">{title}</p>
+            <p className="text-[0.6875rem] text-black/55 dark:text-white/55 mt-1">
               {type === "youtube" ? "YouTube video" : "File"}
             </p>
           </div>
@@ -2867,7 +2867,7 @@ User: ${text}`;
   }
 
   return (
-    <div className={`min-h-screen bg-transparent text-black relative overflow-x-hidden`}>
+    <div className={`min-h-screen bg-transparent text-black dark:text-white relative overflow-x-hidden`}>
       <DragDropFileUpload
         triggerRef={addMediaTriggerRef}
         beforeUpload={checkVaultLimit}
@@ -2916,7 +2916,7 @@ User: ${text}`;
                 </SelectTrigger>
                 <SelectContent
                   align="end"
-                  className="glass-control border border-white/25 dark:border-white/10 bg-white/35 dark:bg-white/10 backdrop-blur-xl overflow-hidden"
+                  className="glass-control border border-white/16 dark:border-white/8 bg-white/22 dark:bg-white/8 backdrop-blur-md overflow-hidden"
                 >
                   <SelectGroup>
                     <SelectLabel>Latest</SelectLabel>
@@ -3026,9 +3026,9 @@ User: ${text}`;
         {chatChunkDragOver && (
           <div className="fixed inset-0 z-[60] pointer-events-none flex items-center justify-center">
             <div className="absolute inset-0 bg-blue-500/5 border-2 border-dashed border-blue-400/40 rounded-3xl m-4" />
-            <div className="relative bg-white/90 backdrop-blur-sm rounded-2xl px-6 py-4 shadow-lg border border-blue-300/50 flex items-center gap-3">
+            <div className="relative bg-white/65 backdrop-blur-sm rounded-2xl px-6 py-4 shadow-md border border-blue-300/30 flex items-center gap-3">
               <StickyNote className="w-5 h-5 text-amber-500" />
-              <span className="text-sm font-medium text-black/70">Drop to save as Quick Note</span>
+              <span className="text-sm font-medium text-black/70 dark:text-white/70">Drop to save as Quick Note</span>
             </div>
           </div>
         )}
@@ -3041,7 +3041,7 @@ User: ${text}`;
                   value={embeddedSearch}
                   onChange={(e) => setEmbeddedSearch(e.target.value)}
                   placeholder="Search memories..."
-                  className="flex-1 h-10 rounded-xl border border-black/10 bg-white/80 px-3 text-sm outline-none"
+                  className="flex-1 h-10 rounded-xl border border-black/8 dark:border-white/8 bg-white/55 dark:bg-white/4 px-3 text-sm outline-none"
                 />
                 <div className="flex items-center rounded-xl glass-control p-0.5 gap-0.5 shrink-0">
                   {[
@@ -3057,7 +3057,7 @@ User: ${text}`;
                       className={`flex items-center justify-center w-8 h-8 rounded-lg text-[0.6875rem] font-medium transition-all ${
                         vaultView === v.id
                           ? "bg-blue-500 text-white shadow-sm"
-                          : "text-black/50 hover:text-black/80 hover:bg-black/[0.04]"
+                          : "text-black/50 dark:text-white/50 hover:text-black/80 dark:hover:text-white/80 hover:bg-black/[0.04] dark:hover:bg-white/[0.06]"
                       }`}
                       title={v.label}
                     >
@@ -3089,7 +3089,7 @@ User: ${text}`;
                     </button>
                   )}
                   {showEmbeddedTagDropdown && (
-                    <div className="absolute top-full left-0 mt-1 w-52 max-h-56 overflow-y-auto rounded-xl border border-black/10 dark:border-white/10 bg-white/95 dark:bg-[#1c1c1e]/95 backdrop-blur-xl shadow-md z-50 py-1 scrollbar-hide">
+                    <div className="absolute top-full left-0 mt-1 w-52 max-h-56 overflow-y-auto rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-[#1c1c1e]/80 backdrop-blur-md shadow-md z-50 py-1 scrollbar-hide">
                       {(() => {
                         const untaggedActive = selectedFilterTags.includes("__untagged__");
                         return (
@@ -3142,7 +3142,7 @@ User: ${text}`;
           ) : (
             <>
               <h1 className="text-3xl font-semibold">The Vault</h1>
-              <p className="text-black/60 mt-1">
+              <p className="text-black/60 dark:text-white/60 mt-1">
                 Your digital collage of media files, videos, images, and quick notes. Drag and drop files or folders anywhere on this page.
               </p>
               <div className="mt-4 flex flex-wrap items-center gap-3">
@@ -3153,7 +3153,7 @@ User: ${text}`;
                     handleConceptSearch(vaultSearch);
                   }}
                 >
-                  <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-black/35 pointer-events-none" />
+                  <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-black/35 dark:text-white/35 pointer-events-none" />
                   <input
                     type="text"
                     value={vaultSearch}
@@ -3162,7 +3162,7 @@ User: ${text}`;
                       if (conceptResultIds !== null) setConceptResultIds(null);
                     }}
                     placeholder="Search your vault — type an idea, topic, or keyword and press Enter"
-                    className="w-full h-11 rounded-2xl glass-control pl-10 pr-20 text-sm outline-none placeholder:text-black/35"
+                    className="w-full h-11 rounded-2xl glass-control pl-10 pr-20 text-sm outline-none placeholder:text-black/35 dark:placeholder:text-white/35"
                   />
                   <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
                     {isConceptSearching ? (
@@ -3171,7 +3171,7 @@ User: ${text}`;
                       <>
                         <button
                           type="submit"
-                          className="w-7 h-7 flex items-center justify-center text-black/50 hover:text-black/80 transition-colors"
+                          className="w-7 h-7 flex items-center justify-center text-black/50 dark:text-white/50 hover:text-black/80 dark:hover:text-white/80 transition-colors"
                           title="Search"
                         >
                           <Search className="w-4 h-4" />
@@ -3179,7 +3179,7 @@ User: ${text}`;
                         <button
                           type="button"
                           onClick={() => { setVaultSearch(""); setConceptResultIds(null); }}
-                          className="w-5 h-5 flex items-center justify-center text-black/40 hover:text-black/70"
+                          className="w-5 h-5 flex items-center justify-center text-black/40 dark:text-white/40 hover:text-black/70 dark:hover:text-white/70"
                         >
                           <X className="w-3.5 h-3.5" />
                         </button>
@@ -3202,7 +3202,7 @@ User: ${text}`;
                       className={`flex-1 sm:flex-initial flex items-center justify-center sm:justify-start gap-1.5 rounded-lg px-2.5 py-1.5 text-[0.6875rem] font-medium transition-all ${
                         vaultView === v.id
                           ? "bg-blue-500 text-white shadow-sm"
-                          : "text-black/50 hover:text-black/80 hover:bg-black/[0.04]"
+                          : "text-black/50 dark:text-white/50 hover:text-black/80 dark:hover:text-white/80 hover:bg-black/[0.04] dark:hover:bg-white/[0.06]"
                       }`}
                       title={v.label}
                     >
@@ -3213,10 +3213,10 @@ User: ${text}`;
                 </div>
               </div>
               {isConceptSearching && (
-                <p className="mt-2 text-xs text-black/40">Reading through your vault...</p>
+                <p className="mt-2 text-xs text-black/40 dark:text-white/40">Reading through your vault...</p>
               )}
               {conceptResultIds !== null && !isConceptSearching && (
-                <div className="mt-2 flex items-center gap-2 text-xs text-black/50">
+                <div className="mt-2 flex items-center gap-2 text-xs text-black/50 dark:text-white/50">
                   <span>
                     {conceptResultIds.length === 0
                       ? "Nothing in your vault matches that"
@@ -3234,7 +3234,7 @@ User: ${text}`;
               <div className="mt-4 flex flex-wrap items-center gap-2" style={{ minHeight: 1, transform: "translateZ(0)" }}>
                 {allTags.length > 0 && (
                   <>
-                    <Tag className="w-3.5 h-3.5 text-black/35 shrink-0" />
+                    <Tag className="w-3.5 h-3.5 text-black/35 dark:text-white/35 shrink-0" />
                     {allTags.map((tag) => {
                       const active = selectedFilterTags.includes(tag.name);
                       return (
@@ -3249,12 +3249,12 @@ User: ${text}`;
                           className={`inline-flex items-center gap-1 rounded-full font-medium transition-all ${
                             active
                               ? "bg-blue-500 text-white shadow-sm"
-                              : "glass-control text-black/65 hover:text-black/85"
+                              : "glass-control text-black/65 dark:text-white/65 hover:text-black/85 dark:hover:text-white/85"
                           }`}
                           style={{ fontSize: 11, lineHeight: 1, height: 22, paddingLeft: 8, paddingRight: 8 }}
                         >
                           {tag.name}
-                          <span className={`text-[0.625rem] ${active ? "text-white/70" : "text-black/35"}`}>
+                          <span className={`text-[0.625rem] ${active ? "text-white/70" : "text-black/35 dark:text-white/35"}`}>
                             {tag.count}
                           </span>
                         </button>
@@ -3278,7 +3278,7 @@ User: ${text}`;
 
         {!user && !loading && (
           <div className="glass-control rounded-2xl px-5 py-4 inline-block">
-            <p className="text-sm text-black/70">Sign in to view your vault.</p>
+            <p className="text-sm text-black/70 dark:text-white/70">Sign in to view your vault.</p>
           </div>
         )}
 
@@ -3303,7 +3303,7 @@ User: ${text}`;
                       <div className="w-10 h-10 rounded-full bg-blue-500/10 flex items-center justify-center group-hover/opt:bg-blue-500/20 transition-colors">
                         <Upload className="w-5 h-5 text-blue-500" />
                       </div>
-                      <span className="text-xs font-medium text-black/50 group-hover/opt:text-blue-500 transition-colors">Upload Files</span>
+                      <span className="text-xs font-medium text-black/50 dark:text-white/50 group-hover/opt:text-blue-500 transition-colors">Upload Files</span>
                     </button>
                     <button
                       type="button"
@@ -3313,13 +3313,13 @@ User: ${text}`;
                       <div className="w-10 h-10 rounded-full bg-blue-500/10 flex items-center justify-center group-hover/opt:bg-blue-500/20 transition-colors">
                         <Globe className="w-5 h-5 text-blue-500" />
                       </div>
-                      <span className="text-xs font-medium text-black/50 group-hover/opt:text-blue-500 transition-colors">Save Link</span>
+                      <span className="text-xs font-medium text-black/50 dark:text-white/50 group-hover/opt:text-blue-500 transition-colors">Save Link</span>
                     </button>
                   </div>
                 </div>
                 {embeddedSearch.trim() && (
                   <div className="glass-control rounded-2xl px-5 py-4 inline-block">
-                    <p className="text-sm text-black/70">No results match your search.</p>
+                    <p className="text-sm text-black/70 dark:text-white/70">No results match your search.</p>
                   </div>
                 )}
               </div>
@@ -3328,19 +3328,19 @@ User: ${text}`;
                 <div className="rounded-2xl border-2 border-dashed border-blue-500/30 p-4 flex items-center justify-center text-center gap-4 max-w-xs">
                   <button type="button" onClick={() => addMediaTriggerRef.current?.()} className="group/opt flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-blue-500/[0.06] transition-colors">
                     <div className="w-8 h-8 rounded-full bg-blue-500/10 flex items-center justify-center group-hover/opt:bg-blue-500/20 transition-colors"><Upload className="w-4 h-4 text-blue-500" /></div>
-                    <span className="text-[0.6875rem] font-medium text-black/50 group-hover/opt:text-blue-500 transition-colors">Files</span>
+                    <span className="text-[0.6875rem] font-medium text-black/50 dark:text-white/50 group-hover/opt:text-blue-500 transition-colors">Files</span>
                   </button>
                   <button type="button" onClick={() => setShowSaveLink(true)} className="group/opt flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-blue-500/[0.06] transition-colors">
                     <div className="w-8 h-8 rounded-full bg-blue-500/10 flex items-center justify-center group-hover/opt:bg-blue-500/20 transition-colors"><Globe className="w-4 h-4 text-blue-500" /></div>
-                    <span className="text-[0.6875rem] font-medium text-black/50 group-hover/opt:text-blue-500 transition-colors">Link</span>
+                    <span className="text-[0.6875rem] font-medium text-black/50 dark:text-white/50 group-hover/opt:text-blue-500 transition-colors">Link</span>
                   </button>
                 </div>
                 {tagGroupedCards.map(([tagName, cards]) => (
                   <div key={tagName}>
                     <div className="flex items-center gap-2 mb-3">
-                      <Tag className="w-4 h-4 text-black/40" />
-                      <h2 className="text-lg font-semibold text-black/80">{tagName}</h2>
-                      <span className="text-xs text-black/40 font-medium">{cards.length}</span>
+                      <Tag className="w-4 h-4 text-black/40 dark:text-white/40" />
+                      <h2 className="text-lg font-semibold text-black/80 dark:text-white/80">{tagName}</h2>
+                      <span className="text-xs text-black/40 dark:text-white/40 font-medium">{cards.length}</span>
                     </div>
                     <div className={isEmbeddedMode ? "grid grid-cols-2 gap-3" : "grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4"}>
                       {cards.map((card) => (
@@ -3380,7 +3380,7 @@ User: ${text}`;
                                     if (openCardMenuId === card.id) { setOpenCardMenuId(null); return; }
                                     openCardMenuForAnchor(card.id, e.currentTarget);
                                   }}
-                                  className="px-1 py-0.5 text-black/75 hover:text-black leading-none text-base font-semibold"
+                                  className="px-1 py-0.5 text-black/75 dark:text-white/75 hover:text-black dark:hover:text-white leading-none text-base font-semibold"
                                   title="Actions"
                                 >
                                   <MoreHorizontal className="w-4 h-4" />
@@ -3390,11 +3390,11 @@ User: ${text}`;
                           ) : card.kind === "quick-note" ? (
                             <>
                               <div className="glass-control rounded-2xl p-3 h-40 overflow-hidden">
-                                <div className="flex items-center gap-1.5 text-black/60 mb-1.5">
+                                <div className="flex items-center gap-1.5 text-black/60 dark:text-white/60 mb-1.5">
                                   <StickyNote className="w-3.5 h-3.5" />
                                   <span className="text-[0.625rem] font-medium">Quick Note</span>
                                 </div>
-                                <p className="text-xs text-black/70 whitespace-pre-wrap break-words line-clamp-5">{card.excerpt}</p>
+                                <p className="text-xs text-black/70 dark:text-white/70 whitespace-pre-wrap break-words line-clamp-5">{card.excerpt}</p>
                               </div>
                               <div className="mt-1 flex justify-end px-1">
                                 <button
@@ -3405,7 +3405,7 @@ User: ${text}`;
                                     if (openCardMenuId === card.id) { setOpenCardMenuId(null); return; }
                                     openCardMenuForAnchor(card.id, e.currentTarget);
                                   }}
-                                  className="px-1 py-0.5 text-black/75 hover:text-black leading-none text-base font-semibold"
+                                  className="px-1 py-0.5 text-black/75 dark:text-white/75 hover:text-black dark:hover:text-white leading-none text-base font-semibold"
                                   title="Quick note actions"
                                 >
                                   <MoreHorizontal className="w-4 h-4" />
@@ -3415,8 +3415,8 @@ User: ${text}`;
                           ) : (
                             <>
                               <div className="glass-control rounded-2xl p-3 h-40 overflow-hidden">
-                                <h3 className="text-xs font-semibold text-black/80 truncate mb-1">{card.title}</h3>
-                                {card.question && <p className="text-[0.6875rem] text-black/60 line-clamp-3">{card.question}</p>}
+                                <h3 className="text-xs font-semibold text-black/80 dark:text-white/80 truncate mb-1">{card.title}</h3>
+                                {card.question && <p className="text-[0.6875rem] text-black/60 dark:text-white/60 line-clamp-3">{card.question}</p>}
                               </div>
                               <div className="mt-1 flex justify-end px-1">
                                 <button
@@ -3427,7 +3427,7 @@ User: ${text}`;
                                     if (openCardMenuId === card.id) { setOpenCardMenuId(null); return; }
                                     openCardMenuForAnchor(card.id, e.currentTarget);
                                   }}
-                                  className="px-1 py-0.5 text-black/75 hover:text-black leading-none text-base font-semibold"
+                                  className="px-1 py-0.5 text-black/75 dark:text-white/75 hover:text-black dark:hover:text-white leading-none text-base font-semibold"
                                   title="Actions"
                                 >
                                   <MoreHorizontal className="w-4 h-4" />
@@ -3447,19 +3447,19 @@ User: ${text}`;
                 <div className="rounded-2xl border-2 border-dashed border-blue-500/30 p-4 flex items-center justify-center text-center gap-4 max-w-xs">
                   <button type="button" onClick={() => addMediaTriggerRef.current?.()} className="group/opt flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-blue-500/[0.06] transition-colors">
                     <div className="w-8 h-8 rounded-full bg-blue-500/10 flex items-center justify-center group-hover/opt:bg-blue-500/20 transition-colors"><Upload className="w-4 h-4 text-blue-500" /></div>
-                    <span className="text-[0.6875rem] font-medium text-black/50 group-hover/opt:text-blue-500 transition-colors">Files</span>
+                    <span className="text-[0.6875rem] font-medium text-black/50 dark:text-white/50 group-hover/opt:text-blue-500 transition-colors">Files</span>
                   </button>
                   <button type="button" onClick={() => setShowSaveLink(true)} className="group/opt flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-blue-500/[0.06] transition-colors">
                     <div className="w-8 h-8 rounded-full bg-blue-500/10 flex items-center justify-center group-hover/opt:bg-blue-500/20 transition-colors"><Globe className="w-4 h-4 text-blue-500" /></div>
-                    <span className="text-[0.6875rem] font-medium text-black/50 group-hover/opt:text-blue-500 transition-colors">Link</span>
+                    <span className="text-[0.6875rem] font-medium text-black/50 dark:text-white/50 group-hover/opt:text-blue-500 transition-colors">Link</span>
                   </button>
                 </div>
                 {typeGroupedCards.map(([typeName, cards]) => {
                   return (
                     <div key={typeName}>
                       <div className="flex items-center gap-2 mb-3">
-                        <h2 className="text-lg font-semibold text-black/80">{typeName}</h2>
-                        <span className="text-xs text-black/40 font-medium">{cards.length}</span>
+                        <h2 className="text-lg font-semibold text-black/80 dark:text-white/80">{typeName}</h2>
+                        <span className="text-xs text-black/40 dark:text-white/40 font-medium">{cards.length}</span>
                       </div>
                       <div className={isEmbeddedMode ? "grid grid-cols-2 gap-3" : "grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4"}>
                         {cards.map((card) => (
@@ -3492,7 +3492,7 @@ User: ${text}`;
                                       if (openCardMenuId === card.id) { setOpenCardMenuId(null); return; }
                                       openCardMenuForAnchor(card.id, e.currentTarget);
                                     }}
-                                    className="px-1 py-0.5 text-black/75 hover:text-black leading-none text-base font-semibold"
+                                    className="px-1 py-0.5 text-black/75 dark:text-white/75 hover:text-black dark:hover:text-white leading-none text-base font-semibold"
                                     title="Actions"
                                   >
                                     <MoreHorizontal className="w-4 h-4" />
@@ -3502,11 +3502,11 @@ User: ${text}`;
                             ) : card.kind === "quick-note" ? (
                               <>
                                 <div className="glass-control rounded-2xl p-3 h-40 overflow-hidden">
-                                  <div className="flex items-center gap-1.5 text-black/60 mb-1.5">
+                                  <div className="flex items-center gap-1.5 text-black/60 dark:text-white/60 mb-1.5">
                                     <StickyNote className="w-3.5 h-3.5" />
                                     <span className="text-[0.625rem] font-medium">Quick Note</span>
                                   </div>
-                                  <p className="text-xs text-black/70 whitespace-pre-wrap break-words line-clamp-5">{card.excerpt}</p>
+                                  <p className="text-xs text-black/70 dark:text-white/70 whitespace-pre-wrap break-words line-clamp-5">{card.excerpt}</p>
                                 </div>
                                 <div className="mt-1 flex justify-end px-1">
                                   <button
@@ -3517,7 +3517,7 @@ User: ${text}`;
                                       if (openCardMenuId === card.id) { setOpenCardMenuId(null); return; }
                                       openCardMenuForAnchor(card.id, e.currentTarget);
                                     }}
-                                    className="px-1 py-0.5 text-black/75 hover:text-black leading-none text-base font-semibold"
+                                    className="px-1 py-0.5 text-black/75 dark:text-white/75 hover:text-black dark:hover:text-white leading-none text-base font-semibold"
                                     title="Quick note actions"
                                   >
                                     <MoreHorizontal className="w-4 h-4" />
@@ -3527,8 +3527,8 @@ User: ${text}`;
                             ) : (
                               <>
                                 <div className="glass-control rounded-2xl p-3 h-40 overflow-hidden">
-                                  <h3 className="text-xs font-semibold text-black/80 truncate mb-1">{card.title}</h3>
-                                  {card.question && <p className="text-[0.6875rem] text-black/60 line-clamp-3">{card.question}</p>}
+                                  <h3 className="text-xs font-semibold text-black/80 dark:text-white/80 truncate mb-1">{card.title}</h3>
+                                  {card.question && <p className="text-[0.6875rem] text-black/60 dark:text-white/60 line-clamp-3">{card.question}</p>}
                                 </div>
                                 <div className="mt-1 flex justify-end px-1">
                                   <button
@@ -3539,7 +3539,7 @@ User: ${text}`;
                                       if (openCardMenuId === card.id) { setOpenCardMenuId(null); return; }
                                       openCardMenuForAnchor(card.id, e.currentTarget);
                                     }}
-                                    className="px-1 py-0.5 text-black/75 hover:text-black leading-none text-base font-semibold"
+                                    className="px-1 py-0.5 text-black/75 dark:text-white/75 hover:text-black dark:hover:text-white leading-none text-base font-semibold"
                                     title="Actions"
                                   >
                                     <MoreHorizontal className="w-4 h-4" />
@@ -3577,7 +3577,7 @@ User: ${text}`;
                       <div className="w-9 h-9 rounded-full bg-blue-500/10 flex items-center justify-center group-hover/opt:bg-blue-500/20 transition-colors">
                         <Upload className="w-4 h-4 text-blue-500" />
                       </div>
-                      <span className="text-[0.625rem] font-medium text-black/50 group-hover/opt:text-blue-500 transition-colors">Files</span>
+                      <span className="text-[0.625rem] font-medium text-black/50 dark:text-white/50 group-hover/opt:text-blue-500 transition-colors">Files</span>
                     </button>
                     <button
                       type="button"
@@ -3587,7 +3587,7 @@ User: ${text}`;
                       <div className="w-9 h-9 rounded-full bg-blue-500/10 flex items-center justify-center group-hover/opt:bg-blue-500/20 transition-colors">
                         <Globe className="w-4 h-4 text-blue-500" />
                       </div>
-                      <span className="text-[0.625rem] font-medium text-black/50 group-hover/opt:text-blue-500 transition-colors">Link</span>
+                      <span className="text-[0.625rem] font-medium text-black/50 dark:text-white/50 group-hover/opt:text-blue-500 transition-colors">Link</span>
                     </button>
                   </div>
                 </div>
@@ -3674,10 +3674,10 @@ User: ${text}`;
                               e.stopPropagation();
                               setOpenAttachmentNotesCardId((prev) => (prev === card.id ? null : card.id));
                             }}
-                            className="absolute top-2 right-2 h-6 min-w-6 px-1.5 rounded-full bg-white/70 backdrop-blur-md border border-white/60 text-[0.6875rem] font-semibold flex items-center justify-center gap-1 z-[125] shadow-sm"
+                            className="absolute top-2 right-2 h-6 min-w-6 px-1.5 rounded-full bg-white/45 backdrop-blur-sm border border-white/30 text-[0.6875rem] font-semibold text-black flex items-center justify-center gap-1 z-[125] shadow-sm"
                             title="View file notes"
                           >
-                            <MessageSquare className="w-3 h-3" />
+                            <MessageSquare className="w-3 h-3 text-black" />
                             <span>{parseAttachmentNotes(card.attachment).length}</span>
                           </button>
                         )}
@@ -3706,20 +3706,20 @@ User: ${text}`;
                                 }
                                 openCardMenuForAnchor(card.id, e.currentTarget);
                               }}
-                              className="px-1 py-0.5 text-black/75 hover:text-black leading-none text-base font-semibold"
+                              className="px-1 py-0.5 text-black/75 dark:text-white/75 hover:text-black dark:hover:text-white leading-none text-base font-semibold"
                               title="Actions"
                             >
                               <MoreHorizontal className="w-4 h-4" />
                             </button>
                             {openAttachmentNotesCardId === card.id && (
                               <div
-                                className="absolute right-0 bottom-full mb-2 w-64 rounded-2xl border border-white/60 bg-white/85 backdrop-blur-xl shadow-2xl p-3 z-[140]"
+                                className="absolute right-0 bottom-full mb-2 w-64 rounded-2xl border border-white/30 dark:border-white/10 bg-white/60 dark:bg-gray-900/65 backdrop-blur-md shadow-lg p-3 z-[140]"
                                 data-no-drag="true"
                                 draggable={false}
                                 onPointerDown={(e) => e.stopPropagation()}
                                 onMouseDown={(e) => e.stopPropagation()}
                               >
-                                <div className="text-[0.6875rem] font-medium text-black/60 mb-2">Add a note</div>
+                                <div className="text-[0.6875rem] font-medium text-black/60 dark:text-white/60 mb-2">Add a note</div>
                                 <textarea
                                   value={attachmentNoteDraft}
                                   onChange={(e) => setAttachmentNoteDraft(e.target.value)}
@@ -3732,7 +3732,7 @@ User: ${text}`;
                                     }
                                   }}
                                   placeholder="Write a note about this file…"
-                                  className="w-full rounded-lg border border-black/10 bg-white/70 px-2.5 py-2 text-xs outline-none resize-none placeholder:text-black/40"
+                                  className="w-full rounded-lg border border-black/10 dark:border-white/10 bg-white/45 dark:bg-white/4 px-2.5 py-2 text-xs outline-none resize-none placeholder:text-black/40 dark:placeholder:text-white/40"
                                   rows={3}
                                   autoFocus
                                 />
@@ -3740,7 +3740,7 @@ User: ${text}`;
                                   <button
                                     type="button"
                                     onClick={() => { setOpenAttachmentNotesCardId(null); setAttachmentNoteDraft(""); }}
-                                    className="text-[0.6875rem] text-black/50 hover:text-black/70"
+                                    className="text-[0.6875rem] text-black/50 dark:text-white/50 hover:text-black/70 dark:hover:text-white/70"
                                   >
                                     Cancel
                                   </button>
@@ -3760,10 +3760,10 @@ User: ${text}`;
                                   </button>
                                 </div>
                                 {parseAttachmentNotes(card.attachment).length > 0 && (
-                                  <div className="mt-3 border-t border-black/10 pt-2 max-h-32 overflow-y-auto scrollbar-hide space-y-1.5">
+                                  <div className="mt-3 border-t border-black/10 dark:border-white/10 pt-2 max-h-32 overflow-y-auto scrollbar-hide space-y-1.5">
                                     {parseAttachmentNotes(card.attachment).map((note) => (
-                                      <div key={note.id} className="rounded-md bg-black/5 px-2 py-1.5">
-                                        <p className="text-xs text-black/80 whitespace-pre-wrap break-words">{note.text}</p>
+                                      <div key={note.id} className="rounded-md bg-black/5 dark:bg-white/5 px-2 py-1.5">
+                                        <p className="text-xs text-black/80 dark:text-white/80 whitespace-pre-wrap break-words">{note.text}</p>
                                       </div>
                                     ))}
                                   </div>
@@ -3776,15 +3776,15 @@ User: ${text}`;
                     ) : card.kind === "chat-preview" ? (
                       <div className={`p-4 space-y-3 ${vaultView === "grid" ? "h-44 overflow-hidden" : ""}`}>
                         <div className="flex items-center justify-between">
-                          <h2 className="text-sm font-semibold text-black/90 truncate">{card.title}</h2>
-                          <span className="text-[0.6875rem] text-black/60">{card.turnsCount} turns</span>
+                          <h2 className="text-sm font-semibold text-black/90 dark:text-white/90 truncate">{card.title}</h2>
+                          <span className="text-[0.6875rem] text-black/60 dark:text-white/60">{card.turnsCount} turns</span>
                         </div>
                         <div className="rounded-xl bg-white/40 border border-white/45 px-3 py-2">
-                          <p className={`text-[0.75rem] text-black/80 ${vaultView === "grid" ? "line-clamp-2" : "line-clamp-3"}`}>{card.question}</p>
+                          <p className={`text-[0.75rem] text-black/80 dark:text-white/80 ${vaultView === "grid" ? "line-clamp-2" : "line-clamp-3"}`}>{card.question}</p>
                         </div>
                         {card.answer && vaultView !== "grid" && (
                           <div className="rounded-xl bg-black/10 border border-white/30 px-3 py-2">
-                            <p className="text-[0.75rem] text-black/75 line-clamp-4">{card.answer}</p>
+                            <p className="text-[0.75rem] text-black/75 dark:text-white/75 line-clamp-4">{card.answer}</p>
                           </div>
                         )}
                         {card.tags?.length > 0 && (
@@ -3797,7 +3797,7 @@ User: ${text}`;
                           </div>
                         )}
                         {vaultView !== "grid" && (
-                        <div className="text-[0.6875rem] text-black/55 flex items-center gap-1">
+                        <div className="text-[0.6875rem] text-black/55 dark:text-white/55 flex items-center gap-1">
                           <Clock className="w-3 h-3" />
                           <span>{card.dateLabel}</span>
                         </div>
@@ -3806,12 +3806,12 @@ User: ${text}`;
                     ) : (
                       <>
                         <div className={`glass-control rounded-2xl p-4 ${vaultView === "grid" ? "h-44 overflow-hidden" : ""}`}>
-                          <div className="flex items-center gap-2 text-black/70 mb-2">
+                          <div className="flex items-center gap-2 text-black/70 dark:text-white/70 mb-2">
                             <StickyNote className="w-4 h-4" />
                             <span className="text-xs font-medium">Quick Note</span>
                           </div>
                           <div className={vaultView === "grid" ? "overflow-hidden" : "max-h-56 overflow-y-auto scrollbar-hide"}>
-                            <p className={`text-sm text-black/70 whitespace-pre-wrap break-words ${vaultView === "grid" ? "line-clamp-5" : ""}`}>{card.excerpt}</p>
+                            <p className={`text-sm text-black/70 dark:text-white/70 whitespace-pre-wrap break-words ${vaultView === "grid" ? "line-clamp-5" : ""}`}>{card.excerpt}</p>
                           </div>
                           {card.tags?.length > 0 && (
                             <div className="mt-2 flex flex-wrap gap-1">
@@ -3822,7 +3822,7 @@ User: ${text}`;
                               ))}
                             </div>
                           )}
-                          <div className="mt-3 text-[0.6875rem] text-black/55 flex items-center gap-1">
+                          <div className="mt-3 text-[0.6875rem] text-black/55 dark:text-white/55 flex items-center gap-1">
                             <Clock className="w-3 h-3" />
                             <span>{card.dateLabel}</span>
                           </div>
@@ -3843,7 +3843,7 @@ User: ${text}`;
                               }
                               openCardMenuForAnchor(card.id, e.currentTarget);
                             }}
-                            className="px-1 py-0.5 text-black/75 hover:text-black leading-none text-base font-semibold"
+                            className="px-1 py-0.5 text-black/75 dark:text-white/75 hover:text-black dark:hover:text-white leading-none text-base font-semibold"
                             title="Quick note actions"
                           >
                             <MoreHorizontal className="w-4 h-4" />
@@ -3857,7 +3857,7 @@ User: ${text}`;
               </div>
             )}
             {isLoadingMoreNotes && (
-              <div className="mt-4 text-xs text-black/60">Loading more memories...</div>
+              <div className="mt-4 text-xs text-black/60 dark:text-white/60">Loading more memories...</div>
             )}
           </motion.div>
         )}
@@ -3877,7 +3877,7 @@ User: ${text}`;
       )}
       {showChat && (
         <div
-          className={`fixed bottom-0 flex flex-col bg-white/40 backdrop-blur-sm border-l border-black/10 transition-[right] duration-300 ${isMobileChat ? "z-[80] inset-x-0 border-l-0" : "z-[64]"}`}
+          className={`fixed bottom-0 flex flex-col bg-white/40 dark:bg-white/5 backdrop-blur-sm border-l border-black/10 dark:border-white/10 transition-[right] duration-300 ${isMobileChat ? "z-[80] inset-x-0 border-l-0" : "z-[64]"}`}
           style={{
             top: isMobileChat ? 0 : "var(--header-height, 4.9rem)",
             right: isMobileChat ? undefined : 0,
@@ -3889,12 +3889,12 @@ User: ${text}`;
             <div className="absolute left-0 top-0 bottom-0 w-3 -translate-x-1/2 cursor-col-resize z-[70] pointer-events-auto" onPointerDown={handleStartChatResize} title="Drag to resize chat" />
           )}
           {isMobileChat && (
-            <div className="flex items-center justify-between px-3 py-2 border-b border-black/10 shrink-0">
-              <div className="flex items-center gap-2 text-xs font-semibold text-black/80">
+            <div className="flex items-center justify-between px-3 py-2 border-b border-black/10 dark:border-white/10 shrink-0">
+              <div className="flex items-center gap-2 text-xs font-semibold text-black/80 dark:text-white/80">
                 <MessageSquare className="w-3.5 h-3.5" />
                 Chat
               </div>
-              <button type="button" onClick={() => setShowChat(false)} className="h-6 w-6 rounded-full flex items-center justify-center text-black/40 hover:text-red-500 hover:bg-red-500/10 transition-colors">
+              <button type="button" onClick={() => setShowChat(false)} className="h-6 w-6 rounded-full flex items-center justify-center text-black/40 dark:text-white/40 hover:text-red-500 hover:bg-red-500/10 transition-colors">
                 <X className="w-3 h-3" />
               </button>
             </div>
@@ -3903,7 +3903,7 @@ User: ${text}`;
             {chatMessages.map((msg, idx) => (
               <div key={msg.id || idx} className={`flex flex-col ${msg.role === "user" ? "items-end" : "items-start"}`}>
                 {msg.role === "user" ? (
-                  <div className="max-w-[94%] rounded-2xl rounded-br-md px-3 py-2 text-xs leading-relaxed text-black/90 border border-white/55 bg-[linear-gradient(135deg,rgba(255,255,255,0.32),rgba(255,255,255,0.16))] backdrop-blur-xl shadow-[0_10px_28px_rgba(0,0,0,0.10),inset_0_1px_0_rgba(255,255,255,0.35)] [&_table]:text-[0.6875rem] [&_td]:py-1 [&_th]:py-1">
+                  <div className="max-w-[94%] rounded-2xl rounded-br-md px-3 py-2 text-xs leading-relaxed text-black/90 dark:text-white/90 border border-white/30 dark:border-white/10 bg-[linear-gradient(135deg,rgba(255,255,255,0.14),rgba(255,255,255,0.06))] dark:bg-[linear-gradient(135deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02))] backdrop-blur-md shadow-[0_4px_14px_rgba(0,0,0,0.06)] dark:shadow-[0_4px_14px_rgba(0,0,0,0.16)] [&_table]:text-[0.6875rem] [&_td]:py-1 [&_th]:py-1">
                     <ReactMarkdown remarkPlugins={[remarkGfm]} components={buildChatMarkdownComponents(msg.id)}>
                       {normalizeChecklistSyntax(msg.content || "")}
                     </ReactMarkdown>
@@ -3915,17 +3915,17 @@ User: ${text}`;
                       {msg.id && (
                         <button
                           type="button"
-                          className="w-full flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-white/50 bg-white/40 backdrop-blur-sm hover:bg-white/60 transition-all text-left group/collapse"
+                          className="w-full flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-white/50 dark:border-white/12 bg-white/40 dark:bg-white/5 backdrop-blur-sm hover:bg-white/60 dark:hover:bg-white/10 transition-all text-left group/collapse"
                           onClick={() => toggleAiExpanded(msg.id)}
                         >
-                          <ChevronRight className={`w-3 h-3 text-black/40 flex-shrink-0 transition-transform duration-200 ${isExpanded ? "rotate-90" : ""}`} />
+                          <ChevronRight className={`w-3 h-3 text-black/40 dark:text-white/40 flex-shrink-0 transition-transform duration-200 ${isExpanded ? "rotate-90" : ""}`} />
                           {!isExpanded && (
-                            <span className="text-[0.6875rem] text-black/60 truncate leading-tight flex-1">
+                            <span className="text-[0.6875rem] text-black/60 dark:text-white/60 truncate leading-tight flex-1">
                               {getCollapsedPreview(msg.content || "")}
                             </span>
                           )}
                           {isExpanded && (
-                            <span className="text-[0.6875rem] text-black/40 font-medium flex-1">AI Response</span>
+                            <span className="text-[0.6875rem] text-black/40 dark:text-white/40 font-medium flex-1">AI Response</span>
                           )}
                         </button>
                       )}
@@ -3941,7 +3941,7 @@ User: ${text}`;
                                     <div
                                       draggable
                                       onDragStart={(e) => handleChunkDragStart(e, chunk)}
-                                      className={`rounded-xl px-3 py-1.5 text-xs leading-relaxed break-words border text-black/85 cursor-grab active:cursor-grabbing transition-all ${isSingle ? "bg-white/70 border-white/70 rounded-2xl rounded-bl-md" : "bg-white/50 border-white/40 hover:bg-white/70 hover:border-blue-300/40 hover:shadow-sm"}`}
+                                      className={`rounded-xl px-3 py-1.5 text-xs leading-relaxed break-words border text-black/85 dark:text-white/85 cursor-grab active:cursor-grabbing transition-all ${isSingle ? "bg-white/45 dark:bg-white/6 border-white/40 dark:border-white/8 rounded-2xl rounded-bl-md" : "bg-white/30 dark:bg-white/4 border-white/25 dark:border-white/8 hover:bg-white/45 dark:hover:bg-white/8 hover:border-blue-300/40 hover:shadow-sm"}`}
                                     >
                                       <div className={`absolute -left-5 top-1/2 -translate-y-1/2 opacity-0 group-hover/chunk:opacity-100 transition-opacity ${isSingle ? "hidden" : ""}`}>
                                         <GripVertical className="w-3 h-3 text-blue-400/60" />
@@ -3966,10 +3966,10 @@ User: ${text}`;
                             );
                           })()}
                           <div className="flex items-center gap-0.5 px-1">
-                            <button type="button" title="Save full response as quick note" className="p-1 rounded-md text-black/30 hover:text-amber-500 hover:bg-amber-500/10 transition-colors" onClick={() => saveChunkAsQuickNote(msg.content || "")}>
+                            <button type="button" title="Save full response as quick note" className="p-1 rounded-md text-black/30 dark:text-white/30 hover:text-amber-500 hover:bg-amber-500/10 transition-colors" onClick={() => saveChunkAsQuickNote(msg.content || "")}>
                               <StickyNote className="w-3 h-3" />
                             </button>
-                            <button type="button" title="Copy" className={`p-1 rounded-md transition-colors ${copiedMsgId === msg.id ? "text-blue-500 bg-blue-500/10" : "text-black/30 hover:text-black/60 hover:bg-black/5"}`} onClick={() => { void navigator.clipboard.writeText(msg.content || ""); setCopiedMsgId(msg.id); setTimeout(() => setCopiedMsgId((cur) => cur === msg.id ? null : cur), 2000); }}>
+                            <button type="button" title="Copy" className={`p-1 rounded-md transition-colors ${copiedMsgId === msg.id ? "text-blue-500 bg-blue-500/10" : "text-black/30 dark:text-white/30 hover:text-black/60 dark:hover:text-white/60 hover:bg-black/5 dark:hover:bg-white/5"}`} onClick={() => { void navigator.clipboard.writeText(msg.content || ""); setCopiedMsgId(msg.id); setTimeout(() => setCopiedMsgId((cur) => cur === msg.id ? null : cur), 2000); }}>
                               {copiedMsgId === msg.id ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
                             </button>
                           </div>
@@ -3993,7 +3993,7 @@ User: ${text}`;
             })()}
             {isChatLoading && (
               <div className="flex flex-col items-end w-full">
-                <div className="max-w-[94%] text-[0.6875rem] text-black/60 px-1 flex items-center justify-end gap-2" aria-live="polite">
+                <div className="max-w-[94%] text-[0.6875rem] text-black/60 dark:text-white/60 px-1 flex items-center justify-end gap-2" aria-live="polite">
                   <div className="brick-spinner" />
                   {thinkingStatus}
                 </div>
@@ -4037,7 +4037,7 @@ User: ${text}`;
                   <SelectTrigger className="omnia-neu-chat-toolbar-select-trigger h-8 max-w-[6.5rem] min-w-0 shrink-0 rounded-lg border-0 bg-transparent text-[0.625rem] px-1.5 font-medium text-black/75 shadow-none dark:text-white/80 [&>span]:truncate">
                     <SelectValue placeholder="Model" />
                   </SelectTrigger>
-                  <SelectContent side="top" align="start" className="glass-control border border-white/25 dark:border-white/10 bg-white/35 dark:bg-white/10 backdrop-blur-xl shadow-lg max-h-[min(28rem,70vh)] overflow-y-auto w-[min(92vw,18rem)]">
+                  <SelectContent side="top" align="start" className="glass-control border border-white/16 dark:border-white/8 bg-white/22 dark:bg-white/8 backdrop-blur-md shadow-md max-h-[min(28rem,70vh)] overflow-y-auto w-[min(92vw,18rem)]">
                     <SelectGroup>
                       <SelectLabel>Latest</SelectLabel>
                       <SelectItem value="claude-sonnet-4-6" hint="Anthropic flagship">Claude Sonnet 4.6</SelectItem>
@@ -4137,11 +4137,11 @@ User: ${text}`;
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between">
-              <h2 className="text-sm font-semibold text-black/85 flex items-center gap-2">
+              <h2 className="text-sm font-semibold text-black/85 dark:text-white/85 flex items-center gap-2">
                 <Globe className="w-4 h-4" />
                 Save Link to Vault
               </h2>
-              <button type="button" onClick={() => { setShowSaveLink(false); setSaveLinkUrl(""); setSaveLinkPreview(null); }} className="text-black/50 hover:text-black/80">
+              <button type="button" onClick={() => { setShowSaveLink(false); setSaveLinkUrl(""); setSaveLinkPreview(null); }} className="text-black/50 dark:text-white/50 hover:text-black/80 dark:hover:text-white/80">
                 <X className="w-4 h-4" />
               </button>
             </div>
@@ -4160,7 +4160,7 @@ User: ${text}`;
                 }}
                 onKeyDown={(e) => { if (e.key === "Enter" && saveLinkUrl.trim()) void handleUnfurlLink(saveLinkUrl); }}
                 placeholder="Paste or type a URL..."
-                className="flex-1 rounded-xl border border-white/40 bg-white/30 px-3 py-2 text-sm outline-none placeholder:text-black/40 focus:border-blue-400/50"
+                className="flex-1 rounded-xl border border-white/40 dark:border-white/15 bg-white/30 dark:bg-white/5 px-3 py-2 text-sm outline-none placeholder:text-black/40 dark:placeholder:text-white/40 focus:border-blue-400/50"
                 autoFocus
               />
               <button
@@ -4174,30 +4174,30 @@ User: ${text}`;
             </div>
 
             {isSaveLinkLoading && (
-              <div className="flex items-center justify-center py-6 text-black/50">
+              <div className="flex items-center justify-center py-6 text-black/50 dark:text-white/50">
                 <Loader2 className="w-5 h-5 animate-spin mr-2" />
                 <span className="text-xs">Fetching link preview...</span>
               </div>
             )}
 
             {saveLinkPreview && !isSaveLinkLoading && (
-              <div className="rounded-xl border border-white/40 overflow-hidden bg-white/20">
+                <div className="rounded-xl border border-white/40 dark:border-white/15 overflow-hidden bg-white/20 dark:bg-white/5">
                 {saveLinkPreview.image && (
                   <div className="w-full h-40 overflow-hidden bg-black/5">
                     <img src={saveLinkPreview.image} alt="" className="w-full h-full object-cover" loading="lazy" onError={(e) => { e.currentTarget.style.display = "none"; }} />
                   </div>
                 )}
                 <div className="p-3 space-y-1.5">
-                  <div className="flex items-center gap-1.5 text-black/50">
+                  <div className="flex items-center gap-1.5 text-black/50 dark:text-white/50">
                     <Globe className="w-3 h-3" />
                     <span className="text-[0.625rem] font-medium">{saveLinkPreview.siteName || (() => { try { return new URL(saveLinkPreview.url).hostname.replace(/^www\./, ""); } catch { return ""; } })()}</span>
                   </div>
-                  <p className="text-sm font-semibold text-black/85 leading-snug">{saveLinkPreview.title}</p>
+                  <p className="text-sm font-semibold text-black/85 dark:text-white/85 leading-snug">{saveLinkPreview.title}</p>
                   {saveLinkPreview.description && (
-                    <p className="text-xs text-black/55 leading-relaxed line-clamp-3">{saveLinkPreview.description}</p>
+                    <p className="text-xs text-black/55 dark:text-white/55 leading-relaxed line-clamp-3">{saveLinkPreview.description}</p>
                   )}
                   {saveLinkPreview.articleText && (
-                    <p className="text-[0.625rem] text-black/40 mt-1">Article text captured ({saveLinkPreview.articleText.length.toLocaleString()} chars)</p>
+                    <p className="text-[0.625rem] text-black/40 dark:text-white/40 mt-1">Article text captured ({saveLinkPreview.articleText.length.toLocaleString()} chars)</p>
                   )}
                 </div>
               </div>
@@ -4239,7 +4239,7 @@ User: ${text}`;
           return (
             <div
               ref={cardMenuRef}
-              className="rounded-2xl border border-white/60 bg-white/85 dark:bg-[#171515]/85 backdrop-blur-xl shadow-lg p-2 overflow-y-auto scrollbar-hide"
+              className="rounded-2xl border border-white/30 dark:border-white/10 bg-white/60 dark:bg-[#171515]/60 backdrop-blur-md shadow-md p-2 overflow-y-auto scrollbar-hide"
               style={{
                 position: "fixed",
                 width: menuW,
@@ -4252,21 +4252,21 @@ User: ${text}`;
               }}
               onMouseDown={(e) => e.stopPropagation()}
             >
-              <div className="px-2 py-1 text-[0.6875rem] font-medium text-black/60">Add to project</div>
+              <div className="px-2 py-1 text-[0.6875rem] font-medium text-black/60 dark:text-white/60">Add to project</div>
               <div className="space-y-1">
                 <button
                   type="button"
                   disabled={isCardActionBusy}
                   onClick={() => void createProjectFromCard(menuCard)}
-                  className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 disabled:opacity-60 flex items-center gap-2"
+                  className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 dark:hover:bg-white/5 disabled:opacity-60 flex items-center gap-2"
                 >
                   <Plus className="w-3.5 h-3.5" />
                   New project
                 </button>
-                <div className="my-1 h-px bg-black/10" />
+                <div className="my-1 h-px bg-black/10 dark:bg-white/10" />
                 <div className="max-h-44 overflow-y-auto scrollbar-hide space-y-1">
                   {projects.length === 0 ? (
-                    <div className="px-2 py-1.5 text-[0.6875rem] text-black/55">No projects found.</div>
+                    <div className="px-2 py-1.5 text-[0.6875rem] text-black/55 dark:text-white/55">No projects found.</div>
                   ) : (
                     projects.map((project) => (
                       <button
@@ -4274,7 +4274,7 @@ User: ${text}`;
                         type="button"
                         disabled={isCardActionBusy}
                         onClick={() => void addCardToProject(menuCard, project.id)}
-                        className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/10 disabled:opacity-60 truncate"
+                        className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/10 dark:hover:bg-white/10 disabled:opacity-60 truncate"
                         title={project.name}
                       >
                         {project.name}
@@ -4285,7 +4285,7 @@ User: ${text}`;
               </div>
               {menuCard.kind === "attachment" && (
                 <>
-                  <div className="my-1 h-px bg-black/10" />
+                  <div className="my-1 h-px bg-black/10 dark:bg-white/10" />
                   <button
                     type="button"
                     disabled={isCardActionBusy}
@@ -4294,7 +4294,7 @@ User: ${text}`;
                       setAttachmentNoteDraft("");
                       setOpenCardMenuId(null);
                     }}
-                    className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 disabled:opacity-60 flex items-center gap-2"
+                    className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 dark:hover:bg-white/5 disabled:opacity-60 flex items-center gap-2"
                   >
                     <StickyNote className="w-3.5 h-3.5" />
                     Note
@@ -4303,7 +4303,7 @@ User: ${text}`;
               )}
               {menuCard.noteId && (
                 <>
-                  <div className="my-1 h-px bg-black/10" />
+                  <div className="my-1 h-px bg-black/10 dark:bg-white/10" />
                   <button
                     type="button"
                     onClick={() => {
@@ -4312,14 +4312,14 @@ User: ${text}`;
                       setTagPickerPosition({ left: rect.left, top: rect.bottom + 8 });
                       setOpenCardMenuId(null);
                     }}
-                    className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 flex items-center gap-2"
+                    className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 dark:hover:bg-white/5 flex items-center gap-2"
                   >
                     <Tag className="w-3.5 h-3.5" />
                     Tags
                   </button>
                 </>
               )}
-              <div className="my-1 h-px bg-black/10" />
+              <div className="my-1 h-px bg-black/10 dark:bg-white/10" />
               <button
                 type="button"
                 disabled={isCardActionBusy}
@@ -4332,7 +4332,7 @@ User: ${text}`;
                     void removeQuickNoteCard(menuCard);
                   }
                 }}
-                className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 disabled:opacity-60 flex items-center gap-2 text-red-600"
+                className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 dark:hover:bg-white/5 disabled:opacity-60 flex items-center gap-2 text-red-600"
               >
                 <Trash2 className="w-3.5 h-3.5" />
                 Delete
@@ -4363,13 +4363,13 @@ User: ${text}`;
           return (
             <div
               ref={tagPickerRef}
-              className="rounded-2xl border border-white/60 bg-white/90 dark:bg-[#171515]/90 backdrop-blur-xl shadow-lg p-3 overflow-hidden"
+              className="rounded-2xl border border-white/30 dark:border-white/10 bg-white/65 dark:bg-[#171515]/65 backdrop-blur-md shadow-md p-3 overflow-hidden"
               style={{ position: "fixed", width: menuW, left, top, zIndex: 10000 }}
               onMouseDown={(e) => e.stopPropagation()}
             >
               <div className="flex items-center gap-2 mb-2">
-                <Tag className="w-3.5 h-3.5 text-black/50" />
-                <span className="text-xs font-medium text-black/70">Tags</span>
+                <Tag className="w-3.5 h-3.5 text-black/50 dark:text-white/50" />
+                <span className="text-xs font-medium text-black/70 dark:text-white/70">Tags</span>
               </div>
               <div className="relative mb-2">
                 <input
@@ -4384,7 +4384,7 @@ User: ${text}`;
                     }
                   }}
                   placeholder="Search or create tag..."
-                  className="w-full h-8 rounded-lg border border-black/10 bg-white/60 dark:bg-[#1f1d1d]/60 px-2.5 text-xs outline-none placeholder:text-black/35 focus:border-blue-400/50"
+                  className="w-full h-8 rounded-lg border border-black/10 dark:border-white/10 bg-white/60 dark:bg-[#1f1d1d]/60 px-2.5 text-xs outline-none placeholder:text-black/35 dark:placeholder:text-white/35 focus:border-blue-400/50"
                   autoFocus
                 />
               </div>
@@ -4403,7 +4403,7 @@ User: ${text}`;
               )}
               <div className="max-h-48 overflow-y-auto scrollbar-hide space-y-0.5">
                 {filteredTags.length === 0 && !newTagInput.trim() && (
-                  <div className="px-2 py-2 text-[0.6875rem] text-black/45">No tags yet. Type to create one.</div>
+                  <div className="px-2 py-2 text-[0.6875rem] text-black/45 dark:text-white/45">No tags yet. Type to create one.</div>
                 )}
                 {filteredTags.map((tag) => {
                   const isAssigned = cardTags.includes(tag.name);
@@ -4413,12 +4413,12 @@ User: ${text}`;
                       type="button"
                       onClick={() => void toggleCardTag(pickerCard.noteId, tag.name)}
                       className={`w-full text-left rounded-md px-2 py-1.5 text-xs flex items-center justify-between gap-2 transition-colors ${
-                        isAssigned ? "bg-blue-500/10 text-blue-700" : "hover:bg-black/5 text-black/70"
+                        isAssigned ? "bg-blue-500/10 text-blue-700 dark:text-blue-400" : "hover:bg-black/5 dark:hover:bg-white/5 text-black/70 dark:text-white/70"
                       }`}
                     >
                       <span className="truncate">{tag.name}</span>
                       <span className="flex items-center gap-1.5 shrink-0">
-                        <span className="text-[0.625rem] text-black/35">{tag.count}</span>
+                        <span className="text-[0.625rem] text-black/35 dark:text-white/35">{tag.count}</span>
                         {isAssigned && <Check className="w-3 h-3 text-blue-500" />}
                       </span>
                     </button>
@@ -4426,7 +4426,7 @@ User: ${text}`;
                 })}
               </div>
               {cardTags.length > 0 && (
-                <div className="mt-2 pt-2 border-t border-black/8 flex flex-wrap gap-1">
+                <div className="mt-2 pt-2 border-t border-black/8 dark:border-white/8 flex flex-wrap gap-1">
                   {cardTags.map((tag) => (
                     <span
                       key={tag}

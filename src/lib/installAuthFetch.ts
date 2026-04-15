@@ -12,12 +12,16 @@ supabase.auth.onAuthStateChange((_event, session) => {
 });
 
 async function getToken(): Promise<string | null> {
-  // 30s buffer before actual expiry avoids using a token that's about to die
   if (cachedToken && Date.now() < tokenExpiresAt - 30_000) return cachedToken;
 
-  const { data } = await supabase.auth.getSession();
-  cachedToken = data?.session?.access_token ?? null;
-  tokenExpiresAt = (data?.session?.expires_at ?? 0) * 1000;
+  try {
+    const { data } = await supabase.auth.getSession();
+    cachedToken = data?.session?.access_token ?? null;
+    tokenExpiresAt = (data?.session?.expires_at ?? 0) * 1000;
+  } catch {
+    cachedToken = null;
+    tokenExpiresAt = 0;
+  }
   return cachedToken;
 }
 
