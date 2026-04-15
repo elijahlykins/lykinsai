@@ -3,7 +3,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
-import { Save, LogOut, User, Globe, MessageSquare } from 'lucide-react';
+import { Save, LogOut, User, Globe, MessageSquare, Sun, Moon, Monitor } from 'lucide-react';
 
 import AboutYouSection from '@/components/intake/AboutYouSection';
 import { useAuth } from '@/lib/SupabaseAuth';
@@ -24,9 +24,18 @@ export default function SettingsModal({ isOpen, onClose }) {
   const [authMode, setAuthMode] = useState('login'); // 'login' or 'signup'
   const [authError, setAuthError] = useState('');
 
-  // Bright white base with a very subtle blue hint (glass feel)
-  const DEFAULT_BG_LIGHT = '#f3f8ff';
-  const DEFAULT_BG_DARK = '#0b0b0f';
+  const DEFAULT_BG_LIGHT = '#ffffff';
+  const DEFAULT_BG_DARK = '#1e1e1e';
+
+  const applyTheme = (theme) => {
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const isDark = theme === 'dark' || (theme === 'system' && prefersDark);
+    document.documentElement.classList.toggle('dark', isDark);
+    document.documentElement.style.setProperty(
+      '--app-background',
+      isDark ? DEFAULT_BG_DARK : DEFAULT_BG_LIGHT
+    );
+  };
 
   useEffect(() => {
     const loadSettings = () => {
@@ -34,30 +43,19 @@ export default function SettingsModal({ isOpen, onClose }) {
       if (saved) {
         try {
           const parsed = JSON.parse(saved);
-          parsed.theme = 'light';
+          if (!parsed.theme) parsed.theme = 'light';
           setSettings(parsed);
-          document.documentElement.classList.remove('dark');
-          document.documentElement.style.setProperty('--app-background', DEFAULT_BG_LIGHT);
+          applyTheme(parsed.theme);
         } catch (e) {
           console.error('Error parsing settings:', e);
         }
-      } else {
-        document.documentElement.classList.remove('dark');
-        document.documentElement.style.setProperty('--app-background', DEFAULT_BG_LIGHT);
       }
     };
     
     loadSettings();
+    if (isOpen) loadSettings();
     
-    // Reload settings when modal opens (in case they changed elsewhere)
-    if (isOpen) {
-      loadSettings();
-    }
-    
-    // Listen for settings changes from other components
-    const handleSettingsChange = () => {
-      loadSettings();
-    };
+    const handleSettingsChange = () => loadSettings();
     window.addEventListener('lykinsai_settings_changed', handleSettingsChange);
     
     return () => {
@@ -66,18 +64,15 @@ export default function SettingsModal({ isOpen, onClose }) {
   }, [isOpen, user]);
 
   const handleSave = () => {
-    const toSave = { ...settings, theme: 'light' };
-    localStorage.setItem('lykinsai_settings', JSON.stringify(toSave));
-    document.documentElement.classList.remove('dark');
+    localStorage.setItem('lykinsai_settings', JSON.stringify(settings));
     const densities = { compact: '0.75', comfortable: '1', spacious: '1.25' };
     document.documentElement.style.setProperty('--layout-density', densities[settings.layoutDensity]);
-    document.documentElement.style.setProperty('--app-background', DEFAULT_BG_LIGHT);
+    applyTheme(settings.theme);
     
     window.dispatchEvent(new CustomEvent('lykinsai_settings_changed'));
     window.dispatchEvent(new Event('storage'));
     
     onClose();
-    window.location.reload();
   };
 
   const handleAuth = async (e) => {
@@ -101,7 +96,7 @@ export default function SettingsModal({ isOpen, onClose }) {
   if (loading) {
     return (
       <Dialog open={isOpen} onOpenChange={onClose}>
-        <DialogContent className="bg-white dark:bg-[#171515] border-white/30 dark:border-gray-700 text-black dark:text-white max-w-md backdrop-blur-2xl">
+        <DialogContent className="bg-white dark:bg-[#171515] border-white/15 dark:border-gray-700 text-black dark:text-white max-w-md backdrop-blur-md">
           <div className="flex items-center justify-center p-8">
             <div className="w-6 h-6 border-4 border-slate-200 border-t-slate-800 rounded-full animate-spin"></div>
           </div>
@@ -112,7 +107,7 @@ export default function SettingsModal({ isOpen, onClose }) {
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="bg-white dark:bg-[#171515] border-white/30 dark:border-gray-700 text-black dark:text-white max-w-md backdrop-blur-2xl max-h-[90vh] overflow-y-auto">
+      <DialogContent className="bg-white dark:bg-[#171515] border-white/15 dark:border-gray-700 text-black dark:text-white max-w-md backdrop-blur-md max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="text-black dark:text-white">Settings</DialogTitle>
         </DialogHeader>
@@ -250,12 +245,30 @@ export default function SettingsModal({ isOpen, onClose }) {
           {/* Settings */}
           <div className="space-y-3">
             <div className="space-y-2">
-              <Label className="text-gray-900">Theme</Label>
-              <div className="flex items-center gap-3">
-                <div className="flex-1 px-3 py-2 bg-white/60 border border-white/40 text-gray-900 backdrop-blur-md rounded-xl text-sm">
-                  Light
-                </div>
-                <span className="text-xs text-gray-400 italic whitespace-nowrap">Dark mode coming soon</span>
+              <Label className="text-gray-900 dark:text-white">Appearance</Label>
+              <div className="flex gap-2">
+                {[
+                  { value: 'light', icon: Sun, label: 'Light' },
+                  { value: 'dark', icon: Moon, label: 'Dark' },
+                  { value: 'system', icon: Monitor, label: 'System' },
+                ].map(({ value, icon: Icon, label }) => (
+                  <button
+                    key={value}
+                    onClick={() => {
+                      const updated = { ...settings, theme: value };
+                      setSettings(updated);
+                      applyTheme(value);
+                    }}
+                    className={`flex-1 flex flex-col items-center gap-1.5 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${
+                      settings.theme === value
+                        ? 'bg-black/10 dark:bg-white/15 border border-black/20 dark:border-white/25 text-black dark:text-white shadow-sm'
+                        : 'bg-white/40 dark:bg-white/5 border border-transparent text-gray-500 dark:text-gray-400 hover:bg-white/60 dark:hover:bg-white/10'
+                    }`}
+                  >
+                    <Icon className="w-4 h-4" />
+                    {label}
+                  </button>
+                ))}
               </div>
             </div>
 
@@ -272,7 +285,7 @@ export default function SettingsModal({ isOpen, onClose }) {
                 <SelectTrigger className="bg-white/60 dark:bg-gray-800/60 border-white/40 dark:border-gray-700/40 text-gray-900 dark:text-white backdrop-blur-md rounded-xl">
                   <SelectValue />
                 </SelectTrigger>
-                <SelectContent className="bg-glass-card border-white/30 dark:border-gray-700/30 backdrop-blur-2xl">
+                <SelectContent className="bg-glass-card border-white/15 dark:border-gray-700/20 backdrop-blur-md">
                     <SelectGroup>
                       <SelectLabel>Latest</SelectLabel>
                       <SelectItem value="claude-sonnet-4-6" hint="Anthropic flagship">Claude Sonnet 4.6</SelectItem>

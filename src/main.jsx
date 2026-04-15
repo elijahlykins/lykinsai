@@ -10,7 +10,13 @@ try {
   const densities  = { compact: '0.75', comfortable: '1', spacious: '1.25' };
   if (saved.fontSize)      document.documentElement.style.setProperty('--font-scale', fontScales[saved.fontSize] || '1');
   if (saved.layoutDensity) document.documentElement.style.setProperty('--layout-density', densities[saved.layoutDensity] || '1');
-  if (saved.theme === 'dark') document.documentElement.classList.add('dark');
+
+  const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const isDark = saved.theme === 'dark' || (saved.theme === 'system' && prefersDark);
+  if (isDark) {
+    document.documentElement.classList.add('dark');
+    document.documentElement.style.setProperty('--app-background', '#1e1e1e');
+  }
 } catch {}
 
 console.log('🚀 App is starting...');

@@ -55,7 +55,7 @@ function AccountSection({ currentPlan, usage, topupBalance, onBuyTopup }) {
   const isFree = currentPlan === "free";
 
   return (
-    <div className="rounded-2xl bg-white/40 backdrop-blur-xl border border-white/50 shadow-lg shadow-black/[0.03] p-6 mb-10">
+    <div className="rounded-2xl bg-white/28 backdrop-blur-md border border-white/25 shadow-md shadow-black/[0.02] p-6 mb-10">
       <h3 className="text-sm font-semibold text-black/80 mb-5">Usage</h3>
 
       <div className="flex flex-col sm:flex-row gap-6">

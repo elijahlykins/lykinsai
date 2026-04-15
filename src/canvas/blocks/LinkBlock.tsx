@@ -345,7 +345,7 @@ export const LinkBlock = memo(function LinkBlock({ id, onMinimize, onMenu }: { i
           width: "72px",
           height: "20px",
           background: "linear-gradient(180deg, rgba(255,255,255,0.72), rgba(255,255,255,0.48))",
-          backdropFilter: "blur(8px)",
+          backdropFilter: "blur(4px)",
           borderRadius: "8px 8px 0 0",
           border: "1px solid rgba(255,255,255,0.55)",
           borderBottom: "none",

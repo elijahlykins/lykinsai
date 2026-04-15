@@ -9,8 +9,8 @@ import { SupabaseAuthProvider, useAuth } from '@/lib/SupabaseAuth';
 import { IntakeProvider } from '@/context/IntakeContext';
 import IntakeModal from '@/components/intake/IntakeModal';
 import LoadingScreen from "@/components/LoadingScreen";
+import RouteErrorBoundary from '@/lib/RouteErrorBoundary';
 
-// ✅ CORRECT IMPORTS (no spaces, match your filenames)
 import Login from "./pages/Login";
 import OmniaGrid from "./pages/OmniaGrid";
 import ProjectPlaceholder from "./pages/ProjectPlaceholder";
@@ -66,74 +66,75 @@ function AppShell() {
       {!isEmbeddedVault && !isLoginPage && <AppSidebar />}
       {!isEmbeddedVault && !isLoginPage && user && <IntakeModal />}
       <div className={isLoginPage ? "" : "app-content"}>
-        <Routes>
-          <Route path="/login" element={<Login />} />
-          <Route path="/" element={<ProtectedRoute><OmniaGrid /></ProtectedRoute>} />
-          <Route path="/dashboard" element={<Navigate to="/" replace />} />
-          <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
-          <Route path="/grid/:boardId" element={<ProtectedRoute><OmniaGrid /></ProtectedRoute>} />
-          <Route path="/project/:projectId" element={<ProtectedRoute><ProjectPlaceholder /></ProtectedRoute>} />
-          <Route path="/omnia" element={<ProtectedRoute><OmniaGrid /></ProtectedRoute>} />
-          <Route path="/vault" element={<ProtectedRoute><VaultNew /></ProtectedRoute>} />
-          <Route
-            path="/tag-management"
-            element={
-              <ProtectedRoute>
-                {legacyEnabled ? (
-                  <Suspense fallback={loadingFallback}>
-                    <LegacyTagManagement />
-                  </Suspense>
-                ) : (
-                  <TagManagementNew />
-                )}
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/vaultchat"
-            element={
-              <ProtectedRoute>
-                {legacyEnabled ? (
-                  <Suspense fallback={loadingFallback}>
-                    <LegacyVaultChat />
-                  </Suspense>
-                ) : (
-                  <VaultChatNew />
-                )}
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/vault-chat"
-            element={
-              <ProtectedRoute>
-                {legacyEnabled ? (
-                  <Suspense fallback={loadingFallback}>
-                    <LegacyVaultChat />
-                  </Suspense>
-                ) : (
-                  <VaultChatNew />
-                )}
-              </ProtectedRoute>
-            }
-          />
-          {/* Chat is now an inline mode on the grid — no separate route */}
-          <Route
-            path="/billing"
-            element={
-              <ProtectedRoute>
-                {legacyEnabled ? (
-                  <Suspense fallback={loadingFallback}>
-                    <LegacyBilling />
-                  </Suspense>
-                ) : (
-                  <BillingNew />
-                )}
-              </ProtectedRoute>
-            }
-          />
-          <Route path="*" element={<PageNotFound />} />
-        </Routes>
+        <RouteErrorBoundary>
+          <Routes>
+            <Route path="/login" element={<Login />} />
+            <Route path="/" element={<ProtectedRoute><OmniaGrid /></ProtectedRoute>} />
+            <Route path="/dashboard" element={<Navigate to="/" replace />} />
+            <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
+            <Route path="/grid/:boardId" element={<ProtectedRoute><OmniaGrid /></ProtectedRoute>} />
+            <Route path="/project/:projectId" element={<ProtectedRoute><ProjectPlaceholder /></ProtectedRoute>} />
+            <Route path="/omnia" element={<ProtectedRoute><OmniaGrid /></ProtectedRoute>} />
+            <Route path="/vault" element={<ProtectedRoute><VaultNew /></ProtectedRoute>} />
+            <Route
+              path="/tag-management"
+              element={
+                <ProtectedRoute>
+                  {legacyEnabled ? (
+                    <Suspense fallback={loadingFallback}>
+                      <LegacyTagManagement />
+                    </Suspense>
+                  ) : (
+                    <TagManagementNew />
+                  )}
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/vaultchat"
+              element={
+                <ProtectedRoute>
+                  {legacyEnabled ? (
+                    <Suspense fallback={loadingFallback}>
+                      <LegacyVaultChat />
+                    </Suspense>
+                  ) : (
+                    <VaultChatNew />
+                  )}
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/vault-chat"
+              element={
+                <ProtectedRoute>
+                  {legacyEnabled ? (
+                    <Suspense fallback={loadingFallback}>
+                      <LegacyVaultChat />
+                    </Suspense>
+                  ) : (
+                    <VaultChatNew />
+                  )}
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/billing"
+              element={
+                <ProtectedRoute>
+                  {legacyEnabled ? (
+                    <Suspense fallback={loadingFallback}>
+                      <LegacyBilling />
+                    </Suspense>
+                  ) : (
+                    <BillingNew />
+                  )}
+                </ProtectedRoute>
+              }
+            />
+            <Route path="*" element={<PageNotFound />} />
+          </Routes>
+        </RouteErrorBoundary>
       </div>
     </>
   );
