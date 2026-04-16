@@ -793,7 +793,7 @@ export default function NotesPanel({ open, onOpenChange, pages, activePageId, on
           onPointerDown={(e) => e.stopPropagation()}
           onMouseDown={(e) => e.preventDefault()}
         >
-          <div className="flex items-stretch rounded-lg overflow-hidden border border-white/30 dark:border-white/10 bg-[linear-gradient(145deg,rgba(255,255,255,0.82),rgba(245,247,255,0.78))] dark:bg-[linear-gradient(145deg,rgba(40,40,50,0.92),rgba(30,30,38,0.88))] shadow-lg backdrop-blur-md">
+          <div className="flex items-stretch rounded-lg overflow-hidden border border-white/30 dark:border-white/10 bg-[linear-gradient(145deg,rgba(255,255,255,0.82),rgba(245,247,255,0.78))] dark:bg-[linear-gradient(145deg,rgba(43,43,43,0.92),rgba(33,33,33,0.88))] shadow-lg backdrop-blur-md">
             {!selToolbar.highlightSub && !selToolbar.textColorSub && (
               <>
                 <button

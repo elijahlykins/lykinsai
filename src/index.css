@@ -422,7 +422,7 @@ body.embedded-vault-mode .app-content {
   }
 
   .dark .liquid-glass {
-    background: rgba(38, 38, 42, 0.60);
+    background: rgba(38, 38, 38, 0.60);
     backdrop-filter: blur(var(--lg-blur)) saturate(1.1);
     -webkit-backdrop-filter: blur(var(--lg-blur)) saturate(1.1);
     border-color: rgba(255,255,255,0.08);

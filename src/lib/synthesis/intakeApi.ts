@@ -7,14 +7,14 @@ export type SynthesisProfileStatus = {
 };
 
 async function readApiError(res: Response): Promise<string> {
-  const raw = await res.text().catch(() => '');
-  try {
-    const j = JSON.parse(raw) as { error?: string };
-    if (j?.error && typeof j.error === 'string') return j.error;
-  } catch {
-    /* ignore */
+  if (import.meta.env.DEV) {
+    const raw = await res.text().catch(() => '');
+    try {
+      const j = JSON.parse(raw) as { error?: string };
+      if (j?.error) console.error('API error detail:', j.error);
+    } catch { /* ignore */ }
   }
-  return raw.slice(0, 200) || res.statusText;
+  return 'Something went wrong. Please try again.';
 }
 
 export async function fetchSynthesisProfileStatus(): Promise<SynthesisProfileStatus> {
@@ -37,7 +37,8 @@ export async function submitSynthesisIntake(
   });
   const data = (await res.json().catch(() => ({}))) as { ok?: boolean; updated?: boolean; reason?: string; error?: string };
   if (!res.ok) {
-    throw new Error(data.error || `HTTP ${res.status}`);
+    if (import.meta.env.DEV) console.error('Intake API error:', data.error, res.status);
+    throw new Error('Something went wrong. Please try again.');
   }
   return data;
 }

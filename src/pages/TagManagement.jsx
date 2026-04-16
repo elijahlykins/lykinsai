@@ -53,12 +53,12 @@ export default function TagManagementPage() {
         }
         
         if (error) {
-          console.warn('Error fetching notes:', error);
+          if (import.meta.env.DEV) console.warn('Error fetching notes:', error);
           return [];
         }
         return data || [];
       } catch (error) {
-        console.error('Error fetching notes:', error);
+        if (import.meta.env.DEV) console.error('Error fetching notes:', error);
         return [];
       }
     },

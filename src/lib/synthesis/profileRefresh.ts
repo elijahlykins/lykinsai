@@ -35,9 +35,9 @@ async function runProfileRefresh(): Promise<void> {
     });
     if (!res.ok) {
       const t = await res.text().catch(() => "");
-      console.warn("[Synthesis] profile refresh failed:", res.status, t.slice(0, 120));
+      if (import.meta.env.DEV) console.warn("[Synthesis] profile refresh failed:", res.status);
     }
   } catch (e) {
-    console.warn("[Synthesis] profile refresh error:", e);
+    if (import.meta.env.DEV) console.warn("[Synthesis] profile refresh error:", e);
   }
 }

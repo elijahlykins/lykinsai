@@ -195,7 +195,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
               },
             };
           } catch (blockErr) {
-            console.warn("[LYKN] Skipping corrupt block during snapshot apply:", b?.id, blockErr);
+            if (import.meta.env.DEV) console.warn("[LYKN] Skipping corrupt block:", b?.id, blockErr);
             return null;
           }
         })
@@ -389,7 +389,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
           if (Array.isArray(cleaned.attachments)) {
             cleaned.attachments = cleaned.attachments.map((a: any) => {
               const c = { ...a };
-              if (typeof c.url === "string" && SIGNED_URL_RE.test(c.url)) c.url = "";
+              if (typeof c.url === "string" && (SIGNED_URL_RE.test(c.url) || c.url.startsWith("blob:"))) c.url = "";
               delete c.transcript;
               return c;
             });
@@ -439,7 +439,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
       let stateSaveOk = !initialUpsertRes.error;
 
       if (initialUpsertRes.error) {
-        console.error("[LYKN] Board state save failed, attempting self-heal:", initialUpsertRes.error.message);
+        if (import.meta.env.DEV) console.error("[LYKN] Board state save failed, attempting self-heal:", initialUpsertRes.error.message);
         await supabase
           .from("omnia_board_states")
           .update({ user_id: userId })
@@ -448,11 +448,11 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
         const retryRes = await supabase
           .from("omnia_board_states")
           .upsert(statePayload, { onConflict: "board_id" });
-        if (retryRes.error) console.error("[LYKN] Board state save retry failed:", retryRes.error.message);
+        if (retryRes.error && import.meta.env.DEV) console.error("[LYKN] Board state save retry failed:", retryRes.error.message);
         else stateSaveOk = true;
       }
 
-      if (updateRes.error) console.error("[LYKN] Board title save failed:", updateRes.error.message);
+      if (updateRes.error && import.meta.env.DEV) console.error("[LYKN] Board title save failed:", updateRes.error.message);
 
       if (!updateRes.error && stateSaveOk) {
         lastSaveTimeRef.current = now;
@@ -473,7 +473,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
       }
 
       // Auto-naming runs independently of save success
-      console.log("[LYKN] Auto-name check:", { savedTitle, userRenamed: userRenamedRef.current, inFlight: autoNamingInFlightRef.current, blockCount: Object.keys(raw.blocks || {}).length });
+      if (import.meta.env.DEV) console.log("[LYKN] Auto-name check:", { savedTitle, userRenamed: userRenamedRef.current, inFlight: autoNamingInFlightRef.current, blockCount: Object.keys(raw.blocks || {}).length });
       if (savedTitle === "New Grid" && !userRenamedRef.current && !autoNamingInFlightRef.current) {
         const blockText = snapshotToSynthesisText(raw as Parameters<typeof snapshotToSynthesisText>[0]);
         const stripped = blockText.replace(/^Board:.*\n?/, "").trim();
@@ -486,37 +486,37 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
         }
         const chatText = chatSnippets.join(" ").trim();
         const combined = [stripped, chatText].filter(Boolean).join("\n").trim();
-        console.log("[LYKN] Auto-name content length:", combined.length, "preview:", combined.slice(0, 120));
+        if (import.meta.env.DEV) console.log("[LYKN] Auto-name content length:", combined.length);
         if (combined.length >= 10) {
           autoNamingInFlightRef.current = true;
           const capturedBoardId = boardId;
           (async () => {
             try {
               const { API_BASE_URL } = await import("@/lib/api-config");
-              console.log("[LYKN] Auto-name fetching:", `${API_BASE_URL}/api/ai/name-grid`);
+              if (import.meta.env.DEV) console.log("[LYKN] Auto-name fetching");
               const resp = await fetch(`${API_BASE_URL}/api/ai/name-grid`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ content: combined }),
               });
               if (!resp.ok) {
-                console.warn("[LYKN] Auto-name request failed:", resp.status, await resp.text().catch(() => ""));
+                if (import.meta.env.DEV) console.warn("[LYKN] Auto-name request failed:", resp.status);
                 return;
               }
               const data = await resp.json();
               const newTitle = String(data?.title || "").trim();
-              if (!newTitle) { console.warn("[LYKN] Auto-name returned empty title"); return; }
+              if (!newTitle) { if (import.meta.env.DEV) console.warn("[LYKN] Auto-name returned empty title"); return; }
               if (userRenamedRef.current) {
-                console.log("[LYKN] Auto-name skipped — user renamed during request");
+                if (import.meta.env.DEV) console.log("[LYKN] Auto-name skipped — user renamed during request");
                 return;
               }
-              console.log("[LYKN] Auto-named grid:", newTitle);
+              if (import.meta.env.DEV) console.log("[LYKN] Auto-named grid:", newTitle);
               setTitleTracked(newTitle);
               lastSavedTitleRef.current = newTitle;
               await supabase.from("omnia_boards").update({ title: newTitle }).eq("id", capturedBoardId);
               window.dispatchEvent(new Event("lykinsai_boards_changed"));
             } catch (e) {
-              console.warn("[LYKN] Auto-name error:", e);
+              if (import.meta.env.DEV) console.warn("[LYKN] Auto-name error:", e);
             } finally {
               autoNamingInFlightRef.current = false;
             }
@@ -524,7 +524,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
         }
       }
     } catch (err) {
-      console.error("[LYKN] saveSnapshot error:", err);
+      if (import.meta.env.DEV) console.error("[LYKN] saveSnapshot error:", err);
     } finally {
       savingRef.current = false;
     }
@@ -607,13 +607,13 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
             .insert(routeBoardId ? { id: routeBoardId, user_id: userId, title: "New Grid" } : { user_id: userId, title: "New Grid" })
             .select("id, title")
             .maybeSingle();
-          if (insertErr) console.error("[LYKN] Board insert error:", insertErr.message);
+          if (insertErr && import.meta.env.DEV) console.error("[LYKN] Board insert error:", insertErr.message);
           id = data?.id || null;
           if (data?.title) setTitleTracked(String(data.title));
           lastSavedTitleRef.current = String(data?.title || "New Grid");
           if (id) localStorage.setItem("omnia_board_id", id);
         } catch (insertCatch) {
-          console.error("[LYKN] Board creation failed:", insertCatch);
+          if (import.meta.env.DEV) console.error("[LYKN] Board creation failed:", insertCatch);
         }
       }
       if (cancelled) return;
@@ -643,7 +643,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
             .order("created_at", { ascending: false })
             .limit(1)
             .maybeSingle();
-          if (error) { console.error("[LYKN] Board state fetch error:", error.message); fetchFailed = true; }
+          if (error) { if (import.meta.env.DEV) console.error("[LYKN] Board state fetch error:", error.message); fetchFailed = true; }
           else remoteData = data;
         } catch { fetchFailed = true; }
 
@@ -688,7 +688,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
         }
         try { localStorage.removeItem(`omnia_draft_${id}`); } catch { /* ignore */ }
       } catch (err) {
-        console.error("[LYKN] Failed to load board state:", err);
+        if (import.meta.env.DEV) console.error("[LYKN] Failed to load board state:", err);
         try {
           localStorage.removeItem(`omnia_draft_${id}`);
           localStorage.removeItem(`omnia_chat_${id}`);
@@ -760,7 +760,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
           if (Array.isArray(cleaned.attachments)) {
             cleaned.attachments = cleaned.attachments.map((a: any) => {
               const c = { ...a };
-              if (typeof c.url === "string" && SIGNED_URL_RE.test(c.url)) c.url = "";
+              if (typeof c.url === "string" && (SIGNED_URL_RE.test(c.url) || c.url.startsWith("blob:"))) c.url = "";
               delete c.transcript;
               return c;
             });

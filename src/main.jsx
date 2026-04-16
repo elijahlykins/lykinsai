@@ -12,14 +12,12 @@ try {
   if (saved.layoutDensity) document.documentElement.style.setProperty('--layout-density', densities[saved.layoutDensity] || '1');
 
   const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-  const isDark = saved.theme === 'dark' || (saved.theme === 'system' && prefersDark);
+  const isDark = !saved.theme || saved.theme === 'dark' || (saved.theme === 'system' && prefersDark);
   if (isDark) {
     document.documentElement.classList.add('dark');
     document.documentElement.style.setProperty('--app-background', '#1e1e1e');
   }
 } catch {}
-
-console.log('🚀 App is starting...');
 
 try {
   const rootElement = document.getElementById('root');
@@ -32,15 +30,15 @@ try {
       <App />
     </ErrorBoundary>
   );
-  
-  console.log('✅ App rendered successfully');
 } catch (error) {
-  console.error('❌ Failed to render app:', error);
+  if (import.meta.env.DEV) console.error('Failed to render app:', error);
   document.body.innerHTML = `
-    <div style="padding: 20px; font-family: monospace;">
-      <h1 style="color: red;">Failed to load app</h1>
-      <pre>${error.toString()}</pre>
-      <pre>${error.stack}</pre>
+    <div style="padding: 40px; font-family: -apple-system, BlinkMacSystemFont, sans-serif; text-align: center; max-width: 480px; margin: 80px auto;">
+      <h1 style="font-size: 1.5rem; font-weight: 600; color: #1a1a1a; margin-bottom: 12px;">Something went wrong</h1>
+      <p style="font-size: 0.95rem; color: #666; margin-bottom: 24px;">We couldn't load the app. Please try refreshing the page.</p>
+      <button onclick="window.location.reload()" style="padding: 10px 24px; font-size: 0.9rem; font-weight: 500; color: #fff; background: #111; border: none; border-radius: 8px; cursor: pointer;">
+        Refresh Page
+      </button>
     </div>
   `;
 }

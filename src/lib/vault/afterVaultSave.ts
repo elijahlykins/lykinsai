@@ -69,9 +69,9 @@ async function runVaultNoteEnrichment(noteId: string): Promise<void> {
     });
     if (!res.ok) {
       const t = await res.text().catch(() => "");
-      console.warn("[Vault] enrich-note failed:", res.status, t.slice(0, 120));
+      if (import.meta.env.DEV) console.warn("[Vault] enrich-note failed:", res.status);
     }
   } catch (e) {
-    console.warn("[Vault] enrich-note error:", e);
+    if (import.meta.env.DEV) console.warn("[Vault] enrich-note error:", e);
   }
 }

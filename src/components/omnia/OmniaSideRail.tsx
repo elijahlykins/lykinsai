@@ -1,8 +1,9 @@
 import React, { useRef, useEffect, useState, useCallback } from "react";
 import {
   MessageSquare, X, Check, Save, FileText, Globe, Copy,
-  ChevronRight, GripVertical, LayoutGrid,
+  ChevronRight, GripVertical,
 } from "lucide-react";
+import { GridIcon } from "@/components/ui/GridIcon";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -407,7 +408,7 @@ const OmniaSideRail: React.FC<OmniaSideRailProps> = React.memo(function OmniaSid
                               className="absolute right-1 top-1 opacity-0 group-hover/chunk:opacity-100 transition-opacity p-0.5 rounded text-blue-400/70 hover:text-blue-500 hover:bg-blue-500/10"
                               onClick={() => addChatResponseToGrid(selectedChunks.size > 0 ? getSelectedText(chunkKey, chunk) : chunk)}
                             >
-                              <LayoutGrid className="w-2.5 h-2.5" />
+                              <GridIcon className="w-2.5 h-2.5" />
                             </button>
                           )}
                         </div>
@@ -418,7 +419,7 @@ const OmniaSideRail: React.FC<OmniaSideRailProps> = React.memo(function OmniaSid
                 })()}
                 <div className="flex items-center gap-0.5 px-1">
                   <button type="button" title="Add full response to grid" className="p-1 rounded-md text-black/30 dark:text-white/30 hover:text-blue-500 hover:bg-blue-500/10 transition-colors" onClick={() => addChatResponseToGrid(msg.aiResponse || "")}>
-                    <LayoutGrid className="w-3 h-3" />
+                    <GridIcon className="w-3 h-3" />
                   </button>
                   <button type="button" title="Copy" className={`p-1 rounded-md transition-colors ${copiedMsgId === msg.id ? "text-blue-500 bg-blue-500/10" : "text-black/30 dark:text-white/30 hover:text-black/60 dark:hover:text-white/60 hover:bg-black/5 dark:hover:bg-white/5"}`} onClick={() => { onCopyMessage(msg.id, msg.aiResponse || ""); }}>
                     {copiedMsgId === msg.id ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}

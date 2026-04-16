@@ -21,7 +21,6 @@ import {
   Download,
   Pencil,
   BrickWall,
-  LayoutGrid,
   Table,
   Tag,
   Check,
@@ -1044,7 +1043,7 @@ export default function ProjectPlaceholder() {
         const { fileToDisplayableFile } = await import("@/lib/heifToJpeg");
         fileToUpload = await fileToDisplayableFile(file);
       } catch (e) {
-        console.warn("[ProjectPlaceholder] HEIF conversion skipped:", e);
+        if (import.meta.env.DEV) console.warn("[ProjectPlaceholder] HEIF conversion skipped:", e);
       }
     }
 
@@ -1058,7 +1057,7 @@ export default function ProjectPlaceholder() {
       .upload(storagePath, fileToUpload, { cacheControl: "3600", upsert: false });
 
     if (uploadError) {
-      console.error("Upload error:", uploadError);
+      if (import.meta.env.DEV) console.error("Upload error:", uploadError);
       return null;
     }
 

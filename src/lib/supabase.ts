@@ -3,18 +3,22 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
+const isSafari =
+  typeof navigator !== 'undefined' &&
+  /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+
 let supabase: SupabaseClient<any>;
 
 if (!supabaseUrl || !supabaseAnonKey) {
-  console.warn('⚠️ Missing Supabase env vars. Create .env file in project root with VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY');
+  if (import.meta.env.DEV) console.warn('Missing Supabase env vars — using placeholder client');
   supabase = createClient('https://placeholder.supabase.co', 'placeholder-key');
 } else {
   supabase = createClient(supabaseUrl, supabaseAnonKey, {
     auth: {
       autoRefreshToken: true,
       persistSession: true,
-      detectSessionInUrl: false,
-      flowType: 'pkce',
+      detectSessionInUrl: true,
+      flowType: isSafari ? 'implicit' : 'pkce',
     },
   });
 }

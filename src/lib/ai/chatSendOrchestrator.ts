@@ -680,7 +680,11 @@ async function handleStreamingResponse(
           if (payload === "[DONE]") break;
           try {
             const parsed = JSON.parse(payload);
-            if (parsed.error) { accumulated = String(parsed.error); break; }
+            if (parsed.error) {
+              if (import.meta.env.DEV) console.error('SSE error:', parsed.error);
+              accumulated = "Something went wrong. Please try again.";
+              break;
+            }
             if (parsed.status) { state.setChatStatusText(String(parsed.status)); continue; }
             if (parsed.image) {
               state.setChatStatusText("Image generated");

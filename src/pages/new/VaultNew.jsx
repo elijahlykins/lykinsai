@@ -10,7 +10,7 @@ import {
   ExternalLink,
   FileText,
   Globe,
-  Grid3X3,
+  Grid2X2,
   Layers,
   LayoutGrid,
   Link as LinkIcon,
@@ -262,7 +262,9 @@ function withAttachmentJsonMarker(content = "", attachments = []) {
     }
   }
   if (jsonEnd <= jsonStart) return `${raw.trim()}\n\n${payload}`.trim();
-  return `${raw.slice(0, start)}${payload}${raw.slice(jsonEnd)}`.replace(/\n{3,}/g, "\n\n").trim();
+  let sliceEnd = jsonEnd;
+  if (raw[sliceEnd] === "]") sliceEnd += 1;
+  return `${raw.slice(0, start)}${payload}${raw.slice(sliceEnd)}`.replace(/\n{3,}/g, "\n\n").trim();
 }
 
 function decodeHtmlEntities(input = "") {
@@ -1137,7 +1139,7 @@ export default function VaultNew() {
         .eq("id", noteId)
         .eq("user_id", user.id);
       if (error) {
-        console.error("Failed to update tags:", error);
+        if (import.meta.env.DEV) console.error("Failed to update tags:", error);
         return;
       }
       setNotes((prev) =>
@@ -1209,10 +1211,10 @@ export default function VaultNew() {
       }
       if (error) {
         objectNotFound = /not found/i.test(error.message || "");
-        if (!objectNotFound) console.warn("[Vault] Signed URL error for", target.path, error.message);
+        if (!objectNotFound && import.meta.env.DEV) console.warn("[Vault] Signed URL error for", target.path, error.message);
       }
     } catch (err) {
-      console.warn("[Vault] Signed URL exception for", target.path, err);
+      if (import.meta.env.DEV) console.warn("[Vault] Signed URL exception for", target.path, err);
     }
     if (!objectNotFound) {
       try {
@@ -1235,7 +1237,7 @@ export default function VaultNew() {
           }
         }
       } catch (err) {
-        console.warn("[Vault] Server-side signed URL fallback failed for", target.path, err);
+        if (import.meta.env.DEV) console.warn("[Vault] Server-side signed URL fallback failed:", err);
       }
     }
     imageRetryCountsRef.current.set(card.id, 99);
@@ -1323,10 +1325,41 @@ export default function VaultNew() {
       visibleCardIdsRef.current.add(card.id);
       urlResolveQueueRef.current.push(card);
     }
-    const safetyTimer = setTimeout(() => setVaultReady(true), 8000);
+    const safetyTimer = setTimeout(() => setVaultReady(true), 10000);
     drainUrlResolveQueue().then(() => {
-      clearTimeout(safetyTimer);
-      setVaultReady(true);
+      const imageCards = attachmentCards.filter((c) => {
+        const t = resolveAttachmentType(c.attachment || {});
+        return t === "image";
+      });
+      const urlsToPreload = imageCards
+        .slice(0, 24)
+        .map((c) => signedUrlCacheRef.current.get(
+          `${parseStorageTarget(c.attachment || {})?.bucket || "user-files"}:${parseStorageTarget(c.attachment || {})?.path || ""}`
+        ) || c.attachment?.url)
+        .filter((u) => u && !String(u).startsWith("data:"));
+      if (urlsToPreload.length === 0) {
+        clearTimeout(safetyTimer);
+        setVaultReady(true);
+        return;
+      }
+      let settled = 0;
+      const preloadDone = () => {
+        settled += 1;
+        if (settled >= urlsToPreload.length) {
+          clearTimeout(safetyTimer);
+          setVaultReady(true);
+        }
+      };
+      const preloadTimeout = setTimeout(() => {
+        clearTimeout(safetyTimer);
+        setVaultReady(true);
+      }, 4000);
+      for (const url of urlsToPreload) {
+        const img = new window.Image();
+        img.onload = () => { preloadDone(); if (settled >= urlsToPreload.length) clearTimeout(preloadTimeout); };
+        img.onerror = () => { preloadDone(); if (settled >= urlsToPreload.length) clearTimeout(preloadTimeout); };
+        img.src = url;
+      }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [vaultCards, user?.id, isLoadingNotes, drainUrlResolveQueue]);
@@ -1751,7 +1784,7 @@ export default function VaultNew() {
       }
 
       if (remaining.length === 0) {
-        console.log("[VaultSearch] All items matched locally:", localMatches.length);
+        if (import.meta.env.DEV) console.log("[VaultSearch] All matched locally:", localMatches.length);
         setConceptResultIds(localMatches);
         return;
       }
@@ -1771,7 +1804,7 @@ export default function VaultNew() {
       ].join("\n");
 
       const { API_BASE_URL } = await import("@/lib/api-config");
-      console.log("[VaultSearch] Local matches:", localMatches.length, "| Sending", remaining.length, "to AI");
+      if (import.meta.env.DEV) console.log("[VaultSearch] Local:", localMatches.length, "| AI:", remaining.length);
       const res = await fetch(`${API_BASE_URL}/api/ai/vault-search`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1793,18 +1826,18 @@ export default function VaultNew() {
           } catch { /* use empty */ }
         }
       } else {
-        console.warn("[VaultSearch] Server returned", res.status);
+        if (import.meta.env.DEV) console.warn("[VaultSearch] Server returned", res.status);
       }
 
       if (searchId !== conceptSearchIdRef.current) return;
 
       const combined = [...localMatches, ...aiMatchIds];
-      console.log("[VaultSearch] Results:", localMatches.length, "local +", aiMatchIds.length, "AI =", combined.length, "total");
+      if (import.meta.env.DEV) console.log("[VaultSearch] Results:", combined.length);
       setConceptResultIds(combined);
     } catch (err) {
       if (err?.name === "AbortError") return;
       if (searchId !== conceptSearchIdRef.current) return;
-      console.error("[VaultSearch] Error:", err);
+      if (import.meta.env.DEV) console.error("[VaultSearch] Error:", err);
       setConceptResultIds(null);
     } finally {
       if (searchId === conceptSearchIdRef.current) {
@@ -2203,13 +2236,19 @@ User: ${text}`;
       }
 
       return (
+        <div className="w-full min-h-[8rem] rounded-2xl bg-black/[0.02] dark:bg-white/[0.02]">
         <img
           key={resolvedUrl}
           src={resolvedUrl}
           alt={title}
-          className="w-full h-auto max-h-[42rem] rounded-2xl"
+          className="w-full h-auto max-h-[42rem] rounded-2xl opacity-0 transition-opacity duration-300 ease-out"
           loading="lazy"
           draggable={false}
+          onLoad={(e) => {
+            e.currentTarget.style.opacity = "1";
+            const wrapper = e.currentTarget.parentElement;
+            if (wrapper) { wrapper.style.minHeight = "0"; wrapper.style.background = "transparent"; }
+          }}
           onError={() => {
             const retryCount = imageRetryCountsRef.current.get(card.id) || 0;
             if (retryCount < 2) {
@@ -2260,6 +2299,7 @@ User: ${text}`;
             }
           }}
         />
+        </div>
       );
     }
 
@@ -2277,16 +2317,23 @@ User: ${text}`;
       }
 
       return (
-        <video
-          key={resolvedUrl}
-          className="w-full h-auto max-h-[42rem] rounded-2xl bg-black/10"
-          controls
-          playsInline
-          preload="metadata"
-          draggable={false}
-        >
-          <source src={resolvedUrl} type={videoMime} />
-        </video>
+        <div className="w-full min-h-[8rem] rounded-2xl bg-black/[0.02] dark:bg-white/[0.02]">
+          <video
+            key={resolvedUrl}
+            className="w-full h-auto max-h-[42rem] rounded-2xl bg-black/10 opacity-0 transition-opacity duration-300 ease-out"
+            controls
+            playsInline
+            preload="metadata"
+            draggable={false}
+            onLoadedData={(e) => {
+              e.currentTarget.style.opacity = "1";
+              const wrapper = e.currentTarget.parentElement;
+              if (wrapper) { wrapper.style.minHeight = "0"; wrapper.style.background = "transparent"; }
+            }}
+          >
+            <source src={resolvedUrl} type={videoMime} />
+          </video>
+        </div>
       );
     }
 
@@ -2308,8 +2355,9 @@ User: ${text}`;
           <iframe
             src={resolvedUrl}
             title={title || "PDF preview"}
-            className="w-full h-full border-0"
+            className="w-full h-full border-0 opacity-0 transition-opacity duration-300 ease-out"
             draggable={false}
+            onLoad={(e) => { e.currentTarget.style.opacity = "1"; }}
           />
         </div>
       );
@@ -2441,9 +2489,11 @@ User: ${text}`;
               <img
                 src={attachment.image}
                 alt=""
-                className="w-full h-full object-cover group-hover/bm:scale-[1.03] transition-transform duration-300"
+                className="w-full h-full object-cover group-hover/bm:scale-[1.03] transition-transform duration-300 opacity-0"
+                style={{ transition: "opacity 0.3s ease-out, transform 0.3s" }}
                 loading="lazy"
                 draggable={false}
+                onLoad={(e) => { e.currentTarget.style.opacity = "1"; }}
                 onError={(e) => { e.currentTarget.parentElement.style.display = "none"; }}
               />
             </div>
@@ -3043,10 +3093,10 @@ User: ${text}`;
                   placeholder="Search memories..."
                   className="flex-1 h-10 rounded-xl border border-black/8 dark:border-white/8 bg-white/55 dark:bg-white/4 px-3 text-sm outline-none"
                 />
-                <div className="flex items-center rounded-xl glass-control p-0.5 gap-0.5 shrink-0">
+                <div className="flex items-center rounded-xl glass-control p-1 gap-0.5 shrink-0">
                   {[
                     { id: "collage", icon: Layers, label: "Collage" },
-                    { id: "grid", icon: Grid3X3, label: "Grid" },
+                    { id: "grid", icon: Grid2X2, label: "Grid" },
                     { id: "tags", icon: Tag, label: "Tags" },
                     { id: "type", icon: LayoutGrid, label: "Type" },
                   ].map((v) => (
@@ -3056,7 +3106,7 @@ User: ${text}`;
                       onClick={() => setVaultView(v.id)}
                       className={`flex items-center justify-center w-8 h-8 rounded-lg text-[0.6875rem] font-medium transition-all ${
                         vaultView === v.id
-                          ? "bg-blue-500 text-white shadow-sm"
+                          ? "bg-blue-500/12 text-blue-600 dark:bg-blue-400/15 dark:text-blue-400"
                           : "text-black/50 dark:text-white/50 hover:text-black/80 dark:hover:text-white/80 hover:bg-black/[0.04] dark:hover:bg-white/[0.06]"
                       }`}
                       title={v.label}
@@ -3089,7 +3139,7 @@ User: ${text}`;
                     </button>
                   )}
                   {showEmbeddedTagDropdown && (
-                    <div className="absolute top-full left-0 mt-1 w-52 max-h-56 overflow-y-auto rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-[#1c1c1e]/80 backdrop-blur-md shadow-md z-50 py-1 scrollbar-hide">
+                    <div className="absolute top-full left-0 mt-1 w-52 max-h-56 overflow-y-auto rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-[#1c1c1c]/80 backdrop-blur-md shadow-md z-50 py-1 scrollbar-hide">
                       {(() => {
                         const untaggedActive = selectedFilterTags.includes("__untagged__");
                         return (
@@ -3102,7 +3152,7 @@ User: ${text}`;
                             }
                             className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[0.6875rem] hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors border-b border-black/5 dark:border-white/5 mb-0.5"
                           >
-                            <div className={`w-3.5 h-3.5 rounded flex items-center justify-center shrink-0 ${untaggedActive ? "bg-blue-500 text-white" : "border border-black/20 dark:border-white/20"}`}>
+                            <div className={`w-3.5 h-3.5 rounded flex items-center justify-center shrink-0 ${untaggedActive ? "bg-blue-500/15 text-blue-600 dark:bg-blue-400/20 dark:text-blue-400 ring-1 ring-blue-500/25" : "border border-black/20 dark:border-white/20"}`}>
                               {untaggedActive && <Check className="w-2.5 h-2.5" />}
                             </div>
                             <span className={`flex-1 truncate italic ${untaggedActive ? "text-black/90 dark:text-white/90 font-medium" : "text-black/50 dark:text-white/50"}`}>
@@ -3124,7 +3174,7 @@ User: ${text}`;
                             }
                             className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[0.6875rem] hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors"
                           >
-                            <div className={`w-3.5 h-3.5 rounded flex items-center justify-center shrink-0 ${active ? "bg-blue-500 text-white" : "border border-black/20 dark:border-white/20"}`}>
+                            <div className={`w-3.5 h-3.5 rounded flex items-center justify-center shrink-0 ${active ? "bg-blue-500/15 text-blue-600 dark:bg-blue-400/20 dark:text-blue-400 ring-1 ring-blue-500/25" : "border border-black/20 dark:border-white/20"}`}>
                               {active && <Check className="w-2.5 h-2.5" />}
                             </div>
                             <span className={`flex-1 truncate ${active ? "text-black/90 dark:text-white/90 font-medium" : "text-black/65 dark:text-white/65"}`}>
@@ -3188,10 +3238,10 @@ User: ${text}`;
                   </div>
                 </form>
 
-                <div className="flex items-center rounded-xl glass-control p-0.5 gap-0.5 shrink-0 w-full sm:w-auto">
+                <div className="flex items-center rounded-xl glass-control p-1 gap-0.5 shrink-0 w-full sm:w-auto">
                   {[
                     { id: "collage", icon: Layers, label: "Collage" },
-                    { id: "grid", icon: Grid3X3, label: "Grid" },
+                    { id: "grid", icon: Grid2X2, label: "Grid" },
                     { id: "tags", icon: Tag, label: "Tags" },
                     { id: "type", icon: LayoutGrid, label: "Type" },
                   ].map((v) => (
@@ -3201,7 +3251,7 @@ User: ${text}`;
                       onClick={() => setVaultView(v.id)}
                       className={`flex-1 sm:flex-initial flex items-center justify-center sm:justify-start gap-1.5 rounded-lg px-2.5 py-1.5 text-[0.6875rem] font-medium transition-all ${
                         vaultView === v.id
-                          ? "bg-blue-500 text-white shadow-sm"
+                          ? "bg-blue-500/12 text-blue-600 dark:bg-blue-400/15 dark:text-blue-400"
                           : "text-black/50 dark:text-white/50 hover:text-black/80 dark:hover:text-white/80 hover:bg-black/[0.04] dark:hover:bg-white/[0.06]"
                       }`}
                       title={v.label}
@@ -3248,13 +3298,13 @@ User: ${text}`;
                           }
                           className={`inline-flex items-center gap-1 rounded-full font-medium transition-all ${
                             active
-                              ? "bg-blue-500 text-white shadow-sm"
+                              ? "bg-blue-500/12 text-blue-600 dark:bg-blue-400/15 dark:text-blue-400 ring-1 ring-blue-500/20 dark:ring-blue-400/25"
                               : "glass-control text-black/65 dark:text-white/65 hover:text-black/85 dark:hover:text-white/85"
                           }`}
                           style={{ fontSize: 11, lineHeight: 1, height: 22, paddingLeft: 8, paddingRight: 8 }}
                         >
                           {tag.name}
-                          <span className={`text-[0.625rem] ${active ? "text-white/70" : "text-black/35 dark:text-white/35"}`}>
+                          <span className={`text-[0.625rem] ${active ? "text-blue-500/60 dark:text-blue-400/60" : "text-black/35 dark:text-white/35"}`}>
                             {tag.count}
                           </span>
                         </button>
@@ -3264,7 +3314,7 @@ User: ${text}`;
                       <button
                         type="button"
                         onClick={() => setSelectedFilterTags([])}
-                        className="text-[0.6875rem] text-blue-500 hover:text-blue-600 ml-1"
+                        className="text-[0.6875rem] text-blue hover:opacity-80 ml-1"
                       >
                         Clear filters
                       </button>

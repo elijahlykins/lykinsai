@@ -178,7 +178,7 @@ export const migrateLegacyBlocks = (blocks: LegacyBlock[]): Block[] => {
         break;
       }
       default: {
-        console.warn("migrateLegacyBlocks: unmapped block type", block.type, block.id);
+        if (import.meta.env.DEV) console.warn("migrateLegacyBlocks: unmapped block type", block.type);
         break;
       }
     }

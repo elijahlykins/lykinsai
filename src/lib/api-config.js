@@ -58,11 +58,6 @@ const getFrontendBaseUrl = () => {
 
 export const FRONTEND_BASE_URL = getFrontendBaseUrl();
 
-console.log('🔧 API Configuration:', {
-  API_BASE_URL,
-  FRONTEND_BASE_URL,
-  hostname: typeof window !== 'undefined' ? window.location.hostname : 'server-side',
-  isProduction: typeof window !== 'undefined' && 
-                window.location.hostname !== 'localhost' && 
-                window.location.hostname !== '127.0.0.1'
-});
+if (import.meta.env.DEV) {
+  console.log('API Configuration:', { API_BASE_URL, FRONTEND_BASE_URL });
+}

@@ -3,7 +3,8 @@ import { useNavigate, useParams } from "react-router-dom";
 import { Canvas } from "@/canvas/Canvas";
 import { useCanvasStore } from "@/store/canvasStore";
 import type { Block } from "@/canvas/types";
-import { ChevronDown, ChevronUp, ChevronRight, Plus, Link as LinkIcon, Image as ImageIcon, MessageSquare, Mic, BookOpen, X, Clock, Edit2, Folder as FolderIcon, Link2, MoreHorizontal, PanelRightClose, PanelRight, StickyNote, Play, FileText, Music, Video, Share2, Download, Copy, Check, RefreshCw, ThumbsUp, ThumbsDown, Square, Sparkles, Save, Globe, GripVertical, LayoutGrid, ArrowUp } from "lucide-react";
+import { ChevronDown, ChevronUp, ChevronRight, Plus, Link as LinkIcon, Image as ImageIcon, MessageSquare, Mic, BookOpen, X, Clock, Edit2, Folder as FolderIcon, Link2, MoreHorizontal, PanelRightClose, PanelRight, StickyNote, Play, FileText, Music, Video, Share2, Download, Copy, Check, RefreshCw, ThumbsUp, ThumbsDown, Square, Sparkles, Save, Globe, GripVertical, ArrowUp } from "lucide-react";
+import { GridIcon } from "@/components/ui/GridIcon";
 import DraggableQuickNote from "@/components/notes/DraggableQuickNote";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -754,7 +755,7 @@ export default function OmniaGridPage() {
       for (const m of msgs) {
         if (Array.isArray((m as any).attachments)) {
           (m as any).attachments.forEach((a: any, idx: number) => {
-            if (a.storagePath && (!a.url || a.url === "")) {
+            if (a.storagePath && (!a.url || a.url === "" || a.url.startsWith("blob:"))) {
               attachJobs.push({ msgId: m.id, attIdx: idx, storagePath: a.storagePath, bucket: a.storageBucket || "user-files" });
             }
           });
@@ -1359,12 +1360,12 @@ export default function OmniaGridPage() {
     const handler = (e: MessageEvent) => {
       if (!e.data || typeof e.data !== "object") return;
       if (e.data.type === "omnia-vault-drag-start" && e.data.data) {
-        console.log("[VAULT-DRAG] postMessage received: drag-start", e.data.data?.attachments?.map((a: any) => ({ type: a.type, url: a.url?.substring(0, 60), videoId: a.videoId })));
+        if (import.meta.env.DEV) console.log("[VAULT-DRAG] drag-start received");
         (window as any).__omnia_pending_vault = { ...e.data.data, timestamp: Date.now() };
         setVaultDragActive(true);
       }
       if (e.data.type === "omnia-vault-drag-end") {
-        console.log("[VAULT-DRAG] postMessage received: drag-end");
+        if (import.meta.env.DEV) console.log("[VAULT-DRAG] drag-end received");
         setVaultDragActive(false);
       }
     };
@@ -1402,11 +1403,11 @@ export default function OmniaGridPage() {
           fileUrl = signedData?.signedUrl || imageUrl;
           uploaded = true;
         } else {
-          console.warn("[LYKN] Failed to upload AI image to storage:", uploadError.message);
+          if (import.meta.env.DEV) console.warn("[LYKN] Failed to upload AI image to storage:", uploadError.message);
         }
       }
     } catch (err) {
-      console.warn("[LYKN] Could not download AI image for re-upload, saving with direct URL:", err);
+      if (import.meta.env.DEV) console.warn("[LYKN] Could not download AI image for re-upload:", err);
     }
 
     try {
@@ -1430,9 +1431,9 @@ export default function OmniaGridPage() {
         })
         .select("id")
         .single();
-      if (error) console.warn("[LYKN] Failed to save AI image note:", error.message);
+      if (error && import.meta.env.DEV) console.warn("[LYKN] Failed to save AI image note:", error.message);
       else {
-        console.log(`[LYKN] AI image saved to media: ${filename} (${uploaded ? "uploaded to storage" : "direct URL"})`);
+        if (import.meta.env.DEV) console.log("[LYKN] AI image saved to media");
         if (ins?.id) {
           afterVaultNoteSaved(user.id, ins.id, { title: filename, content: noteContent }, {
             excludeBoardId: routeBoardId || boardId || undefined,
@@ -1440,7 +1441,7 @@ export default function OmniaGridPage() {
         }
       }
     } catch (err) {
-      console.warn("[LYKN] Error saving AI image note to media:", err);
+      if (import.meta.env.DEV) console.warn("[LYKN] Error saving AI image note:", err);
     }
   }, [user?.id, routeBoardId, boardId]);
 
@@ -1468,14 +1469,14 @@ export default function OmniaGridPage() {
         })
         .select("id")
         .single();
-      if (error) console.warn("[LYKN] Failed to save YouTube note:", error.message);
+      if (error && import.meta.env.DEV) console.warn("[LYKN] Failed to save YouTube note:", error.message);
       else if (ins?.id) {
         afterVaultNoteSaved(user.id, ins.id, { title, content: noteContent }, {
           excludeBoardId: routeBoardId || boardId || undefined,
         });
       }
     } catch (err) {
-      console.warn("[LYKN] Error saving YouTube to media:", err);
+      if (import.meta.env.DEV) console.warn("[LYKN] Error saving YouTube to media:", err);
     }
   }, [user?.id, routeBoardId, boardId]);
 
@@ -1511,9 +1512,9 @@ export default function OmniaGridPage() {
         })
         .select("id")
         .single();
-      if (error) console.warn("[LYKN] Failed to save link note:", error.message);
+      if (error && import.meta.env.DEV) console.warn("[LYKN] Failed to save link note:", error.message);
       else {
-        console.log(`[LYKN] Link saved to media: ${meta.title || linkUrl}`);
+        if (import.meta.env.DEV) console.log("[LYKN] Link saved to media");
         if (ins?.id) {
           afterVaultNoteSaved(user.id, ins.id, {
             title: meta.title || linkUrl,
@@ -1522,7 +1523,7 @@ export default function OmniaGridPage() {
         }
       }
     } catch (err) {
-      console.warn("[LYKN] Error saving link to media:", err);
+      if (import.meta.env.DEV) console.warn("[LYKN] Error saving link to media:", err);
     }
   }, [user?.id, routeBoardId, boardId]);
 
@@ -1720,7 +1721,10 @@ export default function OmniaGridPage() {
         });
         const data = await res.json().catch(() => ({}));
         let aiText = String(data?.response || data?.answer || data?.text || "").trim();
-        if (!res.ok) aiText = String(data?.error || "Regeneration failed.").trim();
+        if (!res.ok) {
+          if (import.meta.env.DEV) console.error('Regen API error:', data?.error);
+          aiText = "Regeneration failed. Please try again.";
+        }
 
         const { cleanText } = extractSourceLinksLocal(aiText);
         const normalized = normalizeAiTextForBlock(cleanText);
@@ -2130,8 +2134,8 @@ export default function OmniaGridPage() {
     setVaultDragActive(false);
     window.dispatchEvent(new CustomEvent("omnia_canvas_interact"));
     const pending = (window as any).__omnia_pending_vault;
-    console.log("[VAULT-DROP] overlay onDrop fired, pending:", !!pending, pending);
-    if (!pending || typeof pending !== "object") { console.log("[VAULT-DROP] no pending data, aborting"); return; }
+    if (import.meta.env.DEV) console.log("[VAULT-DROP] overlay onDrop fired");
+    if (!pending || typeof pending !== "object") { if (import.meta.env.DEV) console.log("[VAULT-DROP] no pending data"); return; }
     (window as any).__omnia_pending_vault = null;
 
     const attachments = Array.isArray(pending.attachments) ? pending.attachments : [];
@@ -2159,11 +2163,11 @@ export default function OmniaGridPage() {
       return;
     }
 
-    console.log("[VAULT-DROP] attachments:", attachments.map((a: any) => ({ type: a.type, url: a.url?.substring(0, 80), videoId: a.videoId })));
+    if (import.meta.env.DEV) console.log("[VAULT-DROP] attachments count:", attachments.length);
     const youtubeAttach = attachments.find((a: any) =>
       a.type === "youtube" || a.videoId || (a.url && (a.url.includes("youtube.com") || a.url.includes("youtu.be")))
     );
-    console.log("[VAULT-DROP] youtubeAttach:", youtubeAttach ? { type: youtubeAttach.type, url: youtubeAttach.url?.substring(0, 80), videoId: youtubeAttach.videoId } : null);
+    if (import.meta.env.DEV) console.log("[VAULT-DROP] youtubeAttach:", !!youtubeAttach);
     const imageAttach = attachments.find((a: any) =>
       a.type === "image" || (a.url && /\.(jpg|jpeg|png|gif|webp|svg|heic|heif)(\?|$)/i.test(a.url)) || (a.url && a.url.startsWith("data:image/"))
     );
@@ -2196,7 +2200,7 @@ export default function OmniaGridPage() {
         ytUrl = `https://www.youtube.com/watch?v=${vid}`;
       }
       const extractedVid = extractYouTubeVideoId(ytUrl) || vid;
-      console.log("[VAULT-DROP] YouTube processing:", { ytUrl, vid, extractedVid });
+      if (import.meta.env.DEV) console.log("[VAULT-DROP] YouTube processing");
       if (ytUrl && extractedVid) {
         const st = useCanvasStore.getState();
         const existingIds = Array.isArray(st.blockOrder) ? st.blockOrder : [];
@@ -2204,7 +2208,7 @@ export default function OmniaGridPage() {
           const blk = (st.blocks as any)?.[bid];
           return blk && (blk.videoId === extractedVid || blk.data?.videoId === extractedVid || blk.url === ytUrl || blk.data?.url === ytUrl);
         });
-        if (alreadyOnCanvas) { console.log("[VAULT-DROP] YouTube duplicate, skipping"); return; }
+        if (alreadyOnCanvas) { if (import.meta.env.DEV) console.log("[VAULT-DROP] YouTube duplicate, skipping"); return; }
         const g = Math.max(1, Math.floor(st.gridSize || 24));
         const canvasEl = document.querySelector<HTMLElement>(".overflow-auto.overscroll-contain");
         const rect = canvasEl?.getBoundingClientRect();
@@ -2212,10 +2216,10 @@ export default function OmniaGridPage() {
         const localY = rect ? cy - rect.top : cy;
         const wx = Math.round(localX / g) * g;
         const wy = Math.round((Number(st.camera?.y || 0) + localY) / g) * g;
-        console.log("[VAULT-DROP] Creating YouTube block at", { wx, wy, ytUrl, extractedVid });
+        if (import.meta.env.DEV) console.log("[VAULT-DROP] Creating YouTube block");
         st.addYouTubeBlockAt({ x: wx, y: wy }, { url: ytUrl, videoId: extractedVid });
       } else {
-        console.log("[VAULT-DROP] YouTube: no valid URL or videoId, skipping");
+        if (import.meta.env.DEV) console.log("[VAULT-DROP] YouTube: no valid URL or videoId");
       }
       return;
     }

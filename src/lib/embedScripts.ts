@@ -99,6 +99,6 @@ export async function loadAndProcessEmbed(
         break;
     }
   } catch (err) {
-    console.warn(`[embedScripts] Failed to load ${platform} embed:`, err);
+    if (import.meta.env.DEV) console.warn(`[embedScripts] Failed to load ${platform} embed:`, err);
   }
 }

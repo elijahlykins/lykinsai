@@ -2444,7 +2444,7 @@ ${t}
         "",
         "What you can see RIGHT NOW:",
         "- [BOARD_CONTEXT]: The current board/grid the user is actively working on. This is your PRIMARY context — always prioritize it.",
-        hasProject ? "- [PROJECT_KNOWLEDGE]: The project this grid belongs to — its other boards, files, and folders. This is your SECONDARY context. Use it to connect the user's current work to the broader project." : "- [PROJECT_KNOWLEDGE]: The user's project files, folders, other boards, and mindmaps.",
+        hasProject ? "- [PROJECT_KNOWLEDGE]: The project this grid belongs to — its other boards, files, and folders. This is your SECONDARY context. Use it to connect the user's current work to the broader project." : "- [PROJECT_KNOWLEDGE]: The user's project files, folders, other boards, and synthesis layer.",
         "- [WORKSPACE_CONTEXT]: The user's other boards and Vault (saved notes, files, links, videos, images). Background context — use when relevant but do NOT prioritize over the current grid" + (hasProject ? " or project." : "."),
         "- [USER_MODEL] (if present): Periodically updated themes and style summary from past chats — use for tone, not as facts.",
         "- [SYNTHESIS_RETRIEVAL] (if present): Semantic matches from their embedded workspace index.",

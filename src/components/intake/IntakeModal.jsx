@@ -57,14 +57,15 @@ export default function IntakeModal() {
       try {
         await refreshProfileStatus();
       } catch (refreshErr) {
-        console.warn('[Intake] status refresh after submit (non-fatal):', refreshErr);
+        if (import.meta.env.DEV) console.warn('[Intake] status refresh failed (non-fatal):', refreshErr);
       }
       toast({
         title: "You're set",
         description: "I'll use this to personalize your workspace.",
       });
     } catch (err) {
-      const msg = err?.message || 'Something went wrong. Try again.';
+      if (import.meta.env.DEV) console.error('Intake submit error:', err);
+      const msg = 'Something went wrong. Please try again.';
       setError(msg);
       toast({ title: 'Could not save', description: msg, variant: 'destructive' });
     } finally {

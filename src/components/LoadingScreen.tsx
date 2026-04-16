@@ -9,7 +9,7 @@ export default function LoadingScreen({ isLoading, children }: LoadingScreenProp
   if (!isLoading) return <>{children}</>;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-white dark:bg-[#0b0b0f]">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-white dark:bg-[#0d0d0d]">
       <span className="loading-typewriter text-lg font-medium text-black dark:text-white">
         Getting things ready...
       </span>

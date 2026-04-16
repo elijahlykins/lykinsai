@@ -38,7 +38,7 @@ export async function fileToDisplayableDataUrl(file: File): Promise<string> {
     if (!blob) throw new Error("HEIF conversion produced no output");
     return blobToDataUrl(blob);
   } catch (err) {
-    console.warn("[heifToJpeg] Conversion failed, falling back to raw:", err);
+    if (import.meta.env.DEV) console.warn("[heifToJpeg] Conversion failed, falling back to raw:", err);
     return blobToDataUrl(file);
   }
 }
@@ -63,7 +63,7 @@ export async function fileToDisplayableFile(file: File): Promise<File> {
     const baseName = (file.name || "image").replace(/\.(heic|heif)$/i, "") || "image";
     return new File([blob], `${baseName}.jpg`, { type: "image/jpeg" });
   } catch (err) {
-    console.warn("[heifToJpeg] Conversion failed, using original:", err);
+    if (import.meta.env.DEV) console.warn("[heifToJpeg] Conversion failed, using original:", err);
     return file;
   }
 }

@@ -36,7 +36,7 @@ class RouteErrorBoundary extends React.Component {
   }
 
   componentDidCatch(error, errorInfo) {
-    console.error('[RouteErrorBoundary]', error, errorInfo);
+    if (import.meta.env.DEV) console.error('[RouteErrorBoundary]', error, errorInfo);
 
     const isHookError = error?.message?.includes('#310') || error?.message?.includes('more hooks');
     if (!this.state.autoRecoveryAttempted && isHookError) {
@@ -57,7 +57,7 @@ class RouteErrorBoundary extends React.Component {
   render() {
     if (!this.state.hasError) return this.props.children;
 
-    const isDev = import.meta.env?.DEV || window.location.hostname === 'localhost';
+    const isDev = !!import.meta.env?.DEV;
 
     const handleRetry = () => {
       this.setState((prev) => ({

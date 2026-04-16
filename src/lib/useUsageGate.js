@@ -57,13 +57,11 @@ export function useUsageGate() {
   }, [refreshVaultCount, refreshAiCount]);
 
   useEffect(() => {
-    const handler = (e) => {
-      const detail = e.detail || {};
+    const handler = () => {
       setUpgradeModal({
         type: "ai",
         title: "AI request limit reached",
         description:
-          detail.message ||
           "You've used all your AI requests this month. Upgrade your plan or add a top-up to continue.",
       });
     };

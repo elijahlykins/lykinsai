@@ -364,6 +364,33 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     return () => window.removeEventListener("omnia_chat_drop_attachments", handler);
   }, [chatRailVisible, chatMode, setChatRailOpen, setRailVisible]);
 
+  // When a canvas file finishes uploading to storage, back-fill the chat
+  // attachment with storagePath + a durable signed URL so the image survives
+  // page reloads (blob: URLs die when the session ends).
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const ce = e as CustomEvent<{ fileName: string; fileUrl: string; storagePath: string; storageBucket: string }>;
+      const { fileName, fileUrl, storagePath, storageBucket } = ce.detail || {};
+      if (!fileName || !storagePath) return;
+      setChatMessages((prev) =>
+        prev.map((m: any) => {
+          if (!Array.isArray(m.attachments)) return m;
+          let changed = false;
+          const updated = m.attachments.map((a: any) => {
+            if (a.name === fileName && !a.storagePath) {
+              changed = true;
+              return { ...a, url: fileUrl, storagePath, storageBucket: storageBucket || "user-files" };
+            }
+            return a;
+          });
+          return changed ? { ...m, attachments: updated } : m;
+        })
+      );
+    };
+    window.addEventListener("omnia_canvas_file_stored", handler);
+    return () => window.removeEventListener("omnia_canvas_file_stored", handler);
+  }, []);
+
   // Resize chat input on mode switch
   useEffect(() => {
     resizeChatInputEl(chatPanelInputRef.current);

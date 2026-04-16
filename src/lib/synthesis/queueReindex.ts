@@ -68,10 +68,10 @@ async function flushSynthesisReindex(key: string): Promise<void> {
     });
     if (!res.ok) {
       const err = await res.text().catch(() => "");
-      console.warn("[Synthesis] reindex failed:", res.status, err.slice(0, 200));
+      if (import.meta.env.DEV) console.warn("[Synthesis] reindex failed:", res.status);
     }
   } catch (e) {
-    console.warn("[Synthesis] reindex error:", e);
+    if (import.meta.env.DEV) console.warn("[Synthesis] reindex error:", e);
   }
 }
 
@@ -105,8 +105,8 @@ export async function purgeSynthesisSource(
       },
       body: JSON.stringify({ sourceType, sourceId }),
     });
-    if (!res.ok) console.warn("[Synthesis] purge failed:", res.status);
+    if (!res.ok && import.meta.env.DEV) console.warn("[Synthesis] purge failed:", res.status);
   } catch (e) {
-    console.warn("[Synthesis] purge error:", e);
+    if (import.meta.env.DEV) console.warn("[Synthesis] purge error:", e);
   }
 }

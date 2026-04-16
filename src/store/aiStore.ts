@@ -104,7 +104,7 @@ export const useAiStore = create<AiState>()(
         });
         return kbText;
       } catch (error: any) {
-        console.error("KB refresh failed:", error);
+        if (import.meta.env.DEV) console.error("KB refresh failed:", error);
         set((s) => {
           s.isRefreshing = false;
           s.lastError = error?.message || "Failed to refresh knowledge base";
@@ -139,7 +139,7 @@ export const useAiStore = create<AiState>()(
         });
         return ws;
       } catch (error: any) {
-        console.error("Workspace summary refresh failed:", error);
+        if (import.meta.env.DEV) console.error("Workspace summary refresh failed:", error);
         return null;
       }
     },
@@ -224,7 +224,7 @@ export const useAiStore = create<AiState>()(
         });
         return { actions, response };
       } catch (error: any) {
-        console.error("Organize ideas failed:", error);
+        if (import.meta.env.DEV) console.error("Organize ideas failed:", error);
         set((s) => {
           s.isOrganizing = false;
           s.lastError = error?.message || "Failed to organize ideas";

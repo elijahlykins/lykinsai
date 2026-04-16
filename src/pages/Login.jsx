@@ -44,7 +44,9 @@ function friendlyError(raw) {
     return "Too many attempts. Please wait a moment and try again.";
   if (lower.includes("network") || lower.includes("fetch"))
     return "Connection error. Please check your internet and try again.";
-  return raw;
+  if (lower.includes("password") && lower.includes("characters"))
+    return "Password must be at least 6 characters.";
+  return "Something went wrong. Please try again.";
 }
 
 export default function Login() {
@@ -100,7 +102,8 @@ export default function Login() {
         }
       }
     } catch (err) {
-      setError(err?.message || "Authentication failed.");
+      if (import.meta.env.DEV) console.error('Auth error:', err);
+      setError(friendlyError(err?.message) || "Authentication failed. Please try again.");
     } finally {
       setSubmitting(false);
     }
@@ -118,7 +121,7 @@ export default function Login() {
 
   if (showSuccess) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-white dark:bg-[#0b0b0f]">
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-white dark:bg-[#0d0d0d]">
         <FloatingOrb className="w-96 h-96 bg-blue-400 -top-20 -left-20" />
         <FloatingOrb className="w-80 h-80 bg-violet-400 -bottom-10 -right-10" delay={2} />
         <motion.div
@@ -152,7 +155,7 @@ export default function Login() {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex bg-white dark:bg-[#0b0b0f] overflow-hidden">
+    <div className="fixed inset-0 z-50 flex bg-white dark:bg-[#0d0d0d] overflow-hidden">
       <FloatingOrb className="w-[500px] h-[500px] bg-blue-300 dark:bg-blue-600 -top-32 -left-32" />
       <FloatingOrb className="w-[400px] h-[400px] bg-violet-300 dark:bg-violet-600 top-1/2 -right-20" delay={2} />
       <FloatingOrb className="w-[300px] h-[300px] bg-amber-200 dark:bg-amber-600 -bottom-16 left-1/3" delay={4} />

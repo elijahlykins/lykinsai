@@ -55,7 +55,7 @@ export function IntakeProvider({ children }) {
         lastErr = e;
       }
     }
-    console.warn('[Intake] profile status failed after retries:', lastErr);
+    if (import.meta.env.DEV) console.warn('[Intake] profile status failed after retries:', lastErr);
     setStatusError(true);
     setProfileStatus(null);
     setStatusLoading(false);

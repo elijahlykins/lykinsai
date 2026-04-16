@@ -7,6 +7,8 @@ import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/SupabaseAuth';
+import { afterVaultNoteSaved } from '@/lib/vault/afterVaultSave';
+import { describeVaultItemInBackground } from '@/lib/vault/describeVaultItem';
 
 /**
  * DragDropFileUpload Component
@@ -78,60 +80,6 @@ export default function DragDropFileUpload({ onUploadComplete, triggerRef, befor
     return match ? match[0] : '';
   };
 
-  const describeVaultItemInBackground = useCallback((noteId, { imageUrl, textContent, fileType, fileName }) => {
-    (async () => {
-      try {
-        const { API_BASE_URL } = await import('@/lib/api-config');
-        const res = await fetch(`${API_BASE_URL}/api/ai/describe-image`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ imageUrl, textContent, fileType, fileName }),
-        });
-        if (!res.ok) return;
-        const { description } = await res.json();
-        if (!description) return;
-
-        const { data: note } = await supabase
-          .from('notes')
-          .select('content')
-          .eq('id', noteId)
-          .single();
-        if (!note?.content) return;
-
-        const marker = '[ATTACHMENTS_JSON:';
-        const start = note.content.indexOf(marker);
-        if (start === -1) return;
-        const jsonStart = start + marker.length;
-        let bracketCount = 0;
-        let jsonEnd = jsonStart;
-        for (let i = jsonStart; i < note.content.length; i++) {
-          if (note.content[i] === '[') bracketCount++;
-          if (note.content[i] === ']') {
-            bracketCount--;
-            if (bracketCount === 0) { jsonEnd = i + 1; break; }
-          }
-        }
-        if (jsonEnd <= jsonStart) return;
-
-        let attachments;
-        try { attachments = JSON.parse(note.content.slice(jsonStart, jsonEnd)); } catch { return; }
-        if (!Array.isArray(attachments) || attachments.length === 0) return;
-
-        attachments[0].aiDescription = description;
-        const updatedContent = note.content.slice(0, start) +
-          `[ATTACHMENTS_JSON:${JSON.stringify(attachments)}]` +
-          note.content.slice(jsonEnd + (note.content[jsonEnd] === ']' ? 1 : 0));
-
-        await supabase
-          .from('notes')
-          .update({ content: updatedContent })
-          .eq('id', noteId);
-      } catch (err) {
-        console.warn('Background vault item describe failed:', err?.message);
-      }
-    })();
-  }, []);
-
   const createDroppedLinkNote = useCallback(async (url) => {
     if (!user?.id || !url) return false;
     if (beforeUpload && !(await beforeUpload())) return false;
@@ -187,7 +135,7 @@ export default function DragDropFileUpload({ onUploadComplete, triggerRef, befor
     ({ data: insertedNote, error: noteError } = await supabase
       .from('notes')
       .insert(richInsert)
-      .select('id, title, content, created_at, updated_at')
+      .select('id, title, content, attachments, tags, created_at, updated_at')
       .single());
 
     const missingColumnError =
@@ -207,7 +155,7 @@ export default function DragDropFileUpload({ onUploadComplete, triggerRef, befor
     }
 
     if (noteError) {
-      console.error('Error creating dropped link note:', noteError);
+      if (import.meta.env.DEV) console.error('Error creating dropped link note:', noteError);
       return null;
     }
 
@@ -220,10 +168,15 @@ export default function DragDropFileUpload({ onUploadComplete, triggerRef, befor
         fileType: youtube ? 'youtube' : 'bookmark',
         fileName: att.title || att.name || trimmedUrl,
       });
+      afterVaultNoteSaved(user.id, insertedNote.id, {
+        title: insertedNote.title || noteTitle,
+        content: insertedNote.content || noteContent,
+        extraPlain: linkText || undefined,
+      });
     }
 
     return insertedNote || null;
-  }, [user?.id, describeVaultItemInBackground]);
+  }, [user?.id]);
 
   const extractPdfText = async (file) => {
     try {
@@ -246,7 +199,7 @@ export default function DragDropFileUpload({ onUploadComplete, triggerRef, befor
 
       return pages.join('\n\n');
     } catch (error) {
-      console.warn('⚠️ PDF text extraction failed:', error?.message || error);
+      if (import.meta.env.DEV) console.warn('PDF text extraction failed:', error?.message);
       return '';
     }
   };
@@ -313,7 +266,7 @@ Size: ${sizeDisplay}
       ({ data: insertedNote, error: noteError } = await supabase
         .from('notes')
         .insert(richInsert)
-        .select('id, title, content, created_at, updated_at')
+        .select('id, title, content, attachments, tags, created_at, updated_at')
         .single());
 
       const missingColumnError =
@@ -337,12 +290,12 @@ Size: ${sizeDisplay}
       }
 
       if (noteError) {
-        console.error('Error creating note for file:', noteError);
+        if (import.meta.env.DEV) console.error('Error creating note for file:', noteError);
         return null;
       }
       return insertedNote || null;
     } catch (error) {
-      console.error('Error creating note:', error);
+      if (import.meta.env.DEV) console.error('Error creating note:', error);
       return null;
     }
   }, [user?.id]);
@@ -361,7 +314,7 @@ Size: ${sizeDisplay}
           filename = displayable.name;
         }
       } catch (e) {
-        console.warn('[DragDropFileUpload] HEIF conversion skipped:', e);
+        if (import.meta.env.DEV) console.warn('[DragDropFileUpload] HEIF conversion skipped:', e);
       }
     }
 
@@ -439,6 +392,8 @@ Size: ${sizeDisplay}
         } catch { /* parse is best-effort */ }
       }
 
+      const extractedPdfText = fileType === 'pdf' ? await extractPdfText(file) : '';
+
       const createdNote = await createVaultNoteForAsset({
         filename,
         folderPath,
@@ -449,20 +404,24 @@ Size: ${sizeDisplay}
         fileSize: file.size,
         mimeType: file.type,
         fileRecordId: null,
-        extractedPdfText: fileType === 'pdf' ? await extractPdfText(file) : '',
+        extractedPdfText,
         spreadsheetData,
       });
 
       if (createdNote?.id) {
-        const extractedText = fileType === 'pdf' ? (await extractPdfText(file).catch(() => '')) : '';
         const ssText = spreadsheetData?.cells
           ? Object.values(spreadsheetData.cells).flat().filter(Boolean).join(', ').slice(0, 3000)
           : '';
         describeVaultItemInBackground(createdNote.id, {
           imageUrl: (fileType === 'image' || fileType === 'video') ? fileUrl : undefined,
-          textContent: extractedText || ssText || undefined,
+          textContent: extractedPdfText || ssText || undefined,
           fileType,
           fileName: filename,
+        });
+        afterVaultNoteSaved(user.id, createdNote.id, {
+          title: createdNote.title || filename,
+          content: createdNote.content || '',
+          extraPlain: extractedPdfText || ssText || undefined,
         });
       }
 
@@ -479,7 +438,7 @@ Size: ${sizeDisplay}
       return createdNote || null;
 
     } catch (error) {
-      console.error('Upload error:', error);
+      if (import.meta.env.DEV) console.error('Upload error:', error);
       setUploads(prev => {
         const updated = [...prev];
         updated[index] = { 

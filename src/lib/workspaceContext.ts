@@ -119,7 +119,7 @@ export async function fetchWorkspaceSummaries(
     return cached.data;
   }
 
-  console.log("[LYKN-WS] Fetching workspace summaries for user:", userId, "excluding board:", excludeBoardId);
+  if (import.meta.env.DEV) console.log("[LYKN-WS] Fetching workspace summaries");
 
   let boardsResult: any = { data: [], error: null };
   let notesResult: any = { data: [], error: null };
@@ -140,18 +140,18 @@ export async function fetchWorkspaceSummaries(
         .limit(25),
     ]);
   } catch (err) {
-    console.error("[LYKN-WS] Failed to fetch boards/notes:", err);
+    if (import.meta.env.DEV) console.error("[LYKN-WS] Failed to fetch boards/notes:", err);
     return { boards: "", media: "", full: "" };
   }
 
-  if (boardsResult.error) console.warn("[LYKN-WS] Boards query error:", boardsResult.error);
-  if (notesResult.error) console.warn("[LYKN-WS] Notes query error:", notesResult.error);
+  if (boardsResult.error && import.meta.env.DEV) console.warn("[LYKN-WS] Boards query error:", boardsResult.error);
+  if (notesResult.error && import.meta.env.DEV) console.warn("[LYKN-WS] Notes query error:", notesResult.error);
 
   const boards = (boardsResult.data || []).filter(
     (b: any) => b.id !== excludeBoardId,
   ).slice(0, 10);
 
-  console.log("[LYKN-WS] Found", boards.length, "boards,", (notesResult.data || []).length, "notes");
+  if (import.meta.env.DEV) console.log("[LYKN-WS] Found", boards.length, "boards,", (notesResult.data || []).length, "notes");
 
   const boardIds = boards.map((b: any) => b.id);
   let latestSnapshots: Record<string, any> = {};
@@ -162,15 +162,15 @@ export async function fetchWorkspaceSummaries(
         .from("omnia_board_states")
         .select("board_id, state")
         .in("board_id", boardIds.slice(0, 10));
-      if (error) console.warn("[LYKN-WS] Board state batch query error:", error);
+      if (error && import.meta.env.DEV) console.warn("[LYKN-WS] Board state batch query error:", error);
       for (const row of stateRows || []) {
         if (row.board_id && row.state) {
           latestSnapshots[row.board_id] = row.state;
         }
       }
-      console.log("[LYKN-WS] Loaded snapshots for", Object.keys(latestSnapshots).length, "boards");
+      if (import.meta.env.DEV) console.log("[LYKN-WS] Loaded snapshots for", Object.keys(latestSnapshots).length, "boards");
     } catch (err) {
-      console.warn("[LYKN-WS] Board states fetch failed:", err);
+      if (import.meta.env.DEV) console.warn("[LYKN-WS] Board states fetch failed:", err);
     }
   }
 
@@ -238,7 +238,7 @@ export async function fetchWorkspaceSummaries(
   // Vault / media first so client `.slice(0, 2000)` does not drop it when OTHER BOARDS is large.
   const full = [mediaText, boardsText].filter(Boolean).join("\n\n");
 
-  console.log("[LYKN-WS] Workspace context size:", full.length, "chars. Boards section:", boardsText.length, "chars. Media section:", mediaText.length, "chars");
+  if (import.meta.env.DEV) console.log("[LYKN-WS] Workspace context size:", full.length, "chars");
 
   const result = { boards: boardsText, media: mediaText, full };
   wsCache.set(cacheKey, { ts: Date.now(), data: result });

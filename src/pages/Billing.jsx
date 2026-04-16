@@ -29,7 +29,7 @@ export default function BillingPage() {
         }
         // If no user, they're anonymous (free plan)
       } catch (error) {
-        console.error('Error loading user:', error);
+        if (import.meta.env.DEV) console.error('Error loading user:', error);
       }
     };
     loadUser();
@@ -48,7 +48,7 @@ export default function BillingPage() {
         'Basic AI analysis',
         '5 AI searches per day',
         'Standard memory retention',
-        'Basic mind maps',
+        'Basic Synthesis Layer',
       ],
       buttonText: 'Current Plan',
       buttonVariant: 'outline',
@@ -66,7 +66,7 @@ export default function BillingPage() {
         'Advanced AI analysis',
         'Unlimited AI searches',
         'Priority processing',
-        'Advanced mind maps',
+        'Advanced Synthesis Layer',
         'Custom AI models (GPT-4, Claude)',
         'Export & backup',
         'Priority support',

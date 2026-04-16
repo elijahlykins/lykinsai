@@ -1,9 +1,10 @@
 import React, { useRef, useEffect, useState, useCallback } from "react";
 import {
   Check, ChevronRight, Copy, Download, FileText, Globe,
-  GripVertical, LayoutGrid, Link2, Music, Play, RefreshCw,
+  GripVertical, Link2, Music, Play, RefreshCw,
   Save, Share2, StickyNote, ThumbsDown, ThumbsUp,
 } from "lucide-react";
+import { GridIcon } from "@/components/ui/GridIcon";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -501,7 +502,7 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
                                     className="absolute right-1.5 top-1.5 opacity-0 group-hover/fchunk:opacity-100 transition-opacity p-1 rounded-md text-blue-400/70 hover:text-blue-500 hover:bg-blue-500/10"
                                     onClick={() => addChatResponseToGrid(selectedChunks.size > 0 ? getSelectedText(chunkKey, chunk) : chunk)}
                                   >
-                                    <LayoutGrid className="w-3 h-3" />
+                                    <GridIcon className="w-3 h-3" />
                                   </button>
                                 )}
                               </div>
@@ -576,7 +577,7 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
                       )}
                       <div className="flex items-center gap-0.5 px-3 pb-2 pt-0.5">
                         <button type="button" title="Add to grid" className="p-1.5 rounded-md text-black/40 dark:text-white/40 hover:text-blue-500 hover:bg-blue-500/10 transition-colors" onClick={() => addChatResponseToGrid(msg.aiResponse || "")}>
-                          <LayoutGrid className="w-3.5 h-3.5" />
+                          <GridIcon className="w-3.5 h-3.5" />
                         </button>
                         <button type="button" title="Share" className="p-1.5 rounded-md text-black/40 dark:text-white/40 hover:text-black/70 dark:hover:text-white/70 hover:bg-black/5 dark:hover:bg-white/10 transition-colors" onClick={() => { const text = msg.aiResponse || ""; if (navigator.share) { navigator.share({ text }).catch(() => {}); } else { void navigator.clipboard.writeText(text); } }}>
                           <Share2 className="w-3.5 h-3.5" />

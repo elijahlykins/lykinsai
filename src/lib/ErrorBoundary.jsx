@@ -41,13 +41,13 @@ class ErrorBoundary extends React.Component {
   }
 
   componentDidCatch(error, errorInfo) {
-    console.error('ErrorBoundary caught an error:', error, errorInfo);
+    if (import.meta.env.DEV) console.error('ErrorBoundary caught an error:', error, errorInfo);
     this.setState({ error, errorInfo });
 
     if (!this.state.autoRecoveryAttempted) {
       this.setState({ autoRecoveryAttempted: true });
       const cleared = clearOmniaLocalStorage();
-      console.warn(`[ErrorBoundary] Cleared ${cleared} cached keys — attempting auto-recovery…`);
+      if (import.meta.env.DEV) console.warn(`[ErrorBoundary] Cleared ${cleared} cached keys — attempting auto-recovery`);
       setTimeout(() => {
         this.setState({ hasError: false, error: null, errorInfo: null });
       }, 100);
@@ -56,7 +56,7 @@ class ErrorBoundary extends React.Component {
 
   render() {
     if (this.state.hasError) {
-      const isDev = import.meta.env?.DEV || window.location.hostname === 'localhost';
+      const isDev = !!import.meta.env?.DEV;
 
       const handleRetry = () => {
         this.setState({ hasError: false, error: null, errorInfo: null });

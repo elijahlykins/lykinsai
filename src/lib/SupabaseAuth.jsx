@@ -13,9 +13,47 @@ export function SupabaseAuthProvider({ children }) {
   useEffect(() => {
     let isMounted = true;
 
+    // Surface any OAuth error params from the redirect URL
+    const params = new URLSearchParams(window.location.search);
+    const hash = window.location.hash;
+    const errorParam = params.get('error');
+    const errorDesc = params.get('error_description') || params.get('error_code');
+    const hashParams = new URLSearchParams(hash.replace('#', ''));
+    const hashError = hashParams.get('error');
+    const hashErrorDesc = hashParams.get('error_description');
+
+    if (errorParam || hashError) {
+      if (import.meta.env.DEV) console.error('[Auth] OAuth error:', errorDesc || hashErrorDesc || errorParam || hashError);
+      setAuthError("Sign-in failed. Please try again.");
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+
+    // Safety net: never let the loading screen persist indefinitely.
+    // The Supabase client fires INITIAL_SESSION within a few seconds at most;
+    // if it hasn't arrived by 10s something went wrong.
+    const safetyTimeout = setTimeout(() => {
+      if (isMounted && loading) {
+        if (import.meta.env.DEV) console.warn('[Auth] Safety timeout — forcing loading=false');
+        setLoading(false);
+      }
+    }, 10_000);
+
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
         if (!isMounted) return;
+
+        if (import.meta.env.DEV) {
+          console.log('[Auth]', event, session?.user?.email ?? '(no user)');
+        }
+
+        // INITIAL_SESSION fires once when the listener is registered.
+        // With detectSessionInUrl:true the client will have already exchanged
+        // any ?code= from an OAuth return, so the session is ready here.
+        if (event === 'INITIAL_SESSION') {
+          setUser(session?.user ?? null);
+          setLoading(false);
+          return;
+        }
 
         if (session?.user) {
           if (signOutTimerRef.current) {
@@ -56,66 +94,9 @@ export function SupabaseAuthProvider({ children }) {
       }
     );
 
-    const initAuth = async () => {
-      try {
-        const params = new URLSearchParams(window.location.search);
-        const hash = window.location.hash;
-
-        const errorParam = params.get('error');
-        const errorDesc = params.get('error_description') || params.get('error_code');
-        const hashParams = new URLSearchParams(hash.replace('#', ''));
-        const hashError = hashParams.get('error');
-        const hashErrorDesc = hashParams.get('error_description');
-
-        if (errorParam || hashError) {
-          const msg = errorDesc || hashErrorDesc || errorParam || hashError;
-          if (isMounted) setAuthError(msg);
-          window.history.replaceState({}, '', window.location.pathname);
-        }
-
-        const code = params.get('code');
-        if (code) {
-          const { error } = await supabase.auth.exchangeCodeForSession(code);
-          if (error && isMounted) {
-            setAuthError("Sign-in failed. Please try again.");
-          }
-          window.history.replaceState({}, '', window.location.pathname);
-        }
-
-        if (hash && (hash.includes('access_token') || hash.includes('refresh_token'))) {
-          await new Promise(r => setTimeout(r, 100));
-        }
-
-        let session = null;
-        try {
-          const { data } = await supabase.auth.getSession();
-          session = data?.session;
-        } catch {
-          // Retry once after a short delay for transient network failures
-          await new Promise(r => setTimeout(r, 500));
-          try {
-            const { data } = await supabase.auth.getSession();
-            session = data?.session;
-          } catch (retryErr) {
-            console.error('Auth session recovery failed:', retryErr);
-          }
-        }
-
-        if (isMounted) {
-          setUser(session?.user || null);
-        }
-      } catch (err) {
-        console.error('Auth initialization error:', err);
-        if (isMounted) setUser(null);
-      } finally {
-        if (isMounted) setLoading(false);
-      }
-    };
-
-    initAuth();
-
     return () => {
       isMounted = false;
+      clearTimeout(safetyTimeout);
       subscription.unsubscribe();
       if (signOutTimerRef.current) clearTimeout(signOutTimerRef.current);
     };

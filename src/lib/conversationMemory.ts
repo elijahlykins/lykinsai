@@ -38,7 +38,7 @@ export async function saveExchange(
       })
       .select("id")
       .single();
-    if (error) console.warn("[ConversationMemory] save failed:", error.message);
+    if (error && import.meta.env.DEV) console.warn("[ConversationMemory] save failed:", error.message);
     else if (data?.id) {
       const text = `User:\n${userMessage.slice(0, 8000)}\n\nAssistant:\n${assistantMessage.slice(0, 8000)}`;
       const { scheduleSynthesisReindex } = await import("@/lib/synthesis/queueReindex");
@@ -121,7 +121,7 @@ async function loadFromBoardStates(
     }
     return entries;
   } catch (err) {
-    console.warn("[ConversationMemory] board states load failed:", err);
+    if (import.meta.env.DEV) console.warn("[ConversationMemory] board states load failed:", err);
     return [];
   }
 }

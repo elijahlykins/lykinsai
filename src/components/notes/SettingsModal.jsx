@@ -12,7 +12,7 @@ import { supabase } from '@/lib/supabase';
 export default function SettingsModal({ isOpen, onClose }) {
   const { user, loading, signInWithOAuth, signOut } = useAuth();
   const [settings, setSettings] = useState({
-    theme: 'light',
+    theme: 'dark',
     layoutDensity: 'comfortable',
     aiPersonality: 'balanced',
     aiDetailLevel: 'medium',
@@ -43,11 +43,11 @@ export default function SettingsModal({ isOpen, onClose }) {
       if (saved) {
         try {
           const parsed = JSON.parse(saved);
-          if (!parsed.theme) parsed.theme = 'light';
+          if (!parsed.theme) parsed.theme = 'dark';
           setSettings(parsed);
           applyTheme(parsed.theme);
         } catch (e) {
-          console.error('Error parsing settings:', e);
+          if (import.meta.env.DEV) console.error('Error parsing settings:', e);
         }
       }
     };
@@ -152,11 +152,11 @@ export default function SettingsModal({ isOpen, onClose }) {
                       const { error } = await signInWithOAuth('google');
                       if (error) {
                         setAuthError("Google sign-in failed. Please try again.");
-                        console.error('Google OAuth error:', error);
+                        if (import.meta.env.DEV) console.error('Google OAuth error:', error);
                       }
                     } catch (error) {
                       setAuthError("Google sign-in failed. Please try again later.");
-                      console.error('Google OAuth exception:', error);
+                      if (import.meta.env.DEV) console.error('Google OAuth exception:', error);
                     }
                   }}
                   variant="outline"

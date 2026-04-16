@@ -342,11 +342,11 @@ export default function BillingNew() {
   }, [user?.id]);
 
   const handleCheckout = useCallback((planId) => {
-    console.log(`[Billing] handleCheckout called for plan: ${planId}`);
+    if (import.meta.env.DEV) console.log(`[Billing] handleCheckout called for plan: ${planId}`);
   }, []);
 
   const handleBuyTopup = useCallback(() => {
-    console.log(`[Billing] handleBuyTopup called for plan: ${currentPlan}`);
+    if (import.meta.env.DEV) console.log(`[Billing] handleBuyTopup called for plan: ${currentPlan}`);
   }, [currentPlan]);
 
   const toggleFaq = useCallback(

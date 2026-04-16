@@ -68,7 +68,7 @@ export default function VaultChatPage() {
         if (error) {
           // If that fails, try without attachments column
           if (error.code === 'PGRST204' || error.message?.includes('Could not find') || error.message?.includes('attachments')) {
-            console.warn('⚠️ Some columns not found, trying without attachments:', error.message);
+            if (import.meta.env.DEV) console.warn('Columns fallback:', error.message);
             ({ data, error } = await supabase
               .from('notes')
               .select('id, title, created_at, updated_at')
@@ -79,7 +79,7 @@ export default function VaultChatPage() {
           
           if (error && (error.code === 'PGRST204' || error.message?.includes('Could not find'))) {
             // Final fallback to minimal columns
-            console.warn('⚠️ Trying with minimal columns:', error.message);
+            if (import.meta.env.DEV) console.warn('Minimal columns fallback:', error.message);
             ({ data, error } = await supabase
               .from('notes')
               .select('id, title')
@@ -91,7 +91,7 @@ export default function VaultChatPage() {
           if (error) {
             // If it's a placeholder client or missing table, return empty array
             if (error.message?.includes('placeholder') || error.code === 'PGRST116' || error.code === '42P01') {
-              console.warn('⚠️ Supabase not configured or notes table missing. Using empty array.');
+              if (import.meta.env.DEV) console.warn('Supabase not configured or notes table missing.');
               return [];
             }
             throw error;
@@ -99,7 +99,7 @@ export default function VaultChatPage() {
         }
         return data || [];
       } catch (error) {
-        console.error('Error fetching notes:', error);
+        if (import.meta.env.DEV) console.error('Error fetching notes:', error);
         // Return empty array instead of crashing
         return [];
       }
@@ -164,7 +164,7 @@ export default function VaultChatPage() {
         localStorage.removeItem('chat_continue_note');
         return;
       } catch (error) {
-        console.error('Error loading chat:', error);
+        if (import.meta.env.DEV) console.error('Error loading chat:', error);
         localStorage.removeItem('chat_continue_note');
         localStorage.removeItem('lykinsai_chat');
       }
@@ -222,7 +222,7 @@ export default function VaultChatPage() {
           }
         }
       } catch (error) {
-        if (error.code !== 'PGRST204' && error.code !== '42703') console.warn('Note update error (non-critical):', error.message);
+        if (import.meta.env.DEV && error.code !== 'PGRST204' && error.code !== '42703') console.warn('Note update error:', error.message);
       }
     } else {
       try {
@@ -238,7 +238,7 @@ export default function VaultChatPage() {
         }
         if (data?.[0]) setCurrentChatNoteId(data[0].id);
       } catch (error) {
-        console.warn('⚠️ Note saving failed, but chat will continue');
+        if (import.meta.env.DEV) console.warn('Note saving failed, but chat will continue');
       }
     }
   };
@@ -364,29 +364,10 @@ export default function VaultChatPage() {
           }
         }
         
-        // Debug: Log if we found transcripts
-        if (hasTranscriptsInContent) {
-          const transcriptLength = contentText.length;
-          console.log(`📹 Found YouTube transcript in note "${n.title}": ${transcriptLength} characters of content (includes transcript)`);
-        } else if (attachments && Array.isArray(attachments) && attachments.some(att => att && att.type === 'youtube' && att.transcript)) {
-          const transcriptCount = attachments.filter(att => att && att.type === 'youtube' && att.transcript).length;
-          console.log(`📹 Found ${transcriptCount} YouTube transcript(s) in attachments for note "${n.title}"`);
-        }
-        
         return noteText;
       }).join('\n\n---\n\n');
 
       const conversationHistory = messages.map(m => `${m.role}: ${m.content}`).join('\n');
-
-      // Debug: Check if transcripts are in the context
-      const hasTranscripts = notesContext.includes('YouTube Video') || notesContext.includes('Transcript:') || notesContext.includes('**YouTube Video:');
-      if (hasTranscripts) {
-        const transcriptMatches = (notesContext.match(/Transcript:/g) || []).length;
-        console.log(`📹 YouTube transcripts found in chat context (${transcriptMatches} transcript(s) detected)`);
-        console.log(`📝 Context length: ${notesContext.length} characters`);
-      } else {
-        console.warn(`⚠️ No YouTube transcripts found in chat context. Context length: ${notesContext.length} characters`);
-      }
 
       const prompt = `${personalityStyles[personality]} ${detailStyles[detailLevel]}
 
@@ -416,7 +397,8 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
       });
 
       if (!aiResponse.ok) {
-        throw new Error(`AI API error: ${aiResponse.statusText}`);
+        if (import.meta.env.DEV) console.error('AI API error:', aiResponse.status, aiResponse.statusText);
+        throw new Error('AI_REQUEST_FAILED');
       }
 
       let aiText = '';
@@ -434,10 +416,16 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
             toolSuggestion = data.toolSuggestion || null;
           }
         } catch (jsonError) {
-          aiText = await aiResponse.text();
+          if (import.meta.env.DEV) console.error('JSON parse failed:', jsonError);
+          aiText = 'Sorry, something went wrong processing the response. Please try again.';
         }
       } else {
-        aiText = await aiResponse.text();
+        const rawText = await aiResponse.text();
+        if (rawText && !rawText.trim().startsWith('<') && rawText.length < 50000) {
+          aiText = rawText;
+        } else {
+          aiText = 'Sorry, something went wrong processing the response. Please try again.';
+        }
       }
 
       if (imageResponse) {
@@ -487,7 +475,7 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
 
       await saveChatToNote(title, chatContent, allAttachments);
     } catch (error) {
-      console.error('Chat error:', error);
+      if (import.meta.env.DEV) console.error('Chat error:', error);
       setMessages(prev => {
         const newMessages = [...prev];
         newMessages[assistantMessageIndex] = { 
@@ -579,7 +567,7 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
       mediaRecorder.start();
       setIsRecording(true);
     } catch (error) {
-      console.error('Error starting recording:', error);
+      if (import.meta.env.DEV) console.error('Error starting recording:', error);
       alert('Could not access microphone. Please check permissions.');
     }
   };

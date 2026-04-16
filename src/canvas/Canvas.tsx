@@ -78,12 +78,12 @@ function dataUrlToFile(dataUrl: string, name: string): File | null {
 
 async function processVaultDrop(pending: { title: string; content: string; attachments: any[] }, clientX: number, clientY: number) {
   const attachments = Array.isArray(pending.attachments) ? pending.attachments : [];
-  console.log("[VAULT-DROP-CANVAS] processVaultDrop called, attachments:", attachments.map((a: any) => ({ type: a.type, url: a.url?.substring(0, 80), videoId: a.videoId })));
+  if (import.meta.env.DEV) console.log("[VAULT-DROP-CANVAS] processVaultDrop called, attachments:", attachments.length);
 
   const youtubeAttach = attachments.find((a: any) =>
     a.type === "youtube" || a.videoId || (a.url && (a.url.includes("youtube.com") || a.url.includes("youtu.be")))
   );
-  console.log("[VAULT-DROP-CANVAS] youtubeAttach:", youtubeAttach ? { type: youtubeAttach.type, url: youtubeAttach.url?.substring(0, 80), videoId: youtubeAttach.videoId } : null);
+  if (import.meta.env.DEV) console.log("[VAULT-DROP-CANVAS] youtubeAttach:", !!youtubeAttach);
   const imageAttach = attachments.find((a: any) =>
     a.type === "image" || (a.url && /\.(jpg|jpeg|png|gif|webp|svg|heic|heif)(\?|$)/i.test(a.url)) || (a.url && a.url.startsWith("data:image/"))
   );
@@ -657,7 +657,7 @@ const CanvasBlock = React.memo(function CanvasBlock({
       isAiThinking, thinkingStatusText,
     });
   } catch (err) {
-    console.error(`[LYKN] Block ${id} render error:`, err);
+    if (import.meta.env.DEV) console.error(`[LYKN] Block ${id} render error:`, err);
     return null;
   }
 });
@@ -696,7 +696,7 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
         }
         if (dupeIds.length === 0 || cancelled) return;
 
-        console.log(`[Canvas] Cleaning up ${dupeIds.length} duplicate media entries`);
+        if (import.meta.env.DEV) console.log(`[Canvas] Cleaning up ${dupeIds.length} duplicate media entries`);
         const BATCH = 50;
         for (let i = 0; i < dupeIds.length; i += BATCH) {
           if (cancelled) return;
@@ -704,9 +704,9 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
           await supabase.from("notes").delete().in("id", batch).eq("user_id", user.id);
           purgeVaultNoteEmbeddings(batch);
         }
-        console.log("[Canvas] Duplicate media cleanup complete");
+        if (import.meta.env.DEV) console.log("[Canvas] Duplicate media cleanup complete");
       } catch (err) {
-        console.warn("[Canvas] Duplicate cleanup error:", err);
+        if (import.meta.env.DEV) console.warn("[Canvas] Duplicate cleanup error:", err);
       }
     }, 15000);
     return () => { cancelled = true; clearTimeout(delay); };
@@ -4061,7 +4061,7 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
               continue;
             }
           } catch (err: any) {
-            console.warn(`Spreadsheet parse failed for ${name}:`, err?.message);
+            if (import.meta.env.DEV) console.warn(`Spreadsheet parse failed for ${name}:`, err?.message);
           }
         }
         // Document files (TXT, MD, JSON, HTML, RTF, DOCX, PPTX, ODT)
@@ -4093,7 +4093,7 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
               continue;
             }
           } catch (err: any) {
-            console.warn(`Document extraction failed for ${name}:`, err?.message);
+            if (import.meta.env.DEV) console.warn(`Document extraction failed for ${name}:`, err?.message);
           }
         }
         const b = createCreateBlockSafe(x, y, "embed", { url: dataUrl, mime, name }, gridSize * 12, gridSize * 5);
@@ -4401,9 +4401,11 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
         body: JSON.stringify(payload),
       });
       if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        const msg = String(err.error || res.statusText || "AI request failed");
-        throw new Error(`${res.status} ${msg}`.trim());
+        if (import.meta.env.DEV) {
+          const err = await res.json().catch(() => ({}));
+          console.error("AI invoke failed:", res.status, err.error);
+        }
+        throw new Error("AI request failed. Please try again.");
       }
       const data = await res.json();
       return String(data.response || "").trim();
@@ -7412,7 +7414,7 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
           onPointerDown={(e) => e.stopPropagation()}
           onMouseDown={(e) => e.preventDefault()}
         >
-          <div className="flex items-stretch rounded-lg overflow-hidden border border-white/30 dark:border-white/10 bg-[linear-gradient(145deg,rgba(255,255,255,0.82),rgba(245,247,255,0.78))] dark:bg-[linear-gradient(145deg,rgba(40,40,50,0.92),rgba(30,30,38,0.88))] shadow-lg backdrop-blur-md">
+          <div className="flex items-stretch rounded-lg overflow-hidden border border-white/30 dark:border-white/10 bg-[linear-gradient(145deg,rgba(255,255,255,0.82),rgba(245,247,255,0.78))] dark:bg-[linear-gradient(145deg,rgba(43,43,43,0.92),rgba(33,33,33,0.88))] shadow-lg backdrop-blur-md">
             {!selToolbar.highlightSub && !selToolbar.textColorSub && (
               <>
                 <button

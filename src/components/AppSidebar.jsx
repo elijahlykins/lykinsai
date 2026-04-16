@@ -3,16 +3,14 @@ import ReactDOM from "react-dom";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   Brain,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   CreditCard,
   Edit2,
   FolderPlus,
   Bug,
-  LayoutGrid,
-  Lightbulb,
   Lock,
-  LogIn,
   LogOut,
   MoreHorizontal,
   Plus,
@@ -21,6 +19,7 @@ import {
   Trash2,
 } from "lucide-react";
 import FeedbackModal from "@/components/FeedbackModal";
+import { GridIcon } from "@/components/ui/GridIcon";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -54,6 +53,7 @@ export default function AppSidebar() {
   const [pickerPos, setPickerPos] = useState({ top: 0, left: 0 });
   const [menuProjectId, setMenuProjectId] = useState(null);
   const [menuProjectPos, setMenuProjectPos] = useState({ top: 0, left: 0 });
+  const [projectsExpanded, setProjectsExpanded] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [feedbackType, setFeedbackType] = useState("bug");
   const menuRef = useRef(null);
@@ -249,215 +249,222 @@ export default function AppSidebar() {
       </div>
 
       <div
-        className={`fixed top-0 left-0 z-[70] h-[100svh] w-[12rem] bg-transparent p-3 pt-12 transition-transform duration-200 flex flex-col ${
+        className={`fixed top-0 left-0 z-[70] h-[100svh] w-[12rem] bg-background p-3 pt-12 transition-transform duration-200 flex flex-col ${
           open ? "translate-x-0" : "-translate-x-[120%]"
         }`}
       >
-        <div className="absolute right-0 top-0 bottom-0 w-px bg-transparent pointer-events-none" />
-        <div className="mt-5 flex items-center justify-between px-2 py-1">
-          <div className="text-[0.6875rem] font-semibold text-black/70 dark:text-white/70">Navigation</div>
-        </div>
-
-        <div className="px-2 pt-2">
-          <div className="flex items-center gap-2 rounded-xl border border-transparent bg-transparent px-2 py-1.5 text-[0.6875rem] text-black/60 dark:text-white/60">
-            <SearchIcon className="w-3.5 h-3.5" />
+        {/* ── Top: nav links (fixed, never scrolls) ── */}
+        <div className="flex-shrink-0 mt-3">
+          <div className="flex items-center gap-2 rounded-xl border border-transparent bg-transparent px-2 py-1 text-[0.6875rem] text-black/60 dark:text-white/60">
+            <SearchIcon className="w-3.5 h-3.5 flex-shrink-0" />
             <input
               placeholder="Search"
               className="w-full bg-transparent outline-none placeholder:text-black/40 dark:placeholder:text-white/40 text-black/70 dark:text-white/70"
             />
           </div>
+
+          <div className="mt-1.5 flex flex-col gap-0.5">
+            <button
+              type="button"
+              onClick={() => flushAndNavigate(nav, "/")}
+              className="w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
+            >
+              <GridIcon className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
+              Grid
+            </button>
+            <button
+              type="button"
+              onClick={() => flushAndNavigate(nav, "/vault")}
+              className="w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
+            >
+              <Lock className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
+              Vault
+            </button>
+            <button
+              type="button"
+              onClick={() => flushAndNavigate(nav, "/synthesis-layer")}
+              className="w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
+            >
+              <Brain className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
+              Synthesis Layer
+            </button>
+          </div>
         </div>
 
-        <div className="mt-2 flex flex-col gap-1">
+        {/* ── Projects (fixed, collapsible) ── */}
+        <div className="flex-shrink-0 mt-2">
           <button
             type="button"
-            onClick={() => flushAndNavigate(nav, "/")}
-            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
+            onClick={() => setProjectsExpanded((v) => !v)}
+            className="flex items-center gap-1.5 px-2 py-0.5 w-full text-left hover:bg-blue-500/10 rounded-md transition-colors"
           >
-            <LayoutGrid className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
-            Grid
+            <ChevronDown className={`w-3 h-3 text-black/40 dark:text-white/40 transition-transform ${projectsExpanded ? "" : "-rotate-90"}`} />
+            <span className="text-[0.625rem] font-semibold uppercase tracking-wider text-black/50 dark:text-white/50">Projects</span>
           </button>
-          <button
-            type="button"
-            onClick={() => flushAndNavigate(nav, "/vault")}
-            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
-          >
-            <Lock className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
-            Vault
-          </button>
-          <button
-            type="button"
-            onClick={() => flushAndNavigate(nav, "/mindmap")}
-            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
-          >
-            <Brain className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
-            Mind Map
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              const newId = crypto.randomUUID();
-              flushAndNavigate(nav, `/grid/${newId}`);
-            }}
-            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
-          >
-            <Plus className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
-            New Grid
-          </button>
-          <button
-            type="button"
-            onClick={async () => {
-              if (!user?.id) return;
-              const { data } = await supabase
-                .from("omnia_projects")
-                .insert({ user_id: user.id, name: "New Project" })
-                .select("id")
-                .single();
-              if (data?.id) {
-                window.dispatchEvent(new Event(PROJECTS_CHANGED_EVENT));
-                flushAndNavigate(nav, `/project/${data.id}`);
-              }
-            }}
-            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
-          >
-            <FolderPlus className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
-            New Project
-          </button>
-        </div>
-
-        <div className="mt-3 text-[0.6875rem] font-semibold text-black/70 dark:text-white/70 px-2 py-1">Projects</div>
-        <div className="flex flex-col gap-0.5 max-h-[28vh] overflow-y-auto scrollbar-hide pr-1">
-          {projects.length === 0 ? (
-            <div className="text-[0.6875rem] text-black/50 dark:text-white/50 px-2.5 py-1.5">No projects yet.</div>
-          ) : (
-            projects.map((project) => {
-              const isActive = location.pathname === `/project/${project.id}`;
-              return (
-                <div key={project.id} className="group relative flex items-center">
-                  <button
-                    type="button"
-                    onClick={() => flushAndNavigate(nav, `/project/${project.id}`)}
-                    className={`flex-1 min-w-0 text-left text-[0.6875rem] pl-2.5 pr-7 py-1.5 rounded-md flex items-center gap-2 transition-colors ${
-                      isActive ? "bg-blue-500/15" : "hover:bg-blue-500/15"
-                    }`}
-                  >
-                    <span className={`inline-block h-1.5 w-1.5 rounded-full flex-shrink-0 ${isActive ? "bg-blue-500" : "bg-black/30 dark:bg-white/30"}`} />
-                    <span className="truncate">{project.name}</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setMenuBoardId(null);
-                      setShowProjectPicker(false);
-                      if (menuProjectId === project.id) {
-                        setMenuProjectId(null);
-                      } else {
-                        const rect = e.currentTarget.getBoundingClientRect();
-                        setMenuProjectPos({ top: rect.bottom + 4, left: rect.right });
-                        setMenuProjectId(project.id);
-                      }
-                    }}
-                    className="absolute right-1 top-1/2 -translate-y-1/2 w-5 h-5 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-blue-500/15 transition-opacity"
-                  >
-                    <MoreHorizontal className="w-3 h-3 text-black/50 dark:text-white/50" />
-                  </button>
-                </div>
-              );
-            })
+          {projectsExpanded && (
+            <div>
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!user?.id) return;
+                  const { data } = await supabase
+                    .from("omnia_projects")
+                    .insert({ user_id: user.id, name: "New Project" })
+                    .select("id")
+                    .single();
+                  if (data?.id) {
+                    window.dispatchEvent(new Event(PROJECTS_CHANGED_EVENT));
+                    flushAndNavigate(nav, `/project/${data.id}`);
+                  }
+                }}
+                className="w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2 text-black/60 dark:text-white/60"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                Add New Project
+              </button>
+              <div className="flex flex-col gap-0.5">
+                {projects.length === 0 ? (
+                  <div className="text-[0.6875rem] text-black/40 dark:text-white/40 px-2.5 py-1">No projects yet</div>
+                ) : (
+                  projects.map((project) => {
+                    const isActive = location.pathname === `/project/${project.id}`;
+                    return (
+                      <div key={project.id} className="group relative flex items-center">
+                        <button
+                          type="button"
+                          onClick={() => flushAndNavigate(nav, `/project/${project.id}`)}
+                          className={`flex-1 min-w-0 text-left text-[0.6875rem] pl-2.5 pr-7 py-1 rounded-md flex items-center gap-2 transition-colors ${
+                            isActive ? "bg-blue-500/15" : "hover:bg-blue-500/15"
+                          }`}
+                        >
+                          <span className={`inline-block h-1.5 w-1.5 rounded-full flex-shrink-0 ${isActive ? "bg-blue-500" : "bg-black/30 dark:bg-white/30"}`} />
+                          <span className="truncate">{project.name}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setMenuBoardId(null);
+                            setShowProjectPicker(false);
+                            if (menuProjectId === project.id) {
+                              setMenuProjectId(null);
+                            } else {
+                              const rect = e.currentTarget.getBoundingClientRect();
+                              setMenuProjectPos({ top: rect.bottom + 4, left: rect.right });
+                              setMenuProjectId(project.id);
+                            }
+                          }}
+                          className="absolute right-1 top-1/2 -translate-y-1/2 w-5 h-5 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-blue-500/15 transition-opacity"
+                        >
+                          <MoreHorizontal className="w-3 h-3 text-black/50 dark:text-white/50" />
+                        </button>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
           )}
         </div>
 
-        <div className="mt-3 text-[0.6875rem] font-semibold text-black/70 dark:text-white/70 px-2 py-1">Grids</div>
-        <div className="flex flex-col gap-0.5 max-h-[28vh] overflow-y-auto scrollbar-hide pr-1">
-          {boards.length === 0 ? (
-            <div className="text-[0.6875rem] text-black/50 dark:text-white/50 px-2.5 py-1.5">No grids yet.</div>
-          ) : (
-            boards.map((board) => {
-              const isActive = location.pathname === `/grid/${board.id}`;
-              return (
-                <div key={board.id} className="group relative flex items-center">
-                  <button
-                    type="button"
-                    onClick={() => flushAndNavigate(nav, `/grid/${board.id}`)}
-                    className={`flex-1 min-w-0 text-left text-[0.6875rem] pl-2.5 pr-7 py-1.5 rounded-md flex items-center gap-2 transition-colors ${
-                      isActive ? "bg-blue-500/15" : "hover:bg-blue-500/15"
-                    }`}
-                  >
-                    <span className={`inline-block h-1.5 w-1.5 rounded-full flex-shrink-0 ${isActive ? "bg-blue-500" : "bg-black/30 dark:bg-white/30"}`} />
-                    <span className="truncate">{board.title || "Untitled Grid"}</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setMenuProjectId(null);
-                      if (menuBoardId === board.id) {
-                        setMenuBoardId(null);
-                        setShowProjectPicker(false);
-                      } else {
-                        const rect = e.currentTarget.getBoundingClientRect();
-                        setMenuPos({ top: rect.bottom + 4, left: rect.right });
-                        setMenuBoardId(board.id);
-                        setShowProjectPicker(false);
-                      }
-                    }}
-                    className="absolute right-1 top-1/2 -translate-y-1/2 w-5 h-5 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-blue-500/15 transition-opacity"
-                  >
-                    <MoreHorizontal className="w-3 h-3 text-black/50 dark:text-white/50" />
-                  </button>
-                </div>
-              );
-            })
-          )}
+        {/* ── Grids (scrollable) ── */}
+        <div className="flex-1 min-h-0 flex flex-col mt-2">
+          <div className="flex-shrink-0 flex items-center justify-between px-2 py-0.5">
+            <span className="text-[0.625rem] font-semibold uppercase tracking-wider text-black/50 dark:text-white/50">Grids</span>
+          </div>
+          <div className="flex-shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                const newId = crypto.randomUUID();
+                flushAndNavigate(nav, `/grid/${newId}`);
+              }}
+              className="w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2 text-black/60 dark:text-white/60"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              Add New Grid
+            </button>
+          </div>
+          <div className="flex-1 min-h-0 overflow-y-auto scrollbar-hide">
+            <div className="flex flex-col gap-0.5">
+              {boards.length === 0 ? (
+                <div className="text-[0.6875rem] text-black/40 dark:text-white/40 px-2.5 py-1">No grids yet</div>
+              ) : (
+                boards.map((board) => {
+                  const isActive = location.pathname === `/grid/${board.id}`;
+                  return (
+                    <div key={board.id} className="group relative flex items-center">
+                      <button
+                        type="button"
+                        onClick={() => flushAndNavigate(nav, `/grid/${board.id}`)}
+                        className={`flex-1 min-w-0 text-left text-[0.6875rem] pl-2.5 pr-7 py-1 rounded-md flex items-center gap-2 transition-colors ${
+                          isActive ? "bg-blue-500/15" : "hover:bg-blue-500/15"
+                        }`}
+                      >
+                        <span className={`inline-block h-1.5 w-1.5 rounded-full flex-shrink-0 ${isActive ? "bg-blue-500" : "bg-black/30 dark:bg-white/30"}`} />
+                        <span className="truncate">{board.title || "Untitled Grid"}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setMenuProjectId(null);
+                          if (menuBoardId === board.id) {
+                            setMenuBoardId(null);
+                            setShowProjectPicker(false);
+                          } else {
+                            const rect = e.currentTarget.getBoundingClientRect();
+                            setMenuPos({ top: rect.bottom + 4, left: rect.right });
+                            setMenuBoardId(board.id);
+                            setShowProjectPicker(false);
+                          }
+                        }}
+                        className="absolute right-1 top-1/2 -translate-y-1/2 w-5 h-5 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-blue-500/15 transition-opacity"
+                      >
+                        <MoreHorizontal className="w-3 h-3 text-black/50 dark:text-white/50" />
+                      </button>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
         </div>
 
-        <div className="mt-3 text-[0.6875rem] font-semibold text-black/70 dark:text-white/70 px-2 py-1">Account</div>
-        <div className="flex flex-col gap-1">
+        {/* ── Bottom: icon row (pinned) ── */}
+        <div className="flex-shrink-0 pt-2 border-t border-black/5 dark:border-white/5 mt-1 flex items-center justify-center gap-2">
           <button
             type="button"
             onClick={() => flushAndNavigate(nav, "/settings")}
-            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
+            className="w-7 h-7 rounded-md hover:bg-blue-500/15 transition-colors flex items-center justify-center"
+            title="Settings"
           >
             <SettingsIcon className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
-            Settings
           </button>
           <button
             type="button"
             onClick={() => flushAndNavigate(nav, "/billing")}
-            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
+            className="w-7 h-7 rounded-md hover:bg-blue-500/15 transition-colors flex items-center justify-center"
+            title="Billing"
           >
             <CreditCard className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
-            Billing
           </button>
-        </div>
-
-        <div className="mt-auto pt-4">
           <button
             type="button"
             onClick={() => { setFeedbackType("bug"); setFeedbackOpen(true); }}
-            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
+            className="w-7 h-7 rounded-md hover:bg-blue-500/15 transition-colors flex items-center justify-center"
+            title="Report Bug"
           >
             <Bug className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
-            Report Bug
           </button>
-          <button
-            type="button"
-            onClick={() => { setFeedbackType("suggestion"); setFeedbackOpen(true); }}
-            className="w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
-          >
-            <Lightbulb className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
-            Suggestion
-          </button>
-
           {user && (
             <button
               type="button"
               onClick={() => signOut()}
-              className="mt-2 w-full text-left text-[0.6875rem] px-2.5 py-1.5 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
+              className="w-7 h-7 rounded-md hover:bg-blue-500/15 transition-colors flex items-center justify-center"
+              title="Log out"
             >
               <LogOut className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
-              Log out
             </button>
           )}
         </div>

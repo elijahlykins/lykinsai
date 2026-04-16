@@ -22,6 +22,7 @@ import {
   ZoomOut,
   Maximize2,
 } from "lucide-react";
+import { GridIcon } from "@/components/ui/GridIcon";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -636,7 +637,7 @@ function NodeIcon({ kind, size = 14 }: { kind: NodeKind; size?: number }) {
   switch (kind) {
     case "root": return <Brain className={cls} size={size} />;
     case "project": return <FolderOpen className={cls} size={size} />;
-    case "grid": return <LayoutGrid className={cls} size={size} />;
+    case "grid": return <GridIcon className={cls} size={size} />;
     case "vault": return <StickyNote className={cls} size={size} />;
     case "tag": return <Tag className={cls} size={size} />;
     case "neuron": return <Sparkles className={cls} size={size} />;
@@ -647,7 +648,7 @@ function NodeIcon({ kind, size = 14 }: { kind: NodeKind; size?: number }) {
 function catIcon(id: string, size = 14) {
   const cls = "text-white/90";
   if (id.includes("projects")) return <FolderOpen className={cls} size={size} />;
-  if (id.includes("grids")) return <LayoutGrid className={cls} size={size} />;
+  if (id.includes("grids")) return <GridIcon className={cls} size={size} />;
   if (id.includes("vault")) return <Lock className={cls} size={size} />;
   if (id.includes("tags")) return <Tag className={cls} size={size} />;
   if (id.includes("neurons")) return <Sparkles className={cls} size={size} />;
@@ -658,7 +659,7 @@ function catIcon(id: string, size = 14) {
 /*  Welcome panel (typewriter intro)                                   */
 /* ------------------------------------------------------------------ */
 
-const WELCOME_TEXT = `Welcome to your Mind Map.\n\nYour Mind Map is a living visualization of how the LYKN Synthesis Layer is forming connections across everything you create — grids, projects, vault notes, tags, and conversations.\n\nEvery time the AI identifies a new pattern, recognizes a recurring theme, or surfaces an insight from your work, it creates a neuron — a visible node on this map that represents something the system has learned about you.\n\nThe closer a node sits to the center, the more deeply connected it is to your broader body of work. Cross-connections reveal how your ideas relate to each other — often in ways you might not expect.\n\nClick any node to inspect it.`;
+const WELCOME_TEXT = `Welcome to the Synthesis Layer.\n\nThe Synthesis Layer is a living visualization of how LYKN is forming connections across everything you create — grids, projects, vault notes, tags, and conversations.\n\nEvery time the AI identifies a new pattern, recognizes a recurring theme, or surfaces an insight from your work, it creates a neuron — a visible node on this map that represents something the system has learned about you.\n\nThe closer a node sits to the center, the more deeply connected it is to your broader body of work. Cross-connections reveal how your ideas relate to each other — often in ways you might not expect.\n\nClick any node to inspect it.`;
 
 function WelcomePanel({ onClose, neurons, onSelectNode }: { onClose: () => void; neurons: MindNode[]; onSelectNode: (id: string) => void }) {
   const [charCount, setCharCount] = useState(0);
@@ -700,10 +701,10 @@ function WelcomePanel({ onClose, neurons, onSelectNode }: { onClose: () => void;
             const isLast = i === arr.length - 1;
             const isCta = charCount >= WELCOME_TEXT.length && isLast;
             return (
-              <p key={i} className={`mb-3 ${isFirst ? "text-[0.9375rem] font-semibold text-gray-800 dark:text-gray-100" : ""} ${isCta ? "text-[0.6875rem] font-medium text-blue-400" : ""}`}>
+              <p key={i} className={`mb-3 ${isFirst ? "text-[0.9375rem] font-semibold text-gray-800 dark:text-gray-100" : ""} ${isCta ? "text-[0.6875rem] font-medium text-blue-300 dark:text-blue-300" : ""}`}>
                 {para}
                 {isLast && charCount < WELCOME_TEXT.length && (
-                  <span className="inline-block w-[2px] h-[0.9em] bg-indigo-400 dark:bg-indigo-500 ml-0.5 animate-pulse align-text-bottom" />
+                  <span className="inline-block w-[2px] h-[0.9em] bg-gray-400 dark:bg-gray-500 ml-0.5 animate-pulse align-text-bottom" />
                 )}
               </p>
             );
@@ -1032,9 +1033,9 @@ function DetailPanel({
                       <button
                         key={g.id}
                         onClick={() => onNavigate(`/grid/${g.meta?.boardId}`)}
-                        className="flex items-center gap-2 px-2.5 py-1.5 rounded-md hover:bg-blue-50 dark:hover:bg-blue-900/15 transition-colors text-left"
+                        className="flex items-center gap-2 px-2.5 py-1.5 rounded-md hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-colors text-left"
                       >
-                        <LayoutGrid size={12} className="text-blue-400 flex-shrink-0" />
+                        <GridIcon size={12} className="text-blue-400 flex-shrink-0" />
                         <span className="text-[0.6875rem] text-gray-600 dark:text-gray-300 truncate">{g.label}</span>
                       </button>
                     ))}
@@ -1140,9 +1141,9 @@ function DetailPanel({
                       <button
                         key={c.id}
                         onClick={() => onNavigate(`/grid/${c.meta?.boardId}`)}
-                        className="flex items-center gap-2 px-2 py-1 rounded-md bg-blue-50/50 dark:bg-blue-900/10 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors text-left"
+                        className="flex items-center gap-2 px-2 py-1 rounded-md bg-gray-100/50 dark:bg-white/[0.05] hover:bg-gray-100 dark:hover:bg-white/[0.08] transition-colors text-left"
                       >
-                        <LayoutGrid size={10} className="text-blue-400 flex-shrink-0" />
+                        <GridIcon size={10} className="text-blue-400 flex-shrink-0" />
                         <span className="text-[0.6875rem] text-gray-600 dark:text-gray-300 truncate">{c.label}</span>
                       </button>
                     ))}
@@ -1230,7 +1231,7 @@ function DetailPanel({
 /*  Main component                                                     */
 /* ------------------------------------------------------------------ */
 
-export default function MindMap() {
+export default function SynthesisLayer() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -1453,7 +1454,7 @@ export default function MindMap() {
         <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
           <div className="text-center space-y-3">
             <Brain className="w-12 h-12 text-indigo-300 dark:text-indigo-500 mx-auto" />
-            <p className="text-sm text-gray-400 dark:text-gray-500">Your mind map is empty.</p>
+            <p className="text-sm text-gray-400 dark:text-gray-500">Your Synthesis Layer is empty.</p>
             <p className="text-xs text-gray-400 dark:text-gray-500">Create grids, projects, or vault notes to see them here.</p>
           </div>
         </div>
@@ -1627,7 +1628,7 @@ export default function MindMap() {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -4 }}
                 transition={{ duration: 0.12 }}
-                className="absolute top-full left-0 mt-1.5 w-48 rounded-xl bg-white/90 dark:bg-gray-800/90 backdrop-blur-md border border-black/5 dark:border-white/8 shadow-lg py-1 z-50"
+                className="absolute top-full left-0 mt-1.5 w-48 rounded-xl bg-white/90 dark:bg-neutral-800/90 backdrop-blur-md border border-black/5 dark:border-white/8 shadow-lg py-1 z-50"
               >
                 {layoutModes.map((m) => (
                   <button
@@ -1640,7 +1641,7 @@ export default function MindMap() {
                     }}
                     className={`w-full text-left px-3 py-2 flex items-center gap-2.5 text-[0.6875rem] transition-colors ${
                       layoutMode === m.id
-                        ? "bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 font-medium"
+                        ? "bg-gray-100 dark:bg-white/10 text-gray-800 dark:text-gray-200 font-medium"
                         : "text-gray-600 dark:text-gray-300 hover:bg-black/[0.03] dark:hover:bg-white/[0.05]"
                     }`}
                   >
@@ -1670,7 +1671,7 @@ export default function MindMap() {
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -4 }}
                   transition={{ duration: 0.12 }}
-                  className="absolute top-full left-0 mt-1.5 w-48 max-h-64 overflow-y-auto rounded-xl bg-white/90 dark:bg-gray-800/90 backdrop-blur-md border border-black/5 dark:border-white/8 shadow-lg py-1 z-50 scrollbar-hide"
+                  className="absolute top-full left-0 mt-1.5 w-48 max-h-64 overflow-y-auto rounded-xl bg-white/90 dark:bg-neutral-800/90 backdrop-blur-md border border-black/5 dark:border-white/8 shadow-lg py-1 z-50 scrollbar-hide"
                 >
                   {allIdeas.length === 0 ? (
                       <p className="px-3 py-2 text-[0.6875rem] text-gray-400">No ideas found</p>
@@ -1697,8 +1698,7 @@ export default function MindMap() {
       {/* Title — centered */}
       <div className="absolute top-5 left-0 right-0 z-20 flex justify-center pointer-events-none">
         <div className="flex items-center gap-2.5">
-          <Brain className="w-5 h-5 text-blue-400" />
-          <h1 className="text-sm font-semibold text-gray-700 dark:text-gray-200 tracking-wide">Mind Map</h1>
+          <h1 className="text-sm font-semibold text-gray-700 dark:text-gray-200 tracking-wide">Synthesis Layer</h1>
         </div>
       </div>
 

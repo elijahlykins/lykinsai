@@ -53,16 +53,17 @@ export default function AboutYouSection({ isOpen }) {
       try {
         await refreshProfileStatus();
       } catch (refreshErr) {
-        console.warn('[Intake] status refresh after settings submit (non-fatal):', refreshErr);
+        if (import.meta.env.DEV) console.warn('[Intake] status refresh failed (non-fatal):', refreshErr);
       }
       toast({
         title: 'Profile updated',
         description: 'Your workspace model has been refreshed.',
       });
     } catch (err) {
+      if (import.meta.env.DEV) console.error('Profile update error:', err);
       toast({
         title: 'Could not update',
-        description: err?.message || 'Try again later.',
+        description: 'Something went wrong. Please try again later.',
         variant: 'destructive',
       });
     } finally {
