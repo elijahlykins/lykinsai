@@ -167,6 +167,7 @@ export default function ProjectPlaceholder() {
 
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
   const chatUserScrolledUpRef = useRef(false);
+  const chatProgrammaticScrollRef = useRef(false);
   const chatInputRef = useRef<HTMLTextAreaElement | null>(null);
   const [expandedAiMsgIds, setExpandedAiMsgIds] = useState<Set<string>>(new Set());
   const prevMsgCountRef = useRef(0);
@@ -291,11 +292,33 @@ export default function ProjectPlaceholder() {
   useEffect(() => {
     const el = chatScrollRef.current;
     if (!el) return;
-    const onScroll = () => {
-      chatUserScrolledUpRef.current = !chatIsNearBottom();
+    const markScrolledUp = () => { chatUserScrolledUpRef.current = true; };
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY < 0) markScrolledUp();
     };
+    const onTouchStart = () => markScrolledUp();
+    const onKeyDown = (e: KeyboardEvent) => {
+      const k = e.key;
+      if (k === "ArrowUp" || k === "PageUp" || k === "Home") markScrolledUp();
+    };
+    const onScroll = () => {
+      if (chatProgrammaticScrollRef.current) {
+        chatProgrammaticScrollRef.current = false;
+        return;
+      }
+      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 4;
+      chatUserScrolledUpRef.current = !atBottom;
+    };
+    el.addEventListener("wheel", onWheel, { passive: true });
+    el.addEventListener("touchstart", onTouchStart, { passive: true });
+    el.addEventListener("keydown", onKeyDown);
     el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
+    return () => {
+      el.removeEventListener("wheel", onWheel);
+      el.removeEventListener("touchstart", onTouchStart);
+      el.removeEventListener("keydown", onKeyDown);
+      el.removeEventListener("scroll", onScroll);
+    };
   }, [showChat, chatIsNearBottom]);
 
   useEffect(() => {
@@ -303,6 +326,7 @@ export default function ProjectPlaceholder() {
     if (chatUserScrolledUpRef.current) return;
     const el = chatScrollRef.current;
     if (!el) return;
+    chatProgrammaticScrollRef.current = true;
     el.scrollTop = el.scrollHeight;
   }, [chatMessages, isChatLoading, showChat]);
 
@@ -1583,7 +1607,7 @@ INSTRUCTIONS:
         });
         if (!chatUserScrolledUpRef.current) {
           const el = chatScrollRef.current;
-          if (el) el.scrollTop = el.scrollHeight;
+          if (el) { chatProgrammaticScrollRef.current = true; el.scrollTop = el.scrollHeight; }
         }
         await new Promise((resolve) => setTimeout(resolve, 30));
       }

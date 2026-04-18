@@ -402,7 +402,7 @@ export default function AppSidebar() {
                         }`}
                       >
                         <span className={`inline-block h-1.5 w-1.5 rounded-full flex-shrink-0 ${isActive ? "bg-blue-500" : "bg-black/30 dark:bg-white/30"}`} />
-                        <span className="truncate">{board.title || "Untitled Grid"}</span>
+                        <span className="truncate">{board.title || "New Grid"}</span>
                       </button>
                       <button
                         type="button"

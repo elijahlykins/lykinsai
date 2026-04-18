@@ -175,7 +175,7 @@ function buildGraph(
 
   boards.forEach((b) => {
     const nid = `grid_${b.id}`;
-    nodes.push({ id: nid, label: b.title || "Untitled Grid", kind: "grid", radius: 20, color: palette.grid.bg, glow: palette.grid.glow, parentId: "__cat_grids__", categoryId: "__cat_grids__", meta: { boardId: b.id, projectId: b.project_id } });
+    nodes.push({ id: nid, label: b.title || "New Grid", kind: "grid", radius: 20, color: palette.grid.bg, glow: palette.grid.glow, parentId: "__cat_grids__", categoryId: "__cat_grids__", meta: { boardId: b.id, projectId: b.project_id } });
     edges.push({ from: "__cat_grids__", to: nid });
     if (b.project_id && nodes.some((n) => n.id === `project_${b.project_id}`)) {
       edges.push({ from: `project_${b.project_id}`, to: nid, cross: true });

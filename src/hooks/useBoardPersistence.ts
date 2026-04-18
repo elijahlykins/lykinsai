@@ -89,7 +89,6 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
   const titleRef = useRef<string>("");
   const lastSavedTitleRef = useRef<string>("");
   const userRenamedRef = useRef(false);
-  const autoNamingInFlightRef = useRef(false);
   const hydratedRef = useRef(false);
   const saveTimerRef = useRef<number | null>(null);
   const savingRef = useRef(false);
@@ -472,57 +471,6 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
         }
       }
 
-      // Auto-naming runs independently of save success
-      if (import.meta.env.DEV) console.log("[LYKN] Auto-name check:", { savedTitle, userRenamed: userRenamedRef.current, inFlight: autoNamingInFlightRef.current, blockCount: Object.keys(raw.blocks || {}).length });
-      if (savedTitle === "New Grid" && !userRenamedRef.current && !autoNamingInFlightRef.current) {
-        const blockText = snapshotToSynthesisText(raw as Parameters<typeof snapshotToSynthesisText>[0]);
-        const stripped = blockText.replace(/^Board:.*\n?/, "").trim();
-
-        const chatMsgs: any[] = Array.isArray(raw.chatMessages) ? raw.chatMessages : [];
-        const chatSnippets: string[] = [];
-        for (const m of chatMsgs.slice(0, 6)) {
-          const userText = String(m?.content || m?.text || "").trim();
-          if (userText && m?.role !== "system") chatSnippets.push(userText.slice(0, 300));
-        }
-        const chatText = chatSnippets.join(" ").trim();
-        const combined = [stripped, chatText].filter(Boolean).join("\n").trim();
-        if (import.meta.env.DEV) console.log("[LYKN] Auto-name content length:", combined.length);
-        if (combined.length >= 10) {
-          autoNamingInFlightRef.current = true;
-          const capturedBoardId = boardId;
-          (async () => {
-            try {
-              const { API_BASE_URL } = await import("@/lib/api-config");
-              if (import.meta.env.DEV) console.log("[LYKN] Auto-name fetching");
-              const resp = await fetch(`${API_BASE_URL}/api/ai/name-grid`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ content: combined }),
-              });
-              if (!resp.ok) {
-                if (import.meta.env.DEV) console.warn("[LYKN] Auto-name request failed:", resp.status);
-                return;
-              }
-              const data = await resp.json();
-              const newTitle = String(data?.title || "").trim();
-              if (!newTitle) { if (import.meta.env.DEV) console.warn("[LYKN] Auto-name returned empty title"); return; }
-              if (userRenamedRef.current) {
-                if (import.meta.env.DEV) console.log("[LYKN] Auto-name skipped — user renamed during request");
-                return;
-              }
-              if (import.meta.env.DEV) console.log("[LYKN] Auto-named grid:", newTitle);
-              setTitleTracked(newTitle);
-              lastSavedTitleRef.current = newTitle;
-              await supabase.from("omnia_boards").update({ title: newTitle }).eq("id", capturedBoardId);
-              window.dispatchEvent(new Event("lykinsai_boards_changed"));
-            } catch (e) {
-              if (import.meta.env.DEV) console.warn("[LYKN] Auto-name error:", e);
-            } finally {
-              autoNamingInFlightRef.current = false;
-            }
-          })();
-        }
-      }
     } catch (err) {
       if (import.meta.env.DEV) console.error("[LYKN] saveSnapshot error:", err);
     } finally {
@@ -558,7 +506,6 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
     const loadBoard = async () => {
       hydratedRef.current = false;
       userRenamedRef.current = false;
-      autoNamingInFlightRef.current = false;
       let id: string | null = null;
       let loadedTitle = "New Grid";
       try {
@@ -774,25 +721,6 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boardId, chatMessages]);
-
-  /* ------------------------------------------------------------------ */
-  /*  Trigger auto-name save shortly after first chat messages arrive    */
-  /* ------------------------------------------------------------------ */
-  useEffect(() => {
-    if (!boardId || !userId || !hydratedRef.current) return;
-    if (userRenamedRef.current) return;
-    const currentTitle = String(titleRef.current || "").trim();
-    if (currentTitle && currentTitle !== "New Grid") return;
-    if (chatMessages.length < 1) return;
-    const timer = setTimeout(() => {
-      if (!savingRef.current && hydratedRef.current && !userRenamedRef.current) {
-        savingRef.current = false;
-        saveSnapshot();
-      }
-    }, 3_000);
-    return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [boardId, chatMessages.length, saveSnapshot, userId]);
 
   /* ------------------------------------------------------------------ */
   /*  Vault saved sets persist effect                                    */

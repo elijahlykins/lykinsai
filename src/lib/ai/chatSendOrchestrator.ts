@@ -463,8 +463,13 @@ async function fetchYouTubeGrounding(
       }
     }
   } else if (!isBrickAction && allYouTubeVideos.length > 0 && !signal.aborted) {
-    state.setChatStatusText("Analyzing visible YouTube videos...");
-    youtubeGrounding = await youtube.buildYouTubeGrounding(apiBase, text, signal);
+    const hasAnyCachedTranscript = allYouTubeVideos.some(
+      (v) => youtube.youtubeTranscriptCache[v.videoId]?.transcript,
+    );
+    if (hasAnyCachedTranscript) {
+      state.setChatStatusText("Analyzing visible YouTube videos...");
+      youtubeGrounding = await youtube.buildYouTubeGrounding(apiBase, text, signal);
+    }
   }
 
   return { youtubeGrounding, youtubeTranscriptSource };

@@ -554,7 +554,7 @@ const BrickTextSurface = React.memo(function BrickTextSurface(props: {
     ol: ({ children }: any) => React.createElement("ol", { className: "my-1 list-decimal pl-5 space-y-0.5" }, children),
     li: ({ children }: any) => React.createElement("li", { className: "leading-relaxed" }, children),
     strong: ({ children }: any) => React.createElement("strong", { className: "font-semibold" }, children),
-    blockquote: ({ children }: any) => React.createElement("blockquote", { className: "border-l-2 border-black/20 pl-3 my-1 text-black/70 italic" }, children),
+    blockquote: ({ children }: any) => React.createElement("blockquote", { className: "border-l-2 border-black/20 dark:border-white/20 pl-3 my-1 text-black/70 dark:text-white/70 italic" }, children),
     code: ({ children, className }: any) => {
       const isBlock = className?.startsWith("language-");
       if (isBlock) return React.createElement("pre", { className: "rounded-lg bg-black/5 p-2 my-1 overflow-x-auto", style: { fontSize: "0.85em" } }, React.createElement("code", null, children));
@@ -1363,7 +1363,9 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
       )
     : null;
 
-  const useFlexHeight = Boolean(opts?.extraContent) || Boolean(shell.isAiResponseBubble);
+  const hasGfmTable = parseGfmTable(String(shell.content || "")) !== null;
+  const useFlexHeight = Boolean(opts?.extraContent) || Boolean(shell.isAiResponseBubble) || hasGfmTable;
+  const hasContent = Boolean(shell.content.trim());
 
   return React.createElement(
     "div",
@@ -1467,34 +1469,36 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
       labelEl
     ),
     null,
-    React.createElement("div", {
-      key: "brick-drag-handle",
-      "data-drag-handle": true,
-      className: "absolute z-30 cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 transition-opacity",
-      style: {
-        left: "8px",
-        top: "-20px",
-        width: "72px",
-        height: "20px",
-        background: "linear-gradient(180deg, rgba(255,255,255,0.72), rgba(255,255,255,0.48))",
-        backdropFilter: "blur(8px)",
-        borderRadius: "8px 8px 0 0",
-        border: "1px solid rgba(255,255,255,0.55)",
-        borderBottom: "none",
-        boxShadow: "0 -2px 8px rgba(0,0,0,0.08)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-      },
-      title: "Drag to move",
-      onClick: (e: any) => e.stopPropagation(),
-      onPointerDown: (e: any) => e.stopPropagation(),
-    },
-      React.createElement("span", {
-        style: { width: 16, height: 2, borderRadius: 1, background: "rgba(0,0,0,0.25)" },
-      })
-    ),
-    shell.content.trim()
+    hasContent
+      ? React.createElement("div", {
+          key: "brick-drag-handle",
+          "data-drag-handle": true,
+          className: "absolute z-30 cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 transition-opacity",
+          style: {
+            left: "8px",
+            top: "-20px",
+            width: "72px",
+            height: "20px",
+            background: "linear-gradient(180deg, rgba(255,255,255,0.72), rgba(255,255,255,0.48))",
+            backdropFilter: "blur(8px)",
+            borderRadius: "8px 8px 0 0",
+            border: "1px solid rgba(255,255,255,0.55)",
+            borderBottom: "none",
+            boxShadow: "0 -2px 8px rgba(0,0,0,0.08)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          },
+          title: "Drag to move",
+          onClick: (e: any) => e.stopPropagation(),
+          onPointerDown: (e: any) => e.stopPropagation(),
+        },
+          React.createElement("span", {
+            style: { width: 16, height: 2, borderRadius: 1, background: "rgba(0,0,0,0.25)" },
+          })
+        )
+      : null,
+    hasContent
       ? React.createElement(
           "div",
           {
@@ -1540,7 +1544,7 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
           )
         )
       : null,
-    typeof opts?.onConnectionDragStart === "function"
+    hasContent && typeof opts?.onConnectionDragStart === "function"
       ? renderConnectionNodes(shell.id, opts.onConnectionDragStart, 1)
       : null
   );

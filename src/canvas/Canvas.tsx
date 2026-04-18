@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { createPortal } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Trash2, ZoomIn, ZoomOut, Maximize, ChevronUp, ChevronDown, Copy, CopyPlus, Send, Palette, Type as TypeIcon, Square, Mic, MoreHorizontal, Sparkles, FileText, Maximize2, ArrowUpToLine, ArrowDownToLine, Archive, Check, Mouse, Highlighter, Search, Brain, ListCollapse } from "lucide-react";
+import { Trash2, ZoomIn, ZoomOut, Maximize, ChevronUp, ChevronDown, Copy, CopyPlus, Send, Palette, Type as TypeIcon, Square, Mic, MoreHorizontal, Sparkles, FileText, Maximize2, ArrowUpToLine, ArrowDownToLine, Archive, Check, Mouse, Highlighter, Search, Brain, ListCollapse, Grid3x3 } from "lucide-react";
 import { useCanvasStore } from "@/store/canvasStore";
 import { isInViewport } from "@/canvas/utils/isInViewport";
 import { snapToGrid } from "@/canvas/utils/snap";
@@ -723,6 +723,9 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
   });
   const wheelZoomModeRef = useRef(wheelZoomMode);
   useEffect(() => { wheelZoomModeRef.current = wheelZoomMode; }, [wheelZoomMode]);
+  const [showGrid, setShowGrid] = useState(() => {
+    try { return localStorage.getItem("lykn_show_grid") === "true"; } catch { return false; }
+  });
   const middlePanRef = useRef<{ active: boolean; startX: number; startY: number; scrollLeft: number; scrollTop: number } | null>(null);
   const [viewport, setViewport] = useState({ width: 0, height: 0 });
   const [hoverCell, setHoverCell] = useState<{ x: number; y: number } | null>(null);
@@ -5653,7 +5656,7 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
 
             <div
               ref={aiAnswerContentRef}
-              className="text-foreground break-words [&_h1]:text-xl [&_h1]:font-semibold [&_h1]:mt-2 [&_h1]:mb-1 [&_h2]:text-lg [&_h2]:font-semibold [&_h2]:mt-2 [&_h2]:mb-1 [&_h3]:text-base [&_h3]:font-semibold [&_h3]:mt-1.5 [&_h3]:mb-1 [&_p]:my-1 [&_p]:whitespace-pre-wrap [&_ul]:my-1 [&_ul]:list-disc [&_ul]:pl-5 [&_ul]:space-y-0.5 [&_ol]:my-1 [&_ol]:list-decimal [&_ol]:pl-5 [&_ol]:space-y-0.5 [&_li]:leading-relaxed [&_strong]:font-semibold [&_blockquote]:border-l-2 [&_blockquote]:border-black/20 [&_blockquote]:pl-3 [&_blockquote]:my-1 [&_blockquote]:italic [&_table]:w-full [&_table]:border-collapse [&_table]:text-xs [&_table]:my-2 [&_thead]:border-b [&_thead]:border-black/20 [&_tr]:border-b [&_tr]:border-black/10 [&_th]:text-left [&_th]:px-2 [&_th]:py-1 [&_th]:font-semibold [&_td]:px-2 [&_td]:py-1 [&_pre]:rounded-lg [&_pre]:bg-black/5 [&_pre]:p-2 [&_pre]:my-1 [&_pre]:overflow-x-auto [&_pre]:text-[0.85em] [&_code]:rounded [&_code]:bg-black/10 [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-[0.85em]"
+              className="text-foreground break-words [&_h1]:text-xl [&_h1]:font-semibold [&_h1]:mt-2 [&_h1]:mb-1 [&_h2]:text-lg [&_h2]:font-semibold [&_h2]:mt-2 [&_h2]:mb-1 [&_h3]:text-base [&_h3]:font-semibold [&_h3]:mt-1.5 [&_h3]:mb-1 [&_p]:my-1 [&_p]:whitespace-pre-wrap [&_ul]:my-1 [&_ul]:list-disc [&_ul]:pl-5 [&_ul]:space-y-0.5 [&_ol]:my-1 [&_ol]:list-decimal [&_ol]:pl-5 [&_ol]:space-y-0.5 [&_li]:leading-relaxed [&_strong]:font-semibold [&_blockquote]:border-l-2 [&_blockquote]:border-black/20 [&_blockquote]:dark:border-white/20 [&_blockquote]:pl-3 [&_blockquote]:my-1 [&_blockquote]:italic [&_blockquote]:text-black/70 [&_blockquote]:dark:text-white/70 [&_table]:w-full [&_table]:border-collapse [&_table]:text-xs [&_table]:my-2 [&_thead]:border-b [&_thead]:border-black/20 [&_tr]:border-b [&_tr]:border-black/10 [&_th]:text-left [&_th]:px-2 [&_th]:py-1 [&_th]:font-semibold [&_td]:px-2 [&_td]:py-1 [&_pre]:rounded-lg [&_pre]:bg-black/5 [&_pre]:p-2 [&_pre]:my-1 [&_pre]:overflow-x-auto [&_pre]:text-[0.85em] [&_code]:rounded [&_code]:bg-black/10 [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-[0.85em]"
               style={{
                 fontFamily: defaultFontFamily,
                 fontSize: `${aiFontSizePx}px`,
@@ -5781,6 +5784,23 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
           backfaceVisibility: "hidden",
         }}
       >
+        {showGrid && (
+          <div
+            aria-hidden
+            className="pointer-events-none absolute text-black/15 dark:text-white/10"
+            style={{
+              left: `${-SURFACE_ORIGIN_PAD}px`,
+              top: `${-SURFACE_ORIGIN_PAD}px`,
+              width: `${surface.width + SURFACE_ORIGIN_PAD * 2}px`,
+              height: `${surface.height + SURFACE_ORIGIN_PAD * 2}px`,
+              zIndex: 0,
+              backgroundImage:
+                "linear-gradient(to right, currentColor 1px, transparent 1px), linear-gradient(to bottom, currentColor 1px, transparent 1px)",
+              backgroundSize: `${gridSize}px ${gridSize}px, ${gridSize}px ${gridSize}px`,
+              backgroundPosition: `${SURFACE_ORIGIN_PAD % gridSize}px ${SURFACE_ORIGIN_PAD % gridSize}px`,
+            }}
+          />
+        )}
 
         {marqueeRect && (
           <div
@@ -7394,6 +7414,20 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
                 title={wheelZoomMode ? "Scroll wheel: Zoom — click to switch to Scroll" : "Scroll wheel: Scroll — click to switch to Zoom"}
               >
                 {wheelZoomMode ? <ZoomIn className="w-3.5 h-3.5" /> : <Mouse className="w-3.5 h-3.5" />}
+              </button>
+              <button
+                className={`flex items-center justify-center w-7 h-7 rounded-lg transition-colors ${showGrid ? "bg-blue-500/25 text-blue-500 dark:text-blue-400" : "hover:bg-black/10 dark:hover:bg-white/15 text-black/50 dark:text-white/50 hover:text-black/90 dark:hover:text-white"}`}
+                onClick={() => {
+                  setShowGrid((v) => {
+                    const next = !v;
+                    try { localStorage.setItem("lykn_show_grid", String(next)); } catch { /* ignore */ }
+                    return next;
+                  });
+                }}
+                title={showGrid ? "Hide alignment grid" : "Show alignment grid"}
+                aria-pressed={showGrid}
+              >
+                <Grid3x3 className="w-3.5 h-3.5" />
               </button>
             </div>
           )}

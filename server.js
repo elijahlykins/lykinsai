@@ -106,13 +106,13 @@ async function scrapeUrlsFromText(text) {
 }
 
 // ---- Web search ----
-const WEB_SEARCH_KEYWORDS = /\b(latest|today|tonight|yesterday|current|recent|now|news|price|weather|score|update|trending|live|stock|market|election|announce|release|launch|202[4-9])\b/i;
-const WEB_SEARCH_PHRASES = /\b(what happened|who won|how much is|search for|look up|find out|tell me about the latest|what(?:'s| is) (?:the |going on)|any news|browse|go to|visit|check out|show me|pull up)\b/i;
+const WEB_SEARCH_KEYWORDS = /\b(latest|today|tonight|yesterday|news|price|weather|score|trending|live|stock|market|election|announce|launch|202[4-9])\b/i;
+const WEB_SEARCH_PHRASES = /\b(what happened|who won|how much is|search (?:for|the web|online)|look up|find out|tell me about the latest|what(?:'s| is) (?:the |going on)|any news|go to|visit)\b/i;
 const SKIP_SEARCH_PATTERNS = /^(hi|hello|hey|thanks|thank you|ok|okay|yes|no|sure|got it|never ?mind)\b/i;
 const KNOWLEDGE_QUESTION = /\b(what is|who is|who are|where is|when did|how does|how do|how to|why does|why is|explain|tell me about|define|describe|compare|difference between|history of|meaning of)\b/i;
 const SITE_REFERENCE = /\b\w+\.(com|org|net|io|co|gov|edu|store|shop|app|dev|ai)\b/i;
 
-const WORKSPACE_SCOPED_PATTERNS = /\b(my\s+(?:board|notes?|project|ideas?|media|files?|workspace|vault|saved)|on\s+(?:the|this)\s+(?:board|grid|canvas)|(?:in|from)\s+(?:my|the)\s+(?:project|workspace|notes?|media|vault)|what\s+(?:do\s+)?(?:i|we)\s+have|what(?:'s| is)\s+(?:on|in)\s+(?:my|the|this))\b/i;
+const WORKSPACE_SCOPED_PATTERNS = /\b(my\s+(?:board|notes?|project|ideas?|media|files?|workspace|vault|saved|bricks?|blocks?|grid|canvas|stuff|content|work|progress)|on\s+(?:the|this)\s+(?:board|grid|canvas)|(?:in|from)\s+(?:my|the)\s+(?:project|workspace|notes?|media|vault)|what\s+(?:do\s+)?(?:i|we)\s+have|what(?:'s| is)\s+(?:on|in)\s+(?:my|the|this)|(?:help|assist)\s+(?:me\s+)?(?:with\s+)?(?:this|my)|(?:summarize|explain|break\s+down|rewrite|improve|edit|update|organize|review)\s+(?:this|my|the|it))\b/i;
 
 const LOCATION_AWARE_PATTERNS = /\b(near\s+me|in\s+my\s+(?:area|town|city|neighborhood|region)|around\s+here|local|nearby|closest|nearest|in\s+(?:downtown|midtown|uptown)|in\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?(?:,\s*[A-Z]{2})?)\b/i;
 
@@ -127,9 +127,18 @@ function needsWebSearch(text, opts = {}) {
 
   if (LOCATION_AWARE_PATTERNS.test(t)) return true;
 
-  const hasExplicitWebIntent = WEB_SEARCH_KEYWORDS.test(t) || WEB_SEARCH_PHRASES.test(t);
+  const hasKeyword = WEB_SEARCH_KEYWORDS.test(t);
+  const hasPhrase = WEB_SEARCH_PHRASES.test(t);
+  const hasExplicitWebIntent = hasKeyword || hasPhrase;
   if (opts.hasFocusedBricks && !hasExplicitWebIntent) return false;
-  if (hasExplicitWebIntent) return true;
+
+  if (hasExplicitWebIntent) {
+    if (hasPhrase) return true;
+    if (hasKeyword && !opts.hasContext) return true;
+    if (hasKeyword && /\b(news|price|weather|score|stock|market|election|202[4-9])\b/i.test(t)) return true;
+    if (hasKeyword && opts.hasContext) return false;
+    return true;
+  }
   if (SITE_REFERENCE.test(t) && t.length < 200) return true;
 
   if (opts.hasContext || opts.hasFocusedBricks) {
@@ -154,6 +163,7 @@ function classifyEnrichment(text, opts = {}) {
   if (GREETING_PATTERN.test(t)) return 'none';
   if (LAYOUT_COMMAND_PATTERN.test(t)) return 'none';
   if (BOARD_ACTION_PATTERN.test(t)) return 'none';
+  if (WORKSPACE_SCOPED_PATTERNS.test(t)) return 'light';
   const wordCount = t.split(/\s+/).length;
   if (wordCount <= SHORT_REPLY_MAX_WORDS && !t.includes('?') && !/\b(what|how|why|where|when|who|which|explain|describe|tell|find|search|show|compare)\b/i.test(t)) return 'none';
 
@@ -5481,13 +5491,65 @@ app.get('/api/unfurl', requireAuth, async (req, res) => {
 
     const canonical = $('link[rel="canonical"]').attr('href')?.trim() || '';
 
-    const title = og('title') || $('title').text().trim() || (parsedUrl?.hostname || url);
-    const description = og('description') || meta('description') || '';
-    const image = og('image') || '';
-    const siteName = og('site_name') || (parsedUrl?.hostname?.replace(/^www\./, '') || '');
-    const favicon = parsedUrl
-      ? `${parsedUrl.protocol}//${parsedUrl.host}/favicon.ico`
-      : '';
+    // Resolve a possibly-relative asset URL against the page URL
+    const resolveAsset = (raw) => {
+      const s = String(raw || '').trim();
+      if (!s) return '';
+      try { return new URL(s, parsedUrl || url).toString(); } catch { return ''; }
+    };
+
+    const title = og('title') || meta('twitter:title') || $('title').text().trim() || (parsedUrl?.hostname || url);
+    const description = og('description') || meta('twitter:description') || meta('description') || '';
+
+    // ---- Image: try harder than just og:image ----
+    // 1) Standard Open Graph
+    let image = resolveAsset(og('image') || og('image:secure_url'));
+    // 2) Twitter card images
+    if (!image) image = resolveAsset(meta('twitter:image') || meta('twitter:image:src'));
+    // 3) Largest apple-touch-icon (these are square PNGs, typically ≥ 120px — much better than a 16×16 favicon)
+    if (!image) {
+      const touchIcons = [];
+      $('link[rel="apple-touch-icon"], link[rel="apple-touch-icon-precomposed"]').each((_, el) => {
+        const href = $(el).attr('href');
+        if (!href) return;
+        const sizes = String($(el).attr('sizes') || '').toLowerCase();
+        const m = sizes.match(/(\d+)x\d+/);
+        const size = m ? parseInt(m[1], 10) : 120;
+        touchIcons.push({ href, size });
+      });
+      touchIcons.sort((a, b) => b.size - a.size);
+      if (touchIcons.length) image = resolveAsset(touchIcons[0].href);
+    }
+    // 4) First reasonably large <img> inside <article> or <main>
+    if (!image) {
+      const bodyImg = $('article img, main img, [role="main"] img').first();
+      if (bodyImg.length) {
+        const src = bodyImg.attr('src') || bodyImg.attr('data-src') || bodyImg.attr('data-original') || '';
+        const w = parseInt(bodyImg.attr('width') || '0', 10);
+        const h = parseInt(bodyImg.attr('height') || '0', 10);
+        // Skip tiny icons / trackers (must be ≥ 200 on one side, or declared size unknown)
+        if (src && (!(w && h) || w >= 200 || h >= 200)) image = resolveAsset(src);
+      }
+    }
+
+    const siteName = og('site_name') || meta('application-name') || (parsedUrl?.hostname?.replace(/^www\./, '') || '');
+
+    // ---- Favicon: follow <link rel="icon"> first, then /favicon.ico ----
+    let favicon = '';
+    const iconCandidates = [];
+    $('link[rel="icon"], link[rel="shortcut icon"], link[rel="mask-icon"]').each((_, el) => {
+      const href = $(el).attr('href');
+      if (!href) return;
+      const sizes = String($(el).attr('sizes') || '').toLowerCase();
+      const m = sizes.match(/(\d+)x\d+/);
+      const size = m ? parseInt(m[1], 10) : 32;
+      iconCandidates.push({ href, size });
+    });
+    // Prefer the largest declared icon (better for retina & big tiles)
+    iconCandidates.sort((a, b) => b.size - a.size);
+    if (iconCandidates.length) favicon = resolveAsset(iconCandidates[0].href);
+    if (!favicon && parsedUrl) favicon = `${parsedUrl.protocol}//${parsedUrl.host}/favicon.ico`;
+
     const finalUrl = canonical || url;
 
     $('script, style, nav, footer, header, aside, iframe, noscript, svg, form').remove();

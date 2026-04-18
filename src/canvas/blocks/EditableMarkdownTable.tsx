@@ -62,7 +62,10 @@ const GRID = 24;
 const snap = (n: number) => Math.ceil(n / GRID) * GRID;
 const COL_MIN_WIDTH = 120;
 const ROW_HEIGHT_EST = 36;
-const TABLE_PADDING = 48;
+// Height pad accounts for the "add row" button (24px) + wrapper my-3 margins (24px).
+const HEIGHT_PADDING = 48;
+// Width pad accounts for brick horizontal padding (8px + 8px) with a small buffer.
+const WIDTH_PADDING = 24;
 
 export const EditableMarkdownTable = memo(function EditableMarkdownTable({
   blockId,
@@ -94,8 +97,9 @@ export const EditableMarkdownTable = memo(function EditableMarkdownTable({
   const autoGrow = useCallback(
     (colCount: number, rowCount: number) => {
       if (!block) return;
-      const neededW = snap(colCount * COL_MIN_WIDTH + TABLE_PADDING);
-      const neededH = snap((rowCount + 2) * ROW_HEIGHT_EST + TABLE_PADDING);
+      // Header row + N data rows (add-row button + margins covered by HEIGHT_PADDING).
+      const neededW = snap(colCount * COL_MIN_WIDTH + WIDTH_PADDING);
+      const neededH = snap((rowCount + 1) * ROW_HEIGHT_EST + HEIGHT_PADDING);
       const patch: Record<string, any> = {};
       if (neededW > (block.width || 0)) patch.width = neededW;
       if (neededH > (block.height || 0)) patch.height = neededH;

@@ -36,7 +36,7 @@ import {
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/SupabaseAuth";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, useInfiniteQuery } from "@tanstack/react-query";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select";
 import DraggableQuickNote from "@/components/notes/DraggableQuickNote";
 import DragDropFileUpload from "@/components/files/DragDropFileUpload";
@@ -46,6 +46,7 @@ import { extractYouTubeVideoId, getYouTubeEmbedUrl } from "@/canvas/utils/youtub
 import { detectSocialPlatform, isSocialEmbedType, isVerticalSocialContent } from "@/canvas/utils/socialEmbed";
 import { SocialEmbedInline } from "@/canvas/blocks/SocialEmbedBlock";
 import LoadingScreen from "@/components/LoadingScreen";
+import LinkPreview from "@/components/LinkPreview";
 import { getAiPrefs } from "@/lib/ai-prefs";
 import { saveExchange, getMemoryForPrompt, invalidateMemoryCache } from "@/lib/conversationMemory";
 import { purgeVaultNoteEmbeddings } from "@/lib/synthesis/queueReindex";
@@ -54,6 +55,12 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useThinkingStatus } from "@/hooks/useThinkingStatus";
 import { splitResponseIntoChunks, normalizeChecklistSyntax, flattenNodeText, handleChunkDragStart } from "@/lib/chatChunks";
+
+// Tracks whether the vault has completed its initial image-preload gating at
+// least once during this SPA session. Persists across route remounts so
+// navigating away from /vault and back does not re-show the LoadingScreen
+// while the browser's image cache is already warm.
+let sessionVaultReady = false;
 
 function stripAttachmentJsonMarker(content) {
   if (!content) return "";
@@ -495,9 +502,24 @@ export default function VaultNew() {
   const { checkVaultLimit, incrementVaultCount, upgradeModal, dismissUpgradeModal } = useUsageGate();
   const [embeddedSearch, setEmbeddedSearch] = useState("");
   const vaultQueryClient = useQueryClient();
-  const [notes, setNotes] = useState([]);
-  const [isLoadingNotes, setIsLoadingNotes] = useState(true);
-  const [vaultReady, setVaultReady] = useState(false);
+  const [vaultReady, setVaultReadyRaw] = useState(() => sessionVaultReady);
+  const markVaultReady = useCallback(() => {
+    sessionVaultReady = true;
+    setVaultReadyRaw(true);
+  }, []);
+  const setVaultReady = useCallback((value) => {
+    if (value === true) {
+      markVaultReady();
+    } else if (typeof value === "function") {
+      setVaultReadyRaw((prev) => {
+        const next = value(prev);
+        if (next === true) sessionVaultReady = true;
+        return next;
+      });
+    } else {
+      setVaultReadyRaw(value);
+    }
+  }, [markVaultReady]);
   const [notesError, setNotesError] = useState("");
   const [topPanelOpen, setTopPanelOpen] = useState(false);
   const [showChat, setShowChat] = useState(false);
@@ -508,8 +530,6 @@ export default function VaultNew() {
   const [orderByPage, setOrderByPage] = useState({ everything: [] });
   const [draggedCardId, setDraggedCardId] = useState(null);
   const [dropTargetCardId, setDropTargetCardId] = useState(null);
-  const [hasMoreNotes, setHasMoreNotes] = useState(true);
-  const [isLoadingMoreNotes, setIsLoadingMoreNotes] = useState(false);
   const [resolvedAttachmentUrls, setResolvedAttachmentUrls] = useState({});
   const [failedImageIds, setFailedImageIds] = useState(new Set());
   const imageRetryCountsRef = useRef(new Map());
@@ -552,6 +572,7 @@ export default function VaultNew() {
   const assistantIndexRef = useRef(null);
   const chatScrollRef = useRef(null);
   const chatUserScrolledUpRef = useRef(false);
+  const chatProgrammaticScrollRef = useRef(false);
   const chatInputRef = useRef(null);
   const [expandedAiMsgIds, setExpandedAiMsgIds] = useState(new Set());
   const prevMsgCountRef = useRef(0);
@@ -730,11 +751,33 @@ export default function VaultNew() {
   useEffect(() => {
     const el = chatScrollRef.current;
     if (!el) return;
-    const onScroll = () => {
-      chatUserScrolledUpRef.current = !chatIsNearBottom();
+    const markScrolledUp = () => { chatUserScrolledUpRef.current = true; };
+    const onWheel = (e) => {
+      if (e.deltaY < 0) markScrolledUp();
     };
+    const onTouchStart = () => markScrolledUp();
+    const onKeyDown = (e) => {
+      const k = e.key;
+      if (k === "ArrowUp" || k === "PageUp" || k === "Home") markScrolledUp();
+    };
+    const onScroll = () => {
+      if (chatProgrammaticScrollRef.current) {
+        chatProgrammaticScrollRef.current = false;
+        return;
+      }
+      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 4;
+      chatUserScrolledUpRef.current = !atBottom;
+    };
+    el.addEventListener("wheel", onWheel, { passive: true });
+    el.addEventListener("touchstart", onTouchStart, { passive: true });
+    el.addEventListener("keydown", onKeyDown);
     el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
+    return () => {
+      el.removeEventListener("wheel", onWheel);
+      el.removeEventListener("touchstart", onTouchStart);
+      el.removeEventListener("keydown", onKeyDown);
+      el.removeEventListener("scroll", onScroll);
+    };
   }, [showChat, chatIsNearBottom]);
 
   useEffect(() => {
@@ -742,6 +785,7 @@ export default function VaultNew() {
     if (chatUserScrolledUpRef.current) return;
     const el = chatScrollRef.current;
     if (!el) return;
+    chatProgrammaticScrollRef.current = true;
     el.scrollTop = el.scrollHeight;
   }, [chatMessages, isChatLoading, showChat]);
 
@@ -787,8 +831,6 @@ export default function VaultNew() {
     return "claude-sonnet-4-6";
   });
 
-  const notesCursorRef = useRef(null);
-
   const resolvedColumnsRef = useRef(null);
 
   const COLUMN_SETS = [
@@ -830,43 +872,74 @@ export default function VaultNew() {
     [user?.id]
   );
 
-  const refreshNotes = useCallback(async () => {
-    if (!user?.id) {
-      setNotes([]);
-      setIsLoadingNotes(false);
-      setHasMoreNotes(false);
-      return;
-    }
+  const notesQueryKey = useMemo(() => ["vault-notes", user?.id || null], [user?.id]);
 
-    setIsLoadingNotes(true);
-    setVaultReady(false);
-    eagerResolveRunRef.current = false;
-    initialCardIdsRef.current = null;
-    setNotesError("");
-    notesCursorRef.current = null;
-    try {
-      const { data, error } = await fetchNotesBatch(null);
-
+  const notesQuery = useInfiniteQuery({
+    queryKey: notesQueryKey,
+    queryFn: async ({ pageParam }) => {
+      const { data, error } = await fetchNotesBatch(pageParam ?? null);
       if (error) {
         if (["PGRST116", "42P01"].includes(error.code) || error.message?.includes("placeholder")) {
-          setNotes([]);
-          setHasMoreNotes(false);
-        } else {
-          throw error;
+          return [];
         }
-      } else {
-        const list = Array.isArray(data) ? data : [];
-        setNotes(list);
-        setHasMoreNotes(list.length === MEMORY_PAGE_SIZE);
-        if (list.length > 0) notesCursorRef.current = list[list.length - 1].updated_at;
+        throw error;
       }
-    } catch (err) {
+      return Array.isArray(data) ? data : [];
+    },
+    initialPageParam: null,
+    getNextPageParam: (lastPage) => {
+      if (!Array.isArray(lastPage) || lastPage.length < MEMORY_PAGE_SIZE) return undefined;
+      return lastPage[lastPage.length - 1]?.updated_at ?? undefined;
+    },
+    enabled: !!user?.id && !loading,
+    // Keep notes fresh for 30s; within that window, remounts use cache immediately.
+    staleTime: 30_000,
+    // Hold cache for 10 minutes after the last observer unmounts.
+    gcTime: 10 * 60_000,
+    // Default refetchOnMount (true) + staleTime gives us stale-while-revalidate.
+  });
+
+  const notes = useMemo(
+    () => notesQuery.data?.pages.flatMap((p) => (Array.isArray(p) ? p : [])) ?? [],
+    [notesQuery.data]
+  );
+
+  const isLoadingNotes = notesQuery.isPending;
+  const hasMoreNotes = !!notesQuery.hasNextPage;
+  const isLoadingMoreNotes = notesQuery.isFetchingNextPage;
+
+  // Wrapper that keeps every existing `setNotes((prev) => ...)` call site working.
+  // We flatten the cached pages, apply the updater, and store the result as a
+  // single page so cursor pagination (based on the last item's updated_at) still works.
+  const setNotes = useCallback(
+    (updater) => {
+      vaultQueryClient.setQueryData(notesQueryKey, (old) => {
+        const current = old?.pages?.flatMap((p) => (Array.isArray(p) ? p : [])) ?? [];
+        const next = typeof updater === "function" ? updater(current) : updater;
+        const list = Array.isArray(next) ? next : [];
+        return {
+          pages: [list],
+          pageParams: [null],
+        };
+      });
+    },
+    [vaultQueryClient, notesQueryKey]
+  );
+
+  const refreshNotes = useCallback(async () => {
+    setNotesError("");
+    eagerResolveRunRef.current = false;
+    initialCardIdsRef.current = null;
+    if (!user?.id) return;
+    await vaultQueryClient.invalidateQueries({ queryKey: notesQueryKey });
+  }, [vaultQueryClient, notesQueryKey, user?.id]);
+
+  // Map query-level errors into the user-facing notesError banner.
+  useEffect(() => {
+    if (notesQuery.isError) {
       setNotesError("Couldn't load your memories right now. Please try again later.");
-      setHasMoreNotes(false);
-    } finally {
-      setIsLoadingNotes(false);
     }
-  }, [fetchNotesBatch, user?.id]);
+  }, [notesQuery.isError]);
 
   const { data: projects = [] } = useQuery({
     queryKey: ["projects", user?.id],
@@ -885,25 +958,12 @@ export default function VaultNew() {
 
   const loadMoreNotes = useCallback(async () => {
     if (!user?.id || isLoadingNotes || isLoadingMoreNotes || !hasMoreNotes) return;
-    setIsLoadingMoreNotes(true);
     try {
-      const { data, error } = await fetchNotesBatch(notesCursorRef.current);
-      if (error) throw error;
-      const list = Array.isArray(data) ? data : [];
-      if (list.length === 0) {
-        setHasMoreNotes(false);
-        return;
-      }
-      setNotes((prev) => [...prev, ...list]);
-      setHasMoreNotes(list.length === MEMORY_PAGE_SIZE);
-      if (list.length > 0) notesCursorRef.current = list[list.length - 1].updated_at;
+      await notesQuery.fetchNextPage();
     } catch {
-      setHasMoreNotes(false);
       setNotesError((prev) => prev || "Some memories could not be loaded.");
-    } finally {
-      setIsLoadingMoreNotes(false);
     }
-  }, [fetchNotesBatch, hasMoreNotes, isLoadingMoreNotes, isLoadingNotes, user?.id]);
+  }, [notesQuery, hasMoreNotes, isLoadingMoreNotes, isLoadingNotes, user?.id]);
 
   useEffect(() => {
     const handleSettingsChange = () => {
@@ -924,12 +984,6 @@ export default function VaultNew() {
       window.removeEventListener("storage", handleSettingsChange);
     };
   }, []);
-
-  useEffect(() => {
-    if (loading) return;
-    void refreshNotes();
-  }, [loading, refreshNotes]);
-
 
   useEffect(() => {
     const onPointerDown = (event) => {
@@ -2141,7 +2195,7 @@ User: ${text}`;
             });
             if (!chatUserScrolledUpRef.current) {
               const el = chatScrollRef.current;
-              if (el) el.scrollTop = el.scrollHeight;
+              if (el) { chatProgrammaticScrollRef.current = true; el.scrollTop = el.scrollHeight; }
             }
             if (!done) window.setTimeout(tick, 18);
           };
@@ -2168,7 +2222,7 @@ User: ${text}`;
             });
             if (!chatUserScrolledUpRef.current) {
               const el = chatScrollRef.current;
-              if (el) el.scrollTop = el.scrollHeight;
+              if (el) { chatProgrammaticScrollRef.current = true; el.scrollTop = el.scrollHeight; }
             }
             if (i < words.length) window.setTimeout(tick, 18);
           };
@@ -2441,80 +2495,19 @@ User: ${text}`;
 
     if (type === "bookmark") {
       const linkUrl = attachment.url || resolvedUrl || "";
-      const domain = attachment.siteName || (() => { try { return new URL(linkUrl).hostname.replace(/^www\./, ""); } catch { return ""; } })();
-      const displayTitle = attachment.title || title || linkUrl;
-      const desc = String(attachment.description || "").slice(0, 200);
-      const hasImage = Boolean(attachment.image);
-      const isTweet = attachment.oembedType === "twitter" && desc;
-
-      if (isTweet) {
-        return (
-          <a
-            href={linkUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="block rounded-2xl overflow-hidden border border-white/40 dark:border-white/15 bg-white/30 dark:bg-white/5 backdrop-blur-md hover:bg-white/40 dark:hover:bg-white/10 transition-colors group/bm"
-            draggable={false}
-          >
-            <div className="p-4 flex flex-col gap-2.5">
-              <div className="flex items-center gap-2">
-                <svg viewBox="0 0 24 24" className="w-4 h-4 shrink-0 fill-current text-black/70 dark:text-white/70" aria-hidden="true">
-                  <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
-                </svg>
-                <div className="min-w-0 flex-1">
-                  <span className="text-sm font-semibold text-black/85 dark:text-white/85 truncate block leading-tight">{attachment.authorName || displayTitle}</span>
-                  {attachment.authorHandle && <span className="text-[0.625rem] text-black/45 dark:text-white/45 truncate block leading-tight">{attachment.authorHandle}</span>}
-                </div>
-                <ExternalLink className="w-3 h-3 opacity-0 group-hover/bm:opacity-60 transition-opacity shrink-0" />
-              </div>
-              <p className="text-[13px] text-black/75 dark:text-white/75 leading-relaxed whitespace-pre-line line-clamp-6">{desc}</p>
-              <div className="flex items-center gap-1.5 text-black/35 dark:text-white/35 pt-1.5 border-t border-black/8 dark:border-white/8">
-                <span className="text-[0.6rem]">X (Twitter)</span>
-              </div>
-            </div>
-          </a>
-        );
-      }
-
       return (
-        <a
-          href={linkUrl}
-          target="_blank"
-          rel="noreferrer"
-          className="block rounded-2xl overflow-hidden border border-white/40 dark:border-white/15 bg-white/30 dark:bg-white/5 backdrop-blur-md hover:bg-white/40 dark:hover:bg-white/10 transition-colors group/bm"
-          draggable={false}
-        >
-          {hasImage && (
-            <div className="w-full h-36 overflow-hidden bg-black/5">
-              <img
-                src={attachment.image}
-                alt=""
-                className="w-full h-full object-cover group-hover/bm:scale-[1.03] transition-transform duration-300 opacity-0"
-                style={{ transition: "opacity 0.3s ease-out, transform 0.3s" }}
-                loading="lazy"
-                draggable={false}
-                onLoad={(e) => { e.currentTarget.style.opacity = "1"; }}
-                onError={(e) => { e.currentTarget.parentElement.style.display = "none"; }}
-              />
-            </div>
-          )}
-          <div className="p-3.5 space-y-1.5">
-            <div className="flex items-center gap-1.5 text-black/50 dark:text-white/50">
-              {attachment.favicon ? (
-                <img src={attachment.favicon} alt="" className="w-3.5 h-3.5 rounded-sm" onError={(e) => { e.currentTarget.style.display = "none"; }} />
-              ) : (
-                <Globe className="w-3.5 h-3.5" />
-              )}
-              <span className="text-[0.625rem] font-medium truncate">{domain}</span>
-              <ExternalLink className="w-2.5 h-2.5 ml-auto opacity-0 group-hover/bm:opacity-100 transition-opacity" />
-            </div>
-            <p className="text-sm font-semibold text-black/85 dark:text-white/85 leading-snug line-clamp-2">{displayTitle}</p>
-            {desc && <p className="text-xs text-black/55 dark:text-white/55 leading-relaxed line-clamp-3">{desc}</p>}
-            {!hasImage && !desc && linkUrl && (
-              <p className="text-xs text-black/40 dark:text-white/40 truncate">{linkUrl}</p>
-            )}
-          </div>
-        </a>
+        <LinkPreview
+          url={linkUrl}
+          title={attachment.title || title || ""}
+          description={String(attachment.description || "")}
+          image={attachment.image || ""}
+          siteName={attachment.siteName || ""}
+          favicon={attachment.favicon || ""}
+          authorName={attachment.authorName || ""}
+          authorHandle={attachment.authorHandle || ""}
+          oembedType={attachment.oembedType || ""}
+          variant="vault"
+        />
       );
     }
 

@@ -1607,23 +1607,31 @@ export default function OmniaGridPage() {
   useEffect(() => {
     const el = chatScrollRef.current;
     if (!el) return;
+    const markScrolledUp = () => { chatUserScrolledUpRef.current = true; };
     const onWheel = (e: WheelEvent) => {
-      if (e.deltaY < 0) chatUserScrolledUpRef.current = true;
+      if (e.deltaY < 0) markScrolledUp();
     };
-    const onTouchStart = () => { chatUserScrolledUpRef.current = true; };
+    const onTouchStart = () => { markScrolledUp(); };
+    const onKeyDown = (e: KeyboardEvent) => {
+      const k = e.key;
+      if (k === "ArrowUp" || k === "PageUp" || k === "Home") markScrolledUp();
+    };
     const onScroll = () => {
       if (chatProgrammaticScrollRef.current) {
         chatProgrammaticScrollRef.current = false;
         return;
       }
-      if (chatIsNearBottom()) chatUserScrolledUpRef.current = false;
+      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 4;
+      chatUserScrolledUpRef.current = !atBottom;
     };
     el.addEventListener("wheel", onWheel, { passive: true });
     el.addEventListener("touchstart", onTouchStart, { passive: true });
+    el.addEventListener("keydown", onKeyDown);
     el.addEventListener("scroll", onScroll, { passive: true });
     return () => {
       el.removeEventListener("wheel", onWheel);
       el.removeEventListener("touchstart", onTouchStart);
+      el.removeEventListener("keydown", onKeyDown);
       el.removeEventListener("scroll", onScroll);
     };
   }, [chatMode, chatRailVisible, chatIsNearBottom]);
@@ -2178,6 +2186,27 @@ export default function OmniaGridPage() {
     const cx = e.clientX;
     const cy = e.clientY;
 
+    // Convert client (screen) coords to snapped world coords, matching
+    // Canvas.tsx `clientToWorld` (accounts for the canvas scroll container's
+    // position, zoom, and SURFACE_ORIGIN_PAD baked into `camera.x/y`).
+    const worldFromClient = (clientX: number, clientY: number) => {
+      const st = useCanvasStore.getState() as any;
+      const g = Math.max(1, Math.floor(st.gridSize || 24));
+      const cam = st.camera || { x: 0, y: 0, zoom: 1 };
+      const z = Number(cam.zoom) || 1;
+      const canvasEl = document.querySelector<HTMLElement>(".overflow-auto.overscroll-contain");
+      const rect = canvasEl?.getBoundingClientRect();
+      const localX = rect ? clientX - rect.left : clientX;
+      const localY = rect ? clientY - rect.top : clientY;
+      const worldX = (Number(cam.x) || 0) + localX / z;
+      const worldY = (Number(cam.y) || 0) + localY / z;
+      return {
+        wx: Math.round(worldX / g) * g,
+        wy: Math.round(worldY / g) * g,
+        g,
+      };
+    };
+
     const toFile = (dataUrl: string, name: string): File | null => {
       try {
         const parts = dataUrl.split(",");
@@ -2209,13 +2238,7 @@ export default function OmniaGridPage() {
           return blk && (blk.videoId === extractedVid || blk.data?.videoId === extractedVid || blk.url === ytUrl || blk.data?.url === ytUrl);
         });
         if (alreadyOnCanvas) { if (import.meta.env.DEV) console.log("[VAULT-DROP] YouTube duplicate, skipping"); return; }
-        const g = Math.max(1, Math.floor(st.gridSize || 24));
-        const canvasEl = document.querySelector<HTMLElement>(".overflow-auto.overscroll-contain");
-        const rect = canvasEl?.getBoundingClientRect();
-        const localX = rect ? cx - rect.left : cx;
-        const localY = rect ? cy - rect.top : cy;
-        const wx = Math.round(localX / g) * g;
-        const wy = Math.round((Number(st.camera?.y || 0) + localY) / g) * g;
+        const { wx, wy } = worldFromClient(cx, cy);
         if (import.meta.env.DEV) console.log("[VAULT-DROP] Creating YouTube block");
         st.addYouTubeBlockAt({ x: wx, y: wy }, { url: ytUrl, videoId: extractedVid });
       } else {
@@ -2260,13 +2283,7 @@ export default function OmniaGridPage() {
         (async () => {
           const dropMode = await promptFileDropMode(pdfTitle, "pdf");
           const st = useCanvasStore.getState();
-          const g = Math.max(1, Math.floor(st.gridSize || 24));
-          const canvasEl = document.querySelector<HTMLElement>(".overflow-auto.overscroll-contain");
-          const rect = canvasEl?.getBoundingClientRect();
-          const localX = rect ? cx - rect.left : cx;
-          const localY = rect ? cy - rect.top : cy;
-          const wx = Math.round(localX / g) * g;
-          const wy = Math.round((Number(st.camera?.y || 0) + localY) / g) * g;
+          const { wx, wy, g } = worldFromClient(cx, cy);
 
           if (dropMode === "link") {
             st.addBlock({

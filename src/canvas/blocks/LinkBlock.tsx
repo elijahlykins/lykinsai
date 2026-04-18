@@ -1,10 +1,11 @@
 import React, { memo, useMemo, useRef } from "react";
-import { ExternalLink, FileText, Globe, Link as LinkIcon, Music2, Video } from "lucide-react";
+import { Music2 } from "lucide-react";
 import { useCanvasStore } from "@/store/canvasStore";
 import { snapToGrid } from "@/canvas/utils/snap";
 import { BlockHoverToolbar } from "./BlockHoverToolbar";
 import { detectSocialPlatform, isSocialEmbedType } from "@/canvas/utils/socialEmbed";
 import { SocialEmbedInline } from "./SocialEmbedBlock";
+import LinkPreview from "@/components/LinkPreview";
 
 type DragState = {
   pointerId: number;
@@ -35,15 +36,6 @@ type ResizeState = {
   raf: number | null;
   capturer: HTMLElement | null;
 };
-
-function safeHostname(urlStr: string) {
-  try {
-    const u = new URL(urlStr);
-    return u.hostname.replace(/^www\./, "");
-  } catch {
-    return "";
-  }
-}
 
 function fileNameFromUrl(input: string) {
   const raw = String(input || "").trim();
@@ -107,7 +99,6 @@ export const LinkBlock = memo(function LinkBlock({ id, onMinimize, onMenu }: { i
   const mime = isCreate ? String(data.mime || "") : "";
   if (!url) return null;
 
-  const host = safeHostname(url);
   const oembedType = isCreate ? String(data.oembedType || "") : "";
   const previewKind = inferPreviewKind(url, mime, name, oembedType);
   const snapSize = (n: number) => {
@@ -413,104 +404,21 @@ export const LinkBlock = memo(function LinkBlock({ id, onMinimize, onMenu }: { i
               authorHandle={String(data.authorHandle || "")}
             />
           )}
-          {previewKind === "link" && (() => {
-            const ogTitle = String(data.ogTitle || "").trim();
-            const ogDesc = String(data.ogDescription || "").trim();
-            const ogImage = String(data.ogImage || "").trim();
-            const ogSiteName = String(data.ogSiteName || "").trim();
-            const ogFavicon = String(data.ogFavicon || "").trim();
-            const oembedType = String(data.oembedType || "").trim();
-            const authorName = String(data.authorName || "").trim();
-            const authorHandle = String(data.authorHandle || "").trim();
-            const hasOg = Boolean(ogTitle);
-
-            if (oembedType === "twitter" && ogDesc) {
-              return (
-                <button
-                  type="button"
-                  className="w-full h-full flex flex-col text-left overflow-hidden group/bm"
-                  onPointerDown={(e) => e.stopPropagation()}
-                  onClick={(e) => { e.stopPropagation(); open(); }}
-                  title={url}
-                >
-                  <div className="p-4 flex flex-col gap-2.5 h-full">
-                    <div className="flex items-center gap-2">
-                      <svg viewBox="0 0 24 24" className="w-4 h-4 shrink-0 fill-current text-gray-800 dark:text-gray-200" aria-hidden="true">
-                        <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
-                      </svg>
-                      <div className="min-w-0 flex-1">
-                        <span className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate block leading-tight">{authorName}</span>
-                        {authorHandle && <span className="text-[0.625rem] text-gray-500 dark:text-gray-400 truncate block leading-tight">{authorHandle}</span>}
-                      </div>
-                      <ExternalLink className="w-3 h-3 opacity-0 group-hover/bm:opacity-60 transition-opacity shrink-0" />
-                    </div>
-                    <p className="text-[13px] text-gray-800 dark:text-gray-200 leading-relaxed flex-1 overflow-hidden whitespace-pre-line line-clamp-[12]">{ogDesc}</p>
-                    <div className="flex items-center gap-1.5 text-gray-400 dark:text-gray-500 pt-1 border-t border-gray-200/50 dark:border-white/8">
-                      <span className="text-[0.6rem]">X (Twitter)</span>
-                    </div>
-                  </div>
-                </button>
-              );
-            }
-
-            if (hasOg) {
-              const domain = ogSiteName || host;
-              return (
-                <button
-                  type="button"
-                  className="w-full h-full flex flex-col text-left overflow-hidden group/bm"
-                  onPointerDown={(e) => e.stopPropagation()}
-                  onClick={(e) => { e.stopPropagation(); open(); }}
-                  title={url}
-                >
-                  {ogImage && (
-                    <div className="w-full flex-1 min-h-0 overflow-hidden bg-black/5">
-                      <img
-                        src={ogImage}
-                        alt=""
-                        className="w-full h-full object-cover group-hover/bm:scale-[1.03] transition-transform duration-300"
-                        draggable={false}
-                        onError={(e) => { (e.currentTarget as HTMLElement).parentElement!.style.display = "none"; }}
-                      />
-                    </div>
-                  )}
-                  <div className="p-3 space-y-1 shrink-0">
-                    <div className="flex items-center gap-1.5 text-gray-500 dark:text-gray-400">
-                      {ogFavicon ? (
-                        <img src={ogFavicon} alt="" className="w-3.5 h-3.5 rounded-sm" onError={(e) => { (e.currentTarget as HTMLElement).style.display = "none"; }} />
-                      ) : (
-                        <Globe className="w-3.5 h-3.5" />
-                      )}
-                      <span className="text-[0.625rem] font-medium truncate">{domain}</span>
-                      <ExternalLink className="w-2.5 h-2.5 ml-auto opacity-0 group-hover/bm:opacity-100 transition-opacity" />
-                    </div>
-                    <p className="text-sm font-semibold text-gray-900 dark:text-gray-100 leading-snug line-clamp-2">{ogTitle}</p>
-                    {ogDesc && <p className="text-xs text-gray-600/80 dark:text-gray-300/70 leading-relaxed line-clamp-2">{ogDesc}</p>}
-                  </div>
-                </button>
-              );
-            }
-            return (
-              <button
-                type="button"
-                className="w-full h-full px-3 py-2 flex items-center gap-3 text-left"
-                onPointerDown={(e) => e.stopPropagation()}
-                onClick={(e) => { e.stopPropagation(); open(); }}
-                title={url}
-              >
-                <div className="w-9 h-9 rounded-lg bg-white/18 dark:bg-white/10 border border-white/18 flex items-center justify-center shrink-0">
-                  <LinkIcon className="w-4 h-4" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{host || name || "Link"}</div>
-                  <div className="text-xs text-gray-600/80 dark:text-gray-300/70 truncate">{url}</div>
-                </div>
-                <div className="w-9 h-9 rounded-lg bg-white/18 dark:bg-white/10 border border-white/18 flex items-center justify-center shrink-0">
-                  <ExternalLink className="w-4 h-4" />
-                </div>
-              </button>
-            );
-          })()}
+          {previewKind === "link" && (
+            <LinkPreview
+              url={url}
+              title={String(data.ogTitle || "")}
+              description={String(data.ogDescription || "")}
+              image={String(data.ogImage || "")}
+              siteName={String(data.ogSiteName || "")}
+              favicon={String(data.ogFavicon || "")}
+              authorName={String(data.authorName || "")}
+              authorHandle={String(data.authorHandle || "")}
+              oembedType={String(data.oembedType || "")}
+              variant="canvas"
+              onOpen={open}
+            />
+          )}
 
         </div>
 

@@ -454,7 +454,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       );
     },
     strong: ({ children }: any) => React.createElement("strong", { className: "font-semibold" }, children),
-    blockquote: ({ children }: any) => React.createElement("blockquote", { className: "border-l-2 border-black/20 pl-3 my-2 text-black/70 italic" }, children),
+    blockquote: ({ children }: any) => React.createElement("blockquote", { className: "border-l-2 border-black/20 dark:border-white/20 pl-3 my-2 text-black/70 dark:text-white/70 italic" }, children),
     code: ({ children, className }: any) => {
       const isBlock = className?.startsWith("language-");
       if (isBlock) return React.createElement("pre", { className: "rounded-lg bg-black/5 p-3 my-2 overflow-x-auto text-[0.85em]" }, React.createElement("code", null, children));
@@ -609,7 +609,12 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
 
   const isVideoQuestion = useCallback((s: string) => {
     const t = String(s || "").toLowerCase();
-    return /(video|youtube|clip|short|reel|summari[sz]e.*video|explain.*video|talk.*about.*video|what.*video.*about|what.*youtube.*about|what.*does.*he.*say|what.*does.*she.*say|what.*do.*they.*say|what.*is.*this.*about|what.*are.*they.*talking|what.*is.*he.*talking|what.*is.*she.*talking|summarize\s+this|explain\s+this|break\s+this\s+down|what.*main\s+point|key\s+takeaway|transcri(?:be|pt|ption)|what.*saying|what.*said|watch|recap|overview\s+of\s+this)/i.test(t);
+    const hasVideoWord = /\b(video|youtube|clip|short|reel|transcript|watch|recording)\b/i.test(t);
+    if (hasVideoWord) return true;
+    if (/transcri(?:be|pt|ption)/i.test(t)) return true;
+    const hasPronouns = /\b(he|she|they|speaker|narrator|host|presenter)\b/i.test(t);
+    if (hasPronouns && /\b(say(?:s|ing)?|said|talk(?:s|ing)?|mention|discuss|explain|point)\b/i.test(t)) return true;
+    return false;
   }, []);
 
   const sanitizeAssistantResponse = useCallback((s: string) => String(s || "").trim(), []);
@@ -715,16 +720,128 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     return links.slice(0, 5);
   }, []);
 
-  const extractAndEmbedMediaItems = useCallback(async (aiText: string, responseBlockId: string | null): Promise<{ cleanText: string; pulled: number }> => {
+  const extractAndEmbedMediaItems = useCallback(async (aiText: string, _responseBlockId: string | null): Promise<{ cleanText: string; pulled: number }> => {
     const re = /\[PULL_MEDIA:([^\]|]+?)(?:\|(\d+))?\]/g;
     const pulls: { noteId: string; attIndex: number }[] = [];
     let m: RegExpExecArray | null;
     while ((m = re.exec(aiText)) !== null) { const nid = m[1].trim(); const ai = m[2] !== undefined ? parseInt(m[2], 10) : 0; if (nid) pulls.push({ noteId: nid, attIndex: ai }); }
     if (!pulls.length) return { cleanText: aiText, pulled: 0 };
     const cleanText = aiText.replace(/\s*\[PULL_MEDIA:[^\]]*\]/g, "").trimEnd();
-    // Simplified: just return clean text and count. The full media pull logic stays here for fidelity.
-    return { cleanText, pulled: 0 };
-  }, []);
+
+    let pulled = 0;
+    const st = useCanvasStore.getState() as any;
+    const g = Math.max(1, Math.floor(st.gridSize || 24));
+    const vw = window.innerWidth || 1280;
+    const vh = window.innerHeight || 800;
+
+    const seenNotes = new Map<string, Record<string, unknown>>();
+
+    for (const pull of pulls) {
+      try {
+        let note = seenNotes.get(pull.noteId);
+        if (!note) {
+          const { data, error } = await supabase.from("notes").select("id, title, content, attachments, source").eq("id", pull.noteId).single();
+          if (error || !data) continue;
+          note = data as Record<string, unknown>;
+          seenNotes.set(pull.noteId, note);
+        }
+
+        const rawAtts: unknown[] = [];
+        if (Array.isArray(note.attachments)) rawAtts.push(...note.attachments);
+        else if (typeof note.attachments === "string") { try { const p = JSON.parse(note.attachments as string); if (Array.isArray(p)) rawAtts.push(...p); } catch {} }
+        if (rawAtts.length === 0 && note.content) {
+          const c = String(note.content);
+          const marker = "[ATTACHMENTS_JSON:";
+          const start = c.indexOf(marker);
+          if (start !== -1) {
+            const jsonStart = start + marker.length;
+            let bc = 0, jsonEnd = jsonStart;
+            for (let i = jsonStart; i < c.length; i++) { if (c[i] === "[") bc++; if (c[i] === "]") { bc--; if (bc === 0) { jsonEnd = i + 1; break; } } }
+            if (jsonEnd > jsonStart) { try { const p = JSON.parse(c.slice(jsonStart, jsonEnd)); if (Array.isArray(p)) rawAtts.push(...p); } catch {} }
+          }
+        }
+
+        const att = rawAtts[pull.attIndex] as Record<string, unknown> | undefined;
+
+        if (!att) {
+          const noteContent = String(note.content || "").trim();
+          const noteTitle = String(note.title || "Quick Note").trim();
+          if (!noteContent) continue;
+          const content = noteTitle ? `# ${noteTitle}\n\n${noteContent}` : noteContent;
+          const bw = g * 12; const bh = g * 6;
+          const pos = findSmartPlacement({ blockW: bw, blockH: bh, gridSize: g, camera: st.camera || { x: 0, y: 0, zoom: 1 }, viewportW: vw, viewportH: vh, railWidth: 0, existingBlocks: Object.values(st.blocks || {}).filter(Boolean) as any[] });
+          const id = addTextBlockAt({ x: pos.x, y: pos.y }, { width: bw, height: bh, content, format: "rich" });
+          if (id) { st.updateBlock(id, { data: { ...((st.blocks as any)?.[id]?.data || {}), vaultPulled: true } }); pulled++; }
+          continue;
+        }
+
+        const attUrl = String(att.url || "").trim();
+        const storagePath = String(att.storagePath || "").trim();
+        const bucket = String(att.storageBucket || "user-files").trim() || "user-files";
+        const attName = String(att.name || note.title || "Vault item").trim();
+
+        let resolvedUrl = attUrl;
+        if (storagePath) {
+          try {
+            const { data: signed } = await supabase.storage.from(bucket).createSignedUrl(storagePath, 60 * 60 * 24 * 7);
+            if (signed?.signedUrl) resolvedUrl = signed.signedUrl;
+          } catch {}
+        } else if (attUrl && !attUrl.startsWith("http") && !attUrl.startsWith("data:")) {
+          try {
+            const { data: signed } = await supabase.storage.from(bucket).createSignedUrl(attUrl, 60 * 60 * 24 * 7);
+            if (signed?.signedUrl) resolvedUrl = signed.signedUrl;
+          } catch {}
+        }
+
+        const ext = ((resolvedUrl.split("/").pop() || attName).match(/\.([^.]+)$/) || [])[1]?.toLowerCase() || "";
+        const imgExts = ["jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "heic", "heif", "tiff"];
+        const vidExts = ["mp4", "mov", "avi", "mkv", "webm", "m4v", "wmv"];
+        const isImage = att.type === "image" || imgExts.includes(ext) || resolvedUrl.startsWith("data:image/");
+        const isVideo = att.type === "video" || vidExts.includes(ext) || resolvedUrl.startsWith("data:video/");
+        const isYouTube = resolvedUrl.includes("youtube.com") || resolvedUrl.includes("youtu.be");
+        const isBookmark = att.type === "bookmark" || att.type === "link" || !!att.siteName || !!att.articleText;
+
+        if (isYouTube) {
+          const vidId = extractYouTubeVideoId(resolvedUrl);
+          if (vidId) {
+            const pos = findSmartPlacement({ blockW: g * 12, blockH: g * 8, gridSize: g, camera: st.camera || { x: 0, y: 0, zoom: 1 }, viewportW: vw, viewportH: vh, railWidth: 0, existingBlocks: Object.values(st.blocks || {}).filter(Boolean) as any[] });
+            st.addYouTubeBlockAt({ x: pos.x, y: pos.y }, { url: resolvedUrl, videoId: vidId });
+            pulled++;
+          }
+        } else if (isImage && resolvedUrl) {
+          const pos = findSmartPlacement({ blockW: g * 12, blockH: g * 10, gridSize: g, camera: st.camera || { x: 0, y: 0, zoom: 1 }, viewportW: vw, viewportH: vh, railWidth: 0, existingBlocks: Object.values(st.blocks || {}).filter(Boolean) as any[] });
+          const bid = `create-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+          st.addBlock({ id: bid, type: "create", mode: "image", x: pos.x, y: pos.y, width: g * 12, height: g * 10, data: { src: resolvedUrl, url: resolvedUrl, name: attName, storagePath, storageBucket: bucket, vaultPulled: true }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+          pulled++;
+        } else if (isVideo && resolvedUrl) {
+          const pos = findSmartPlacement({ blockW: g * 12, blockH: g * 10, gridSize: g, camera: st.camera || { x: 0, y: 0, zoom: 1 }, viewportW: vw, viewportH: vh, railWidth: 0, existingBlocks: Object.values(st.blocks || {}).filter(Boolean) as any[] });
+          const bid = `create-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+          st.addBlock({ id: bid, type: "create", mode: "video", x: pos.x, y: pos.y, width: g * 12, height: g * 10, data: { src: resolvedUrl, url: resolvedUrl, name: attName, storagePath, storageBucket: bucket, vaultPulled: true }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+          pulled++;
+        } else if (isBookmark) {
+          const title = String(att.name || att.siteName || note.title || "Bookmark").trim();
+          const articleText = String(att.articleText || "").trim();
+          const desc = String(att.description || "").trim();
+          const content = articleText ? `# ${title}\n\n${articleText}` : desc ? `# ${title}\n\n${desc}` : `# ${title}\n\n${resolvedUrl}`;
+          const bw = g * 12; const bh = g * 6;
+          const pos = findSmartPlacement({ blockW: bw, blockH: bh, gridSize: g, camera: st.camera || { x: 0, y: 0, zoom: 1 }, viewportW: vw, viewportH: vh, railWidth: 0, existingBlocks: Object.values(st.blocks || {}).filter(Boolean) as any[] });
+          const id = addTextBlockAt({ x: pos.x, y: pos.y }, { width: bw, height: bh, content, format: "rich" });
+          if (id) { st.updateBlock(id, { data: { ...((st.blocks as any)?.[id]?.data || {}), vaultPulled: true } }); pulled++; }
+        } else if (resolvedUrl) {
+          const pos = findSmartPlacement({ blockW: g * 10, blockH: g * 6, gridSize: g, camera: st.camera || { x: 0, y: 0, zoom: 1 }, viewportW: vw, viewportH: vh, railWidth: 0, existingBlocks: Object.values(st.blocks || {}).filter(Boolean) as any[] });
+          window.dispatchEvent(new CustomEvent("omnia_attach_link", { detail: { url: resolvedUrl, clientX: pos.x, clientY: pos.y } }));
+          pulled++;
+        }
+      } catch {
+        // Individual pull failed; continue with others
+      }
+    }
+
+    if (pulled > 0) {
+      setTimeout(() => window.dispatchEvent(new Event("omnia_flush_save")), 500);
+    }
+    return { cleanText, pulled };
+  }, [addTextBlockAt]);
 
   const normalizeAiTextForBlock = useCallback((text: string) => String(text || "").replace(/\r\n?/g, "\n"), []);
 
@@ -1000,8 +1117,15 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
               }).join("\n")
             : "| " + headers.map(() => "").join(" | ") + " |";
           const mdTable = [headerRow, dividerRow, dataRows].join("\n");
-          const w = Math.max(g * 12, g * headers.length * 4);
-          const h = Math.max(g * 4, g * (rowData.length + 3));
+          // Match EditableMarkdownTable.autoGrow sizing so bricks render the full table without excess empty space.
+          const COL_MIN_WIDTH = 120;
+          const ROW_HEIGHT_EST = 36;
+          const HEIGHT_PADDING = 48; // add-row button (24) + wrapper my-3 margins (24)
+          const WIDTH_PADDING = 24; // brick horizontal padding + small buffer
+          const snapUp = (n: number) => Math.ceil(n / g) * g;
+          const rowCount = Math.max(1, rowData.length);
+          const w = Math.max(g * 12, snapUp(headers.length * COL_MIN_WIDTH + WIDTH_PADDING));
+          const h = Math.max(g * 5, snapUp((rowCount + 1) * ROW_HEIGHT_EST + HEIGHT_PADDING));
           const pos = getPos(w, h, rawX, rawY);
           const bid = st.addTextBlockAt({ x: pos.x, y: pos.y }, { width: w, height: h, content: mdTable, format: "rich" });
           if (bid) {
