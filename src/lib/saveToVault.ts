@@ -2,6 +2,7 @@ import { supabase } from "@/lib/supabase";
 import { detectSocialPlatform, getSocialEmbedLabel } from "@/canvas/utils/socialEmbed";
 import { afterVaultNoteSaved } from "@/lib/vault/afterVaultSave";
 import { describeVaultItemInBackground } from "@/lib/vault/describeVaultItem";
+import { notifyVaultCapIfApplicable } from "@/lib/vault/vaultCapError";
 
 interface SaveFileToVaultOptions {
   userId: string;
@@ -118,7 +119,6 @@ export async function saveFileToVault(
       content: noteContent,
       source: "project_upload",
       tags,
-      attachments: JSON.stringify(attachmentPayload),
     };
 
     let noteError: any = null;
@@ -144,6 +144,7 @@ export async function saveFileToVault(
     }
 
     if (noteError) {
+      notifyVaultCapIfApplicable(noteError);
       if (import.meta.env.DEV) console.error("[saveToVault] Error creating vault note:", noteError);
       return null;
     }
@@ -293,7 +294,6 @@ export async function saveLinkToVault(
       content: noteContent,
       source: isYouTube ? "youtube_drop" : socialPlatform ? `${socialPlatform}_drop` : "link_drop",
       tags,
-      attachments: JSON.stringify(attachmentPayload),
     };
 
     let noteError: any = null;
@@ -319,6 +319,7 @@ export async function saveLinkToVault(
     }
 
     if (noteError) {
+      notifyVaultCapIfApplicable(noteError);
       if (import.meta.env.DEV) console.error("[saveToVault] Error creating vault link note:", noteError);
       return null;
     }

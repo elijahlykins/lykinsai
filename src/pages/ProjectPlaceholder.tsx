@@ -44,6 +44,7 @@ import { extractYouTubeVideoId, getYouTubeEmbedUrl } from "@/canvas/utils/youtub
 import { getAiPrefs } from "@/lib/ai-prefs";
 import { saveFileToVault, saveLinkToVault } from "@/lib/saveToVault";
 import { afterVaultNoteSaved } from "@/lib/vault/afterVaultSave";
+import { notifyVaultCapIfApplicable } from "@/lib/vault/vaultCapError";
 import { saveExchange, getMemoryForPrompt, invalidateMemoryCache } from "@/lib/conversationMemory";
 import { splitResponseIntoChunks, normalizeChecklistSyntax, flattenNodeText, handleChunkDragStart } from "@/lib/chatChunks";
 
@@ -804,7 +805,7 @@ export default function ProjectPlaceholder() {
     if (!user?.id || !projectId) return;
     const { data: taggedNotes } = await supabase
       .from("notes")
-      .select("id, title, content, attachments, tags")
+      .select("id, title, content, tags")
       .eq("user_id", user.id)
       .contains("tags", [tagName]);
     if (!taggedNotes || taggedNotes.length === 0) {
@@ -815,9 +816,28 @@ export default function ProjectPlaceholder() {
     for (const note of taggedNotes) {
       const noteTags: string[] = Array.isArray(note.tags) ? note.tags : [];
       let attachments: any[] = [];
-      if (Array.isArray(note.attachments)) attachments = note.attachments;
-      else if (typeof note.attachments === "string") {
-        try { attachments = JSON.parse(note.attachments); } catch { /* ignore */ }
+      // Attachments live inside `content` as [ATTACHMENTS_JSON:[…]] — no dedicated column exists.
+      if (typeof note.content === "string") {
+        const marker = "[ATTACHMENTS_JSON:";
+        const start = note.content.indexOf(marker);
+        if (start !== -1) {
+          const jsonStart = start + marker.length;
+          let bracketCount = 0;
+          let jsonEnd = jsonStart;
+          for (let i = jsonStart; i < note.content.length; i += 1) {
+            if (note.content[i] === "[") bracketCount += 1;
+            if (note.content[i] === "]") {
+              bracketCount -= 1;
+              if (bracketCount === 0) { jsonEnd = i + 1; break; }
+            }
+          }
+          if (jsonEnd > jsonStart) {
+            try {
+              const parsed = JSON.parse(note.content.slice(jsonStart, jsonEnd));
+              if (Array.isArray(parsed)) attachments = parsed;
+            } catch { /* ignore malformed */ }
+          }
+        }
       }
 
       if (attachments.length > 0) {
@@ -1279,7 +1299,7 @@ export default function ProjectPlaceholder() {
       setChatChunkDragOver(false);
       chatChunkDragDepthRef.current = 0;
       try {
-        const { data: ins } = await supabase
+        const { data: ins, error } = await supabase
           .from("notes")
           .insert({
             user_id: user.id,
@@ -1288,7 +1308,9 @@ export default function ProjectPlaceholder() {
           })
           .select("id")
           .single();
-        if (ins?.id) {
+        if (error) {
+          notifyVaultCapIfApplicable(error);
+        } else if (ins?.id) {
           afterVaultNoteSaved(user.id, ins.id, { title: "Quick Note", content: chatChunkText });
         }
         setQuickNoteTitle("");
@@ -1454,7 +1476,7 @@ export default function ProjectPlaceholder() {
     setIsQuickNoteSaving(true);
     try {
       const t = quickNoteTitle.trim() || "Quick Note";
-      const { data: ins } = await supabase
+      const { data: ins, error } = await supabase
         .from("notes")
         .insert({
           user_id: user.id,
@@ -1463,7 +1485,9 @@ export default function ProjectPlaceholder() {
         })
         .select("id")
         .single();
-      if (ins?.id) {
+      if (error) {
+        notifyVaultCapIfApplicable(error);
+      } else if (ins?.id) {
         afterVaultNoteSaved(user.id, ins.id, { title: t, content });
       }
       setQuickNoteTitle("");

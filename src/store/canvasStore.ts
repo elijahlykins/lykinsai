@@ -30,8 +30,14 @@ type CanvasState = {
   canvasWidth: number | null;
   history: string[];
   future: string[];
+  // Plan-driven hard cap on non-"create" blocks per grid. `null` means no
+  // cap (Studio / Studio Pro / Studio Max). When `addBlock` is called beyond
+  // this cap, it silently refuses and fires a window event so the usage gate
+  // can surface an upgrade modal.
+  blockLimit: number | null;
 
   setCanvasWidth: (width: number | null) => void;
+  setBlockLimit: (limit: number | null) => void;
   addBlock: (block: Block) => void;
   createTextBlock: (
     x: number,
@@ -314,6 +320,7 @@ export const useCanvasStore = create<CanvasState>()(
     canvasWidth: null,
     history: [],
     future: [],
+    blockLimit: null,
     focusedBrickIds: [],
     wireConnections: [],
     recentlyDeleted: [],
@@ -326,7 +333,35 @@ export const useCanvasStore = create<CanvasState>()(
       });
     },
 
+    setBlockLimit: (limit) => {
+      set((state) => {
+        state.blockLimit = limit == null || !isFinite(limit) ? null : Math.max(1, Math.floor(limit));
+      });
+    },
+
     addBlock: (block) => {
+      const st = get();
+      // Enforce the plan's blocks-per-grid cap. The "create" placeholder is
+      // infrastructure, not user content, so it doesn't count against the cap.
+      if (st.blockLimit != null) {
+        const isRealBlock = (block as any)?.type !== "create";
+        const alreadyPresent = st.blockOrder.includes(block.id);
+        if (isRealBlock && !alreadyPresent) {
+          let nonCreateCount = 0;
+          for (const id of st.blockOrder) {
+            const b = st.blocks[id] as any;
+            if (b && b.type !== "create") nonCreateCount += 1;
+          }
+          if (nonCreateCount >= st.blockLimit) {
+            if (typeof window !== "undefined") {
+              window.dispatchEvent(
+                new CustomEvent("lykn:block-limit-reached", { detail: { limit: st.blockLimit } })
+              );
+            }
+            return;
+          }
+        }
+      }
       set((state) => {
         state.blocks[block.id] = block;
         if (!state.blockOrder.includes(block.id)) {

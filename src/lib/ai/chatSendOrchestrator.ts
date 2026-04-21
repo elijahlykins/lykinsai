@@ -3,6 +3,26 @@ import { getAiPrefs } from "@/lib/ai-prefs";
 import { CONTEXT_BUDGETS } from "@/lib/ai/promptBuilder";
 import { saveExchange, getMemoryForPrompt, invalidateMemoryCache } from "@/lib/conversationMemory";
 import { fetchNotesForVaultAi, buildVaultDetailForGridAi, type VaultAiNoteRow } from "@/lib/vault/vaultContentsForAi";
+import { toast } from "@/components/ui/use-toast";
+
+// Show a one-shot toast when the server downgrades the model. The server
+// annotates responses with `X-Model-Downgraded: from->to` whenever the caller
+// requests a model locked behind their plan. Toast once per session per pair
+// to avoid spamming chatty users.
+const notifiedDowngrades = new Set<string>();
+function maybeNotifyModelDowngrade(res: Response | null | undefined) {
+  if (!res) return;
+  const header = res.headers.get("x-model-downgraded");
+  if (!header || notifiedDowngrades.has(header)) return;
+  notifiedDowngrades.add(header);
+  const [from, to] = header.split("->");
+  try {
+    toast({
+      title: "Using a free model for now",
+      description: `${from?.trim() || "That model"} needs a higher plan — we used ${to?.trim() || "a free model"} instead.`,
+    });
+  } catch { /* toast unavailable */ }
+}
 
 /* ------------------------------------------------------------------ */
 /*  Shared types re-exported so callers don't need OmniaGrid           */
@@ -602,6 +622,7 @@ async function handleActionPath(
       signal,
     });
     clearTimeout(invokeTimeout);
+    maybeNotifyModelDowngrade(res);
     const data = await res.json().catch(() => ({}));
     if (res.ok) {
       const assistantText = p.analysis.sanitizeAssistantResponse(
@@ -647,6 +668,80 @@ async function handleActionPath(
 /* ------------------------------------------------------------------ */
 /*  Phase 5: Handle streaming response                                 */
 /* ------------------------------------------------------------------ */
+
+/* ------------------------------------------------------------------ */
+/*  Guest (logged-out) chat flow                                       */
+/*  Skips workspace/memory/tool routing; streams Gemini Flash only.    */
+/* ------------------------------------------------------------------ */
+async function runGuestChat(
+  p: ChatSendParams,
+  promptId: string,
+  cappedText: string,
+): Promise<void> {
+  const { state, streamRefs, abortController } = p;
+  const signal = abortController.signal;
+
+  state.setChatStatusText("Thinking…");
+  state.setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: "" } : m)));
+
+  const history: Array<{ role: "user" | "assistant"; content: string }> = [];
+  for (const cm of p.chatMessages) {
+    if (cm.role === "user" && cm.content) {
+      history.push({ role: "user", content: cm.content });
+      if (cm.aiResponse) history.push({ role: "assistant", content: cm.aiResponse });
+    } else if (cm.role !== "user" && cm.content) {
+      history.push({ role: "assistant", content: cm.content });
+    }
+  }
+  // Drop the most recent user entry — it's the live prompt we're about to send.
+  if (history.length && history[history.length - 1].role === "user") history.pop();
+
+  const { API_BASE_URL: apiBase } = await import("@/lib/api-config");
+
+  let streamResponse: Response | null = null;
+  try {
+    const timeout = setTimeout(() => abortController.abort(), 90_000);
+    streamResponse = await fetch(`${apiBase}/api/ai/stream-guest`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: cappedText, history }),
+      signal,
+    });
+    clearTimeout(timeout);
+  } catch {
+    streamResponse = null;
+  }
+
+  if (!streamResponse || !streamResponse.ok) {
+    let msg = "This demo is having trouble right now — please try again, or sign in for full access.";
+    if (streamResponse?.status === 429) {
+      msg = "You've hit the free preview limit for now — sign in to keep chatting.";
+    }
+    state.setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: msg } : m)));
+    p.aiThread.push({ role: "assistant", content: msg });
+    state.setChatStatusText("Answered");
+    return;
+  }
+
+  const { accumulated } = await handleStreamingResponse(p, streamResponse, promptId, null, cappedText);
+
+  if (streamRefs.streamTypingRafRef.current) {
+    clearTimeout(streamRefs.streamTypingRafRef.current);
+    streamRefs.streamTypingRafRef.current = null;
+  }
+  if (streamRefs.streamPromptIdRef.current && streamRefs.streamDisplayedLenRef.current < streamRefs.streamTargetTextRef.current.length) {
+    state.setChatMessages((prev) => prev.map((m) => (m.id === streamRefs.streamPromptIdRef.current ? { ...m, aiResponse: streamRefs.streamTargetTextRef.current } : m)));
+  }
+  streamRefs.streamTargetTextRef.current = "";
+  streamRefs.streamDisplayedLenRef.current = 0;
+  streamRefs.streamPromptIdRef.current = null;
+
+  const finalText = accumulated || "This demo is having trouble right now — please try again.";
+  state.setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: finalText } : m)));
+  p.aiThread.push({ role: "assistant", content: finalText });
+  if (p.aiThread.length > 40) p.aiThread.splice(0, p.aiThread.length - 40);
+  state.setChatStatusText("Answered");
+}
 
 async function handleStreamingResponse(
   p: ChatSendParams,
@@ -955,6 +1050,13 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
   p.aiThread.push({ role: "user", content: cappedText + (attachmentContext ? attachmentContext.slice(0, 1000) : "") });
   if (p.aiThread.length > 40) p.aiThread.splice(0, p.aiThread.length - 40);
 
+  // Guest (logged-out) path — bypass all workspace/memory/action routing and
+  // stream a lightweight Gemini-only response. No attachments, no tools.
+  if (!identity.userId) {
+    await runGuestChat(p, promptId, cappedText);
+    return;
+  }
+
   const recentThread = p.aiThread.slice(-16);
   const history = recentThread
     .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content.length > 1200 ? m.content.slice(0, 1200) + "…" : m.content}`)
@@ -1116,8 +1218,8 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
     : recentConvo;
 
   const wsContext = context.getCachedWorkspaceSummary();
-  const wantsMediaPull = /\b(pull\s*in|bring\s*in|fetch|grab|get|show\s*me|add)\b.*\b(from\s*(my\s*)?(media|saved|library|files)|that\s*(image|photo|video|pdf|file|doc|link|note)\s*(i|I)\s*saved|saved\s*(content|files|media|stuff)|from\s*media)\b/i.test(text)
-    || /\b(my\s*saved|my\s*media|from\s*media\s*page|media\s*page)\b/i.test(text);
+  const wantsMediaPull = /\b(pull|pull\s*in|bring|bring\s*in|fetch|grab|get|show\s*me|add|put|drop|insert|place)\b.*\b(from\s*(my\s*|the\s*)?(media|saved|library|files|vault)|that\s*(image|photo|video|pdf|file|doc|link|note)\s*(i|I)\s*saved|saved\s*(content|files|media|stuff)|from\s*media|vault\s*(item|items|content|file|files|note|notes)?)\b/i.test(text)
+    || /\b(my\s*saved|my\s*media|my\s*vault|the\s*vault|from\s*(my\s*|the\s*)?vault|from\s*media\s*page|media\s*page)\b/i.test(text);
   let mediaContext = "";
   if (wantsMediaPull) {
     mediaContext = wsContext?.media || "";
@@ -1206,6 +1308,9 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
     if (streamResponse.ok && streamResponse.headers.get("content-type")?.includes("text/event-stream")) {
       useStreaming = true;
     }
+    // The server swaps to a cheaper model for out-of-tier requests; tell the
+    // user so they know why they got a different answer than expected.
+    maybeNotifyModelDowngrade(streamResponse);
   } catch {
     streamResponse = null;
   }
@@ -1234,6 +1339,7 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
       signal,
     });
     clearTimeout(invokeTimeout);
+    maybeNotifyModelDowngrade(res);
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       const finalText = "This model isn\u2019t working properly right now \u2014 try another model.";

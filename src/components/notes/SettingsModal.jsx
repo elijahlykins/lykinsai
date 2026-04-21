@@ -1,16 +1,47 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
-import { Save, LogOut, User, Globe, MessageSquare, Sun, Moon, Monitor } from 'lucide-react';
+import { Save, LogOut, User, Globe, MessageSquare, Sun, Moon, Monitor, Lock, Sparkles, CreditCard } from 'lucide-react';
 
 import AboutYouSection from '@/components/intake/AboutYouSection';
 import { useAuth } from '@/lib/SupabaseAuth';
 import { supabase } from '@/lib/supabase';
+import { useNavigate } from 'react-router-dom';
+import { useUserPlan } from '@/lib/useUserPlan';
+import { isModelAllowedForPlan } from '@/lib/modelTiers';
+import { planMeets } from '@/components/PlanGate';
+import { API_BASE_URL } from '@/lib/api-config';
 
 export default function SettingsModal({ isOpen, onClose }) {
   const { user, loading, signInWithOAuth, signOut } = useAuth();
+  const { planId, modelTier, hasStripeCustomer } = useUserPlan();
+  const nav = useNavigate();
+  const [portalBusy, setPortalBusy] = useState(false);
+
+  const handleManageSubscription = useCallback(async () => {
+    if (portalBusy) return;
+    setPortalBusy(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/billing/portal`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json?.url) {
+        throw new Error(json?.message || json?.error || `Portal failed: ${res.status}`);
+      }
+      window.location.href = json.url;
+    } catch (err) {
+      if (import.meta.env.DEV) console.error('[Settings] portal failed:', err);
+      alert(err?.message || 'Could not open the billing portal.');
+      setPortalBusy(false);
+    }
+  }, [portalBusy]);
+  // Custom AI instructions are a Studio-tier feature. Free / guest users see
+  // the textarea disabled with an upgrade CTA instead.
+  const canUseCustomPrompt = planMeets(planId, "studio");
   const [settings, setSettings] = useState({
     theme: 'dark',
     layoutDensity: 'comfortable',
@@ -216,28 +247,104 @@ export default function SettingsModal({ isOpen, onClose }) {
             )}
           </div>
 
-          {/* Custom User Prompt */}
-          <div className="p-4 bg-gray-50 dark:bg-[#1f1d1d]/80 rounded-xl border border-gray-200 dark:border-gray-700">
+          {/* Subscription — lets paid users open the Stripe portal directly
+              without navigating to /billing first. Free signed-in users get
+              an Upgrade CTA. */}
+          {user && (
+            <div className="p-4 bg-gray-50 dark:bg-[#1f1d1d]/80 rounded-xl border border-gray-200 dark:border-gray-700">
+              <div className="flex items-center gap-3 mb-3">
+                <div className="w-10 h-10 rounded-full bg-gray-200 dark:bg-gray-700 flex items-center justify-center">
+                  <CreditCard className="w-5 h-5 text-gray-600 dark:text-gray-300" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="font-semibold text-black dark:text-white">
+                    Subscription
+                  </p>
+                  <p className="text-sm text-gray-600 dark:text-gray-400 truncate">
+                    {planId === "free"
+                      ? "You're on Free"
+                      : planId === "studio"
+                        ? "You're on Studio"
+                        : planId === "studio_pro"
+                          ? "You're on Studio Pro"
+                          : planId === "studio_max"
+                            ? "You're on Studio Max"
+                            : `Plan: ${planId}`}
+                  </p>
+                </div>
+              </div>
+              <div className="flex flex-col sm:flex-row gap-2">
+                {hasStripeCustomer ? (
+                  <Button
+                    onClick={handleManageSubscription}
+                    disabled={portalBusy}
+                    variant="outline"
+                    className="flex-1 border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#171515] flex items-center justify-center gap-2"
+                  >
+                    <CreditCard className="w-4 h-4" />
+                    {portalBusy ? "Opening…" : "Manage subscription"}
+                  </Button>
+                ) : (
+                  <Button
+                    onClick={() => { onClose(); nav("/billing"); }}
+                    className="flex-1 bg-black text-white hover:bg-black/90 dark:bg-white dark:text-black dark:hover:bg-white/90 flex items-center justify-center gap-2"
+                  >
+                    <Sparkles className="w-4 h-4" />
+                    Upgrade plan
+                  </Button>
+                )}
+                <Button
+                  onClick={() => { onClose(); nav("/billing"); }}
+                  variant="outline"
+                  className="flex-1 border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#171515]"
+                >
+                  {hasStripeCustomer ? "Change plan" : "View plans"}
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {/* Custom User Prompt (Studio+) */}
+          <div className="p-4 bg-gray-50 dark:bg-[#1f1d1d]/80 rounded-xl border border-gray-200 dark:border-gray-700 relative">
             <div className="flex items-center gap-3 mb-3">
               <div className="w-10 h-10 rounded-full bg-gray-200 dark:bg-gray-700 flex items-center justify-center">
                 <MessageSquare className="w-5 h-5 text-gray-600 dark:text-gray-300" />
               </div>
               <div className="flex-1">
-                <p className="font-semibold text-black dark:text-white">Personal AI Instructions</p>
+                <p className="font-semibold text-black dark:text-white flex items-center gap-1.5">
+                  Personal AI Instructions
+                  {!canUseCustomPrompt && <Lock className="w-3.5 h-3.5 text-amber-500 dark:text-amber-400" aria-label="Studio-only feature" />}
+                </p>
                 <p className="text-sm text-gray-600 dark:text-gray-400">
-                  Tell the AI about yourself and how you want it to respond
+                  {canUseCustomPrompt
+                    ? "Tell the AI about yourself and how you want it to respond"
+                    : "Customize how the AI responds to you — available on Studio and above."}
                 </p>
               </div>
             </div>
             <textarea
               value={settings.userPrompt || ''}
-              onChange={(e) => setSettings({ ...settings, userPrompt: e.target.value })}
-              placeholder="e.g. I'm a software developer. Always respond in concise bullet points. I prefer technical explanations over simplified ones."
-              className="w-full h-28 px-3 py-2 text-sm bg-white dark:bg-[#171515] border border-gray-200 dark:border-gray-700 text-black dark:text-white rounded-lg resize-none focus:outline-none focus:ring-1 focus:ring-black/20 dark:focus:ring-white/20"
+              onChange={(e) => { if (canUseCustomPrompt) setSettings({ ...settings, userPrompt: e.target.value }); }}
+              readOnly={!canUseCustomPrompt}
+              placeholder={canUseCustomPrompt
+                ? "e.g. I'm a software developer. Always respond in concise bullet points. I prefer technical explanations over simplified ones."
+                : "Upgrade to Studio to personalize every AI response."}
+              className={`w-full h-28 px-3 py-2 text-sm bg-white dark:bg-[#171515] border border-gray-200 dark:border-gray-700 text-black dark:text-white rounded-lg resize-none focus:outline-none focus:ring-1 focus:ring-black/20 dark:focus:ring-white/20 ${!canUseCustomPrompt ? 'opacity-60 cursor-not-allowed' : ''}`}
             />
-            <p className="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
-              This is added to every AI conversation so it knows your preferences.
-            </p>
+            {canUseCustomPrompt ? (
+              <p className="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                This is added to every AI conversation so it knows your preferences.
+              </p>
+            ) : (
+              <button
+                type="button"
+                onClick={() => { onClose(); nav("/billing"); }}
+                className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold text-blue-600 dark:text-blue-400 hover:underline"
+              >
+                <Sparkles className="w-3 h-3" />
+                Upgrade to Studio
+              </button>
+            )}
           </div>
 
           {user ? <AboutYouSection isOpen={isOpen} /> : null}
@@ -275,86 +382,111 @@ export default function SettingsModal({ isOpen, onClose }) {
             <div className="space-y-2">
               <Label className="text-gray-900 dark:text-white">AI Model</Label>
               <Select value={settings.aiModel} onValueChange={(value) => {
+                // Block locked selections so the stored preference never holds
+                // a model the plan can't run. The top-level model picker
+                // already surfaces a toast on locked clicks.
+                if (!isModelAllowedForPlan(value, modelTier)) return;
                 setSettings({...settings, aiModel: value});
-                // Save immediately so Create page can sync
                 const updatedSettings = {...settings, aiModel: value};
                 localStorage.setItem('lykinsai_settings', JSON.stringify(updatedSettings));
-                // Trigger custom event for immediate sync (same-tab)
                 window.dispatchEvent(new CustomEvent('lykinsai_settings_changed'));
               }}>
                 <SelectTrigger className="bg-white/60 dark:bg-gray-800/60 border-white/40 dark:border-gray-700/40 text-gray-900 dark:text-white backdrop-blur-md rounded-xl">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent className="bg-glass-card border-white/15 dark:border-gray-700/20 backdrop-blur-md">
-                    <SelectGroup>
-                      <SelectLabel>Latest</SelectLabel>
-                      <SelectItem value="claude-sonnet-4-6" hint="Anthropic flagship">Claude Sonnet 4.6</SelectItem>
-                      <SelectItem value="gpt-5.4" hint="OpenAI flagship">GPT-5.4</SelectItem>
-                      <SelectItem value="gemini-3.1-pro-preview" hint="Google flagship">Gemini 3.1 Pro</SelectItem>
-                      <SelectItem value="grok-4-1-fast-reasoning" hint="xAI flagship">Grok 4.1 Fast Reasoning</SelectItem>
-                    </SelectGroup>
-                    <SelectSeparator />
-                    <SelectGroup>
-                      <SelectLabel>Fastest</SelectLabel>
-                      <SelectItem value="gemini-3-flash-preview" hint="Google, ultra-fast">Gemini 3 Flash</SelectItem>
-                      <SelectItem value="gemini-3.1-flash-lite-preview" hint="Google, cheapest">Gemini 3.1 Flash-Lite</SelectItem>
-                      <SelectItem value="gemini-2.5-flash" hint="Google, balanced">Gemini 2.5 Flash</SelectItem>
-                      <SelectItem value="gpt-4.1-nano" hint="OpenAI, smallest">GPT-4.1 Nano</SelectItem>
-                      <SelectItem value="gpt-4.1-mini" hint="OpenAI, fast + smart">GPT-4.1 Mini</SelectItem>
-                      <SelectItem value="gpt-5-mini" hint="OpenAI, near-frontier">GPT-5 Mini</SelectItem>
-                      <SelectItem value="claude-haiku-4-5-20251001" hint="Anthropic, fast">Claude Haiku 4.5</SelectItem>
-                      <SelectItem value="grok-4-1-fast-non-reasoning" hint="xAI, low latency">Grok 4.1 Fast Non-Reasoning</SelectItem>
-                    </SelectGroup>
-                    <SelectSeparator />
-                    <SelectGroup>
-                      <SelectLabel>Cheap</SelectLabel>
-                      <SelectItem value="gpt-4o-mini" hint="OpenAI, budget">GPT-4o Mini</SelectItem>
-                      <SelectItem value="o4-mini" hint="OpenAI, cheap reasoning">o4 Mini</SelectItem>
-                      <SelectItem value="grok-3-mini" hint="xAI, budget">Grok 3 Mini</SelectItem>
-                    </SelectGroup>
-                    <SelectSeparator />
-                    <SelectGroup>
-                      <SelectLabel>Image Gen</SelectLabel>
-                      <SelectItem value="gpt-image-1.5" hint="OpenAI, images">GPT Image 1.5</SelectItem>
-                      <SelectItem value="gemini-3.1-flash-image-preview" hint="Google, images">Nano Banana 2</SelectItem>
-                      <SelectItem value="grok-imagine-image-pro" hint="xAI, pro images">Grok Imagine Image Pro</SelectItem>
-                      <SelectItem value="grok-imagine-image" hint="xAI, images">Grok Imagine Image</SelectItem>
-                      <SelectItem value="grok-2-image-1212" hint="xAI, images">Grok 2 Image</SelectItem>
-                      <SelectItem value="dall-e-3" hint="OpenAI, images">DALL-E 3</SelectItem>
-                    </SelectGroup>
-                    <SelectSeparator />
-                    <SelectGroup>
-                      <SelectLabel>Deep Thinking</SelectLabel>
-                      <SelectItem value="o3" hint="OpenAI, reasoning">o3</SelectItem>
-                      <SelectItem value="o3-pro" hint="OpenAI, max reasoning">o3 Pro</SelectItem>
-                      <SelectItem value="gpt-5.4-pro" hint="OpenAI, extended">GPT-5.4 Pro</SelectItem>
-                      <SelectItem value="claude-opus-4-1-20250805" hint="Anthropic, deep">Claude Opus 4.1</SelectItem>
-                      <SelectItem value="claude-opus-4-20250514" hint="Anthropic, deep">Claude Opus 4</SelectItem>
-                      <SelectItem value="gemini-2.5-pro" hint="Google, reasoning">Gemini 2.5 Pro</SelectItem>
-                      <SelectItem value="grok-4-fast-reasoning" hint="xAI, reasoning">Grok 4 Fast Reasoning</SelectItem>
-                    </SelectGroup>
-                    <SelectSeparator />
-                    <SelectGroup>
-                      <SelectLabel>Code</SelectLabel>
-                      <SelectItem value="claude-opus-4-6-code" hint="Anthropic, top coder">Claude Opus 4.6</SelectItem>
-                      <SelectItem value="gpt-5.3-codex" hint="OpenAI, agentic code">Codex 5.3</SelectItem>
-                      <SelectItem value="gpt-4.1" hint="OpenAI, 1M ctx code">GPT-4.1</SelectItem>
-                      <SelectItem value="grok-code-fast-1" hint="xAI, code">Grok Code Fast 1</SelectItem>
-                    </SelectGroup>
-                    <SelectSeparator />
-                    <SelectGroup>
-                      <SelectLabel>General</SelectLabel>
-                      <SelectItem value="gpt-5.2" hint="OpenAI, previous gen">GPT-5.2</SelectItem>
-                      <SelectItem value="gpt-5.1" hint="OpenAI, previous gen">GPT-5.1</SelectItem>
-                      <SelectItem value="gpt-5" hint="OpenAI, previous gen">GPT-5</SelectItem>
-                      <SelectItem value="gpt-4o" hint="OpenAI, versatile">GPT-4o</SelectItem>
-                      <SelectItem value="claude-sonnet-4-20250514" hint="Anthropic, balanced">Claude Sonnet 4</SelectItem>
-                      <SelectItem value="grok-4-fast-non-reasoning" hint="xAI, general">Grok 4 Fast Non-Reasoning</SelectItem>
-                      <SelectItem value="grok-4-0709" hint="xAI, general">Grok 4 0709</SelectItem>
-                      <SelectItem value="grok-3" hint="xAI, previous gen">Grok 3</SelectItem>
-                      <SelectItem value="grok-2-vision-1212" hint="xAI, vision">Grok 2 Vision</SelectItem>
-                      <SelectItem value="unified-auto" hint="Auto-picks best">Unified AI (Auto)</SelectItem>
-                    </SelectGroup>
+                  {(() => {
+                    const gate = (value, label, hint) => {
+                      const allowed = isModelAllowedForPlan(value, modelTier);
+                      return (
+                        <SelectItem
+                          key={value}
+                          value={value}
+                          hint={hint}
+                          disabled={!allowed}
+                          className={!allowed ? 'opacity-50 cursor-not-allowed' : undefined}
+                        >
+                          <span className="inline-flex items-center gap-1.5">
+                            {label}
+                            {!allowed && <Lock className="w-3 h-3 opacity-60" aria-label="Upgrade required" />}
+                          </span>
+                        </SelectItem>
+                      );
+                    };
+                    return (
+                      <>
+                        <SelectGroup>
+                          <SelectLabel>Latest</SelectLabel>
+                          {gate('claude-sonnet-4-6', 'Claude Sonnet 4.6', 'Anthropic flagship')}
+                          {gate('gpt-5.4', 'GPT-5.4', 'OpenAI flagship')}
+                          {gate('gemini-3.1-pro-preview', 'Gemini 3.1 Pro', 'Google flagship')}
+                          {gate('grok-4-1-fast-reasoning', 'Grok 4.1 Fast Reasoning', 'xAI flagship')}
+                        </SelectGroup>
+                        <SelectSeparator />
+                        <SelectGroup>
+                          <SelectLabel>Fastest</SelectLabel>
+                          {gate('gemini-3-flash-preview', 'Gemini 3 Flash', 'Google, ultra-fast')}
+                          {gate('gemini-3.1-flash-lite-preview', 'Gemini 3.1 Flash-Lite', 'Google, cheapest')}
+                          {gate('gemini-2.5-flash', 'Gemini 2.5 Flash', 'Google, balanced')}
+                          {gate('gpt-4.1-nano', 'GPT-4.1 Nano', 'OpenAI, smallest')}
+                          {gate('gpt-4.1-mini', 'GPT-4.1 Mini', 'OpenAI, fast + smart')}
+                          {gate('gpt-5-mini', 'GPT-5 Mini', 'OpenAI, near-frontier')}
+                          {gate('claude-haiku-4-5-20251001', 'Claude Haiku 4.5', 'Anthropic, fast')}
+                          {gate('grok-4-1-fast-non-reasoning', 'Grok 4.1 Fast Non-Reasoning', 'xAI, low latency')}
+                        </SelectGroup>
+                        <SelectSeparator />
+                        <SelectGroup>
+                          <SelectLabel>Cheap</SelectLabel>
+                          {gate('gpt-4o-mini', 'GPT-4o Mini', 'OpenAI, budget')}
+                          {gate('o4-mini', 'o4 Mini', 'OpenAI, cheap reasoning')}
+                          {gate('grok-3-mini', 'Grok 3 Mini', 'xAI, budget')}
+                        </SelectGroup>
+                        <SelectSeparator />
+                        <SelectGroup>
+                          <SelectLabel>Image Gen</SelectLabel>
+                          {gate('gpt-image-1.5', 'GPT Image 1.5', 'OpenAI, images')}
+                          {gate('gemini-3.1-flash-image-preview', 'Nano Banana 2', 'Google, images')}
+                          {gate('grok-imagine-image-pro', 'Grok Imagine Image Pro', 'xAI, pro images')}
+                          {gate('grok-imagine-image', 'Grok Imagine Image', 'xAI, images')}
+                          {gate('grok-2-image-1212', 'Grok 2 Image', 'xAI, images')}
+                          {gate('dall-e-3', 'DALL-E 3', 'OpenAI, images')}
+                        </SelectGroup>
+                        <SelectSeparator />
+                        <SelectGroup>
+                          <SelectLabel>Deep Thinking</SelectLabel>
+                          {gate('o3', 'o3', 'OpenAI, reasoning')}
+                          {gate('o3-pro', 'o3 Pro', 'OpenAI, max reasoning')}
+                          {gate('gpt-5.4-pro', 'GPT-5.4 Pro', 'OpenAI, extended')}
+                          {gate('claude-opus-4-1-20250805', 'Claude Opus 4.1', 'Anthropic, deep')}
+                          {gate('claude-opus-4-20250514', 'Claude Opus 4', 'Anthropic, deep')}
+                          {gate('gemini-2.5-pro', 'Gemini 2.5 Pro', 'Google, reasoning')}
+                          {gate('grok-4-fast-reasoning', 'Grok 4 Fast Reasoning', 'xAI, reasoning')}
+                        </SelectGroup>
+                        <SelectSeparator />
+                        <SelectGroup>
+                          <SelectLabel>Code</SelectLabel>
+                          {gate('claude-opus-4-6-code', 'Claude Opus 4.6', 'Anthropic, top coder')}
+                          {gate('gpt-5.3-codex', 'Codex 5.3', 'OpenAI, agentic code')}
+                          {gate('gpt-4.1', 'GPT-4.1', 'OpenAI, 1M ctx code')}
+                          {gate('grok-code-fast-1', 'Grok Code Fast 1', 'xAI, code')}
+                        </SelectGroup>
+                        <SelectSeparator />
+                        <SelectGroup>
+                          <SelectLabel>General</SelectLabel>
+                          {gate('gpt-5.2', 'GPT-5.2', 'OpenAI, previous gen')}
+                          {gate('gpt-5.1', 'GPT-5.1', 'OpenAI, previous gen')}
+                          {gate('gpt-5', 'GPT-5', 'OpenAI, previous gen')}
+                          {gate('gpt-4o', 'GPT-4o', 'OpenAI, versatile')}
+                          {gate('claude-sonnet-4-20250514', 'Claude Sonnet 4', 'Anthropic, balanced')}
+                          {gate('grok-4-fast-non-reasoning', 'Grok 4 Fast Non-Reasoning', 'xAI, general')}
+                          {gate('grok-4-0709', 'Grok 4 0709', 'xAI, general')}
+                          {gate('grok-3', 'Grok 3', 'xAI, previous gen')}
+                          {gate('grok-2-vision-1212', 'Grok 2 Vision', 'xAI, vision')}
+                          {gate('unified-auto', 'Unified AI (Auto)', 'Auto-picks best')}
+                        </SelectGroup>
+                      </>
+                    );
+                  })()}
                 </SelectContent>
               </Select>
             </div>

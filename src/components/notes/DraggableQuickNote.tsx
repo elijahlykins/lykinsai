@@ -1,6 +1,6 @@
 import React, { useRef } from "react";
 import { motion } from "framer-motion";
-import { X } from "lucide-react";
+import { ChevronDown, StickyNote, Loader2, Save } from "lucide-react";
 
 type DraggableQuickNoteProps = {
   title?: string;
@@ -22,33 +22,52 @@ export default function DraggableQuickNote({
   const constraintsRef = useRef<HTMLDivElement | null>(null);
 
   return (
-    <div className="fixed inset-0 pointer-events-none z-[75] flex items-center justify-center" ref={constraintsRef}>
+    <div
+      className="fixed inset-0 pointer-events-none z-[75] flex items-center justify-center"
+      ref={constraintsRef}
+    >
       <motion.div
         drag
         dragConstraints={constraintsRef}
         dragMomentum={false}
-        initial={{ x: 400, y: 0, opacity: 0, scale: 0.9 }}
+        dragElastic={0.08}
+        initial={{ x: 400, y: 0, opacity: 0, scale: 0.95 }}
         animate={{ x: 0, y: 0, opacity: 1, scale: 1 }}
-        exit={{ opacity: 0, scale: 0.9 }}
-        className="group pointer-events-auto w-[380px] max-w-[92vw] min-h-[360px] max-h-[86vh] glass-control rounded-2xl shadow-2xl p-3 relative"
+        exit={{ opacity: 0, scale: 0.95 }}
+        transition={{ type: "spring", stiffness: 260, damping: 26 }}
+        className="pointer-events-auto w-[380px] max-w-[92vw] min-h-[360px] max-h-[86vh] flex flex-col rounded-2xl border border-black/8 dark:border-white/8 bg-white/80 dark:bg-[#1e1e1e]/90 backdrop-blur-md shadow-2xl overflow-hidden"
       >
-        <div className="absolute top-3 right-3 z-20 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
-          <button
-            type="button"
-            className="h-5 w-5 text-black/70 dark:text-white/70 hover:text-red-500 flex items-center justify-center"
-            onClick={onClose}
-            title="Close"
-          >
-            <X className="w-3 h-3" />
-          </button>
+        {/* Drag handle pill */}
+        <div className="flex-shrink-0 flex justify-center pt-2 pb-1 select-none cursor-grab active:cursor-grabbing">
+          <div className="w-8 h-1 rounded-full bg-black/15 dark:bg-white/15" />
         </div>
 
-        <div className="h-full relative">
+        {/* Header — mirrors NotesPanel header */}
+        <div className="flex-shrink-0 flex items-center gap-2 px-3 pb-2 border-b border-black/6 dark:border-white/6">
+          <button
+            type="button"
+            onClick={onClose}
+            onPointerDown={(e) => e.stopPropagation()}
+            title="Close"
+            className="flex-shrink-0 flex items-center justify-center w-6 h-6 rounded-md text-black/35 dark:text-white/35 hover:text-black/60 dark:hover:text-white/60 hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
+          >
+            <ChevronDown className="w-4 h-4" />
+          </button>
+          <div className="flex-shrink-0 flex items-center gap-2">
+            <StickyNote className="w-4 h-4 text-black/40 dark:text-white/40" />
+            <h3 className="text-sm font-semibold text-black/70 dark:text-white/70">
+              Quick Note
+            </h3>
+          </div>
+        </div>
+
+        {/* Editor area — styled like the Notes editor content */}
+        <div className="flex-1 relative overflow-y-auto scrollbar-hide px-4 py-3">
           <textarea
             value={content}
             onChange={(e) => setContent(e.target.value)}
             placeholder=""
-            className="h-full w-full min-h-[340px] overflow-y-auto scrollbar-hide resize-none rounded-lg bg-transparent border border-white/35 px-3 py-3 text-sm text-black dark:text-white outline-none"
+            className="block w-full h-full min-h-[240px] resize-none bg-transparent border-0 outline-none text-sm leading-relaxed text-black/85 dark:text-white/85 placeholder:text-black/40 dark:placeholder:text-white/40"
             onPointerDownCapture={(e) => e.stopPropagation()}
             onKeyDown={(e) => {
               if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
@@ -56,16 +75,44 @@ export default function DraggableQuickNote({
                 onSave();
               }
             }}
+            autoFocus
           />
           {!content.trim() && (
-            <div className="pointer-events-none absolute inset-0 px-3 py-3 text-sm text-black/45 select-none">
-              <div>Write your quick note...</div>
-              <div className="mt-2 text-[0.6875rem] text-black/50">Tip: Press Ctrl/Cmd + Enter to save.</div>
+            <div className="pointer-events-none absolute inset-x-4 top-3 text-sm text-black/35 dark:text-white/35 select-none">
+              Start typing a quick note...
             </div>
           )}
+        </div>
+
+        {/* Footer — keyboard hint + save button */}
+        <div className="flex-shrink-0 px-3 py-2 border-t border-black/6 dark:border-white/6 flex items-center justify-between gap-2">
+          <span className="text-[11px] text-black/40 dark:text-white/40 flex items-center">
+            <kbd className="px-1 py-0.5 rounded bg-black/5 dark:bg-white/10 border border-black/8 dark:border-white/10 text-[10px] font-medium text-black/55 dark:text-white/55">
+              ⌘
+            </kbd>
+            <span className="mx-1">+</span>
+            <kbd className="px-1 py-0.5 rounded bg-black/5 dark:bg-white/10 border border-black/8 dark:border-white/10 text-[10px] font-medium text-black/55 dark:text-white/55">
+              Enter
+            </kbd>
+            <span className="ml-1.5">to save</span>
+          </span>
+          <button
+            type="button"
+            onClick={() => { void onSave(); }}
+            onPointerDown={(e) => e.stopPropagation()}
+            disabled={isSaving || !content.trim()}
+            title="Save note"
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium bg-black/85 dark:bg-white/90 text-white dark:text-black hover:bg-black dark:hover:bg-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {isSaving ? (
+              <Loader2 className="w-3 h-3 animate-spin" />
+            ) : (
+              <Save className="w-3 h-3" />
+            )}
+            <span>{isSaving ? "Saving" : "Save"}</span>
+          </button>
         </div>
       </motion.div>
     </div>
   );
 }
-

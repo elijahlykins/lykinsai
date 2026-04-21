@@ -40,7 +40,9 @@ import { useQuery, useQueryClient, useInfiniteQuery } from "@tanstack/react-quer
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select";
 import DraggableQuickNote from "@/components/notes/DraggableQuickNote";
 import DragDropFileUpload from "@/components/files/DragDropFileUpload";
+import { useVaultUploadStore } from "@/store/vaultUploadStore";
 import { useUsageGate } from "@/lib/useUsageGate";
+import { notifyVaultCapIfApplicable } from "@/lib/vault/vaultCapError";
 import UpgradeModal from "@/components/UpgradeModal";
 import { extractYouTubeVideoId, getYouTubeEmbedUrl } from "@/canvas/utils/youtube";
 import { detectSocialPlatform, isSocialEmbedType, isVerticalSocialContent } from "@/canvas/utils/socialEmbed";
@@ -526,6 +528,14 @@ export default function VaultNew() {
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState("");
   const [isChatLoading, setIsChatLoading] = useState(false);
+  const [isDictating, setIsDictating] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const mediaRecorderRef = useRef(null);
+  const mediaStreamRef = useRef(null);
+  const audioChunksRef = useRef([]);
+  const activeAiAbortRef = useRef(null);
+  const typingCancelRef = useRef(false);
+  const chatInputValueRef = useRef("");
   const [showQuickNote, setShowQuickNote] = useState(false);
   const [orderByPage, setOrderByPage] = useState({ everything: [] });
   const [draggedCardId, setDraggedCardId] = useState(null);
@@ -549,6 +559,7 @@ export default function VaultNew() {
   const [showSaveLink, setShowSaveLink] = useState(false);
   const [saveLinkUrl, setSaveLinkUrl] = useState("");
   const [saveLinkPreview, setSaveLinkPreview] = useState(null);
+  const [previewCard, setPreviewCard] = useState(null);
   const [isSaveLinkLoading, setIsSaveLinkLoading] = useState(false);
   const [isSaveLinkSaving, setIsSaveLinkSaving] = useState(false);
   const [vaultSearch, setVaultSearch] = useState("");
@@ -589,6 +600,10 @@ export default function VaultNew() {
     const maxW = Math.max(minW + 20, Math.floor(width * 0.45));
     return Math.max(minW, Math.min(maxW, Math.floor(raw || minW)));
   }, []);
+
+  useEffect(() => {
+    chatInputValueRef.current = chatInput;
+  }, [chatInput]);
 
   const isMobileChat = typeof window !== "undefined" && window.innerWidth < 640;
 
@@ -738,7 +753,9 @@ export default function VaultNew() {
       setNotes((prev) => [insertedNote, ...prev]);
       incrementVaultCount();
     } catch (err) {
-      setNotesError("Couldn't save the dropped note. Please try again.");
+      if (!notifyVaultCapIfApplicable(err)) {
+        setNotesError("Couldn't save the dropped note. Please try again.");
+      }
     }
   }, [user?.id, checkVaultLimit, incrementVaultCount]);
 
@@ -1039,9 +1056,60 @@ export default function VaultNew() {
     return () => observer.disconnect();
   }, [loadMoreNotes, loading, user?.id]);
 
+  // Optimistic "ghost" cards: in-flight uploads that already have a local
+  // preview URL but don't yet have a DB note. We render them right in the
+  // vault grid so users can play a dropped video or view a dropped image
+  // immediately — compression/upload continues in the background and the
+  // ghost swaps for the real note as soon as `onFileComplete` fires.
+  const uploadItems = useVaultUploadStore((s) => s.items);
+  const ghostCards = useMemo(() => {
+    if (!Array.isArray(uploadItems) || uploadItems.length === 0) return [];
+    const existingNoteIds = new Set(notes.map((n) => String(n?.id || "")));
+    const out = [];
+    for (const item of uploadItems) {
+      if (!item || !item.previewUrl) continue;
+      if (item.status === "error") continue;
+      // Once the real note has been merged into state, drop the ghost.
+      if (item.noteId && existingNoteIds.has(String(item.noteId))) continue;
+      const ghostType =
+        item.fileType === "image" || item.fileType === "video"
+          ? item.fileType
+          : null;
+      if (!ghostType) continue;
+      out.push({
+        id: `ghost-${item.id}`,
+        kind: "attachment",
+        ghost: true,
+        uploadItemId: item.id,
+        uploadStatus: item.status,
+        uploadProgress: item.progress,
+        noteId: null,
+        attachmentIndex: 0,
+        type: ghostType,
+        attachment: {
+          type: ghostType,
+          url: item.previewUrl,
+          name: item.filename,
+          mimeType: item.mimeType || "",
+          size: item.sizeBytes,
+        },
+        title: sanitizeCardTitle(item.filename || "Uploading…"),
+        parentTitle: sanitizeCardTitle(item.filename || "Uploading…"),
+        noteExcerpt: "",
+        dateLabel: "Uploading…",
+        tags: [],
+      });
+    }
+    return out;
+  }, [uploadItems, notes]);
+
   const vaultCards = useMemo(() => {
     const safeNotes = notes.filter((n) => n && !n.trashed);
     const cards = [];
+
+    // Ghost cards first so they render at the top of the grid — matches
+    // how fresh drops normally land (mergeUploadedNotes also prepends).
+    for (const ghost of ghostCards) cards.push(ghost);
 
     safeNotes.forEach((note) => {
       const attachments = parseAttachmentsFromNote(note);
@@ -1148,7 +1216,7 @@ export default function VaultNew() {
       }
       return true;
     });
-  }, [notes]);
+  }, [notes, ghostCards]);
 
   const [allTagsRaw, setAllTagsRaw] = useState([]);
 
@@ -1683,6 +1751,12 @@ export default function VaultNew() {
   );
 
   const handleCardDragStart = useCallback((e, card) => {
+    // In-flight (ghost) uploads aren't backed by a note yet, so dragging
+    // them around the grid (or out to the canvas) has no meaningful target.
+    if (card?.ghost) {
+      e.preventDefault();
+      return;
+    }
     if (e.target instanceof Element && e.target.closest("[data-no-drag='true']")) {
       e.preventDefault();
       return;
@@ -1760,6 +1834,39 @@ export default function VaultNew() {
       try { window.parent.postMessage({ type: "omnia-vault-drag-end" }, "*"); } catch {}
     }
   }, [isEmbeddedMode]);
+
+  // Open a full-size preview/view window when a card is clicked. Interactive
+  // elements (buttons, links, form fields, media controls, menus) opt-out
+  // either via stopPropagation or by being covered in this selector.
+  const handleCardPress = useCallback((e, card) => {
+    if (!card) return;
+    if (draggedCardId) return;
+    // Ghost cards (still-uploading previews) behave exactly like a normal
+    // card in the grid: the user can click to open the preview / view
+    // mode and watch the video. DB-bound actions (tag / delete / notes)
+    // simply no-op until the real note lands, at which point this card is
+    // swapped for the DB-backed one transparently.
+    const target = e?.target;
+    if (target && typeof target.closest === "function") {
+      if (target.closest(
+        'button, a, input, textarea, select, iframe, video, audio, [data-no-drag="true"], [data-no-preview="true"]'
+      )) {
+        return;
+      }
+    }
+    setOpenCardMenuId(null);
+    setOpenAttachmentNotesCardId(null);
+    setPreviewCard(card);
+  }, [draggedCardId]);
+
+  useEffect(() => {
+    if (!previewCard) return;
+    const onKey = (e) => {
+      if (e.key === "Escape") setPreviewCard(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [previewCard]);
 
   const getCardSearchText = useCallback((card) => {
     const parts = [];
@@ -1930,7 +2037,9 @@ export default function VaultNew() {
       setNotes((prev) => [insertedNote, ...prev]);
       incrementVaultCount();
     } catch (error) {
-      setNotesError("Couldn't save your note. Please try again.");
+      if (!notifyVaultCapIfApplicable(error)) {
+        setNotesError("Couldn't save your note. Please try again.");
+      }
     } finally {
       setIsQuickNoteSaving(false);
     }
@@ -2004,19 +2113,92 @@ export default function VaultNew() {
       setSaveLinkUrl("");
       setSaveLinkPreview(null);
     } catch (err) {
-      setNotesError("Couldn't save the link. Please try again.");
+      if (!notifyVaultCapIfApplicable(err)) {
+        setNotesError("Couldn't save the link. Please try again.");
+      }
     } finally {
       setIsSaveLinkSaving(false);
     }
   }, [user?.id, isSaveLinkSaving, saveLinkPreview, saveLinkUrl, checkVaultLimit, incrementVaultCount]);
 
+  const handleStopAi = useCallback(() => {
+    try { activeAiAbortRef.current?.abort(); } catch { /* ignore */ }
+    activeAiAbortRef.current = null;
+    typingCancelRef.current = true;
+    setIsChatLoading(false);
+  }, []);
+
+  const handleDictateToggle = useCallback(() => {
+    if (isDictating) {
+      try {
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+          mediaRecorderRef.current.stop();
+        }
+      } catch { /* ignore */ }
+      return;
+    }
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      return;
+    }
+    const mimeType = (typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported?.("audio/webm;codecs=opus"))
+      ? "audio/webm;codecs=opus"
+      : "audio/webm";
+    navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
+      mediaStreamRef.current = stream;
+      audioChunksRef.current = [];
+      const recorder = new MediaRecorder(stream, { mimeType });
+      mediaRecorderRef.current = recorder;
+      recorder.ondataavailable = (event) => {
+        if (event.data?.size > 0) audioChunksRef.current.push(event.data);
+      };
+      recorder.onstop = async () => {
+        try { mediaStreamRef.current?.getTracks?.().forEach((t) => t.stop()); } catch { /* ignore */ }
+        mediaStreamRef.current = null;
+        mediaRecorderRef.current = null;
+        setIsDictating(false);
+        const blob = new Blob(audioChunksRef.current, { type: mimeType });
+        audioChunksRef.current = [];
+        if (blob.size < 2000) return;
+        setIsTranscribing(true);
+        try {
+          const { API_BASE_URL } = await import("@/lib/api-config");
+          const formData = new FormData();
+          formData.append("audio", blob, "dictation.webm");
+          formData.append("model", "whisper-1");
+          formData.append("language", "en");
+          const cur = String(chatInputValueRef.current || "").trim();
+          if (cur) formData.append("prompt", cur.split(/\s+/).slice(-12).join(" "));
+          const res = await fetch(`${API_BASE_URL}/api/ai/transcribe`, { method: "POST", body: formData });
+          const data = await res.json().catch(() => ({}));
+          const transcript = String(data?.text || "").trim();
+          if (res.ok && transcript) {
+            setChatInput((prev) => {
+              const c = String(prev || "").trim();
+              return c ? `${c} ${transcript}` : transcript;
+            });
+          }
+        } catch { /* ignore */ }
+        setIsTranscribing(false);
+      };
+      recorder.onerror = () => {
+        setIsDictating(false);
+        setIsTranscribing(false);
+      };
+      recorder.start();
+      setIsDictating(true);
+    }).catch(() => setIsDictating(false));
+  }, [isDictating]);
+
   const handleChatSend = async () => {
     const text = chatInput.trim();
-    if (!text || isChatLoading) return;
+    if (!text || isChatLoading || isDictating || isTranscribing) return;
 
     chatUserScrolledUpRef.current = false;
     setChatInput("");
     setIsChatLoading(true);
+    typingCancelRef.current = false;
+    const abortCtrl = new AbortController();
+    activeAiAbortRef.current = abortCtrl;
     const asstId = `msg-${Date.now()}`;
     setChatMessages((prev) => {
       const idx = prev.length + 1;
@@ -2149,6 +2331,7 @@ User: ${text}`;
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ model: selectedModel, prompt, ...getAiPrefs() }),
+        signal: abortCtrl.signal,
       });
       if (!res.ok) throw new Error("AI request failed");
       const data = await res.json().catch(() => ({}));
@@ -2185,6 +2368,14 @@ User: ${text}`;
           let i = 0;
           let current = "";
           const tick = () => {
+            if (typingCancelRef.current) {
+              setChatMessages((prev) => {
+                const next = prev.slice();
+                if (next[idx]) next[idx] = { ...next[idx], content: fullText, tagActions: { applied, tags: newTagNames } };
+                return next;
+              });
+              return;
+            }
             current += (i === 0 ? "" : " ") + words[i];
             i += 1;
             const done = i >= words.length;
@@ -2213,6 +2404,14 @@ User: ${text}`;
           let i = 0;
           let current = "";
           const tick = () => {
+            if (typingCancelRef.current) {
+              setChatMessages((prev) => {
+                const next = prev.slice();
+                if (next[idx]) next[idx] = { ...next[idx], content: aiText };
+                return next;
+              });
+              return;
+            }
             current += (i === 0 ? "" : " ") + words[i];
             i += 1;
             setChatMessages((prev) => {
@@ -2230,7 +2429,11 @@ User: ${text}`;
         }
       }
       if (user?.id) { invalidateMemoryCache(); saveExchange(user.id, "vault", null, null, text, aiText); }
-    } catch {
+    } catch (err) {
+      if (err?.name === "AbortError") {
+        setIsChatLoading(false);
+        return;
+      }
       const idx = assistantIndexRef.current;
       if (idx != null) {
         setChatMessages((prev) => {
@@ -2247,6 +2450,42 @@ User: ${text}`;
   const renderAttachmentCard = (card, tileHeightClass) => {
     const { attachment, type, title } = card;
     const resolvedUrl = resolvedAttachmentUrls[card.id] || attachment.url;
+
+    // Ghost cards represent uploads still in flight. We render the local
+    // blob preview directly — no signed-URL resolver, no retry logic —
+    // so the file is immediately usable as if it were already a normal
+    // embedded video / image.
+    //
+    // Intentionally NO compression chrome in the grid: no progress bar,
+    // no "Compressing…" label, no overlays. The only place the user sees
+    // upload / compression state is the global upload toast. Once the
+    // pipeline finishes, `onFileComplete` swaps this for the real
+    // DB-backed card transparently.
+    if (card.ghost) {
+      if (type === "video") {
+        return (
+          <video
+            className="w-full h-auto max-h-[42rem] rounded-2xl bg-black/10"
+            autoPlay
+            muted
+            loop
+            playsInline
+            controls
+            preload="auto"
+            draggable={false}
+            src={attachment.url}
+          />
+        );
+      }
+      return (
+        <img
+          src={attachment.url}
+          alt={title}
+          className="w-full h-auto max-h-[42rem] rounded-2xl"
+          draggable={false}
+        />
+      );
+    }
 
     if (type === "image") {
       const storageTarget = parseStorageTarget(attachment || {});
@@ -2914,6 +3153,9 @@ User: ${text}`;
       <DragDropFileUpload
         triggerRef={addMediaTriggerRef}
         beforeUpload={checkVaultLimit}
+        onFileComplete={(note) => {
+          if (note?.id) mergeUploadedNotes([note]);
+        }}
         onUploadComplete={(payload) => {
           const createdNotes = Array.isArray(payload?.createdNotes) ? payload.createdNotes : [];
           if (createdNotes.length > 0) {
@@ -3398,7 +3640,8 @@ User: ${text}`;
                           draggable
                           onDragStart={(e) => handleCardDragStart(e, card)}
                           onDragEnd={handleCardDragEnd}
-                          className={`rounded-2xl relative overflow-hidden cursor-grab ${
+                          onClick={(e) => handleCardPress(e, card)}
+                          className={`rounded-2xl relative overflow-hidden cursor-pointer ${
                             card.kind === "attachment" || card.kind === "quick-note"
                               ? "bg-transparent border-0 shadow-none"
                               : "glass-control"
@@ -3517,7 +3760,8 @@ User: ${text}`;
                             draggable
                             onDragStart={(e) => handleCardDragStart(e, card)}
                             onDragEnd={handleCardDragEnd}
-                            className={`rounded-2xl relative overflow-hidden cursor-grab ${
+                            onClick={(e) => handleCardPress(e, card)}
+                            className={`rounded-2xl relative overflow-hidden cursor-pointer ${
                               card.kind === "attachment" || card.kind === "quick-note"
                                 ? "bg-transparent border-0 shadow-none"
                                 : "glass-control"
@@ -3684,6 +3928,7 @@ User: ${text}`;
                       window.dispatchEvent(new CustomEvent("vault_collage_reorder_drag_end"));
                     }}
                     onDragEnd={handleCardDragEnd}
+                    onClick={(e) => handleCardPress(e, card)}
                     className={`${vaultView === "grid" ? "" : "break-inside-avoid"} ${isEmbeddedMode ? "mb-0" : vaultView === "grid" ? "" : "mb-5"} rounded-2xl relative ${
                       card.kind === "chat-preview" ? "overflow-hidden" : vaultView === "grid" ? "overflow-hidden" : "overflow-visible"
                     } ${
@@ -3693,7 +3938,7 @@ User: ${text}`;
                     } ${
                       draggedCardId === card.id
                         ? "opacity-30 cursor-grabbing ring-2 ring-blue-400/50"
-                        : "cursor-grab"
+                        : "cursor-pointer"
                     } ${dropTargetCardId === card.id && draggedCardId !== card.id ? "ring-2 ring-blue-400/40" : ""} ${
                       card.kind === "attachment" && card.type === "youtube"
                         ? getYouTubeOffsetClass(card.id)
@@ -3984,9 +4229,9 @@ User: ${text}`;
                                     <div
                                       draggable
                                       onDragStart={(e) => handleChunkDragStart(e, chunk)}
-                                      className={`rounded-xl px-3 py-1.5 text-xs leading-relaxed break-words border text-black/85 dark:text-white/85 cursor-grab active:cursor-grabbing transition-all ${isSingle ? "bg-white/45 dark:bg-white/6 border-white/40 dark:border-white/8 rounded-2xl rounded-bl-md" : "bg-white/30 dark:bg-white/4 border-white/25 dark:border-white/8 hover:bg-white/45 dark:hover:bg-white/8 hover:border-blue-300/40 hover:shadow-sm"}`}
+                                      className={`rounded-xl px-3 py-1.5 text-xs leading-relaxed break-words border text-black/85 dark:text-white/85 cursor-grab active:cursor-grabbing transition-all ${isSingle ? "border-transparent bg-transparent hover:bg-white/50 dark:hover:bg-white/[0.02] hover:border-blue-300/40 dark:hover:border-white/[0.03] rounded-2xl rounded-bl-md" : "border-transparent bg-transparent hover:bg-white/50 dark:hover:bg-white/[0.02] hover:border-blue-300/40 dark:hover:border-white/[0.03] hover:shadow-sm"}`}
                                     >
-                                      <div className={`absolute -left-5 top-1/2 -translate-y-1/2 opacity-0 group-hover/chunk:opacity-100 transition-opacity ${isSingle ? "hidden" : ""}`}>
+                                      <div className={`absolute left-0 top-1/2 -translate-y-1/2 opacity-0 group-hover/chunk:opacity-100 transition-opacity ${isSingle ? "hidden" : ""}`}>
                                         <GripVertical className="w-3 h-3 text-blue-400/60" />
                                       </div>
                                       <ReactMarkdown remarkPlugins={[remarkGfm]} components={buildChatMarkdownComponents(msg.id)}>
@@ -3997,7 +4242,7 @@ User: ${text}`;
                                       <button
                                         type="button"
                                         title="Save this section as quick note"
-                                        className="absolute -right-1 top-0.5 opacity-0 group-hover/chunk:opacity-100 transition-opacity p-0.5 rounded text-amber-400/70 hover:text-amber-500 hover:bg-amber-500/10"
+                                        className="absolute right-1 top-1 opacity-0 group-hover/chunk:opacity-100 transition-opacity p-0.5 rounded text-amber-400/70 hover:text-amber-500 hover:bg-amber-500/10"
                                         onClick={() => saveChunkAsQuickNote(chunk)}
                                       >
                                         <StickyNote className="w-2.5 h-2.5" />
@@ -4035,8 +4280,8 @@ User: ${text}`;
               ) : null;
             })()}
             {isChatLoading && (
-              <div className="flex flex-col items-end w-full">
-                <div className="max-w-[94%] text-[0.6875rem] text-black/60 dark:text-white/60 px-1 flex items-center justify-end gap-2" aria-live="polite">
+              <div className="flex flex-col items-start w-full">
+                <div className="omnia-ai-thinking-glow rounded-xl max-w-[94%] bg-white/60 dark:bg-white/8 border border-white/50 dark:border-white/12 backdrop-blur-sm text-[0.6875rem] text-black/60 dark:text-white/60 px-3 py-1.5 flex items-center gap-2" aria-live="polite">
                   <div className="brick-spinner" />
                   {thinkingStatus}
                 </div>
@@ -4045,27 +4290,43 @@ User: ${text}`;
           </div>
           <div className="p-3 pb-3">
             <div className="omnia-neu-chat-shell omnia-chat-border-run-once px-2.5 py-2 w-full flex flex-col gap-1.5">
-              <textarea
-                ref={chatInputRef}
-                data-min-h="44"
-                value={chatInput}
-                onChange={(e) => setChatInput(e.target.value)}
-                onInput={(e) => {
-                  const el = e.currentTarget;
-                  el.style.height = "auto";
-                  el.style.height = Math.min(el.scrollHeight, 160) + "px";
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    handleChatSend();
-                  }
-                }}
-                placeholder="Ask me anything..."
-                rows={1}
-                className="w-full min-h-[2.75rem] max-h-[160px] omnia-neu-chat-field px-2.5 py-1.5 text-[0.6875rem] leading-4 text-black dark:text-white placeholder:text-black/50 dark:placeholder:text-white/45 outline-none resize-none scrollbar-hide"
-                disabled={isChatLoading}
-              />
+              {isDictating || isTranscribing ? (
+                <div className="w-full min-h-[2.75rem] omnia-neu-chat-field ring-1 ring-blue-400/35 px-2.5 py-1.5 flex items-center gap-2">
+                  {isDictating ? (
+                    <>
+                      <div className="dictation-wave"><span /><span /><span /><span /><span /></div>
+                      <span className="text-[0.6875rem] text-blue-600 dark:text-blue-400 font-medium">Recording...</span>
+                    </>
+                  ) : (
+                    <>
+                      <div className="brick-spinner" style={{ width: 12, height: 12 }} />
+                      <span className="text-[0.6875rem] text-black/60 dark:text-white/55">Transcribing...</span>
+                    </>
+                  )}
+                </div>
+              ) : (
+                <textarea
+                  ref={chatInputRef}
+                  data-min-h="44"
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  onInput={(e) => {
+                    const el = e.currentTarget;
+                    el.style.height = "auto";
+                    el.style.height = Math.min(el.scrollHeight, 160) + "px";
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      handleChatSend();
+                    }
+                  }}
+                  placeholder="Ask me anything..."
+                  rows={1}
+                  className="w-full min-h-[2.75rem] max-h-[160px] omnia-neu-chat-field px-2.5 py-1.5 text-[0.6875rem] leading-4 text-black dark:text-white placeholder:text-black/50 dark:placeholder:text-white/45 outline-none resize-none scrollbar-hide"
+                  disabled={isChatLoading}
+                />
+              )}
               <div className="flex items-center gap-2 pt-0.5">
                 <Select value={selectedModel} onValueChange={(value) => {
                   setSelectedModel(value);
@@ -4143,15 +4404,26 @@ User: ${text}`;
                   <Plus className="w-3 h-3" />
                 </button>
                 {isChatLoading ? (
-                  <button type="button" onClick={() => setIsChatLoading(false)} className="h-8 w-8 omnia-neu-chat-icon-plain flex items-center justify-center shrink-0" title="Stop generating">
+                  <button type="button" onClick={handleStopAi} className="h-8 w-8 omnia-neu-chat-icon-plain flex items-center justify-center shrink-0" title="Stop generating">
                     <Square className="w-2.5 h-2.5 text-red-600 dark:text-red-400" fill="currentColor" />
                   </button>
                 ) : (
-                  <button type="button" className="h-8 w-8 omnia-neu-chat-icon-plain flex items-center justify-center shrink-0" title="Dictate">
-                    <Mic className="w-3 h-3 text-black/75 dark:text-white/80" />
+                  <button
+                    type="button"
+                    onClick={handleDictateToggle}
+                    className={`h-8 w-8 omnia-neu-chat-icon-plain flex items-center justify-center shrink-0 ${isDictating ? "ring-1 ring-blue-400/40 rounded-lg" : ""}`}
+                    title={isDictating ? "Stop recording" : "Dictate"}
+                  >
+                    <Mic className={`w-3 h-3 ${isDictating ? "text-blue-600 dark:text-blue-400" : "text-black/75 dark:text-white/80"}`} />
                   </button>
                 )}
-                <button type="button" onClick={() => handleChatSend()} disabled={!chatInput.trim() || isChatLoading} className={`h-8 w-8 omnia-neu-chat-send-btn flex items-center justify-center shrink-0 ${!chatInput.trim() || isChatLoading ? "opacity-40 cursor-not-allowed" : "text-blue-600 dark:text-blue-400"}`} title="Send">
+                <button
+                  type="button"
+                  onClick={() => handleChatSend()}
+                  disabled={!chatInput.trim() || isChatLoading || isDictating || isTranscribing}
+                  className={`h-8 w-8 omnia-neu-chat-send-btn flex items-center justify-center shrink-0 ${(!chatInput.trim() || isChatLoading || isDictating || isTranscribing) ? "opacity-40 cursor-not-allowed" : "text-blue-600 dark:text-blue-400"}`}
+                  title="Send"
+                >
                   <ArrowUp className="w-3 h-3" strokeWidth={2.25} />
                 </button>
               </div>
@@ -4487,6 +4759,255 @@ User: ${text}`;
                   ))}
                 </div>
               )}
+            </div>
+          );
+        })(),
+        document.body
+      )}
+      {previewCard && createPortal(
+        (() => {
+          const card = previewCard;
+          const att = card.attachment || {};
+          const type = card.type || card.kind;
+          const resolvedUrl = resolvedAttachmentUrls[card.id] || att.url || "";
+          const title = card.title || att.name || (card.kind === "quick-note" ? "Quick Note" : "Vault Item");
+          const cardTags = Array.isArray(card.tags) ? card.tags : [];
+          const fileNotes = card.kind === "attachment" ? parseAttachmentNotes(att) : [];
+          const videoId = type === "youtube"
+            ? (extractYouTubeVideoId(String(att.url || "")) || String(att.videoId || "").trim() || null)
+            : null;
+          const youtubeEmbedUrl = videoId ? getYouTubeEmbedUrl(videoId) : "";
+
+          let body;
+          if (card.kind === "attachment" && type === "image") {
+            body = (
+              <img
+                src={resolvedUrl}
+                alt={title}
+                className="w-full max-h-[78vh] object-contain rounded-xl bg-black/5 dark:bg-white/5"
+                draggable={false}
+              />
+            );
+          } else if (card.kind === "attachment" && type === "video") {
+            body = (
+              <video
+                src={resolvedUrl}
+                controls
+                autoPlay
+                playsInline
+                className="w-full max-h-[78vh] rounded-xl bg-black"
+              />
+            );
+          } else if (card.kind === "attachment" && type === "audio") {
+            body = (
+              <div className="flex flex-col items-center gap-4 py-8">
+                <Music className="w-14 h-14 text-violet-400/70" />
+                <p className="text-sm text-black/70 dark:text-white/70 text-center">{title}</p>
+                <audio src={resolvedUrl} controls autoPlay className="w-full max-w-xl" />
+              </div>
+            );
+          } else if (card.kind === "attachment" && type === "pdf") {
+            body = (
+              <iframe
+                title={title}
+                src={resolvedUrl}
+                className="w-full h-[78vh] rounded-xl border border-white/30 dark:border-white/10 bg-white"
+              />
+            );
+          } else if (card.kind === "attachment" && type === "youtube") {
+            body = youtubeEmbedUrl ? (
+              <iframe
+                title={title}
+                src={youtubeEmbedUrl}
+                className="w-full h-[70vh] rounded-xl border-0 bg-black"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                allowFullScreen
+              />
+            ) : (
+              <a href={att.url} target="_blank" rel="noreferrer" className="text-sm text-blue-500 underline">
+                Open YouTube video
+              </a>
+            );
+          } else if (card.kind === "attachment" && (type === "instagram" || type === "tiktok" || type === "facebook")) {
+            body = (
+              <div className="w-full max-h-[78vh] overflow-auto rounded-xl">
+                <SocialEmbedInline
+                  platform={type}
+                  oembedHtml={String(att.oembedHtml || "")}
+                  url={String(att.url || resolvedUrl || "")}
+                  thumbnailUrl={att.image || att.thumbnail_url || ""}
+                  title={att.title || title || ""}
+                  authorName={att.authorName || ""}
+                  authorHandle={att.authorHandle || ""}
+                />
+              </div>
+            );
+          } else if (card.kind === "attachment" && type === "bookmark") {
+            body = (
+              <div className="space-y-4">
+                <LinkPreview
+                  url={att.url || resolvedUrl || ""}
+                  title={att.title || title || ""}
+                  description={String(att.description || "")}
+                  image={att.image || ""}
+                  siteName={att.siteName || ""}
+                  favicon={att.favicon || ""}
+                  authorName={att.authorName || ""}
+                  authorHandle={att.authorHandle || ""}
+                  oembedType={att.oembedType || ""}
+                  variant="vault"
+                />
+                {att.articleText && (
+                  <div className="rounded-xl bg-white/40 dark:bg-white/5 border border-white/40 dark:border-white/10 px-4 py-3 max-h-[40vh] overflow-y-auto text-sm text-black/80 dark:text-white/80 whitespace-pre-wrap">
+                    {att.articleText}
+                  </div>
+                )}
+                {(att.url || resolvedUrl) && (
+                  <a
+                    href={att.url || resolvedUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-500 hover:text-blue-600"
+                  >
+                    <Globe className="w-3.5 h-3.5" />
+                    Open link in new tab
+                  </a>
+                )}
+              </div>
+            );
+          } else if (card.kind === "attachment" && type === "spreadsheet") {
+            const cells = att.cells || {};
+            const totalRows = Math.min(Number(att.rows) || 0, 200);
+            const totalCols = Math.min(Number(att.cols) || 0, 50);
+            body = (
+              <div className="rounded-xl overflow-auto max-h-[78vh] border border-white/30 dark:border-white/10 bg-white/60 dark:bg-white/5">
+                <table className="w-full border-collapse text-xs">
+                  <tbody>
+                    {Array.from({ length: totalRows }, (_, r) => (
+                      <tr key={r} className={r === 0 ? "bg-black/5 dark:bg-white/10 font-semibold" : ""}>
+                        {Array.from({ length: totalCols }, (_, c) => (
+                          <td key={c} className="px-2.5 py-1.5 border-b border-r border-black/6 dark:border-white/6 text-black/80 dark:text-white/80 whitespace-nowrap">
+                            {cells[`${r},${c}`] || ""}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            );
+          } else if (card.kind === "attachment") {
+            body = (
+              <div className="flex flex-col items-center gap-4 py-10 text-center">
+                <FileText className="w-14 h-14 text-black/30 dark:text-white/30" />
+                <p className="text-sm text-black/70 dark:text-white/70 break-all max-w-lg">{title}</p>
+                {resolvedUrl && (
+                  <a
+                    href={resolvedUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    download={title}
+                    className="text-xs font-medium text-blue-500 hover:text-blue-600 underline"
+                  >
+                    Open / download file
+                  </a>
+                )}
+              </div>
+            );
+          } else if (card.kind === "quick-note") {
+            body = (
+              <div className="rounded-xl bg-white/45 dark:bg-white/5 border border-white/40 dark:border-white/10 px-5 py-4 max-h-[72vh] overflow-y-auto">
+                <p className="text-sm text-black/85 dark:text-white/85 whitespace-pre-wrap break-words leading-relaxed">
+                  {card.excerpt || ""}
+                </p>
+              </div>
+            );
+          } else if (card.kind === "chat-preview") {
+            body = (
+              <div className="space-y-3 max-h-[72vh] overflow-y-auto">
+                {card.question && (
+                  <div className="rounded-xl bg-white/45 dark:bg-white/5 border border-white/40 dark:border-white/10 px-4 py-3">
+                    <div className="text-[0.625rem] uppercase tracking-wide text-black/45 dark:text-white/45 mb-1">You</div>
+                    <p className="text-sm text-black/85 dark:text-white/85 whitespace-pre-wrap break-words">{card.question}</p>
+                  </div>
+                )}
+                {card.answer && (
+                  <div className="rounded-xl bg-black/5 dark:bg-white/[0.03] border border-black/8 dark:border-white/8 px-4 py-3">
+                    <div className="text-[0.625rem] uppercase tracking-wide text-black/45 dark:text-white/45 mb-1">Assistant</div>
+                    <p className="text-sm text-black/85 dark:text-white/85 whitespace-pre-wrap break-words">{card.answer}</p>
+                  </div>
+                )}
+                {card.turnsCount ? (
+                  <div className="text-[0.6875rem] text-black/50 dark:text-white/50">{card.turnsCount} turns in this thread</div>
+                ) : null}
+              </div>
+            );
+          } else {
+            body = (
+              <div className="text-sm text-black/60 dark:text-white/60">No preview available.</div>
+            );
+          }
+
+          return (
+            <div
+              className="fixed inset-0 z-[9999] bg-black/55 backdrop-blur-sm flex items-center justify-center p-4"
+              onClick={() => setPreviewCard(null)}
+            >
+              <div
+                className="relative rounded-2xl border border-white/30 dark:border-white/10 bg-white/80 dark:bg-neutral-900/90 backdrop-blur-md shadow-2xl w-[min(1100px,96vw)] max-h-[92vh] overflow-hidden flex flex-col"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-center gap-3 px-4 py-3 border-b border-black/8 dark:border-white/8">
+                  <div className="min-w-0 flex-1">
+                    <h2 className="text-sm font-semibold text-black/85 dark:text-white/85 truncate">{title}</h2>
+                    {card.dateLabel && (
+                      <div className="mt-0.5 flex items-center gap-1 text-[0.6875rem] text-black/50 dark:text-white/50">
+                        <Clock className="w-3 h-3" />
+                        <span>{card.dateLabel}</span>
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setPreviewCard(null)}
+                    className="rounded-full w-8 h-8 flex items-center justify-center text-black/70 dark:text-white/70 hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
+                    title="Close (Esc)"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+                <div className="px-4 py-4 overflow-y-auto">
+                  {body}
+                  {card.kind === "attachment" && att.aiDescription && (
+                    <div className="mt-4 rounded-xl bg-white/40 dark:bg-white/5 border border-white/40 dark:border-white/10 px-4 py-3">
+                      <div className="text-[0.625rem] uppercase tracking-wide text-black/45 dark:text-white/45 mb-1">Description</div>
+                      <p className="text-sm text-black/80 dark:text-white/80 whitespace-pre-wrap break-words">{String(att.aiDescription)}</p>
+                    </div>
+                  )}
+                  {fileNotes.length > 0 && (
+                    <div className="mt-4 space-y-2">
+                      <div className="text-[0.625rem] uppercase tracking-wide text-black/45 dark:text-white/45">Notes</div>
+                      {fileNotes.map((n) => (
+                        <div key={n.id} className="rounded-lg bg-black/5 dark:bg-white/5 px-3 py-2">
+                          <p className="text-xs text-black/80 dark:text-white/80 whitespace-pre-wrap break-words">{n.text}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                {cardTags.length > 0 && (
+                  <div className="px-4 py-3 border-t border-black/8 dark:border-white/8 flex flex-wrap gap-1.5">
+                    {cardTags.map((t) => (
+                      <span
+                        key={t}
+                        className="inline-flex items-center rounded-full bg-blue-500/10 text-blue-700 dark:text-blue-300 text-[0.6875rem] leading-none px-2.5 py-1 font-medium"
+                      >
+                        {t}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           );
         })(),

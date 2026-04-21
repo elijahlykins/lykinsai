@@ -52,33 +52,16 @@ export default function VaultChatPage() {
       }
       
       try {
-        // Try to select only essential columns first to avoid 400 errors
-        // If that fails, try with just title and content
-        let data, error;
-        
-        // First try with common columns (include attachments for YouTube transcripts)
-        // ✅ Filter by user_id to show only current user's notes
-        ({ data, error } = await supabase
+        // Attachments live inside `content` as [ATTACHMENTS_JSON:...]; no dedicated column.
+        let { data, error } = await supabase
           .from('notes')
-          .select('id, title, created_at, updated_at, attachments')
+          .select('id, title, content, created_at, updated_at')
           .eq('user_id', user.id)
           .order('created_at', { ascending: false })
-          .limit(50));
-        
+          .limit(50);
+
         if (error) {
-          // If that fails, try without attachments column
-          if (error.code === 'PGRST204' || error.message?.includes('Could not find') || error.message?.includes('attachments')) {
-            if (import.meta.env.DEV) console.warn('Columns fallback:', error.message);
-            ({ data, error } = await supabase
-              .from('notes')
-              .select('id, title, created_at, updated_at')
-              .eq('user_id', user.id)
-              .order('created_at', { ascending: false })
-              .limit(50));
-          }
-          
-          if (error && (error.code === 'PGRST204' || error.message?.includes('Could not find'))) {
-            // Final fallback to minimal columns
+          if (error.code === 'PGRST204' || error.message?.includes('Could not find')) {
             if (import.meta.env.DEV) console.warn('Minimal columns fallback:', error.message);
             ({ data, error } = await supabase
               .from('notes')
@@ -87,9 +70,8 @@ export default function VaultChatPage() {
               .order('id', { ascending: false })
               .limit(50));
           }
-          
+
           if (error) {
-            // If it's a placeholder client or missing table, return empty array
             if (error.message?.includes('placeholder') || error.code === 'PGRST116' || error.code === '42P01') {
               if (import.meta.env.DEV) console.warn('Supabase not configured or notes table missing.');
               return [];
@@ -100,7 +82,6 @@ export default function VaultChatPage() {
         return data || [];
       } catch (error) {
         if (import.meta.env.DEV) console.error('Error fetching notes:', error);
-        // Return empty array instead of crashing
         return [];
       }
     },

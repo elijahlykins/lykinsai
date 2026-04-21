@@ -3,11 +3,15 @@ import { useNavigate, useParams } from "react-router-dom";
 import { Canvas } from "@/canvas/Canvas";
 import { useCanvasStore } from "@/store/canvasStore";
 import type { Block } from "@/canvas/types";
-import { ChevronDown, ChevronUp, ChevronRight, Plus, Link as LinkIcon, Image as ImageIcon, MessageSquare, Mic, BookOpen, X, Clock, Edit2, Folder as FolderIcon, Link2, MoreHorizontal, PanelRightClose, PanelRight, StickyNote, Play, FileText, Music, Video, Share2, Download, Copy, Check, RefreshCw, ThumbsUp, ThumbsDown, Square, Sparkles, Save, Globe, GripVertical, ArrowUp } from "lucide-react";
+import { ChevronDown, ChevronUp, ChevronRight, Plus, Link as LinkIcon, Image as ImageIcon, MessageSquare, Mic, BookOpen, X, Clock, Edit2, Folder as FolderIcon, Link2, MoreHorizontal, PanelRightClose, PanelRight, StickyNote, Play, FileText, Music, Video, Share2, Download, Copy, Check, RefreshCw, ThumbsUp, ThumbsDown, Square, Sparkles, Save, Globe, GripVertical, ArrowUp, Lock } from "lucide-react";
 import { GridIcon } from "@/components/ui/GridIcon";
 import DraggableQuickNote from "@/components/notes/DraggableQuickNote";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { toast } from "@/components/ui/use-toast";
+import { useUserPlan } from "@/lib/useUserPlan";
+import { isModelAllowedForPlan, defaultModelForTier } from "@/lib/modelTiers";
+import { notifyVaultCapIfApplicable } from "@/lib/vault/vaultCapError";
 import { supabase } from "@/lib/supabase";
 import { useAiStore } from "@/store/aiStore";
 import { useAuth } from "@/lib/SupabaseAuth";
@@ -434,78 +438,101 @@ const makeAttId = () =>
   `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 
-/** Shared model list for top panel and chat-bar selectors */
-function OmniaGridModelSelectMenuBody() {
+/** Shared model list for top panel and chat-bar selectors.
+ * `modelTier` gates which models are selectable:
+ *   - "basic"     (Free / guest)   → only non-thinking fast models
+ *   - "top"       (Studio)          → all text LLMs, no media gen
+ *   - "top+media" (Studio Pro/Max) → everything
+ * Locked models are shown greyed out with a lock badge so users can see the
+ * upgrade path instead of hiding the tier entirely.
+ */
+function OmniaGridModelSelectMenuBody({ modelTier = "basic" }: { modelTier?: string }) {
+  const gate = (value: string, children: React.ReactNode, hint: string) => {
+    const allowed = isModelAllowedForPlan(value, modelTier);
+    return (
+      <SelectItem
+        value={value}
+        hint={hint}
+        disabled={!allowed}
+        className={!allowed ? "opacity-50 cursor-not-allowed" : undefined}
+      >
+        <span className="inline-flex items-center gap-1.5">
+          {children}
+          {!allowed && <Lock className="w-3 h-3 opacity-60" aria-label="Upgrade required" />}
+        </span>
+      </SelectItem>
+    );
+  };
   return (
     <>
       <SelectGroup>
         <SelectLabel>Latest</SelectLabel>
-        <SelectItem value="claude-sonnet-4-6" hint="Anthropic flagship">Claude Sonnet 4.6</SelectItem>
-        <SelectItem value="gpt-5.4" hint="OpenAI flagship">GPT-5.4</SelectItem>
-        <SelectItem value="gemini-3.1-pro-preview" hint="Google flagship">Gemini 3.1 Pro</SelectItem>
-        <SelectItem value="grok-4-1-fast-reasoning" hint="xAI flagship">Grok 4.1 Fast Reasoning</SelectItem>
+        {gate("claude-sonnet-4-6", "Claude Sonnet 4.6", "Anthropic flagship")}
+        {gate("gpt-5.4", "GPT-5.4", "OpenAI flagship")}
+        {gate("gemini-3.1-pro-preview", "Gemini 3.1 Pro", "Google flagship")}
+        {gate("grok-4-1-fast-reasoning", "Grok 4.1 Fast Reasoning", "xAI flagship")}
       </SelectGroup>
       <SelectSeparator />
       <SelectGroup>
         <SelectLabel>Fastest</SelectLabel>
-        <SelectItem value="gemini-3-flash-preview" hint="Google, ultra-fast">Gemini 3 Flash</SelectItem>
-        <SelectItem value="gemini-3.1-flash-lite-preview" hint="Google, cheapest">Gemini 3.1 Flash-Lite</SelectItem>
-        <SelectItem value="gemini-2.5-flash" hint="Google, balanced">Gemini 2.5 Flash</SelectItem>
-        <SelectItem value="gpt-4.1-nano" hint="OpenAI, smallest">GPT-4.1 Nano</SelectItem>
-        <SelectItem value="gpt-4.1-mini" hint="OpenAI, fast + smart">GPT-4.1 Mini</SelectItem>
-        <SelectItem value="gpt-5-mini" hint="OpenAI, near-frontier">GPT-5 Mini</SelectItem>
-        <SelectItem value="claude-haiku-4-5-20251001" hint="Anthropic, fast">Claude Haiku 4.5</SelectItem>
-        <SelectItem value="grok-4-1-fast-non-reasoning" hint="xAI, low latency">Grok 4.1 Fast Non-Reasoning</SelectItem>
+        {gate("gemini-3-flash-preview", "Gemini 3 Flash", "Google, ultra-fast")}
+        {gate("gemini-3.1-flash-lite-preview", "Gemini 3.1 Flash-Lite", "Google, cheapest")}
+        {gate("gemini-2.5-flash", "Gemini 2.5 Flash", "Google, balanced")}
+        {gate("gpt-4.1-nano", "GPT-4.1 Nano", "OpenAI, smallest")}
+        {gate("gpt-4.1-mini", "GPT-4.1 Mini", "OpenAI, fast + smart")}
+        {gate("gpt-5-mini", "GPT-5 Mini", "OpenAI, near-frontier")}
+        {gate("claude-haiku-4-5-20251001", "Claude Haiku 4.5", "Anthropic, fast")}
+        {gate("grok-4-1-fast-non-reasoning", "Grok 4.1 Fast Non-Reasoning", "xAI, low latency")}
       </SelectGroup>
       <SelectSeparator />
       <SelectGroup>
         <SelectLabel>Cheap</SelectLabel>
-        <SelectItem value="gpt-4o-mini" hint="OpenAI, budget">GPT-4o Mini</SelectItem>
-        <SelectItem value="o4-mini" hint="OpenAI, cheap reasoning">o4 Mini</SelectItem>
-        <SelectItem value="grok-3-mini" hint="xAI, budget">Grok 3 Mini</SelectItem>
+        {gate("gpt-4o-mini", "GPT-4o Mini", "OpenAI, budget")}
+        {gate("o4-mini", "o4 Mini", "OpenAI, cheap reasoning")}
+        {gate("grok-3-mini", "Grok 3 Mini", "xAI, budget")}
       </SelectGroup>
       <SelectSeparator />
       <SelectGroup>
         <SelectLabel>Image Gen</SelectLabel>
-        <SelectItem value="gpt-image-1.5" hint="OpenAI, images">GPT Image 1.5</SelectItem>
-        <SelectItem value="gemini-3.1-flash-image-preview" hint="Google, images">Nano Banana 2</SelectItem>
-        <SelectItem value="grok-imagine-image-pro" hint="xAI, pro images">Grok Imagine Image Pro</SelectItem>
-        <SelectItem value="grok-imagine-image" hint="xAI, images">Grok Imagine Image</SelectItem>
-        <SelectItem value="grok-2-image-1212" hint="xAI, images">Grok 2 Image</SelectItem>
-        <SelectItem value="dall-e-3" hint="OpenAI, images">DALL-E 3</SelectItem>
+        {gate("gpt-image-1.5", "GPT Image 1.5", "OpenAI, images")}
+        {gate("gemini-3.1-flash-image-preview", "Nano Banana 2", "Google, images")}
+        {gate("grok-imagine-image-pro", "Grok Imagine Image Pro", "xAI, pro images")}
+        {gate("grok-imagine-image", "Grok Imagine Image", "xAI, images")}
+        {gate("grok-2-image-1212", "Grok 2 Image", "xAI, images")}
+        {gate("dall-e-3", "DALL-E 3", "OpenAI, images")}
       </SelectGroup>
       <SelectSeparator />
       <SelectGroup>
         <SelectLabel>Deep Thinking</SelectLabel>
-        <SelectItem value="o3" hint="OpenAI, reasoning">o3</SelectItem>
-        <SelectItem value="o3-pro" hint="OpenAI, max reasoning">o3 Pro</SelectItem>
-        <SelectItem value="gpt-5.4-pro" hint="OpenAI, extended">GPT-5.4 Pro</SelectItem>
-        <SelectItem value="claude-opus-4-1-20250805" hint="Anthropic, deep">Claude Opus 4.1</SelectItem>
-        <SelectItem value="claude-opus-4-20250514" hint="Anthropic, deep">Claude Opus 4</SelectItem>
-        <SelectItem value="gemini-2.5-pro" hint="Google, reasoning">Gemini 2.5 Pro</SelectItem>
-        <SelectItem value="grok-4-fast-reasoning" hint="xAI, reasoning">Grok 4 Fast Reasoning</SelectItem>
+        {gate("o3", "o3", "OpenAI, reasoning")}
+        {gate("o3-pro", "o3 Pro", "OpenAI, max reasoning")}
+        {gate("gpt-5.4-pro", "GPT-5.4 Pro", "OpenAI, extended")}
+        {gate("claude-opus-4-1-20250805", "Claude Opus 4.1", "Anthropic, deep")}
+        {gate("claude-opus-4-20250514", "Claude Opus 4", "Anthropic, deep")}
+        {gate("gemini-2.5-pro", "Gemini 2.5 Pro", "Google, reasoning")}
+        {gate("grok-4-fast-reasoning", "Grok 4 Fast Reasoning", "xAI, reasoning")}
       </SelectGroup>
       <SelectSeparator />
       <SelectGroup>
         <SelectLabel>Code</SelectLabel>
-        <SelectItem value="claude-opus-4-6-code" hint="Anthropic, top coder">Claude Opus 4.6</SelectItem>
-        <SelectItem value="gpt-5.3-codex" hint="OpenAI, agentic code">Codex 5.3</SelectItem>
-        <SelectItem value="gpt-4.1" hint="OpenAI, 1M ctx code">GPT-4.1</SelectItem>
-        <SelectItem value="grok-code-fast-1" hint="xAI, code">Grok Code Fast 1</SelectItem>
+        {gate("claude-opus-4-6-code", "Claude Opus 4.6", "Anthropic, top coder")}
+        {gate("gpt-5.3-codex", "Codex 5.3", "OpenAI, agentic code")}
+        {gate("gpt-4.1", "GPT-4.1", "OpenAI, 1M ctx code")}
+        {gate("grok-code-fast-1", "Grok Code Fast 1", "xAI, code")}
       </SelectGroup>
       <SelectSeparator />
       <SelectGroup>
         <SelectLabel>General</SelectLabel>
-        <SelectItem value="gpt-5.2" hint="OpenAI, previous gen">GPT-5.2</SelectItem>
-        <SelectItem value="gpt-5.1" hint="OpenAI, previous gen">GPT-5.1</SelectItem>
-        <SelectItem value="gpt-5" hint="OpenAI, previous gen">GPT-5</SelectItem>
-        <SelectItem value="gpt-4o" hint="OpenAI, versatile">GPT-4o</SelectItem>
-        <SelectItem value="claude-sonnet-4-20250514" hint="Anthropic, balanced">Claude Sonnet 4</SelectItem>
-        <SelectItem value="grok-4-fast-non-reasoning" hint="xAI, general">Grok 4 Fast Non-Reasoning</SelectItem>
-        <SelectItem value="grok-4-0709" hint="xAI, general">Grok 4 0709</SelectItem>
-        <SelectItem value="grok-3" hint="xAI, previous gen">Grok 3</SelectItem>
-        <SelectItem value="grok-2-vision-1212" hint="xAI, vision">Grok 2 Vision</SelectItem>
-        <SelectItem value="unified-auto" hint="Auto-picks best">Unified AI (Auto)</SelectItem>
+        {gate("gpt-5.2", "GPT-5.2", "OpenAI, previous gen")}
+        {gate("gpt-5.1", "GPT-5.1", "OpenAI, previous gen")}
+        {gate("gpt-5", "GPT-5", "OpenAI, previous gen")}
+        {gate("gpt-4o", "GPT-4o", "OpenAI, versatile")}
+        {gate("claude-sonnet-4-20250514", "Claude Sonnet 4", "Anthropic, balanced")}
+        {gate("grok-4-fast-non-reasoning", "Grok 4 Fast Non-Reasoning", "xAI, general")}
+        {gate("grok-4-0709", "Grok 4 0709", "xAI, general")}
+        {gate("grok-3", "Grok 3", "xAI, previous gen")}
+        {gate("grok-2-vision-1212", "Grok 2 Vision", "xAI, vision")}
+        {gate("unified-auto", "Unified AI (Auto)", "Auto-picks best")}
       </SelectGroup>
     </>
   );
@@ -513,7 +540,7 @@ function OmniaGridModelSelectMenuBody() {
 
 const OmniaChatBarToolbar = React.memo(function OmniaChatBarToolbar({
   compact, onSend, chatInputHasText, isChatLoading, isDictating, isTranscribing,
-  selectedModel, persistSelectedModel,
+  selectedModel, persistSelectedModel, modelTier,
   handleOpenAttachments, handleStopAi, handleDictateToggle,
 }: {
   compact?: boolean;
@@ -524,6 +551,7 @@ const OmniaChatBarToolbar = React.memo(function OmniaChatBarToolbar({
   isTranscribing: boolean;
   selectedModel: string;
   persistSelectedModel: (v: string) => void;
+  modelTier?: string;
   handleOpenAttachments: () => void;
   handleStopAi: () => void;
   handleDictateToggle: () => void;
@@ -547,7 +575,7 @@ const OmniaChatBarToolbar = React.memo(function OmniaChatBarToolbar({
           align="start"
           className={`${dropdownCls} max-h-[min(28rem,70vh)] overflow-y-auto w-[min(92vw,18rem)]`}
         >
-          <OmniaGridModelSelectMenuBody />
+          <OmniaGridModelSelectMenuBody modelTier={modelTier} />
         </SelectContent>
       </Select>
       <div className="flex-1 min-w-[4px]" aria-hidden />
@@ -595,7 +623,36 @@ export default function OmniaGridPage() {
   const nav = useNavigate();
   const { boardId: routeBoardId } = useParams<{ boardId?: string }>();
   const { user } = useAuth();
-  const { checkVaultLimit, incrementVaultCount, upgradeModal, dismissUpgradeModal } = useUsageGate();
+  const { modelTier, loading: planLoading, isGuest } = useUserPlan();
+  const requireSignIn = useCallback((what: string = "save your work") => {
+    try {
+      toast({
+        title: "Sign in to continue",
+        description: `You need an account to ${what} — it's free.`,
+        action: (
+          <button
+            type="button"
+            onClick={() => nav("/login")}
+            className="inline-flex items-center rounded-md bg-white text-black text-[12px] font-semibold px-3 py-1.5 hover:bg-white/90"
+          >
+            Sign in
+          </button>
+        ),
+      });
+    } catch { /* toast unavailable — non-critical */ }
+  }, [nav]);
+  const { checkVaultLimit, incrementVaultCount, upgradeModal, dismissUpgradeModal, limits: planLimits } = useUsageGate();
+  const setBlockLimit = useCanvasStore((s) => s.setBlockLimit);
+  // Push the plan's blocks-per-grid cap into the store so every addBlock
+  // call path (drag-drop, paste, AI actions, toolbars, etc.) gets gated for
+  // free.
+  useEffect(() => {
+    const raw = planLimits?.blocksPerGrid;
+    const cap = raw == null || !isFinite(raw) ? null : raw;
+    setBlockLimit(cap);
+    // Don't clear on unmount — the store is module-scoped and the next mount
+    // will set it again from the latest plan.
+  }, [planLimits?.blocksPerGrid, setBlockLimit]);
   const blockCount = useCanvasStore((s) => s.blockOrder.length);
   const blockUrlSignature = useCanvasStore((s) =>
     s.blockOrder.map((id) => {
@@ -663,6 +720,25 @@ export default function OmniaGridPage() {
     return false;
   });
   const persistSelectedModel = useCallback((value: string) => {
+    // Refuse to persist a model the current plan can't use. Radix will already
+    // prevent selection of disabled items, but this guards against stale saved
+    // preferences and any programmatic callers.
+    if (!isModelAllowedForPlan(value, modelTier)) {
+      toast({
+        title: "Upgrade required",
+        description: "That model isn't available on your current plan.",
+        action: (
+          <button
+            type="button"
+            onClick={() => nav(isGuest ? "/login" : "/billing")}
+            className="inline-flex items-center rounded-md bg-white text-black text-[12px] font-semibold px-3 py-1.5 hover:bg-white/90"
+          >
+            {isGuest ? "Sign in" : "Upgrade"}
+          </button>
+        ),
+      });
+      return;
+    }
     setSelectedModel(value);
     try {
       const saved = localStorage.getItem("lykinsai_settings");
@@ -673,7 +749,23 @@ export default function OmniaGridPage() {
     } catch {
       /* ignore */
     }
-  }, []);
+  }, [modelTier, nav, isGuest]);
+
+  // Auto-downgrade the saved model once the plan resolves. Keeps behaviour
+  // deterministic for users who had a premium model picked before downgrading.
+  useEffect(() => {
+    if (planLoading) return;
+    if (isModelAllowedForPlan(selectedModel, modelTier)) return;
+    const fallback = defaultModelForTier(modelTier);
+    setSelectedModel(fallback);
+    try {
+      const saved = localStorage.getItem("lykinsai_settings");
+      const settings = saved ? JSON.parse(saved) : {};
+      settings.aiModel = fallback;
+      localStorage.setItem("lykinsai_settings", JSON.stringify(settings));
+    } catch { /* ignore */ }
+  }, [modelTier, planLoading, selectedModel]);
+
   const [chatMode, setChatMode] = useState(false);
   const [notesOpen, setNotesOpenRaw] = useState(false);
   const [notesGridFilesHidden, setNotesGridFilesHidden] = useState(false);
@@ -1315,7 +1407,8 @@ export default function OmniaGridPage() {
   }, []);
 
   const handleSaveQuickNote = useCallback(async () => {
-    if (!user?.id || isQuickNoteSaving) return;
+    if (isQuickNoteSaving) return;
+    if (!user?.id) { requireSignIn("save notes"); return; }
     const content = quickNoteContent.trim();
     if (!content) return;
     if (!(await checkVaultLimit())) return;
@@ -1327,18 +1420,24 @@ export default function OmniaGridPage() {
         .select("id")
         .single();
       if (error) {
-        await supabase
+        if (notifyVaultCapIfApplicable(error)) {
+          return;
+        }
+        const { error: fallbackError } = await supabase
           .from("notes")
           .insert({ user_id: user.id, title: "Quick Note", content })
           .select("id")
           .single();
+        if (fallbackError && notifyVaultCapIfApplicable(fallbackError)) {
+          return;
+        }
       }
       setQuickNoteContent("");
       setShowQuickNote(false);
     } catch { /* ignore */ } finally {
       setIsQuickNoteSaving(false);
     }
-  }, [user?.id, isQuickNoteSaving, quickNoteContent]);
+  }, [user?.id, isQuickNoteSaving, quickNoteContent, requireSignIn]);
 
   const handleCloseQuickNote = useCallback(async () => {
     if (isQuickNoteSaving) return;
@@ -1374,7 +1473,8 @@ export default function OmniaGridPage() {
   }, []);
 
   const saveAiImageToMedia = useCallback(async (imageUrl: string, promptText?: string) => {
-    if (!user?.id || !imageUrl) return;
+    if (!imageUrl) return;
+    if (!user?.id) { requireSignIn("save to the vault"); return; }
     if (!(await checkVaultLimit())) return;
 
     let ext = "jpg";
@@ -1431,8 +1531,10 @@ export default function OmniaGridPage() {
         })
         .select("id")
         .single();
-      if (error && import.meta.env.DEV) console.warn("[LYKN] Failed to save AI image note:", error.message);
-      else {
+      if (error) {
+        notifyVaultCapIfApplicable(error);
+        if (import.meta.env.DEV) console.warn("[LYKN] Failed to save AI image note:", error.message);
+      } else {
         if (import.meta.env.DEV) console.log("[LYKN] AI image saved to media");
         if (ins?.id) {
           afterVaultNoteSaved(user.id, ins.id, { title: filename, content: noteContent }, {
@@ -1443,10 +1545,11 @@ export default function OmniaGridPage() {
     } catch (err) {
       if (import.meta.env.DEV) console.warn("[LYKN] Error saving AI image note:", err);
     }
-  }, [user?.id, routeBoardId, boardId]);
+  }, [user?.id, routeBoardId, boardId, requireSignIn]);
 
   const saveYouTubeToMedia = useCallback(async (videoId: string, url: string) => {
-    if (!user?.id || !videoId) return;
+    if (!videoId) return;
+    if (!user?.id) { requireSignIn("save to the vault"); return; }
     if (!(await checkVaultLimit())) return;
     const title = `YouTube Video — ${videoId}`;
     const watchUrl = url || `https://www.youtube.com/watch?v=${videoId}`;
@@ -1469,8 +1572,10 @@ export default function OmniaGridPage() {
         })
         .select("id")
         .single();
-      if (error && import.meta.env.DEV) console.warn("[LYKN] Failed to save YouTube note:", error.message);
-      else if (ins?.id) {
+      if (error) {
+        notifyVaultCapIfApplicable(error);
+        if (import.meta.env.DEV) console.warn("[LYKN] Failed to save YouTube note:", error.message);
+      } else if (ins?.id) {
         afterVaultNoteSaved(user.id, ins.id, { title, content: noteContent }, {
           excludeBoardId: routeBoardId || boardId || undefined,
         });
@@ -1478,10 +1583,11 @@ export default function OmniaGridPage() {
     } catch (err) {
       if (import.meta.env.DEV) console.warn("[LYKN] Error saving YouTube to media:", err);
     }
-  }, [user?.id, routeBoardId, boardId]);
+  }, [user?.id, routeBoardId, boardId, requireSignIn]);
 
   const saveLinkToMedia = useCallback(async (linkUrl: string) => {
-    if (!user?.id || !linkUrl) return;
+    if (!linkUrl) return;
+    if (!user?.id) { requireSignIn("save to the vault"); return; }
     if (!(await checkVaultLimit())) return;
     try {
       const { API_BASE_URL } = await import("@/lib/api-config");
@@ -1512,8 +1618,10 @@ export default function OmniaGridPage() {
         })
         .select("id")
         .single();
-      if (error && import.meta.env.DEV) console.warn("[LYKN] Failed to save link note:", error.message);
-      else {
+      if (error) {
+        notifyVaultCapIfApplicable(error);
+        if (import.meta.env.DEV) console.warn("[LYKN] Failed to save link note:", error.message);
+      } else {
         if (import.meta.env.DEV) console.log("[LYKN] Link saved to media");
         if (ins?.id) {
           afterVaultNoteSaved(user.id, ins.id, {
@@ -1525,10 +1633,11 @@ export default function OmniaGridPage() {
     } catch (err) {
       if (import.meta.env.DEV) console.warn("[LYKN] Error saving link to media:", err);
     }
-  }, [user?.id, routeBoardId, boardId]);
+  }, [user?.id, routeBoardId, boardId, requireSignIn]);
 
   const saveAttachmentToMedia = useCallback(async (url: string, name: string, mediaType: "image" | "video" | "audio" | "file") => {
-    if (!user?.id || !url) return;
+    if (!url) return;
+    if (!user?.id) { requireSignIn("save to the vault"); return; }
     if (!(await checkVaultLimit())) return;
     const fileId = crypto.randomUUID();
     let fileUrl = url;
@@ -1571,7 +1680,7 @@ export default function OmniaGridPage() {
         mimeType,
       }];
       const noteContent = `${filename}\n\n[View](${fileUrl})\n\n[ATTACHMENTS_JSON:${JSON.stringify(attachment)}]`;
-      const { data: ins } = await supabase
+      const { data: ins, error } = await supabase
         .from("notes")
         .insert({
           user_id: user.id,
@@ -1580,13 +1689,15 @@ export default function OmniaGridPage() {
         })
         .select("id")
         .single();
-      if (ins?.id) {
+      if (error) {
+        notifyVaultCapIfApplicable(error);
+      } else if (ins?.id) {
         afterVaultNoteSaved(user.id, ins.id, { title: filename, content: noteContent }, {
           excludeBoardId: routeBoardId || boardId || undefined,
         });
       }
     } catch { /* ignore */ }
-  }, [user?.id, routeBoardId, boardId]);
+  }, [user?.id, routeBoardId, boardId, requireSignIn]);
 
 
   const handleCenterAskSend = useCallback(async () => {
@@ -2052,9 +2163,9 @@ export default function OmniaGridPage() {
 
   const chatBarToolbarProps = useMemo(() => ({
     chatInputHasText, isChatLoading, isDictating, isTranscribing,
-    selectedModel, persistSelectedModel,
+    selectedModel, persistSelectedModel, modelTier,
     handleOpenAttachments, handleStopAi, handleDictateToggle,
-  }), [chatInputHasText, isChatLoading, isDictating, isTranscribing, selectedModel, persistSelectedModel, handleOpenAttachments, handleStopAi, handleDictateToggle]);
+  }), [chatInputHasText, isChatLoading, isDictating, isTranscribing, selectedModel, persistSelectedModel, modelTier, handleOpenAttachments, handleStopAi, handleDictateToggle]);
 
   const handleCloseSideRail = useCallback(() => {
     setChatRailVisible(false);
@@ -2510,6 +2621,25 @@ export default function OmniaGridPage() {
 
   return (
     <div className="w-full h-[100svh] relative overflow-hidden omnia-grid-bg">
+      {!user && (
+        <div
+          className="pointer-events-auto absolute top-3 left-1/2 -translate-x-1/2 z-[80] flex items-center gap-3 rounded-full border border-white/25 bg-black/55 backdrop-blur-md px-4 py-2 text-[13px] text-white/90 shadow-lg"
+          role="status"
+          aria-live="polite"
+        >
+          <span className="inline-flex h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.9)]" aria-hidden />
+          <span>
+            Preview mode — chat is free, but your work won&rsquo;t save.
+          </span>
+          <button
+            type="button"
+            onClick={() => nav("/login")}
+            className="rounded-full bg-white text-black text-[12px] font-semibold px-3 py-1 hover:bg-white/90 transition-colors"
+          >
+            Sign in
+          </button>
+        </div>
+      )}
       {/* Match BrickEditor layout: minimal chrome + floating controls */}
       <OmniaToolbar
         title={title}
@@ -2540,7 +2670,7 @@ export default function OmniaGridPage() {
         showVaultSidebar={showVaultSidebar}
         onVaultToggle={() => setShowVaultSidebar((v) => !v)}
         notesOpen={notesOpen}
-        modelSelectMenu={<OmniaGridModelSelectMenuBody />}
+        modelSelectMenu={<OmniaGridModelSelectMenuBody modelTier={modelTier} />}
       />
 
       <div

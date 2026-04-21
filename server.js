@@ -13,6 +13,7 @@ import rateLimit from 'express-rate-limit';
 import crypto from 'crypto';
 import { createClient } from '@supabase/supabase-js';
 import { Resend } from 'resend';
+import Stripe from 'stripe';
 import {
   answerVideoQuestion,
   clearCacheForVideo,
@@ -36,6 +37,12 @@ import {
   getSessionWithLogs,
   startSessionCleanup,
 } from './usageTracking.js';
+import {
+  isModelAllowedForPlan,
+  defaultModelForTier,
+  classifyModel,
+} from './src/lib/modelTiers.js';
+import { PLAN_LIMITS } from './src/lib/pricing-config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, '.env') });
@@ -53,6 +60,8 @@ console.log('  RESEND_API_KEY:', process.env.RESEND_API_KEY ? '✅ Set' : '❌ M
 console.log('  SUPABASE_SERVICE_ROLE_KEY:', process.env.SUPABASE_SERVICE_ROLE_KEY ? '✅ Set' : '⚪ Not set (usage tracking disabled)');
 console.log('  BACKFILL_SECRET:', process.env.BACKFILL_SECRET ? '✅ Set' : '⚪ Not set (synthesis backfill disabled)');
 console.log('  META_APP_TOKEN:', process.env.META_APP_TOKEN ? '✅ Set' : '⚪ Not set (Instagram/Facebook oEmbed disabled)');
+console.log('  STRIPE_SECRET_KEY:', process.env.STRIPE_SECRET_KEY ? '✅ Set' : '⚪ Not set (Stripe billing disabled)');
+console.log('  STRIPE_WEBHOOK_SECRET:', process.env.STRIPE_WEBHOOK_SECRET ? '✅ Set' : '⚪ Not set (webhook signature check disabled)');
 
 const app = express();
 const PORT = 3001;
@@ -319,6 +328,7 @@ app.use((req, res, next) => {
   
   res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.header('Access-Control-Expose-Headers', 'X-Model-Downgraded, X-Plan, X-Feature-Stripped');
   res.header('Access-Control-Allow-Credentials', 'true');
   
   if (req.method === 'OPTIONS') {
@@ -326,6 +336,76 @@ app.use((req, res, next) => {
   }
   next();
 });
+
+// ============================================
+// STRIPE — client + price map
+// ============================================
+// NOTE: Stripe must be initialized before the webhook route so the raw-body
+// handler can verify signatures.
+const stripe = process.env.STRIPE_SECRET_KEY
+  ? new Stripe(process.env.STRIPE_SECRET_KEY)
+  : null;
+
+// Price IDs live in Stripe, not in code. Map internal plan ids → env-provided
+// Stripe price ids. Populate these in .env after creating the corresponding
+// Products + Prices in the Stripe dashboard.
+const STRIPE_PRICE_MAP = {
+  studio: {
+    monthly: process.env.STRIPE_PRICE_STUDIO_MONTHLY,
+    annual: process.env.STRIPE_PRICE_STUDIO_ANNUAL,
+  },
+  studio_pro: {
+    monthly: process.env.STRIPE_PRICE_STUDIO_PRO_MONTHLY,
+    annual: process.env.STRIPE_PRICE_STUDIO_PRO_ANNUAL,
+  },
+  studio_max: {
+    monthly: process.env.STRIPE_PRICE_STUDIO_MAX_MONTHLY,
+    annual: process.env.STRIPE_PRICE_STUDIO_MAX_ANNUAL,
+  },
+};
+
+// ============================================
+// STRIPE WEBHOOK — must be mounted BEFORE express.json()
+// ============================================
+// Stripe requires the raw request body bytes to verify the HMAC signature.
+// Registering this route before the global JSON parser keeps req.body as a
+// Buffer here while every other route still gets parsed JSON.
+app.post(
+  '/api/stripe/webhook',
+  express.raw({ type: 'application/json' }),
+  async (req, res) => {
+    if (!stripe) {
+      console.warn('⚠️ Stripe webhook hit but STRIPE_SECRET_KEY is not set');
+      return res.status(503).json({ error: 'Stripe not configured' });
+    }
+    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+    if (!webhookSecret) {
+      console.warn('⚠️ Stripe webhook hit but STRIPE_WEBHOOK_SECRET is not set');
+      return res.status(503).json({ error: 'Webhook secret not configured' });
+    }
+
+    let event;
+    try {
+      event = stripe.webhooks.constructEvent(
+        req.body,
+        req.headers['stripe-signature'],
+        webhookSecret,
+      );
+    } catch (err) {
+      console.warn('🔒 Stripe webhook signature verification failed:', err.message);
+      return res.status(400).send(`Webhook Error: ${err.message}`);
+    }
+
+    try {
+      await handleStripeEvent(event);
+      res.json({ received: true });
+    } catch (err) {
+      console.error('❌ Stripe webhook handler threw:', err);
+      // Return 500 so Stripe retries.
+      res.status(500).json({ error: 'handler_failed' });
+    }
+  },
+);
 
 app.use(express.json({ limit: '5mb' }));
 
@@ -343,9 +423,11 @@ const supabaseAdmin = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
 async function requireAuth(req, res, next) {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    console.warn('🔒 requireAuth: missing/invalid Authorization header on', req.method, req.path);
     return res.status(401).json({ error: 'Missing or invalid Authorization header' });
   }
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+    console.warn('🔒 requireAuth: SUPABASE_URL / SUPABASE_ANON_KEY not set — skipping auth (dev fallback)');
     return next(); // skip auth check if Supabase not configured (dev fallback)
   }
   try {
@@ -354,12 +436,15 @@ async function requireAuth(req, res, next) {
       headers: { Authorization: `Bearer ${token}`, apikey: SUPABASE_ANON_KEY },
     });
     if (!resp.ok) {
+      const bodyPreview = await resp.text().catch(() => '');
+      console.warn('🔒 requireAuth: Supabase rejected token', { status: resp.status, path: req.path, body: bodyPreview.slice(0, 300) });
       return res.status(401).json({ error: 'Invalid or expired token' });
     }
     const user = await resp.json();
     req.user = user;
     next();
-  } catch {
+  } catch (err) {
+    console.error('🔒 requireAuth: fetch to Supabase threw', { name: err?.name, message: err?.message, cause: err?.cause?.code || err?.cause?.message, path: req.path });
     return res.status(401).json({ error: 'Auth verification failed' });
   }
 }
@@ -1062,6 +1147,28 @@ const synthesisLimiter = rateLimit({
   message: { error: 'Synthesis reindex rate limit — try again shortly' },
 });
 
+// Guest (unauthenticated) AI limiter — keyed strictly by IP.
+// Tight ceiling to keep the free landing experience cheap + abuse-resistant.
+const guestAiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 8,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.ip,
+  validate: rlValidateOff,
+  message: { error: 'Guest rate limit — sign in for higher limits' },
+});
+
+const guestAiDailyLimiter = rateLimit({
+  windowMs: 24 * 60 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.ip,
+  validate: rlValidateOff,
+  message: { error: 'Daily guest limit reached — sign in to keep chatting' },
+});
+
 const profileRefreshLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 8,
@@ -1074,11 +1181,14 @@ const profileRefreshLimiter = rateLimit({
 
 app.use('/api/', globalLimiter);
 
+// Free tier is gated by model tier (non-thinking only), not by request count.
+// Paid plans currently have no request cap; we keep this map so future limits
+// can be reintroduced without touching call sites.
 const PLAN_REQUEST_LIMITS = {
   free: Infinity,
-  starter: 300,
-  pro: 1500,
-  max: Infinity,
+  studio: Infinity,
+  studio_pro: Infinity,
+  studio_max: Infinity,
 };
 
 async function checkAiUsageLimit(req, res, next) {
@@ -1506,6 +1616,157 @@ app.get('/api/ai/models', (req, res) => {
       enabled: !m.env || Boolean(process.env[m.env]),
     }));
     res.json({ models });
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  Guest streaming chat (no auth, Gemini Flash only, IP-rate-limited) */
+/*  Powers the logged-out landing-page grid demo.                     */
+/* ------------------------------------------------------------------ */
+const GUEST_MODEL = 'gemini-flash-latest';
+const GUEST_MAX_PROMPT_CHARS = 6000;
+const GUEST_MAX_HISTORY_TURNS = 8;
+const GUEST_MAX_HISTORY_CHARS = 4000;
+const GUEST_SYSTEM_PROMPT =
+  'You are Lykins AI running in preview mode for a logged-out visitor. ' +
+  'Be helpful, concise, and friendly. Use markdown when appropriate. ' +
+  'If the user asks to save work, manage files, use the vault, generate images or video, ' +
+  'access other models, or anything that requires an account, politely explain they need to sign in ' +
+  'and that free accounts unlock unlimited grids, vault storage, and more.';
+
+app.post('/api/ai/stream-guest', guestAiLimiter, guestAiDailyLimiter, async (req, res) => {
+  if (!process.env.GOOGLE_API_KEY) {
+    return res.status(503).json({ error: 'Guest chat is temporarily unavailable' });
+  }
+
+  const rawPrompt = typeof req.body?.prompt === 'string' ? req.body.prompt : '';
+  const prompt = rawPrompt.trim().slice(0, GUEST_MAX_PROMPT_CHARS);
+  if (!prompt) {
+    return res.status(400).json({ error: 'Prompt is required' });
+  }
+
+  // Lightly sanitized conversation history — role + content only.
+  const rawHistory = Array.isArray(req.body?.history) ? req.body.history : [];
+  const history = rawHistory
+    .filter((m) => m && typeof m === 'object' && typeof m.content === 'string')
+    .map((m) => ({
+      role: m.role === 'assistant' || m.role === 'model' ? 'model' : 'user',
+      content: String(m.content || '').trim().slice(0, 2000),
+    }))
+    .filter((m) => m.content)
+    .slice(-GUEST_MAX_HISTORY_TURNS);
+
+  let historyChars = 0;
+  const trimmedHistory = [];
+  for (let i = history.length - 1; i >= 0; i--) {
+    const msg = history[i];
+    if (historyChars + msg.content.length > GUEST_MAX_HISTORY_CHARS) break;
+    trimmedHistory.unshift(msg);
+    historyChars += msg.content.length;
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  if (typeof res.flushHeaders === 'function') res.flushHeaders();
+
+  let ended = false;
+  const sendChunk = (text) => {
+    if (ended || res.writableEnded) return;
+    res.write(`data: ${JSON.stringify({ t: text })}\n\n`);
+    if (typeof res.flush === 'function') res.flush();
+  };
+  const sendError = (msg) => {
+    if (ended || res.writableEnded) return;
+    ended = true;
+    try { res.write(`data: ${JSON.stringify({ error: msg })}\n\n`); } catch {}
+    try { res.end(); } catch {}
+  };
+  const sendDone = () => {
+    if (ended || res.writableEnded) return;
+    ended = true;
+    try { res.write('data: [DONE]\n\n'); } catch {}
+    try { res.end(); } catch {}
+  };
+
+  req.on('close', () => { ended = true; });
+
+  const contents = [
+    ...trimmedHistory.map((m) => ({ role: m.role, parts: [{ text: m.content }] })),
+    { role: 'user', parts: [{ text: prompt }] },
+  ];
+
+  const body = {
+    contents,
+    systemInstruction: { parts: [{ text: GUEST_SYSTEM_PROMPT }] },
+    generationConfig: { maxOutputTokens: 2048, temperature: 0.7 },
+  };
+
+  const abort = new AbortController();
+  const inactivityTimeout = setTimeout(() => {
+    try { abort.abort(); } catch {}
+    sendError('Timed out — try again');
+  }, 60_000);
+
+  let geminiRes;
+  try {
+    geminiRes = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${GUEST_MODEL}:streamGenerateContent?alt=sse&key=${process.env.GOOGLE_API_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: abort.signal,
+      }
+    );
+  } catch (err) {
+    clearTimeout(inactivityTimeout);
+    console.error('❌ Guest stream fetch failed:', err?.message || err);
+    return sendError('This demo is having trouble right now — please try again.');
+  }
+
+  if (!geminiRes.ok) {
+    clearTimeout(inactivityTimeout);
+    const errJson = await geminiRes.json().catch(() => ({}));
+    console.error('❌ Guest Gemini error:', errJson?.error?.message || geminiRes.statusText);
+    return sendError('This demo is having trouble right now — please try again.');
+  }
+
+  const reader = geminiRes.body;
+  let buffer = '';
+  let inactivityRef = setTimeout(() => { try { abort.abort(); } catch {} sendError('Timed out — try again'); }, 45_000);
+  const bumpInactivity = () => {
+    clearTimeout(inactivityRef);
+    inactivityRef = setTimeout(() => { try { abort.abort(); } catch {} sendError('Timed out — try again'); }, 45_000);
+  };
+
+  reader.on('data', (chunk) => {
+    if (ended) return;
+    bumpInactivity();
+    buffer += chunk.toString();
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('data: ')) continue;
+      try {
+        const parsed = JSON.parse(trimmed.slice(6));
+        const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (text) sendChunk(text);
+      } catch { /* ignore partial json */ }
+    }
+  });
+  reader.on('end', () => {
+    clearTimeout(inactivityRef);
+    clearTimeout(inactivityTimeout);
+    sendDone();
+  });
+  reader.on('error', (err) => {
+    clearTimeout(inactivityRef);
+    clearTimeout(inactivityTimeout);
+    console.error('❌ Guest stream reader error:', err?.message || err);
+    sendError('This demo is having trouble right now — please try again.');
   });
 });
 
@@ -2088,13 +2349,31 @@ app.post('/api/ai/invoke', requireAuth, aiLimiter, checkAiUsageLimit, async (req
       imageUrlPrefixes: incomingImageUrls.map(u => String(u || '').slice(0, 60)),
     });
     
-    const { intent, text, returnActions, context, knowledgeBase, projectId, conversation, conversationMemory, imageUrls: rawImageUrls, userPrompt, responseLength, hasFocusedBricks, skipWebSearch, workspaceContext } = req.body;
-    const model = normalizedModel;
+    const { intent, text, returnActions, context, knowledgeBase, projectId, conversation, conversationMemory, imageUrls: rawImageUrls, responseLength, hasFocusedBricks, skipWebSearch, workspaceContext } = req.body;
+    let { userPrompt } = req.body;
+    let model = normalizedModel;
     const imageUrls = (Array.isArray(rawImageUrls) ? rawImageUrls : [])
       .map((u) => String(u || '').trim())
       .filter((u) => u.startsWith('http') || u.startsWith('data:image/'))
       .slice(0, 10);
     let { prompt } = req.body;
+
+    // Enforce plan tier: silently downgrade locked models instead of erroring.
+    const invokePlan = await resolveUserPlan(req.user?.id);
+    if (!isModelAllowedForPlan(model, invokePlan.modelTier)) {
+      const downgraded = defaultModelForTier(invokePlan.modelTier);
+      console.log(`🔒 Model ${model} locked for plan ${invokePlan.planId} — downgrading to ${downgraded}`);
+      res.setHeader('X-Model-Downgraded', `${model}->${downgraded}`);
+      res.setHeader('X-Plan', invokePlan.planId);
+      model = downgraded;
+    }
+    // Custom AI instructions are a Studio+ feature. Basic-tier callers get
+    // the userPrompt silently stripped so the server prompt builder treats
+    // them as a vanilla request.
+    if (invokePlan.modelTier === 'basic' && userPrompt) {
+      userPrompt = undefined;
+      res.setHeader('X-Feature-Stripped', 'user_prompt');
+    }
 
     // Auto-detect image edit or generation requests
     // Use ONLY the pure latest user message for intent detection — never the full prompt
@@ -3474,6 +3753,23 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
     if (!prompt && text) prompt = `Answer the user's question clearly.\nQuestion:\n${text}\n`;
     if (!prompt) return res.status(400).json({ error: 'Missing prompt' });
 
+    // Enforce the caller's plan tier. If they request a model their plan
+    // doesn't cover, downgrade to the best model they can use and surface an
+    // `X-Model-Downgraded` header so the client can nudge them to upgrade.
+    const streamPlan = await resolveUserPlan(req.user?.id);
+    if (!isModelAllowedForPlan(model, streamPlan.modelTier)) {
+      const downgraded = defaultModelForTier(streamPlan.modelTier);
+      console.log(`🔒 Model ${model} locked for plan ${streamPlan.planId} — downgrading to ${downgraded}`);
+      res.setHeader('X-Model-Downgraded', `${model}->${downgraded}`);
+      res.setHeader('X-Plan', streamPlan.planId);
+      model = downgraded;
+    }
+    // Custom AI instructions are Studio+. Strip them for basic-tier callers.
+    if (streamPlan.modelTier === 'basic' && userPrompt) {
+      userPrompt = undefined;
+      res.setHeader('X-Feature-Stripped', 'user_prompt');
+    }
+
     // Auto-detect image edit or generation requests
     // Use ONLY the pure latest user message for intent detection.
     const streamUserText = String(text || prompt || '').trim();
@@ -4154,6 +4450,17 @@ app.post('/api/ai/image', requireAuth, generationLimiter, checkAiUsageLimit, asy
       });
     }
 
+    // Gate image generation to Studio Pro / Studio Max only.
+    const imagePlan = await resolveUserPlan(req.user?.id);
+    if (!isModelAllowedForPlan(imageModel, imagePlan.modelTier)) {
+      return res.status(403).json({
+        error: 'upgrade_required',
+        message: 'Image generation is included with Studio Pro. Upgrade to keep creating images.',
+        required_plan: 'studio_pro',
+        current_plan: imagePlan.planId,
+      });
+    }
+
     const imagePrompt = extractImagePrompt(cleanPrompt);
     console.log(`🎨 Image generation (${imageModel}): "${imagePrompt.slice(0, 120)}"`);
 
@@ -4301,6 +4608,17 @@ app.post('/api/ai/image-edit', requireAuth, generationLimiter, checkAiUsageLimit
 
     const sourceUrls = Array.isArray(image_urls) ? image_urls : (image_url ? [image_url] : []);
     if (!sourceUrls.length) return res.status(400).json({ error: 'Missing source image URL' });
+
+    // Image edit is a media-tier feature. Gate it to Studio Pro / Studio Max.
+    const editPlan = await resolveUserPlan(req.user?.id);
+    if (editPlan.modelTier !== 'top+media') {
+      return res.status(403).json({
+        error: 'upgrade_required',
+        message: 'Image editing is included with Studio Pro. Upgrade to keep editing images.',
+        required_plan: 'studio_pro',
+        current_plan: editPlan.planId,
+      });
+    }
 
     if (!process.env.GOOGLE_API_KEY) {
       return res.status(500).json({ error: 'GOOGLE_API_KEY not configured. Required for image editing.' });
@@ -5920,6 +6238,370 @@ app.get('/api/usage/history', requireAuth, async (req, res) => {
   } catch (error) {
     console.error('❌ Usage history error:', error.message);
     return res.status(500).json({ error: 'Failed to fetch usage history' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ============================================
+// STRIPE BILLING — customer + checkout + portal + webhook handler
+// ============================================
+
+const PLAN_IDS = new Set(['studio', 'studio_pro', 'studio_max']);
+const BILLING_PERIODS = new Set(['monthly', 'annual']);
+
+function stripeConfigured() {
+  return Boolean(stripe && supabaseAdmin);
+}
+
+function appUrlFromReq(req) {
+  const explicit = process.env.APP_URL || process.env.FRONTEND_URL;
+  if (explicit) return explicit.replace(/\/$/, '');
+  const origin = req.headers.origin;
+  if (origin) return origin.replace(/\/$/, '');
+  return 'http://localhost:5173';
+}
+
+function planFromPriceId(priceId) {
+  if (!priceId) return null;
+  for (const [plan, periods] of Object.entries(STRIPE_PRICE_MAP)) {
+    for (const [period, id] of Object.entries(periods)) {
+      if (id && id === priceId) return { plan, period };
+    }
+  }
+  return null;
+}
+
+async function loadBillingRow(userId) {
+  if (!supabaseAdmin) return null;
+  const { data, error } = await supabaseAdmin
+    .from('user_billing')
+    .select('*')
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (error) {
+    console.error('❌ loadBillingRow failed:', error.message);
+    return null;
+  }
+  return data || null;
+}
+
+// ── User plan / model tier resolver ─────────────────────────────────────────
+// Small in-memory TTL cache so every AI request doesn't re-hit user_billing.
+// Keyed by userId; cleared when billing changes via webhook (see
+// syncSubscriptionToBilling) — if that proves not enough, drop TTL to ~5s.
+const USER_PLAN_CACHE_TTL_MS = 60_000;
+const userPlanCache = new Map(); // userId → { tier, planId, expiresAt }
+
+function invalidateUserPlanCache(userId) {
+  if (!userId) return;
+  userPlanCache.delete(userId);
+}
+
+async function resolveUserPlan(userId) {
+  if (!userId) return { planId: 'free', modelTier: 'basic' };
+  const cached = userPlanCache.get(userId);
+  const now = Date.now();
+  if (cached && cached.expiresAt > now) return { planId: cached.planId, modelTier: cached.tier };
+
+  const row = await loadBillingRow(userId);
+  const rawPlan = String(row?.plan || 'free').toLowerCase();
+  const status = String(row?.status || '').toLowerCase();
+  const planConf = PLAN_LIMITS[rawPlan];
+  const isPaid = rawPlan !== 'free';
+  const isActive = !isPaid || status === 'active' || status === 'trialing';
+  const effectivePlan = planConf && isActive ? rawPlan : 'free';
+  const tier = (PLAN_LIMITS[effectivePlan] || PLAN_LIMITS.free).modelTier || 'basic';
+
+  userPlanCache.set(userId, {
+    planId: effectivePlan,
+    tier,
+    expiresAt: now + USER_PLAN_CACHE_TTL_MS,
+  });
+  return { planId: effectivePlan, modelTier: tier };
+}
+
+async function ensureStripeCustomer(user) {
+  if (!stripeConfigured()) throw new Error('stripe_not_configured');
+  const existing = await loadBillingRow(user.id);
+  if (existing?.stripe_customer_id) return existing.stripe_customer_id;
+
+  const customer = await stripe.customers.create({
+    email: user.email || undefined,
+    metadata: { supabase_user_id: user.id },
+  });
+
+  const { error } = await supabaseAdmin
+    .from('user_billing')
+    .upsert(
+      {
+        user_id: user.id,
+        stripe_customer_id: customer.id,
+        plan: existing?.plan || 'free',
+        status: existing?.status || 'inactive',
+      },
+      { onConflict: 'user_id' },
+    );
+  if (error) {
+    console.error('❌ ensureStripeCustomer upsert failed:', error.message);
+    throw new Error('billing_upsert_failed');
+  }
+  return customer.id;
+}
+
+async function syncSubscriptionToBilling(subscription) {
+  if (!supabaseAdmin) return;
+  const customerId = typeof subscription.customer === 'string'
+    ? subscription.customer
+    : subscription.customer?.id;
+  if (!customerId) return;
+
+  const priceId = subscription.items?.data?.[0]?.price?.id;
+  const match = planFromPriceId(priceId);
+  const isActive = ['active', 'trialing', 'past_due'].includes(subscription.status);
+
+  const updates = {
+    stripe_subscription_id: subscription.id,
+    status: subscription.status,
+    cancel_at_period_end: Boolean(subscription.cancel_at_period_end),
+    current_period_end: subscription.current_period_end
+      ? new Date(subscription.current_period_end * 1000).toISOString()
+      : null,
+  };
+
+  if (match) {
+    updates.plan = isActive ? match.plan : 'free';
+    updates.billing_period = match.period;
+  } else if (!isActive) {
+    updates.plan = 'free';
+    updates.billing_period = null;
+  }
+
+  const { data: updated, error } = await supabaseAdmin
+    .from('user_billing')
+    .update(updates)
+    .eq('stripe_customer_id', customerId)
+    .select('user_id');
+  if (error) {
+    console.error('❌ syncSubscriptionToBilling failed:', error.message);
+    return;
+  }
+  for (const row of updated || []) {
+    invalidateUserPlanCache(row.user_id);
+  }
+}
+
+async function handleStripeEvent(event) {
+  if (!supabaseAdmin) {
+    console.warn('⚠️ Stripe event received but supabaseAdmin unavailable — skipping');
+    return;
+  }
+
+  // Idempotency: ignore events we've already processed.
+  const { data: seen } = await supabaseAdmin
+    .from('stripe_events')
+    .select('id')
+    .eq('id', event.id)
+    .maybeSingle();
+  if (seen) return;
+
+  console.log(`💳 Stripe event: ${event.type} (${event.id})`);
+
+  switch (event.type) {
+    case 'checkout.session.completed': {
+      const session = event.data.object;
+      if (session.mode === 'subscription' && session.subscription) {
+        const sub = await stripe.subscriptions.retrieve(session.subscription);
+        await syncSubscriptionToBilling(sub);
+      }
+      break;
+    }
+    case 'customer.subscription.created':
+    case 'customer.subscription.updated':
+    case 'customer.subscription.deleted': {
+      await syncSubscriptionToBilling(event.data.object);
+      break;
+    }
+    case 'invoice.payment_failed': {
+      const invoice = event.data.object;
+      if (invoice.subscription) {
+        const sub = await stripe.subscriptions.retrieve(invoice.subscription);
+        await syncSubscriptionToBilling(sub);
+      }
+      break;
+    }
+    default:
+      // Silently accept other events so Stripe marks them delivered.
+      break;
+  }
+
+  const { error: logErr } = await supabaseAdmin
+    .from('stripe_events')
+    .insert({ id: event.id, type: event.type, payload: event });
+  if (logErr && !String(logErr.message).includes('duplicate')) {
+    console.error('⚠️ stripe_events insert failed:', logErr.message);
+  }
+}
+
+// ── /api/billing/me ─────────────────────────────────────────────────────────
+app.get('/api/billing/me', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Not authenticated' });
+    const row = await loadBillingRow(userId);
+    return res.json({
+      plan: row?.plan || 'free',
+      billing_period: row?.billing_period || null,
+      status: row?.status || 'inactive',
+      current_period_end: row?.current_period_end || null,
+      cancel_at_period_end: Boolean(row?.cancel_at_period_end),
+      has_stripe_customer: Boolean(row?.stripe_customer_id),
+    });
+  } catch (err) {
+    console.error('❌ /api/billing/me error:', err);
+    return res.status(500).json({ error: 'Failed to load billing' });
+  }
+});
+
+// ── /api/billing/checkout (subscription) ────────────────────────────────────
+app.post('/api/billing/checkout', requireAuth, async (req, res) => {
+  try {
+    if (!stripeConfigured()) return res.status(503).json({ error: 'Stripe not configured' });
+    const user = req.user;
+    const { planId, period } = req.body || {};
+    if (!PLAN_IDS.has(planId)) return res.status(400).json({ error: 'invalid_plan' });
+    if (!BILLING_PERIODS.has(period)) return res.status(400).json({ error: 'invalid_period' });
+
+    const priceId = STRIPE_PRICE_MAP[planId]?.[period];
+    if (!priceId) {
+      return res.status(500).json({
+        error: 'price_not_configured',
+        message: `Missing env var for ${planId}/${period} price id`,
+      });
+    }
+
+    const customerId = await ensureStripeCustomer(user);
+    const appUrl = appUrlFromReq(req);
+
+    const session = await stripe.checkout.sessions.create({
+      mode: 'subscription',
+      customer: customerId,
+      line_items: [{ price: priceId, quantity: 1 }],
+      success_url: `${appUrl}/billing?checkout=success&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${appUrl}/billing?checkout=canceled`,
+      client_reference_id: user.id,
+      allow_promotion_codes: true,
+      metadata: { supabase_user_id: user.id, plan: planId, period },
+      subscription_data: {
+        metadata: { supabase_user_id: user.id, plan: planId, period },
+      },
+    });
+
+    return res.json({ url: session.url });
+  } catch (err) {
+    console.error('❌ /api/billing/checkout error:', err);
+    return res.status(500).json({ error: 'checkout_failed', message: err.message });
+  }
+});
+
+// ── /api/billing/portal (manage subscription / cards / invoices) ────────────
+app.post('/api/billing/portal', requireAuth, async (req, res) => {
+  try {
+    if (!stripeConfigured()) return res.status(503).json({ error: 'Stripe not configured' });
+    const row = await loadBillingRow(req.user.id);
+    if (!row?.stripe_customer_id) {
+      return res.status(400).json({ error: 'no_customer', message: 'No Stripe customer yet.' });
+    }
+    const appUrl = appUrlFromReq(req);
+    const portal = await stripe.billingPortal.sessions.create({
+      customer: row.stripe_customer_id,
+      return_url: `${appUrl}/billing`,
+    });
+    return res.json({ url: portal.url });
+  } catch (err) {
+    console.error('❌ /api/billing/portal error:', err);
+    return res.status(500).json({ error: 'portal_failed', message: err.message });
+  }
+});
+
+// ── /api/billing/waitlist (Studio Max sign-ups) ─────────────────────────────
+// Writes to `public.studio_max_waitlist` via the service role so clients can't
+// tamper with rows. GET returns whether the current user is already on the
+// list so the pricing card can render a "You're on the list" confirmed state.
+
+const WAITLIST_NOTE_MAX = 2000;
+
+app.get('/api/billing/waitlist', requireAuth, async (req, res) => {
+  try {
+    if (!supabaseAdmin) return res.status(503).json({ error: 'db_not_configured' });
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Not authenticated' });
+    const { data, error } = await supabaseAdmin
+      .from('studio_max_waitlist')
+      .select('email, note, created_at')
+      .eq('user_id', userId)
+      .maybeSingle();
+    if (error) {
+      console.error('❌ waitlist get error:', error.message);
+      return res.status(500).json({ error: 'waitlist_get_failed' });
+    }
+    return res.json({
+      joined: Boolean(data),
+      entry: data
+        ? { email: data.email, note: data.note, created_at: data.created_at }
+        : null,
+    });
+  } catch (err) {
+    console.error('❌ /api/billing/waitlist GET error:', err);
+    return res.status(500).json({ error: 'waitlist_get_failed' });
+  }
+});
+
+app.post('/api/billing/waitlist', requireAuth, async (req, res) => {
+  try {
+    if (!supabaseAdmin) return res.status(503).json({ error: 'db_not_configured' });
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Not authenticated' });
+
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const rawEmail = typeof body.email === 'string' ? body.email.trim() : '';
+    // Fall back to the auth email if the client didn't send one.
+    const email = (rawEmail || req.user?.email || '').trim().toLowerCase();
+    if (!email || !email.includes('@') || email.length > 320) {
+      return res.status(400).json({ error: 'invalid_email' });
+    }
+    const note = typeof body.note === 'string'
+      ? body.note.trim().slice(0, WAITLIST_NOTE_MAX)
+      : null;
+
+    const metadata = {
+      ua: String(req.headers['user-agent'] || '').slice(0, 500),
+      ip: (req.headers['x-forwarded-for'] || req.ip || '').toString().split(',')[0].trim().slice(0, 64),
+    };
+
+    // Upsert on user_id so double-clicks and re-edits don't create dupes.
+    const { data, error } = await supabaseAdmin
+      .from('studio_max_waitlist')
+      .upsert(
+        { user_id: userId, email, note, metadata },
+        { onConflict: 'user_id' },
+      )
+      .select('email, note, created_at')
+      .single();
+
+    if (error) {
+      console.error('❌ waitlist upsert error:', error.message);
+      return res.status(500).json({ error: 'waitlist_save_failed' });
+    }
+
+    return res.json({
+      ok: true,
+      joined: true,
+      entry: { email: data.email, note: data.note, created_at: data.created_at },
+    });
+  } catch (err) {
+    console.error('❌ /api/billing/waitlist POST error:', err);
+    return res.status(500).json({ error: 'waitlist_save_failed' });
   }
 });
 

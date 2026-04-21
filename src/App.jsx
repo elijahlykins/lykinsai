@@ -16,11 +16,13 @@ import OmniaGrid from "./pages/OmniaGrid";
 import ProjectPlaceholder from "./pages/ProjectPlaceholder";
 import Settings from "./pages/Settings";
 import SynthesisLayer from "./pages/SynthesisLayer";
+import PlanGate from "./components/PlanGate";
 import AppSidebar from "./components/AppSidebar";
 import VaultNew from "./pages/new/VaultNew";
 import VaultChatNew from "./pages/new/VaultChatNew";
 import TagManagementNew from "./pages/new/TagManagementNew";
 import BillingNew from "./pages/new/BillingNew";
+import VaultUploadToast from "./components/files/VaultUploadToast";
 
 
 const legacyEnabled = String(import.meta.env.VITE_ENABLE_LEGACY_NOTES || "").toLowerCase() === "true";
@@ -54,30 +56,38 @@ function AppShell() {
     };
   }, [isEmbeddedVault]);
 
-  if (!loading && !user && !isLoginPage) {
-    return (
-      <Routes>
-        <Route path="*" element={<Navigate to="/login" state={{ from: location }} replace />} />
-      </Routes>
-    );
-  }
+  const isGuest = !loading && !user;
 
   return (
     <>
-      {!isEmbeddedVault && !isLoginPage && <AppSidebar />}
+      {!isEmbeddedVault && !isLoginPage && user && <AppSidebar />}
       {!isEmbeddedVault && !isLoginPage && user && <IntakeModal />}
-      <div className={isLoginPage ? "" : "app-content"}>
+      {!isEmbeddedVault && user && <VaultUploadToast />}
+      <div className={isLoginPage ? "" : (isGuest ? "app-content guest-mode" : "app-content")}>
         <RouteErrorBoundary>
           <Routes>
             <Route path="/login" element={<Login />} />
-            <Route path="/" element={<ProtectedRoute><OmniaGrid /></ProtectedRoute>} />
+            <Route path="/" element={<OmniaGrid />} />
             <Route path="/dashboard" element={<Navigate to="/" replace />} />
             <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
             <Route path="/grid/:boardId" element={<ProtectedRoute><OmniaGrid /></ProtectedRoute>} />
             <Route path="/project/:projectId" element={<ProtectedRoute><ProjectPlaceholder /></ProtectedRoute>} />
             <Route path="/omnia" element={<ProtectedRoute><OmniaGrid /></ProtectedRoute>} />
             <Route path="/vault" element={<ProtectedRoute><VaultNew /></ProtectedRoute>} />
-            <Route path="/synthesis-layer" element={<ProtectedRoute><SynthesisLayer /></ProtectedRoute>} />
+            <Route
+              path="/synthesis-layer"
+              element={
+                <ProtectedRoute>
+                  <PlanGate
+                    minPlan="studio"
+                    feature="Mind Map"
+                    description="The synthesis layer visualises every grid, project, and vault item as a live mind map. Upgrade to Studio to explore it."
+                  >
+                    <SynthesisLayer />
+                  </PlanGate>
+                </ProtectedRoute>
+              }
+            />
             <Route
               path="/tag-management"
               element={

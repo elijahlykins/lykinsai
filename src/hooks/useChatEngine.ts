@@ -631,15 +631,24 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   const getKnowledgeBaseContext = useCallback(() => getCachedKbText(), [getCachedKbText]);
 
   const extractSourceLinks = useCallback((text: string): { cleanText: string; sources: { title: string; url: string }[] } => {
-    const sm = text.match(/\n*(?:Sources?|References?):?\s*\n([\s\S]*?)$/i);
+    // Require at least one newline before the header so we don't grab the word
+    // "sources:" or "references:" when the model uses it in the middle of a
+    // sentence (case-insensitive match previously chopped off the rest of a
+    // long response whenever prose like "The main sources:\n..." appeared).
+    const sm = text.match(/\n+(?:Sources?|References?):?[ \t]*\n([\s\S]*?)$/i);
     if (!sm) return { cleanText: text, sources: [] };
-    const ct = text.slice(0, sm.index).trimEnd();
     const block = sm[1].trim();
     const sources: { title: string; url: string }[] = [];
     const lr = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g;
     let m: RegExpExecArray | null;
     while ((m = lr.exec(block)) !== null) sources.push({ title: m[1], url: m[2] });
     if (!sources.length) { const br = /(?:^|\n)\s*\d+\.\s*(https?:\/\/[^\s]+)/g; while ((m = br.exec(block)) !== null) { try { const u = new URL(m[1]); sources.push({ title: u.hostname.replace(/^www\./, ""), url: m[1] }); } catch {} } }
+    // Only strip the trailing block when we actually extracted real citation
+    // links. Otherwise the match was likely a false positive (e.g. the AI used
+    // "Sources:" as an inline list header) and we'd silently delete the rest
+    // of the response.
+    if (!sources.length) return { cleanText: text, sources: [] };
+    const ct = text.slice(0, sm.index).trimEnd();
     return { cleanText: ct, sources };
   }, []);
 
@@ -723,8 +732,24 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   const extractAndEmbedMediaItems = useCallback(async (aiText: string, _responseBlockId: string | null): Promise<{ cleanText: string; pulled: number }> => {
     const re = /\[PULL_MEDIA:([^\]|]+?)(?:\|(\d+))?\]/g;
     const pulls: { noteId: string; attIndex: number }[] = [];
+    const seenKeys = new Set<string>();
     let m: RegExpExecArray | null;
-    while ((m = re.exec(aiText)) !== null) { const nid = m[1].trim(); const ai = m[2] !== undefined ? parseInt(m[2], 10) : 0; if (nid) pulls.push({ noteId: nid, attIndex: ai }); }
+    while ((m = re.exec(aiText)) !== null) {
+      // Models sometimes wrap the id with leftovers from the source listing, e.g.
+      // "{noteId:abc}" or "id=abc". Strip any surrounding decoration and keep only
+      // the UUID-ish core so the Supabase lookup still succeeds.
+      let nid = String(m[1] || "").trim();
+      nid = nid.replace(/^[{(\s"']+|[)}\s"']+$/g, "");
+      const prefixMatch = nid.match(/^(?:noteId\s*[:=]\s*|id\s*[:=]\s*)(.+)$/i);
+      if (prefixMatch) nid = prefixMatch[1].trim();
+      nid = nid.replace(/^[{(\s"']+|[)}\s"']+$/g, "");
+      const ai = m[2] !== undefined ? parseInt(m[2], 10) : 0;
+      if (!nid) continue;
+      const key = `${nid}|${ai}`;
+      if (seenKeys.has(key)) continue;
+      seenKeys.add(key);
+      pulls.push({ noteId: nid, attIndex: ai });
+    }
     if (!pulls.length) return { cleanText: aiText, pulled: 0 };
     const cleanText = aiText.replace(/\s*\[PULL_MEDIA:[^\]]*\]/g, "").trimEnd();
 
@@ -740,7 +765,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       try {
         let note = seenNotes.get(pull.noteId);
         if (!note) {
-          const { data, error } = await supabase.from("notes").select("id, title, content, attachments, source").eq("id", pull.noteId).single();
+          const { data, error } = await supabase.from("notes").select("id, title, content, source").eq("id", pull.noteId).single();
           if (error || !data) continue;
           note = data as Record<string, unknown>;
           seenNotes.set(pull.noteId, note);

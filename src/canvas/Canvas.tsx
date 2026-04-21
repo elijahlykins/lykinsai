@@ -26,6 +26,7 @@ import { supabase } from "@/lib/supabase";
 import { purgeVaultNoteEmbeddings } from "@/lib/synthesis/queueReindex";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { useUsageGate } from "@/lib/useUsageGate";
+import { notifyVaultCapIfApplicable } from "@/lib/vault/vaultCapError";
 import UpgradeModal from "@/components/UpgradeModal";
 
 type CanvasProps = {
@@ -7147,7 +7148,9 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
                         content,
                         is_pinned: false,
                       });
-                      if (!error) {
+                      if (error) {
+                        notifyVaultCapIfApplicable(error);
+                      } else {
                         setVaultSavedId(bid);
                         setTimeout(() => { setBrickMenu(null); setVaultSavedId(null); }, 1200);
                       }

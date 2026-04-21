@@ -23,6 +23,8 @@ import { GridIcon } from "@/components/ui/GridIcon";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useUserPlan } from "@/lib/useUserPlan";
+import { planMeets } from "@/components/PlanGate";
 
 const PROJECTS_CHANGED_EVENT = "lykinsai_projects_changed";
 
@@ -45,6 +47,8 @@ export default function AppSidebar() {
   const nav = useNavigate();
   const location = useLocation();
   const { user, signInWithOAuth, signOut } = useAuth();
+  const { planId } = useUserPlan();
+  const canUseSynthesis = planMeets(planId, "studio");
   const [open, setOpen] = useState(false);
   const queryClient = useQueryClient();
   const [menuBoardId, setMenuBoardId] = useState(null);
@@ -283,10 +287,14 @@ export default function AppSidebar() {
             <button
               type="button"
               onClick={() => flushAndNavigate(nav, "/synthesis-layer")}
+              title={canUseSynthesis ? "Synthesis Layer" : "Upgrade to Studio to unlock the Mind Map"}
               className="w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
             >
               <Brain className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
-              Synthesis Layer
+              <span className="flex-1">Synthesis Layer</span>
+              {!canUseSynthesis && (
+                <Lock className="w-3 h-3 text-black/40 dark:text-white/40" aria-label="Upgrade required" />
+              )}
             </button>
           </div>
         </div>

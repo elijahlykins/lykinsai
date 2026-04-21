@@ -8,12 +8,10 @@ import { detectSocialPlatform, isSocialEmbedType } from "@/canvas/utils/socialEm
 export const VAULT_AI_NOTES_LIMIT = 100;
 export const VAULT_AI_MAX_CARD_LINES = 40;
 
+// `attachments` is embedded inside `content` as [ATTACHMENTS_JSON:...]; no dedicated column.
 const NOTES_COLUMN_SETS = [
-  "id, title, content, attachments, tags, created_at, updated_at, source",
-  "id, title, content, attachments, tags, created_at, updated_at",
   "id, title, content, tags, created_at, updated_at, source",
   "id, title, content, tags, created_at, updated_at",
-  "id, title, content, attachments, created_at, updated_at",
   "id, title, content, created_at, updated_at",
 ] as const;
 
@@ -384,12 +382,24 @@ function buildVaultCardsForAiChat(notes: VaultAiNoteRow[]): VaultAiCard[] {
 function formatVaultCardLineForAi(card: VaultAiCard): string {
   const date = card.dateLabel || "unknown date";
   const tagStr = card.tags?.length ? ` [tags: ${card.tags.join(", ")}]` : "";
-  const nid = card.noteId ? ` {noteId:${card.noteId}}` : "";
+  // Use the same notation the server system prompt documents — "(id=<noteId>)" — so
+  // the AI can reliably construct [PULL_MEDIA:<noteId>|<index>] tokens. Also emit the
+  // exact pull marker the AI should copy verbatim to the end of its response when the
+  // user asks to bring this item onto the board.
+  const noteId = card.noteId || "";
+  const idStr = noteId ? ` (id=${noteId})` : "";
+  const pullToken = noteId
+    ? card.kind === "attachment"
+      ? `[PULL_MEDIA:${noteId}|${Number.isInteger(card.attachmentIndex) ? card.attachmentIndex : 0}]`
+      : `[PULL_MEDIA:${noteId}]`
+    : "";
+  const pullStr = pullToken ? ` pull=${pullToken}` : "";
 
   if (card.kind === "attachment") {
     const att = card.attachment || {};
     const type = (card.type || "file").toUpperCase();
     const name = card.title || (att.name as string) || "Untitled file";
+    const attIdx = Number.isInteger(card.attachmentIndex) ? ` attachmentIndex=${card.attachmentIndex}` : "";
     const extras: string[] = [];
     if (card.parentTitle && card.parentTitle !== name && card.parentTitle !== "Untitled note") {
       extras.push(`From note: "${card.parentTitle}"`);
@@ -407,14 +417,14 @@ function formatVaultCardLineForAi(card: VaultAiCard): string {
         `User notes (context on why they saved this): ${fileNotes.map((n) => n.text).join(" | ").slice(0, 400)}`,
       );
     }
-    return `[${type}]${nid} "${name}" (${date})${tagStr}${extras.length ? " — " + extras.join(" | ") : ""}`;
+    return `[${type}] "${name}"${idStr}${attIdx}${pullStr} (${date})${tagStr}${extras.length ? " — " + extras.join(" | ") : ""}`;
   }
 
   if (card.kind === "quick-note") {
-    return `[NOTE]${nid} "${card.title || "Quick Note"}" — ${(card.excerpt || "").slice(0, 500)} (${date})${tagStr}`;
+    return `[NOTE] "${card.title || "Quick Note"}"${idStr}${pullStr} — ${(card.excerpt || "").slice(0, 500)} (${date})${tagStr}`;
   }
 
-  return `[ITEM]${nid} "${card.title || "Untitled"}" (${date})${tagStr}`;
+  return `[ITEM] "${card.title || "Untitled"}"${idStr}${pullStr} (${date})${tagStr}`;
 }
 
 function collectAllTagsFromNotes(notes: VaultAiNoteRow[]): string {
@@ -451,7 +461,7 @@ function buildTagDirectory(notes: VaultAiNoteRow[]): string {
   const lines = sorted.map(([tag, items]) => {
     const refs = items
       .slice(0, 8)
-      .map((n) => `"${n.title}" {noteId:${n.id}}`)
+      .map((n) => `"${n.title}" (id=${n.id})`)
       .join(", ");
     const overflow = items.length > 8 ? ` +${items.length - 8} more` : "";
     return `#${tag} (${items.length}): ${refs}${overflow}`;
@@ -472,6 +482,10 @@ export function buildVaultDetailForGridAi(
   const block = lines.length
     ? [
         `DETAILED VAULT — same listing as Vault chat (${totalCardCount} cards from recent notes; showing up to ${maxLines}). Existing tags in use: ${existingTagsStr}.`,
+        // Explicit, unambiguous instructions so the AI can pull items onto the current grid
+        // when the user asks. Each item line below includes its exact "pull=[PULL_MEDIA:...]"
+        // token; the model should copy those tokens verbatim to the END of its reply.
+        `To add any item below onto the current board, copy its exact "pull=" token (the full "[PULL_MEDIA:...]" marker) to the END of your response (hidden from the user). Do NOT alter the token. Use one pull marker per item. Example: [PULL_MEDIA:abc123|0] [PULL_MEDIA:def456]`,
         tagDir,
         lines.join("\n"),
       ]

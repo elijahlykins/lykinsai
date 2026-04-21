@@ -6,6 +6,7 @@ import type { Block } from "@/canvas/types";
 import { snapshotToSynthesisText } from "@/lib/synthesis/sourceText";
 import { scheduleSynthesisReindex } from "@/lib/synthesis/queueReindex";
 import type { NotePage } from "@/components/notes/NotesPanel";
+import { notifyBlocksCapIfApplicable } from "@/lib/board/blocksCapError";
 
 const SNAPSHOT_VERSION = 2;
 
@@ -24,6 +25,32 @@ function isValidNotesTiptapDoc(v: unknown): v is { type: string; content: unknow
     (v as { type?: string }).type === "doc" &&
     Array.isArray((v as { content?: unknown }).content)
   );
+}
+
+/**
+ * Returns true when a single tiptap doc has no meaningful content
+ * (empty, or just empty paragraphs with no text/children).
+ */
+function isNotesContentEmpty(content: any): boolean {
+  if (!content || typeof content !== "object") return true;
+  if (content.type !== "doc") return false;
+  const nodes = Array.isArray(content.content) ? content.content : [];
+  if (nodes.length === 0) return true;
+  const isEmptyNode = (node: any): boolean => {
+    if (!node || typeof node !== "object") return true;
+    if (node.type === "text") return !String(node.text || "").trim();
+    if (node.type === "paragraph" || node.type === "heading") {
+      const kids = Array.isArray(node.content) ? node.content : [];
+      return kids.every(isEmptyNode);
+    }
+    return false;
+  };
+  return nodes.every(isEmptyNode);
+}
+
+function isNotesPagesEmpty(pages: NotePage[] | null | undefined): boolean {
+  if (!Array.isArray(pages) || pages.length === 0) return true;
+  return pages.every((p) => isNotesContentEmpty(p?.content));
 }
 
 function isValidNotesPages(v: unknown): v is NotePage[] {
@@ -337,7 +364,9 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
       if (content.length > 0) return true;
       return false;
     });
-    return meaningful.length === 0;
+    if (meaningful.length > 0) return false;
+    if (!isNotesPagesEmpty(notesPagesRef.current)) return false;
+    return true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatMessages.length]);
 
@@ -417,9 +446,49 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
 
   /* ------------------------------------------------------------------ */
   /*  saveSnapshot                                                       */
+  /*                                                                     */
+  /*  When opts.isFinal is true the caller is finalising the board       */
+  /*  (unmount / beforeunload). If the board is still completely empty   */
+  /*  and was never saved before, we delete the stale omnia_boards row   */
+  /*  that was eagerly created on load so it never appears in the UI.   */
   /* ------------------------------------------------------------------ */
-  const saveSnapshot = useCallback(async () => {
+  const saveSnapshot = useCallback(async (opts?: { isFinal?: boolean }) => {
     if (!userId || !boardId || savingRef.current || !hydratedRef.current) return;
+
+    // Skip persisting brand-new empty boards. If the caller is finalising,
+    // also clean up the eagerly created board row + local caches.
+    const neverSavedBefore = !lastSaveTimeRef.current;
+    const titleUntouched =
+      !userRenamedRef.current &&
+      (!lastSavedTitleRef.current || lastSavedTitleRef.current === "New Grid");
+    if (neverSavedBefore && titleUntouched && isBoardEmpty()) {
+      if (opts?.isFinal) {
+        savingRef.current = true;
+        try {
+          await supabase
+            .from("omnia_boards")
+            .delete()
+            .eq("id", boardId)
+            .eq("user_id", userId);
+          try { localStorage.removeItem(`omnia_draft_${boardId}`); } catch { /* ignore */ }
+          try { localStorage.removeItem(`omnia_chat_${boardId}`); } catch { /* ignore */ }
+          try { localStorage.removeItem(`omnia_camera_${boardId}`); } catch { /* ignore */ }
+          try { localStorage.removeItem(`omnia_vault_saved_${boardId}`); } catch { /* ignore */ }
+          try {
+            if (localStorage.getItem("omnia_board_id") === boardId) {
+              localStorage.removeItem("omnia_board_id");
+            }
+          } catch { /* ignore */ }
+          window.dispatchEvent(new Event("lykinsai_boards_changed"));
+        } catch (err) {
+          if (import.meta.env.DEV) console.error("[LYKN] Empty board cleanup failed:", err);
+        } finally {
+          savingRef.current = false;
+        }
+      }
+      return;
+    }
+
     savingRef.current = true;
     try {
       const raw = buildSnapshot();
@@ -438,17 +507,31 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
       let stateSaveOk = !initialUpsertRes.error;
 
       if (initialUpsertRes.error) {
-        if (import.meta.env.DEV) console.error("[LYKN] Board state save failed, attempting self-heal:", initialUpsertRes.error.message);
-        await supabase
-          .from("omnia_board_states")
-          .update({ user_id: userId })
-          .eq("board_id", boardId)
-          .is("user_id", null);
-        const retryRes = await supabase
-          .from("omnia_board_states")
-          .upsert(statePayload, { onConflict: "board_id" });
-        if (retryRes.error && import.meta.env.DEV) console.error("[LYKN] Board state save retry failed:", retryRes.error.message);
-        else stateSaveOk = true;
+        // The DB-level blocks-per-grid trigger raises this error when a
+        // tampered or stale client tries to save more blocks than the plan
+        // allows. Surface the upgrade modal and stop — no point retrying.
+        if (notifyBlocksCapIfApplicable(initialUpsertRes.error)) {
+          if (import.meta.env.DEV) console.warn("[LYKN] Board save blocked by per-grid block cap.");
+        } else {
+          if (import.meta.env.DEV) console.error("[LYKN] Board state save failed, attempting self-heal:", initialUpsertRes.error.message);
+          await supabase
+            .from("omnia_board_states")
+            .update({ user_id: userId })
+            .eq("board_id", boardId)
+            .is("user_id", null);
+          const retryRes = await supabase
+            .from("omnia_board_states")
+            .upsert(statePayload, { onConflict: "board_id" });
+          if (retryRes.error) {
+            if (notifyBlocksCapIfApplicable(retryRes.error)) {
+              if (import.meta.env.DEV) console.warn("[LYKN] Board save retry blocked by per-grid block cap.");
+            } else if (import.meta.env.DEV) {
+              console.error("[LYKN] Board state save retry failed:", retryRes.error.message);
+            }
+          } else {
+            stateSaveOk = true;
+          }
+        }
       }
 
       if (updateRes.error && import.meta.env.DEV) console.error("[LYKN] Board title save failed:", updateRes.error.message);
@@ -748,7 +831,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
         localStorage.setItem(`omnia_draft_${boardId}`, JSON.stringify(snapshot));
       } catch { /* quota */ }
       savingRef.current = false;
-      saveSnapshot();
+      saveSnapshot({ isFinal: true });
     };
     const onFlushSave = () => {
       savingRef.current = false;
@@ -783,7 +866,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
     if (!boardId || !userId) return;
     return () => {
       savingRef.current = false;
-      saveSnapshot();
+      saveSnapshot({ isFinal: true });
     };
   }, [boardId, saveSnapshot, userId]);
 

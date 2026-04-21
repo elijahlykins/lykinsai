@@ -1,20 +1,22 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/SupabaseAuth";
-import { PLAN_LIMITS } from "@/lib/pricing-config";
+import { PLAN_LIMITS, UPLOAD_RATE_LIMITS } from "@/lib/pricing-config";
 import { API_BASE_URL } from "@/lib/api-config";
+import { useUserPlan } from "@/lib/useUserPlan";
+import { VAULT_CAP_EVENT } from "@/lib/vault/vaultCapError";
+import { UPLOAD_RATE_LIMIT_EVENT } from "@/lib/vault/uploadRateLimitError";
 
-function getUserPlan() {
-  try {
-    const stored = localStorage.getItem("lykn_user_plan");
-    if (stored && PLAN_LIMITS[stored]) return stored;
-  } catch {}
-  return "free";
-}
+// The `blocks-per-grid` cap is enforced at the canvas-store level (see
+// `src/store/canvasStore.ts`). When a user hits it the store dispatches this
+// event and the modal picks it up here. Defined as a module-level constant so
+// both emitter and listener share the exact string.
+export const BLOCK_LIMIT_EVENT = "lykn:block-limit-reached";
 
 export function useUsageGate() {
   const { user } = useAuth();
-  const [currentPlan] = useState(getUserPlan);
+  const { planId, isGuest, loading: planLoading } = useUserPlan();
+  const currentPlan = planId;
   const [vaultCount, setVaultCount] = useState(0);
   const [aiRequestCount, setAiRequestCount] = useState(0);
   const [upgradeModal, setUpgradeModal] = useState(null);
@@ -69,8 +71,102 @@ export function useUsageGate() {
     return () => window.removeEventListener("lykn:ai-limit-reached", handler);
   }, []);
 
+  // Listen for the canvas-store block-limit event so any component mounting
+  // the hook (Canvas, OmniaGrid, etc) can surface the upgrade modal.
+  useEffect(() => {
+    const handler = (e) => {
+      const detail = e?.detail || {};
+      const limit = detail.limit || limitsRef.current.blocksPerGrid;
+      const planName = (() => {
+        const p = planRef.current;
+        if (p === "free") return "Free";
+        if (p === "studio") return "Studio";
+        if (p === "studio_pro") return "Studio Pro";
+        if (p === "studio_max") return "Studio Max";
+        return p;
+      })();
+      setUpgradeModal({
+        type: "blocks",
+        title: "Grid is full",
+        description: `Your ${planName} plan caps each Grid at ${limit} blocks. Upgrade to Studio for unlimited blocks per Grid.`,
+      });
+    };
+    window.addEventListener(BLOCK_LIMIT_EVENT, handler);
+    return () => window.removeEventListener(BLOCK_LIMIT_EVENT, handler);
+  }, []);
+
+  // Safety net: the DB trigger (029_vault_cap_trigger.sql) raises
+  // `vault_cap_reached` if the client somehow slipped past `checkVaultLimit`
+  // (stale plan data, two-tab race, tampered request). Surface the same
+  // modal so the user isn't stuck with a silent failure.
+  useEffect(() => {
+    const handler = () => {
+      const plan = planRef.current;
+      const limit = limitsRef.current.vaultCards;
+      const planName = plan === "free"
+        ? "Free"
+        : plan === "studio_pro"
+          ? "Studio Pro"
+          : plan === "studio_max"
+            ? "Studio Max"
+            : plan === "studio"
+              ? "Studio"
+              : plan;
+      setUpgradeModal({
+        type: "vault",
+        title: "Vault limit reached",
+        description: isFinite(limit)
+          ? `Your ${planName} plan allows ${limit} Vault items. Upgrade to save more.`
+          : `Your ${planName} plan hit the Vault limit. Upgrade to save more.`,
+      });
+    };
+    window.addEventListener(VAULT_CAP_EVENT, handler);
+    return () => window.removeEventListener(VAULT_CAP_EVENT, handler);
+  }, []);
+
+  // Upload rate limiting (033_upload_rate_trigger.sql). The client already
+  // paces big drops locally (see uploadPipeline.awaitRateLimitSlot), so this
+  // usually only fires on cross-tab bursts or a tampered client. We show a
+  // "slow down / upgrade" modal so the user knows what's going on rather
+  // than seeing a cryptic upload failure.
+  useEffect(() => {
+    const handler = (e) => {
+      const plan = planRef.current;
+      const windowKind = e?.detail?.window || null;
+      const caps = UPLOAD_RATE_LIMITS[plan] || UPLOAD_RATE_LIMITS.free;
+      const planName = plan === "free"
+        ? "Free"
+        : plan === "studio_pro"
+          ? "Studio Pro"
+          : plan === "studio_max"
+            ? "Studio Max"
+            : plan === "studio"
+              ? "Studio"
+              : plan;
+      const detail =
+        windowKind === "minute"
+          ? `Your ${planName} plan allows ${caps.perMinute} uploads per minute.`
+          : windowKind === "hour"
+            ? `Your ${planName} plan allows ${caps.perHour} uploads per hour.`
+            : `Your ${planName} plan limits how fast you can upload — try again in a moment.`;
+      setUpgradeModal({
+        type: "upload_rate",
+        title: "Slow down a sec",
+        description: `${detail} Uploads will keep running automatically, or upgrade for higher throughput.`,
+      });
+    };
+    window.addEventListener(UPLOAD_RATE_LIMIT_EVENT, handler);
+    return () => window.removeEventListener(UPLOAD_RATE_LIMIT_EVENT, handler);
+  }, []);
+
   const checkVaultLimit = useCallback(async () => {
+    if (isGuest) {
+      // Guests can't save to the Vault at all — let the calling code handle
+      // the sign-in prompt itself rather than popping a billing modal.
+      return false;
+    }
     if (!user?.id) return false;
+    if (planLoading) return true; // optimistic while plan resolves
     const limit = limitsRef.current.vaultCards;
     if (!isFinite(limit)) return true;
 
@@ -84,15 +180,24 @@ export function useUsageGate() {
 
     if (current >= limit) {
       const plan = planRef.current;
+      const planName = plan === "free"
+        ? "Free"
+        : plan === "studio_pro"
+          ? "Studio Pro"
+          : plan === "studio_max"
+            ? "Studio Max"
+            : plan === "studio"
+              ? "Studio"
+              : plan;
       setUpgradeModal({
         type: "vault",
         title: "Vault limit reached",
-        description: `Your ${plan === "free" ? "Free" : plan.charAt(0).toUpperCase() + plan.slice(1)} plan allows ${limit} Vault cards. Upgrade to save more.`,
+        description: `Your ${planName} plan allows ${limit} Vault items. Upgrade to save more.`,
       });
       return false;
     }
     return true;
-  }, [user?.id]);
+  }, [user?.id, isGuest, planLoading]);
 
   const checkAiLimit = useCallback(async () => {
     const limit = limitsRef.current.requests;
@@ -119,6 +224,18 @@ export function useUsageGate() {
     return true;
   }, [aiRequestCount]);
 
+  // Optional pre-check for callers that already know the current block count.
+  // Returns true when adding one more block is allowed, false otherwise, and
+  // pops the modal so the caller can bail out cleanly.
+  const checkBlockLimit = useCallback((currentCount) => {
+    const limit = limitsRef.current.blocksPerGrid;
+    if (!isFinite(limit)) return true;
+    if (typeof currentCount !== "number") return true;
+    if (currentCount < limit) return true;
+    window.dispatchEvent(new CustomEvent(BLOCK_LIMIT_EVENT, { detail: { limit } }));
+    return false;
+  }, []);
+
   const dismissUpgradeModal = useCallback(() => setUpgradeModal(null), []);
 
   const incrementVaultCount = useCallback(() => {
@@ -137,6 +254,7 @@ export function useUsageGate() {
     limits,
     checkVaultLimit,
     checkAiLimit,
+    checkBlockLimit,
     incrementVaultCount,
     incrementAiCount,
     refreshVaultCount,

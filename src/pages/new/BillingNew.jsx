@@ -1,18 +1,11 @@
 import React, { useState, useCallback, useEffect } from "react";
-import {
-  Check,
-  Minus,
-  Zap,
-  ChevronDown,
-  Plus,
-} from "lucide-react";
+import { Check, Minus, ChevronDown } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   PLANS,
   FAQ_ITEMS,
   BILLING_PERIODS,
   PLAN_LIMITS,
-  TOPUP_OPTIONS,
   getDisplayPrice,
   getAnnualSavings,
 } from "@/lib/pricing-config";
@@ -49,79 +42,74 @@ function MiniBar({ label, used, limit, unit = "" }) {
   );
 }
 
-function AccountSection({ currentPlan, usage, topupBalance, onBuyTopup }) {
+function AccountSection({
+  currentPlan,
+  usage,
+  onManageBilling,
+  billingStatus,
+  portalBusy,
+}) {
   const limits = PLAN_LIMITS[currentPlan] || PLAN_LIMITS.free;
-  const topup = TOPUP_OPTIONS[currentPlan];
-  const isFree = currentPlan === "free";
+  const canManage = Boolean(billingStatus?.has_stripe_customer);
+  const renewalLabel = billingStatus?.current_period_end
+    ? new Date(billingStatus.current_period_end).toLocaleDateString(undefined, {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      })
+    : null;
+
+  const planDisplay =
+    currentPlan === "free"
+      ? "Free"
+      : currentPlan === "studio"
+      ? "Studio"
+      : currentPlan === "studio_pro"
+      ? "Studio Pro"
+      : currentPlan === "studio_max"
+      ? "Studio Max"
+      : currentPlan;
 
   return (
     <div className="rounded-2xl bg-white/28 backdrop-blur-md border border-white/25 shadow-md shadow-black/[0.02] p-6 mb-10">
-      <h3 className="text-sm font-semibold text-black/80 mb-5">Usage</h3>
-
-      <div className="flex flex-col sm:flex-row gap-6">
-        {/* Usage Bars */}
-        <div className="flex-1 min-w-0 space-y-4">
-          <MiniBar
-            label="AI Requests"
-            used={usage.requestsUsed}
-            limit={limits.requests}
-          />
-          <MiniBar
-            label="Vault Cards"
-            used={usage.vaultCardsUsed}
-            limit={limits.vaultCards}
-          />
-          {topupBalance > 0 && (
-            <div className="flex items-center gap-1.5 text-[11px] text-black/40 pt-1">
-              <Zap className="w-3 h-3 text-amber-500" />
-              <span>
-                <span className="font-medium text-black/55">
-                  {topupBalance.toLocaleString()}
-                </span>{" "}
-                top-up requests remaining
-              </span>
-            </div>
+      <div className="flex items-start justify-between mb-5 gap-3 flex-wrap">
+        <div>
+          <h3 className="text-sm font-semibold text-black/80">
+            Usage
+            <span className="ml-2 text-[11px] font-medium text-black/40">
+              · Current plan: {planDisplay}
+            </span>
+          </h3>
+          {renewalLabel && (
+            <p className="text-[11px] text-black/40 mt-0.5">
+              {billingStatus?.cancel_at_period_end
+                ? `Cancels on ${renewalLabel}`
+                : `Renews ${renewalLabel}`}
+            </p>
           )}
         </div>
+        {canManage && (
+          <button
+            onClick={onManageBilling}
+            disabled={portalBusy}
+            className="text-[11px] font-semibold text-black/60 hover:text-black/90 underline underline-offset-2 disabled:opacity-50"
+          >
+            {portalBusy ? "Opening…" : "Manage billing"}
+          </button>
+        )}
+      </div>
 
-        {/* Top-Up Card */}
-        <div className="flex-shrink-0 sm:w-52">
-          <div className="relative rounded-xl bg-white/50 backdrop-blur-md border border-white/60 shadow-sm p-4 overflow-hidden">
-            {isFree && (
-              <div className="absolute inset-0 bg-white/60 backdrop-blur-sm z-10 flex items-center justify-center rounded-xl">
-                <span className="text-[11px] font-semibold text-black/40 uppercase tracking-wider">
-                  Upgrade Required
-                </span>
-              </div>
-            )}
-            <div className={isFree ? "blur-[2px]" : ""}>
-              <p className="text-xs font-semibold text-black/70 mb-2">
-                AI Request Top-Up
-              </p>
-              <div className="flex items-baseline gap-1 mb-3">
-                <span className="text-lg font-bold text-black/85">
-                  {topup ? topup.requests : 200}
-                </span>
-                <span className="text-[10px] text-black/40">requests</span>
-                <span className="text-[10px] text-black/25 mx-0.5">·</span>
-                <span className="text-sm font-semibold text-black/70">
-                  ${topup ? topup.price : 5}
-                </span>
-              </div>
-              <button
-                onClick={onBuyTopup}
-                disabled={isFree}
-                className="w-full flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-lg bg-black/90 text-white text-[11px] font-semibold hover:bg-black/80 transition-colors disabled:opacity-50"
-              >
-                <Plus className="w-3 h-3" />
-                Buy Top-Up
-              </button>
-              <p className="text-[9px] text-black/25 leading-snug mt-2">
-                Credits roll over monthly. Never auto-charged.
-              </p>
-            </div>
-          </div>
-        </div>
+      <div className="space-y-4">
+        <MiniBar
+          label="AI Requests"
+          used={usage.requestsUsed}
+          limit={limits.requests}
+        />
+        <MiniBar
+          label="Vault Items"
+          used={usage.vaultCardsUsed}
+          limit={limits.vaultCards}
+        />
       </div>
     </div>
   );
@@ -210,8 +198,20 @@ function FeatureList({ features }) {
   );
 }
 
-function PlanCard({ plan, period, currentPlan, onCheckout }) {
+function PlanCard({
+  plan,
+  period,
+  currentPlan,
+  onCheckout,
+  busy,
+  waitlistState,
+  onJoinWaitlist,
+}) {
   const isCurrent = plan.id === currentPlan;
+  const isBusy = busy === plan.id;
+  const isWaitlistCard = plan.comingSoon;
+  const hasJoinedWaitlist = isWaitlistCard && Boolean(waitlistState?.joined);
+  const waitlistBusy = isWaitlistCard && Boolean(waitlistState?.busy);
   const ctaStyles = {
     outline:
       "border border-black/10 text-black/70 hover:bg-black/[0.03] hover:border-black/15",
@@ -258,16 +258,43 @@ function PlanCard({ plan, period, currentPlan, onCheckout }) {
       <FeatureList features={plan.features} />
 
       <button
-        onClick={() => onCheckout(plan.id)}
-        disabled={plan.comingSoon || isCurrent}
+        onClick={() => {
+          if (isWaitlistCard) {
+            if (!hasJoinedWaitlist) onJoinWaitlist?.(plan.id);
+            return;
+          }
+          onCheckout(plan.id);
+        }}
+        disabled={
+          isCurrent ||
+          isBusy ||
+          (isWaitlistCard ? hasJoinedWaitlist || waitlistBusy : false)
+        }
         className={`mt-4 w-full py-2 px-3 rounded-lg text-xs font-semibold transition-all duration-200 cursor-pointer disabled:cursor-default ${
           isCurrent
             ? "border border-black/10 text-black/40 bg-black/[0.02]"
-            : `${ctaStyles[plan.ctaVariant]} disabled:opacity-60`
+            : hasJoinedWaitlist
+              ? "border border-emerald-200 bg-emerald-50 text-emerald-700"
+              : `${ctaStyles[plan.ctaVariant]} disabled:opacity-60`
         }`}
       >
-        {isCurrent ? "Current Plan" : plan.cta}
+        {isCurrent
+          ? "Current Plan"
+          : isWaitlistCard
+            ? hasJoinedWaitlist
+              ? "You're on the waitlist"
+              : waitlistBusy
+                ? "Adding you…"
+                : plan.cta
+            : isBusy
+              ? "Redirecting…"
+              : plan.cta}
       </button>
+      {isWaitlistCard && hasJoinedWaitlist && (
+        <p className="mt-2 text-[10px] text-black/40 text-center">
+          We'll email you when Studio Max goes live.
+        </p>
+      )}
     </motion.div>
   );
 }
@@ -309,45 +336,165 @@ function FAQItem({ item, isOpen, onToggle }) {
   );
 }
 
+async function authHeaders() {
+  const { data } = await supabase.auth.getSession();
+  const token = data?.session?.access_token;
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+async function postBilling(path, body) {
+  const headers = { "Content-Type": "application/json", ...(await authHeaders()) };
+  const res = await fetch(`${API_BASE_URL}${path}`, {
+    method: "POST",
+    headers,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(json?.message || json?.error || `Request failed: ${res.status}`);
+    err.code = json?.error;
+    throw err;
+  }
+  return json;
+}
+
 export default function BillingNew() {
   const { user } = useAuth();
   const [period, setPeriod] = useState(BILLING_PERIODS.MONTHLY);
   const [openFaq, setOpenFaq] = useState(null);
   const [currentPlan, setCurrentPlan] = useState("free");
+  const [billingStatus, setBillingStatus] = useState({
+    status: "inactive",
+    current_period_end: null,
+    cancel_at_period_end: false,
+    has_stripe_customer: false,
+  });
   const [usage, setUsage] = useState({ requestsUsed: 0, vaultCardsUsed: 0 });
-  const [topupBalance, setTopupBalance] = useState(0);
+  const [checkoutBusy, setCheckoutBusy] = useState(null);
+  const [portalBusy, setPortalBusy] = useState(false);
+  const [waitlistState, setWaitlistState] = useState({ joined: false, busy: false });
 
   useEffect(() => {
+    if (!user?.id) return;
     (async () => {
-      const aiUsage = fetch(`${API_BASE_URL}/api/usage/me`)
+      const headers = await authHeaders();
+      const aiUsage = fetch(`${API_BASE_URL}/api/usage/me`, { headers })
         .then((r) => (r.ok ? r.json() : null))
         .catch(() => null);
 
-      const vaultCount =
-        user?.id
-          ? supabase
-              .from("notes")
-              .select("id", { count: "exact", head: true })
-              .eq("user_id", user.id)
-              .then(({ count }) => count ?? 0)
-          : Promise.resolve(0);
+      const billing = fetch(`${API_BASE_URL}/api/billing/me`, { headers })
+        .then((r) => (r.ok ? r.json() : null))
+        .catch(() => null);
 
-      const [aiData, cards] = await Promise.all([aiUsage, vaultCount]);
+      const vaultCount = supabase
+        .from("notes")
+        .select("id", { count: "exact", head: true })
+        .eq("user_id", user.id)
+        .then(({ count }) => count ?? 0);
+
+      const waitlist = fetch(`${API_BASE_URL}/api/billing/waitlist`, { headers })
+        .then((r) => (r.ok ? r.json() : null))
+        .catch(() => null);
+
+      const [aiData, billingData, cards, waitlistData] = await Promise.all([
+        aiUsage,
+        billing,
+        vaultCount,
+        waitlist,
+      ]);
 
       setUsage({
         requestsUsed: aiData?.log_count || 0,
         vaultCardsUsed: cards,
       });
+      if (billingData) {
+        setCurrentPlan(billingData.plan || "free");
+        setBillingStatus({
+          status: billingData.status || "inactive",
+          current_period_end: billingData.current_period_end || null,
+          cancel_at_period_end: Boolean(billingData.cancel_at_period_end),
+          has_stripe_customer: Boolean(billingData.has_stripe_customer),
+        });
+      }
+      if (waitlistData) {
+        setWaitlistState((prev) => ({
+          ...prev,
+          joined: Boolean(waitlistData.joined),
+        }));
+      }
     })();
   }, [user?.id]);
 
-  const handleCheckout = useCallback((planId) => {
-    if (import.meta.env.DEV) console.log(`[Billing] handleCheckout called for plan: ${planId}`);
+  // Surface the result of a Stripe redirect (?checkout=success, etc.) and
+  // clean the URL so a refresh doesn't re-trigger the toast.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const checkout = params.get("checkout");
+    if (!checkout) return;
+
+    if (checkout === "success") {
+      // The webhook updates billing asynchronously; poll /api/billing/me once.
+      (async () => {
+        try {
+          const headers = await authHeaders();
+          const r = await fetch(`${API_BASE_URL}/api/billing/me`, { headers });
+          const data = await r.json();
+          if (data?.plan) setCurrentPlan(data.plan);
+        } catch {
+          /* ignore */
+        }
+      })();
+    }
+    const url = new URL(window.location.href);
+    url.searchParams.delete("checkout");
+    url.searchParams.delete("session_id");
+    window.history.replaceState({}, "", url.toString());
   }, []);
 
-  const handleBuyTopup = useCallback(() => {
-    if (import.meta.env.DEV) console.log(`[Billing] handleBuyTopup called for plan: ${currentPlan}`);
-  }, [currentPlan]);
+  const handleCheckout = useCallback(
+    async (planId) => {
+      if (planId === currentPlan) return;
+      setCheckoutBusy(planId);
+      try {
+        const { url } = await postBilling("/api/billing/checkout", { planId, period });
+        if (url) window.location.href = url;
+      } catch (err) {
+        console.error("[Billing] checkout failed:", err);
+        alert(err.message || "Checkout failed. Please try again.");
+      } finally {
+        setCheckoutBusy(null);
+      }
+    },
+    [currentPlan, period],
+  );
+
+  const handleJoinWaitlist = useCallback(async () => {
+    if (waitlistState.joined || waitlistState.busy) return;
+    setWaitlistState((prev) => ({ ...prev, busy: true }));
+    try {
+      const body = user?.email ? { email: user.email } : {};
+      const data = await postBilling("/api/billing/waitlist", body);
+      setWaitlistState({ joined: Boolean(data?.joined), busy: false });
+    } catch (err) {
+      console.error("[Billing] waitlist join failed:", err);
+      alert(err.message || "Could not join the waitlist. Please try again.");
+      setWaitlistState((prev) => ({ ...prev, busy: false }));
+    }
+  }, [user?.email, waitlistState.joined, waitlistState.busy]);
+
+  const handleManageBilling = useCallback(async () => {
+    setPortalBusy(true);
+    try {
+      const { url } = await postBilling("/api/billing/portal");
+      if (url) window.location.href = url;
+    } catch (err) {
+      console.error("[Billing] portal failed:", err);
+      alert(err.message || "Could not open billing portal.");
+    } finally {
+      setPortalBusy(false);
+    }
+  }, []);
 
   const toggleFaq = useCallback(
     (idx) => setOpenFaq((prev) => (prev === idx ? null : idx)),
@@ -360,10 +507,11 @@ export default function BillingNew() {
         {/* Hero */}
         <div className="text-center mb-10">
           <h2 className="text-3xl font-bold text-black/90 tracking-tight">
-            Unlimited Storage now available on Pro
+            Pick the plan that fits how you work
           </h2>
           <p className="text-base text-black/45 mt-3 max-w-lg mx-auto leading-relaxed">
-           Upgrade to get unlimited grids. No surprises, no hidden fees.
+            Start free, upgrade for top-tier models and unlimited workspace.
+            Cancel anytime — no hidden fees.
           </p>
         </div>
 
@@ -385,6 +533,9 @@ export default function BillingNew() {
                 period={period}
                 currentPlan={currentPlan}
                 onCheckout={handleCheckout}
+                busy={checkoutBusy}
+                waitlistState={waitlistState}
+                onJoinWaitlist={handleJoinWaitlist}
               />
             </motion.div>
           ))}
@@ -395,26 +546,10 @@ export default function BillingNew() {
         <AccountSection
           currentPlan={currentPlan}
           usage={usage}
-          topupBalance={topupBalance}
-          onBuyTopup={handleBuyTopup}
+          onManageBilling={handleManageBilling}
+          billingStatus={billingStatus}
+          portalBusy={portalBusy}
         />
-
-        {/* AI Top-Up Info */}
-        <div className="max-w-2xl mx-auto mb-16">
-          <div className="rounded-2xl bg-gradient-to-r from-blue-50/80 to-indigo-50/60 border border-blue-100/60 p-6 sm:p-8 text-center">
-            <div className="w-10 h-10 rounded-xl bg-blue-100 flex items-center justify-center mx-auto mb-4">
-              <Zap className="w-5 h-5 text-blue-600" />
-            </div>
-            <h3 className="text-base font-semibold text-blue-900 mb-2">
-              Need more AI requests?
-            </h3>
-            <p className="text-sm text-blue-700/70 leading-relaxed max-w-md mx-auto">
-              Top-ups are opt-in and user-initiated — we never charge you
-              automatically. Starter gets 200 requests for $5, Pro gets 500
-              requests for $10. Credits roll over every month.
-            </p>
-          </div>
-        </div>
 
         {/* FAQ */}
         <div className="max-w-2xl mx-auto mb-16">
