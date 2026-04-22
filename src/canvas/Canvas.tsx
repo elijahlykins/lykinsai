@@ -722,8 +722,9 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
   const hoverRafRef = useRef<number>(0);
   const scrollCameraRafRef = useRef<number>(0);
   const [wheelZoomMode, setWheelZoomMode] = useState(() => {
-    // Default to zoom mode: wheel/trackpad scroll zooms the canvas.
-    // Only explicit "false" (user toggled it off) disables it.
+    // Default to zoom+scroll (ZoomIn icon): a mouse wheel zooms the canvas
+    // and trackpad two-finger scroll still pans. Only an explicit "false"
+    // in localStorage (user toggled it off) switches to scroll-only.
     try { return localStorage.getItem("lykn_wheel_zoom_mode") !== "false"; } catch { return true; }
   });
   const wheelZoomModeRef = useRef(wheelZoomMode);
@@ -1649,7 +1650,17 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
       accumulatedDelta = 0;
       if (delta === 0) return;
 
-      const z = canvasZoomRef.current;
+      // If a previous flush in a recent frame already set a pending zoom+scroll
+      // target that React hasn't committed yet, it is the authoritative "current"
+      // state — the DOM still shows the pre-flush scroll but logically we're
+      // already at the pending zoom. Using canvasZoomRef + el.scrollLeft in that
+      // window mixes values from two different zoom levels and produces the
+      // random "shoot up" / "content jumps above viewport" glitch during
+      // continuous trackpad gestures.
+      const pending = pendingZoomScrollRef.current;
+      const z = pending ? pending.zoom : canvasZoomRef.current;
+      const curScrollLeft = pending ? pending.left : el.scrollLeft;
+      const curScrollTop = pending ? pending.top : el.scrollTop;
       // Pinch events from trackpads are coarser than raw wheel, so give them a bit more.
       const speed = lastIsPinch ? 0.006 : 0.0025;
       const zoomDelta = -delta * speed;
@@ -1659,8 +1670,8 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
       if (Math.abs(next - z) < 1e-4) return;
 
       // Anchor "world+PAD" point under the cursor so it stays put across the zoom change.
-      const anchorX = (el.scrollLeft + lastPointerX) / z;
-      const anchorY = (el.scrollTop + lastPointerY) / z;
+      const anchorX = (curScrollLeft + lastPointerX) / z;
+      const anchorY = (curScrollTop + lastPointerY) / z;
 
       // Compute the scrollable range that the container will have after React commits
       // the new zoom. Clamping to this range up-front prevents the browser from silently
@@ -1696,11 +1707,35 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
         return;
       }
 
-      const inZoomMode = wheelZoomModeRef.current;
-      // Trackpad pinch arrives as ctrl/meta+wheel — always treat as zoom regardless of mode.
+      // Trackpad pinch arrives as ctrl/meta+wheel — always treat as zoom
+      // regardless of the wheel-zoom toggle. This is also how Cmd/Ctrl+mouse
+      // wheel is expressed, so power-mouse-wheel-zoom still works.
       const isPinch = e.ctrlKey || e.metaKey;
 
-      if (inZoomMode || isPinch) {
+      // Detect a trackpad two-finger pan so we never hijack it for zoom —
+      // otherwise trackpad users can't navigate the canvas. Heuristic matches
+      // what Figma/tldraw/Excalidraw use:
+      //   • `deltaMode === 0` (pixels) is a necessary-but-not-sufficient signal
+      //     since Chrome on Mac also uses pixel deltas for smooth mouse wheels.
+      //   • Fractional `deltaY`, a non-zero `deltaX`, or small-magnitude deltas
+      //     are all reliable trackpad tells. A mouse wheel notch on Mac
+      //     produces an integer deltaY around 100+.
+      const isLikelyTrackpadPan =
+        !isPinch &&
+        e.deltaMode === 0 &&
+        (e.deltaX !== 0 ||
+          !Number.isInteger(e.deltaY) ||
+          Math.abs(e.deltaY) < 50);
+
+      // Trackpad two-finger pan: let the browser handle native scrolling via
+      // the container's `overflow: auto`. We just return without preventing
+      // default — the scroll→camera sync effect will keep the store in step.
+      if (isLikelyTrackpadPan) return;
+
+      const inZoomMode = wheelZoomModeRef.current;
+      const shouldZoom = isPinch || inZoomMode;
+
+      if (shouldZoom) {
         e.preventDefault();
 
         // Normalize deltaY across input devices so zoom speed is consistent:
@@ -1726,11 +1761,7 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
         return;
       }
 
-      // Scroll mode: ALL wheel/trackpad input pans. Block Ctrl/pinch zoom entirely.
-      if (e.ctrlKey || e.metaKey) {
-        e.preventDefault();
-        return;
-      }
+      // Scroll mode, plain mouse wheel: native scroll handles it. Nothing to do.
     };
 
     el.addEventListener("wheel", onWheel, { passive: false });
@@ -5411,7 +5442,15 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
       ref={containerRef}
       data-omnia-canvas
       className="relative w-full h-full overflow-auto scrollbar-hide bg-transparent"
-      style={{ touchAction: "none", overscrollBehavior: "contain" }}
+      style={{
+        touchAction: "none",
+        overscrollBehavior: "contain",
+        // Disable Chrome's scroll anchoring. When zoom changes the inner
+        // content size, the browser will otherwise silently shift scrollTop
+        // to keep a picked "anchor element" in view, which fights our
+        // zoom-to-cursor math and produces the random upward jumps.
+        overflowAnchor: "none",
+      }}
       tabIndex={0}
       onPointerDownCapture={(e) => {
         if (e.button === 0) {
@@ -7484,7 +7523,7 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
                     return next;
                   });
                 }}
-                title={wheelZoomMode ? "Scroll wheel: Zoom — click to switch to Scroll" : "Scroll wheel: Scroll — click to switch to Zoom"}
+                title={wheelZoomMode ? "Mouse wheel: Zoom — click to switch to Scroll (trackpad pinch always zooms, two-finger scroll always pans)" : "Mouse wheel: Scroll — click to switch to Zoom (trackpad pinch always zooms, two-finger scroll always pans)"}
               >
                 {wheelZoomMode ? <ZoomIn className="w-3.5 h-3.5" /> : <Mouse className="w-3.5 h-3.5" />}
               </button>
