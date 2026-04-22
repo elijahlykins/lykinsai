@@ -52,6 +52,16 @@ export default function FileDropModeDialog() {
   const meta = FILE_TYPE_META[pending.fileType] || FILE_TYPE_META.document;
   const Icon = meta.icon;
 
+  const isPdf = pending.fileType === "pdf";
+  const linkLabel = isPdf ? "Link" : "Link Card";
+  const linkDescription = isPdf
+    ? "A regular link brick on the grid. Click to open."
+    : "Compact card with file icon. Click to open.";
+  const viewLabel = isPdf ? "Full View" : "Full View";
+  const viewDescription = isPdf
+    ? "Embedded PDF viewer on the grid."
+    : "Expand content directly on the grid.";
+
   return (
     <Dialog open onOpenChange={handleOpenChange}>
       <DialogContent className="sm:max-w-md">
@@ -75,9 +85,9 @@ export default function FileDropModeDialog() {
               <Link2 className="h-6 w-6 text-muted-foreground group-hover:text-primary" />
             </div>
             <div className="text-center">
-              <div className="font-medium text-sm">Link Card</div>
+              <div className="font-medium text-sm">{linkLabel}</div>
               <div className="text-xs text-muted-foreground mt-1">
-                Compact card with file icon. Click to open.
+                {linkDescription}
               </div>
             </div>
           </button>
@@ -90,9 +100,9 @@ export default function FileDropModeDialog() {
               <Eye className="h-6 w-6 text-muted-foreground group-hover:text-primary" />
             </div>
             <div className="text-center">
-              <div className="font-medium text-sm">Full View</div>
+              <div className="font-medium text-sm">{viewLabel}</div>
               <div className="text-xs text-muted-foreground mt-1">
-                Expand content directly on the grid.
+                {viewDescription}
               </div>
             </div>
           </button>

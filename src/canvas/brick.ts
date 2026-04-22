@@ -1364,8 +1364,12 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
     : null;
 
   const hasGfmTable = parseGfmTable(String(shell.content || "")) !== null;
-  const useFlexHeight = Boolean(opts?.extraContent) || Boolean(shell.isAiResponseBubble) || hasGfmTable;
-  const hasContent = Boolean(shell.content.trim());
+  const hasExtraContent = Boolean(opts?.extraContent);
+  const useFlexHeight = hasExtraContent || Boolean(shell.isAiResponseBubble) || hasGfmTable;
+  // Bricks with `extraContent` (audio, PDF, link card, etc.) don't carry text
+  // content, but still need a drag handle, hover toolbar, and connection
+  // nodes — otherwise the user can't move or configure them at all.
+  const hasContent = Boolean(shell.content.trim()) || hasExtraContent;
 
   return React.createElement(
     "div",
@@ -1391,7 +1395,11 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
           ? { minHeight: `${shell.height}px`, height: "auto", display: "flex", flexDirection: "column" as const }
           : { height: `${shell.height}px` }),
         ...(isRaised ? { zIndex: 40 } : {}),
-        willChange: "transform",
+        // Only promote to a GPU layer during an active interaction (drag/raise).
+        // Always-on `will-change: transform` caches each brick as a bitmap, which
+        // the compositor stretches at higher canvas zoom levels — making content
+        // look blurry until a repaint (e.g. clicking the brick) forces re-raster.
+        ...(isRaised || isActivated ? { willChange: "transform" as const } : {}),
       },
     },
     React.createElement(

@@ -46,6 +46,7 @@ import OmniaVaultOverlay from "@/components/omnia/OmniaVaultOverlay";
 import FileDropModeDialog from "@/components/omnia/FileDropModeDialog";
 import OmniaSideRail from "@/components/omnia/OmniaSideRail";
 import OmniaFocusedChat from "@/components/omnia/OmniaFocusedChat";
+import GridShareDialog from "@/components/omnia/GridShareDialog";
 import { useBoardPersistence, makeDefaultNotesPages } from "@/hooks/useBoardPersistence";
 import { useChatEngine } from "@/hooks/useChatEngine";
 
@@ -671,6 +672,7 @@ export default function OmniaGridPage() {
   const gridSize = useCanvasStore((s) => s.gridSize);
   const [topPanelOpen, setTopPanelOpen] = useState(true);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
+  const [showShareDialog, setShowShareDialog] = useState(false);
   const [showVaultSidebar, setShowVaultSidebar] = useState(false);
   const [vaultDragActive, setVaultDragActive] = useState(false);
   const [showQuickNote, setShowQuickNote] = useState(false);
@@ -2390,41 +2392,41 @@ export default function OmniaGridPage() {
     if (pdfAttach) {
       const pdfText = String(pdfAttach.pdfText || pdfAttach.extractedText || "").trim();
       const pdfTitle = String(pdfAttach.name || pdfAttach.title || "PDF").trim();
-      if (pdfText) {
+      const pdfUrl = String(pdfAttach.url || "").trim();
+      if (pdfUrl) {
         (async () => {
           const dropMode = await promptFileDropMode(pdfTitle, "pdf");
           const st = useCanvasStore.getState();
           const { wx, wy, g } = worldFromClient(cx, cy);
 
+          // Every block needs a stable id — addBlock uses it as the key in
+          // state.blocks and blockOrder, so passing undefined here used to
+          // overwrite the "undefined" slot and wreak havoc on re-renders.
+          const newId = `create-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+          const nowIso = new Date().toISOString();
+
           if (dropMode === "link") {
+            // Regular link brick — same shape as a pasted URL. Omit mime so
+            // the render path routes through LinkBlock; displayMode="link"
+            // prevents the PDF-extension check from swapping back to an
+            // iframe viewer.
             st.addBlock({
-              type: "create", mode: "embed", x: wx, y: wy, width: g * 10, height: g * 3, content: "",
-              data: { url: pdfAttach.url || "", mime: "application/pdf", name: pdfTitle, displayMode: "link-card", extractedText: pdfText },
+              id: newId,
+              type: "create", mode: "embed", x: wx, y: wy, width: g * 12, height: g * 8, content: "",
+              data: { url: pdfUrl, name: pdfTitle, displayMode: "link", extractedText: pdfText || undefined },
+              createdAt: nowIso,
+              updatedAt: nowIso,
             } as any);
           } else {
-            const combined = `# ${pdfTitle}\n\n${pdfText}`;
-            const charsPerLine = Math.max(1, Math.floor((g * 16 * 0.85) / 8));
-            const wrappedLines = combined.split("\n").reduce((sum: number, line: string) => sum + Math.max(1, Math.ceil(line.length / charsPerLine)), 0);
-            const height = Math.max(g * 6, Math.min(g * 30, wrappedLines * 22 + 32));
-            st.addTextBlockAt({ x: wx, y: wy }, { width: g * 16, height, content: combined, format: "plain" });
+            // Full view — embedded PDF viewer on the grid.
+            st.addBlock({
+              id: newId,
+              type: "create", mode: "embed", x: wx, y: wy, width: g * 12, height: g * 16, content: "",
+              data: { url: pdfUrl, mime: "application/pdf", name: pdfTitle, extractedText: pdfText || undefined },
+              createdAt: nowIso,
+              updatedAt: nowIso,
+            } as any);
           }
-        })();
-        return;
-      }
-      if (pdfAttach.url) {
-        const pdfUrl = String(pdfAttach.url);
-        const pdfName = pdfTitle.endsWith(".pdf") ? pdfTitle : `${pdfTitle}.pdf`;
-        (async () => {
-          try {
-            const resp = await fetch(pdfUrl);
-            if (resp.ok) {
-              const blob = await resp.blob();
-              const file = new File([blob], pdfName, { type: "application/pdf" });
-              window.dispatchEvent(new CustomEvent("omnia_attach_files", { detail: { files: [file], clientX: cx, clientY: cy } }));
-              return;
-            }
-          } catch { /* fetch failed, fall through */ }
-          window.dispatchEvent(new CustomEvent("omnia_attach_link", { detail: { url: pdfUrl, clientX: cx, clientY: cy } }));
         })();
         return;
       }
@@ -2671,6 +2673,22 @@ export default function OmniaGridPage() {
         onVaultToggle={() => setShowVaultSidebar((v) => !v)}
         notesOpen={notesOpen}
         modelSelectMenu={<OmniaGridModelSelectMenuBody modelTier={modelTier} />}
+        onShareGrid={() => setShowShareDialog(true)}
+      />
+
+      <GridShareDialog
+        open={showShareDialog}
+        onOpenChange={setShowShareDialog}
+        gridTitle={title}
+        boardId={boardId}
+        notesPages={notesPages}
+        onEnsureSaved={async () => {
+          const start = Date.now();
+          while (savingRef.current && Date.now() - start < 4000) {
+            await new Promise((r) => setTimeout(r, 50));
+          }
+          await saveSnapshot();
+        }}
       />
 
       <div

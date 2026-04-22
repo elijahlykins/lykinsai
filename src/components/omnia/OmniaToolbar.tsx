@@ -6,6 +6,7 @@ import {
   PanelRight,
   PanelRightClose,
   Plus,
+  Share2,
 } from "lucide-react";
 import {
   Select,
@@ -30,6 +31,7 @@ interface OmniaToolbarProps {
   onVaultToggle: () => void;
   notesOpen: boolean;
   modelSelectMenu: React.ReactNode;
+  onShareGrid?: () => void;
 }
 
 const OmniaToolbar = React.memo(function OmniaToolbar({
@@ -48,6 +50,7 @@ const OmniaToolbar = React.memo(function OmniaToolbar({
   onVaultToggle,
   notesOpen,
   modelSelectMenu,
+  onShareGrid,
 }: OmniaToolbarProps) {
   return (
     <>
@@ -129,6 +132,21 @@ const OmniaToolbar = React.memo(function OmniaToolbar({
               >
                 {showVaultSidebar ? <PanelRightClose className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
               </button>
+
+              {onShareGrid && (
+                <>
+                  <div className="w-px h-4 bg-black/10 dark:bg-white/10 mx-1" />
+                  <button
+                    type="button"
+                    onClick={onShareGrid}
+                    className="rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center"
+                    title="Share grid"
+                  >
+                    <Share2 className="w-4 h-4" />
+                    <span className="sr-only">Share grid</span>
+                  </button>
+                </>
+              )}
             </div>
           )}
         </div>

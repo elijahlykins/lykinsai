@@ -16,6 +16,7 @@ import OmniaGrid from "./pages/OmniaGrid";
 import ProjectPlaceholder from "./pages/ProjectPlaceholder";
 import Settings from "./pages/Settings";
 import SynthesisLayer from "./pages/SynthesisLayer";
+import SharedGrid from "./pages/SharedGrid";
 import PlanGate from "./components/PlanGate";
 import AppSidebar from "./components/AppSidebar";
 import VaultNew from "./pages/new/VaultNew";
@@ -46,6 +47,7 @@ function AppShell() {
   const search = new URLSearchParams(location.search);
   const isEmbeddedVault = location.pathname === "/vault" && search.get("embedded") === "1";
   const isLoginPage = location.pathname === "/login";
+  const isSharedGridView = location.pathname.startsWith("/s/");
 
   useEffect(() => {
     document.documentElement.classList.toggle("embedded-vault-mode", isEmbeddedVault);
@@ -57,16 +59,18 @@ function AppShell() {
   }, [isEmbeddedVault]);
 
   const isGuest = !loading && !user;
+  const isStandalone = isLoginPage || isSharedGridView;
 
   return (
     <>
-      {!isEmbeddedVault && !isLoginPage && user && <AppSidebar />}
-      {!isEmbeddedVault && !isLoginPage && user && <IntakeModal />}
-      {!isEmbeddedVault && user && <VaultUploadToast />}
-      <div className={isLoginPage ? "" : (isGuest ? "app-content guest-mode" : "app-content")}>
+      {!isEmbeddedVault && !isStandalone && user && <AppSidebar />}
+      {!isEmbeddedVault && !isStandalone && user && <IntakeModal />}
+      {!isEmbeddedVault && !isSharedGridView && user && <VaultUploadToast />}
+      <div className={isStandalone ? "" : (isGuest ? "app-content guest-mode" : "app-content")}>
         <RouteErrorBoundary>
           <Routes>
             <Route path="/login" element={<Login />} />
+            <Route path="/s/:token" element={<SharedGrid />} />
             <Route path="/" element={<OmniaGrid />} />
             <Route path="/dashboard" element={<Navigate to="/" replace />} />
             <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />

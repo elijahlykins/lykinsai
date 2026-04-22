@@ -185,14 +185,17 @@ async function processVaultDrop(pending: { title: string; content: string; attac
     return;
   }
 
-  // PDFs → text block with extracted content, or fetch bytes and use file pipeline
+  // PDFs → embedded PDF viewer (view) or regular link brick (link). In either
+  // case we keep the extracted text on block.data.extractedText so the AI
+  // context builder can still see the PDF's contents.
   const pdfAttach = attachments.find((a: any) =>
     a.type === "pdf" || (a.url && /\.pdf(\?|$)/i.test(a.url)) || (a.mime === "application/pdf")
   );
   if (pdfAttach) {
     const pdfText = String(pdfAttach.pdfText || pdfAttach.extractedText || "").trim();
     const pdfName = String(pdfAttach.name || pdfAttach.title || "PDF").trim();
-    if (pdfText) {
+    const pdfUrl = String(pdfAttach.url || "").trim();
+    if (pdfUrl) {
       const dropMode = await promptFileDropMode(pdfName, "pdf");
       const st = useCanvasStore.getState();
       const g = Math.max(1, Math.floor(st.gridSize || 24));
@@ -206,35 +209,34 @@ async function processVaultDrop(pending: { title: string; content: string; attac
       const wx = Math.round(((scrollLeft + localX) / z - 5000) / g) * g;
       const wy = Math.round(((scrollTop + localY) / z - 5000) / g) * g;
 
+      // Every block must have a stable id — without one, addBlock stores
+      // it under the key "undefined" and later renders behave badly.
+      const newId = `create-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      const nowIso = new Date().toISOString();
+
       if (dropMode === "link") {
+        // Regular link brick — same shape as a pasted URL. No mime so the
+        // render path routes through LinkBlock (LinkPreview card), and
+        // displayMode="link" overrides the PDF-extension detection so we
+        // don't accidentally fall back to the iframe viewer.
         st.addBlock({
-          type: "create", mode: "embed", x: wx, y: wy, width: g * 10, height: g * 3, content: "",
-          data: { url: pdfAttach.url || "", mime: "application/pdf", name: pdfName, displayMode: "link-card", extractedText: pdfText },
+          id: newId,
+          type: "create", mode: "embed", x: wx, y: wy, width: g * 12, height: g * 8, content: "",
+          data: { url: pdfUrl, name: pdfName, displayMode: "link", extractedText: pdfText || undefined },
+          createdAt: nowIso,
+          updatedAt: nowIso,
         } as any);
       } else {
-        const combined = `# ${pdfName}\n\n${pdfText}`;
-        const charsPerLine = Math.max(1, Math.floor((g * 16 * 0.85) / 8));
-        const wrappedLines = combined.split("\n").reduce((sum: number, line: string) => sum + Math.max(1, Math.ceil(line.length / charsPerLine)), 0);
-        const height = Math.max(g * 6, Math.min(g * 30, wrappedLines * 22 + 32));
-        st.addTextBlockAt({ x: wx, y: wy }, { width: g * 16, height, content: combined, format: "plain" });
+        // Full view — embedded PDF on the grid. Height is tall enough that
+        // a single page is comfortably legible; user can resize.
+        st.addBlock({
+          id: newId,
+          type: "create", mode: "embed", x: wx, y: wy, width: g * 12, height: g * 16, content: "",
+          data: { url: pdfUrl, mime: "application/pdf", name: pdfName, extractedText: pdfText || undefined },
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        } as any);
       }
-      return;
-    }
-    if (pdfAttach.url) {
-      const pdfUrl = String(pdfAttach.url);
-      const pdfFileName = pdfName.endsWith(".pdf") ? pdfName : `${pdfName}.pdf`;
-      (async () => {
-        try {
-          const resp = await fetch(pdfUrl);
-          if (resp.ok) {
-            const blob = await resp.blob();
-            const file = new File([blob], pdfFileName, { type: "application/pdf" });
-            window.dispatchEvent(new CustomEvent("omnia_attach_files", { detail: { files: [file], clientX, clientY } }));
-            return;
-          }
-        } catch { /* fetch failed, fall through */ }
-        window.dispatchEvent(new CustomEvent("omnia_attach_link", { detail: { url: pdfUrl, clientX, clientY } }));
-      })();
       return;
     }
   }
@@ -720,7 +722,9 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
   const hoverRafRef = useRef<number>(0);
   const scrollCameraRafRef = useRef<number>(0);
   const [wheelZoomMode, setWheelZoomMode] = useState(() => {
-    try { return localStorage.getItem("lykn_wheel_zoom_mode") === "true"; } catch { return false; }
+    // Default to zoom mode: wheel/trackpad scroll zooms the canvas.
+    // Only explicit "false" (user toggled it off) disables it.
+    try { return localStorage.getItem("lykn_wheel_zoom_mode") !== "false"; } catch { return true; }
   });
   const wheelZoomModeRef = useRef(wheelZoomMode);
   useEffect(() => { wheelZoomModeRef.current = wheelZoomMode; }, [wheelZoomMode]);
@@ -1566,6 +1570,13 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
     return () => ro.disconnect();
   }, [setCanvasWidth]);
 
+  // While a wheel-zoom gesture is active, suppress the scroll→camera and
+  // camera→scroll sync paths. The wheel handler is authoritative during the
+  // gesture; letting the other paths run creates races where stale zoom/scroll
+  // snapshots fight and the view visibly jumps.
+  const isWheelZoomingRef = useRef(false);
+  const wheelZoomEndTimerRef = useRef<number | null>(null);
+
   // Scrolling-as-camera (BrickEditor feel): keep store camera in sync with scroll.
   useEffect(() => {
     const el = containerRef.current;
@@ -1574,9 +1585,11 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
       const left = el.scrollLeft || 0;
       const top = el.scrollTop || 0;
       scrollPosRef.current = { left, top };
+      if (isWheelZoomingRef.current) return; // wheel flush will update camera itself
       if (scrollCameraRafRef.current) return;
       scrollCameraRafRef.current = requestAnimationFrame(() => {
         scrollCameraRafRef.current = 0;
+        if (isWheelZoomingRef.current) return;
         const l = el.scrollLeft || 0;
         const t = el.scrollTop || 0;
         const z = canvasZoomRef.current;
@@ -1593,6 +1606,7 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
 
   // Sync local zoom & scroll from store camera when it diverges (snapshot restore).
   useEffect(() => {
+    if (isWheelZoomingRef.current) return; // don't fight the active wheel gesture
     const z = canvasZoomRef.current;
     if (Math.abs(camera.zoom - z) > 0.01) {
       const next = camera.zoom;
@@ -1618,6 +1632,64 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
+
+    // Accumulate wheel deltas in refs and flush once per animation frame.
+    // This keeps zoom state, scroll position, and the painted frame in lockstep,
+    // preventing the blink that happens when many wheel events arrive between
+    // React commits and the ref runs ahead of the DOM.
+    let rafId = 0;
+    let accumulatedDelta = 0; // in normalized pixels, sign matches e.deltaY
+    let lastPointerX = 0;
+    let lastPointerY = 0;
+    let lastIsPinch = false;
+
+    const flush = () => {
+      rafId = 0;
+      const delta = accumulatedDelta;
+      accumulatedDelta = 0;
+      if (delta === 0) return;
+
+      const z = canvasZoomRef.current;
+      // Pinch events from trackpads are coarser than raw wheel, so give them a bit more.
+      const speed = lastIsPinch ? 0.006 : 0.0025;
+      const zoomDelta = -delta * speed;
+      // Keep full float precision here (no 0.01 rounding) — rounding creates visible
+      // stair-stepping during continuous gestures. The zoom panel UI rounds for display.
+      const next = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z * Math.exp(zoomDelta)));
+      if (Math.abs(next - z) < 1e-4) return;
+
+      // Anchor "world+PAD" point under the cursor so it stays put across the zoom change.
+      const anchorX = (el.scrollLeft + lastPointerX) / z;
+      const anchorY = (el.scrollTop + lastPointerY) / z;
+
+      // Compute the scrollable range that the container will have after React commits
+      // the new zoom. Clamping to this range up-front prevents the browser from silently
+      // clamping the scroll (which would cause the pointer anchor to drift and the view
+      // to visibly "jump" when zooming out fast).
+      const nextContentW = (surfaceWidthRef.current + SURFACE_ORIGIN_PAD) * next;
+      const nextContentH = (surfaceHeightRef.current + SURFACE_ORIGIN_PAD) * next;
+      const maxLeft = Math.max(0, nextContentW - el.clientWidth);
+      const maxTop = Math.max(0, nextContentH - el.clientHeight);
+      const rawLeft = anchorX * next - lastPointerX;
+      const rawTop = anchorY * next - lastPointerY;
+      const targetLeft = Math.max(0, Math.min(maxLeft, rawLeft));
+      const targetTop = Math.max(0, Math.min(maxTop, rawTop));
+
+      // Mark gesture active so the scroll/camera sync effects don't fight us.
+      isWheelZoomingRef.current = true;
+      if (wheelZoomEndTimerRef.current != null) {
+        window.clearTimeout(wheelZoomEndTimerRef.current);
+      }
+      wheelZoomEndTimerRef.current = window.setTimeout(() => {
+        isWheelZoomingRef.current = false;
+        wheelZoomEndTimerRef.current = null;
+      }, 120);
+
+      canvasZoomRef.current = next;
+      pendingZoomScrollRef.current = { left: targetLeft, top: targetTop, zoom: next };
+      setCanvasZoom(next);
+    };
+
     const onWheel = (e: WheelEvent) => {
       if (middlePanRef.current?.active) {
         e.preventDefault();
@@ -1625,27 +1697,32 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
       }
 
       const inZoomMode = wheelZoomModeRef.current;
+      // Trackpad pinch arrives as ctrl/meta+wheel — always treat as zoom regardless of mode.
+      const isPinch = e.ctrlKey || e.metaKey;
 
-      if (inZoomMode) {
-        // Zoom mode: ALL wheel/trackpad input zooms. No panning at all.
+      if (inZoomMode || isPinch) {
         e.preventDefault();
-        const z = canvasZoomRef.current;
-        const zoomDelta = -e.deltaY * 0.0015;
-        const next = Math.round(Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z * Math.exp(zoomDelta))) * 100) / 100;
-        if (next === z) return;
 
+        // Normalize deltaY across input devices so zoom speed is consistent:
+        //   - DOM_DELTA_PIXEL (0): trackpads (small values, ~1-10 per frame)
+        //   - DOM_DELTA_LINE  (1): mouse wheels (small values, ~1-5 per notch)
+        //   - DOM_DELTA_PAGE  (2): rare, treat as lines scaled up
+        let normalized: number;
+        if (e.deltaMode === 1) normalized = e.deltaY * 16;
+        else if (e.deltaMode === 2) normalized = e.deltaY * 400;
+        else normalized = e.deltaY;
+        // Clamp per-event delta so a single big wheel notch can't overshoot.
+        normalized = Math.max(-50, Math.min(50, normalized));
+
+        // Record the latest pointer position; the anchor for zoom-to-cursor is the
+        // most recent event in the frame (feels natural with continuous gestures).
         const rect = el.getBoundingClientRect();
-        const pointerX = e.clientX - rect.left;
-        const pointerY = e.clientY - rect.top;
-        const worldX = (el.scrollLeft + pointerX) / z;
-        const worldY = (el.scrollTop + pointerY) / z;
+        lastPointerX = e.clientX - rect.left;
+        lastPointerY = e.clientY - rect.top;
+        lastIsPinch = isPinch;
+        accumulatedDelta += normalized;
 
-        const targetLeft = worldX * next - pointerX;
-        const targetTop = worldY * next - pointerY;
-
-        canvasZoomRef.current = next;
-        pendingZoomScrollRef.current = { left: targetLeft, top: targetTop, zoom: next };
-        setCanvasZoom(next);
+        if (!rafId) rafId = requestAnimationFrame(flush);
         return;
       }
 
@@ -1655,8 +1732,12 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
         return;
       }
     };
+
     el.addEventListener("wheel", onWheel, { passive: false });
-    return () => el.removeEventListener("wheel", onWheel);
+    return () => {
+      el.removeEventListener("wheel", onWheel);
+      if (rafId) cancelAnimationFrame(rafId);
+    };
   }, []);
 
   useLayoutEffect(() => {
@@ -2336,6 +2417,16 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
       height: Math.max(worldViewH * 2, maxBottom + worldViewH),
     };
   }, [blockOrder, blocks, gridSize, viewport.width, viewport.height]);
+
+  // Mirror surface dimensions into refs so the wheel-zoom flush (which runs
+  // inside a useEffect with empty deps) can read the current value without
+  // stale-closure issues.
+  const surfaceWidthRef = useRef(surface.width);
+  const surfaceHeightRef = useRef(surface.height);
+  useEffect(() => {
+    surfaceWidthRef.current = surface.width;
+    surfaceHeightRef.current = surface.height;
+  }, [surface.width, surface.height]);
 
   const visibleIds = useMemo(() => {
     const ids: string[] = [];
@@ -3810,24 +3901,6 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
       const bytes = await response.arrayBuffer();
       return extractPdfPagesFromBytes(bytes);
     };
-    const addPdfStatusBlock = (
-      x: number,
-      y: number,
-      name: string,
-      message: string,
-      containerId: string | null
-    ) => {
-      const statusId = addTextBlockAt(
-        { x, y },
-        {
-          width: gridSize * 14,
-          height: gridSize * 4,
-          content: `PDF import status: ${name}\n${message}`,
-          format: "plain",
-        }
-      );
-      if (containerId) updateBlock(statusId, { containerId } as any);
-    };
     const getPdfTextBlockHeight = (text: string) => {
       const content = String(text || "");
       if (!content) return gridSize * 5;
@@ -3989,46 +4062,39 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
         }
         if (mime === "application/pdf" || /\.pdf$/i.test(name)) {
           const dropMode = await promptFileDropMode(name, "pdf");
+          // Try to extract text up-front so the AI context has the PDF's
+          // contents. Text extraction is best-effort — if it fails we still
+          // create the block and rely on the rendered PDF/url for the user.
+          let extractedText = "";
           try {
-            const { pages, pageCount } = await extractPdfPages(f);
-            const previewPages = pages.length;
-            const combined = buildCombinedPdfText(name, pages);
-
-            if (dropMode === "link") {
-              const b = createCreateBlockSafe(
-                x, y, "embed",
-                { url: dataUrl, mime: "application/pdf", name, displayMode: "link-card", extractedText: combined },
-                gridSize * 10, gridSize * 3
-              );
-              if (containerId) (b as any).containerId = containerId;
-              addBlock(b);
-              uploadAndReplace(b.id, f, "url");
-            } else {
-              if (previewPages === 0) {
-                addPdfStatusBlock(x, y, name, "Parsed PDF but found 0 renderable pages. Falling back to embedded PDF block.", containerId);
-              }
-              const textId = addTextBlockAt(
-                { x, y },
-                { width: gridSize * 16, height: getPdfTextBlockHeight(combined), content: combined, format: "plain" }
-              );
-              if (containerId) updateBlock(textId, { containerId } as any);
-            }
+            const { pages } = await extractPdfPages(f);
+            extractedText = buildCombinedPdfText(name, pages);
           } catch (error: any) {
-            if (dropMode === "link") {
-              const b = createCreateBlockSafe(
-                x, y, "embed",
-                { url: dataUrl, mime: "application/pdf", name, displayMode: "link-card" },
-                gridSize * 10, gridSize * 3
-              );
-              if (containerId) (b as any).containerId = containerId;
-              addBlock(b);
-              uploadAndReplace(b.id, f, "url");
-            } else {
-              addPdfStatusBlock(x, y, name, `PDF couldn't be parsed directly — it's been embedded instead so you can still view it.`, containerId);
-              const b = createCreateBlockSafe(x, y, "embed", { url: dataUrl, mime: "application/pdf", name }, gridSize * 12, gridSize * 8);
-              if (containerId) (b as any).containerId = containerId;
-              addBlock(b);
-            }
+            if (import.meta.env.DEV) console.warn(`PDF text extraction failed for ${name}:`, error?.message);
+          }
+
+          if (dropMode === "link") {
+            // Regular link brick. Omit mime so the block routes through
+            // LinkBlock, and tag displayMode="link" so the PDF-extension
+            // check in inferPreviewKind doesn't swap us back to an iframe.
+            const b = createCreateBlockSafe(
+              x, y, "embed",
+              { url: dataUrl, name, displayMode: "link", extractedText: extractedText || undefined },
+              gridSize * 12, gridSize * 8
+            );
+            if (containerId) (b as any).containerId = containerId;
+            addBlock(b);
+            uploadAndReplace(b.id, f, "url");
+          } else {
+            // Full view — embedded PDF on the grid (iframe viewer).
+            const b = createCreateBlockSafe(
+              x, y, "embed",
+              { url: dataUrl, mime: "application/pdf", name, extractedText: extractedText || undefined },
+              gridSize * 12, gridSize * 16
+            );
+            if (containerId) (b as any).containerId = containerId;
+            addBlock(b);
+            uploadAndReplace(b.id, f, "url");
           }
           continue;
         }
@@ -4176,44 +4242,58 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
         if (mime.startsWith("audio/") || mime === "application/pdf") {
           if (mime === "application/pdf") {
             const dropMode = await promptFileDropMode(fileName, "pdf");
+            // Best-effort text extraction so the AI still sees the
+            // contents. We don't block the block creation on success.
+            let extractedText = "";
             try {
-              const { pages, pageCount } = await tryExtractPdfPagesFromUrl(u);
-              const previewPages = pages.length;
-              const combined = buildCombinedPdfText(fileName, pages);
-
-              if (dropMode === "link") {
-                const b = createCreateBlockSafe(
-                  wx, wy, "embed",
-                  { url: u, mime: "application/pdf", name: fileName, displayMode: "link-card", extractedText: combined },
-                  gridSize * 10, gridSize * 3
-                );
-                if (containerId) (b as any).containerId = containerId;
-                addBlock(b);
-                return;
-              }
-
-              if (previewPages === 0) {
-                addPdfStatusBlock(wx, wy, fileName, "URL PDF parsed but returned 0 pages. Falling back to embedded PDF block.", containerId);
-              }
-              const textId = addTextBlockAt(
-                { x: wx, y: wy },
-                { width: gridSize * 16, height: getPdfTextBlockHeight(combined), content: combined, format: "plain" }
-              );
-              if (containerId) updateBlock(textId, { containerId } as any);
-              return;
+              const { pages } = await tryExtractPdfPagesFromUrl(u);
+              extractedText = buildCombinedPdfText(fileName, pages);
             } catch (error: any) {
-              if (dropMode === "link") {
-                const b = createCreateBlockSafe(
-                  wx, wy, "embed",
-                  { url: u, mime: "application/pdf", name: fileName, displayMode: "link-card" },
-                  gridSize * 10, gridSize * 3
-                );
-                if (containerId) (b as any).containerId = containerId;
-                addBlock(b);
-                return;
-              }
-              addPdfStatusBlock(wx, wy, fileName, `Couldn't parse this PDF directly — it's been embedded instead so you can still view it.`, containerId);
+              if (import.meta.env.DEV) console.warn(`PDF URL extraction failed for ${fileName}:`, error?.message);
             }
+
+            if (dropMode === "link") {
+              // Regular link brick. Unfurl in the background to populate
+              // OG metadata, same as any other pasted URL.
+              const b = createCreateBlockSafe(
+                wx, wy, "embed",
+                { url: u, name: fileName, displayMode: "link", extractedText: extractedText || undefined },
+                gridSize * 12, gridSize * 8
+              );
+              if (containerId) (b as any).containerId = containerId;
+              addBlock(b);
+              (async () => {
+                try {
+                  const { API_BASE_URL } = await import("@/lib/api-config");
+                  const res = await fetch(`${API_BASE_URL}/api/unfurl?url=${encodeURIComponent(u)}`);
+                  if (!res.ok) return;
+                  const meta = await res.json();
+                  if (meta?.title) {
+                    updateBlock(b.id, {
+                      data: {
+                        ...(b as any).data,
+                        ogTitle: meta.title || "",
+                        ogDescription: meta.description || "",
+                        ogImage: meta.image || "",
+                        ogSiteName: meta.siteName || "",
+                        ogFavicon: meta.favicon || "",
+                      },
+                    } as any);
+                  }
+                } catch { /* best-effort */ }
+              })();
+              return;
+            }
+
+            // Full view — embedded PDF (iframe viewer).
+            const b = createCreateBlockSafe(
+              wx, wy, "embed",
+              { url: u, mime: "application/pdf", name: fileName, extractedText: extractedText || undefined },
+              gridSize * 12, gridSize * 16
+            );
+            if (containerId) (b as any).containerId = containerId;
+            addBlock(b);
+            return;
           }
           const b = createCreateBlockSafe(
             wx,
@@ -4221,7 +4301,7 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
             "embed",
             { url: u, mime, name: fileName },
             gridSize * 12,
-            mime === "application/pdf" ? gridSize * 8 : gridSize * 4
+            gridSize * 4
           );
           if (containerId) (b as any).containerId = containerId;
           addBlock(b);
@@ -5781,8 +5861,11 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
           height: `${surface.height}px`,
           transform: `scale(${canvasZoom}) translate(${SURFACE_ORIGIN_PAD}px, ${SURFACE_ORIGIN_PAD}px)`,
           transformOrigin: "top left",
-          willChange: "transform",
-          backfaceVisibility: "hidden",
+          // Intentionally NOT using `will-change: transform` / `backface-visibility: hidden`
+          // here. Those would promote this to a cached GPU layer whose bitmap is
+          // stretched when `scale()` grows past 1×, producing visibly blurry text
+          // and edges at high zoom. Letting the browser re-rasterize at the
+          // current scale keeps content sharp — Miro/Figma behave the same way.
         }}
       >
         {showGrid && (
@@ -6138,17 +6221,24 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
             mode === "embed" &&
             embedUrl &&
             embedMime.startsWith("audio/");
+          // PDF bricks with displayMode="link" opt out of the embedded PDF
+          // iframe on purpose — they're regular link bricks (LinkBlock +
+          // LinkPreview), same as any pasted URL would be.
           const isCreateEmbedPdf =
             (b as any).type === "create" &&
             mode === "embed" &&
             embedUrl &&
+            createData.displayMode !== "link" &&
             (embedMime === "application/pdf" || String(createData.name || "").toLowerCase().endsWith(".pdf"));
+          // Both view-mode PDFs (iframe) and link-mode PDFs (preview card)
+          // render through LinkBlock — it already handles `previewKind === "pdf"`
+          // with an iframe and, more importantly, gives them the same drag /
+          // edge-resize / corner-scale affordances as every other block.
           const isCreateEmbedLink =
             (b as any).type === "create" &&
             mode === "embed" &&
             embedUrl &&
-            !embedMime.startsWith("audio/") &&
-            embedMime !== "application/pdf";
+            !embedMime.startsWith("audio/");
           const isLinkCard =
             (b as any).type === "create" &&
             mode === "embed" &&
@@ -6210,7 +6300,8 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
                   top: `${Number((b as any).y || 0)}px`,
                   width: `${minW}px`,
                   height: `${minH}px`,
-                  willChange: "transform",
+                  // No `will-change: transform` here: it would cache this block as
+                  // a GPU bitmap that stretches (blurs) when canvas zoom grows.
                 }}
                 onPointerDown={(e) => {
                   const blockEl = e.currentTarget;
@@ -6355,27 +6446,6 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
               onMinimize: toggleMinimized, onBrickMenu: handleBlockMenu, onConnectionDragStart: handleConnectionDragStart,
             });
             return React.cloneElement(cardBrick as React.ReactElement, { key: id });
-          }
-          if (isCreateEmbedPdf) {
-            const pdfName = String(createData.name || "PDF");
-            const pdfExtra = React.createElement(
-              "div",
-              {
-                className: "flex flex-col flex-1 overflow-hidden",
-                onClick: (e: React.MouseEvent) => e.stopPropagation(),
-                onDoubleClick: (e: React.MouseEvent) => e.stopPropagation(),
-                onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
-              },
-              React.createElement("div", { className: "text-[0.7rem] font-medium text-black/60 dark:text-white/60 truncate px-3 py-1.5 border-b border-black/5 dark:border-white/5" }, pdfName),
-              React.createElement("iframe", {
-                src: embedUrl,
-                title: pdfName,
-                className: "flex-1 w-full border-0",
-                style: { minHeight: "200px" },
-              }),
-            );
-            const pdfBrick = renderBrickShell(b as any, id, { extraContent: pdfExtra, resizeGridSize: gridSize, canvasZoom: canvasZoomRef.current, onCornerScale: (bid, _nextScale, newWidth, newHeight) => { const cur: any = (blocks as any)[bid]; if (!cur) return; const data = cur?.data && typeof cur.data === "object" ? { ...cur.data } : {}; updateBlock(bid as any, { width: Math.max(gridSize * 10, newWidth), height: Math.max(gridSize * 4, newHeight), data: { ...data, userResized: true } } as any); }, onMinimize: toggleMinimized, onBrickMenu: handleBlockMenu, onConnectionDragStart: handleConnectionDragStart });
-            return React.cloneElement(pdfBrick as React.ReactElement, { key: id });
           }
           if (isCreateEmbedLink) {
             return (

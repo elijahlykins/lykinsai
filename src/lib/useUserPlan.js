@@ -38,8 +38,8 @@ export function useUserPlan() {
     queryKey: ["billing-me", user?.id || "guest"],
     queryFn: fetchBilling,
     enabled: Boolean(user?.id),
-    staleTime: 60_000,
-    gcTime: 5 * 60_000,
+    staleTime: 5_000,
+    gcTime: 60_000,
     retry: 1,
   });
 

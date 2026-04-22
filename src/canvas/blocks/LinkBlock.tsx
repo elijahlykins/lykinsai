@@ -53,7 +53,11 @@ function extensionFromName(name: string) {
   return String(name || "").split(".").pop()?.toLowerCase() || "";
 }
 
-function inferPreviewKind(url: string, mimeHint: string, nameHint: string, oembedType?: string) {
+function inferPreviewKind(url: string, mimeHint: string, nameHint: string, oembedType?: string, displayMode?: string) {
+  // Explicit "link" displayMode forces the OG/link-preview card even for
+  // URLs that would otherwise be auto-detected (e.g. PDFs chosen to come
+  // onto the grid as a regular link brick rather than an embedded viewer).
+  if (displayMode === "link") return "link";
   if (isSocialEmbedType(oembedType)) return "social-embed";
   if (detectSocialPlatform(url)) return "social-embed";
   const mime = String(mimeHint || "").toLowerCase();
@@ -100,7 +104,8 @@ export const LinkBlock = memo(function LinkBlock({ id, onMinimize, onMenu }: { i
   if (!url) return null;
 
   const oembedType = isCreate ? String(data.oembedType || "") : "";
-  const previewKind = inferPreviewKind(url, mime, name, oembedType);
+  const displayMode = isCreate ? String(data.displayMode || "") : "";
+  const previewKind = inferPreviewKind(url, mime, name, oembedType, displayMode);
   const snapSize = (n: number) => {
     const g = Math.max(1, Math.floor(gridSize || 24));
     return Math.max(g, snapToGrid(n, g));

@@ -6290,7 +6290,7 @@ async function loadBillingRow(userId) {
 // Small in-memory TTL cache so every AI request doesn't re-hit user_billing.
 // Keyed by userId; cleared when billing changes via webhook (see
 // syncSubscriptionToBilling) — if that proves not enough, drop TTL to ~5s.
-const USER_PLAN_CACHE_TTL_MS = 60_000;
+const USER_PLAN_CACHE_TTL_MS = 5_000;
 const userPlanCache = new Map(); // userId → { tier, planId, expiresAt }
 
 function invalidateUserPlanCache(userId) {
