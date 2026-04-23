@@ -18,7 +18,7 @@ import { useUserPlan } from "@/lib/useUserPlan";
  * — the user can start uploading on /vault and keep browsing while the
  * background workers finish.
  */
-export default function DragDropFileUpload({ onUploadComplete, onFileComplete, triggerRef, beforeUpload }) {
+export default function DragDropFileUpload({ onUploadComplete, onFileComplete, triggerRef, beforeUpload, onRequireSignIn }) {
   const { user } = useAuth();
   const { planId } = useUserPlan();
   const [isDragging, setIsDragging] = useState(false);
@@ -53,7 +53,11 @@ export default function DragDropFileUpload({ onUploadComplete, onFileComplete, t
 
   const createDroppedLinkNote = useCallback(
     async (url) => {
-      if (!user?.id || !url) return false;
+      if (!user?.id) {
+        onRequireSignIn?.();
+        return false;
+      }
+      if (!url) return false;
       if (beforeUpload && !(await beforeUpload())) return false;
 
       const trimmedUrl = String(url).trim();
@@ -150,13 +154,13 @@ export default function DragDropFileUpload({ onUploadComplete, onFileComplete, t
 
       return insertedNote || null;
     },
-    [user?.id, beforeUpload],
+    [user?.id, beforeUpload, onRequireSignIn],
   );
 
   const handleFileUpload = useCallback(
     async (acceptedFiles) => {
       if (!user?.id) {
-        alert("Please sign in to upload files");
+        onRequireSignIn?.();
         return;
       }
       if (beforeUpload && !(await beforeUpload())) return;
@@ -175,7 +179,7 @@ export default function DragDropFileUpload({ onUploadComplete, onFileComplete, t
         onFileComplete,
       });
     },
-    [user?.id, planId, beforeUpload, processFileList, onUploadComplete, onFileComplete],
+    [user?.id, planId, beforeUpload, processFileList, onUploadComplete, onFileComplete, onRequireSignIn],
   );
 
   const onDrop = useCallback(

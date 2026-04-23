@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   ChevronDown,
   ChevronUp,
@@ -7,6 +7,7 @@ import {
   PanelRightClose,
   Plus,
   Share2,
+  X,
 } from "lucide-react";
 import {
   Select,
@@ -52,6 +53,66 @@ const OmniaToolbar = React.memo(function OmniaToolbar({
   modelSelectMenu,
   onShareGrid,
 }: OmniaToolbarProps) {
+  const instructionPhrases = useMemo(
+    () => [
+      "Press / to see slash commands.",
+      "Click anywhere to start typing on the grid.",
+      "Drag files in to generate ideas faster.",
+      "Use chat to turn ideas into blocks.",
+      "Ask LYKN to organize your grid.",
+      "LYKN can do a SWOT analysis on your grid.",
+      "The tab at the bottom is for notes.",
+      "Ask LYKN what it's learned about you.",
+      "LYKN can bring in things from the vault if asked.",
+      "Double press any block to focus on it.",
+    ],
+    []
+  );
+  const [instructionIdx, setInstructionIdx] = useState(0);
+  const [typedInstruction, setTypedInstruction] = useState("");
+  const [tipsDismissed, setTipsDismissed] = useState(false);
+  const typingMsPerChar = 34;
+  const fullPhraseHoldMs = 1700;
+  const betweenPhraseGapMs = 300;
+
+  useEffect(() => {
+    if (tipsDismissed) {
+      setTypedInstruction("");
+      return;
+    }
+    if (!instructionPhrases.length) return;
+    let cancelled = false;
+    let timer: number | null = null;
+
+    const phrase = String(instructionPhrases[instructionIdx] || "");
+    setTypedInstruction("");
+
+    const typeAt = (charIdx: number) => {
+      if (cancelled) return;
+      setTypedInstruction(phrase.slice(0, charIdx));
+      if (charIdx < phrase.length) {
+        timer = window.setTimeout(() => typeAt(charIdx + 1), typingMsPerChar);
+        return;
+      }
+
+      timer = window.setTimeout(() => {
+        if (cancelled) return;
+        setTypedInstruction("");
+        timer = window.setTimeout(() => {
+          if (cancelled) return;
+          setInstructionIdx((prev) => (prev + 1) % instructionPhrases.length);
+        }, betweenPhraseGapMs);
+      }, fullPhraseHoldMs);
+    };
+
+    timer = window.setTimeout(() => typeAt(1), typingMsPerChar);
+
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [instructionIdx, instructionPhrases, typingMsPerChar, fullPhraseHoldMs, betweenPhraseGapMs, tipsDismissed]);
+
   return (
     <>
       {/* Board title */}
@@ -76,6 +137,25 @@ const OmniaToolbar = React.memo(function OmniaToolbar({
         style={{ left: "var(--sidebar-offset, 0px)", transition: "left 200ms ease" }}
       >
         <div className="pointer-events-auto flex items-center gap-2">
+          {!tipsDismissed && (
+            <div
+              className="hidden lg:flex relative min-w-[17rem] max-w-[21rem] h-5 items-center pr-5 group"
+              title={instructionPhrases[instructionIdx]}
+            >
+              <span className="block w-full h-5 leading-5 overflow-hidden text-xs text-black/55 dark:text-white/55 whitespace-nowrap text-right">
+                {typedInstruction}
+              </span>
+              <button
+                type="button"
+                onClick={() => setTipsDismissed(true)}
+                className="absolute right-0 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full inline-flex items-center justify-center text-black/40 dark:text-white/45 hover:text-black/70 dark:hover:text-white/75 hover:bg-black/10 dark:hover:bg-white/12 opacity-0 group-hover:opacity-100 transition-opacity"
+                title="Hide tips"
+                aria-label="Hide tips"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          )}
           <button
             type="button"
             onClick={onTopPanelToggle}
@@ -87,7 +167,7 @@ const OmniaToolbar = React.memo(function OmniaToolbar({
           </button>
 
           {topPanelOpen && (
-            <div className="flex items-center gap-1 p-1 rounded-full glass-control flex-wrap">
+            <div className="flex items-center gap-1 p-1 rounded-full bg-background border border-black/8 dark:border-white/10 shadow-sm flex-wrap">
               <Select value={selectedModel} onValueChange={onModelChange}>
                 <SelectTrigger className="w-[6.5rem] sm:w-[8.125rem] h-9 rounded-full glass-control hover:opacity-90 text-xs font-medium">
                   <SelectValue placeholder="Model" />

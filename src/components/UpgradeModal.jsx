@@ -1,6 +1,6 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
-import { Lock } from "lucide-react";
+import { Lock, Sparkles } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -41,8 +41,9 @@ export default function UpgradeModal({ modal, onDismiss }) {
               onDismiss();
               nav("/billing");
             }}
-            className="flex-1 py-2 px-4 rounded-lg bg-blue-100 dark:bg-blue-900/40 text-blue-500 dark:text-blue-400 text-xs font-semibold hover:bg-blue-200 dark:hover:bg-blue-900/60 transition-colors"
+            className="flex-1 py-2 px-4 rounded-lg border border-blue-300/30 bg-blue-950 text-blue-200 text-xs font-semibold hover:bg-blue-900 transition-colors inline-flex items-center justify-center gap-1.5"
           >
+            <Sparkles className="w-3.5 h-3.5" />
             View Plans
           </button>
         </DialogFooter>

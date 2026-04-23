@@ -41,6 +41,7 @@ import { normalizeValueToV2, getBlockPlainText } from "@/components/notes/blockM
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { extractYouTubeVideoId, getYouTubeEmbedUrl } from "@/canvas/utils/youtube";
+import SignInActionBlocker from "@/components/SignInActionBlocker";
 import { getAiPrefs } from "@/lib/ai-prefs";
 import { saveFileToVault, saveLinkToVault } from "@/lib/saveToVault";
 import { afterVaultNoteSaved } from "@/lib/vault/afterVaultSave";
@@ -141,6 +142,12 @@ export default function ProjectPlaceholder() {
   const { projectId } = useParams();
   const nav = useNavigate();
   const { user } = useAuth();
+  const [showSignInBlocker, setShowSignInBlocker] = useState(false);
+  const requireSignInForAction = useCallback(() => {
+    if (user?.id) return false;
+    setShowSignInBlocker(true);
+    return true;
+  }, [user?.id]);
   const [projectName, setProjectName] = useState("Project");
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [draftTitle, setDraftTitle] = useState("Project");
@@ -280,9 +287,10 @@ export default function ProjectPlaceholder() {
   }), [assistantTaskChecks, updateTaskCheck]);
 
   const saveChunkAsQuickNote = useCallback((text: string) => {
+    if (requireSignInForAction()) return;
     setQuickNoteContent(text);
     setShowQuickNote(true);
-  }, []);
+  }, [requireSignInForAction]);
 
   const chatIsNearBottom = useCallback((threshold = 80) => {
     const el = chatScrollRef.current;
@@ -923,7 +931,8 @@ export default function ProjectPlaceholder() {
   }, [boards, files, folders]);
 
   const handleCreateBoard = async () => {
-    if (!user?.id || !projectId) return;
+    if (requireSignInForAction()) return;
+    if (!projectId) return;
     const { data } = await supabase
       .from("omnia_boards")
       .insert({ user_id: user.id, title: "New Grid", project_id: projectId })
@@ -1077,7 +1086,7 @@ export default function ProjectPlaceholder() {
   };
 
   const uploadFileToStorage = async (file: File, targetFolderId: string | null): Promise<FileEntry | null> => {
-    if (!user?.id) return null;
+    if (requireSignInForAction()) return null;
     const kind = classifyFile(file);
 
     // Convert HEIF to JPEG before upload so images render in all browsers
@@ -1290,6 +1299,12 @@ export default function ProjectPlaceholder() {
   };
 
   const handleDrop = async (event: React.DragEvent<HTMLDivElement>) => {
+    if (requireSignInForAction()) {
+      event.preventDefault();
+      dragDepthRef.current = 0;
+      setIsDragging(false);
+      return;
+    }
     // Handle AI chat chunk drops — save as quick note
     const chatChunkText = event.dataTransfer.getData("application/x-omnia-chat-response");
     if (chatChunkText && user?.id) {
@@ -1368,6 +1383,10 @@ export default function ProjectPlaceholder() {
   };
 
   const handleFileInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (requireSignInForAction()) {
+      e.target.value = "";
+      return;
+    }
     const inputFiles = e.target.files;
     if (!inputFiles || inputFiles.length === 0) return;
     const newEntries: FileEntry[] = [];
@@ -1470,7 +1489,8 @@ export default function ProjectPlaceholder() {
   };
 
   const handleSaveQuickNote = async () => {
-    if (!user?.id || isQuickNoteSaving) return;
+    if (requireSignInForAction()) return;
+    if (isQuickNoteSaving) return;
     const content = quickNoteContent.trim();
     if (!content) return;
     setIsQuickNoteSaving(true);
@@ -1827,7 +1847,10 @@ INSTRUCTIONS:
 
               <button
                 type="button"
-                onClick={() => setShowVaultSidebar((v) => !v)}
+                onClick={() => {
+                  if (!showVaultSidebar && requireSignInForAction()) return;
+                  setShowVaultSidebar((v) => !v);
+                }}
                 className="rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/10 transition-colors touch-manipulation flex items-center justify-center"
                 title={showVaultSidebar ? "Hide media sidebar" : "Add media"}
               >
@@ -2931,13 +2954,20 @@ INSTRUCTIONS:
 
       <button
         type="button"
-        onClick={() => setShowQuickNote((v) => !v)}
+        onClick={() => {
+          if (requireSignInForAction()) return;
+          setShowQuickNote((v) => !v);
+        }}
         className="fixed bottom-6 w-12 h-12 rounded-full glass-control hover:opacity-90 shadow-lg hover:shadow-xl transition-all flex items-center justify-center z-[80]"
         style={{ right: showChat && !isMobileChat ? `${chatRailWidthPx + 24}px` : "24px", transition: "right 350ms cubic-bezier(0.22,1,0.36,1)" }}
         title="Quick Notes"
       >
         <StickyNote className="w-5 h-5" />
       </button>
+      <SignInActionBlocker
+        open={showSignInBlocker}
+        onClose={() => setShowSignInBlocker(false)}
+      />
     </div>
   );
 }

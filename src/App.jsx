@@ -30,7 +30,6 @@ import GuestSignInPrompt from "./components/GuestSignInPrompt";
 const legacyEnabled = String(import.meta.env.VITE_ENABLE_LEGACY_NOTES || "").toLowerCase() === "true";
 const LegacyVaultChat = React.lazy(() => import("./pages/VaultChat"));
 const LegacyTagManagement = React.lazy(() => import("./pages/TagManagement"));
-const LegacyBilling = React.lazy(() => import("./pages/Billing"));
 const loadingFallback = <LoadingScreen isLoading={true} />;
 
 function ProtectedRoute({ children }) {
@@ -74,13 +73,13 @@ function AppShell() {
             <Route path="/dashboard" element={<Navigate to="/" replace />} />
             <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
             <Route path="/grid/:boardId" element={<ProtectedRoute><OmniaGrid /></ProtectedRoute>} />
-            <Route path="/project/:projectId" element={<ProtectedRoute><ProjectPlaceholder /></ProtectedRoute>} />
+            <Route path="/project/:projectId" element={<ProjectPlaceholder />} />
             <Route path="/omnia" element={<ProtectedRoute><OmniaGrid /></ProtectedRoute>} />
-            <Route path="/vault" element={<ProtectedRoute><VaultNew /></ProtectedRoute>} />
+            <Route path="/vault" element={<VaultNew />} />
             <Route
               path="/synthesis-layer"
               element={
-                <ProtectedRoute>
+                user ? (
                   <PlanGate
                     minPlan="studio"
                     feature="Mind Map"
@@ -88,7 +87,9 @@ function AppShell() {
                   >
                     <SynthesisLayer />
                   </PlanGate>
-                </ProtectedRoute>
+                ) : (
+                  <SynthesisLayer />
+                )
               }
             />
             <Route
@@ -137,13 +138,7 @@ function AppShell() {
               path="/billing"
               element={
                 <ProtectedRoute>
-                  {legacyEnabled ? (
-                    <Suspense fallback={loadingFallback}>
-                      <LegacyBilling />
-                    </Suspense>
-                  ) : (
-                    <BillingNew />
-                  )}
+                  <BillingNew />
                 </ProtectedRoute>
               }
             />

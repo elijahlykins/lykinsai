@@ -43,7 +43,7 @@ export default function SettingsModal({ isOpen, onClose }) {
   // the textarea disabled with an upgrade CTA instead.
   const canUseCustomPrompt = planMeets(planId, "studio");
   const [settings, setSettings] = useState({
-    theme: 'dark',
+    theme: 'system',
     layoutDensity: 'comfortable',
     aiPersonality: 'balanced',
     aiDetailLevel: 'medium',
@@ -55,17 +55,18 @@ export default function SettingsModal({ isOpen, onClose }) {
   const [authMode, setAuthMode] = useState('login'); // 'login' or 'signup'
   const [authError, setAuthError] = useState('');
 
-  const DEFAULT_BG_LIGHT = '#ffffff';
   const DEFAULT_BG_DARK = '#1e1e1e';
 
   const applyTheme = (theme) => {
     const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
     const isDark = theme === 'dark' || (theme === 'system' && prefersDark);
     document.documentElement.classList.toggle('dark', isDark);
-    document.documentElement.style.setProperty(
-      '--app-background',
-      isDark ? DEFAULT_BG_DARK : DEFAULT_BG_LIGHT
-    );
+    if (isDark) {
+      document.documentElement.style.setProperty('--app-background', DEFAULT_BG_DARK);
+    } else {
+      // Let the stylesheet's beige --app-background (hsl(var(--background))) apply.
+      document.documentElement.style.removeProperty('--app-background');
+    }
   };
 
   useEffect(() => {
@@ -74,7 +75,7 @@ export default function SettingsModal({ isOpen, onClose }) {
       if (saved) {
         try {
           const parsed = JSON.parse(saved);
-          if (!parsed.theme) parsed.theme = 'dark';
+          if (!parsed.theme) parsed.theme = 'system';
           setSettings(parsed);
           applyTheme(parsed.theme);
         } catch (e) {
@@ -503,7 +504,7 @@ export default function SettingsModal({ isOpen, onClose }) {
           </Button>
           <Button
             onClick={handleSave}
-            className="bg-blue-500 text-white hover:bg-blue-600 flex items-center gap-2"
+            className="bg-blue-500/15 dark:bg-blue-500/20 text-blue-500 dark:text-blue-400 hover:bg-blue-500/25 dark:hover:bg-blue-500/30 border-transparent shadow-none flex items-center gap-2"
           >
             <Save className="w-4 h-4" />
             Save

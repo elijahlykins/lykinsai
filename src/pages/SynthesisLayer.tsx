@@ -23,6 +23,24 @@ import {
   Maximize2,
 } from "lucide-react";
 import { GridIcon } from "@/components/ui/GridIcon";
+import {
+  DEMO_PROJECTS,
+  DEMO_BOARDS,
+  DEMO_SYNTHESIS_PROFILE,
+  DEMO_SYNTHESIS_NOTES,
+  isDemoNodeId,
+} from "@/lib/demoSynthesis";
+import { isDemoGridId } from "@/lib/demoGrids";
+
+// Demo grid boards have real preview routes (see demoGrids.js), so they're
+// navigable even though their ids match the `demo-*` pattern. Other demo
+// node ids (projects, vault notes) still aren't navigable because their
+// routes don't exist yet.
+const isBlockedDemoId = (id: string | null | undefined): boolean => {
+  if (!id) return true;
+  if (isDemoGridId(id)) return false;
+  return isDemoNodeId(id);
+};
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -115,6 +133,8 @@ function extractKeywords(text: string): Set<string> {
       .filter((w) => w.length > 4 && !STOP_WORDS.has(w)),
   );
 }
+
+const EMPTY_VAULT_GRID_MAP: Map<string, Set<string>> = new Map();
 
 function buildVaultGridMap(chunks: ChunkRow[]): Map<string, Set<string>> {
   const vaultChunks = chunks.filter((c) => c.source_type === "vault_note");
@@ -930,10 +950,15 @@ function DetailPanel({
     return allNodes.filter((n) => ids.has(n.id));
   }, [node, allNodes, edges]);
 
-  const navPath = node.kind === "grid" && node.meta?.boardId
-    ? `/grid/${node.meta.boardId}`
-    : node.kind === "project" && node.meta?.projectId
-    ? `/project/${node.meta.projectId}`
+  // Demo grid/project nodes never hit the DB, so we can't navigate to
+  // their detail pages (they'd 404 or show an empty grid). The Vault page
+  // is always valid — guests see the preloaded demo vault there.
+  const boardId = node.meta?.boardId as string | undefined;
+  const projectId = node.meta?.projectId as string | undefined;
+  const navPath = node.kind === "grid" && boardId && !isBlockedDemoId(boardId)
+    ? `/grid/${boardId}`
+    : node.kind === "project" && projectId && !isBlockedDemoId(projectId)
+    ? `/project/${projectId}`
     : node.kind === "vault"
     ? "/vault"
     : null;
@@ -1029,16 +1054,21 @@ function DetailPanel({
                 <div className="mb-4">
                   <p className="text-[0.6875rem] font-medium text-gray-500 dark:text-gray-400 mb-2">Found in Grids</p>
                   <div className="flex flex-col gap-1">
-                    {linkedGrids.map((g) => (
-                      <button
-                        key={g.id}
-                        onClick={() => onNavigate(`/grid/${g.meta?.boardId}`)}
-                        className="flex items-center gap-2 px-2.5 py-1.5 rounded-md hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-colors text-left"
-                      >
-                        <GridIcon size={12} className="text-blue-400 flex-shrink-0" />
-                        <span className="text-[0.6875rem] text-gray-600 dark:text-gray-300 truncate">{g.label}</span>
-                      </button>
-                    ))}
+                    {linkedGrids.map((g) => {
+                      const gBoardId = g.meta?.boardId as string | undefined;
+                      const isDemo = isBlockedDemoId(gBoardId);
+                      const Tag: any = isDemo ? "div" : "button";
+                      return (
+                        <Tag
+                          key={g.id}
+                          {...(isDemo ? {} : { onClick: () => onNavigate(`/grid/${gBoardId}`) })}
+                          className={`flex items-center gap-2 px-2.5 py-1.5 rounded-md text-left ${isDemo ? "" : "hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-colors cursor-pointer"}`}
+                        >
+                          <GridIcon size={12} className="text-blue-400 flex-shrink-0" />
+                          <span className="text-[0.6875rem] text-gray-600 dark:text-gray-300 truncate">{g.label}</span>
+                        </Tag>
+                      );
+                    })}
                   </div>
                 </div>
               );
@@ -1137,16 +1167,21 @@ function DetailPanel({
                 <div className="mb-3">
                   <p className="text-[0.625rem] font-medium text-gray-400 dark:text-gray-500 mb-1.5 uppercase tracking-wider">Related Grids</p>
                   <div className="flex flex-col gap-1">
-                    {connectedGrids.slice(0, 6).map((c) => (
-                      <button
-                        key={c.id}
-                        onClick={() => onNavigate(`/grid/${c.meta?.boardId}`)}
-                        className="flex items-center gap-2 px-2 py-1 rounded-md bg-gray-100/50 dark:bg-white/[0.05] hover:bg-gray-100 dark:hover:bg-white/[0.08] transition-colors text-left"
-                      >
-                        <GridIcon size={10} className="text-blue-400 flex-shrink-0" />
-                        <span className="text-[0.6875rem] text-gray-600 dark:text-gray-300 truncate">{c.label}</span>
-                      </button>
-                    ))}
+                    {connectedGrids.slice(0, 6).map((c) => {
+                      const cBoardId = c.meta?.boardId as string | undefined;
+                      const isDemo = isBlockedDemoId(cBoardId);
+                      const Tag: any = isDemo ? "div" : "button";
+                      return (
+                        <Tag
+                          key={c.id}
+                          {...(isDemo ? {} : { onClick: () => onNavigate(`/grid/${cBoardId}`) })}
+                          className={`flex items-center gap-2 px-2 py-1 rounded-md bg-gray-100/50 dark:bg-white/[0.05] text-left ${isDemo ? "" : "hover:bg-gray-100 dark:hover:bg-white/[0.08] transition-colors cursor-pointer"}`}
+                        >
+                          <GridIcon size={10} className="text-blue-400 flex-shrink-0" />
+                          <span className="text-[0.6875rem] text-gray-600 dark:text-gray-300 truncate">{c.label}</span>
+                        </Tag>
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -1155,16 +1190,21 @@ function DetailPanel({
                 <div className="mb-3">
                   <p className="text-[0.625rem] font-medium text-gray-400 dark:text-gray-500 mb-1.5 uppercase tracking-wider">Related Projects</p>
                   <div className="flex flex-col gap-1">
-                    {connectedProjects.slice(0, 4).map((c) => (
-                      <button
-                        key={c.id}
-                        onClick={() => onNavigate(`/project/${c.meta?.projectId}`)}
-                        className="flex items-center gap-2 px-2 py-1 rounded-md bg-purple-50/50 dark:bg-purple-900/10 hover:bg-purple-50 dark:hover:bg-purple-900/20 transition-colors text-left"
-                      >
-                        <FolderOpen size={10} className="text-purple-400 flex-shrink-0" />
-                        <span className="text-[0.6875rem] text-gray-600 dark:text-gray-300 truncate">{c.label}</span>
-                      </button>
-                    ))}
+                    {connectedProjects.slice(0, 4).map((c) => {
+                      const cProjectId = c.meta?.projectId as string | undefined;
+                      const isDemo = !cProjectId || isDemoNodeId(cProjectId);
+                      const Tag: any = isDemo ? "div" : "button";
+                      return (
+                        <Tag
+                          key={c.id}
+                          {...(isDemo ? {} : { onClick: () => onNavigate(`/project/${cProjectId}`) })}
+                          className={`flex items-center gap-2 px-2 py-1 rounded-md bg-purple-50/50 dark:bg-purple-900/10 text-left ${isDemo ? "" : "hover:bg-purple-50 dark:hover:bg-purple-900/20 transition-colors cursor-pointer"}`}
+                        >
+                          <FolderOpen size={10} className="text-purple-400 flex-shrink-0" />
+                          <span className="text-[0.6875rem] text-gray-600 dark:text-gray-300 truncate">{c.label}</span>
+                        </Tag>
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -1316,16 +1356,57 @@ export default function SynthesisLayer() {
     enabled: !!user?.id,
   });
 
-  const vaultGridMap = useMemo(() => buildVaultGridMap(synthesisChunks), [synthesisChunks]);
+  // Stable empty-map for guests (and any signed-in user with no chunks
+  // yet) — without this, a fresh `synthesisChunks` array reference on each
+  // render would make buildVaultGridMap return a fresh `new Map()` every
+  // render, invalidating the downstream graph + layout memos and jittering
+  // the force simulation.
+  const vaultGridMap = useMemo(
+    () => (synthesisChunks.length === 0 ? EMPTY_VAULT_GRID_MAP : buildVaultGridMap(synthesisChunks)),
+    [synthesisChunks],
+  );
+
+  // Demo-mode kicks in whenever the user hasn't created any projects or
+  // grids yet (guests always match; brand-new signed-in users match until
+  // they make their first one). In that state we overlay synthetic
+  // projects / boards / synthesis profile so the layer feels alive instead
+  // of flashing the "empty" placeholder. Real notes (or seeded demo notes)
+  // stay as-is.
+  const isDemoMode = projects.length === 0 && boards.length === 0;
+
+  const effectiveProjects = useMemo(
+    () => (isDemoMode ? DEMO_PROJECTS : projects),
+    [isDemoMode, projects],
+  );
+  const effectiveBoards = useMemo(
+    () => (isDemoMode ? DEMO_BOARDS : boards),
+    [isDemoMode, boards],
+  );
+  // For guests we intentionally bypass `notes` as a dependency — the
+  // `useQuery` destructuring default (`= []`) produces a new empty array
+  // reference on every render, which would otherwise invalidate this memo
+  // (and every downstream memo) on every hover tick, re-seeding the force
+  // layout with fresh random jitter.
+  const effectiveNotes = useMemo<NoteRow[]>(() => {
+    if (!user?.id) return DEMO_SYNTHESIS_NOTES as unknown as NoteRow[];
+    return notes as NoteRow[];
+  }, [user?.id, notes]);
 
   const synthesisData: SynthesisData | null = useMemo(() => {
+    if (isDemoMode) {
+      return {
+        themes: DEMO_SYNTHESIS_PROFILE.themes,
+        narrative: DEMO_SYNTHESIS_PROFILE.narrative,
+        signals: DEMO_SYNTHESIS_PROFILE.signals as Record<string, any>,
+      };
+    }
     if (!synthesisProfile) return null;
     return {
       themes: Array.isArray(synthesisProfile.themes) ? synthesisProfile.themes : [],
       narrative: synthesisProfile.narrative || "",
       signals: (synthesisProfile.signals && typeof synthesisProfile.signals === "object") ? synthesisProfile.signals as Record<string, any> : {},
     };
-  }, [synthesisProfile]);
+  }, [isDemoMode, synthesisProfile]);
 
   const synthesisThemes: string[] = useMemo(() => {
     const t: string[] = [];
@@ -1335,19 +1416,22 @@ export default function SynthesisLayer() {
   }, [synthesisData]);
 
   /* Build + simulate */
-  const { nodes: allNodes, edges } = useMemo(() => buildGraph(projects, boards, notes, synthesisThemes, synthesisData, vaultGridMap), [projects, boards, notes, synthesisThemes, synthesisData, vaultGridMap]);
+  const { nodes: allNodes, edges } = useMemo(
+    () => buildGraph(effectiveProjects, effectiveBoards, effectiveNotes, synthesisThemes, synthesisData, vaultGridMap),
+    [effectiveProjects, effectiveBoards, effectiveNotes, synthesisThemes, synthesisData, vaultGridMap],
+  );
   const nodeMap = useMemo(() => new Map(allNodes.map((n) => [n.id, n])), [allNodes]);
 
   /* Collect all ideas: synthesis themes + note ai_signals themes + tags */
   const allIdeas = useMemo(() => {
     const s = new Set<string>();
     synthesisThemes.forEach((t) => s.add(t));
-    notes.forEach((n) => {
+    effectiveNotes.forEach((n) => {
       (n.tags || []).forEach((t: string) => s.add(t.toLowerCase().trim()));
       extractNoteThemes(n).forEach((t) => s.add(t));
     });
     return Array.from(s).sort();
-  }, [notes, synthesisThemes]);
+  }, [effectiveNotes, synthesisThemes]);
 
   const simNodes = useMemo(
     () => simulateLayout(allNodes, edges, dimensions.w / 2, dimensions.h / 2, layoutMode, filterTag),
@@ -1409,7 +1493,7 @@ export default function SynthesisLayer() {
   }, []);
 
   const svgTransform = `translate(${dimensions.w / 2 + camera.x}, ${dimensions.h / 2 + camera.y}) scale(${camera.zoom}) translate(${-dimensions.w / 2}, ${-dimensions.h / 2})`;
-  const isEmpty = projects.length === 0 && boards.length === 0 && notes.length === 0;
+  const isEmpty = effectiveProjects.length === 0 && effectiveBoards.length === 0 && effectiveNotes.length === 0;
   const selectedNode = selectedId ? nodeMap.get(selectedId) : null;
   const panelOpen = selectedNode != null || showWelcome;
   const isTopicMode = layoutMode === "topic" && !!filterTag;
@@ -1485,10 +1569,12 @@ export default function SynthesisLayer() {
                 stroke={isHl ? a.color : edge.cross ? "rgba(148,163,184,0.10)" : "rgba(148,163,184,0.20)"}
                 strokeWidth={isHl ? 2.5 : edge.cross ? 0.8 : 1.2}
                 strokeDasharray={edge.cross ? "4 4" : undefined}
-                opacity={isDimmed ? 0.08 : relevanceDim ? 0.12 : 1}
                 initial={{ pathLength: 0, opacity: 0 }}
                 animate={{ pathLength: 1, opacity: isDimmed ? 0.08 : relevanceDim ? 0.12 : 1 }}
-                transition={{ duration: 1, delay: i * 0.004 }}
+                transition={{
+                  pathLength: { duration: 1, delay: i * 0.004 },
+                  opacity: { duration: 0.18 },
+                }}
               />
             );
           })}
@@ -1505,22 +1591,30 @@ export default function SynthesisLayer() {
                 : 1;
 
             return (
-              <motion.g
+              // Outer <g> carries the node's x/y as a static SVG transform
+              // so hover-triggered re-renders (which flip `isHovered` /
+              // `isDimmed` on every node) don't retrigger framer-motion's
+              // x/y transitions. Only scale + opacity animate on hover.
+              <g
                 key={node.id}
+                transform={`translate(${node.x} ${node.y})`}
+              >
+              <motion.g
                 data-node
                 style={{ cursor: node.kind === "root" ? "default" : "pointer" }}
                 initial={{ opacity: 0, scale: 0 }}
                 animate={{
                   opacity: nodeOpacity,
-                  scale: isHovered ? 1.15 : isSelected ? 1.1 : 1,
-                  x: node.x,
-                  y: node.y,
+                  // Only scale up on explicit selection. Hover is expressed
+                  // purely through the glow ring + dimming of other nodes
+                  // — the hovered node itself must not resize/move, or its
+                  // growing hit-area causes adjacent nodes to flicker into
+                  // and out of hover on tiny cursor moves.
+                  scale: isSelected ? 1.08 : 1,
                 }}
                 transition={{
-                  x: { duration: 0.8, delay: i * 0.012 },
-                  y: { duration: 0.8, delay: i * 0.012 },
-                  opacity: { duration: 0.2 },
-                  scale: { type: "spring", stiffness: 300, damping: 20 },
+                  opacity: { duration: 0.18 },
+                  scale: { type: "spring", stiffness: 260, damping: 24 },
                 }}
                 onPointerEnter={() => setHoveredNode(node.id)}
                 onPointerLeave={() => setHoveredNode(null)}
@@ -1604,6 +1698,7 @@ export default function SynthesisLayer() {
                   {node.label.length > 24 ? node.label.slice(0, 22) + "…" : node.label}
                 </text>
               </motion.g>
+              </g>
             );
           })}
         </g>
@@ -1706,11 +1801,11 @@ export default function SynthesisLayer() {
       <div className="absolute top-6 z-20 flex items-center gap-4 text-[0.625rem] text-gray-400 dark:text-gray-500 pointer-events-none transition-[right] duration-300"
         style={{ right: panelOpen ? 384 : 24 }}
       >
-        <span>{projects.length} projects</span>
+        <span>{effectiveProjects.length} projects</span>
         <span className="w-px h-3 bg-gray-200 dark:bg-gray-700" />
-        <span>{boards.length} grids</span>
+        <span>{effectiveBoards.length} grids</span>
         <span className="w-px h-3 bg-gray-200 dark:bg-gray-700" />
-        <span>{notes.length} notes</span>
+        <span>{effectiveNotes.length} notes</span>
       </div>
 
       {/* Zoom controls */}

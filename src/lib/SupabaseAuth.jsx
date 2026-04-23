@@ -64,10 +64,21 @@ export function SupabaseAuthProvider({ children }) {
           return;
         }
 
-        // Debounce sign-out: wait 1.5s before clearing the user to avoid
-        // cascading logouts from transient token-refresh failures.  If a
-        // valid session arrives in the meantime the timer is cancelled above.
-        if (event === 'SIGNED_OUT' || event === 'TOKEN_REFRESHED') {
+        // Explicit sign-out should update UI immediately.
+        if (event === 'SIGNED_OUT') {
+          if (signOutTimerRef.current) {
+            clearTimeout(signOutTimerRef.current);
+            signOutTimerRef.current = null;
+          }
+          setUser(null);
+          return;
+        }
+
+        // Debounce fallback for refresh edge-cases: wait 1.5s before
+        // clearing the user to avoid cascading logouts from transient
+        // token-refresh failures. If a valid session arrives in the meantime
+        // the timer is cancelled above.
+        if (event === 'TOKEN_REFRESHED') {
           if (recoveryInFlightRef.current) return;
           recoveryInFlightRef.current = true;
 
@@ -142,7 +153,14 @@ export function SupabaseAuthProvider({ children }) {
     return data;
   };
 
-  const signOut = () => supabase.auth.signOut({ scope: 'local' });
+  const signOut = async () => {
+    if (signOutTimerRef.current) {
+      clearTimeout(signOutTimerRef.current);
+      signOutTimerRef.current = null;
+    }
+    setUser(null);
+    return supabase.auth.signOut({ scope: 'local' });
+  };
 
   return (
     <AuthContext.Provider value={{

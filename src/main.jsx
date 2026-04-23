@@ -12,7 +12,8 @@ try {
   if (saved.layoutDensity) document.documentElement.style.setProperty('--layout-density', densities[saved.layoutDensity] || '1');
 
   const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-  const isDark = !saved.theme || saved.theme === 'dark' || (saved.theme === 'system' && prefersDark);
+  const theme = saved.theme || 'system';
+  const isDark = theme === 'dark' || (theme === 'system' && prefersDark);
   if (isDark) {
     document.documentElement.classList.add('dark');
     document.documentElement.style.setProperty('--app-background', '#1e1e1e');

@@ -2623,25 +2623,6 @@ export default function OmniaGridPage() {
 
   return (
     <div className="w-full h-[100svh] relative overflow-hidden omnia-grid-bg">
-      {!user && (
-        <div
-          className="pointer-events-auto absolute top-3 left-1/2 -translate-x-1/2 z-[80] flex items-center gap-3 rounded-full border border-white/25 bg-black/55 backdrop-blur-md px-4 py-2 text-[13px] text-white/90 shadow-lg"
-          role="status"
-          aria-live="polite"
-        >
-          <span className="inline-flex h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.9)]" aria-hidden />
-          <span>
-            Preview mode — chat is free, but your work won&rsquo;t save.
-          </span>
-          <button
-            type="button"
-            onClick={() => nav("/login")}
-            className="rounded-full bg-white text-black text-[12px] font-semibold px-3 py-1 hover:bg-white/90 transition-colors"
-          >
-            Sign in
-          </button>
-        </div>
-      )}
       {/* Match BrickEditor layout: minimal chrome + floating controls */}
       <OmniaToolbar
         title={title}

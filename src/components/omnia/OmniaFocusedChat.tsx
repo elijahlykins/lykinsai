@@ -421,7 +421,7 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
                         })}
                       </div>
                     )}
-                    <div className="max-w-[80%] rounded-2xl rounded-br-md px-4 py-3 text-sm leading-relaxed text-black/90 dark:text-white/90 border border-white/30 bg-[linear-gradient(135deg,rgba(255,255,255,0.14),rgba(255,255,255,0.06))] backdrop-blur-md shadow-[0_4px_14px_rgba(0,0,0,0.06)] [&_table]:my-2 [&_td]:px-2 [&_th]:px-2">
+                    <div className="max-w-[80%] rounded-2xl rounded-br-md px-4 py-3 text-sm leading-relaxed text-black/90 dark:text-white/90 border border-black/8 dark:border-white/10 bg-background shadow-[0_4px_14px_rgba(0,0,0,0.06)] [&_table]:my-2 [&_td]:px-2 [&_th]:px-2">
                       <ReactMarkdown remarkPlugins={[remarkGfm]} components={buildChatMarkdownComponents(msg.id)}>{normalizeChecklistSyntax(msg.content || "")}</ReactMarkdown>
                     </div>
                   </div>
@@ -433,7 +433,11 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
                     <div className="max-w-[80%] w-full">
                       <button
                         type="button"
-                        className="w-full flex items-center gap-2 px-4 py-2.5 rounded-2xl border border-white/50 dark:border-white/15 bg-white/30 dark:bg-white/5 backdrop-blur-sm hover:bg-white/50 dark:hover:bg-white/10 transition-all text-left"
+                        className={`w-full flex items-center gap-2 transition-all text-left ${
+                          isFocusedExpanded
+                            ? "px-4 py-2.5 rounded-2xl border border-white/50 dark:border-white/15 bg-white/30 dark:bg-white/5 backdrop-blur-sm hover:bg-white/50 dark:hover:bg-white/10"
+                            : "px-0 py-0.5 rounded-none border border-transparent bg-transparent backdrop-blur-none hover:bg-transparent"
+                        }`}
                         onClick={() => toggleAiExpanded(msg.id)}
                       >
                         <ChevronRight className={`w-4 h-4 text-black/40 dark:text-white/40 flex-shrink-0 transition-transform duration-200 ${isFocusedExpanded ? "rotate-90" : ""}`} />
@@ -696,7 +700,7 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
             ))}
             {isChatLoading && (
               <div className="flex justify-start">
-                <div className="omnia-ai-thinking-glow rounded-2xl rounded-bl-md max-w-[80%] px-4 py-3 text-sm leading-relaxed border bg-white/55 dark:bg-white/8 border-white/40 dark:border-white/10 text-black/60 dark:text-white/60 backdrop-blur-sm flex items-center gap-3">
+                <div className="omnia-ai-thinking-glow rounded-2xl rounded-bl-md max-w-[80%] px-4 py-3 text-sm leading-relaxed border bg-black/5 dark:bg-white/8 border-black/10 dark:border-white/10 text-black/70 dark:text-white/60 backdrop-blur-sm flex items-center gap-3">
                   <div className="brick-spinner" />
                   {thinkingStatus}
                 </div>

@@ -387,11 +387,11 @@ export default function AboutYouSection({ isOpen }) {
             type="button"
             onClick={startSession}
             aria-label="Start recording"
-            className="relative w-20 h-20 rounded-full bg-blue-500 text-white hover:bg-blue-600 shadow-lg shadow-blue-500/25 flex items-center justify-center transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60"
+            className="relative w-20 h-20 rounded-full bg-blue-500/15 dark:bg-blue-500/20 text-blue-500 dark:text-blue-400 hover:bg-blue-500/25 dark:hover:bg-blue-500/30 flex items-center justify-center transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60"
           >
             <Mic className="w-8 h-8" />
           </button>
-          <p className="text-sm text-black dark:text-white font-medium">
+          <p className="text-sm text-blue-500 dark:text-blue-400 font-medium">
             Tap to start
           </p>
           <p className="text-xs text-gray-500 dark:text-gray-400 max-w-xs">

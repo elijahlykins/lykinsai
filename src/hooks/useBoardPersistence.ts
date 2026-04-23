@@ -7,6 +7,7 @@ import { snapshotToSynthesisText } from "@/lib/synthesis/sourceText";
 import { scheduleSynthesisReindex } from "@/lib/synthesis/queueReindex";
 import type { NotePage } from "@/components/notes/NotesPanel";
 import { notifyBlocksCapIfApplicable } from "@/lib/board/blocksCapError";
+import { isDemoGridId, getDemoGridSnapshot } from "@/lib/demoGrids";
 
 const SNAPSHOT_VERSION = 2;
 
@@ -454,6 +455,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
   /* ------------------------------------------------------------------ */
   const saveSnapshot = useCallback(async (opts?: { isFinal?: boolean }) => {
     if (!userId || !boardId || savingRef.current || !hydratedRef.current) return;
+    if (isDemoGridId(boardId)) return; // demo grids are read/edit-only; never hit the DB
 
     // Skip persisting brand-new empty boards. If the caller is finalising,
     // also clean up the eagerly created board row + local caches.
@@ -567,6 +569,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
   /* ------------------------------------------------------------------ */
   const commitBoardTitle = useCallback(async () => {
     if (!boardId || !userId) return;
+    if (isDemoGridId(boardId)) return;
     const next = String(titleRef.current || "").trim() || "New Grid";
     if (next === lastSavedTitleRef.current) return;
     lastSavedTitleRef.current = next;
@@ -584,8 +587,71 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
   /*  Board load effect                                                  */
   /* ------------------------------------------------------------------ */
   useEffect(() => {
-    if (!userId) return;
     let cancelled = false;
+
+    // Demo grids short-circuit the whole persistence flow — the snapshot is
+    // baked in client-side, nothing gets read from (or written to) Supabase.
+    // Works for both guests and signed-in users; saves are gated elsewhere.
+    if (routeBoardId && isDemoGridId(routeBoardId)) {
+      (async () => {
+        hydratedRef.current = false;
+        userRenamedRef.current = false;
+        const snapshot = getDemoGridSnapshot(routeBoardId);
+        if (cancelled) return;
+        const demoTitle = String(snapshot?.title || "New Grid");
+        setTitleTracked(demoTitle);
+        lastSavedTitleRef.current = demoTitle;
+        userRenamedRef.current = demoTitle !== "New Grid";
+        setBoardId(routeBoardId);
+        reset();
+        setChatMessages([]);
+        aiThreadRef.current = [];
+        // Demo snapshots already carry a non-default camera computed at
+        // fetch time (see `computeDemoCamera` in demoGrids.js) — framing
+        // the top of the grid at a zoom that fits the bbox width. That
+        // lets `applySnapshot` commit the camera in a single update via
+        // `loadBlocks({ camera })`, bypassing its default-camera auto-
+        // centre branch. Patching the camera a second time from here
+        // would open a window where an in-flight wheel-zoom flush reads
+        // a stale `canvasZoomRef` / `el.scrollTop` pair and clamps the
+        // scroll to `maxTop`, visibly shooting the user to the bottom
+        // of the grid on their first zoom-out gesture.
+        if (snapshot) applySnapshotRef.current(snapshot);
+        if (!cancelled) hydratedRef.current = true;
+      })();
+      return () => { cancelled = true; };
+    }
+
+    // Guest (pre-sign-in) new grid: show a fresh, in-memory board. Saves are
+    // gated elsewhere by the `!userId` check, so nothing persists — but the
+    // user still gets an empty canvas they can play with after clicking
+    // "Add New Grid" in the sidebar.
+    if (!userId) {
+      if (routeBoardId) {
+        (async () => {
+          hydratedRef.current = false;
+          userRenamedRef.current = false;
+          setTitleTracked("New Grid");
+          lastSavedTitleRef.current = "New Grid";
+          if (cancelled) return;
+          setBoardId(routeBoardId);
+          reset();
+          setChatMessages([]);
+          aiThreadRef.current = [];
+          applySnapshotRef.current({
+            version: SNAPSHOT_VERSION,
+            blocks: {},
+            blockOrder: [],
+            camera: { x: 0, y: 0, zoom: 1 },
+            gridSize: 24,
+            wireConnections: [],
+            notesPages: makeDefaultNotesPages(),
+          });
+          hydratedRef.current = true;
+        })();
+      }
+      return () => { cancelled = true; };
+    }
     const loadBoard = async () => {
       hydratedRef.current = false;
       userRenamedRef.current = false;
@@ -752,6 +818,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
   /* ------------------------------------------------------------------ */
   useEffect(() => {
     if (!boardId || !userId) return;
+    if (isDemoGridId(boardId)) return; // demo grids never persist
     let draftTimer: ReturnType<typeof setTimeout> | null = null;
     const unsubscribe = useCanvasStore.subscribe(() => {
       onCanvasChange?.();
@@ -781,6 +848,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
   /* ------------------------------------------------------------------ */
   useEffect(() => {
     if (!boardId) return;
+    if (isDemoGridId(boardId)) return; // demo grids stay fresh across visits
     const timer = setTimeout(() => {
       try {
         const MAX_LOCAL_CHAT = 30;
@@ -824,6 +892,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
   /* ------------------------------------------------------------------ */
   useEffect(() => {
     if (!boardId || !userId) return;
+    if (isDemoGridId(boardId)) return; // demo grids never autosave
     const onBeforeUnload = () => {
       try {
         const snapshot = buildSnapshot();
@@ -864,6 +933,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
   /* ------------------------------------------------------------------ */
   useEffect(() => {
     if (!boardId || !userId) return;
+    if (isDemoGridId(boardId)) return;
     return () => {
       savingRef.current = false;
       saveSnapshot({ isFinal: true });

@@ -25,6 +25,7 @@ import { useAuth } from "@/lib/SupabaseAuth";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useUserPlan } from "@/lib/useUserPlan";
 import { planMeets } from "@/components/PlanGate";
+import { DEMO_GRID_LIST } from "@/lib/demoGrids";
 
 const PROJECTS_CHANGED_EVENT = "lykinsai_projects_changed";
 
@@ -253,7 +254,7 @@ export default function AppSidebar() {
       </div>
 
       <div
-        className={`fixed top-0 left-0 z-[70] h-[100svh] w-[12rem] bg-background p-3 pt-12 transition-transform duration-200 flex flex-col ${
+        className={`fixed top-0 left-0 z-[70] h-[100svh] w-[12rem] bg-[hsl(var(--sidebar-surface))] dark:bg-[hsl(0_0%_16%)] p-3 pt-12 transition-transform duration-200 flex flex-col ${
           open ? "translate-x-0" : "-translate-x-[120%]"
         }`}
       >
@@ -395,7 +396,29 @@ export default function AppSidebar() {
           </div>
           <div className="flex-1 min-h-0 overflow-y-auto scrollbar-hide">
             <div className="flex flex-col gap-0.5">
-              {boards.length === 0 ? (
+              {!user ? (
+                // Guest preview: show 3 demo grids so the sidebar isn't empty.
+                // Routes resolve to snapshot-backed boards (see demoGrids.js).
+                <>
+                  {DEMO_GRID_LIST.map((g) => {
+                    const isActive = location.pathname === `/grid/${g.id}`;
+                    return (
+                      <div key={g.id} className="group relative flex items-center">
+                        <button
+                          type="button"
+                          onClick={() => flushAndNavigate(nav, `/grid/${g.id}`)}
+                          className={`flex-1 min-w-0 text-left text-[0.6875rem] px-2.5 py-1 rounded-md flex items-center gap-2 transition-colors ${
+                            isActive ? "bg-blue-500/15" : "hover:bg-blue-500/15"
+                          }`}
+                        >
+                          <span className={`inline-block h-1.5 w-1.5 rounded-full flex-shrink-0 ${isActive ? "bg-blue-500" : "bg-black/30 dark:bg-white/30"}`} />
+                          <span className="truncate">{g.title}</span>
+                        </button>
+                      </div>
+                    );
+                  })}
+                </>
+              ) : boards.length === 0 ? (
                 <div className="text-[0.6875rem] text-black/40 dark:text-white/40 px-2.5 py-1">No grids yet</div>
               ) : (
                 boards.map((board) => {

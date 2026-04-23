@@ -44,6 +44,8 @@ import { useVaultUploadStore } from "@/store/vaultUploadStore";
 import { useUsageGate } from "@/lib/useUsageGate";
 import { notifyVaultCapIfApplicable } from "@/lib/vault/vaultCapError";
 import UpgradeModal from "@/components/UpgradeModal";
+import SignInActionBlocker from "@/components/SignInActionBlocker";
+import { buildGuestDemoCards, buildSeedNoteRows } from "@/lib/demoVault";
 import { extractYouTubeVideoId, getYouTubeEmbedUrl } from "@/canvas/utils/youtube";
 import { detectSocialPlatform, isSocialEmbedType, isVerticalSocialContent } from "@/canvas/utils/socialEmbed";
 import { SocialEmbedInline } from "@/canvas/blocks/SocialEmbedBlock";
@@ -559,6 +561,7 @@ export default function VaultNew() {
   const [showSaveLink, setShowSaveLink] = useState(false);
   const [saveLinkUrl, setSaveLinkUrl] = useState("");
   const [saveLinkPreview, setSaveLinkPreview] = useState(null);
+  const [showSignInBlocker, setShowSignInBlocker] = useState(false);
   const [previewCard, setPreviewCard] = useState(null);
   const [isSaveLinkLoading, setIsSaveLinkLoading] = useState(false);
   const [isSaveLinkSaving, setIsSaveLinkSaving] = useState(false);
@@ -567,6 +570,23 @@ export default function VaultNew() {
     try { return localStorage.getItem("lykn_vault_view") || "collage"; } catch { return "collage"; }
   });
   const [conceptResultIds, setConceptResultIds] = useState(null);
+  const requireSignInForAction = useCallback(() => {
+    if (user?.id) return false;
+    setShowSignInBlocker(true);
+    return true;
+  }, [user?.id]);
+  const handleRequestAddMedia = useCallback(() => {
+    if (requireSignInForAction()) return;
+    addMediaTriggerRef.current?.();
+  }, [requireSignInForAction]);
+  const handleRequestSaveLink = useCallback(() => {
+    if (requireSignInForAction()) return;
+    setShowSaveLink(true);
+  }, [requireSignInForAction]);
+  const handleToggleQuickNote = useCallback(() => {
+    if (requireSignInForAction()) return;
+    setShowQuickNote((v) => !v);
+  }, [requireSignInForAction]);
   const [isConceptSearching, setIsConceptSearching] = useState(false);
   const [selectedFilterTags, setSelectedFilterTags] = useState([]);
   const [showEmbeddedTagDropdown, setShowEmbeddedTagDropdown] = useState(false);
@@ -921,7 +941,10 @@ export default function VaultNew() {
     [notesQuery.data]
   );
 
-  const isLoadingNotes = notesQuery.isPending;
+  // For guests the query is disabled, but react-query still reports status === "pending".
+  // Treat it as not-loading so the vault UI (incl. the "Add attachments" tile) can render
+  // before sign-in.
+  const isLoadingNotes = !!user?.id && notesQuery.isPending;
   const hasMoreNotes = !!notesQuery.hasNextPage;
   const isLoadingMoreNotes = notesQuery.isFetchingNextPage;
 
@@ -957,6 +980,55 @@ export default function VaultNew() {
       setNotesError("Couldn't load your memories right now. Please try again later.");
     }
   }, [notesQuery.isError]);
+
+  // Seed the starter pack for brand-new signed-in users. Runs once per user
+  // (tracked by a localStorage flag) so deleting every seeded card does NOT
+  // cause them to reappear on the next visit.
+  const demoSeedingRef = useRef(false);
+  useEffect(() => {
+    if (!user?.id) return;
+    if (loading || isLoadingNotes) return;
+    if (notes.length > 0) return;
+    if (demoSeedingRef.current) return;
+
+    const flagKey = `lykn.demo_seeded.${user.id}`;
+    try {
+      if (localStorage.getItem(flagKey)) return;
+    } catch { /* storage disabled — treat as already seeded to be safe */ return; }
+
+    demoSeedingRef.current = true;
+    try { localStorage.setItem(flagKey, "1"); } catch { /* ignore */ }
+
+    (async () => {
+      const rows = buildSeedNoteRows(user.id);
+      if (rows.length === 0) return;
+
+      // First attempt: full rows including `tags`. Falls back to a
+      // tags-less insert if the deployment's `notes` table doesn't have a
+      // `tags` column (older schemas — see COLUMN_SETS above).
+      let data = null;
+      let error = null;
+      ({ data, error } = await supabase
+        .from("notes")
+        .insert(rows)
+        .select("id, title, content, tags, created_at, updated_at"));
+
+      if (error) {
+        const rowsNoTags = rows.map(({ tags: _omit, ...rest }) => rest);
+        ({ data, error } = await supabase
+          .from("notes")
+          .insert(rowsNoTags)
+          .select("id, title, content, created_at, updated_at"));
+      }
+
+      if (error || !Array.isArray(data)) {
+        try { localStorage.removeItem(flagKey); } catch { /* ignore */ }
+        demoSeedingRef.current = false;
+        return;
+      }
+      setNotes((prev) => [...data, ...prev]);
+    })();
+  }, [user?.id, loading, isLoadingNotes, notes.length, setNotes]);
 
   const { data: projects = [] } = useQuery({
     queryKey: ["projects", user?.id],
@@ -1103,6 +1175,14 @@ export default function VaultNew() {
     return out;
   }, [uploadItems, notes]);
 
+  // Synthetic starter-pack cards shown ONLY to guests (no user id yet). For
+  // signed-in users, the starter pack is seeded as real DB rows on first visit
+  // by the `useEffect` below, so no synthetic cards are needed after sign-in.
+  const guestDemoCards = useMemo(
+    () => (user?.id ? [] : buildGuestDemoCards()),
+    [user?.id]
+  );
+
   const vaultCards = useMemo(() => {
     const safeNotes = notes.filter((n) => n && !n.trashed);
     const cards = [];
@@ -1110,6 +1190,11 @@ export default function VaultNew() {
     // Ghost cards first so they render at the top of the grid — matches
     // how fresh drops normally land (mergeUploadedNotes also prepends).
     for (const ghost of ghostCards) cards.push(ghost);
+
+    // Guest starter pack — these render as normal cards but flag `isDemo`
+    // so mutating actions (drag, 3-dot menu) are gated behind the sign-in
+    // blocker. Previews work as usual.
+    for (const demo of guestDemoCards) cards.push(demo);
 
     safeNotes.forEach((note) => {
       const attachments = parseAttachmentsFromNote(note);
@@ -1216,7 +1301,7 @@ export default function VaultNew() {
       }
       return true;
     });
-  }, [notes, ghostCards]);
+  }, [notes, ghostCards, guestDemoCards]);
 
   const [allTagsRaw, setAllTagsRaw] = useState([]);
 
@@ -1249,7 +1334,25 @@ export default function VaultNew() {
     return () => { cancelled = true; };
   }, [user?.id, notes]);
 
-  const allTags = allTagsRaw;
+  // Guests have no rows in Supabase, so `allTagsRaw` stays empty. Fall back
+  // to deriving the top tag filter row from whatever cards are rendered
+  // (including the starter-pack demo cards) so the filter bar isn't empty
+  // pre sign-in. For signed-in users we keep the DB-sourced counts because
+  // they reflect ALL notes, not just the ones currently on screen.
+  const allTags = useMemo(() => {
+    if (allTagsRaw.length > 0) return allTagsRaw;
+    const tagMap = {};
+    vaultCards.forEach((card) => {
+      (card.tags || []).forEach((t) => {
+        const tag = String(t).trim();
+        if (!tag) return;
+        tagMap[tag] = (tagMap[tag] || 0) + 1;
+      });
+    });
+    return Object.entries(tagMap)
+      .sort((a, b) => b[1] - a[1])
+      .map(([name, count]) => ({ name, count }));
+  }, [allTagsRaw, vaultCards]);
 
   const updateNoteTags = useCallback(
     async (noteId, newTags) => {
@@ -1751,6 +1854,14 @@ export default function VaultNew() {
   );
 
   const handleCardDragStart = useCallback((e, card) => {
+    // Guest demo cards aren't backed by a real note — dragging them into a
+    // project or the canvas would have nowhere to land. Block the drag and
+    // surface the sign-in prompt instead.
+    if (card?.isDemo) {
+      e.preventDefault();
+      requireSignInForAction();
+      return;
+    }
     // In-flight (ghost) uploads aren't backed by a note yet, so dragging
     // them around the grid (or out to the canvas) has no meaningful target.
     if (card?.ghost) {
@@ -1823,7 +1934,7 @@ export default function VaultNew() {
     lastHoverTargetRef.current = card.id;
     window.dispatchEvent(new CustomEvent("vault_collage_reorder_drag_start"));
     try { e.dataTransfer.setData("application/x-lykins-vault-card-id", card.id); } catch {}
-  }, [isEmbeddedMode, resolvedAttachmentUrls]);
+  }, [isEmbeddedMode, resolvedAttachmentUrls, requireSignInForAction]);
 
   const handleCardDragEnd = useCallback(() => {
     setDraggedCardId(null);
@@ -2008,7 +2119,8 @@ export default function VaultNew() {
   }, [visibleCards, buildCardSummary, getCardSearchText]);
 
   const handleSaveQuickNote = async () => {
-    if (!user?.id || isQuickNoteSaving) return;
+    if (!user?.id) { setShowSignInBlocker(true); return; }
+    if (isQuickNoteSaving) return;
     const content = quickNoteContent.trim();
     if (!content) return;
     if (!(await checkVaultLimit())) return;
@@ -2075,7 +2187,8 @@ export default function VaultNew() {
   }, []);
 
   const handleSaveLink = useCallback(async () => {
-    if (!user?.id || isSaveLinkSaving || !saveLinkPreview) return;
+    if (!user?.id) { setShowSignInBlocker(true); return; }
+    if (isSaveLinkSaving || !saveLinkPreview) return;
     if (!(await checkVaultLimit())) return;
     setIsSaveLinkSaving(true);
     try {
@@ -3126,6 +3239,12 @@ User: ${text}`;
 
 
   const openCardMenuForAnchor = useCallback((cardId, anchorEl) => {
+    // Guests can only ever see synthetic demo cards (ids prefixed with
+    // "demo-"). Any attempt to open the action menu on those should prompt
+    // sign-in instead — they can't be edited, deleted, or moved until the
+    // user has a real account + real note rows.
+    if (requireSignInForAction()) return;
+
     const menuEstimatedHeight = 320;
     const rect = anchorEl?.getBoundingClientRect?.();
     if (!rect) {
@@ -3142,7 +3261,7 @@ User: ${text}`;
     setOpenCardMenuPlacement(shouldOpenUp ? "up" : "down");
     setOpenCardMenuRect({ top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right, width: rect.width, height: rect.height });
     setOpenCardMenuId(cardId);
-  }, []);
+  }, [requireSignInForAction]);
 
   if ((loading || isLoadingNotes || !vaultReady) && user) {
     return <LoadingScreen isLoading={true} />;
@@ -3153,6 +3272,7 @@ User: ${text}`;
       <DragDropFileUpload
         triggerRef={addMediaTriggerRef}
         beforeUpload={checkVaultLimit}
+        onRequireSignIn={() => setShowSignInBlocker(true)}
         onFileComplete={(note) => {
           if (note?.id) mergeUploadedNotes([note]);
         }}
@@ -3279,6 +3399,15 @@ User: ${text}`;
 
               <button
                 type="button"
+                onClick={handleRequestAddMedia}
+                className="rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center"
+                title="Add attachments"
+              >
+                <Plus className="w-4 h-4" />
+              </button>
+
+              <button
+                type="button"
                 onClick={() => setShowChat((v) => !v)}
                 className={`rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center ${showChat ? "bg-blue-500/15" : ""}`}
                 title={showChat ? "Hide chat" : "Open chat"}
@@ -3288,7 +3417,7 @@ User: ${text}`;
 
               <button
                 type="button"
-                onClick={() => setShowQuickNote((v) => !v)}
+                onClick={handleToggleQuickNote}
                 className={`rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center ${showQuickNote ? "bg-amber-500/15" : ""}`}
                 title={showQuickNote ? "Hide quick note" : "New quick note"}
               >
@@ -3561,28 +3690,22 @@ User: ${text}`;
           )}
         </section>
 
-        {!user && !loading && (
-          <div className="glass-control rounded-2xl px-5 py-4 inline-block">
-            <p className="text-sm text-black/70 dark:text-white/70">Sign in to view your vault.</p>
-          </div>
-        )}
-
         {notesError && (
           <div className="glass-control rounded-2xl px-5 py-4 inline-block">
             <p className="text-sm text-red-600">{notesError}</p>
           </div>
         )}
 
-        {!loading && !isLoadingNotes && vaultReady && user && !notesError && (
+        {!loading && !isLoadingNotes && (vaultReady || !user) && !notesError && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.35, ease: "easeOut" }}>
             {orderedVisibleCards.length === 0 ? (
               <div className="flex flex-col items-start gap-4">
                 <div className="break-inside-avoid mb-5 rounded-2xl border-2 border-dashed border-blue-500/30 p-6 flex flex-col items-center justify-center text-center w-full sm:w-64 min-h-[160px] gap-3">
-                  <div className="text-sm font-medium text-black/40 dark:text-white/40 mb-1">Add to Vault</div>
+                  <div className="text-sm font-medium text-black/40 dark:text-white/40 mb-1">Add attachments</div>
                   <div className="flex gap-3">
                     <button
                       type="button"
-                      onClick={() => addMediaTriggerRef.current?.()}
+                      onClick={handleRequestAddMedia}
                       className="group/opt flex flex-col items-center gap-1.5 rounded-xl px-4 py-3 hover:bg-blue-500/[0.06] transition-colors"
                     >
                       <div className="w-10 h-10 rounded-full bg-blue-500/10 flex items-center justify-center group-hover/opt:bg-blue-500/20 transition-colors">
@@ -3592,7 +3715,7 @@ User: ${text}`;
                     </button>
                     <button
                       type="button"
-                      onClick={() => setShowSaveLink(true)}
+                      onClick={handleRequestSaveLink}
                       className="group/opt flex flex-col items-center gap-1.5 rounded-xl px-4 py-3 hover:bg-blue-500/[0.06] transition-colors"
                     >
                       <div className="w-10 h-10 rounded-full bg-blue-500/10 flex items-center justify-center group-hover/opt:bg-blue-500/20 transition-colors">
@@ -3611,11 +3734,11 @@ User: ${text}`;
             ) : vaultView === "tags" ? (
               <div className="space-y-8">
                 <div className="rounded-2xl border-2 border-dashed border-blue-500/30 p-4 flex items-center justify-center text-center gap-4 max-w-xs">
-                  <button type="button" onClick={() => addMediaTriggerRef.current?.()} className="group/opt flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-blue-500/[0.06] transition-colors">
+                  <button type="button" onClick={handleRequestAddMedia} className="group/opt flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-blue-500/[0.06] transition-colors">
                     <div className="w-8 h-8 rounded-full bg-blue-500/10 flex items-center justify-center group-hover/opt:bg-blue-500/20 transition-colors"><Upload className="w-4 h-4 text-blue-500" /></div>
                     <span className="text-[0.6875rem] font-medium text-black/50 dark:text-white/50 group-hover/opt:text-blue-500 transition-colors">Files</span>
                   </button>
-                  <button type="button" onClick={() => setShowSaveLink(true)} className="group/opt flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-blue-500/[0.06] transition-colors">
+                  <button type="button" onClick={handleRequestSaveLink} className="group/opt flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-blue-500/[0.06] transition-colors">
                     <div className="w-8 h-8 rounded-full bg-blue-500/10 flex items-center justify-center group-hover/opt:bg-blue-500/20 transition-colors"><Globe className="w-4 h-4 text-blue-500" /></div>
                     <span className="text-[0.6875rem] font-medium text-black/50 dark:text-white/50 group-hover/opt:text-blue-500 transition-colors">Link</span>
                   </button>
@@ -3647,6 +3770,11 @@ User: ${text}`;
                               : "glass-control"
                           }`}
                         >
+                          {card.isDemo && (
+                            <span className="absolute top-2 left-2 z-[120] rounded-full bg-black/45 text-white/95 text-[0.625rem] font-medium px-2 py-0.5 backdrop-blur-sm pointer-events-none">
+                              Sample
+                            </span>
+                          )}
                           {card.kind === "attachment" ? (
                             <>
                               {renderAttachmentCard(card, "h-40")}
@@ -3731,11 +3859,11 @@ User: ${text}`;
             ) : vaultView === "type" ? (
               <div className="space-y-8">
                 <div className="rounded-2xl border-2 border-dashed border-blue-500/30 p-4 flex items-center justify-center text-center gap-4 max-w-xs">
-                  <button type="button" onClick={() => addMediaTriggerRef.current?.()} className="group/opt flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-blue-500/[0.06] transition-colors">
+                  <button type="button" onClick={handleRequestAddMedia} className="group/opt flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-blue-500/[0.06] transition-colors">
                     <div className="w-8 h-8 rounded-full bg-blue-500/10 flex items-center justify-center group-hover/opt:bg-blue-500/20 transition-colors"><Upload className="w-4 h-4 text-blue-500" /></div>
                     <span className="text-[0.6875rem] font-medium text-black/50 dark:text-white/50 group-hover/opt:text-blue-500 transition-colors">Files</span>
                   </button>
-                  <button type="button" onClick={() => setShowSaveLink(true)} className="group/opt flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-blue-500/[0.06] transition-colors">
+                  <button type="button" onClick={handleRequestSaveLink} className="group/opt flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-blue-500/[0.06] transition-colors">
                     <div className="w-8 h-8 rounded-full bg-blue-500/10 flex items-center justify-center group-hover/opt:bg-blue-500/20 transition-colors"><Globe className="w-4 h-4 text-blue-500" /></div>
                     <span className="text-[0.6875rem] font-medium text-black/50 dark:text-white/50 group-hover/opt:text-blue-500 transition-colors">Link</span>
                   </button>
@@ -3767,6 +3895,11 @@ User: ${text}`;
                                 : "glass-control"
                             }`}
                           >
+                            {card.isDemo && (
+                              <span className="absolute top-2 left-2 z-[120] rounded-full bg-black/45 text-white/95 text-[0.625rem] font-medium px-2 py-0.5 backdrop-blur-sm pointer-events-none">
+                                Sample
+                              </span>
+                            )}
                             {card.kind === "attachment" ? (
                               <>
                                 {renderAttachmentCard(card, "h-40")}
@@ -3854,11 +3987,11 @@ User: ${text}`;
               }>
                 {vaultView === "collage" && (
                 <div className="break-inside-avoid mb-5 rounded-2xl border-2 border-dashed border-blue-500/30 p-4 flex flex-col items-center justify-center text-center min-h-[130px] gap-2">
-                  <div className="text-xs font-medium text-black/40 dark:text-white/40">Add to Vault</div>
+                  <div className="text-xs font-medium text-black/40 dark:text-white/40">Add attachments</div>
                   <div className="flex gap-2">
                     <button
                       type="button"
-                      onClick={() => addMediaTriggerRef.current?.()}
+                      onClick={handleRequestAddMedia}
                       className="group/opt flex flex-col items-center gap-1 rounded-xl px-3 py-2 hover:bg-blue-500/[0.06] transition-colors"
                     >
                       <div className="w-9 h-9 rounded-full bg-blue-500/10 flex items-center justify-center group-hover/opt:bg-blue-500/20 transition-colors">
@@ -3868,7 +4001,7 @@ User: ${text}`;
                     </button>
                     <button
                       type="button"
-                      onClick={() => setShowSaveLink(true)}
+                      onClick={handleRequestSaveLink}
                       className="group/opt flex flex-col items-center gap-1 rounded-xl px-3 py-2 hover:bg-blue-500/[0.06] transition-colors"
                     >
                       <div className="w-9 h-9 rounded-full bg-blue-500/10 flex items-center justify-center group-hover/opt:bg-blue-500/20 transition-colors">
@@ -3881,12 +4014,12 @@ User: ${text}`;
                 )}
                 {vaultView === "grid" && (
                   <div className="rounded-2xl border-2 border-dashed border-blue-500/30 p-4 flex flex-col items-center justify-center text-center aspect-square gap-2">
-                    <div className="text-xs font-medium text-black/40 dark:text-white/40">Add</div>
+                    <div className="text-xs font-medium text-black/40 dark:text-white/40">Add attachments</div>
                     <div className="flex gap-1.5">
-                      <button type="button" onClick={() => addMediaTriggerRef.current?.()} className="w-8 h-8 rounded-full bg-blue-500/10 flex items-center justify-center hover:bg-blue-500/20 transition-colors">
+                      <button type="button" onClick={handleRequestAddMedia} className="w-8 h-8 rounded-full bg-blue-500/10 flex items-center justify-center hover:bg-blue-500/20 transition-colors">
                         <Upload className="w-3.5 h-3.5 text-blue-500" />
                       </button>
-                      <button type="button" onClick={() => setShowSaveLink(true)} className="w-8 h-8 rounded-full bg-blue-500/10 flex items-center justify-center hover:bg-blue-500/20 transition-colors">
+                      <button type="button" onClick={handleRequestSaveLink} className="w-8 h-8 rounded-full bg-blue-500/10 flex items-center justify-center hover:bg-blue-500/20 transition-colors">
                         <Globe className="w-3.5 h-3.5 text-blue-500" />
                       </button>
                     </div>
@@ -3949,6 +4082,11 @@ User: ${text}`;
                         : "z-0"
                     }`}
                   >
+                    {card.isDemo && (
+                      <span className="absolute top-2 left-2 z-[120] rounded-full bg-black/45 text-white/95 text-[0.625rem] font-medium px-2 py-0.5 backdrop-blur-sm pointer-events-none">
+                        Sample
+                      </span>
+                    )}
                     {card.kind === "attachment" ? (
                       <>
                         {renderAttachmentCard(card, vaultView === "grid" ? "h-44" : getAttachmentHeightClass(card))}
@@ -4281,7 +4419,7 @@ User: ${text}`;
             })()}
             {isChatLoading && (
               <div className="flex flex-col items-start w-full">
-                <div className="omnia-ai-thinking-glow rounded-xl max-w-[94%] bg-white/60 dark:bg-white/8 border border-white/50 dark:border-white/12 backdrop-blur-sm text-[0.6875rem] text-black/60 dark:text-white/60 px-3 py-1.5 flex items-center gap-2" aria-live="polite">
+                <div className="omnia-ai-thinking-glow rounded-xl max-w-[94%] bg-black/5 dark:bg-white/8 border border-black/10 dark:border-white/12 backdrop-blur-sm text-[0.6875rem] text-black/70 dark:text-white/60 px-3 py-1.5 flex items-center gap-2" aria-live="polite">
                   <div className="brick-spinner" />
                   {thinkingStatus}
                 </div>
@@ -4400,7 +4538,7 @@ User: ${text}`;
                   </SelectContent>
                 </Select>
                 <div className="flex-1 min-w-[4px]" aria-hidden />
-                <button type="button" onClick={() => addMediaTriggerRef.current?.()} className="h-8 w-8 omnia-neu-chat-icon-plain flex items-center justify-center text-black/80 dark:text-white/85 shrink-0" title="Add attachments">
+                <button type="button" onClick={handleRequestAddMedia} className="h-8 w-8 omnia-neu-chat-icon-plain flex items-center justify-center text-black/80 dark:text-white/85 shrink-0" title="Add attachments">
                   <Plus className="w-3 h-3" />
                 </button>
                 {isChatLoading ? (
@@ -5014,6 +5152,10 @@ User: ${text}`;
         document.body
       )}
       <UpgradeModal modal={upgradeModal} onDismiss={dismissUpgradeModal} />
+      <SignInActionBlocker
+        open={showSignInBlocker}
+        onClose={() => setShowSignInBlocker(false)}
+      />
     </div>
   );
 }

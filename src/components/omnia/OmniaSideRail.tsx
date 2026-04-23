@@ -266,7 +266,7 @@ const OmniaSideRail: React.FC<OmniaSideRailProps> = React.memo(function OmniaSid
             {msg.role === "user" ? (
               <button type="button" onClick={() => { onReplay(msg); }} disabled={!msg.aiResponse} className="group relative text-left max-w-[94%] disabled:cursor-default" title={msg.aiResponse ? "Show saved AI response" : "Waiting for AI response"}>
                 {msg.aiResponse ? (<span className="pointer-events-none absolute -top-6 right-0 rounded-md bg-black/70 px-2 py-1 text-[0.625rem] text-white opacity-0 transition-opacity duration-150 group-hover:opacity-100 whitespace-nowrap">{(msg as any).aiImageUrl ? "Tap to view generated image" : "Tap to view AI response"}</span>) : null}
-                <div className="w-full rounded-2xl rounded-br-md px-3 py-2 text-xs leading-relaxed text-black/90 dark:text-white/90 border border-white/30 dark:border-white/10 bg-[linear-gradient(135deg,rgba(255,255,255,0.14),rgba(255,255,255,0.06))] dark:bg-[linear-gradient(135deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02))] backdrop-blur-md shadow-[0_4px_14px_rgba(0,0,0,0.06)] dark:shadow-[0_4px_14px_rgba(0,0,0,0.16)] [&_table]:text-[0.6875rem] [&_td]:py-1 [&_th]:py-1">
+                <div className="w-full rounded-2xl rounded-br-md px-3 py-2 text-xs leading-relaxed text-black/90 dark:text-white/90 border border-black/8 dark:border-white/10 bg-background dark:bg-[linear-gradient(135deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02))] shadow-[0_4px_14px_rgba(0,0,0,0.06)] dark:shadow-[0_4px_14px_rgba(0,0,0,0.16)] [&_table]:text-[0.6875rem] [&_td]:py-1 [&_th]:py-1">
                   <ReactMarkdown remarkPlugins={[remarkGfm]} components={buildChatMarkdownComponents(msg.id)}>{normalizeChecklistSyntax(msg.content || "")}</ReactMarkdown>
                 </div>
                 {(msg as any).aiImageUrl && (
@@ -342,7 +342,11 @@ const OmniaSideRail: React.FC<OmniaSideRailProps> = React.memo(function OmniaSid
               <div className="self-start max-w-[94%] mt-1.5">
                 <button
                   type="button"
-                  className="w-full flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-white/50 dark:border-white/12 bg-white/40 dark:bg-white/5 backdrop-blur-sm hover:bg-white/60 dark:hover:bg-white/10 transition-all text-left group/collapse"
+                  className={`w-full flex items-center gap-1.5 text-left group/collapse transition-all ${
+                    isExpanded
+                      ? "px-2.5 py-1.5 rounded-xl border border-white/50 dark:border-white/12 bg-white/40 dark:bg-white/5 backdrop-blur-sm hover:bg-white/60 dark:hover:bg-white/10"
+                      : "px-0 py-0.5 rounded-none border border-transparent bg-transparent backdrop-blur-none hover:bg-transparent"
+                  }`}
                   onClick={() => toggleAiExpanded(msg.id)}
                 >
                   <ChevronRight className={`w-3 h-3 text-black/40 dark:text-white/40 flex-shrink-0 transition-transform duration-200 ${isExpanded ? "rotate-90" : ""}`} />
@@ -434,7 +438,7 @@ const OmniaSideRail: React.FC<OmniaSideRailProps> = React.memo(function OmniaSid
         ))}
         {isChatLoading && (
           <div className="flex flex-col items-start w-full">
-            <div className="omnia-ai-thinking-glow rounded-xl max-w-[94%] bg-white/60 dark:bg-white/8 border border-white/50 dark:border-white/12 backdrop-blur-sm text-[0.6875rem] text-black/60 dark:text-white/60 px-3 py-1.5 flex items-center gap-2" aria-live="polite">
+            <div className="omnia-ai-thinking-glow rounded-xl max-w-[94%] bg-black/5 dark:bg-white/8 border border-black/10 dark:border-white/12 backdrop-blur-sm text-[0.6875rem] text-black/70 dark:text-white/60 px-3 py-1.5 flex items-center gap-2" aria-live="polite">
               <div className="brick-spinner" />
               {thinkingStatus}
             </div>

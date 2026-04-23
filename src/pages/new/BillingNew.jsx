@@ -24,13 +24,13 @@ function MiniBar({ label, used, limit, unit = "" }) {
   return (
     <div>
       <div className="flex items-baseline justify-between mb-1">
-        <span className="text-xs font-medium text-black/60">{label}</span>
-        <span className="text-[11px] text-black/40">
+        <span className="text-xs font-medium text-black/60 dark:text-white/70">{label}</span>
+        <span className="text-[11px] text-black/40 dark:text-white/45">
           {formatValue(used)}
           {isUnlimited ? " used" : ` / ${formatValue(limit)}`}
         </span>
       </div>
-      <div className="w-full h-1.5 rounded-full bg-white/60 overflow-hidden">
+      <div className="w-full h-1.5 rounded-full bg-white/60 dark:bg-white/10 overflow-hidden">
         <div
           className={`h-full rounded-full transition-all duration-500 ${
             isFull ? "bg-red-400" : isHigh ? "bg-amber-400" : "bg-blue-400/70"
@@ -71,17 +71,17 @@ function AccountSection({
       : currentPlan;
 
   return (
-    <div className="rounded-2xl bg-white/28 backdrop-blur-md border border-white/25 shadow-md shadow-black/[0.02] p-6 mb-10">
+    <div className="rounded-2xl bg-white/28 dark:bg-zinc-900/70 backdrop-blur-md border border-white/25 dark:border-white/10 shadow-md shadow-black/[0.02] dark:shadow-black/30 p-6 mb-10">
       <div className="flex items-start justify-between mb-5 gap-3 flex-wrap">
         <div>
-          <h3 className="text-sm font-semibold text-black/80">
+          <h3 className="text-sm font-semibold text-black/80 dark:text-white/90">
             Usage
-            <span className="ml-2 text-[11px] font-medium text-black/40">
+            <span className="ml-2 text-[11px] font-medium text-black/40 dark:text-white/45">
               · Current plan: {planDisplay}
             </span>
           </h3>
           {renewalLabel && (
-            <p className="text-[11px] text-black/40 mt-0.5">
+            <p className="text-[11px] text-black/40 dark:text-white/45 mt-0.5">
               {billingStatus?.cancel_at_period_end
                 ? `Cancels on ${renewalLabel}`
                 : `Renews ${renewalLabel}`}
@@ -92,7 +92,7 @@ function AccountSection({
           <button
             onClick={onManageBilling}
             disabled={portalBusy}
-            className="text-[11px] font-semibold text-black/60 hover:text-black/90 underline underline-offset-2 disabled:opacity-50"
+            className="text-[11px] font-semibold text-black/60 dark:text-white/65 hover:text-black/90 dark:hover:text-white underline underline-offset-2 disabled:opacity-50"
           >
             {portalBusy ? "Opening…" : "Manage billing"}
           </button>
@@ -117,7 +117,7 @@ function AccountSection({
 
 function BillingToggle({ period, onChange }) {
   return (
-    <div className="inline-flex rounded-md border border-black/10 bg-black/[0.03] p-[3px]">
+    <div className="inline-flex rounded-md border border-black/10 dark:border-white/15 bg-black/[0.03] dark:bg-white/[0.06] p-[3px]">
       {[
         { key: BILLING_PERIODS.MONTHLY, label: "Monthly" },
         { key: BILLING_PERIODS.ANNUAL, label: "Annual" },
@@ -127,8 +127,8 @@ function BillingToggle({ period, onChange }) {
           onClick={() => onChange(opt.key)}
           className={`relative px-3 py-1 text-xs font-medium rounded transition-all duration-200 ${
             period === opt.key
-              ? "bg-white text-black/85 shadow-sm"
-              : "text-black/40 hover:text-black/60"
+              ? "bg-white dark:bg-zinc-100 text-black/85 dark:text-zinc-900 shadow-sm"
+              : "text-black/40 dark:text-white/45 hover:text-black/60 dark:hover:text-white/70"
           }`}
         >
           {opt.label}
@@ -146,10 +146,10 @@ function PriceDisplay({ plan, period }) {
   return (
     <div className="mt-3 mb-4">
       <div className="flex items-baseline gap-1">
-        <span className="text-2xl font-bold tracking-tight text-black/90">
+        <span className="text-2xl font-bold tracking-tight text-black/90 dark:text-white">
           ${price === 0 ? "0" : price % 1 === 0 ? price : price.toFixed(2)}
         </span>
-        <span className="text-xs text-black/35 font-medium">/mo</span>
+        <span className="text-xs text-black/35 dark:text-white/45 font-medium">/mo</span>
       </div>
       {isAnnual && savings > 0 && (
         <p className="text-xs text-emerald-600 font-medium mt-1">
@@ -166,28 +166,28 @@ function FeatureList({ features }) {
       {features.map((f, i) => (
         <li key={i} className="flex items-start gap-2">
           {f.included ? (
-            <div className="w-4 h-4 rounded-full bg-blue-50 flex items-center justify-center flex-shrink-0 mt-0.5">
-              <Check className="w-2.5 h-2.5 text-blue-600" strokeWidth={3} />
+            <div className="w-4 h-4 rounded-full bg-blue-50 dark:bg-blue-500/20 flex items-center justify-center flex-shrink-0 mt-0.5">
+              <Check className="w-2.5 h-2.5 text-blue-600 dark:text-blue-300" strokeWidth={3} />
             </div>
           ) : (
-            <div className="w-4 h-4 rounded-full bg-black/[0.03] flex items-center justify-center flex-shrink-0 mt-0.5">
-              <Minus className="w-2.5 h-2.5 text-black/20" strokeWidth={2} />
+            <div className="w-4 h-4 rounded-full bg-black/[0.03] dark:bg-white/[0.06] flex items-center justify-center flex-shrink-0 mt-0.5">
+              <Minus className="w-2.5 h-2.5 text-black/20 dark:text-white/25" strokeWidth={2} />
             </div>
           )}
           <div className="min-w-0">
             <span
               className={`text-xs leading-snug ${
                 f.accent
-                  ? "text-blue-500 font-medium"
+                  ? "text-blue-500 dark:text-blue-300 font-medium"
                   : f.included
-                  ? "text-black/70"
-                  : "text-black/30"
+                  ? "text-black/70 dark:text-white/75"
+                  : "text-black/30 dark:text-white/35"
               }`}
             >
               {f.text}
             </span>
             {f.note && (
-              <span className="text-[10px] text-black/30 block mt-0.5">
+              <span className="text-[10px] text-black/30 dark:text-white/35 block mt-0.5">
                 {f.note}
               </span>
             )}
@@ -214,11 +214,11 @@ function PlanCard({
   const waitlistBusy = isWaitlistCard && Boolean(waitlistState?.busy);
   const ctaStyles = {
     outline:
-      "border border-black/10 text-black/70 hover:bg-black/[0.03] hover:border-black/15",
+      "border border-black/10 dark:border-white/20 text-black/70 dark:text-white/80 hover:bg-black/[0.03] dark:hover:bg-white/[0.08] hover:border-black/15 dark:hover:border-white/30",
     default:
-      "bg-black/90 text-white hover:bg-black/80",
+      "bg-black/90 dark:bg-white text-white dark:text-black hover:bg-black/80 dark:hover:bg-white/90",
     primary:
-      "bg-blue-100 text-blue-500 hover:bg-blue-200 shadow-sm",
+      "bg-blue-100 dark:bg-blue-500/25 text-blue-500 dark:text-blue-200 hover:bg-blue-200 dark:hover:bg-blue-500/35 shadow-sm",
   };
 
   return (
@@ -228,28 +228,28 @@ function PlanCard({
       transition={{ duration: 0.4 }}
       className={`relative flex flex-col rounded-2xl border p-5 transition-shadow duration-300 ${
         plan.highlighted
-          ? "border-blue-200 bg-white shadow-xl shadow-blue-600/[0.06] ring-1 ring-blue-100"
-          : "border-black/[0.06] bg-white shadow-sm hover:shadow-md"
+          ? "border-blue-200 dark:border-blue-400/40 bg-white dark:bg-zinc-900/90 shadow-xl shadow-blue-600/[0.06] dark:shadow-blue-900/30 ring-1 ring-blue-100 dark:ring-blue-400/30"
+          : "border-black/[0.06] dark:border-white/[0.12] bg-white dark:bg-zinc-900/85 shadow-sm dark:shadow-black/30 hover:shadow-md"
       } ${plan.comingSoon ? "opacity-[0.88]" : ""}`}
     >
       {plan.comingSoon && (
         <div className="absolute top-4 right-4">
-          <span className="text-[10px] font-bold uppercase tracking-widest text-black/25 bg-black/[0.04] px-2.5 py-1 rounded-full">
+          <span className="text-[10px] font-bold uppercase tracking-widest text-black/25 dark:text-white/60 bg-black/[0.04] dark:bg-white/[0.08] px-2.5 py-1 rounded-full">
             Coming Soon
           </span>
         </div>
       )}
 
       <div className="flex items-center justify-between">
-        <h3 className="text-base font-semibold text-black/85">{plan.name}</h3>
+        <h3 className="text-base font-semibold text-black/85 dark:text-white/90">{plan.name}</h3>
         {plan.badge && (
-          <span className="text-[11px] font-semibold text-blue-500 bg-blue-50 px-2 py-0.5 rounded-md">
+          <span className="text-[11px] font-semibold text-blue-500 dark:text-blue-200 bg-blue-50 dark:bg-blue-500/20 px-2 py-0.5 rounded-md">
             {plan.badge}
           </span>
         )}
       </div>
 
-      <p className="text-xs text-black/40 mt-1 leading-relaxed">
+      <p className="text-xs text-black/40 dark:text-white/45 mt-1 leading-relaxed">
         {plan.tagline}
       </p>
 
@@ -272,9 +272,9 @@ function PlanCard({
         }
         className={`mt-4 w-full py-2 px-3 rounded-lg text-xs font-semibold transition-all duration-200 cursor-pointer disabled:cursor-default ${
           isCurrent
-            ? "border border-black/10 text-black/40 bg-black/[0.02]"
+            ? "border border-black/10 dark:border-white/20 text-black/40 dark:text-white/45 bg-black/[0.02] dark:bg-white/[0.04]"
             : hasJoinedWaitlist
-              ? "border border-emerald-200 bg-emerald-50 text-emerald-700"
+              ? "border border-emerald-200 dark:border-emerald-400/40 bg-emerald-50 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-200"
               : `${ctaStyles[plan.ctaVariant]} disabled:opacity-60`
         }`}
       >
@@ -291,7 +291,7 @@ function PlanCard({
               : plan.cta}
       </button>
       {isWaitlistCard && hasJoinedWaitlist && (
-        <p className="mt-2 text-[10px] text-black/40 text-center">
+        <p className="mt-2 text-[10px] text-black/40 dark:text-white/45 text-center">
           We'll email you when Studio Max goes live.
         </p>
       )}
@@ -301,12 +301,12 @@ function PlanCard({
 
 function FAQItem({ item, isOpen, onToggle }) {
   return (
-    <div className="border-b border-black/[0.05] last:border-0">
+    <div className="border-b border-black/[0.05] dark:border-white/[0.10] last:border-0">
       <button
         onClick={onToggle}
         className="w-full flex items-center justify-between py-4 text-left group"
       >
-        <span className="text-sm font-medium text-black/75 group-hover:text-black/90 transition-colors pr-4">
+        <span className="text-sm font-medium text-black/75 dark:text-white/80 group-hover:text-black/90 dark:group-hover:text-white transition-colors pr-4">
           {item.question}
         </span>
         <motion.div
@@ -314,7 +314,7 @@ function FAQItem({ item, isOpen, onToggle }) {
           transition={{ duration: 0.2 }}
           className="flex-shrink-0"
         >
-          <ChevronDown className="w-4 h-4 text-black/30" />
+          <ChevronDown className="w-4 h-4 text-black/30 dark:text-white/45" />
         </motion.div>
       </button>
       <AnimatePresence initial={false}>
@@ -326,7 +326,7 @@ function FAQItem({ item, isOpen, onToggle }) {
             transition={{ duration: 0.25, ease: "easeInOut" }}
             className="overflow-hidden"
           >
-            <p className="text-sm text-black/50 leading-relaxed pb-4">
+            <p className="text-sm text-black/50 dark:text-white/60 leading-relaxed pb-4">
               {item.answer}
             </p>
           </motion.div>
@@ -502,14 +502,14 @@ export default function BillingNew() {
   );
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-slate-50/80 to-white">
+    <div className="min-h-screen bg-gradient-to-b from-slate-50/80 to-white dark:from-zinc-950 dark:to-zinc-900">
       <div className="max-w-6xl mx-auto px-6 py-10">
         {/* Hero */}
         <div className="text-center mb-10">
-          <h2 className="text-3xl font-bold text-black/90 tracking-tight">
+          <h2 className="text-3xl font-bold text-black/90 dark:text-white tracking-tight">
             Pick the plan that fits how you work
           </h2>
-          <p className="text-base text-black/45 mt-3 max-w-lg mx-auto leading-relaxed">
+          <p className="text-base text-black/45 dark:text-white/60 mt-3 max-w-lg mx-auto leading-relaxed">
             Start free, upgrade for top-tier models and unlimited workspace.
             Cancel anytime — no hidden fees.
           </p>
@@ -553,10 +553,10 @@ export default function BillingNew() {
 
         {/* FAQ */}
         <div className="max-w-2xl mx-auto mb-16">
-          <h3 className="text-xl font-semibold text-black/85 text-center mb-8">
+          <h3 className="text-xl font-semibold text-black/85 dark:text-white/90 text-center mb-8">
             Frequently asked questions
           </h3>
-          <div className="rounded-2xl bg-white border border-black/[0.06] shadow-sm p-6">
+          <div className="rounded-2xl bg-white dark:bg-zinc-900/85 border border-black/[0.06] dark:border-white/[0.12] shadow-sm dark:shadow-black/30 p-6">
             {FAQ_ITEMS.map((item, i) => (
               <FAQItem
                 key={i}
