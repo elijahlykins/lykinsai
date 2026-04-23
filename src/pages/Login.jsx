@@ -62,6 +62,11 @@ export default function Login() {
   const [showSuccess, setShowSuccess] = useState(false);
 
   const from = location.state?.from?.pathname || "/";
+  const prefilledEmail = location.state?.email;
+
+  useEffect(() => {
+    if (prefilledEmail) setEmail(prefilledEmail);
+  }, [prefilledEmail]);
 
   useEffect(() => {
     if (!loading && user) nav(from, { replace: true });
@@ -204,7 +209,7 @@ export default function Login() {
                 transition={{ duration: 0.2 }}
               >
                 <h2 className="text-2xl font-semibold text-gray-900 dark:text-white mb-1">
-                  {mode === "login" ? "Welcome back" : "Create your account"}
+                  {mode === "login" ? "Welcome to the grid" : "Create your account"}
                 </h2>
                 <p className="text-sm text-gray-500 dark:text-gray-400 mb-7">
                   {mode === "login"

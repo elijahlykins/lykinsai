@@ -820,8 +820,8 @@ export default function OmniaGridPage() {
     const emailName = String(user?.email || "").split("@")[0].trim();
     const fullName = String(user?.user_metadata?.full_name || user?.user_metadata?.name || "").trim();
     const firstName = fullName ? fullName.split(/\s+/)[0] : "";
-    const preferredName = String(firstName || emailName || "there").trim();
-    return `Welcome back, ${preferredName}`;
+    const preferredName = String(firstName || emailName || "").trim();
+    return preferredName ? `Welcome to the grid, ${preferredName}` : "Welcome to the grid";
   }, [user?.email, user?.user_metadata?.full_name, user?.user_metadata?.name]);
 
   useEffect(() => {

@@ -11,7 +11,7 @@ export function BlockHoverToolbar({ blockId, onMinimize, onMenu }: Props) {
   return (
     <div
       className="absolute opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5 z-50"
-      style={{ top: "2px", right: "calc(100% + 4px)" }}
+      style={{ top: "2px", right: "calc(100% + 22px)" }}
     >
       {onMinimize && (
         <button

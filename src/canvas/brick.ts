@@ -1514,7 +1514,7 @@ export function renderBrickShell(block: Block | any, key: string, opts?: BrickSh
             className: "absolute opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5",
             style: {
               top: "2px",
-              right: `calc(100% + 4px)`,
+              right: `calc(100% + 22px)`,
             },
           },
           typeof opts?.onMinimize === "function"

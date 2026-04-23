@@ -769,8 +769,28 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
     });
   }, []);
   const lastPointerClientRef = useRef<{ x: number; y: number } | null>(null);
-  const [brickMenu, setBrickMenu] = useState<{ id: string; x: number; y: number } | null>(null);
+  const [brickMenu, setBrickMenu] = useState<{ id: string; x: number; y: number; anchorTop: number; anchorBottom: number } | null>(null);
   const [brickMenuSub, setBrickMenuSub] = useState<"brick-color" | "text-color" | null>(null);
+  const brickMenuRef = useRef<HTMLDivElement | null>(null);
+  const [brickMenuPos, setBrickMenuPos] = useState<{ top: number; left: number; ready: boolean }>({ top: 0, left: 0, ready: false });
+  useLayoutEffect(() => {
+    if (!brickMenu) { setBrickMenuPos((p) => (p.ready ? { top: 0, left: 0, ready: false } : p)); return; }
+    const el = brickMenuRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const margin = 8;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    let top = brickMenu.anchorBottom + 4;
+    if (top + r.height > vh - margin) {
+      const flipped = brickMenu.anchorTop - 4 - r.height;
+      top = flipped >= margin ? flipped : Math.max(margin, vh - r.height - margin);
+    }
+    let left = brickMenu.x;
+    if (left + r.width > vw - margin) left = Math.max(margin, vw - r.width - margin);
+    if (left < margin) left = margin;
+    setBrickMenuPos({ top, left, ready: true });
+  }, [brickMenu, brickMenuSub]);
   const [vaultSavedId, setVaultSavedId] = useState<string | null>(null);
   const [hoveredSpecialBlockId, setHoveredSpecialBlockId] = useState<string | null>(null);
   const [deleteZoneOpen, setDeleteZoneOpen] = useState(false);
@@ -820,7 +840,7 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
   wireDragRef.current = wireDrag;
   const handleBlockMenu = useCallback((bid: string, rect: DOMRect) => {
     setBrickMenuSub(null);
-    setBrickMenu((prev) => prev?.id === bid ? null : { id: bid, x: rect.left, y: rect.bottom + 4 });
+    setBrickMenu((prev) => prev?.id === bid ? null : { id: bid, x: rect.left, y: rect.bottom + 4, anchorTop: rect.top, anchorBottom: rect.bottom });
   }, []);
   const [shapePickerOpen, setShapePickerOpen] = useState(false);
   const [shapePickerAnchor, setShapePickerAnchor] = useState<{ clientX: number; clientY: number; worldX: number; worldY: number }>({
@@ -6375,7 +6395,7 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
                 {/* Left-side toolbar: expand + options */}
                 <div
                   className="absolute opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5"
-                  style={{ top: "0px", right: `calc(100% + 4px)` }}
+                  style={{ top: "0px", right: `calc(100% + 22px)` }}
                 >
                   <button
                     className="flex items-center justify-center w-6 h-6 rounded-md hover:bg-black/8 dark:hover:bg-white/12"
@@ -6391,8 +6411,9 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
                     onClick={(e) => {
                       e.stopPropagation();
                       const btn = e.currentTarget as HTMLElement;
+                      const r = btn.getBoundingClientRect();
                       setBrickMenuSub(null);
-                      setBrickMenu((prev) => prev?.id === id ? null : { id, x: btn.getBoundingClientRect().left, y: btn.getBoundingClientRect().bottom + 4 });
+                      setBrickMenu((prev) => prev?.id === id ? null : { id, x: r.left, y: r.bottom + 4, anchorTop: r.top, anchorBottom: r.bottom });
                     }}
                     onPointerDown={(e) => e.stopPropagation()}
                   >
@@ -6534,8 +6555,9 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
                       onClick={(e) => {
                         e.stopPropagation();
                         const btn = e.currentTarget as HTMLElement;
+                        const r = btn.getBoundingClientRect();
                         setBrickMenuSub(null);
-                        setBrickMenu((prev) => prev?.id === id ? null : { id, x: btn.getBoundingClientRect().left, y: btn.getBoundingClientRect().bottom + 4 });
+                        setBrickMenu((prev) => prev?.id === id ? null : { id, x: r.left, y: r.bottom + 4, anchorTop: r.top, anchorBottom: r.bottom });
                       }}
                       onPointerDown={(e) => e.stopPropagation()}
                     >
@@ -6939,7 +6961,7 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
             onDoubleClick: undefined,
             onBrickMenu: (bid, rect) => {
               setBrickMenuSub(null);
-              setBrickMenu((prev) => prev?.id === bid ? null : { id: bid, x: rect.left, y: rect.bottom + 4 });
+              setBrickMenu((prev) => prev?.id === bid ? null : { id: bid, x: rect.left, y: rect.bottom + 4, anchorTop: rect.top, anchorBottom: rect.bottom });
             },
             onMinimize: toggleMinimized,
             onConnectionDragStart: handleConnectionDragStart,
@@ -7132,11 +7154,14 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
           <>
             <div className="fixed inset-0 z-[299]" onClick={() => { setBrickMenu(null); setBrickMenuSub(null); }} onContextMenu={(e) => { e.preventDefault(); setBrickMenu(null); setBrickMenuSub(null); }} />
             <div
-              className="glass-control fixed z-[300] min-w-[180px] rounded-xl py-1.5 flex flex-col"
+              ref={brickMenuRef}
+              className="glass-control fixed z-[300] min-w-[180px] rounded-xl py-1.5 flex flex-col overflow-y-auto"
               style={{
-                top: `${brickMenu.y}px`,
-                left: `${brickMenu.x}px`,
-                animation: "zoomPanelSlideUp 0.12s ease-out",
+                top: `${brickMenuPos.ready ? brickMenuPos.top : brickMenu.y}px`,
+                left: `${brickMenuPos.ready ? brickMenuPos.left : brickMenu.x}px`,
+                maxHeight: `calc(100vh - 16px)`,
+                visibility: brickMenuPos.ready ? "visible" : "hidden",
+                animation: brickMenuPos.ready ? "zoomPanelSlideUp 0.12s ease-out" : undefined,
               }}
               onPointerDown={(e) => e.stopPropagation()}
             >

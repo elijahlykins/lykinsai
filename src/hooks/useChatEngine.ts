@@ -1677,7 +1677,9 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     } catch (err: any) {
       if (err?.name === "AbortError" && sendAbort !== activeAiAbortRef.current) { setChatStatusText(""); return; }
       setChatFlowMode("idle");
-      const errMsg = "This model isn\u2019t working properly right now \u2014 try another model.";
+      const errMsg = user?.id
+        ? "This model isn\u2019t working properly right now \u2014 try another model."
+        : "The preview chat is having trouble right now \u2014 please try again in a moment.";
       setChatStatusText(errMsg);
       setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: errMsg } : m)));
     } finally {

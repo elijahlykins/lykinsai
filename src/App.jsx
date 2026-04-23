@@ -24,6 +24,7 @@ import VaultChatNew from "./pages/new/VaultChatNew";
 import TagManagementNew from "./pages/new/TagManagementNew";
 import BillingNew from "./pages/new/BillingNew";
 import VaultUploadToast from "./components/files/VaultUploadToast";
+import GuestSignInPrompt from "./components/GuestSignInPrompt";
 
 
 const legacyEnabled = String(import.meta.env.VITE_ENABLE_LEGACY_NOTES || "").toLowerCase() === "true";
@@ -33,11 +34,8 @@ const LegacyBilling = React.lazy(() => import("./pages/Billing"));
 const loadingFallback = <LoadingScreen isLoading={true} />;
 
 function ProtectedRoute({ children }) {
-  const { user, loading } = useAuth();
-  const location = useLocation();
-
+  const { loading } = useAuth();
   if (loading) return null;
-  if (!user) return <Navigate to="/login" state={{ from: location }} replace />;
   return children;
 }
 
@@ -63,9 +61,10 @@ function AppShell() {
 
   return (
     <>
-      {!isEmbeddedVault && !isStandalone && user && <AppSidebar />}
+      {!isEmbeddedVault && !isStandalone && <AppSidebar />}
       {!isEmbeddedVault && !isStandalone && user && <IntakeModal />}
       {!isEmbeddedVault && !isSharedGridView && user && <VaultUploadToast />}
+      {!isEmbeddedVault && !isStandalone && !user && <GuestSignInPrompt />}
       <div className={isStandalone ? "" : (isGuest ? "app-content guest-mode" : "app-content")}>
         <RouteErrorBoundary>
           <Routes>

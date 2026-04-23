@@ -117,7 +117,7 @@ export default function NotionSidebar({
     <div className={`h-full glass-control flex flex-col ${isCompact ? 'p-3' : 'p-4'}`}>
       <div className={`flex items-center justify-between ${isCompact ? 'mb-4' : 'mb-8'}`}>
         <div>
-          <h1 className={`${isCompact ? 'text-xl' : 'text-2xl'} font-bold text-black dark:text-white tracking-tight`}>lykinsai</h1>
+          <h1 className={`${isCompact ? 'text-xl' : 'text-2xl'} font-bold text-black dark:text-white tracking-tight`}>LYKN</h1>
           <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">Your AI Vault Companion</p>
         </div>
         {showCollapseToggle && (

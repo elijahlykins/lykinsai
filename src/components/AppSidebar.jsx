@@ -487,7 +487,7 @@ export default function AppSidebar() {
       {menuProjectId && ReactDOM.createPortal(
         <div
           ref={projectMenuRef}
-          className="fixed z-[9999] w-44 rounded-lg border border-black/8 dark:border-white/8 bg-white/80 dark:bg-gray-900/80 backdrop-blur-md shadow-md py-1 text-[0.6875rem]"
+          className="fixed z-[9999] w-44 rounded-lg border border-white/8 bg-neutral-800 shadow-md py-1 text-[0.6875rem] text-white/80"
           style={{ top: menuProjectPos.top, left: menuProjectPos.left }}
         >
           <button
@@ -513,7 +513,7 @@ export default function AppSidebar() {
       {menuBoardId && ReactDOM.createPortal(
         <div
           ref={menuRef}
-          className="fixed z-[9999] w-44 rounded-lg border border-black/8 dark:border-white/8 bg-white/80 dark:bg-gray-900/80 backdrop-blur-md shadow-md py-1 text-[0.6875rem]"
+          className="fixed z-[9999] w-44 rounded-lg border border-white/8 bg-neutral-800 shadow-md py-1 text-[0.6875rem] text-white/80"
           style={{ top: menuPos.top, left: menuPos.left }}
         >
           <button
@@ -547,7 +547,7 @@ export default function AppSidebar() {
             {showProjectPicker && ReactDOM.createPortal(
               <div
                 ref={pickerRef}
-                className="fixed z-[10000] w-44 rounded-lg border border-black/8 dark:border-white/8 bg-white/80 dark:bg-gray-900/80 backdrop-blur-md shadow-md py-1 text-[0.6875rem]"
+                className="fixed z-[10000] w-44 rounded-lg border border-white/8 bg-neutral-800 shadow-md py-1 text-[0.6875rem] text-white/80"
                 style={{ top: pickerPos.top, left: pickerPos.left }}
                 onMouseEnter={() => setShowProjectPicker(true)}
                 onMouseLeave={() => setShowProjectPicker(false)}
