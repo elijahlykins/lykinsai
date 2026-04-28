@@ -1,0 +1,91 @@
+<!doctype html>
+<!--
+  Open this file in a browser, click each "Download" button, and save the
+  resulting PNGs alongside it as icon-16.png / icon-32.png / icon-48.png /
+  icon-128.png. Chrome MV3 requires PNG icons, but we keep a single SVG as
+  the source of truth (icon.svg) and rasterise from it here.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Generate LYKN extension icons</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        padding: 24px;
+        background: #fafafa;
+      }
+      .row {
+        display: flex;
+        gap: 16px;
+        align-items: center;
+        margin: 12px 0;
+      }
+      canvas {
+        background: transparent;
+        border: 1px solid #ddd;
+      }
+      button {
+        padding: 6px 10px;
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <h2>LYKN extension icons</h2>
+    <p>Click each button to download the rasterised PNG for that size.</p>
+    <div id="rows"></div>
+    <script>
+      const sizes = [16, 32, 48, 128];
+      const rows = document.getElementById("rows");
+
+      async function loadSvg() {
+        const res = await fetch("./icon.svg");
+        const text = await res.text();
+        return text;
+      }
+
+      function rasterize(svgText, size) {
+        return new Promise((resolve) => {
+          const blob = new Blob([svgText], { type: "image/svg+xml" });
+          const url = URL.createObjectURL(blob);
+          const img = new Image();
+          img.onload = () => {
+            const canvas = document.createElement("canvas");
+            canvas.width = size;
+            canvas.height = size;
+            const ctx = canvas.getContext("2d");
+            ctx.drawImage(img, 0, 0, size, size);
+            URL.revokeObjectURL(url);
+            resolve(canvas);
+          };
+          img.src = url;
+        });
+      }
+
+      (async function main() {
+        const svgText = await loadSvg();
+        for (const size of sizes) {
+          const canvas = await rasterize(svgText, size);
+          const row = document.createElement("div");
+          row.className = "row";
+          const label = document.createElement("div");
+          label.textContent = `icon-${size}.png`;
+          const btn = document.createElement("button");
+          btn.textContent = "Download";
+          btn.addEventListener("click", () => {
+            canvas.toBlob((blob) => {
+              const a = document.createElement("a");
+              a.href = URL.createObjectURL(blob);
+              a.download = `icon-${size}.png`;
+              a.click();
+              URL.revokeObjectURL(a.href);
+            });
+          });
+          row.append(canvas, label, btn);
+          rows.append(row);
+        }
+      })();
+    </script>
+  </body>
+</html>

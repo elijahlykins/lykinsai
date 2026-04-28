@@ -16,6 +16,7 @@ import OmniaGrid from "./pages/OmniaGrid";
 import ProjectPlaceholder from "./pages/ProjectPlaceholder";
 import Settings from "./pages/Settings";
 import SynthesisLayer from "./pages/SynthesisLayer";
+import Discover from "./pages/Discover";
 import SharedGrid from "./pages/SharedGrid";
 import PlanGate from "./components/PlanGate";
 import AppSidebar from "./components/AppSidebar";
@@ -25,6 +26,8 @@ import TagManagementNew from "./pages/new/TagManagementNew";
 import BillingNew from "./pages/new/BillingNew";
 import VaultUploadToast from "./components/files/VaultUploadToast";
 import GuestSignInPrompt from "./components/GuestSignInPrompt";
+import ShareReceiver from "./pages/ShareReceiver";
+import Connections from "./pages/Connections";
 
 
 const legacyEnabled = String(import.meta.env.VITE_ENABLE_LEGACY_NOTES || "").toLowerCase() === "true";
@@ -45,6 +48,7 @@ function AppShell() {
   const isEmbeddedVault = location.pathname === "/vault" && search.get("embedded") === "1";
   const isLoginPage = location.pathname === "/login";
   const isSharedGridView = location.pathname.startsWith("/s/");
+  const isSharePage = location.pathname === "/share";
 
   useEffect(() => {
     document.documentElement.classList.toggle("embedded-vault-mode", isEmbeddedVault);
@@ -56,7 +60,7 @@ function AppShell() {
   }, [isEmbeddedVault]);
 
   const isGuest = !loading && !user;
-  const isStandalone = isLoginPage || isSharedGridView;
+  const isStandalone = isLoginPage || isSharedGridView || isSharePage;
 
   return (
     <>
@@ -76,6 +80,16 @@ function AppShell() {
             <Route path="/project/:projectId" element={<ProjectPlaceholder />} />
             <Route path="/omnia" element={<ProtectedRoute><OmniaGrid /></ProtectedRoute>} />
             <Route path="/vault" element={<VaultNew />} />
+            <Route path="/discover" element={<ProtectedRoute><Discover /></ProtectedRoute>} />
+            <Route path="/share" element={<ShareReceiver />} />
+            <Route
+              path="/connections"
+              element={
+                <ProtectedRoute>
+                  <Connections />
+                </ProtectedRoute>
+              }
+            />
             <Route
               path="/synthesis-layer"
               element={

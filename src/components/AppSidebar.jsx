@@ -6,6 +6,7 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Compass,
   CreditCard,
   Edit2,
   FolderPlus,
@@ -13,7 +14,9 @@ import {
   Lock,
   LogOut,
   MoreHorizontal,
+  Plug,
   Plus,
+  SquarePen,
   Search as SearchIcon,
   Settings as SettingsIcon,
   Trash2,
@@ -260,12 +263,25 @@ export default function AppSidebar() {
       >
         {/* ── Top: nav links (fixed, never scrolls) ── */}
         <div className="flex-shrink-0 mt-3">
-          <div className="flex items-center gap-2 rounded-xl border border-transparent bg-transparent px-2 py-1 text-[0.6875rem] text-black/60 dark:text-white/60">
-            <SearchIcon className="w-3.5 h-3.5 flex-shrink-0" />
-            <input
-              placeholder="Search"
-              className="w-full bg-transparent outline-none placeholder:text-black/40 dark:placeholder:text-white/40 text-black/70 dark:text-white/70"
-            />
+          <div className="flex items-center gap-1">
+            <div className="flex-1 min-w-0 flex items-center gap-2 rounded-xl border border-transparent bg-transparent px-2 py-1 text-[0.6875rem] text-black/60 dark:text-white/60">
+              <SearchIcon className="w-3.5 h-3.5 flex-shrink-0" />
+              <input
+                placeholder="Search"
+                className="w-full bg-transparent outline-none placeholder:text-black/40 dark:placeholder:text-white/40 text-black/70 dark:text-white/70"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                const newId = crypto.randomUUID();
+                flushAndNavigate(nav, `/grid/${newId}`);
+              }}
+              className="flex-shrink-0 w-7 h-7 rounded-md hover:bg-blue-500/15 transition-colors flex items-center justify-center text-black/60 dark:text-white/60"
+              title="New grid"
+            >
+              <SquarePen className="w-3.5 h-3.5" />
+            </button>
           </div>
 
           <div className="mt-1.5 flex flex-col gap-0.5">
@@ -285,6 +301,11 @@ export default function AppSidebar() {
               <Lock className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
               Vault
             </button>
+          </div>
+
+          <div className="my-2 border-t border-black/5 dark:border-white/5" />
+
+          <div className="flex flex-col gap-0.5">
             <button
               type="button"
               onClick={() => flushAndNavigate(nav, "/synthesis-layer")}
@@ -296,6 +317,22 @@ export default function AppSidebar() {
               {!canUseSynthesis && (
                 <Lock className="w-3 h-3 text-black/40 dark:text-white/40" aria-label="Upgrade required" />
               )}
+            </button>
+            <button
+              type="button"
+              onClick={() => flushAndNavigate(nav, "/discover")}
+              className="w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
+            >
+              <Compass className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
+              Discover
+            </button>
+            <button
+              type="button"
+              onClick={() => flushAndNavigate(nav, "/connections")}
+              className="w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
+            >
+              <Plug className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
+              Connections
             </button>
           </div>
         </div>

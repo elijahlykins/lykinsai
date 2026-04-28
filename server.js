@@ -43,6 +43,24 @@ import {
   classifyModel,
 } from './src/lib/modelTiers.js';
 import { PLAN_LIMITS } from './src/lib/pricing-config.js';
+import {
+  discoverFeed,
+  fetchAndSaveNewEntries,
+  pollDueFeeds,
+  makeRssPoller,
+} from './rss-service.js';
+import {
+  CONNECTOR_REGISTRY,
+  PROVIDER_CREDENTIALS,
+  isProviderConfigured,
+  envPrefixFor,
+  createOAuthState,
+  consumeOAuthState,
+  saveConnection,
+  runSync,
+  makeConnectorPoller,
+  encryptToken,
+} from './connectors-service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, '.env') });
@@ -59,6 +77,7 @@ console.log('  SERPER_API_KEY:', process.env.SERPER_API_KEY ? '✅ Set' : '❌ M
 console.log('  RESEND_API_KEY:', process.env.RESEND_API_KEY ? '✅ Set' : '❌ Missing');
 console.log('  SUPABASE_SERVICE_ROLE_KEY:', process.env.SUPABASE_SERVICE_ROLE_KEY ? '✅ Set' : '⚪ Not set (usage tracking disabled)');
 console.log('  BACKFILL_SECRET:', process.env.BACKFILL_SECRET ? '✅ Set' : '⚪ Not set (synthesis backfill disabled)');
+console.log('  DISCOVER_INGEST_SECRET:', process.env.DISCOVER_INGEST_SECRET ? '✅ Set' : '⚪ Not set (discover ingest disabled)');
 console.log('  META_APP_TOKEN:', process.env.META_APP_TOKEN ? '✅ Set' : '⚪ Not set (Instagram/Facebook oEmbed disabled)');
 console.log('  STRIPE_SECRET_KEY:', process.env.STRIPE_SECRET_KEY ? '✅ Set' : '⚪ Not set (Stripe billing disabled)');
 console.log('  STRIPE_WEBHOOK_SECRET:', process.env.STRIPE_WEBHOOK_SECRET ? '✅ Set' : '⚪ Not set (webhook signature check disabled)');
@@ -261,7 +280,7 @@ async function runYouTubeSearchIfNeeded(text) {
     console.log(`🎬 YouTube search: "${query.slice(0, 80)}"`);
     const apiUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(query)}&maxResults=5&type=video&videoEmbeddable=true&key=${process.env.YOUTUBE_API_KEY}`;
     const response = await fetch(apiUrl, {
-      headers: { 'Referer': process.env.FRONTEND_URL || 'https://lykinsai-1.onrender.com' },
+      headers: { 'Referer': process.env.FRONTEND_URL || 'https://lykn-ideation.onrender.com' },
       signal: AbortSignal.timeout(8000),
     });
     if (!response.ok) {
@@ -299,8 +318,10 @@ app.use((req, res, next) => {
         'http://localhost:5173',
         'http://localhost:5174',
         'http://localhost:5175',
-        'https://lykinsai-1.onrender.com',
-        'https://www.lykinsai-1.onrender.com'
+        'https://lykn.io',
+        'https://www.lykn.io',
+        'https://lykn-ideation.onrender.com',
+        'https://www.lykn-ideation.onrender.com'
       ];
   
   // Allow requests from allowed origins
@@ -326,7 +347,7 @@ app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', process.env.FRONTEND_URL || '*');
   }
   
-  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   res.header('Access-Control-Expose-Headers', 'X-Model-Downgraded, X-Plan, X-Feature-Stripped');
   res.header('Access-Control-Allow-Credentials', 'true');
@@ -363,6 +384,37 @@ const STRIPE_PRICE_MAP = {
     annual: process.env.STRIPE_PRICE_STUDIO_MAX_ANNUAL,
   },
 };
+
+// ============================================
+// COMPED ACCOUNTS — internal team / friends-of-house
+// ============================================
+// Emails listed here get free Studio Pro access regardless of their
+// `user_billing` row or Stripe state. Both server enforcement
+// (`resolveUserPlan`) and the `/api/billing/me` endpoint that powers the
+// frontend `useUserPlan` hook short-circuit through here, so these accounts
+// look identical to a paying Studio Pro subscriber to the rest of the app.
+// Stripe webhooks can't override this — even if the row says `free`, comp
+// users still resolve to studio_pro.
+//
+// Add overrides via `COMPED_PRO_EMAILS` env (comma-separated) without a
+// redeploy; the hardcoded list is the source of truth for known team members.
+const COMPED_PRO_PLAN_ID = 'studio_pro';
+const COMPED_PRO_EMAILS = new Set(
+  [
+    'jaeminw8@gmail.com',
+    'spam.redford@gmail.com',
+    'rowan@lykn.io',
+    ...String(process.env.COMPED_PRO_EMAILS || '')
+      .split(',')
+      .map((e) => e.trim())
+      .filter(Boolean),
+  ].map((e) => e.toLowerCase()),
+);
+
+function isCompedProEmail(email) {
+  if (!email) return false;
+  return COMPED_PRO_EMAILS.has(String(email).trim().toLowerCase());
+}
 
 // ============================================
 // STRIPE WEBHOOK — must be mounted BEFORE express.json()
@@ -1946,6 +1998,1454 @@ app.post('/api/synthesis/intake', requireAuth, profileRefreshLimiter, async (req
   }
 });
 
+// ============================================
+// DISCOVER FEED — articles + videos personalized by synthesis profile
+// ============================================
+// Pulls themes/narrative from lykn_user_synthesis_profile, expands them into
+// search queries, and fetches:
+//   • Articles via Serper (organic results)
+//   • Videos via YouTube Data API
+// Results are merged, deduped, lightly ranked, and cached per-user/per-theme-set
+// for ~30 minutes to conserve API quota.
+const discoverLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 12,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: userOrIpKey,
+  validate: rlValidateOff,
+  message: { error: 'Discover rate limit — try again shortly' },
+});
+
+// Cache 60 min by default — we only use API quota on cache miss. Call ?force=1
+// from the UI Refresh button to bypass.
+const discoverFeedCache = memCache('discover_feed', { ttlMs: 60 * 60 * 1000, maxSize: 512 });
+
+// Cache resolved og:image lookups across users — same URL → same hero image.
+// 24h TTL because article hero images rarely change after publication.
+const discoverOgImageCache = memCache('discover_og_image', {
+  ttlMs: 24 * 60 * 60 * 1000,
+  maxSize: 2048,
+});
+
+const DISCOVER_DEFAULT_THEMES = [
+  'creative direction',
+  'design inspiration',
+  'creator tools',
+];
+
+// ── Quality filters for articles (Serper organic results) ──
+// Block obvious low-quality sources: pinned aggregators, content farms, sites
+// that surface user-generated SEO spam. Keeps the feed feeling editorial.
+const ARTICLE_DOMAIN_BLOCKLIST = new Set([
+  'pinterest.com',
+  'pinterest.ca',
+  'pinterest.co.uk',
+  'quora.com',
+  'reddit.com',           // separate concern; signal/noise too variable for Discover MVP
+  'answers.com',
+  'ehow.com',
+  'wikihow.com',
+  'fandom.com',
+  'glassdoor.com',
+  'tripadvisor.com',
+  'yelp.com',
+  'amazon.com',
+  'amazon.co.uk',
+  'ebay.com',
+  'etsy.com',
+  // Video/social platforms — they leak into Serper /search results but
+  // they're not articles (login walls, embed-only pages, no og:image we
+  // can reliably scrape). Videos already arrive via the YouTube channel.
+  'youtube.com',
+  'm.youtube.com',
+  'youtu.be',
+  'instagram.com',
+  'facebook.com',
+  'm.facebook.com',
+  'x.com',
+  'twitter.com',
+  'tiktok.com',
+  'linkedin.com',
+  'play.google.com',
+  'apps.apple.com',
+]);
+
+// Domains we slightly prefer when ranking (well-edited publishers).
+// This is a small whitelist — not a hard requirement, just a tie-breaker boost.
+const ARTICLE_DOMAIN_BOOST = new Map([
+  ['nytimes.com', 0.25],
+  ['theguardian.com', 0.25],
+  ['wsj.com', 0.25],
+  ['bloomberg.com', 0.25],
+  ['ft.com', 0.25],
+  ['theverge.com', 0.2],
+  ['wired.com', 0.2],
+  ['arstechnica.com', 0.2],
+  ['techcrunch.com', 0.18],
+  ['nature.com', 0.25],
+  ['economist.com', 0.25],
+  ['hbr.org', 0.2],
+  ['fastcompany.com', 0.18],
+  ['itsnicethat.com', 0.2],
+  ['designboom.com', 0.18],
+  ['arch-daily.com', 0.18],
+  ['dezeen.com', 0.2],
+  ['creativebloq.com', 0.18],
+  ['aiga.org', 0.18],
+]);
+
+// Hard cap on pages we'll serve per user/session. After this we return
+// hasMore=false so the infinite scroller stops asking. 5 pages × 4 queries
+// × 2 endpoints = 40 Serper calls (~$0.04) and 5 × 401 = 2005 YouTube
+// quota units worst case per heavy scroller. Plenty for a session, bounded
+// enough that quota holds across the user base.
+const DISCOVER_MAX_PAGES = 5;
+
+// Adjective prefixes used to rotate the same themes into different search
+// queries on later pages. This is what makes the feed "feel endless" without
+// requiring true Serper pagination on a single query (which produces
+// progressively lower-quality results).
+const DISCOVER_PAGE_PREFIXES = ['', 'best', 'latest', 'how to', 'trends in'];
+
+function pickDiscoverQueries(themes, narrative, recencyDays, mode, pageIndex = 0) {
+  const cleanThemes = (Array.isArray(themes) ? themes : [])
+    .map((t) => String(t || '').trim())
+    .filter(Boolean)
+    .slice(0, 8);
+  const usable = cleanThemes.length ? cleanThemes : DISCOVER_DEFAULT_THEMES;
+  const queries = [];
+
+  if (pageIndex === 0) {
+    // First page: the user's top 3 themes (most representative) + a
+    // narrative-blended query for personalization.
+    for (const t of usable.slice(0, 3)) queries.push(t);
+    if (narrative && narrative.length > 30 && usable[0] && queries.length < 4) {
+      const nWords = narrative
+        .toLowerCase()
+        .replace(/[^a-z\s]/g, ' ')
+        .split(/\s+/)
+        .filter((w) => w.length > 4)
+        .slice(0, 2)
+        .join(' ');
+      if (nWords) queries.push(`${usable[0]} ${nWords}`.slice(0, 80));
+    }
+  } else {
+    // Subsequent pages: rotate through the user's full theme list and apply
+    // an adjective prefix so even users with only 3 themes get fresh
+    // queries on each scroll. Indices wrap so we never run out.
+    const prefix = DISCOVER_PAGE_PREFIXES[pageIndex % DISCOVER_PAGE_PREFIXES.length];
+    const offset = pageIndex * 2;
+    for (let i = 0; i < 3; i += 1) {
+      const theme = usable[(offset + i) % usable.length];
+      queries.push(prefix ? `${prefix} ${theme}` : theme);
+    }
+    // Cross-pollinate: pair two themes the user cares about for unique
+    // hybrid queries (e.g. "creative direction design inspiration").
+    if (usable.length >= 2) {
+      const a = usable[offset % usable.length];
+      const b = usable[(offset + 1) % usable.length];
+      if (a !== b) queries.push(`${a} ${b}`.slice(0, 80));
+    }
+  }
+  return Array.from(new Set(queries)).slice(0, 4);
+}
+
+// YouTube order rotation by page. Each page asks YouTube to surface a
+// different slice of the index, so a heavy scroller doesn't see the same
+// videos repeatedly even when the underlying queries overlap.
+const DISCOVER_PAGE_YT_ORDERS = ['relevance', 'viewCount', 'date', 'relevance', 'rating'];
+function ytOrderForPage(pageIndex) {
+  return DISCOVER_PAGE_YT_ORDERS[pageIndex % DISCOVER_PAGE_YT_ORDERS.length] || 'relevance';
+}
+
+function tbsForRecency(recencyDays) {
+  if (!recencyDays || recencyDays <= 0) return null;
+  if (recencyDays <= 1) return 'qdr:d';
+  if (recencyDays <= 7) return 'qdr:w';
+  if (recencyDays <= 31) return 'qdr:m';
+  if (recencyDays <= 365) return 'qdr:y';
+  return null;
+}
+
+// Detect thumbnail URLs that are known to be CDN-scaled mini-previews
+// (~150-300px). These look sharp on Google's results page but pixelate
+// when blown up to a 400px+ card on retina. Returning true here causes
+// the article ingest to drop the URL and let the og:image backfill grab
+// the publisher's full-resolution hero image instead.
+function isLowResThumbnail(url) {
+  if (!url || typeof url !== 'string') return false;
+  // Google's encrypted thumbnail CDN — always small previews
+  if (/encrypted-tbn\d*\.gstatic\.com/i.test(url)) return true;
+  // Generic Google thumbnail/serving CDN explicitly sized small
+  if (/gstatic\.com\/.+(?:[?&]s=\d{1,3}\b|[?&]w=\d{1,3}\b|=w\d{1,3}-h\d{1,3})/i.test(url)) return true;
+  // Bing's analogous CDN (in case Serper falls back to it)
+  if (/th\.bing\.com\/th/i.test(url)) return true;
+  return false;
+}
+
+// Hits Serper's /news endpoint. Results almost always include an imageUrl
+// (Google News pre-indexes hero images), so this is what makes articles look
+// good in the UI without us having to scrape every page ourselves. This is
+// the same trick Perplexity's Discover tab uses.
+async function fetchDiscoverNewsForQuery(query, recencyDays) {
+  if (!process.env.SERPER_API_KEY) return [];
+  try {
+    const body = { q: query, num: 10 };
+    const tbs = tbsForRecency(recencyDays);
+    if (tbs) body.tbs = tbs;
+
+    const res = await fetch('https://google.serper.dev/news', {
+      method: 'POST',
+      headers: {
+        'X-API-KEY': process.env.SERPER_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) {
+      console.warn(`⚠️ Discover Serper /news failed (${res.status}) for "${query.slice(0, 40)}"`);
+      return [];
+    }
+    const data = await res.json();
+    const news = Array.isArray(data.news) ? data.news : [];
+
+    const out = [];
+    for (let i = 0; i < news.length; i += 1) {
+      const item = news[i];
+      const url = String(item.link || '');
+      if (!url) continue;
+      let host = '';
+      try { host = new URL(url).hostname.replace(/^www\./, '').toLowerCase(); } catch { continue; }
+      if (ARTICLE_DOMAIN_BLOCKLIST.has(host)) continue;
+
+      const snippet = String(item.snippet || '').trim();
+      if (snippet.length < 30) continue;
+      const title = String(item.title || '').trim();
+      if (title.length < 10) continue;
+
+      out.push({
+        kind: 'article',
+        url,
+        title: title.slice(0, 220),
+        snippet: snippet.slice(0, 320),
+        // /news exposes a `source` field with the publication name (e.g.
+        // "The New York Times"); fall back to host if missing.
+        source: String(item.source || host).slice(0, 80),
+        // Treat Google's CDN-scaled mini thumbnails as missing — they're
+        // ~200x150 and look pixelated on retina cards. Forcing null here
+        // means backfillArticleThumbnails will fetch the publisher's full
+        // og:image (typically 1200x630) instead.
+        thumbnail: isLowResThumbnail(item.imageUrl) ? null : item.imageUrl || null,
+        publishedAt: item.date || null,
+        _organicPosition: i,
+        _domainBoost: ARTICLE_DOMAIN_BOOST.get(host) || 0,
+        _channel: 'news',
+        query,
+      });
+    }
+    return out;
+  } catch (err) {
+    console.warn('⚠️ Discover Serper /news error:', err.message);
+    return [];
+  }
+}
+
+// Hits Serper's /search endpoint (organic web). Used as a secondary source
+// for things Google News doesn't index well: niche design blogs, essays,
+// long-form creative content. Most of these results will lack imageUrl, so
+// we lean on the og:image backfill below to dress them up.
+async function fetchDiscoverOrganicForQuery(query, recencyDays) {
+  if (!process.env.SERPER_API_KEY) return [];
+  try {
+    const body = { q: query, num: 10 };
+    const tbs = tbsForRecency(recencyDays);
+    if (tbs) body.tbs = tbs;
+    const res = await fetch('https://google.serper.dev/search', {
+      method: 'POST',
+      headers: {
+        'X-API-KEY': process.env.SERPER_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) {
+      console.warn(`⚠️ Discover Serper /search failed (${res.status}) for "${query.slice(0, 40)}"`);
+      return [];
+    }
+    const data = await res.json();
+    const organic = Array.isArray(data.organic) ? data.organic : [];
+
+    const out = [];
+    for (let i = 0; i < organic.length; i += 1) {
+      const item = organic[i];
+      const url = String(item.link || '');
+      if (!url) continue;
+      let host = '';
+      try { host = new URL(url).hostname.replace(/^www\./, '').toLowerCase(); } catch { continue; }
+      if (ARTICLE_DOMAIN_BLOCKLIST.has(host)) continue;
+      const snippet = String(item.snippet || '').trim();
+      if (snippet.length < 40) continue;
+      const title = String(item.title || '').trim();
+      if (title.length < 10) continue;
+
+      const rawThumb = item.imageUrl || item.thumbnailUrl || null;
+      out.push({
+        kind: 'article',
+        url,
+        title: title.slice(0, 220),
+        snippet: snippet.slice(0, 320),
+        source: host,
+        thumbnail: isLowResThumbnail(rawThumb) ? null : rawThumb,
+        publishedAt: item.date || null,
+        _organicPosition: i,
+        _domainBoost: ARTICLE_DOMAIN_BOOST.get(host) || 0,
+        _channel: 'organic',
+        query,
+      });
+    }
+    return out;
+  } catch (err) {
+    console.warn('⚠️ Discover Serper /search error:', err.message);
+    return [];
+  }
+}
+
+// For each query, pull from BOTH /news (image-rich, recent) and /search
+// (broader, niche-friendly) in parallel, then dedupe by canonical URL.
+// Total Serper cost per cache miss: 4 queries × 2 endpoints = 8 calls
+// (~$0.008). Much cheaper than per-page screenshot services.
+async function fetchDiscoverArticlesForQuery(query, recencyDays) {
+  const [newsItems, organicItems] = await Promise.all([
+    fetchDiscoverNewsForQuery(query, recencyDays),
+    fetchDiscoverOrganicForQuery(query, recencyDays),
+  ]);
+  const seen = new Map();
+  // Prefer news items (they have hero images). If the same URL also appeared
+  // in organic results, keep the news version but inherit the organic
+  // position only if it's better.
+  for (const it of newsItems) {
+    const k = (it.url || '').toLowerCase();
+    if (k && !seen.has(k)) seen.set(k, it);
+  }
+  for (const it of organicItems) {
+    const k = (it.url || '').toLowerCase();
+    if (k && !seen.has(k)) seen.set(k, it);
+  }
+  return [...seen.values()];
+}
+
+async function fetchDiscoverVideosForQuery(query, recencyDays, order = 'relevance') {
+  if (!process.env.YOUTUBE_API_KEY) return [];
+  try {
+    const params = new URLSearchParams({
+      part: 'snippet',
+      q: query,
+      // 6 candidates per query × 3-4 queries = ~24 candidates → enrich + rank
+      maxResults: '6',
+      type: 'video',
+      videoEmbeddable: 'true',
+      // `order` rotates per page (relevance / viewCount / date / rating)
+      // so users get fresh content as they scroll.
+      order,
+      relevanceLanguage: 'en',
+      key: process.env.YOUTUBE_API_KEY,
+    });
+    if (recencyDays && recencyDays > 0) {
+      const after = new Date(Date.now() - recencyDays * 24 * 60 * 60 * 1000).toISOString();
+      params.set('publishedAfter', after);
+    }
+    const res = await fetch(`https://www.googleapis.com/youtube/v3/search?${params.toString()}`, {
+      headers: { Referer: process.env.FRONTEND_URL || 'https://lykn-ideation.onrender.com' },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) {
+      console.warn(`⚠️ Discover YouTube failed (${res.status}) for "${query.slice(0, 40)}"`);
+      return [];
+    }
+    const data = await res.json();
+    const items = Array.isArray(data.items) ? data.items : [];
+    return items.map((item) => {
+      const videoId = item?.id?.videoId;
+      if (!videoId) return null;
+      const sn = item.snippet || {};
+      // YouTube's search API only returns up to "high" (480x360), but for
+      // most videos a 1280x720 maxresdefault.jpg exists at a predictable URL
+      // on i.ytimg.com. We construct it here and let the frontend onError
+      // gracefully fall back to hqdefault.jpg (480x360, guaranteed to exist)
+      // for the ~30% of videos without a maxres render.
+      const thumb = `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`;
+      return {
+        kind: 'video',
+        url: `https://www.youtube.com/watch?v=${videoId}`,
+        videoId,
+        title: String(sn.title || 'Untitled').slice(0, 220),
+        snippet: String(sn.description || '').slice(0, 320),
+        source: String(sn.channelTitle || 'YouTube'),
+        thumbnail: thumb,
+        publishedAt: sn.publishedAt || null,
+        // Stats fields filled in by enrichVideosWithStatistics below.
+        viewCount: 0,
+        likeCount: 0,
+        durationSec: 0,
+        query,
+      };
+    }).filter(Boolean);
+  } catch (err) {
+    console.warn('⚠️ Discover YouTube error:', err.message);
+    return [];
+  }
+}
+
+// Parse ISO-8601 PT#H#M#S duration → seconds.
+function parseIsoDurationToSeconds(iso) {
+  if (!iso || typeof iso !== 'string') return 0;
+  const m = iso.match(/^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/);
+  if (!m) return 0;
+  const h = Number(m[1] || 0);
+  const min = Number(m[2] || 0);
+  const s = Number(m[3] || 0);
+  return h * 3600 + min * 60 + s;
+}
+
+// Single batched videos.list call (1 quota unit regardless of count, up to 50
+// IDs per call). Pulls real statistics so we can filter clickbait/no-view
+// videos and rank by popularity.
+async function enrichVideosWithStatistics(videos) {
+  if (!process.env.YOUTUBE_API_KEY || videos.length === 0) return videos;
+  try {
+    const ids = Array.from(
+      new Set(videos.map((v) => v.videoId).filter(Boolean)),
+    ).slice(0, 50);
+    if (ids.length === 0) return videos;
+
+    const url = `https://www.googleapis.com/youtube/v3/videos?part=statistics,contentDetails&id=${ids.join(',')}&key=${process.env.YOUTUBE_API_KEY}`;
+    const res = await fetch(url, {
+      headers: { Referer: process.env.FRONTEND_URL || 'https://lykn-ideation.onrender.com' },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) {
+      console.warn(`⚠️ Discover YouTube stats failed (${res.status})`);
+      return videos;
+    }
+    const data = await res.json();
+    const statsById = new Map();
+    for (const it of data.items || []) {
+      const id = it.id;
+      const s = it.statistics || {};
+      const cd = it.contentDetails || {};
+      statsById.set(id, {
+        viewCount: Number(s.viewCount || 0),
+        likeCount: Number(s.likeCount || 0),
+        durationSec: parseIsoDurationToSeconds(cd.duration),
+      });
+    }
+    return videos.map((v) => {
+      const stats = statsById.get(v.videoId);
+      if (!stats) return v;
+      return { ...v, ...stats };
+    });
+  } catch (err) {
+    console.warn('⚠️ Discover YouTube stats error:', err.message);
+    return videos;
+  }
+}
+
+// Filter very short clips (likely Shorts/spam) and very low-view videos.
+// Threshold scales with video age — a 1-day-old video isn't expected to have
+// 50k views, but a 6-month-old video should.
+function filterLowQualityVideos(videos) {
+  const now = Date.now();
+  return videos.filter((v) => {
+    // Drop clips under 60s — usually Shorts; rarely substantive on Discover.
+    if (v.durationSec > 0 && v.durationSec < 60) return false;
+    // Drop absurdly long (>4h) — usually unedited streams; not "discoverable".
+    if (v.durationSec > 4 * 60 * 60) return false;
+
+    let ageDays = 1;
+    if (v.publishedAt) {
+      const t = Date.parse(v.publishedAt);
+      if (!Number.isNaN(t)) {
+        ageDays = Math.max(1, (now - t) / (24 * 60 * 60 * 1000));
+      }
+    }
+    // Min views threshold: 1k for week-old, scales linearly. Caps at 50k.
+    const minViews = Math.min(50_000, Math.max(1_000, ageDays * 800));
+    if (v.viewCount > 0 && v.viewCount < minViews) return false;
+
+    return true;
+  });
+}
+
+// Final ranking: blend popularity + recency + (article-only) trusted-domain
+// boost + (article-only) Google's organic position.
+function mergeAndRankDiscoverItems(items) {
+  const seen = new Map();
+  for (const it of items) {
+    const key = it.kind === 'video' ? `v:${it.videoId}` : `a:${(it.url || '').toLowerCase()}`;
+    if (!seen.has(key)) seen.set(key, it);
+  }
+  const deduped = [...seen.values()];
+  const now = Date.now();
+  const scored = deduped.map((it) => {
+    let recencyScore = 0.4; // neutral default for items missing a date
+    if (it.publishedAt) {
+      const t = Date.parse(it.publishedAt);
+      if (!Number.isNaN(t)) {
+        const ageDays = Math.max(0, (now - t) / (24 * 60 * 60 * 1000));
+        recencyScore = 1 / (1 + ageDays / 21); // halves every ~3 weeks
+      }
+    }
+
+    let popularityScore = 0;
+    if (it.kind === 'video') {
+      // log-scaled view count: 100 → 0.66, 10k → 1.33, 1M → 2.0, 100M → 2.66
+      const v = Math.max(0, Number(it.viewCount) || 0);
+      popularityScore = v > 0 ? Math.min(2.66, Math.log10(v + 10) / 3) : 0;
+    } else {
+      // For articles we don't have impressions; use Google's organic position
+      // (rank 1 → ~1.0, rank 10 → ~0.1) plus the trusted-domain boost.
+      const pos = Number.isFinite(it._organicPosition) ? it._organicPosition : 5;
+      popularityScore = Math.max(0, 1 - pos * 0.1) + (it._domainBoost || 0);
+    }
+
+    const score = popularityScore * 1.0 + recencyScore * 0.6;
+    return { ...it, _score: score };
+  });
+  scored.sort((a, b) => b._score - a._score);
+  return scored.map(({ _score, _organicPosition, _domainBoost, ...rest }) => rest);
+}
+
+// A real Chrome user-agent — many publishers serve a "blocked" or stripped
+// page to bot UAs (LYKNBot, etc.), which means no og:image. Pretending to be
+// a regular browser is the difference between getting hero images and not.
+const DISCOVER_BROWSER_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+
+// Try every reliable signal a publisher might use to declare a hero image.
+// Order roughly matches what social platforms (FB, Twitter, LinkedIn) use, so
+// we get the same image users see when an article is shared.
+function extractHeroImageFromHtml(html, baseUrl) {
+  const $ = cheerio.load(html);
+  let parsedUrl = null;
+  try { parsedUrl = new URL(baseUrl); } catch { /* ignore */ }
+  const resolveAsset = (raw) => {
+    const s = String(raw || '').trim();
+    if (!s) return '';
+    if (s.startsWith('data:')) return ''; // skip inline placeholders
+    try { return new URL(s, parsedUrl || baseUrl).toString(); } catch { return ''; }
+  };
+  const og = (prop) => $(`meta[property="og:${prop}"]`).attr('content')?.trim() || '';
+  const meta = (name) => $(`meta[name="${name}"]`).attr('content')?.trim() || '';
+  const itemprop = (prop) => $(`meta[itemprop="${prop}"]`).attr('content')?.trim() || '';
+
+  // 1. Standard Open Graph (used by FB, LinkedIn).
+  let image = resolveAsset(og('image:secure_url') || og('image'));
+  // 2. Twitter card.
+  if (!image) image = resolveAsset(meta('twitter:image:src') || meta('twitter:image'));
+  // 3. Schema.org / microdata.
+  if (!image) image = resolveAsset(itemprop('image'));
+  // 4. <link rel="image_src"> (Reddit/older social sharing).
+  if (!image) {
+    const linkSrc = $('link[rel="image_src"]').attr('href');
+    if (linkSrc) image = resolveAsset(linkSrc);
+  }
+  // 5. Schema.org JSON-LD (NewsArticle / Article objects). Many modern CMSes
+  //    only declare images here.
+  if (!image) {
+    $('script[type="application/ld+json"]').each((_, el) => {
+      if (image) return;
+      try {
+        const parsed = JSON.parse($(el).contents().text());
+        const candidates = Array.isArray(parsed) ? parsed : [parsed];
+        for (const node of candidates) {
+          if (!node || image) continue;
+          const stack = [node];
+          while (stack.length && !image) {
+            const cur = stack.shift();
+            if (!cur || typeof cur !== 'object') continue;
+            // Recurse into @graph arrays etc.
+            if (Array.isArray(cur)) { stack.push(...cur); continue; }
+            if (cur.image) {
+              if (typeof cur.image === 'string') image = resolveAsset(cur.image);
+              else if (Array.isArray(cur.image)) {
+                const first = cur.image.find((x) => typeof x === 'string');
+                if (first) image = resolveAsset(first);
+                else if (cur.image[0]?.url) image = resolveAsset(cur.image[0].url);
+              } else if (typeof cur.image === 'object' && cur.image.url) {
+                image = resolveAsset(cur.image.url);
+              }
+            }
+            for (const key of Object.keys(cur)) {
+              const v = cur[key];
+              if (v && typeof v === 'object') stack.push(v);
+            }
+          }
+        }
+      } catch { /* not valid JSON-LD, skip */ }
+    });
+  }
+  // 6. First reasonably large <img> inside the article body. Filters tiny
+  //    icons and tracking pixels by checking declared dimensions.
+  if (!image) {
+    const candidates = $(
+      'article img, [role="article"] img, main img, [role="main"] img, .post-content img, .article-content img, .entry-content img',
+    );
+    candidates.each((_, el) => {
+      if (image) return;
+      const $el = $(el);
+      const src =
+        $el.attr('src') ||
+        $el.attr('data-src') ||
+        $el.attr('data-original') ||
+        $el.attr('data-lazy-src') ||
+        '';
+      if (!src) return;
+      const w = parseInt($el.attr('width') || '0', 10);
+      const h = parseInt($el.attr('height') || '0', 10);
+      if (w && h && (w < 200 || h < 120)) return;
+      // Skip obvious avatars/tracking pixels.
+      if (/avatar|tracking|pixel|sprite|emoji/i.test(src)) return;
+      image = resolveAsset(src);
+    });
+  }
+  return image || '';
+}
+
+// Lightweight hero-image fetch. Real browser headers + 8s timeout + 256 KB
+// slice → covers ~95% of publishers. Cached 24h across all users.
+async function fetchArticleHeroImage(url) {
+  if (!url) return '';
+  const cached = discoverOgImageCache.get(url);
+  if (cached !== undefined) return cached;
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': DISCOVER_BROWSER_UA,
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'identity', // we read raw HTML, skip gzip handling
+      },
+      signal: controller.signal,
+      redirect: 'follow',
+    });
+    clearTimeout(timeout);
+    if (!response.ok) {
+      discoverOgImageCache.set(url, '');
+      return '';
+    }
+    const ct = String(response.headers.get('content-type') || '');
+    if (!ct.includes('text/html') && !ct.includes('application/xhtml')) {
+      discoverOgImageCache.set(url, '');
+      return '';
+    }
+    // Read at most ~256 KB — covers <head> + opening body for the JSON-LD
+    // and content-image fallbacks. Reading more is wasteful and slow.
+    const buf = await response.arrayBuffer();
+    const slice = new Uint8Array(buf).slice(0, 256 * 1024);
+    const html = new TextDecoder('utf-8', { fatal: false }).decode(slice);
+    const image = extractHeroImageFromHtml(html, url);
+    discoverOgImageCache.set(url, image);
+    return image;
+  } catch {
+    discoverOgImageCache.set(url, '');
+    return '';
+  }
+}
+
+// Backfill missing thumbnails on the strongest article candidates. We only
+// look at the top N because (a) most users only see the first ~20 cards and
+// (b) running 30+ HTTP requests would slow refresh too much.
+async function backfillArticleThumbnails(articles, maxToFetch = 14) {
+  if (!Array.isArray(articles) || articles.length === 0) return articles;
+  const targets = [];
+  for (let i = 0; i < articles.length && targets.length < maxToFetch; i += 1) {
+    if (!articles[i].thumbnail) targets.push(i);
+  }
+  if (targets.length === 0) return articles;
+
+  const results = await Promise.allSettled(
+    targets.map((idx) => fetchArticleHeroImage(articles[idx].url)),
+  );
+  const next = articles.slice();
+  results.forEach((r, k) => {
+    if (r.status === 'fulfilled' && r.value) {
+      const idx = targets[k];
+      next[idx] = { ...next[idx], thumbnail: r.value };
+    }
+  });
+  return next;
+}
+
+// Build a unified, interleaved list of articles + videos so the "All" view
+// renders a single ranked stream rather than visually segregated sections.
+// We rescore on a normalized 0..1 popularity scale so a 1M-view video
+// doesn't always beat a top-rank article from a trusted publisher.
+function buildUnifiedDiscoverList(articles, videos, recencyDays) {
+  const now = Date.now();
+  const recencyHalfLifeDays = Math.max(7, Math.min(30, Math.round(recencyDays / 2)));
+
+  const score = (it, idxInOwnList) => {
+    let recency = 0.4;
+    if (it.publishedAt) {
+      const t = Date.parse(it.publishedAt);
+      if (!Number.isNaN(t)) {
+        const ageDays = Math.max(0, (now - t) / (24 * 60 * 60 * 1000));
+        recency = 1 / (1 + ageDays / recencyHalfLifeDays);
+      }
+    }
+
+    let popularity = 0;
+    if (it.kind === 'video') {
+      const v = Math.max(0, Number(it.viewCount) || 0);
+      // 100 → ~0.29, 10k → ~0.57, 1M → ~0.86, 10M+ → ~1.00
+      popularity = v > 0 ? Math.min(1, Math.log10(v + 10) / 7) : 0;
+    } else {
+      // Articles don't have view counts — use ranking position as a proxy.
+      // First in the per-query list ≈ 0.95, fifth ≈ 0.55, tenth ≈ 0.05.
+      const pos = Math.max(0, idxInOwnList);
+      popularity = Math.max(0.05, 1 - pos * 0.1);
+    }
+
+    return popularity * 0.65 + recency * 0.35;
+  };
+
+  const tagged = [
+    ...articles.map((a, i) => ({ ...a, _u: score(a, i) })),
+    ...videos.map((v, i) => ({ ...v, _u: score(v, i) })),
+  ];
+
+  // Interleave: sort by score, but enforce a soft alternation so we never
+  // show more than 2 of the same kind in a row. This keeps the visual
+  // rhythm even if videos happen to dominate by raw score.
+  tagged.sort((a, b) => b._u - a._u);
+  const out = [];
+  let lastKind = null;
+  let runLen = 0;
+  const remaining = tagged.slice();
+  while (remaining.length > 0) {
+    let pickIdx = 0;
+    if (lastKind && runLen >= 2) {
+      const swap = remaining.findIndex((x) => x.kind !== lastKind);
+      if (swap > 0) pickIdx = swap;
+    }
+    const picked = remaining.splice(pickIdx, 1)[0];
+    out.push(picked);
+    if (picked.kind === lastKind) {
+      runLen += 1;
+    } else {
+      lastKind = picked.kind;
+      runLen = 1;
+    }
+  }
+  return out.map(({ _u, ...rest }) => rest);
+}
+
+// Cursor format: opaque base64-encoded JSON describing where to resume.
+//   { type: 'db', a?: { s, i }, v?: { s, i } }   keyset over content tables
+//   { type: 'live', p: number }                  fallback live-API paging
+function encodeDiscoverCursor(obj) {
+  if (!obj) return null;
+  try { return Buffer.from(JSON.stringify(obj), 'utf8').toString('base64'); } catch { return null; }
+}
+function decodeDiscoverCursor(s) {
+  if (!s || typeof s !== 'string') return null;
+  try {
+    const json = Buffer.from(s, 'base64').toString('utf8');
+    const parsed = JSON.parse(json);
+    if (parsed && typeof parsed === 'object') return parsed;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+const DISCOVER_DB_PAGE_SIZE = 12; // per kind
+const DISCOVER_MIN_DB_ITEMS_TO_TRUST = 6; // below this we fall back to live API
+
+// Map a DB row → the same shape the live fetchers return, so the rest of
+// the feed pipeline (interleave, render) doesn't care which source served it.
+function articleRowToFeedItem(row) {
+  return {
+    kind: 'article',
+    url: row.url,
+    title: row.title,
+    snippet: row.snippet || '',
+    source: row.source || row.source_host || '',
+    thumbnail: row.image_url || null,
+    publishedAt: row.published_at,
+    aiTakeaway: row.ai_takeaway || null,
+    _id: row.id,
+    _score: Number(row.popularity_score) || 0,
+  };
+}
+function videoRowToFeedItem(row) {
+  return {
+    kind: 'video',
+    url: `https://www.youtube.com/watch?v=${row.video_id}`,
+    videoId: row.video_id,
+    title: row.title,
+    snippet: row.snippet || '',
+    source: row.channel_title || 'YouTube',
+    thumbnail: row.thumbnail_url || null,
+    publishedAt: row.published_at,
+    viewCount: Number(row.view_count) || 0,
+    likeCount: Number(row.like_count) || 0,
+    durationSec: Number(row.duration_sec) || 0,
+    aiTakeaway: row.ai_takeaway || null,
+    _id: row.id,
+    _score: Number(row.popularity_score) || 0,
+  };
+}
+
+// Read one DB page of articles for the user's themes, paginated by the
+// (popularity_score DESC, id DESC) keyset cursor.
+async function readDiscoverArticlesFromDb(themes, recencyDays, cursorPart) {
+  if (!supabaseAdmin) return { items: [], next: null };
+  if (!themes || themes.length === 0) return { items: [], next: null };
+  try {
+    let q = supabaseAdmin
+      .from('lykn_discover_articles')
+      .select('id, url, title, snippet, image_url, source, source_host, published_at, ai_takeaway, popularity_score')
+      .overlaps('topic_tags', themes)
+      .order('popularity_score', { ascending: false })
+      .order('id', { ascending: false })
+      .limit(DISCOVER_DB_PAGE_SIZE + 1);
+
+    // Apply recency filter only when narrower than the ingest retention
+    // window (otherwise it's a no-op since pruning already enforces it).
+    if (recencyDays && recencyDays < DISCOVER_INGEST_PRUNE_DAYS) {
+      const cutoff = new Date(Date.now() - recencyDays * 24 * 60 * 60 * 1000).toISOString();
+      q = q.gte('published_at', cutoff);
+    }
+
+    if (cursorPart && cursorPart.i) {
+      const safeId = String(cursorPart.i).replace(/[^0-9a-fA-F-]/g, '');
+      const safeScore = Number(cursorPart.s);
+      if (Number.isFinite(safeScore) && safeId) {
+        q = q.or(
+          `popularity_score.lt.${safeScore},and(popularity_score.eq.${safeScore},id.lt.${safeId})`,
+        );
+      }
+    }
+
+    const { data, error } = await q;
+    if (error) {
+      console.warn('⚠️ Discover DB articles read failed:', error.message);
+      return { items: [], next: null };
+    }
+    const rows = data || [];
+    const hasMore = rows.length > DISCOVER_DB_PAGE_SIZE;
+    const slice = rows.slice(0, DISCOVER_DB_PAGE_SIZE);
+    const items = slice.map(articleRowToFeedItem);
+    const last = slice[slice.length - 1];
+    const next = hasMore && last ? { s: Number(last.popularity_score) || 0, i: last.id } : null;
+    return { items, next };
+  } catch (e) {
+    console.warn('⚠️ Discover DB articles error:', e.message);
+    return { items: [], next: null };
+  }
+}
+
+async function readDiscoverVideosFromDb(themes, recencyDays, cursorPart) {
+  if (!supabaseAdmin) return { items: [], next: null };
+  if (!themes || themes.length === 0) return { items: [], next: null };
+  try {
+    let q = supabaseAdmin
+      .from('lykn_discover_videos')
+      .select('id, video_id, title, snippet, channel_title, thumbnail_url, published_at, view_count, like_count, duration_sec, ai_takeaway, popularity_score')
+      .overlaps('topic_tags', themes)
+      .order('popularity_score', { ascending: false })
+      .order('id', { ascending: false })
+      .limit(DISCOVER_DB_PAGE_SIZE + 1);
+
+    if (recencyDays && recencyDays < DISCOVER_INGEST_PRUNE_DAYS) {
+      const cutoff = new Date(Date.now() - recencyDays * 24 * 60 * 60 * 1000).toISOString();
+      q = q.gte('published_at', cutoff);
+    }
+
+    if (cursorPart && cursorPart.i) {
+      const safeId = String(cursorPart.i).replace(/[^0-9a-fA-F-]/g, '');
+      const safeScore = Number(cursorPart.s);
+      if (Number.isFinite(safeScore) && safeId) {
+        q = q.or(
+          `popularity_score.lt.${safeScore},and(popularity_score.eq.${safeScore},id.lt.${safeId})`,
+        );
+      }
+    }
+
+    const { data, error } = await q;
+    if (error) {
+      console.warn('⚠️ Discover DB videos read failed:', error.message);
+      return { items: [], next: null };
+    }
+    const rows = data || [];
+    const hasMore = rows.length > DISCOVER_DB_PAGE_SIZE;
+    const slice = rows.slice(0, DISCOVER_DB_PAGE_SIZE);
+    const items = slice.map(videoRowToFeedItem);
+    const last = slice[slice.length - 1];
+    const next = hasMore && last ? { s: Number(last.popularity_score) || 0, i: last.id } : null;
+    return { items, next };
+  } catch (e) {
+    console.warn('⚠️ Discover DB videos error:', e.message);
+    return { items: [], next: null };
+  }
+}
+
+app.post('/api/discover/feed', requireAuth, discoverLimiter, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const requestedMode = String(body.mode || 'all').toLowerCase();
+    const mode = ['articles', 'videos', 'all'].includes(requestedMode) ? requestedMode : 'all';
+    const recencyDaysRaw = Number(body.recencyDays);
+    const recencyDays = Number.isFinite(recencyDaysRaw) && recencyDaysRaw > 0 ? Math.min(365, Math.floor(recencyDaysRaw)) : 30;
+    const force = Boolean(body.force);
+    const userThemeOverride = Array.isArray(body.themes)
+      ? body.themes.map((t) => String(t || '').trim()).filter(Boolean).slice(0, 8)
+      : null;
+    // Backward compat: legacy clients send `page` (integer). Newer clients
+    // send `cursor` (opaque base64). If both, cursor wins.
+    const cursor = decodeDiscoverCursor(body.cursor) || (() => {
+      const pageRaw = Number(body.page);
+      const p = Number.isFinite(pageRaw) && pageRaw >= 0
+        ? Math.min(DISCOVER_MAX_PAGES - 1, Math.floor(pageRaw))
+        : 0;
+      return p > 0 ? { type: 'live', p } : null;
+    })();
+
+    const client = supabaseAdmin || createSynthesisUserClient(req.headers.authorization);
+    if (!client) return res.status(503).json({ error: 'Database not configured' });
+
+    let themes = userThemeOverride || [];
+    let narrative = '';
+    if (!userThemeOverride) {
+      const { data: profile, error: pErr } = await client
+        .from('lykn_user_synthesis_profile')
+        .select('themes, narrative')
+        .eq('user_id', userId)
+        .maybeSingle();
+      if (pErr) console.warn('⚠️ Discover profile read failed:', pErr.message);
+      themes = Array.isArray(profile?.themes) ? profile.themes : [];
+      narrative = String(profile?.narrative || '').trim();
+    }
+    const themesForRead = themes.length ? themes : DISCOVER_DEFAULT_THEMES;
+
+    const wantArticles = mode === 'all' || mode === 'articles';
+    const wantVideos = mode === 'all' || mode === 'videos';
+
+    // ── Path A: DB-backed feed (preferred) ─────────────────────────────
+    // Only on the first page (no cursor or DB cursor) — once we've decided
+    // to use the live fallback we keep paginating live for the session.
+    const isFirstOrDbCursor = !cursor || cursor.type === 'db';
+    if (isFirstOrDbCursor) {
+      const dbCursor = cursor && cursor.type === 'db' ? cursor : null;
+
+      const [articleRead, videoRead] = await Promise.all([
+        wantArticles
+          ? readDiscoverArticlesFromDb(themesForRead, recencyDays, dbCursor?.a)
+          : Promise.resolve({ items: [], next: null }),
+        wantVideos
+          ? readDiscoverVideosFromDb(themesForRead, recencyDays, dbCursor?.v)
+          : Promise.resolve({ items: [], next: null }),
+      ]);
+
+      const dbItemCount = articleRead.items.length + videoRead.items.length;
+
+      // First page only: if DB coverage is too thin to be useful, fall
+      // through to the live API path below.
+      const acceptDb = dbCursor !== null || dbItemCount >= DISCOVER_MIN_DB_ITEMS_TO_TRUST;
+
+      if (acceptDb) {
+        const items = buildUnifiedDiscoverList(articleRead.items, videoRead.items, recencyDays);
+        const nextCursor =
+          articleRead.next || videoRead.next
+            ? encodeDiscoverCursor({ type: 'db', a: articleRead.next, v: videoRead.next })
+            : null;
+        const hasMore = Boolean(nextCursor);
+
+        console.log(
+          `📰 Discover[DB] ${String(userId).slice(0, 8)}… [${mode}/${recencyDays}d ${dbCursor ? 'next' : 'first'}]: ` +
+          `${articleRead.items.length} articles, ${videoRead.items.length} videos, hasMore=${hasMore}`,
+        );
+
+        return res.json({
+          ok: true,
+          source: 'db',
+          themes: themesForRead,
+          articles: articleRead.items,
+          videos: videoRead.items,
+          items,
+          cursor: nextCursor,
+          hasMore,
+          // Legacy fields preserved so older clients keep working:
+          page: 0,
+          generatedAt: new Date().toISOString(),
+          cached: false,
+        });
+      }
+    }
+
+    // ── Path B: Live API fallback (existing behavior) ──────────────────
+    const livePage =
+      cursor && cursor.type === 'live' && Number.isFinite(Number(cursor.p))
+        ? Math.min(DISCOVER_MAX_PAGES - 1, Math.max(0, Math.floor(Number(cursor.p))))
+        : 0;
+
+    const queries = pickDiscoverQueries(themes, narrative, recencyDays, mode, livePage);
+    const hasMoreLive = livePage < DISCOVER_MAX_PAGES - 1;
+    if (queries.length === 0) {
+      return res.json({
+        ok: true,
+        source: 'live',
+        themes: themesForRead,
+        articles: [],
+        videos: [],
+        items: [],
+        cursor: null,
+        hasMore: false,
+        page: livePage,
+        generatedAt: new Date().toISOString(),
+        cached: false,
+        empty: true,
+      });
+    }
+
+    const cacheKey = `${userId}::${mode}::${recencyDays}::p${livePage}::${queries.join('|')}`;
+    if (!force) {
+      const cached = discoverFeedCache.get(cacheKey);
+      if (cached) {
+        return res.json({ ...cached, cached: true });
+      }
+    }
+
+    const ytOrder = ytOrderForPage(livePage);
+    const [articleBatches, videoBatches] = await Promise.all([
+      wantArticles
+        ? Promise.all(queries.map((q) => fetchDiscoverArticlesForQuery(q, recencyDays)))
+        : Promise.resolve([]),
+      wantVideos
+        ? Promise.all(queries.map((q) => fetchDiscoverVideosForQuery(q, recencyDays, ytOrder)))
+        : Promise.resolve([]),
+    ]);
+
+    const rawVideos = videoBatches.flat();
+    const enrichedVideos = wantVideos ? await enrichVideosWithStatistics(rawVideos) : [];
+    const qualityVideos = filterLowQualityVideos(enrichedVideos);
+
+    let articles = mergeAndRankDiscoverItems(articleBatches.flat()).slice(0, 30);
+    const videos = mergeAndRankDiscoverItems(qualityVideos).slice(0, 30);
+
+    if (wantArticles) {
+      articles = await backfillArticleThumbnails(articles, 18);
+    }
+
+    const items = buildUnifiedDiscoverList(articles, videos, recencyDays);
+
+    const articlesWithThumbs = articles.filter((a) => a.thumbnail).length;
+    const videosWithThumbs = videos.filter((v) => v.thumbnail).length;
+    console.log(
+      `📰 Discover[LIVE] ${String(userId).slice(0, 8)}… [${mode}/${recencyDays}d p${livePage}]: ` +
+      `${articles.length} articles (${articlesWithThumbs} w/img), ` +
+      `${videos.length} videos (${videosWithThumbs} w/img), ` +
+      `queries=[${queries.map((q) => `"${q.slice(0, 24)}"`).join(', ')}]`,
+    );
+
+    const nextCursor = hasMoreLive
+      ? encodeDiscoverCursor({ type: 'live', p: livePage + 1 })
+      : null;
+
+    const payload = {
+      ok: true,
+      source: 'live',
+      themes: themesForRead,
+      queries,
+      articles,
+      videos,
+      items,
+      cursor: nextCursor,
+      hasMore: hasMoreLive,
+      page: livePage,
+      generatedAt: new Date().toISOString(),
+      cached: false,
+    };
+
+    discoverFeedCache.set(cacheKey, payload);
+    return res.json(payload);
+  } catch (e) {
+    console.error('❌ Discover feed:', e?.message || e);
+    return res.status(500).json({ error: 'discover_failed' });
+  }
+});
+
+// ============================================
+// DISCOVER INGEST — periodic Serper/YouTube crawl into the global content
+// index. Triggered by a bearer-secret-protected endpoint so it can be hit
+// by Supabase pg_cron, Render cron, an external scheduler, or manually.
+// Reads the union of all users' synthesis themes (capped at 50), upserts
+// content rows tagged by theme, generates AI takeaways for the strongest
+// new items, and prunes rows older than DISCOVER_INGEST_PRUNE_DAYS.
+// ============================================
+const DISCOVER_INGEST_THEMES_CAP = 50;
+const DISCOVER_INGEST_PRUNE_DAYS = 14;
+
+function verifyDiscoverIngestSecret(req) {
+  const expected = process.env.DISCOVER_INGEST_SECRET;
+  if (!expected || String(expected).length < 8) return false;
+  const auth = req.headers.authorization || '';
+  const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+  if (!token) return false;
+  try {
+    const a = Buffer.from(token, 'utf8');
+    const b = Buffer.from(String(expected), 'utf8');
+    if (a.length !== b.length) return false;
+    return crypto.timingSafeEqual(a, b);
+  } catch {
+    return false;
+  }
+}
+
+async function collectDiscoverIngestThemes() {
+  if (!supabaseAdmin) return DISCOVER_DEFAULT_THEMES.slice();
+  const { data, error } = await supabaseAdmin
+    .from('lykn_user_synthesis_profile')
+    .select('themes');
+  if (error) {
+    console.warn('⚠️ Discover ingest: theme query failed', error.message);
+    return DISCOVER_DEFAULT_THEMES.slice();
+  }
+  // Always include defaults so the table is never empty even with zero
+  // signed-up users.
+  const set = new Set(DISCOVER_DEFAULT_THEMES);
+  for (const row of data || []) {
+    const themes = Array.isArray(row.themes) ? row.themes : [];
+    for (const t of themes) {
+      const clean = String(t || '').trim();
+      if (clean && clean.length >= 2 && clean.length <= 80) set.add(clean);
+    }
+  }
+  return [...set].slice(0, DISCOVER_INGEST_THEMES_CAP);
+}
+
+function computeArticlePopularityScoreForIngest(item) {
+  const pos = Number.isFinite(item._organicPosition) ? item._organicPosition : 5;
+  const positionScore = Math.max(0.05, 1 - pos * 0.1);
+  const domainBoost = item._domainBoost || 0;
+  let recency = 0.4;
+  if (item.publishedAt) {
+    const t = Date.parse(item.publishedAt);
+    if (!Number.isNaN(t)) {
+      const ageDays = Math.max(0, (Date.now() - t) / (24 * 60 * 60 * 1000));
+      recency = 1 / (1 + ageDays / 14);
+    }
+  }
+  return positionScore * 0.5 + domainBoost + recency * 0.3;
+}
+
+function computeVideoPopularityScoreForIngest(item) {
+  const v = Math.max(0, Number(item.viewCount) || 0);
+  const popularity = v > 0 ? Math.min(1, Math.log10(v + 10) / 7) : 0;
+  let recency = 0.4;
+  if (item.publishedAt) {
+    const t = Date.parse(item.publishedAt);
+    if (!Number.isNaN(t)) {
+      const ageDays = Math.max(0, (Date.now() - t) / (24 * 60 * 60 * 1000));
+      recency = 1 / (1 + ageDays / 14);
+    }
+  }
+  return popularity * 0.7 + recency * 0.3;
+}
+
+// One LLM call per batch of up to 10 items. Each item gets a short
+// editorial blurb that we store on the row and render on the card.
+async function generateDiscoverTakeaways(items) {
+  if (!process.env.OPENAI_API_KEY || items.length === 0) return new Map();
+  const sys = `You write punchy 1-sentence "why this matters" blurbs for content discovery cards. Each blurb is 12–22 words, plain text, no quotes, no fluff. Tone: confident editorial, like a curator. Speak about the article/video, not directly to the reader.`;
+  const userMsg = `Generate one blurb per item below. Return JSON: {"blurbs": ["...", "..."]} in the same order.\n\nItems:\n${items
+    .map(
+      (it, i) =>
+        `${i + 1}. [${it.kind}] "${String(it.title || '').slice(0, 200)}" — ${String(it.snippet || '').slice(0, 280)}`,
+    )
+    .join('\n')}`;
+  try {
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        temperature: 0.4,
+        max_tokens: 700,
+        response_format: { type: 'json_object' },
+        messages: [
+          { role: 'system', content: sys },
+          { role: 'user', content: userMsg },
+        ],
+      }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!res.ok) {
+      console.warn('⚠️ Discover takeaway HTTP', res.status);
+      return new Map();
+    }
+    const data = await res.json();
+    const raw = data?.choices?.[0]?.message?.content;
+    let parsed;
+    try { parsed = JSON.parse(raw); } catch { return new Map(); }
+    const blurbs = Array.isArray(parsed.blurbs) ? parsed.blurbs : [];
+    const out = new Map();
+    for (let i = 0; i < items.length && i < blurbs.length; i += 1) {
+      const blurb = String(blurbs[i] || '').trim();
+      if (blurb) out.set(items[i]._key, blurb.slice(0, 240));
+    }
+    return out;
+  } catch (e) {
+    console.warn('⚠️ Discover takeaway error:', e.message);
+    return new Map();
+  }
+}
+
+app.post('/api/discover/ingest', async (req, res) => {
+  if (!verifyDiscoverIngestSecret(req)) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  if (!supabaseAdmin) {
+    return res.status(503).json({ error: 'SUPABASE_SERVICE_ROLE_KEY required for ingest' });
+  }
+  if (!process.env.SERPER_API_KEY && !process.env.YOUTUBE_API_KEY) {
+    return res.status(503).json({ error: 'No content APIs configured (SERPER_API_KEY / YOUTUBE_API_KEY)' });
+  }
+
+  const startedAt = Date.now();
+  try {
+    const themes = await collectDiscoverIngestThemes();
+    if (themes.length === 0) {
+      return res.json({ ok: true, themes: 0, articlesUpserted: 0, videosUpserted: 0 });
+    }
+    console.log(`🌱 Discover ingest start: ${themes.length} unique themes`);
+
+    // Fan out 5 themes at a time so we don't hammer Serper/YouTube with
+    // 50 concurrent requests.
+    const CHUNK = 5;
+    const articleByUrl = new Map(); // url → item with _topicTags Set
+    const videoById = new Map();    // videoId → item with _topicTags Set
+
+    for (let i = 0; i < themes.length; i += CHUNK) {
+      const slice = themes.slice(i, i + CHUNK);
+      const batchResults = await Promise.all(
+        slice.map(async (theme) => {
+          const [articles, videos] = await Promise.all([
+            fetchDiscoverArticlesForQuery(theme, 30),
+            fetchDiscoverVideosForQuery(theme, 30, 'relevance'),
+          ]);
+          return { theme, articles, videos };
+        }),
+      );
+      for (const { theme, articles, videos } of batchResults) {
+        for (const a of articles) {
+          const key = String(a.url || '').toLowerCase();
+          if (!key) continue;
+          const existing = articleByUrl.get(key);
+          if (existing) {
+            existing._topicTags.add(theme);
+          } else {
+            articleByUrl.set(key, { ...a, _topicTags: new Set([theme]) });
+          }
+        }
+        for (const v of videos) {
+          if (!v.videoId) continue;
+          const existing = videoById.get(v.videoId);
+          if (existing) {
+            existing._topicTags.add(theme);
+          } else {
+            videoById.set(v.videoId, { ...v, _topicTags: new Set([theme]) });
+          }
+        }
+      }
+    }
+
+    // Enrich videos with statistics + filter low-quality.
+    const enrichedVideos = await enrichVideosWithStatistics([...videoById.values()]);
+    const qualityVideos = filterLowQualityVideos(enrichedVideos);
+    // Re-attach the topic tags after enrichment (enrichVideosWithStatistics
+    // returns shallow copies, so the Set might survive — be defensive).
+    for (const v of qualityVideos) {
+      const orig = videoById.get(v.videoId);
+      if (orig && !v._topicTags) v._topicTags = orig._topicTags;
+    }
+
+    // Backfill og:image for the strongest articles missing thumbnails.
+    let articleArr = [...articleByUrl.values()];
+    articleArr.sort(
+      (a, b) =>
+        computeArticlePopularityScoreForIngest(b) - computeArticlePopularityScoreForIngest(a),
+    );
+    const backfilled = await backfillArticleThumbnails(articleArr.slice(0, 30), 30);
+    for (let i = 0; i < backfilled.length; i += 1) {
+      // Preserve _topicTags through the backfill (which spreads via Object.assign).
+      const orig = articleArr[i];
+      backfilled[i]._topicTags = orig._topicTags;
+      articleArr[i] = backfilled[i];
+    }
+
+    // Build DB rows.
+    const nowIso = new Date().toISOString();
+    const articleRows = articleArr.map((a) => {
+      let host = null;
+      try { host = new URL(a.url).hostname.replace(/^www\./, '').toLowerCase(); } catch { /* ignore */ }
+      return {
+        url: a.url,
+        title: String(a.title || '').slice(0, 400),
+        snippet: String(a.snippet || '').slice(0, 1000),
+        image_url: a.thumbnail || null,
+        source: a.source ? String(a.source).slice(0, 120) : null,
+        source_host: host,
+        published_at:
+          a.publishedAt && !Number.isNaN(Date.parse(a.publishedAt))
+            ? new Date(Date.parse(a.publishedAt)).toISOString()
+            : null,
+        topic_tags: [...a._topicTags],
+        popularity_score: computeArticlePopularityScoreForIngest(a),
+        ingested_at: nowIso,
+      };
+    });
+
+    const videoRows = qualityVideos.map((v) => ({
+      video_id: v.videoId,
+      title: String(v.title || '').slice(0, 400),
+      snippet: String(v.snippet || '').slice(0, 1000),
+      channel_title: v.source ? String(v.source).slice(0, 200) : null,
+      thumbnail_url: v.thumbnail || null,
+      published_at:
+        v.publishedAt && !Number.isNaN(Date.parse(v.publishedAt))
+          ? new Date(Date.parse(v.publishedAt)).toISOString()
+          : null,
+      view_count: Number.isFinite(Number(v.viewCount)) ? Number(v.viewCount) : 0,
+      like_count: Number.isFinite(Number(v.likeCount)) ? Number(v.likeCount) : 0,
+      duration_sec: Number.isFinite(Number(v.durationSec)) ? Number(v.durationSec) : 0,
+      topic_tags: v._topicTags ? [...v._topicTags] : [],
+      popularity_score: computeVideoPopularityScoreForIngest(v),
+      ingested_at: nowIso,
+    }));
+
+    // Upsert in chunks of 100. ON CONFLICT (url / video_id) replaces the
+    // existing row so re-ingesting refreshes scores + topic_tags.
+    let upsertedArticles = 0;
+    for (let i = 0; i < articleRows.length; i += 100) {
+      const chunk = articleRows.slice(i, i + 100);
+      const { data, error } = await supabaseAdmin
+        .from('lykn_discover_articles')
+        .upsert(chunk, { onConflict: 'url' })
+        .select('id');
+      if (error) {
+        console.warn('⚠️ article upsert error:', error.message);
+      } else {
+        upsertedArticles += data?.length || 0;
+      }
+    }
+    let upsertedVideos = 0;
+    for (let i = 0; i < videoRows.length; i += 100) {
+      const chunk = videoRows.slice(i, i + 100);
+      const { data, error } = await supabaseAdmin
+        .from('lykn_discover_videos')
+        .upsert(chunk, { onConflict: 'video_id' })
+        .select('id');
+      if (error) {
+        console.warn('⚠️ video upsert error:', error.message);
+      } else {
+        upsertedVideos += data?.length || 0;
+      }
+    }
+
+    // AI takeaways: only generate for items missing one. Idempotent so we
+    // don't burn LLM tokens regenerating blurbs we already have.
+    let takeawaysGenerated = 0;
+    try {
+      const { data: needArticles } = await supabaseAdmin
+        .from('lykn_discover_articles')
+        .select('id, title, snippet')
+        .is('ai_takeaway', null)
+        .order('popularity_score', { ascending: false })
+        .limit(40);
+      const { data: needVideos } = await supabaseAdmin
+        .from('lykn_discover_videos')
+        .select('id, title, snippet')
+        .is('ai_takeaway', null)
+        .order('popularity_score', { ascending: false })
+        .limit(40);
+
+      const items = [
+        ...(needArticles || []).map((r) => ({ ...r, kind: 'article', _key: `a:${r.id}` })),
+        ...(needVideos || []).map((r) => ({ ...r, kind: 'video', _key: `v:${r.id}` })),
+      ];
+
+      for (let i = 0; i < items.length; i += 10) {
+        const batch = items.slice(i, i + 10);
+        const blurbs = await generateDiscoverTakeaways(batch);
+        for (const item of batch) {
+          const blurb = blurbs.get(item._key);
+          if (!blurb) continue;
+          const table =
+            item.kind === 'article' ? 'lykn_discover_articles' : 'lykn_discover_videos';
+          const { error } = await supabaseAdmin
+            .from(table)
+            .update({ ai_takeaway: blurb })
+            .eq('id', item.id);
+          if (!error) takeawaysGenerated += 1;
+        }
+      }
+    } catch (e) {
+      console.warn('⚠️ Discover takeaways step failed:', e.message);
+    }
+
+    // Prune content older than the retention window.
+    const cutoff = new Date(
+      Date.now() - DISCOVER_INGEST_PRUNE_DAYS * 24 * 60 * 60 * 1000,
+    ).toISOString();
+    let prunedArticles = 0;
+    let prunedVideos = 0;
+    {
+      const { count } = await supabaseAdmin
+        .from('lykn_discover_articles')
+        .delete({ count: 'exact' })
+        .lt('ingested_at', cutoff);
+      prunedArticles = count || 0;
+    }
+    {
+      const { count } = await supabaseAdmin
+        .from('lykn_discover_videos')
+        .delete({ count: 'exact' })
+        .lt('ingested_at', cutoff);
+      prunedVideos = count || 0;
+    }
+
+    const elapsedMs = Date.now() - startedAt;
+    const summary = {
+      ok: true,
+      themes: themes.length,
+      articlesUpserted: upsertedArticles,
+      videosUpserted: upsertedVideos,
+      takeawaysGenerated,
+      prunedArticles,
+      prunedVideos,
+      elapsedMs,
+    };
+    console.log(`🌱 Discover ingest done: ${JSON.stringify(summary)}`);
+    return res.json(summary);
+  } catch (e) {
+    console.error('❌ Discover ingest:', e?.message || e);
+    return res.status(500).json({ error: 'ingest_failed', detail: e?.message });
+  }
+});
+
 /**
  * Post-save: LLM summary + signals on notes row, then re-embed vault_note for retrieval.
  * Requires migration 025 (ai_summary, ai_signals on notes).
@@ -2384,7 +3884,7 @@ app.post('/api/ai/invoke', requireAuth, aiLimiter, checkAiUsageLimit, async (req
     let { prompt } = req.body;
 
     // Enforce plan tier: silently downgrade locked models instead of erroring.
-    const invokePlan = await resolveUserPlan(req.user?.id);
+    const invokePlan = await resolveUserPlan(req.user?.id, req.user?.email);
     if (!isModelAllowedForPlan(model, invokePlan.modelTier)) {
       const downgraded = defaultModelForTier(invokePlan.modelTier);
       console.log(`🔒 Model ${model} locked for plan ${invokePlan.planId} — downgrading to ${downgraded}`);
@@ -3781,7 +5281,7 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
     // Enforce the caller's plan tier. If they request a model their plan
     // doesn't cover, downgrade to the best model they can use and surface an
     // `X-Model-Downgraded` header so the client can nudge them to upgrade.
-    const streamPlan = await resolveUserPlan(req.user?.id);
+    const streamPlan = await resolveUserPlan(req.user?.id, req.user?.email);
     if (!isModelAllowedForPlan(model, streamPlan.modelTier)) {
       const downgraded = defaultModelForTier(streamPlan.modelTier);
       console.log(`🔒 Model ${model} locked for plan ${streamPlan.planId} — downgrading to ${downgraded}`);
@@ -4476,7 +5976,7 @@ app.post('/api/ai/image', requireAuth, generationLimiter, checkAiUsageLimit, asy
     }
 
     // Gate image generation to Studio Pro / Studio Max only.
-    const imagePlan = await resolveUserPlan(req.user?.id);
+    const imagePlan = await resolveUserPlan(req.user?.id, req.user?.email);
     if (!isModelAllowedForPlan(imageModel, imagePlan.modelTier)) {
       return res.status(403).json({
         error: 'upgrade_required',
@@ -4635,7 +6135,7 @@ app.post('/api/ai/image-edit', requireAuth, generationLimiter, checkAiUsageLimit
     if (!sourceUrls.length) return res.status(400).json({ error: 'Missing source image URL' });
 
     // Image edit is a media-tier feature. Gate it to Studio Pro / Studio Max.
-    const editPlan = await resolveUserPlan(req.user?.id);
+    const editPlan = await resolveUserPlan(req.user?.id, req.user?.email);
     if (editPlan.modelTier !== 'top+media') {
       return res.status(403).json({
         error: 'upgrade_required',
@@ -5198,7 +6698,7 @@ app.get('/api/youtube/search', requireAuth, async (req, res) => {
 
     const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(q)}&maxResults=${maxResults}&type=video&key=${process.env.YOUTUBE_API_KEY}`;
     
-    const refererUrl = process.env.FRONTEND_URL || 'https://lykinsai-1.onrender.com';
+    const refererUrl = process.env.FRONTEND_URL || 'https://lykn-ideation.onrender.com';
     const response = await fetch(url, {
       headers: {
         'Referer': refererUrl,
@@ -5249,7 +6749,7 @@ app.get('/api/youtube/video', requireAuth, async (req, res) => {
     
     console.log(`📹 Fetching from YouTube API: ${url.replace(process.env.YOUTUBE_API_KEY, 'KEY_HIDDEN')}`);
     
-    const refererUrl = process.env.FRONTEND_URL || 'https://lykinsai-1.onrender.com';
+    const refererUrl = process.env.FRONTEND_URL || 'https://lykn-ideation.onrender.com';
     const response = await fetch(url, {
       headers: {
         'Referer': refererUrl,
@@ -6323,8 +7823,17 @@ function invalidateUserPlanCache(userId) {
   userPlanCache.delete(userId);
 }
 
-async function resolveUserPlan(userId) {
+async function resolveUserPlan(userId, email = null) {
   if (!userId) return { planId: 'free', modelTier: 'basic' };
+
+  // Comped team accounts always resolve to Studio Pro. Bypass the cache *and*
+  // the user_billing read so a stray `free` row or canceled Stripe sub can't
+  // accidentally lock them out.
+  if (isCompedProEmail(email)) {
+    const compTier = (PLAN_LIMITS[COMPED_PRO_PLAN_ID] || PLAN_LIMITS.free).modelTier || 'basic';
+    return { planId: COMPED_PRO_PLAN_ID, modelTier: compTier };
+  }
+
   const cached = userPlanCache.get(userId);
   const now = Date.now();
   if (cached && cached.expiresAt > now) return { planId: cached.planId, modelTier: cached.tier };
@@ -6473,6 +7982,24 @@ app.get('/api/billing/me', requireAuth, async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: 'Not authenticated' });
+
+    // Comped team accounts are reported as active Studio Pro to the client so
+    // useUserPlan / PlanGate / model picker all unlock the same as a paying
+    // sub. We still surface the underlying Stripe customer (if any) so the
+    // billing portal link keeps working for them.
+    if (isCompedProEmail(req.user?.email)) {
+      const row = await loadBillingRow(userId);
+      return res.json({
+        plan: COMPED_PRO_PLAN_ID,
+        billing_period: null,
+        status: 'active',
+        current_period_end: null,
+        cancel_at_period_end: false,
+        has_stripe_customer: Boolean(row?.stripe_customer_id),
+        comped: true,
+      });
+    }
+
     const row = await loadBillingRow(userId);
     return res.json({
       plan: row?.plan || 'free',
@@ -6630,10 +8157,519 @@ app.post('/api/billing/waitlist', requireAuth, async (req, res) => {
   }
 });
 
+// ============================================
+// RSS / ATOM FEEDS
+// ============================================
+// Pull-style connector. The user pastes any URL — site or feed — and we
+// auto-discover the canonical feed, store the subscription, and a background
+// poller fetches new entries on a schedule, dropping each one into `notes`
+// in the same shape that /share + the bookmarklet produce.
+
+app.post('/api/feeds/discover', requireAuth, async (req, res) => {
+  try {
+    const { url } = req.body || {};
+    if (!url || typeof url !== 'string') {
+      return res.status(400).json({ error: 'Missing url' });
+    }
+    if (!isUrlSafe(url)) {
+      return res.status(400).json({ error: 'URL not allowed' });
+    }
+    const result = await discoverFeed(url);
+    return res.json(result);
+  } catch (err) {
+    return res.status(400).json({ error: err.message || 'Could not discover feed' });
+  }
+});
+
+app.get('/api/feeds', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Not authenticated' });
+    if (!supabaseAdmin) return res.status(503).json({ error: 'Database unavailable' });
+
+    const { data, error } = await supabaseAdmin
+      .from('rss_feeds')
+      .select(
+        'id, feed_url, site_url, title, description, icon_url, status, ' +
+        'last_fetched_at, last_success_at, last_entry_pub_at, ' +
+        'poll_interval_minutes, consecutive_errors, last_error, created_at',
+      )
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false });
+
+    if (error) return res.status(500).json({ error: error.message });
+
+    // Annotate each feed with a count of items saved so far.
+    const ids = (data || []).map((f) => f.id);
+    let counts = {};
+    if (ids.length) {
+      // Supabase JS doesn't yet support GROUP BY directly; fall back to a
+      // small per-feed query. Cheap because most users will have <20 feeds.
+      const results = await Promise.all(
+        ids.map(async (id) => {
+          const { count } = await supabaseAdmin
+            .from('rss_seen_entries')
+            .select('*', { count: 'exact', head: true })
+            .eq('feed_id', id)
+            .not('note_id', 'is', null);
+          return [id, count || 0];
+        }),
+      );
+      counts = Object.fromEntries(results);
+    }
+
+    return res.json({
+      feeds: (data || []).map((f) => ({ ...f, items_saved: counts[f.id] || 0 })),
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'Failed to list feeds' });
+  }
+});
+
+app.post('/api/feeds', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Not authenticated' });
+    if (!supabaseAdmin) return res.status(503).json({ error: 'Database unavailable' });
+
+    const { url, initialBackfillCount } = req.body || {};
+    if (!url || typeof url !== 'string') {
+      return res.status(400).json({ error: 'Missing url' });
+    }
+    if (!isUrlSafe(url)) {
+      return res.status(400).json({ error: 'URL not allowed' });
+    }
+
+    // Re-discover on save so we always store the canonical feed_url, and
+    // we get the initial title/description/icon for free.
+    const discovery = await discoverFeed(url);
+
+    const backfill = Math.max(
+      0,
+      Math.min(50, Number.isFinite(initialBackfillCount) ? initialBackfillCount : 5),
+    );
+
+    const { data: feed, error } = await supabaseAdmin
+      .from('rss_feeds')
+      .insert({
+        user_id: userId,
+        feed_url: discovery.feedUrl,
+        site_url: discovery.siteUrl,
+        title: discovery.title,
+        description: discovery.description,
+        icon_url: discovery.iconUrl,
+        initial_backfill_count: backfill,
+        status: 'pending',
+      })
+      .select('*')
+      .single();
+
+    if (error) {
+      // Unique violation = already subscribed.
+      if (error.code === '23505') {
+        return res.status(409).json({ error: 'Already subscribed to this feed' });
+      }
+      return res.status(500).json({ error: error.message });
+    }
+
+    // Kick off the first poll right away so the user sees immediate value.
+    // Run async without blocking the response.
+    fetchAndSaveNewEntries({ supabaseAdmin, feed }).catch((e) =>
+      console.error(`[rss] initial poll failed for ${feed.feed_url}:`, e.message),
+    );
+
+    return res.json({ feed, preview: discovery.recentEntries });
+  } catch (err) {
+    return res.status(400).json({ error: err.message || 'Could not add feed' });
+  }
+});
+
+app.patch('/api/feeds/:id', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Not authenticated' });
+    if (!supabaseAdmin) return res.status(503).json({ error: 'Database unavailable' });
+
+    const { id } = req.params;
+    const allowed = {};
+    if (typeof req.body?.status === 'string' && ['active', 'paused'].includes(req.body.status)) {
+      allowed.status = req.body.status;
+    }
+    if (Number.isFinite(req.body?.poll_interval_minutes)) {
+      allowed.poll_interval_minutes = Math.max(5, Math.min(1440, Number(req.body.poll_interval_minutes)));
+    }
+    if (!Object.keys(allowed).length) {
+      return res.status(400).json({ error: 'Nothing to update' });
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from('rss_feeds')
+      .update(allowed)
+      .eq('id', id)
+      .eq('user_id', userId)
+      .select('*')
+      .single();
+
+    if (error) return res.status(500).json({ error: error.message });
+    if (!data) return res.status(404).json({ error: 'Feed not found' });
+    return res.json({ feed: data });
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'Update failed' });
+  }
+});
+
+app.delete('/api/feeds/:id', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Not authenticated' });
+    if (!supabaseAdmin) return res.status(503).json({ error: 'Database unavailable' });
+
+    const { id } = req.params;
+    const { error } = await supabaseAdmin
+      .from('rss_feeds')
+      .delete()
+      .eq('id', id)
+      .eq('user_id', userId);
+
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'Delete failed' });
+  }
+});
+
+app.post('/api/feeds/:id/refresh', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Not authenticated' });
+    if (!supabaseAdmin) return res.status(503).json({ error: 'Database unavailable' });
+
+    const { id } = req.params;
+    const { data: feed, error } = await supabaseAdmin
+      .from('rss_feeds')
+      .select('*')
+      .eq('id', id)
+      .eq('user_id', userId)
+      .single();
+
+    if (error || !feed) return res.status(404).json({ error: 'Feed not found' });
+
+    const result = await fetchAndSaveNewEntries({ supabaseAdmin, feed });
+    return res.json(result);
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'Refresh failed' });
+  }
+});
+
+// Admin / cron endpoint: poll every feed that's currently due. Protected by
+// the same shared secret used by /api/discover/ingest.
+app.post('/api/feeds/poll-due', async (req, res) => {
+  try {
+    const auth = req.headers.authorization || '';
+    const provided = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+    const expected = process.env.ADMIN_INGEST_SECRET || process.env.DISCOVER_INGEST_SECRET;
+    if (!expected || provided !== expected) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    if (!supabaseAdmin) return res.status(503).json({ error: 'Database unavailable' });
+
+    const limit = Math.max(1, Math.min(200, Number(req.body?.limit) || 25));
+    const result = await pollDueFeeds({ supabaseAdmin, limit });
+    return res.json(result);
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'Poll failed' });
+  }
+});
+
+// ============================================
+// CONNECTOR FRAMEWORK (OAuth providers — GitHub, Reddit, Notion, ...)
+// ============================================
+// Generic OAuth start + callback + management routes. Each provider lives
+// in connectors/<id>.js and is registered in connectors-service.js.
+
+// Where the user's browser is sent after OAuth completes. The popup posts
+// a message to its opener and closes itself; this URL is just the fallback.
+const CONNECTOR_FRONTEND_BASE =
+  process.env.FRONTEND_BASE_URL ||
+  process.env.FRONTEND_URL ||
+  'http://localhost:5173';
+
+function connectorRedirectUri(provider) {
+  // GitHub (and most providers) require the redirect_uri to exactly match
+  // what's registered in their developer console. We always send users to
+  // the API origin so the server can do the secret-bearing token swap.
+  const apiBase =
+    process.env.PUBLIC_API_BASE_URL ||
+    process.env.RENDER_EXTERNAL_URL ||
+    `http://localhost:${PORT}`;
+  return `${apiBase.replace(/\/$/, '')}/oauth/callback/${provider}`;
+}
+
+// ── Start OAuth flow ─────────────────────────────────────────────────────────
+// Frontend calls this with auth, we mint a state row and return the URL the
+// browser should be sent to. Frontend opens it in a popup window.
+app.post('/api/connections/:provider/start', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Not authenticated' });
+    if (!supabaseAdmin) return res.status(503).json({ error: 'Database unavailable' });
+
+    const { provider } = req.params;
+    const adapter = CONNECTOR_REGISTRY[provider];
+    if (!adapter) return res.status(404).json({ error: `Unknown provider "${provider}"` });
+    if (!isProviderConfigured(provider)) {
+      const prefix = envPrefixFor(provider);
+      return res.status(503).json({
+        error: `${provider} is not configured. Set ${prefix}_CLIENT_ID and ${prefix}_CLIENT_SECRET on the server.`,
+      });
+    }
+
+    const redirectAfter = typeof req.body?.redirectAfter === 'string'
+      ? req.body.redirectAfter
+      : null;
+
+    const { state, codeVerifier } = await createOAuthState({
+      supabaseAdmin,
+      userId,
+      provider,
+      redirectAfter,
+      pkce: !!adapter.needsPkce,
+    });
+
+    const creds = PROVIDER_CREDENTIALS[provider];
+    const url = adapter.buildAuthUrl({
+      clientId: creds.clientId(),
+      redirectUri: connectorRedirectUri(provider),
+      state,
+      codeVerifier,
+    });
+
+    return res.json({ url });
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'OAuth start failed' });
+  }
+});
+
+// ── OAuth callback ──────────────────────────────────────────────────────────
+// Provider redirects here with ?code=...&state=... . We validate state,
+// exchange the code for tokens, persist the connection, then return a tiny
+// HTML page that messages the opener and closes the popup.
+app.get('/oauth/callback/:provider', async (req, res) => {
+  const { provider } = req.params;
+  const { code, state, error: oauthError, error_description } = req.query || {};
+
+  const finishHtml = (title, body, ok = true) =>
+    `<!doctype html><html><head><meta charset="utf-8"/><title>${title}</title>
+<style>
+  body{font-family:system-ui,-apple-system,sans-serif;margin:0;display:flex;align-items:center;justify-content:center;min-height:100vh;background:#fafafa;color:#111}
+  .card{max-width:380px;padding:24px;border:1px solid #e5e7eb;border-radius:14px;background:white;text-align:center}
+  h1{font-size:16px;margin:0 0 6px;font-weight:600}
+  p{font-size:13px;color:#555;margin:0;line-height:1.5}
+  .ok{color:#059669}.err{color:#b91c1c}
+</style></head><body>
+<div class="card">
+  <h1 class="${ok ? 'ok' : 'err'}">${title}</h1>
+  <p>${body}</p>
+</div>
+<script>
+(function(){
+  try {
+    if (window.opener) {
+      window.opener.postMessage(${JSON.stringify({ type: 'lykn:oauth', provider, ok })}, '*');
+    }
+  } catch (e) {}
+  setTimeout(function(){ try { window.close(); } catch(e){} }, ${ok ? 600 : 2500});
+})();
+</script>
+</body></html>`;
+
+  try {
+    if (oauthError) {
+      return res
+        .status(400)
+        .type('html')
+        .send(finishHtml('Connection cancelled', String(error_description || oauthError), false));
+    }
+
+    const adapter = CONNECTOR_REGISTRY[provider];
+    if (!adapter) {
+      return res.status(404).type('html').send(finishHtml('Unknown provider', `No adapter for "${provider}".`, false));
+    }
+    if (!supabaseAdmin) {
+      return res.status(503).type('html').send(finishHtml('Database unavailable', 'Try again in a moment.', false));
+    }
+
+    // Validate + consume state. If this throws, the request is fraudulent
+    // or stale — no token swap happens.
+    const stateRow = await consumeOAuthState({ supabaseAdmin, state, provider });
+
+    const creds = PROVIDER_CREDENTIALS[provider];
+    const exchanged = await adapter.exchangeCode({
+      code: String(code || ''),
+      clientId: creds.clientId(),
+      clientSecret: creds.clientSecret(),
+      redirectUri: connectorRedirectUri(provider),
+      codeVerifier: stateRow.code_verifier,
+    });
+
+    const connection = await saveConnection({
+      supabaseAdmin,
+      userId: stateRow.user_id,
+      provider,
+      exchanged,
+    });
+
+    // Kick off the first sync immediately. Don't block the popup close
+    // waiting for it — the user can refresh manually if they're impatient.
+    // Synthesize a runSync-shaped row using the already-encrypted blobs
+    // saveConnection just wrote, so we don't pay an extra DB round trip.
+    runSync({
+      supabaseAdmin,
+      connection: {
+        ...connection,
+        user_id: stateRow.user_id,
+        access_token: encryptToken(exchanged.accessToken),
+        refresh_token: exchanged.refreshToken
+          ? encryptToken(exchanged.refreshToken)
+          : null,
+        metadata: exchanged.metadata || {},
+      },
+    }).catch((e) =>
+      console.error(`[connectors] initial sync failed for ${provider}:`, e.message),
+    );
+
+    return res
+      .type('html')
+      .send(finishHtml(`Connected to ${provider}`, 'You can close this window.', true));
+  } catch (err) {
+    console.error(`[connectors] callback error (${provider}):`, err.message);
+    return res
+      .status(400)
+      .type('html')
+      .send(finishHtml('Connection failed', err.message || 'Unknown error', false));
+  }
+});
+
+// ── List user's connections ─────────────────────────────────────────────────
+app.get('/api/connections', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Not authenticated' });
+    if (!supabaseAdmin) return res.status(503).json({ error: 'Database unavailable' });
+
+    const { data, error } = await supabaseAdmin
+      .from('social_connections')
+      .select(
+        'id, provider, provider_user_id, account_handle, account_display_name, ' +
+        'account_email, account_avatar_url, scopes, status, ' +
+        'last_synced_at, last_sync_count, total_synced_count, ' +
+        'consecutive_errors, last_error, sync_interval_minutes, ' +
+        'metadata, created_at',
+      )
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false });
+
+    if (error) return res.status(500).json({ error: error.message });
+
+    // Annotate with provider configuration so the UI can show "set up
+    // pending" for providers without env vars.
+    const providerConfig = {};
+    for (const id of Object.keys(CONNECTOR_REGISTRY)) {
+      providerConfig[id] = isProviderConfigured(id);
+    }
+
+    return res.json({ connections: data || [], providerConfig });
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'Failed to list connections' });
+  }
+});
+
+// ── Trigger a sync now ──────────────────────────────────────────────────────
+app.post('/api/connections/:id/sync', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Not authenticated' });
+    if (!supabaseAdmin) return res.status(503).json({ error: 'Database unavailable' });
+
+    const { id } = req.params;
+    const { data: connection, error } = await supabaseAdmin
+      .from('social_connections')
+      .select('*')
+      .eq('id', id)
+      .eq('user_id', userId)
+      .single();
+    if (error || !connection) return res.status(404).json({ error: 'Connection not found' });
+
+    const result = await runSync({ supabaseAdmin, connection });
+    return res.json(result);
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'Sync failed' });
+  }
+});
+
+// ── Update (pause / resume) ─────────────────────────────────────────────────
+app.patch('/api/connections/:id', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Not authenticated' });
+    if (!supabaseAdmin) return res.status(503).json({ error: 'Database unavailable' });
+
+    const { id } = req.params;
+    const allowed = {};
+    if (typeof req.body?.status === 'string' && ['active', 'paused'].includes(req.body.status)) {
+      allowed.status = req.body.status;
+    }
+    if (Number.isFinite(req.body?.sync_interval_minutes)) {
+      allowed.sync_interval_minutes = Math.max(5, Math.min(1440, Number(req.body.sync_interval_minutes)));
+    }
+    if (!Object.keys(allowed).length) return res.status(400).json({ error: 'Nothing to update' });
+
+    const { data, error } = await supabaseAdmin
+      .from('social_connections')
+      .update(allowed)
+      .eq('id', id)
+      .eq('user_id', userId)
+      .select(
+        'id, provider, provider_user_id, account_handle, account_display_name, ' +
+        'account_avatar_url, scopes, status, last_synced_at, last_sync_count, ' +
+        'total_synced_count, sync_interval_minutes, created_at',
+      )
+      .single();
+    if (error) return res.status(500).json({ error: error.message });
+    if (!data) return res.status(404).json({ error: 'Connection not found' });
+    return res.json({ connection: data });
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'Update failed' });
+  }
+});
+
+// ── Disconnect ──────────────────────────────────────────────────────────────
+app.delete('/api/connections/:id', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Not authenticated' });
+    if (!supabaseAdmin) return res.status(503).json({ error: 'Database unavailable' });
+
+    const { id } = req.params;
+    // We don't bother revoking the token at the provider here; the user
+    // can do that from the provider's own UI if they want. Most providers
+    // don't even offer a clean revoke endpoint without re-auth.
+    const { error } = await supabaseAdmin
+      .from('social_connections')
+      .delete()
+      .eq('id', id)
+      .eq('user_id', userId);
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'Delete failed' });
+  }
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 const HOST = process.env.HOST || '0.0.0.0';
-const frontendUrl = process.env.FRONTEND_URL || 'https://lykinsai-1.onrender.com';
+const frontendUrl = process.env.FRONTEND_URL || 'https://lykn.io';
 
 export { app };
 
@@ -6653,5 +8689,77 @@ if (process.env.NODE_ENV !== 'test') {
     console.log(`   - Google Gemini: ${process.env.GOOGLE_API_KEY ? '✅' : '❌'}`);
     console.log(`   - xAI Grok: ${process.env.XAI_API_KEY ? '✅' : '❌'}`);
     startSessionCleanup();
+
+    // RSS poller — defaults ON for any long-running process (Render,
+    // local dev, self-hosted). Defaults OFF on serverless (Vercel,
+    // AWS Lambda, etc.) where setInterval doesn't survive between
+    // requests. On serverless, set up a 1-minute cron to hit
+    //   POST /api/feeds/poll-due
+    // with `Authorization: Bearer ${ADMIN_INGEST_SECRET}`.
+    //
+    // Override either way:
+    //   RSS_POLLER_ENABLED=1   → force on
+    //   RSS_POLLER_ENABLED=0   → force off
+    const isServerless =
+      process.env.VERCEL === '1' ||
+      process.env.AWS_LAMBDA_FUNCTION_NAME ||
+      process.env.NETLIFY === 'true';
+    const explicitRssToggle = process.env.RSS_POLLER_ENABLED;
+    const rssPollerOn =
+      explicitRssToggle === '1' || explicitRssToggle === 'true'
+        ? true
+        : explicitRssToggle === '0' || explicitRssToggle === 'false'
+          ? false
+          : !isServerless;
+    if (rssPollerOn && supabaseAdmin) {
+      const intervalMs = Math.max(15_000, Number(process.env.RSS_POLLER_INTERVAL_MS) || 60_000);
+      const poller = makeRssPoller({ supabaseAdmin, intervalMs });
+      poller.start();
+    } else {
+      console.log('→ RSS poller: ⚪ disabled (set RSS_POLLER_ENABLED=1 to enable)');
+    }
+
+    // Connector poller — same on/off rules as RSS. Polls /user/starred
+    // (GitHub), /saved (Reddit), Notion pages, etc. on each connection's
+    // configured interval. On serverless, schedule a cron against
+    //   POST /api/connections/poll-due
+    // (TODO: expose this admin endpoint when we deploy serverless).
+    const explicitConnToggle = process.env.CONNECTOR_POLLER_ENABLED;
+    const connectorPollerOn =
+      explicitConnToggle === '1' || explicitConnToggle === 'true'
+        ? true
+        : explicitConnToggle === '0' || explicitConnToggle === 'false'
+          ? false
+          : !isServerless;
+    if (connectorPollerOn && supabaseAdmin) {
+      const intervalMs = Math.max(
+        15_000,
+        Number(process.env.CONNECTOR_POLLER_INTERVAL_MS) || 90_000,
+      );
+      const poller = makeConnectorPoller({ supabaseAdmin, intervalMs });
+      poller.start();
+    } else {
+      console.log(
+        '→ Connector poller: ⚪ disabled (set CONNECTOR_POLLER_ENABLED=1 to enable)',
+      );
+    }
+
+    // Quick boot summary of which providers are wired up.
+    const providers = Object.keys(CONNECTOR_REGISTRY);
+    if (providers.length) {
+      console.log('→ Connectors:');
+      for (const id of providers) {
+        const ok = isProviderConfigured(id);
+        const prefix = envPrefixFor(id);
+        console.log(
+          `   - ${id}: ${ok ? '✅ configured' : `⚪ not configured (set ${prefix}_CLIENT_ID/_SECRET)`}`,
+        );
+      }
+      if (!process.env.CONNECTOR_TOKEN_KEY) {
+        console.log(
+          '   ⚠️  CONNECTOR_TOKEN_KEY missing. Generate with: openssl rand -hex 32',
+        );
+      }
+    }
   });
 }

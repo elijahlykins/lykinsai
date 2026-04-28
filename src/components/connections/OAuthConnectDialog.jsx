@@ -1,0 +1,476 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { supabase } from "@/lib/supabase";
+import { API_BASE_URL } from "@/lib/api-config";
+import { toast } from "@/components/ui/use-toast";
+import {
+  Loader2,
+  RefreshCw,
+  Pause,
+  Play,
+  Unplug,
+  CheckCircle2,
+  AlertTriangle,
+  Shield,
+  ArrowUpRight,
+} from "lucide-react";
+
+/**
+ * Generic OAuth connection dialog. Renders for any provider the backend
+ * supports — GitHub today, Reddit / Notion / Spotify / Pinterest as we
+ * add adapters. The dialog is intentionally provider-agnostic; everything
+ * provider-specific (display name, scopes, what we pull) is passed in.
+ *
+ * Props:
+ *   open, onOpenChange — Radix dialog control
+ *   connector          — full row from src/lib/connectors/catalog.js
+ */
+export default function OAuthConnectDialog({ open, onOpenChange, connector }) {
+  const [connections, setConnections] = useState([]);
+  const [providerConfigured, setProviderConfigured] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [connecting, setConnecting] = useState(false);
+  const [syncingId, setSyncingId] = useState(null);
+
+  const provider = connector?.id;
+  const myConnections = useMemo(
+    () => connections.filter((c) => c.provider === provider),
+    [connections, provider],
+  );
+
+  const refresh = useCallback(async () => {
+    if (!provider) return;
+    setLoading(true);
+    try {
+      const res = await authedFetch("/api/connections");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setConnections(data.connections || []);
+      setProviderConfigured(Boolean(data.providerConfig?.[provider] ?? true));
+    } catch (err) {
+      toast({
+        title: "Couldn't load connections",
+        description: err.message,
+        variant: "destructive",
+      });
+    } finally {
+      setLoading(false);
+    }
+  }, [provider]);
+
+  useEffect(() => {
+    if (open) refresh();
+  }, [open, refresh]);
+
+  // Listen for the popup → opener handshake. The /oauth/callback page
+  // posts a message with { type:'lykn:oauth', provider, ok } and closes
+  // itself. We refresh the list whenever we see that for our provider.
+  //
+  // The popup runs at the API origin (e.g. lykn-ideation.onrender.com), so
+  // event.origin won't equal location.origin — we validate against the
+  // configured API_BASE_URL instead. Defense-in-depth; the payload itself
+  // contains no secrets.
+  useEffect(() => {
+    if (!open) return;
+    const expectedOrigin = (() => {
+      try {
+        return new URL(API_BASE_URL).origin;
+      } catch {
+        return "";
+      }
+    })();
+    const onMessage = (event) => {
+      // Only trust messages from our own API origin.
+      if (expectedOrigin && event.origin !== expectedOrigin) return;
+      const msg = event?.data;
+      if (!msg || msg.type !== "lykn:oauth") return;
+      if (msg.provider !== provider) return;
+      if (msg.ok) {
+        toast({
+          title: `Connected to ${connector.name}`,
+          description: "Initial sync started — check your Vault in a moment.",
+        });
+      } else {
+        toast({
+          title: "Connection failed",
+          description: "The provider rejected the request or you cancelled.",
+          variant: "destructive",
+        });
+      }
+      setConnecting(false);
+      refresh();
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [open, provider, connector?.name, refresh]);
+
+  const handleConnect = useCallback(async () => {
+    if (!providerConfigured) return;
+    setConnecting(true);
+    try {
+      const res = await authedFetch(`/api/connections/${provider}/start`, {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+      const w = 620;
+      const h = 760;
+      const left = Math.max(0, (window.screen.width - w) / 2);
+      const top = Math.max(0, (window.screen.height - h) / 2);
+      const popup = window.open(
+        data.url,
+        "lyknOauth",
+        `width=${w},height=${h},left=${left},top=${top},popup=1`,
+      );
+      if (!popup) {
+        // Popup blocked — fall back to current tab.
+        window.location.href = data.url;
+        return;
+      }
+      // Watchdog: if the popup closes without sending a message, stop the
+      // spinner. (User cancelled, browser killed it, etc.)
+      const watchdog = setInterval(() => {
+        if (popup.closed) {
+          clearInterval(watchdog);
+          setConnecting(false);
+        }
+      }, 500);
+    } catch (err) {
+      setConnecting(false);
+      toast({
+        title: "Couldn't start OAuth",
+        description: err.message,
+        variant: "destructive",
+      });
+    }
+  }, [provider, providerConfigured]);
+
+  const handleSync = useCallback(
+    async (id) => {
+      setSyncingId(id);
+      try {
+        const res = await authedFetch(`/api/connections/${id}/sync`, { method: "POST" });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        if ((data.saved || 0) > 0) {
+          toast({ title: `+${data.saved} saved`, description: "Check your Vault." });
+        } else if (data.status === "reauth") {
+          toast({
+            title: "Token revoked",
+            description: "Reconnect to keep syncing.",
+            variant: "destructive",
+          });
+        } else {
+          toast({ title: "Already up to date", description: "No new items." });
+        }
+        refresh();
+      } catch (err) {
+        toast({ title: "Sync failed", description: err.message, variant: "destructive" });
+      } finally {
+        setSyncingId(null);
+      }
+    },
+    [refresh],
+  );
+
+  const handleToggleStatus = useCallback(
+    async (conn) => {
+      const next = conn.status === "paused" ? "active" : "paused";
+      try {
+        const res = await authedFetch(`/api/connections/${conn.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ status: next }),
+        });
+        if (!res.ok) {
+          const d = await res.json().catch(() => ({}));
+          throw new Error(d.error || `HTTP ${res.status}`);
+        }
+        refresh();
+      } catch (err) {
+        toast({ title: "Update failed", description: err.message, variant: "destructive" });
+      }
+    },
+    [refresh],
+  );
+
+  const handleDisconnect = useCallback(
+    async (conn) => {
+      if (
+        !confirm(
+          `Disconnect ${connector.name} (${conn.account_handle || conn.account_display_name})? Items already in your vault stay.`,
+        )
+      )
+        return;
+      try {
+        const res = await authedFetch(`/api/connections/${conn.id}`, { method: "DELETE" });
+        if (!res.ok) {
+          const d = await res.json().catch(() => ({}));
+          throw new Error(d.error || `HTTP ${res.status}`);
+        }
+        toast({ title: "Disconnected", description: `${connector.name} unlinked.` });
+        refresh();
+      } catch (err) {
+        toast({ title: "Delete failed", description: err.message, variant: "destructive" });
+      }
+    },
+    [connector?.name, refresh],
+  );
+
+  if (!connector) return null;
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-lg bg-white dark:bg-zinc-950 border border-black/10 dark:border-white/10">
+        <DialogHeader>
+          <DialogTitle className="text-[18px] font-semibold tracking-tight flex items-center gap-2">
+            <ProviderFavicon connector={connector} />
+            {connector.name}
+          </DialogTitle>
+          <DialogDescription className="text-[12.5px] leading-relaxed text-black/60 dark:text-white/60">
+            {connector.summary}
+          </DialogDescription>
+        </DialogHeader>
+
+        {/* ── Scopes / what we pull ───────────────────────── */}
+        <div className="rounded-xl border border-black/[0.08] dark:border-white/10 bg-black/[0.02] dark:bg-white/[0.04] p-3">
+          <div className="flex items-center gap-1.5 text-[11px] font-medium text-black/65 dark:text-white/70 mb-1.5">
+            <Shield className="h-3 w-3" />
+            What LYKN reads
+          </div>
+          <ul className="space-y-1">
+            {(connector.pulls || []).map((p) => (
+              <li
+                key={p}
+                className="text-[12px] text-black/75 dark:text-white/80 flex items-start gap-2"
+              >
+                <span className="mt-1 h-1 w-1 rounded-full bg-black/40 dark:bg-white/40 flex-shrink-0" />
+                {p}
+              </li>
+            ))}
+          </ul>
+          <div className="mt-2 text-[10.5px] text-black/45 dark:text-white/45">
+            Read-only. No posts, edits, follows, or DMs. You can disconnect any time.
+          </div>
+        </div>
+
+        {/* ── Provider not configured fallback ─────────────── */}
+        {!providerConfigured && (
+          <div className="rounded-xl border border-amber-300 dark:border-amber-900/50 bg-amber-50 dark:bg-amber-950/20 px-3 py-2.5 text-[12px] text-amber-900 dark:text-amber-200 flex items-start gap-2">
+            <AlertTriangle className="h-3.5 w-3.5 mt-[2px] flex-shrink-0" />
+            <span>
+              <strong>Not configured on the server.</strong> Set{" "}
+              <code className="px-1 rounded bg-amber-100 dark:bg-amber-900/30 text-[11px]">
+                {provider.toUpperCase()}_CLIENT_ID
+              </code>{" "}
+              and{" "}
+              <code className="px-1 rounded bg-amber-100 dark:bg-amber-900/30 text-[11px]">
+                {provider.toUpperCase()}_CLIENT_SECRET
+              </code>{" "}
+              in <code>.env</code>, then restart the API.
+            </span>
+          </div>
+        )}
+
+        {/* ── Already connected accounts ───────────────────── */}
+        {myConnections.length > 0 ? (
+          <div className="space-y-2">
+            <div className="text-[11px] font-medium text-black/65 dark:text-white/70 flex items-center gap-1.5">
+              <CheckCircle2 className="h-3 w-3 text-emerald-500" />
+              Connected
+            </div>
+            <ul className="space-y-1.5">
+              {myConnections.map((conn) => (
+                <ConnectionRow
+                  key={conn.id}
+                  conn={conn}
+                  syncing={syncingId === conn.id}
+                  onSync={() => handleSync(conn.id)}
+                  onToggle={() => handleToggleStatus(conn)}
+                  onDisconnect={() => handleDisconnect(conn)}
+                />
+              ))}
+            </ul>
+            <button
+              type="button"
+              onClick={handleConnect}
+              disabled={!providerConfigured || connecting}
+              className="w-full mt-1 h-9 rounded-lg border border-dashed border-black/15 dark:border-white/15 text-[12px] text-black/55 dark:text-white/55 hover:bg-black/[0.03] dark:hover:bg-white/[0.04] disabled:opacity-50 inline-flex items-center justify-center gap-1.5"
+            >
+              {connecting ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <ArrowUpRight className="h-3.5 w-3.5" />
+              )}
+              Add another {connector.name} account
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={handleConnect}
+            disabled={!providerConfigured || connecting}
+            className="w-full h-10 rounded-xl bg-black text-white dark:bg-white dark:text-black text-[13px] font-semibold disabled:opacity-50 inline-flex items-center justify-center gap-2 shadow-sm hover:opacity-90 transition-opacity"
+          >
+            {connecting ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <ArrowUpRight className="h-4 w-4" />
+            )}
+            Connect {connector.name}
+          </button>
+        )}
+
+        {loading && (
+          <div className="text-[10.5px] text-black/40 dark:text-white/40 inline-flex items-center gap-1.5">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            Refreshing…
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ConnectionRow({ conn, syncing, onSync, onToggle, onDisconnect }) {
+  const isPaused = conn.status === "paused";
+  const isReauth = conn.status === "reauth";
+  const isError = conn.status === "error";
+
+  return (
+    <li
+      className={`rounded-xl border px-3 py-2.5 flex items-center gap-3 transition-colors ${
+        isReauth || isError
+          ? "border-rose-200 dark:border-rose-900/40 bg-rose-50/40 dark:bg-rose-950/15"
+          : isPaused
+            ? "border-black/[0.08] dark:border-white/[0.08] bg-black/[0.02] dark:bg-white/[0.02] opacity-70"
+            : "border-black/[0.08] dark:border-white/[0.08] bg-white dark:bg-white/[0.03]"
+      }`}
+    >
+      {conn.account_avatar_url ? (
+        <img
+          src={conn.account_avatar_url}
+          alt=""
+          className="h-7 w-7 rounded-full object-cover flex-shrink-0 bg-black/[0.04] dark:bg-white/[0.06]"
+        />
+      ) : (
+        <div className="h-7 w-7 rounded-full bg-black/[0.06] dark:bg-white/[0.08] flex items-center justify-center text-[10px] font-semibold text-black/55 dark:text-white/65">
+          {(conn.account_handle || conn.provider)[0]?.toUpperCase() || "?"}
+        </div>
+      )}
+      <div className="min-w-0 flex-1">
+        <div className="text-[12.5px] font-medium text-black/85 dark:text-white/90 truncate">
+          @{conn.account_handle || conn.account_display_name || conn.provider_user_id}
+        </div>
+        <div className="text-[10.5px] text-black/45 dark:text-white/45 truncate">
+          {conn.total_synced_count || 0} item{(conn.total_synced_count || 0) === 1 ? "" : "s"}
+          {" · "}
+          {conn.last_synced_at ? `synced ${relativeTime(conn.last_synced_at)}` : "never synced"}
+          {isReauth && " · needs reconnect"}
+          {isError && conn.last_error ? ` · ${truncate(conn.last_error, 60)}` : ""}
+          {isPaused && " · paused"}
+        </div>
+      </div>
+      <div className="flex items-center gap-0.5 flex-shrink-0">
+        <IconButton
+          title="Sync now"
+          onClick={onSync}
+          disabled={syncing}
+          icon={
+            syncing ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <RefreshCw className="h-3.5 w-3.5" />
+            )
+          }
+        />
+        <IconButton
+          title={isPaused ? "Resume" : "Pause"}
+          onClick={onToggle}
+          icon={isPaused ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}
+        />
+        <IconButton
+          title="Disconnect"
+          onClick={onDisconnect}
+          danger
+          icon={<Unplug className="h-3.5 w-3.5" />}
+        />
+      </div>
+    </li>
+  );
+}
+
+function ProviderFavicon({ connector }) {
+  const url = connector.domain
+    ? `https://www.google.com/s2/favicons?domain=${connector.domain}&sz=64`
+    : "";
+  if (!url) return null;
+  return (
+    <img
+      src={url}
+      alt=""
+      className="h-5 w-5 rounded-sm object-cover bg-black/[0.04] dark:bg-white/[0.06]"
+      onError={(e) => {
+        e.currentTarget.style.display = "none";
+      }}
+    />
+  );
+}
+
+function IconButton({ icon, title, onClick, danger, disabled }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      disabled={disabled}
+      className={`h-7 w-7 rounded-md flex items-center justify-center transition-colors disabled:opacity-50 ${
+        danger
+          ? "text-black/45 dark:text-white/45 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30"
+          : "text-black/55 dark:text-white/55 hover:text-black/85 dark:hover:text-white/90 hover:bg-black/[0.05] dark:hover:bg-white/[0.06]"
+      }`}
+    >
+      {icon}
+    </button>
+  );
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+async function authedFetch(path, init = {}) {
+  const { data: sess } = await supabase.auth.getSession();
+  const token = sess?.session?.access_token || "";
+  return fetch(`${API_BASE_URL}${path}`, {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...(init.headers || {}),
+      Authorization: `Bearer ${token}`,
+    },
+  });
+}
+
+function relativeTime(iso) {
+  const t = new Date(iso).getTime();
+  if (!t) return "—";
+  const diff = Date.now() - t;
+  const sec = Math.floor(diff / 1000);
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const day = Math.floor(hr / 24);
+  if (day < 30) return `${day}d ago`;
+  return `${Math.floor(day / 30)}mo ago`;
+}
+
+function truncate(s, max) {
+  return s.length > max ? s.slice(0, max - 1) + "…" : s;
+}

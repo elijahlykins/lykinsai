@@ -1,11 +1,11 @@
 // API Configuration - handles both development and production
-// Frontend: Vercel (e.g., https://lykinsai.vercel.app)
-// Backend: Render (e.g., https://lykinsai-1.onrender.com)
+// Frontend: Vercel (https://lykn.io)
+// Backend: Render (e.g., https://lykn-ideation.onrender.com)
 // In development, it uses localhost
 
 const getApiBaseUrl = () => {
   // Check for environment variable first (highest priority)
-  // This should be set in Vercel: VITE_API_BASE_URL=https://lykinsai-1.onrender.com
+  // This should be set in Vercel: VITE_API_BASE_URL=https://lykn-ideation.onrender.com
   if (typeof window !== 'undefined') {
     const envApiUrl = import.meta.env.VITE_API_BASE_URL;
     if (envApiUrl) {
@@ -20,7 +20,7 @@ const getApiBaseUrl = () => {
     if (isProduction) {
       // Default production backend URL (should be overridden by env var)
       // Update this to your actual Render backend URL
-      return 'https://lykinsai-1.onrender.com';
+      return 'https://lykn-ideation.onrender.com';
     }
   }
   

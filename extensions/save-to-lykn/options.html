@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LYKN — Settings</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, sans-serif;
+      }
+      body {
+        margin: 0;
+        padding: 24px;
+        max-width: 480px;
+        background: #ffffff;
+        color: #111;
+      }
+      @media (prefers-color-scheme: dark) {
+        body { background: #0b0b0c; color: #f5f5f5; }
+        input { background: #1a1a1c; color: #f5f5f5; border-color: #2a2a2d; }
+        button { background: #ffffff; color: #111; border-color: #ffffff; }
+        .hint { color: #9aa0a6; }
+      }
+      h1 { margin: 0 0 4px; font-size: 18px; }
+      p.hint { margin: 0 0 18px; font-size: 12px; color: #6b7280; }
+      label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 6px; }
+      input[type="url"] {
+        width: 100%;
+        box-sizing: border-box;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        padding: 8px 10px;
+        font-size: 13px;
+        font-family: inherit;
+      }
+      .row { margin-top: 14px; display: flex; gap: 8px; align-items: center; }
+      button {
+        appearance: none;
+        border: 1px solid #111;
+        background: #111;
+        color: #fff;
+        border-radius: 8px;
+        padding: 8px 14px;
+        font-size: 13px;
+        font-weight: 500;
+        cursor: pointer;
+      }
+      .status { font-size: 12px; color: #059669; }
+      .status.error { color: #dc2626; }
+    </style>
+  </head>
+  <body>
+    <h1>Save to LYKN</h1>
+    <p class="hint">
+      Set the base URL of your LYKN app. Use your production domain in normal use,
+      or <code>http://localhost:5173</code> for local development.
+    </p>
+    <label for="baseUrl">LYKN base URL</label>
+    <input id="baseUrl" type="url" placeholder="https://lykn.io" />
+    <div class="row">
+      <button id="save">Save</button>
+      <span class="status" id="status"></span>
+    </div>
+    <script src="options.js"></script>
+  </body>
+</html>

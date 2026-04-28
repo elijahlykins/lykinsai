@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { Canvas } from "@/canvas/Canvas";
 import { useCanvasStore } from "@/store/canvasStore";
 import type { Block } from "@/canvas/types";
@@ -622,6 +622,7 @@ const OmniaChatBarToolbar = React.memo(function OmniaChatBarToolbar({
 
 export default function OmniaGridPage() {
   const nav = useNavigate();
+  const location = useLocation();
   const { boardId: routeBoardId } = useParams<{ boardId?: string }>();
   const { user } = useAuth();
   const { modelTier, loading: planLoading, isGuest } = useUserPlan();
@@ -768,7 +769,29 @@ export default function OmniaGridPage() {
     } catch { /* ignore */ }
   }, [modelTier, planLoading, selectedModel]);
 
-  const [chatMode, setChatMode] = useState(false);
+  // Allow callers (e.g. the Skills page) to deep-link directly into the
+  // grid in chat-focused mode by appending `?chat=1` to the URL. We read
+  // the flag once on mount, then strip it from the URL so it doesn't
+  // linger across reloads or shares.
+  const [chatMode, setChatMode] = useState(() => {
+    if (typeof window === "undefined") return false;
+    const params = new URLSearchParams(window.location.search);
+    return params.get("chat") === "1";
+  });
+  useEffect(() => {
+    if (!location.search) return;
+    const params = new URLSearchParams(location.search);
+    if (params.has("chat")) {
+      params.delete("chat");
+      const cleaned = params.toString();
+      nav(
+        { pathname: location.pathname, search: cleaned ? `?${cleaned}` : "" },
+        { replace: true }
+      );
+    }
+    // Only run on initial mount; later URL changes are handled elsewhere.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [notesOpen, setNotesOpenRaw] = useState(false);
   const [notesGridFilesHidden, setNotesGridFilesHidden] = useState(false);
   const setNotesOpen = useCallback((v: boolean | ((prev: boolean) => boolean)) => {

@@ -1,8 +1,8 @@
 # Deployment Configuration
 
 ## Architecture
-- **Frontend**: Vercel (e.g., `https://lykinsai.vercel.app`)
-- **Backend**: Render (e.g., `https://lykinsai-1.onrender.com`)
+- **Frontend**: Vercel (`https://lykn.io`)
+- **Backend**: Render (e.g., `https://lykn-ideation.onrender.com`)
 
 ## Environment Variables Setup
 
@@ -21,8 +21,8 @@ Set these in your **Vercel Project Settings > Environment Variables**:
 ```env
 # REQUIRED: Backend API URL
 # Local: http://localhost:3001
-# Production: https://lykinsai-1.onrender.com (your Render backend URL)
-VITE_API_BASE_URL=https://lykinsai-1.onrender.com
+# Production: https://lykn-ideation.onrender.com (your Render backend URL)
+VITE_API_BASE_URL=https://lykn-ideation.onrender.com
 
 # Optional: Frontend URL (for OAuth redirects, auto-detected if not set)
 # Local: http://localhost:5173
@@ -85,7 +85,7 @@ fetch(`${API_BASE_URL}/api/ai/invoke`, { ... });
 
 **Result:**
 - Running locally → `http://localhost:3001`
-- Deployed on Vercel → `https://lykinsai-1.onrender.com` (from env var)
+- Deployed on Vercel → `https://lykn-ideation.onrender.com` (from env var)
 - **No code changes needed!** ✅
 
 ### Backend CORS Configuration
@@ -115,7 +115,7 @@ The backend automatically allows requests from:
 
 2. **Set Environment Variables** in Render (see above)
 
-3. **Note your Render backend URL** (e.g., `https://lykinsai-1.onrender.com`)
+3. **Note your Render backend URL** (e.g., `https://lykn-ideation.onrender.com`)
 
 ### 2. Deploy Frontend to Vercel
 
@@ -125,8 +125,8 @@ The backend automatically allows requests from:
    - Root Directory: `lykinsai-97a137df`
 
 2. **Set Environment Variables** in Vercel:
-   - `VITE_API_BASE_URL` = Your Render backend URL (e.g., `https://lykinsai-1.onrender.com`)
-   - `VITE_FRONTEND_BASE_URL` = Your Vercel frontend URL (e.g., `https://lykinsai.vercel.app`)
+   - `VITE_API_BASE_URL` = Your Render backend URL (e.g., `https://lykn-ideation.onrender.com`)
+   - `VITE_FRONTEND_BASE_URL` = Your Vercel frontend URL (e.g., `https://lykn.io`)
    - All Supabase variables
 
 3. **Deploy** - Vercel will automatically build and deploy
@@ -135,8 +135,8 @@ The backend automatically allows requests from:
 
 Update these in your OAuth provider dashboards:
 
-- **Pinterest**: `https://lykinsai-1.onrender.com/api/social/callback/pinterest`
-- **Instagram**: `https://lykinsai-1.onrender.com/api/social/callback/instagram`
+- **Pinterest**: `https://lykn-ideation.onrender.com/api/social/callback/pinterest`
+- **Instagram**: `https://lykn-ideation.onrender.com/api/social/callback/instagram`
 
 ## Local Development
 

@@ -474,7 +474,24 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
                                   draggable
                                   onClick={(e) => { if (!isSingle) handleChunkClick(e, chunkKey, chunk); }}
                                   onDragStart={(e) => {
-                                    const sel = window.getSelection()?.toString()?.trim();
+                                    // Prefer the chunk's raw markdown so formatting (headings,
+                                    // bold, lists, tables, code) survives the drop. Only honor a
+                                    // window selection when it's actually inside the dragged
+                                    // chunk AND is a substring of the markdown source — otherwise
+                                    // a stale or partial selection of rendered text would strip
+                                    // markdown markers.
+                                    let sel = "";
+                                    try {
+                                      const s = window.getSelection();
+                                      if (s && s.rangeCount > 0 && !s.isCollapsed) {
+                                        const range = s.getRangeAt(0);
+                                        const target = e.currentTarget as Node;
+                                        if (target.contains(range.commonAncestorContainer)) {
+                                          const t = String(s.toString() || "").trim();
+                                          if (t && chunk.includes(t)) sel = t;
+                                        }
+                                      }
+                                    } catch { /* ignore */ }
                                     const text = sel || getSelectedText(chunkKey, chunk);
                                     e.dataTransfer.effectAllowed = "copy";
                                     e.dataTransfer.setData("application/x-omnia-chat-response", text);
