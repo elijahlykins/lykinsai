@@ -998,6 +998,17 @@ body.embedded-vault-mode .app-content {
     font-size: 16px;
   }
 
+  /* Tailwind utilities like `text-xs` win against the bare `textarea`
+     selector above, so iOS still auto-zooms when the chat composer is
+     focused on phones. Boost specificity for the chat textarea(s) to
+     guarantee the 16px floor and stop the focus zoom. */
+  textarea.omnia-neu-chat-field,
+  textarea.omnia-neu-chat-field.text-xs,
+  .omnia-neu-chat-shell textarea {
+    font-size: 16px !important;
+    line-height: 1.35 !important;
+  }
+
   /* Stop chrome that's anchored with `var(--sidebar-offset)` from leaving a
      dead pixel column when the offset variable is unexpectedly set. */
   [data-sidebar-anchored] {

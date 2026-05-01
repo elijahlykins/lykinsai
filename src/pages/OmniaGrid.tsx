@@ -46,6 +46,7 @@ import OmniaVaultOverlay from "@/components/omnia/OmniaVaultOverlay";
 import FileDropModeDialog from "@/components/omnia/FileDropModeDialog";
 import OmniaSideRail from "@/components/omnia/OmniaSideRail";
 import OmniaFocusedChat from "@/components/omnia/OmniaFocusedChat";
+import MobileFocusedChatGrids from "@/components/omnia/MobileFocusedChatGrids";
 import GridShareDialog from "@/components/omnia/GridShareDialog";
 import { useBoardPersistence, makeDefaultNotesPages } from "@/hooks/useBoardPersistence";
 import { useChatEngine } from "@/hooks/useChatEngine";
@@ -2872,6 +2873,10 @@ export default function OmniaGridPage() {
           chatBarToolbar={<OmniaChatBarToolbar compact onSend={handleChatSend} {...chatBarToolbarProps} />}
         />
       )}
+
+      {/* Phone-only grids drawer for focused chat. Lets users browse and
+          create grids without leaving chat-only mobile mode. */}
+      {chatMode && isMobilePhone && <MobileFocusedChatGrids />}
 
       {/* Focused chat mode — centered, below top panel, no overlay */}
       {chatMode && (
