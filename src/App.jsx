@@ -20,6 +20,7 @@ import Discover from "./pages/Discover";
 import SharedGrid from "./pages/SharedGrid";
 import PlanGate from "./components/PlanGate";
 import AppSidebar from "./components/AppSidebar";
+import MobileTabBar from "./components/MobileTabBar";
 import VaultNew from "./pages/new/VaultNew";
 import VaultChatNew from "./pages/new/VaultChatNew";
 import TagManagementNew from "./pages/new/TagManagementNew";
@@ -28,6 +29,7 @@ import VaultUploadToast from "./components/files/VaultUploadToast";
 import GuestSignInPrompt from "./components/GuestSignInPrompt";
 import ShareReceiver from "./pages/ShareReceiver";
 import Connections from "./pages/Connections";
+import { useIsMobile } from "@/hooks/useViewportTier";
 
 
 const legacyEnabled = String(import.meta.env.VITE_ENABLE_LEGACY_NOTES || "").toLowerCase() === "true";
@@ -41,9 +43,16 @@ function ProtectedRoute({ children }) {
   return children;
 }
 
+function MobileRedirect({ children, to = "/" }) {
+  const isMobile = useIsMobile();
+  if (isMobile) return <Navigate to={to} replace />;
+  return children;
+}
+
 function AppShell() {
   const { user, loading } = useAuth();
   const location = useLocation();
+  const isMobile = useIsMobile();
   const search = new URLSearchParams(location.search);
   const isEmbeddedVault = location.pathname === "/vault" && search.get("embedded") === "1";
   const isLoginPage = location.pathname === "/login";
@@ -64,7 +73,8 @@ function AppShell() {
 
   return (
     <>
-      {!isEmbeddedVault && !isStandalone && <AppSidebar />}
+      {!isEmbeddedVault && !isStandalone && !isMobile && <AppSidebar />}
+      {!isEmbeddedVault && !isStandalone && isMobile && <MobileTabBar />}
       {!isEmbeddedVault && !isStandalone && user && <IntakeModal />}
       {!isEmbeddedVault && !isSharedGridView && user && <VaultUploadToast />}
       {!isEmbeddedVault && !isStandalone && !user && <GuestSignInPrompt />}
@@ -77,7 +87,14 @@ function AppShell() {
             <Route path="/dashboard" element={<Navigate to="/" replace />} />
             <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
             <Route path="/grid/:boardId" element={<ProtectedRoute><OmniaGrid /></ProtectedRoute>} />
-            <Route path="/project/:projectId" element={<ProjectPlaceholder />} />
+            <Route
+              path="/project/:projectId"
+              element={
+                <MobileRedirect to="/">
+                  <ProjectPlaceholder />
+                </MobileRedirect>
+              }
+            />
             <Route path="/omnia" element={<ProtectedRoute><OmniaGrid /></ProtectedRoute>} />
             <Route path="/vault" element={<VaultNew />} />
             <Route path="/discover" element={<ProtectedRoute><Discover /></ProtectedRoute>} />
@@ -93,17 +110,19 @@ function AppShell() {
             <Route
               path="/synthesis-layer"
               element={
-                user ? (
-                  <PlanGate
-                    minPlan="studio"
-                    feature="Mind Map"
-                    description="The synthesis layer visualises every grid, project, and vault item as a live mind map. Upgrade to Studio to explore it."
-                  >
+                <MobileRedirect to="/">
+                  {user ? (
+                    <PlanGate
+                      minPlan="studio"
+                      feature="Mind Map"
+                      description="The synthesis layer visualises every grid, project, and vault item as a live mind map. Upgrade to Studio to explore it."
+                    >
+                      <SynthesisLayer />
+                    </PlanGate>
+                  ) : (
                     <SynthesisLayer />
-                  </PlanGate>
-                ) : (
-                  <SynthesisLayer />
-                )
+                  )}
+                </MobileRedirect>
               }
             />
             <Route

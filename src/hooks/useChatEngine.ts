@@ -7,7 +7,6 @@ import { supabase } from "@/lib/supabase";
 import { getStructuredPasteFromEvent } from "@/lib/pasteFromClipboard";
 import { buildTieredCanvasContext, buildActionCanvasContext } from "@/lib/ai/buildCanvasContext";
 import { getVaultSidebarWidth } from "@/hooks/useViewportTier";
-import { afterVaultNoteSaved } from "@/lib/vault/afterVaultSave";
 import { getBlockDefinition } from "@/canvas/blockSystem/definitions";
 import type { UniversalBlockType } from "@/canvas/blockSystem/types";
 import { createDatabaseBlockData } from "@/canvas/blockSystem/notionModel";
@@ -21,6 +20,9 @@ import {
   type ChatSendParams,
 } from "@/lib/ai/chatSendOrchestrator";
 import { markdownToTiptap } from "@/lib/markdownToTiptap";
+import { isDemoGridId } from "@/lib/demoGrids";
+import { toast } from "@/components/ui/use-toast";
+import { parseAttachmentsFromContent } from "@/lib/vault/attachmentsMarker";
 
 export type { PromptMessage, FocusedChatAttachment, CreateAction, OrchestratorResult };
 
@@ -754,18 +756,28 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     const cleanText = aiText.replace(/\s*\[PULL_MEDIA:[^\]]*\]/g, "").trimEnd();
 
     let pulled = 0;
-    const st = useCanvasStore.getState() as any;
-    const g = Math.max(1, Math.floor(st.gridSize || 24));
+    const initial = useCanvasStore.getState() as any;
+    const g = Math.max(1, Math.floor(initial.gridSize || 24));
     const vw = window.innerWidth || 1280;
     const vh = window.innerHeight || 800;
+    const userId = user?.id;
 
     const seenNotes = new Map<string, Record<string, unknown>>();
+    const youtubeUrlInBody = (body: string): string | null => {
+      const m2 = String(body || "").match(/https?:\/\/(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/shorts\/)([\w-]{11})[^\s<>"')]*/i);
+      return m2 ? m2[0] : null;
+    };
 
     for (const pull of pulls) {
       try {
         let note = seenNotes.get(pull.noteId);
         if (!note) {
-          const { data, error } = await supabase.from("notes").select("id, title, content, source").eq("id", pull.noteId).single();
+          // Defense-in-depth: even though RLS enforces the same constraint,
+          // explicitly scoping the query to the current user gives a clearer
+          // failure mode if RLS is ever misconfigured.
+          let q = supabase.from("notes").select("id, title, content, source").eq("id", pull.noteId);
+          if (userId) q = q.eq("user_id", userId);
+          const { data, error } = await q.single();
           if (error || !data) continue;
           note = data as Record<string, unknown>;
           seenNotes.set(pull.noteId, note);
@@ -775,28 +787,51 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
         if (Array.isArray(note.attachments)) rawAtts.push(...note.attachments);
         else if (typeof note.attachments === "string") { try { const p = JSON.parse(note.attachments as string); if (Array.isArray(p)) rawAtts.push(...p); } catch {} }
         if (rawAtts.length === 0 && note.content) {
-          const c = String(note.content);
-          const marker = "[ATTACHMENTS_JSON:";
-          const start = c.indexOf(marker);
-          if (start !== -1) {
-            const jsonStart = start + marker.length;
-            let bc = 0, jsonEnd = jsonStart;
-            for (let i = jsonStart; i < c.length; i++) { if (c[i] === "[") bc++; if (c[i] === "]") { bc--; if (bc === 0) { jsonEnd = i + 1; break; } } }
-            if (jsonEnd > jsonStart) { try { const p = JSON.parse(c.slice(jsonStart, jsonEnd)); if (Array.isArray(p)) rawAtts.push(...p); } catch {} }
-          }
+          // Use the canonical attachments-marker parser (handles brackets
+          // inside JSON strings) instead of a naive bracket counter that
+          // mis-parses filenames like "weird]name.png".
+          const parsed = parseAttachmentsFromContent(String(note.content));
+          if (parsed.length > 0) rawAtts.push(...parsed);
         }
 
         const att = rawAtts[pull.attIndex] as Record<string, unknown> | undefined;
+        // Snapshot the current canvas state for THIS iteration so each pull's
+        // smart placement sees the bricks we just added in earlier iterations.
+        const st = useCanvasStore.getState() as any;
 
         if (!att) {
+          // Vault notes whose body holds only a YouTube URL (no real
+          // attachments) get prompted to the model with `pull=...|0`. Honor
+          // that by routing through addYouTubeBlockAt instead of dropping a
+          // text brick the user didn't ask for.
+          const sourceUrl = String(note.source || "").trim();
           const noteContent = String(note.content || "").trim();
+          const ytUrl = (sourceUrl && extractYouTubeVideoId(sourceUrl) ? sourceUrl : null) || youtubeUrlInBody(noteContent);
+          if (ytUrl) {
+            const ytId = extractYouTubeVideoId(ytUrl);
+            if (ytId) {
+              const exists = (Array.isArray(st.blockOrder) ? st.blockOrder : []).some((bid: string) => {
+                const blk = (st.blocks as any)?.[bid];
+                return blk && String(blk.videoId || blk.data?.videoId || "") === ytId;
+              });
+              if (!exists) {
+                const pos = findSmartPlacement({ blockW: g * 12, blockH: g * 8, gridSize: g, camera: st.camera || { x: 0, y: 0, zoom: 1 }, viewportW: vw, viewportH: vh, railWidth: 0, existingBlocks: Object.values(st.blocks || {}).filter(Boolean) as any[] });
+                const newId = st.addYouTubeBlockAt({ x: pos.x, y: pos.y }, { url: ytUrl, videoId: ytId });
+                if (newId) pulled++;
+              } else {
+                pulled++;
+              }
+              continue;
+            }
+          }
+
           const noteTitle = String(note.title || "Quick Note").trim();
           if (!noteContent) continue;
           const content = noteTitle ? `# ${noteTitle}\n\n${noteContent}` : noteContent;
           const bw = g * 12; const bh = g * 6;
           const pos = findSmartPlacement({ blockW: bw, blockH: bh, gridSize: g, camera: st.camera || { x: 0, y: 0, zoom: 1 }, viewportW: vw, viewportH: vh, railWidth: 0, existingBlocks: Object.values(st.blocks || {}).filter(Boolean) as any[] });
-          const id = addTextBlockAt({ x: pos.x, y: pos.y }, { width: bw, height: bh, content, format: "rich" });
-          if (id) { st.updateBlock(id, { data: { ...((st.blocks as any)?.[id]?.data || {}), vaultPulled: true } }); pulled++; }
+          const id = addTextBlockAt({ x: pos.x, y: pos.y }, { width: bw, height: bh, content, format: "rich", data: { vaultPulled: true } });
+          if (id) pulled++;
           continue;
         }
 
@@ -830,19 +865,19 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
           const vidId = extractYouTubeVideoId(resolvedUrl);
           if (vidId) {
             const pos = findSmartPlacement({ blockW: g * 12, blockH: g * 8, gridSize: g, camera: st.camera || { x: 0, y: 0, zoom: 1 }, viewportW: vw, viewportH: vh, railWidth: 0, existingBlocks: Object.values(st.blocks || {}).filter(Boolean) as any[] });
-            st.addYouTubeBlockAt({ x: pos.x, y: pos.y }, { url: resolvedUrl, videoId: vidId });
-            pulled++;
+            const ytId = st.addYouTubeBlockAt({ x: pos.x, y: pos.y }, { url: resolvedUrl, videoId: vidId });
+            if (ytId) pulled++;
           }
         } else if (isImage && resolvedUrl) {
           const pos = findSmartPlacement({ blockW: g * 12, blockH: g * 10, gridSize: g, camera: st.camera || { x: 0, y: 0, zoom: 1 }, viewportW: vw, viewportH: vh, railWidth: 0, existingBlocks: Object.values(st.blocks || {}).filter(Boolean) as any[] });
           const bid = `create-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-          st.addBlock({ id: bid, type: "create", mode: "image", x: pos.x, y: pos.y, width: g * 12, height: g * 10, data: { src: resolvedUrl, url: resolvedUrl, name: attName, storagePath, storageBucket: bucket, vaultPulled: true }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
-          pulled++;
+          const ok = st.addBlock({ id: bid, type: "create", mode: "image", x: pos.x, y: pos.y, width: g * 12, height: g * 10, data: { src: resolvedUrl, url: resolvedUrl, name: attName, storagePath, storageBucket: bucket, vaultPulled: true }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+          if (ok) pulled++;
         } else if (isVideo && resolvedUrl) {
           const pos = findSmartPlacement({ blockW: g * 12, blockH: g * 10, gridSize: g, camera: st.camera || { x: 0, y: 0, zoom: 1 }, viewportW: vw, viewportH: vh, railWidth: 0, existingBlocks: Object.values(st.blocks || {}).filter(Boolean) as any[] });
           const bid = `create-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-          st.addBlock({ id: bid, type: "create", mode: "video", x: pos.x, y: pos.y, width: g * 12, height: g * 10, data: { src: resolvedUrl, url: resolvedUrl, name: attName, storagePath, storageBucket: bucket, vaultPulled: true }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
-          pulled++;
+          const ok = st.addBlock({ id: bid, type: "create", mode: "video", x: pos.x, y: pos.y, width: g * 12, height: g * 10, data: { src: resolvedUrl, url: resolvedUrl, name: attName, storagePath, storageBucket: bucket, vaultPulled: true }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+          if (ok) pulled++;
         } else if (isBookmark) {
           const title = String(att.name || att.siteName || note.title || "Bookmark").trim();
           const articleText = String(att.articleText || "").trim();
@@ -850,11 +885,18 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
           const content = articleText ? `# ${title}\n\n${articleText}` : desc ? `# ${title}\n\n${desc}` : `# ${title}\n\n${resolvedUrl}`;
           const bw = g * 12; const bh = g * 6;
           const pos = findSmartPlacement({ blockW: bw, blockH: bh, gridSize: g, camera: st.camera || { x: 0, y: 0, zoom: 1 }, viewportW: vw, viewportH: vh, railWidth: 0, existingBlocks: Object.values(st.blocks || {}).filter(Boolean) as any[] });
-          const id = addTextBlockAt({ x: pos.x, y: pos.y }, { width: bw, height: bh, content, format: "rich" });
-          if (id) { st.updateBlock(id, { data: { ...((st.blocks as any)?.[id]?.data || {}), vaultPulled: true } }); pulled++; }
+          const id = addTextBlockAt({ x: pos.x, y: pos.y }, { width: bw, height: bh, content, format: "rich", data: { vaultPulled: true } });
+          if (id) pulled++;
         } else if (resolvedUrl) {
           const pos = findSmartPlacement({ blockW: g * 10, blockH: g * 6, gridSize: g, camera: st.camera || { x: 0, y: 0, zoom: 1 }, viewportW: vw, viewportH: vh, railWidth: 0, existingBlocks: Object.values(st.blocks || {}).filter(Boolean) as any[] });
-          window.dispatchEvent(new CustomEvent("omnia_attach_link", { detail: { url: resolvedUrl, clientX: pos.x, clientY: pos.y } }));
+          // pos.{x,y} are WORLD coords (from findSmartPlacement); dispatch
+          // them as worldX/worldY so Canvas's onLink doesn't double-transform
+          // them through clientToWorld and place the brick off-screen.
+          // omnia_attach_link goes through Canvas's addUrlAsBlock which
+          // itself gates on the cap; we can't observe that here, so
+          // attribute to the attempt. The real cap-block is reported via
+          // the lykn:block-limit window event for upgrade UX.
+          window.dispatchEvent(new CustomEvent("omnia_attach_link", { detail: { url: resolvedUrl, worldX: pos.x, worldY: pos.y } }));
           pulled++;
         }
       } catch {
@@ -897,17 +939,34 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     const size = calcAiBubbleSize(content);
     let posX: number, posY: number;
     if (dropClientX != null && dropClientY != null) {
-      const cam = st.camera || { x: 0, y: 0, zoom: 1 };
-      const z = Math.max(0.1, cam.zoom || 1);
-      posX = Math.round(((dropClientX - (cam.x || 0)) / z) / g) * g;
-      posY = Math.round(((dropClientY - (cam.y || 0)) / z) / g) * g;
+      // Canonical client→world: use the canvas element's scroll position
+      // (NOT camera.x/y, which can be momentarily stale during pan/zoom
+      // animations). Matches Canvas.tsx clientToWorld (scrollLeft + localX
+      // / zoom − SURFACE_ORIGIN_PAD). Mirror Canvas.tsx SURFACE_ORIGIN_PAD_WORLD.
+      const SURFACE_ORIGIN_PAD = 10000;
+      const z = Math.max(0.1, Number(st.camera?.zoom) || 1);
+      const canvasEl = document.querySelector<HTMLElement>("[data-omnia-canvas]");
+      const rect = canvasEl?.getBoundingClientRect();
+      const localX = rect ? dropClientX - rect.left : dropClientX;
+      const localY = rect ? dropClientY - rect.top : dropClientY;
+      const scrollLeft = canvasEl?.scrollLeft || 0;
+      const scrollTop = canvasEl?.scrollTop || 0;
+      const worldX = (scrollLeft + localX) / z - SURFACE_ORIGIN_PAD;
+      const worldY = (scrollTop + localY) / z - SURFACE_ORIGIN_PAD;
+      posX = Math.round(worldX / g) * g;
+      posY = Math.round(worldY / g) * g;
     } else {
       const pos = findSmartPlacement({ blockW: size.width, blockH: size.height, gridSize: g, camera: st.camera || { x: 0, y: 0, zoom: 1 }, viewportW: vw, viewportH: vh, railWidth: getChatRailWidthPx(vw), existingBlocks: Object.values(st.blocks || {}).filter(Boolean) as any[] });
       posX = pos.x; posY = pos.y;
     }
-    const id = addTextBlockAt({ x: posX, y: posY }, { width: size.width, height: size.height, content, format: "rich" });
+    const id = addTextBlockAt({ x: posX, y: posY }, {
+      width: size.width,
+      height: size.height,
+      content,
+      format: "rich",
+      data: { aiResponseBubble: true },
+    });
     if (id) {
-      st.updateBlock(id, { data: { ...((st.blocks as any)?.[id]?.data || {}), aiResponseBubble: true } });
       requestAnimationFrame(() => window.dispatchEvent(new CustomEvent("omnia_fit_block", { detail: { id } })));
       setTimeout(() => window.dispatchEvent(new Event("omnia_flush_save")), 500);
     }
@@ -998,6 +1057,22 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
 
     // Track all created block IDs so we can scroll to show them afterward
     const createdBlockIds: string[] = [];
+
+    // Map AI-supplied placeholder IDs (e.g. "text-mokav5-header" from invented
+    // `<add_blocks>` / `<add_wires>` markup) to the real block IDs the store
+    // assigns at creation time, so connect_blocks/move_block/etc actions can
+    // reference siblings that were just created in the same batch.
+    const placeholderToId = new Map<string, string>();
+    const recordPlaceholder = (raw: any, realId: string | null | undefined) => {
+      if (!realId) return;
+      const ph = String(raw?.placeholderId || raw?.placeholder || raw?.id || "").trim();
+      if (ph && !placeholderToId.has(ph)) placeholderToId.set(ph, realId);
+    };
+    const resolveId = (rawId: any): string => {
+      const s = String(rawId || "").trim();
+      if (!s) return s;
+      return placeholderToId.get(s) || s;
+    };
 
     // Estimate block height accounting for word-wrap (no DOM context available)
     const estimateHeight = (content: string, widthPx: number, variant: "h1" | "h2" | "body" = "body"): number => {
@@ -1115,7 +1190,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
           const h = Math.max(g * 8, estimateHeight(content, w));
           const pos = getPos(w, h, rawX, rawY);
           const bid = st.addSheetBlockAt({ x: pos.x, y: pos.y }, { content, width: w, height: h });
-          if (bid) createdBlockIds.push(bid);
+          if (bid) { createdBlockIds.push(bid); recordPlaceholder(raw, bid); }
           created++; continue;
         }
         if (type === "create_spreadsheet") {
@@ -1123,7 +1198,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
           const cols = Math.max(1, Math.min(100, Number((raw as any)?.cols || 20)));
           const pos = getPos(g * 14, g * 10, rawX, rawY);
           const bid = st.addSpreadsheetBlockAt({ x: pos.x, y: pos.y }, { rows, cols });
-          if (bid) createdBlockIds.push(bid);
+          if (bid) { createdBlockIds.push(bid); recordPlaceholder(raw, bid); }
           created++; continue;
         }
         if (type === "create_table") {
@@ -1152,11 +1227,8 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
           const w = Math.max(g * 12, snapUp(headers.length * COL_MIN_WIDTH + WIDTH_PADDING));
           const h = Math.max(g * 5, snapUp((rowCount + 1) * ROW_HEIGHT_EST + HEIGHT_PADDING));
           const pos = getPos(w, h, rawX, rawY);
-          const bid = st.addTextBlockAt({ x: pos.x, y: pos.y }, { width: w, height: h, content: mdTable, format: "rich" });
-          if (bid) {
-            st.updateBlock(bid, { data: { textVariant: "body", listType: "none" } } as any);
-            createdBlockIds.push(bid);
-          }
+          const bid = st.addTextBlockAt({ x: pos.x, y: pos.y }, { width: w, height: h, content: mdTable, format: "rich", data: { textVariant: "body", listType: "none" } });
+          if (bid) { createdBlockIds.push(bid); recordPlaceholder(raw, bid); }
           created++; continue;
         }
         if (type === "create_list" || type === "todo_list" || type === "bulleted_list" || type === "numbered_list" || type === "create_checklist") {
@@ -1176,11 +1248,8 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
           const w = g * 10;
           const blockH = estimateHeight(content, w);
           const pos = getPos(w, blockH, rawX, rawY);
-          const bid = st.addTextBlockAt({ x: pos.x, y: pos.y }, { width: w, height: blockH, content, format: "rich" });
-          if (bid) {
-            st.updateBlock(bid, { data: { textVariant: "body", listType } } as any);
-            createdBlockIds.push(bid);
-          }
+          const bid = st.addTextBlockAt({ x: pos.x, y: pos.y }, { width: w, height: blockH, content, format: "rich", data: { textVariant: "body", listType } });
+          if (bid) { createdBlockIds.push(bid); recordPlaceholder(raw, bid); }
           created++; continue;
         }
         if (type === "create_code_block" || type === "create_code_project") {
@@ -1190,7 +1259,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
           const h = Math.max(g * 4, estimateHeight(content, w));
           const pos = getPos(w, h, rawX, rawY);
           const bid = st.addCodeBlockAt({ x: pos.x, y: pos.y }, { width: w, height: h, language: lang, content });
-          if (bid) createdBlockIds.push(bid);
+          if (bid) { createdBlockIds.push(bid); recordPlaceholder(raw, bid); }
           created++; continue;
         }
         if (type === "create_youtube_block") {
@@ -1199,7 +1268,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
           if (rawUrl || videoId) {
             const pos = getPos(g * 12, g * 8, rawX, rawY);
             const bid = st.addYouTubeBlockAt({ x: pos.x, y: pos.y }, { url: rawUrl || `https://www.youtube.com/watch?v=${videoId}`, videoId });
-            if (bid) createdBlockIds.push(bid);
+            if (bid) { createdBlockIds.push(bid); recordPlaceholder(raw, bid); }
             created++;
           } else failures.push("create_youtube_block: missing url");
           continue;
@@ -1211,11 +1280,8 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
           const w = g * 10;
           const h = estimateHeight(content, w, variant);
           const pos = getPos(w, h, rawX, rawY);
-          const bid = st.addTextBlockAt({ x: pos.x, y: pos.y }, { width: w, height: h, content, format: "rich" });
-          if (bid) {
-            st.updateBlock(bid, { data: { textVariant: variant, listType: "none" } } as any);
-            createdBlockIds.push(bid);
-          }
+          const bid = st.addTextBlockAt({ x: pos.x, y: pos.y }, { width: w, height: h, content, format: "rich", data: { textVariant: variant, listType: "none" } });
+          if (bid) { createdBlockIds.push(bid); recordPlaceholder(raw, bid); }
           created++; continue;
         }
         if (type === "create_quote" || type === "create_callout") {
@@ -1224,11 +1290,8 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
           const w = g * 10;
           const h = estimateHeight(cleanContent, w);
           const pos = getPos(w, h, rawX, rawY);
-          const bid = st.addTextBlockAt({ x: pos.x, y: pos.y }, { width: w, height: h, content: cleanContent, format: "rich" });
-          if (bid) {
-            st.updateBlock(bid, { data: { textVariant: "body", listType: "quote" } } as any);
-            createdBlockIds.push(bid);
-          }
+          const bid = st.addTextBlockAt({ x: pos.x, y: pos.y }, { width: w, height: h, content: cleanContent, format: "rich", data: { textVariant: "body", listType: "quote" } });
+          if (bid) { createdBlockIds.push(bid); recordPlaceholder(raw, bid); }
           created++; continue;
         }
         if (type === "create_text" || type === "create_brick" || type === "create_text_block" || type === "create_card" || type === "create_sticky") {
@@ -1236,11 +1299,8 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
           const w = Number.isFinite((raw as any)?.width) ? Math.round(Number((raw as any).width) / g) * g : g * 8;
           const h = Number.isFinite((raw as any)?.height) ? Math.round(Number((raw as any).height) / g) * g : estimateHeight(content, w);
           const pos = getPos(w, h, rawX, rawY);
-          const bid = st.addTextBlockAt({ x: pos.x, y: pos.y }, { width: w, height: h, content, format: "rich" });
-          if (bid) {
-            st.updateBlock(bid, { data: { textVariant: "body", listType: "none" } } as any);
-            createdBlockIds.push(bid);
-          }
+          const bid = st.addTextBlockAt({ x: pos.x, y: pos.y }, { width: w, height: h, content, format: "rich", data: { textVariant: "body", listType: "none" } });
+          if (bid) { createdBlockIds.push(bid); recordPlaceholder(raw, bid); }
           created++; continue;
         }
         if (type === "create_toggle" || type === "create_toggle_list") {
@@ -1255,11 +1315,8 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
           const w = g * 10;
           const h = estimateHeight(content, w);
           const pos = getPos(w, h, rawX, rawY);
-          const bid = st.addTextBlockAt({ x: pos.x, y: pos.y }, { width: w, height: h, content, format: "rich" });
-          if (bid) {
-            st.updateBlock(bid, { data: { textVariant: "body", listType: "toggle" } } as any);
-            createdBlockIds.push(bid);
-          }
+          const bid = st.addTextBlockAt({ x: pos.x, y: pos.y }, { width: w, height: h, content, format: "rich", data: { textVariant: "body", listType: "toggle" } });
+          if (bid) { createdBlockIds.push(bid); recordPlaceholder(raw, bid); }
           created++; continue;
         }
         if (type === "create_design_board") {
@@ -1276,6 +1333,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
           };
           st.addBlock(b);
           createdBlockIds.push(bid);
+          recordPlaceholder(raw, bid);
           created++; continue;
         }
         if (type === "create_task_board" || type === "create_kanban") {
@@ -1294,6 +1352,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
           };
           st.addBlock(b);
           createdBlockIds.push(bid);
+          recordPlaceholder(raw, bid);
           created++; continue;
         }
         if (type === "create_media" || type === "create_embed" || type === "create_image_block" || type === "create_video_block") {
@@ -1513,16 +1572,16 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
           continue;
         }
         if (type === "connect_blocks" || type === "add_wire" || type === "create_connection") {
-          const fromId = String((raw as any)?.fromId || (raw as any)?.from || "");
-          const toId = String((raw as any)?.toId || (raw as any)?.to || "");
+          const fromId = resolveId((raw as any)?.fromId ?? (raw as any)?.from ?? (raw as any)?.fromPlaceholder);
+          const toId = resolveId((raw as any)?.toId ?? (raw as any)?.to ?? (raw as any)?.toPlaceholder);
           if (!fromId || !toId) { failures.push("connect_blocks: missing fromId or toId"); continue; }
           const fromBlock = st.blocks?.[fromId] as any;
           const toBlock = st.blocks?.[toId] as any;
           if (!fromBlock) { failures.push(`connect_blocks: fromId "${fromId}" not found`); continue; }
           if (!toBlock) { failures.push(`connect_blocks: toId "${toId}" not found`); continue; }
           const validSides = ["top", "right", "bottom", "left"];
-          const aiFromSide = String((raw as any)?.fromSide || "");
-          const aiToSide = String((raw as any)?.toSide || "");
+          const aiFromSide = String((raw as any)?.fromSide || (raw as any)?.fromAnchor || "");
+          const aiToSide = String((raw as any)?.toSide || (raw as any)?.toAnchor || "");
           let fromSide: string;
           let toSide: string;
           if (validSides.includes(aiFromSide) && validSides.includes(aiToSide)) {
@@ -1568,16 +1627,51 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       } catch { failures.push(`Failed action: ${String((raw as any)?.type || "unknown")}`); }
     }
 
-    // Scroll the first created block into view so the user always sees what was built
-    if (createdBlockIds.length) {
+    // Pan (and softly zoom out if needed) so the user sees what was just built.
+    // For a single block the legacy fit-and-scale handler still works best;
+    // for a multi-block batch (e.g. an AI-generated column of shots) we need a
+    // bounding-box fit so the camera doesn't end up parked on just the first
+    // brick with the rest off-screen.
+    if (createdBlockIds.length === 1) {
       requestAnimationFrame(() => {
         window.dispatchEvent(new CustomEvent("omnia_fit_block", { detail: { id: createdBlockIds[0] } }));
       });
       setTimeout(() => window.dispatchEvent(new Event("omnia_flush_save")), 500);
+    } else if (createdBlockIds.length > 1) {
+      // Wait two frames so any pending block additions have laid out their
+      // measured size before we compute the bounding box.
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          window.dispatchEvent(new CustomEvent("omnia_fit_blocks", { detail: { ids: createdBlockIds } }));
+        });
+      });
+      setTimeout(() => window.dispatchEvent(new Event("omnia_flush_save")), 500);
+    }
+
+    // Demo grids never persist (see useBoardPersistence: every save path
+    // bails on isDemoGridId). If the AI just put real work onto a demo
+    // grid, warn the user once per session so they don't lose it on
+    // refresh — past confusion came from the AI confidently creating
+    // bricks here that silently vanished on next page load.
+    if (createdBlockIds.length > 0) {
+      const activeBoardId = routeBoardId || boardId || "";
+      if (isDemoGridId(activeBoardId)) {
+        const flagKey = `omnia_demo_warned_${activeBoardId}`;
+        let alreadyWarned = false;
+        try { alreadyWarned = sessionStorage.getItem(flagKey) === "1"; } catch { /* ignore */ }
+        if (!alreadyWarned) {
+          try { sessionStorage.setItem(flagKey, "1"); } catch { /* ignore */ }
+          toast({
+            title: "This is a demo grid",
+            description: "Changes here aren't saved — refresh and they're gone. Open a regular grid to keep this work.",
+            duration: 8000,
+          });
+        }
+      }
     }
 
     return { created, failures };
-  }, [setNotesOpen]);
+  }, [setNotesOpen, boardId, routeBoardId]);
 
   /* ---------- handleChatSend (delegates to orchestrator) ---------- */
 
@@ -1756,8 +1850,13 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   }, [isDictating, setChatInput]);
 
   const handleChatPaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    // Branch on either HTML OR a structured paste payload (e.g. images,
+    // file lists). When neither is present, let the browser handle the
+    // plain-text paste natively — that path is also where we want default
+    // textarea behaviour (undo, IME, etc).
     const html = e.clipboardData.getData("text/html");
-    if (!html.trim()) return;
+    const hasFiles = (e.clipboardData.files && e.clipboardData.files.length > 0) || false;
+    if (!html.trim() && !hasFiles) return;
     e.preventDefault();
     const ta = e.currentTarget;
     const start = ta.selectionStart; const end = ta.selectionEnd;

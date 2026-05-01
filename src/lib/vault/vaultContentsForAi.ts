@@ -4,6 +4,10 @@
  */
 import { supabase } from "@/lib/supabase";
 import { detectSocialPlatform, isSocialEmbedType } from "@/canvas/utils/socialEmbed";
+import {
+  parseAttachmentsFromContent,
+  stripAttachmentsMarker,
+} from "@/lib/vault/attachmentsMarker";
 
 export const VAULT_AI_NOTES_LIMIT = 100;
 export const VAULT_AI_MAX_CARD_LINES = 40;
@@ -32,29 +36,10 @@ export async function fetchNotesForVaultAi(userId: string): Promise<VaultAiNoteR
   return [];
 }
 
+// Marker parsing delegates to the shared JSON-string-aware scanner so that
+// `[`/`]` characters inside attachment fields don't break boundaries.
 function stripAttachmentJsonMarker(content: string) {
-  if (!content) return "";
-  const marker = "[ATTACHMENTS_JSON:";
-  const start = content.indexOf(marker);
-  if (start === -1) return content;
-
-  const jsonStart = start + marker.length;
-  let bracketCount = 0;
-  let jsonEnd = jsonStart;
-  for (let i = jsonStart; i < content.length; i += 1) {
-    if (content[i] === "[") bracketCount += 1;
-    if (content[i] === "]") {
-      bracketCount -= 1;
-      if (bracketCount === 0) {
-        jsonEnd = i + 1;
-        break;
-      }
-    }
-  }
-  if (jsonEnd <= jsonStart) return content;
-  let stripEnd = jsonEnd;
-  if (content[stripEnd] === "]") stripEnd += 1;
-  return `${content.slice(0, start)}${content.slice(stripEnd)}`.replace(/\n{3,}/g, "\n\n").trim();
+  return stripAttachmentsMarker(String(content || ""));
 }
 
 function parseAttachmentsFromNote(note: VaultAiNoteRow) {
@@ -72,32 +57,7 @@ function parseAttachmentsFromNote(note: VaultAiNoteRow) {
   }
 
   if (normalized.length === 0 && note.content) {
-    const c = String(note.content);
-    const marker = "[ATTACHMENTS_JSON:";
-    const start = c.indexOf(marker);
-    if (start !== -1) {
-      const jsonStart = start + marker.length;
-      let bracketCount = 0;
-      let jsonEnd = jsonStart;
-      for (let i = jsonStart; i < c.length; i += 1) {
-        if (c[i] === "[") bracketCount += 1;
-        if (c[i] === "]") {
-          bracketCount -= 1;
-          if (bracketCount === 0) {
-            jsonEnd = i + 1;
-            break;
-          }
-        }
-      }
-      if (jsonEnd > jsonStart) {
-        try {
-          const parsed = JSON.parse(c.slice(jsonStart, jsonEnd));
-          if (Array.isArray(parsed)) normalized.push(...parsed);
-        } catch {
-          /* ignore */
-        }
-      }
-    }
+    normalized.push(...parseAttachmentsFromContent(String(note.content)));
   }
 
   return normalized.filter(Boolean);
@@ -369,7 +329,12 @@ function buildVaultCardsForAiChat(notes: VaultAiNoteRow[]): VaultAiCard[] {
         .trim()
         .slice(0, 200);
       if (text) {
-        const key = `qn:${text}`;
+        // Include the noteId in the dedup key so two distinct notes
+        // with overlapping first-200-character excerpts don't get
+        // collapsed into one card. Without `noteId` here, the user
+        // would silently lose one of two legitimate quick notes that
+        // happen to start the same way ("Meeting notes — ..." etc.).
+        const key = `qn:${card.noteId || ""}:${text}`;
         if (seen.has(key)) return false;
         seen.add(key);
       }
@@ -441,6 +406,11 @@ function collectAllTagsFromNotes(notes: VaultAiNoteRow[]): string {
   return sorted.length ? sorted.map(([t]) => t).join(", ") : "(none yet)";
 }
 
+/** Hard cap on TAG DIRECTORY entries so a heavily-tagged vault doesn't
+ * blow the AI prompt token budget. The first 60 tags (sorted by item
+ * count) are by far the most useful for the model anyway. */
+const MAX_TAG_DIRECTORY_ENTRIES = 60;
+
 /** Builds a TAG DIRECTORY mapping each tag to its associated note IDs and titles. */
 function buildTagDirectory(notes: VaultAiNoteRow[]): string {
   const tagIndex: Record<string, { id: string; title: string }[]> = {};
@@ -458,7 +428,8 @@ function buildTagDirectory(notes: VaultAiNoteRow[]): string {
   }
   const sorted = Object.entries(tagIndex).sort((a, b) => b[1].length - a[1].length);
   if (sorted.length === 0) return "";
-  const lines = sorted.map(([tag, items]) => {
+  const truncated = sorted.slice(0, MAX_TAG_DIRECTORY_ENTRIES);
+  const lines = truncated.map(([tag, items]) => {
     const refs = items
       .slice(0, 8)
       .map((n) => `"${n.title}" (id=${n.id})`)
@@ -466,7 +437,10 @@ function buildTagDirectory(notes: VaultAiNoteRow[]): string {
     const overflow = items.length > 8 ? ` +${items.length - 8} more` : "";
     return `#${tag} (${items.length}): ${refs}${overflow}`;
   });
-  return `TAG DIRECTORY — every tag with its items:\n${lines.join("\n")}`;
+  const overflowSuffix = sorted.length > MAX_TAG_DIRECTORY_ENTRIES
+    ? `\n…and ${sorted.length - MAX_TAG_DIRECTORY_ENTRIES} more tags omitted to save context.`
+    : "";
+  return `TAG DIRECTORY — every tag with its items:\n${lines.join("\n")}${overflowSuffix}`;
 }
 
 export function buildVaultDetailForGridAi(

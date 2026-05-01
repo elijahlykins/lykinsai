@@ -43,6 +43,12 @@ import DragDropFileUpload from "@/components/files/DragDropFileUpload";
 import { useVaultUploadStore } from "@/store/vaultUploadStore";
 import { useUsageGate } from "@/lib/useUsageGate";
 import { notifyVaultCapIfApplicable } from "@/lib/vault/vaultCapError";
+import {
+  findAttachmentsMarker,
+  parseAttachmentsFromContent,
+  stripAttachmentsMarker,
+  withAttachmentsMarker,
+} from "@/lib/vault/attachmentsMarker";
 import UpgradeModal from "@/components/UpgradeModal";
 import SignInActionBlocker from "@/components/SignInActionBlocker";
 import { buildGuestDemoCards, buildSeedNoteRows } from "@/lib/demoVault";
@@ -66,29 +72,12 @@ import { splitResponseIntoChunks, normalizeChecklistSyntax, flattenNodeText, han
 // while the browser's image cache is already warm.
 let sessionVaultReady = false;
 
+// Marker parsing is delegated to `attachmentsMarker.ts` so all consumers
+// share the same JSON-string-aware scanner. The previous inline bracket
+// counter mishandled `[`/`]` characters that appear inside JSON string
+// fields (e.g. a filename like `report[2025].pdf`), which corrupted slices.
 function stripAttachmentJsonMarker(content) {
-  if (!content) return "";
-  const marker = "[ATTACHMENTS_JSON:";
-  const start = content.indexOf(marker);
-  if (start === -1) return content;
-
-  const jsonStart = start + marker.length;
-  let bracketCount = 0;
-  let jsonEnd = jsonStart;
-  for (let i = jsonStart; i < content.length; i += 1) {
-    if (content[i] === "[") bracketCount += 1;
-    if (content[i] === "]") {
-      bracketCount -= 1;
-      if (bracketCount === 0) {
-        jsonEnd = i + 1;
-        break;
-      }
-    }
-  }
-  if (jsonEnd <= jsonStart) return content;
-  let stripEnd = jsonEnd;
-  if (content[stripEnd] === "]") stripEnd += 1;
-  return `${content.slice(0, start)}${content.slice(stripEnd)}`.replace(/\n{3,}/g, "\n\n").trim();
+  return stripAttachmentsMarker(String(content || ""));
 }
 
 function parseAttachmentsFromNote(note) {
@@ -106,31 +95,7 @@ function parseAttachmentsFromNote(note) {
   }
 
   if (normalized.length === 0 && note.content) {
-    const marker = "[ATTACHMENTS_JSON:";
-    const start = note.content.indexOf(marker);
-    if (start !== -1) {
-      const jsonStart = start + marker.length;
-      let bracketCount = 0;
-      let jsonEnd = jsonStart;
-      for (let i = jsonStart; i < note.content.length; i += 1) {
-        if (note.content[i] === "[") bracketCount += 1;
-        if (note.content[i] === "]") {
-          bracketCount -= 1;
-          if (bracketCount === 0) {
-            jsonEnd = i + 1;
-            break;
-          }
-        }
-      }
-      if (jsonEnd > jsonStart) {
-        try {
-          const parsed = JSON.parse(note.content.slice(jsonStart, jsonEnd));
-          if (Array.isArray(parsed)) normalized.push(...parsed);
-        } catch {
-          // Ignore malformed attachment marker data.
-        }
-      }
-    }
+    normalized.push(...parseAttachmentsFromContent(String(note.content)));
   }
 
   return normalized.filter(Boolean);
@@ -217,14 +182,15 @@ function parseStorageTarget(attachment = {}) {
 }
 
 function buildTextExcerpt(htmlOrText = "") {
-  let text = String(htmlOrText);
+  // Strip the attachments marker first via the JSON-aware parser so a stray
+  // `]` inside attachment metadata doesn't leave residue in the excerpt.
+  let text = stripAttachmentsMarker(String(htmlOrText));
   text = text.replace(/<[^>]+>/g, " ");
   text = text.replace(/\[([^\]]*)\]\([^)]+\)/g, "$1");
   text = text.replace(/https?:\/\/[^\s)>\]]+/g, "");
   text = text.replace(/File uploaded:\s*/i, "");
   text = text.replace(/Type:\s*\w+/i, "");
   text = text.replace(/Size:\s*[\d.]+ [A-Z]+/i, "");
-  text = text.replace(/\[ATTACHMENTS_JSON:[^\]]*\]/g, "");
   return text.replace(/\s+/g, " ").trim();
 }
 
@@ -252,30 +218,7 @@ function parseAttachmentNotes(attachment = {}) {
 }
 
 function withAttachmentJsonMarker(content = "", attachments = []) {
-  const marker = "[ATTACHMENTS_JSON:";
-  const payload = `[ATTACHMENTS_JSON:${JSON.stringify(attachments)}]`;
-  const raw = String(content || "");
-  const start = raw.indexOf(marker);
-  if (start === -1) {
-    return `${raw.trim()}\n\n${payload}`.trim();
-  }
-  const jsonStart = start + marker.length;
-  let bracketCount = 0;
-  let jsonEnd = jsonStart;
-  for (let i = jsonStart; i < raw.length; i += 1) {
-    if (raw[i] === "[") bracketCount += 1;
-    if (raw[i] === "]") {
-      bracketCount -= 1;
-      if (bracketCount === 0) {
-        jsonEnd = i + 1;
-        break;
-      }
-    }
-  }
-  if (jsonEnd <= jsonStart) return `${raw.trim()}\n\n${payload}`.trim();
-  let sliceEnd = jsonEnd;
-  if (raw[sliceEnd] === "]") sliceEnd += 1;
-  return `${raw.slice(0, start)}${payload}${raw.slice(sliceEnd)}`.replace(/\n{3,}/g, "\n\n").trim();
+  return withAttachmentsMarker(String(content || ""), attachments);
 }
 
 function decodeHtmlEntities(input = "") {
@@ -495,6 +438,18 @@ export default function VaultNew() {
     () => new URLSearchParams(location.search).get("embedded") === "1",
     [location.search]
   );
+  // Origin to pass to `window.parent.postMessage`. Targeting "*" (the
+  // previous behaviour) leaks vault drag payloads to whoever happens to
+  // be embedding us, including a malicious parent. The Omnia overlay
+  // hosts the iframe same-origin, so anchoring to our own origin is
+  // safe and tightens the channel.
+  const embeddedTargetOrigin = useMemo(() => {
+    try {
+      return typeof window !== "undefined" ? window.location.origin : "*";
+    } catch {
+      return "*";
+    }
+  }, []);
   useEffect(() => {
     if (isEmbeddedMode) {
       document.documentElement.classList.add("embedded-transparent");
@@ -537,11 +492,31 @@ export default function VaultNew() {
   const audioChunksRef = useRef([]);
   const activeAiAbortRef = useRef(null);
   const typingCancelRef = useRef(false);
+  // Tracks the currently-pending word-typing timeout so we can clear it
+  // on unmount (otherwise the chain keeps ticking and calling setState
+  // on an unmounted component, leaking memory until the page reloads).
+  const typingTimerRef = useRef(null);
+  // Set to false when the component unmounts. Image-retry / copy-toast /
+  // trash-hold timers check this before calling setState so they don't
+  // resurrect state on a torn-down tree.
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
   const chatInputValueRef = useRef("");
   const [showQuickNote, setShowQuickNote] = useState(false);
   const [orderByPage, setOrderByPage] = useState({ everything: [] });
   const [draggedCardId, setDraggedCardId] = useState(null);
   const [dropTargetCardId, setDropTargetCardId] = useState(null);
+  const [vaultTrashHover, setVaultTrashHover] = useState(false);
+  const [vaultTrashHoldReady, setVaultTrashHoldReady] = useState(false);
+  const vaultTrashHoldStartAtRef = useRef(null);
+  const vaultTrashHoldTimeoutRef = useRef(null);
+  const vaultTrashRef = useRef(null);
+  const draggedCardMetricsRef = useRef(null);
   const [resolvedAttachmentUrls, setResolvedAttachmentUrls] = useState({});
   const [failedImageIds, setFailedImageIds] = useState(new Set());
   const imageRetryCountsRef = useRef(new Map());
@@ -625,7 +600,25 @@ export default function VaultNew() {
     chatInputValueRef.current = chatInput;
   }, [chatInput]);
 
-  const isMobileChat = typeof window !== "undefined" && window.innerWidth < 640;
+  // Reactive mobile-chat detection. The previous module-level capture of
+  // window.innerWidth never updated when the user resized the window
+  // (or rotated their tablet), leaving the chat rail stuck in whichever
+  // mode the page first rendered in.
+  const [isMobileChat, setIsMobileChat] = useState(() =>
+    typeof window !== "undefined" ? window.matchMedia("(max-width: 639px)").matches : false,
+  );
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mq = window.matchMedia("(max-width: 639px)");
+    const onChange = (e) => setIsMobileChat(e.matches);
+    setIsMobileChat(mq.matches);
+    if (mq.addEventListener) mq.addEventListener("change", onChange);
+    else mq.addListener(onChange);
+    return () => {
+      if (mq.removeEventListener) mq.removeEventListener("change", onChange);
+      else mq.removeListener(onChange);
+    };
+  }, []);
 
   const chatRailWidthPx = showChat
     ? clampChatRailWidth(chatRailWidthManual ?? CHAT_RAIL_DEFAULT_WIDTH, window.innerWidth)
@@ -674,6 +667,32 @@ export default function VaultNew() {
       ...prev,
       [msgId]: { ...(prev[msgId] || {}), [taskKey]: checked },
     }));
+  }, []);
+
+  // Allowlist URL transformer for ReactMarkdown. Anything matching
+  // `javascript:`, `vbscript:`, `data:` (other than safe images), or
+  // any other unknown scheme is collapsed to "#" so it can't navigate.
+  // The model can be coerced into emitting these via a poisoned vault
+  // item (filename, description, etc.), so this is defence-in-depth on
+  // top of the AI prompt itself.
+  const safeMarkdownUrl = useCallback((url) => {
+    if (!url) return "#";
+    const s = String(url).trim();
+    if (!s) return "#";
+    // Relative URLs (no scheme), in-page anchors, and protocol-relative
+    // URLs are all fine; only worry about absolute URLs with schemes.
+    if (s.startsWith("#") || s.startsWith("/") || s.startsWith("./") || s.startsWith("../")) return s;
+    if (s.startsWith("//")) return s;
+    const schemeMatch = s.match(/^([a-z][a-z0-9+.-]*):/i);
+    if (!schemeMatch) return s;
+    const scheme = schemeMatch[1].toLowerCase();
+    if (scheme === "http" || scheme === "https" || scheme === "mailto" || scheme === "tel") return s;
+    if (scheme === "data") {
+      // Permit only image data URIs (most common safe case) — block
+      // everything else, especially `data:text/html,…`.
+      return /^data:image\/(png|jpe?g|gif|webp|svg\+xml);/.test(s) ? s : "#";
+    }
+    return "#";
   }, []);
 
   const buildChatMarkdownComponents = useCallback((msgId) => ({
@@ -879,14 +898,29 @@ export default function VaultNew() {
 
   const fetchNotesBatch = useCallback(
     async (cursor) => {
+      // Cursor is `{ updatedAt, id }` so we can break ties on equal
+      // `updated_at`. Plain `.lt("updated_at", cursor)` skips every row
+      // that shares the boundary timestamp with the last item of the
+      // previous page, silently dropping notes from the user's view.
+      // The `.or("updated_at.lt.X,and(updated_at.eq.X,id.lt.Y)")` form
+      // is a stable secondary keyset on `id` (we already order by both).
       const buildQuery = (cols) => {
         let q = supabase
           .from("notes")
           .select(cols)
           .eq("user_id", user.id)
           .order("updated_at", { ascending: false })
+          .order("id", { ascending: false })
           .limit(MEMORY_PAGE_SIZE);
-        if (cursor) q = q.lt("updated_at", cursor);
+        if (cursor && cursor.updatedAt) {
+          if (cursor.id) {
+            q = q.or(
+              `updated_at.lt.${cursor.updatedAt},and(updated_at.eq.${cursor.updatedAt},id.lt.${cursor.id})`,
+            );
+          } else {
+            q = q.lt("updated_at", cursor.updatedAt);
+          }
+        }
         return q;
       };
 
@@ -926,7 +960,9 @@ export default function VaultNew() {
     initialPageParam: null,
     getNextPageParam: (lastPage) => {
       if (!Array.isArray(lastPage) || lastPage.length < MEMORY_PAGE_SIZE) return undefined;
-      return lastPage[lastPage.length - 1]?.updated_at ?? undefined;
+      const last = lastPage[lastPage.length - 1];
+      if (!last?.updated_at) return undefined;
+      return { updatedAt: last.updated_at, id: last.id ?? null };
     },
     enabled: !!user?.id && !loading,
     // Keep notes fresh for 30s; within that window, remounts use cache immediately.
@@ -975,11 +1011,15 @@ export default function VaultNew() {
   }, [vaultQueryClient, notesQueryKey, user?.id]);
 
   // Map query-level errors into the user-facing notesError banner.
+  // Also clear the banner when the query recovers — without this, a
+  // transient network blip leaves the banner pinned forever.
   useEffect(() => {
     if (notesQuery.isError) {
       setNotesError("Couldn't load your memories right now. Please try again later.");
+    } else if (notesQuery.isSuccess) {
+      setNotesError("");
     }
-  }, [notesQuery.isError]);
+  }, [notesQuery.isError, notesQuery.isSuccess]);
 
   // Seed the starter pack for brand-new signed-in users. Runs once per user
   // (tracked by a localStorage flag) so deleting every seeded card does NOT
@@ -999,6 +1039,11 @@ export default function VaultNew() {
     demoSeedingRef.current = true;
     try { localStorage.setItem(flagKey, "1"); } catch { /* ignore */ }
 
+    // The async IIFE below outlives the effect: a sign-out (or a
+    // remount with a different user) shouldn't have us writing seed
+    // rows for the previous account into the new account's grid.
+    let cancelled = false;
+
     (async () => {
       const rows = buildSeedNoteRows(user.id);
       if (rows.length === 0) return;
@@ -1012,6 +1057,7 @@ export default function VaultNew() {
         .from("notes")
         .insert(rows)
         .select("id, title, content, tags, created_at, updated_at"));
+      if (cancelled) return;
 
       if (error) {
         const rowsNoTags = rows.map(({ tags: _omit, ...rest }) => rest);
@@ -1019,6 +1065,7 @@ export default function VaultNew() {
           .from("notes")
           .insert(rowsNoTags)
           .select("id, title, content, created_at, updated_at"));
+        if (cancelled) return;
       }
 
       if (error || !Array.isArray(data)) {
@@ -1026,8 +1073,13 @@ export default function VaultNew() {
         demoSeedingRef.current = false;
         return;
       }
+      if (cancelled) return;
       setNotes((prev) => [...data, ...prev]);
     })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [user?.id, loading, isLoadingNotes, notes.length, setNotes]);
 
   const { data: projects = [] } = useQuery({
@@ -1093,11 +1145,27 @@ export default function VaultNew() {
       }
     };
     const onBlur = () => setShowEmbeddedTagDropdown(false);
+    // Escape closes the open dropdown / tag picker — same expectation
+    // as every other floating menu on the page. Without this the only
+    // way to dismiss the tag picker without selecting was clicking
+    // outside, which mobile users especially missed.
+    const onKeyDown = (event) => {
+      if (event.key !== "Escape") return;
+      setOpenCardMenuId(null);
+      setOpenAttachmentNotesCardId(null);
+      setAttachmentNoteDraft("");
+      setTagPickerCardId(null);
+      setTagPickerPosition(null);
+      setNewTagInput("");
+      setShowEmbeddedTagDropdown(false);
+    };
     window.addEventListener("mousedown", onPointerDown);
     window.addEventListener("blur", onBlur);
+    window.addEventListener("keydown", onKeyDown);
     return () => {
       window.removeEventListener("mousedown", onPointerDown);
       window.removeEventListener("blur", onBlur);
+      window.removeEventListener("keydown", onKeyDown);
     };
   }, []);
 
@@ -1183,6 +1251,12 @@ export default function VaultNew() {
     [user?.id]
   );
 
+  // Ref-mirrored vaultCards for handlers that fire outside React's
+  // render cycle (drag-end fires from a DOM event, by which time the
+  // closed-over `vaultCards` array can be stale — e.g. an upload just
+  // landed, the user just deleted a card, etc.).
+  const vaultCardsRef = useRef([]);
+
   const vaultCards = useMemo(() => {
     const safeNotes = notes.filter((n) => n && !n.trashed);
     const cards = [];
@@ -1235,6 +1309,13 @@ export default function VaultNew() {
             id: `${note.id}-yt-${idx}`,
             kind: "attachment",
             noteId: note.id,
+            // Mark this tile as derived from a URL embedded in note content
+            // (no real attachment payload). `removeAttachmentFromNote` keys
+            // off this so deleting the tile only strips the URL from the
+            // note instead of dropping the whole row, which previously
+            // wiped notes that had real attachments alongside a YT link.
+            syntheticType: "youtube-link",
+            syntheticUrl: url,
             type: "youtube",
             attachment: { url, name: "YouTube Video" },
             title: "YouTube Video",
@@ -1303,6 +1384,13 @@ export default function VaultNew() {
     });
   }, [notes, ghostCards, guestDemoCards]);
 
+  // Keep the ref in sync so handlers that fire from raw DOM events
+  // (drag-end, etc.) can read the current grid without going through
+  // a stale closure.
+  useEffect(() => {
+    vaultCardsRef.current = vaultCards;
+  }, [vaultCards]);
+
   const [allTagsRaw, setAllTagsRaw] = useState([]);
 
   useEffect(() => {
@@ -1332,7 +1420,12 @@ export default function VaultNew() {
       );
     })();
     return () => { cancelled = true; };
-  }, [user?.id, notes]);
+    // Depend on `notes.length` (not `notes`) so this query doesn't
+    // re-run on every tag-toggle, attachment edit, or content rewrite —
+    // those don't change the global tag distribution we'd hit the DB
+    // for. The visible-cards-derived `allTags` fallback in the memo
+    // below still picks up local tag changes between refetches.
+  }, [user?.id, notes.length]);
 
   // Guests have no rows in Supabase, so `allTagsRaw` stays empty. Fall back
   // to deriving the top tag filter row from whatever cards are rendered
@@ -1356,8 +1449,8 @@ export default function VaultNew() {
 
   const updateNoteTags = useCallback(
     async (noteId, newTags) => {
-      if (!user?.id) return;
-      if (resolvedColumnsRef.current && !resolvedColumnsRef.current.includes("tags")) return;
+      if (!user?.id) return false;
+      if (resolvedColumnsRef.current && !resolvedColumnsRef.current.includes("tags")) return false;
       const { error } = await supabase
         .from("notes")
         .update({ tags: newTags })
@@ -1365,11 +1458,12 @@ export default function VaultNew() {
         .eq("user_id", user.id);
       if (error) {
         if (import.meta.env.DEV) console.error("Failed to update tags:", error);
-        return;
+        return false;
       }
       setNotes((prev) =>
         prev.map((n) => (String(n.id) === String(noteId) ? { ...n, tags: newTags } : n))
       );
+      return true;
     },
     [user?.id]
   );
@@ -1550,8 +1644,13 @@ export default function VaultNew() {
       visibleCardIdsRef.current.add(card.id);
       urlResolveQueueRef.current.push(card);
     }
-    const safetyTimer = setTimeout(() => setVaultReady(true), 10000);
+    let cancelled = false;
+    const safetyTimer = setTimeout(() => {
+      if (!cancelled) setVaultReady(true);
+    }, 10000);
+    let preloadTimeout = null;
     drainUrlResolveQueue().then(() => {
+      if (cancelled) return;
       const imageCards = attachmentCards.filter((c) => {
         const t = resolveAttachmentType(c.attachment || {});
         return t === "image";
@@ -1570,22 +1669,29 @@ export default function VaultNew() {
       let settled = 0;
       const preloadDone = () => {
         settled += 1;
-        if (settled >= urlsToPreload.length) {
+        if (settled >= urlsToPreload.length && !cancelled) {
           clearTimeout(safetyTimer);
+          if (preloadTimeout) clearTimeout(preloadTimeout);
           setVaultReady(true);
         }
       };
-      const preloadTimeout = setTimeout(() => {
+      preloadTimeout = setTimeout(() => {
+        if (cancelled) return;
         clearTimeout(safetyTimer);
         setVaultReady(true);
       }, 4000);
       for (const url of urlsToPreload) {
         const img = new window.Image();
-        img.onload = () => { preloadDone(); if (settled >= urlsToPreload.length) clearTimeout(preloadTimeout); };
-        img.onerror = () => { preloadDone(); if (settled >= urlsToPreload.length) clearTimeout(preloadTimeout); };
+        img.onload = () => { if (!cancelled) preloadDone(); };
+        img.onerror = () => { if (!cancelled) preloadDone(); };
         img.src = url;
       }
     });
+    return () => {
+      cancelled = true;
+      clearTimeout(safetyTimer);
+      if (preloadTimeout) clearTimeout(preloadTimeout);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [vaultCards, user?.id, isLoadingNotes, drainUrlResolveQueue]);
 
@@ -1659,40 +1765,35 @@ export default function VaultNew() {
           const { description } = await res.json();
           if (!description || cancelled) continue;
 
+          // Fetch with `updated_at` so we can guard against trampling user
+          // edits made between the AI request and the persist below.
           const { data: note } = await supabase
             .from("notes")
-            .select("content")
+            .select("content, updated_at")
             .eq("id", card.noteId)
+            .eq("user_id", user.id)
             .single();
           if (!note?.content) continue;
 
-          const marker = "[ATTACHMENTS_JSON:";
-          const start = note.content.indexOf(marker);
-          if (start === -1) continue;
-          const jsonStart = start + marker.length;
-          let bracketCount = 0;
-          let jsonEnd = jsonStart;
-          for (let i = jsonStart; i < note.content.length; i++) {
-            if (note.content[i] === "[") bracketCount++;
-            if (note.content[i] === "]") {
-              bracketCount--;
-              if (bracketCount === 0) { jsonEnd = i + 1; break; }
-            }
-          }
-          if (jsonEnd <= jsonStart) continue;
+          const span = findAttachmentsMarker(String(note.content));
+          if (!span) continue;
 
-          let attachments;
-          try { attachments = JSON.parse(note.content.slice(jsonStart, jsonEnd)); } catch { continue; }
-          if (!Array.isArray(attachments)) continue;
-
+          const attachments = span.attachments.slice();
           const attIdx = card.attachmentIndex ?? 0;
-          if (attachments[attIdx]) attachments[attIdx].aiDescription = description;
+          if (!attachments[attIdx] || typeof attachments[attIdx] !== "object") continue;
+          attachments[attIdx] = { ...attachments[attIdx], aiDescription: description };
 
-          const updatedContent = note.content.slice(0, start) +
-            `[ATTACHMENTS_JSON:${JSON.stringify(attachments)}]` +
-            note.content.slice(jsonEnd + (note.content[jsonEnd] === "]" ? 1 : 0));
+          const updatedContent = withAttachmentsMarker(String(note.content), attachments);
 
-          await supabase.from("notes").update({ content: updatedContent }).eq("id", card.noteId);
+          // Lost-update guard: only commit if the row hasn't been updated
+          // since we read it.
+          const { error: updateError } = await supabase
+            .from("notes")
+            .update({ content: updatedContent })
+            .eq("id", card.noteId)
+            .eq("user_id", user.id)
+            .eq("updated_at", note.updated_at);
+          if (updateError) continue;
 
           if (!cancelled) {
             setNotes((prev) =>
@@ -1853,6 +1954,56 @@ export default function VaultNew() {
     [orderedVisibleCards]
   );
 
+  const clearVaultTrashHold = useCallback(() => {
+    vaultTrashHoldStartAtRef.current = null;
+    if (vaultTrashHoldTimeoutRef.current) {
+      clearTimeout(vaultTrashHoldTimeoutRef.current);
+      vaultTrashHoldTimeoutRef.current = null;
+    }
+    setVaultTrashHoldReady(false);
+    setVaultTrashHover(false);
+  }, []);
+
+  const startVaultTrashHold = useCallback(() => {
+    if (vaultTrashHoldStartAtRef.current === null) {
+      vaultTrashHoldStartAtRef.current = performance.now();
+      if (vaultTrashHoldTimeoutRef.current) clearTimeout(vaultTrashHoldTimeoutRef.current);
+      vaultTrashHoldTimeoutRef.current = window.setTimeout(() => {
+        vaultTrashHoldTimeoutRef.current = null;
+        setVaultTrashHoldReady(true);
+      }, 1000);
+    }
+    setVaultTrashHover(true);
+  }, []);
+
+  // Match canvas trash logic: detect overlap between the dragged card's
+  // visual bounding rect (which travels with the cursor as the HTML5 drag
+  // ghost) and the trash element's rect, with a 10px pad.
+  const handleCardDrag = useCallback((e) => {
+    const metrics = draggedCardMetricsRef.current;
+    const trashEl = vaultTrashRef.current;
+    if (!metrics || !trashEl) return;
+    // The browser fires a final `drag` with (0,0) right before `dragend`;
+    // ignore it so we don't briefly show "not overlapping" at release.
+    if (e.clientX === 0 && e.clientY === 0) return;
+    const cardLeft = e.clientX - metrics.offsetX;
+    const cardTop = e.clientY - metrics.offsetY;
+    const cardRight = cardLeft + metrics.width;
+    const cardBottom = cardTop + metrics.height;
+    const tr = trashEl.getBoundingClientRect();
+    const PAD = 10;
+    const overlap =
+      cardRight >= tr.left - PAD &&
+      cardLeft <= tr.right + PAD &&
+      cardBottom >= tr.top - PAD &&
+      cardTop <= tr.bottom + PAD;
+    if (overlap) {
+      if (vaultTrashHoldStartAtRef.current === null) startVaultTrashHold();
+    } else if (vaultTrashHoldStartAtRef.current !== null) {
+      clearVaultTrashHold();
+    }
+  }, [startVaultTrashHold, clearVaultTrashHold]);
+
   const handleCardDragStart = useCallback((e, card) => {
     // Guest demo cards aren't backed by a real note — dragging them into a
     // project or the canvas would have nowhere to land. Block the drag and
@@ -1888,11 +2039,21 @@ export default function VaultNew() {
       const videoId = card.type === "youtube" ? (att.videoId || extractYouTubeVideoId(att.url || "") || "") : "";
       const resolvedForDrag = resolvedAttachmentUrls[card.id] || att.url || "";
       const pdfText = (card.type === "pdf" && att.extractedText) ? String(att.extractedText) : "";
+      const dragAttachment = { ...att, url: resolvedForDrag, type: card.type, videoId, ...(pdfText ? { pdfText, extractedText: pdfText } : {}) };
       const pendingData = {
         id: card.id,
+        // Persist the source note id and the original attachment index so
+        // canvas drop handlers can target the exact attachment the user
+        // dragged, not just "the first attachment whose mime matches". Today
+        // attachments[] always has length 1 (per-tile drag), but keeping
+        // these explicit means future flows that drag a whole note with
+        // multiple attachments don't silently lose precision.
+        noteId: card.noteId || card.id,
+        attachmentIndex: Number.isInteger(card.attachmentIndex) ? card.attachmentIndex : 0,
         title: card.title || "",
         content: "",
-        attachments: [{ ...att, url: resolvedForDrag, type: card.type, videoId, ...(pdfText ? { pdfText, extractedText: pdfText } : {}) }],
+        attachments: [dragAttachment],
+        attachment: dragAttachment,
         tags: Array.isArray(card.tags) ? card.tags : [],
         timestamp: Date.now(),
       };
@@ -1902,12 +2063,14 @@ export default function VaultNew() {
         /** @type {any} */ (target).__omnia_pending_vault = pendingData;
       } catch {}
       try {
-        window.parent.postMessage({ type: "omnia-vault-drag-start", data: pendingData }, "*");
+        window.parent.postMessage({ type: "omnia-vault-drag-start", data: pendingData }, embeddedTargetOrigin);
       } catch {}
       e.dataTransfer.effectAllowed = "copyMove";
     } else if (isEmbeddedMode && card.kind === "quick-note") {
       const pendingData = {
         id: card.id,
+        noteId: card.noteId || card.id,
+        attachmentIndex: 0,
         title: card.title || "Quick Note",
         content: card.excerpt || "",
         attachments: [],
@@ -1923,7 +2086,7 @@ export default function VaultNew() {
         /** @type {any} */ (target).__omnia_pending_vault = pendingData;
       } catch {}
       try {
-        window.parent.postMessage({ type: "omnia-vault-drag-start", data: pendingData }, "*");
+        window.parent.postMessage({ type: "omnia-vault-drag-start", data: pendingData }, embeddedTargetOrigin);
       } catch {}
       e.dataTransfer.effectAllowed = "copyMove";
     } else {
@@ -1932,19 +2095,62 @@ export default function VaultNew() {
 
     setDraggedCardId(card.id);
     lastHoverTargetRef.current = card.id;
+    // Capture the card's bounding rect + cursor offset so we can compute
+    // the dragged card's virtual rect during the drag (the HTML5 drag
+    // image follows the cursor with this same offset). This mirrors the
+    // canvas trash overlap logic, where the dragged element's rect — not
+    // the cursor — drives trash detection.
+    const targetEl = e.currentTarget;
+    if (targetEl) {
+      const rect = targetEl.getBoundingClientRect();
+      draggedCardMetricsRef.current = {
+        offsetX: e.clientX - rect.left,
+        offsetY: e.clientY - rect.top,
+        width: rect.width,
+        height: rect.height,
+      };
+    } else {
+      draggedCardMetricsRef.current = null;
+    }
     window.dispatchEvent(new CustomEvent("vault_collage_reorder_drag_start"));
     try { e.dataTransfer.setData("application/x-lykins-vault-card-id", card.id); } catch {}
-  }, [isEmbeddedMode, resolvedAttachmentUrls, requireSignInForAction]);
+  }, [isEmbeddedMode, resolvedAttachmentUrls, requireSignInForAction, embeddedTargetOrigin]);
 
+  // NOTE: `removeAttachmentFromNote` and `removeQuickNoteCard` are
+  // defined later in this component (TDZ), so they are intentionally
+  // omitted from the deps array — the closure resolves them via
+  // lexical lookup at call time (always after render completes).
+  // We read from `vaultCardsRef.current` instead of the closed-over
+  // `vaultCards`: the latter is the snapshot from whichever render
+  // memoized this callback, which can lag behind the actual current
+  // grid by several updates (uploads landing, deletes, drag-and-drop
+  // reorders), causing trash-on-drop to operate on the wrong card or
+  // a card that no longer exists.
   const handleCardDragEnd = useCallback(() => {
+    const ready = vaultTrashHoldReady;
+    const cardId = draggedCardId;
     setDraggedCardId(null);
     setDropTargetCardId(null);
     lastHoverTargetRef.current = null;
+    draggedCardMetricsRef.current = null;
+    clearVaultTrashHold();
     window.dispatchEvent(new CustomEvent("vault_collage_reorder_drag_end"));
     if (isEmbeddedMode) {
-      try { window.parent.postMessage({ type: "omnia-vault-drag-end" }, "*"); } catch {}
+      try { window.parent.postMessage({ type: "omnia-vault-drag-end" }, embeddedTargetOrigin); } catch {}
     }
-  }, [isEmbeddedMode]);
+    if (ready && cardId) {
+      const currentCards = vaultCardsRef.current || [];
+      const card = currentCards.find((c) => c.id === cardId);
+      if (card) {
+        if (card.kind === "attachment") {
+          void removeAttachmentFromNote(card);
+        } else if (card.kind === "quick-note") {
+          void removeQuickNoteCard(card);
+        }
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEmbeddedMode, clearVaultTrashHold, vaultTrashHoldReady, draggedCardId, embeddedTargetOrigin]);
 
   // Open a full-size preview/view window when a card is clicked. Interactive
   // elements (buttons, links, form fields, media controls, menus) opt-out
@@ -2238,7 +2444,36 @@ export default function VaultNew() {
     try { activeAiAbortRef.current?.abort(); } catch { /* ignore */ }
     activeAiAbortRef.current = null;
     typingCancelRef.current = true;
+    if (typingTimerRef.current) {
+      clearTimeout(typingTimerRef.current);
+      typingTimerRef.current = null;
+    }
     setIsChatLoading(false);
+  }, []);
+
+  // Belt-and-suspenders unmount cleanup for the typing animation chain
+  // and any active AI abort controller. Prevents leaks if the user
+  // navigates away from /vault while the model is still typing back.
+  useEffect(() => {
+    return () => {
+      typingCancelRef.current = true;
+      if (typingTimerRef.current) {
+        clearTimeout(typingTimerRef.current);
+        typingTimerRef.current = null;
+      }
+      try { activeAiAbortRef.current?.abort(); } catch { /* ignore */ }
+      activeAiAbortRef.current = null;
+      try { mediaRecorderRef.current?.stop?.(); } catch { /* ignore */ }
+      try { mediaStreamRef.current?.getTracks?.().forEach((t) => t.stop()); } catch { /* ignore */ }
+      mediaRecorderRef.current = null;
+      mediaStreamRef.current = null;
+      // Drop the long-press trash-hold timer so it doesn't fire and
+      // dispatch state updates after unmount.
+      if (vaultTrashHoldTimeoutRef.current) {
+        clearTimeout(vaultTrashHoldTimeoutRef.current);
+        vaultTrashHoldTimeoutRef.current = null;
+      }
+    };
   }, []);
 
   const handleDictateToggle = useCallback(() => {
@@ -2320,8 +2555,13 @@ export default function VaultNew() {
     });
 
     try {
-      const history = chatMessages
-        .slice(-12)
+      // Build history from the prior turns PLUS the just-sent user
+      // message. The plain `chatMessages` closure here is the snapshot
+      // from the render that scheduled this handler, so the message we
+      // just enqueued via setChatMessages above isn't visible to it
+      // (and the model would answer the previous turn instead of the
+      // current one). `text` is the canonical user input.
+      const history = [...chatMessages.slice(-11), { role: "user", content: text }]
         .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
         .join("\n");
 
@@ -2460,8 +2700,12 @@ User: ${text}`;
         const noteIdSet = new Set(notes.map((n) => String(n.id)));
         for (const action of tagActions) {
           if (noteIdSet.has(String(action.noteId))) {
-            await updateNoteTags(String(action.noteId), action.tags);
-            applied += 1;
+            // Only count tags as applied when the DB write actually
+            // succeeded — `updateNoteTags` swallows errors and returns
+            // false, so blindly incrementing here previously claimed
+            // success even when nothing landed on the server.
+            const ok = await updateNoteTags(String(action.noteId), action.tags);
+            if (ok) applied += 1;
           }
         }
         const newTagNames = [...new Set(tagActions.flatMap((a) => a.tags))];
@@ -2501,7 +2745,8 @@ User: ${text}`;
               const el = chatScrollRef.current;
               if (el) { chatProgrammaticScrollRef.current = true; el.scrollTop = el.scrollHeight; }
             }
-            if (!done) window.setTimeout(tick, 18);
+            if (!done) typingTimerRef.current = window.setTimeout(tick, 18);
+            else typingTimerRef.current = null;
           };
           tick();
         }
@@ -2536,7 +2781,8 @@ User: ${text}`;
               const el = chatScrollRef.current;
               if (el) { chatProgrammaticScrollRef.current = true; el.scrollTop = el.scrollHeight; }
             }
-            if (i < words.length) window.setTimeout(tick, 18);
+            if (i < words.length) typingTimerRef.current = window.setTimeout(tick, 18);
+            else typingTimerRef.current = null;
           };
           tick();
         }
@@ -2665,12 +2911,18 @@ User: ${text}`;
                 signedUrlCacheRef.current.delete(cacheKey);
                 const delay = (retryCount + 1) * 800;
                 setTimeout(async () => {
+                  // Guard against the component unmounting between
+                  // the failed image load and this retry tick — without
+                  // it we'd setState on a torn-down tree and warm
+                  // closures into the long-lived image cache.
+                  if (!isMountedRef.current) return;
                   try {
                     const { data } = await supabase.storage
                       .from(target.bucket)
                       .createSignedUrl(target.path, 60 * 60 * 24 * 7);
                     if (data?.signedUrl) {
                       signedUrlCacheRef.current.set(cacheKey, data.signedUrl);
+                      if (!isMountedRef.current) return;
                       setResolvedAttachmentUrls((prev) => ({ ...prev, [card.id]: data.signedUrl }));
                       return;
                     }
@@ -2973,10 +3225,54 @@ User: ${text}`;
       if (!note) return;
       const attachments = parseAttachmentsFromNote(note);
       const idx = Number(card.attachmentIndex);
+
+      // Synthetic tiles built from URLs in note text (e.g. a YouTube link
+      // pasted into a quick note) carry `syntheticType` and no real
+      // `attachmentIndex`. Previously this fell through to the "delete the
+      // whole note" branch via NaN — wiping notes that legitimately still
+      // held other content. Strip just the URL from the note content
+      // instead and bail before touching storage.
+      if (card.syntheticType === "youtube-link") {
+        const url = String(card.syntheticUrl || card.attachment?.url || "").trim();
+        if (!url) return;
+        const escaped = url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const stripped = String(note.content || "").replace(new RegExp(escaped, "g"), "").replace(/\n{3,}/g, "\n\n").trim();
+        const { error: stripError } = await supabase
+          .from("notes")
+          .update({ content: stripped, updated_at: new Date().toISOString() })
+          .eq("id", card.noteId)
+          .eq("user_id", user.id);
+        if (stripError) {
+          notifyVaultCapIfApplicable(stripError);
+          if (import.meta.env.DEV) console.error("[Vault] strip youtube link failed:", stripError);
+          return;
+        }
+        setNotes((prev) =>
+          prev.map((n) =>
+            String(n?.id) === String(card.noteId)
+              ? { ...n, content: stripped, updated_at: new Date().toISOString() }
+              : n
+          )
+        );
+        removeCardFromProjects(card);
+        return;
+      }
+
+      let storageRemovalAllowed = false;
       if (!Number.isFinite(idx) || idx < 0 || idx >= attachments.length || attachments.length <= 1) {
-        await supabase.from("notes").delete().eq("id", card.noteId).eq("user_id", user.id);
+        const { error: deleteError } = await supabase
+          .from("notes")
+          .delete()
+          .eq("id", card.noteId)
+          .eq("user_id", user.id);
+        if (deleteError) {
+          notifyVaultCapIfApplicable(deleteError);
+          if (import.meta.env.DEV) console.error("[Vault] delete note failed:", deleteError);
+          return;
+        }
         purgeVaultNoteEmbeddings(card.noteId);
         setNotes((prev) => prev.filter((n) => String(n?.id) !== String(card.noteId)));
+        storageRemovalAllowed = true;
       } else {
         const nextAttachments = attachments.filter((_, i) => i !== idx);
         const nextContent = withAttachmentJsonMarker(note.content || "", nextAttachments);
@@ -3004,22 +3300,35 @@ User: ${text}`;
             .eq("id", card.noteId)
             .eq("user_id", user.id));
         }
-        if (!updateError) {
-          setNotes((prev) =>
-            prev.map((n) =>
-              String(n?.id) === String(card.noteId)
-                ? { ...n, content: nextContent, attachments: nextAttachmentsString, updated_at: new Date().toISOString() }
-                : n
-            )
-          );
+        if (updateError) {
+          // Bail without touching storage — otherwise the file disappears
+          // while the DB row still references it.
+          notifyVaultCapIfApplicable(updateError);
+          if (import.meta.env.DEV) console.error("[Vault] partial attachment removal failed:", updateError);
+          return;
         }
+        setNotes((prev) =>
+          prev.map((n) =>
+            String(n?.id) === String(card.noteId)
+              ? { ...n, content: nextContent, attachments: nextAttachmentsString, updated_at: new Date().toISOString() }
+              : n
+          )
+        );
+        storageRemovalAllowed = true;
       }
 
       removeCardFromProjects(card);
 
-      const storageTarget = parseStorageTarget(card.attachment || {});
-      if (storageTarget?.bucket && storageTarget?.path) {
-        await supabase.storage.from(storageTarget.bucket).remove([storageTarget.path]);
+      if (storageRemovalAllowed) {
+        const storageTarget = parseStorageTarget(card.attachment || {});
+        if (storageTarget?.bucket && storageTarget?.path) {
+          const { error: storageError } = await supabase.storage
+            .from(storageTarget.bucket)
+            .remove([storageTarget.path]);
+          if (storageError && import.meta.env.DEV) {
+            console.warn("[Vault] storage cleanup failed:", storageError);
+          }
+        }
       }
     } finally {
       setOpenCardMenuId(null);
@@ -3031,7 +3340,21 @@ User: ${text}`;
     if (!user?.id || !card?.noteId) return;
     setIsCardActionBusy(true);
     try {
-      await supabase.from("notes").delete().eq("id", card.noteId).eq("user_id", user.id);
+      // Check the delete actually succeeded before optimistically
+      // dropping the card. If RLS or the network rejected, we used to
+      // silently remove the row from local state and leak it on the
+      // server until the next refetch — which made deleted-then-
+      // reappearing cards a user-visible mystery.
+      const { error: deleteError } = await supabase
+        .from("notes")
+        .delete()
+        .eq("id", card.noteId)
+        .eq("user_id", user.id);
+      if (deleteError) {
+        notifyVaultCapIfApplicable(deleteError);
+        if (import.meta.env.DEV) console.error("[Vault] delete quick note failed:", deleteError);
+        return;
+      }
       purgeVaultNoteEmbeddings(card.noteId);
       setNotes((prev) => prev.filter((n) => String(n?.id) !== String(card.noteId)));
       removeCardFromProjects(card);
@@ -3629,12 +3952,20 @@ User: ${text}`;
               {isConceptSearching && (
                 <p className="mt-2 text-xs text-black/40 dark:text-white/40">Reading through your vault...</p>
               )}
-              {conceptResultIds !== null && !isConceptSearching && (
+              {conceptResultIds !== null && !isConceptSearching && (() => {
+                // Count only IDs that are actually present in the current
+                // visible card list. The raw `conceptResultIds.length`
+                // includes notes that have been filtered out (tag filter,
+                // search), deleted, or aren't loaded — leading to "Found
+                // 12 related items" when only 5 cards actually appear.
+                const visibleIds = new Set(visibleCards.map((c) => c.id));
+                const matchedCount = conceptResultIds.filter((id) => visibleIds.has(id)).length;
+                return (
                 <div className="mt-2 flex items-center gap-2 text-xs text-black/50 dark:text-white/50">
                   <span>
-                    {conceptResultIds.length === 0
+                    {matchedCount === 0
                       ? "Nothing in your vault matches that"
-                      : `Found ${conceptResultIds.length} related item${conceptResultIds.length === 1 ? "" : "s"}`}
+                      : `Found ${matchedCount} related item${matchedCount === 1 ? "" : "s"}`}
                   </span>
                   <button
                     type="button"
@@ -3644,7 +3975,8 @@ User: ${text}`;
                     Show all
                   </button>
                 </div>
-              )}
+                );
+              })()}
               <div className="mt-4 flex flex-wrap items-center gap-2" style={{ minHeight: 1, transform: "translateZ(0)" }}>
                 {allTags.length > 0 && (
                   <>
@@ -3762,6 +4094,7 @@ User: ${text}`;
                           ref={(el) => { if (card.kind === "attachment") registerCardRef(card.id, el); }}
                           draggable
                           onDragStart={(e) => handleCardDragStart(e, card)}
+                          onDrag={handleCardDrag}
                           onDragEnd={handleCardDragEnd}
                           onClick={(e) => handleCardPress(e, card)}
                           className={`rounded-2xl relative overflow-hidden cursor-pointer ${
@@ -3887,6 +4220,7 @@ User: ${text}`;
                             ref={(el) => { if (card.kind === "attachment") registerCardRef(card.id, el); }}
                             draggable
                             onDragStart={(e) => handleCardDragStart(e, card)}
+                            onDrag={handleCardDrag}
                             onDragEnd={handleCardDragEnd}
                             onClick={(e) => handleCardPress(e, card)}
                             className={`rounded-2xl relative overflow-hidden cursor-pointer ${
@@ -4036,21 +4370,32 @@ User: ${text}`;
                     ref={(el) => { if (card.kind === "attachment") registerCardRef(card.id, el); }}
                     draggable
                     onDragStart={(e) => handleCardDragStart(e, card)}
+                    onDrag={handleCardDrag}
                     onDragEnter={(e) => {
                       e.preventDefault();
                       if (!draggedCardId || draggedCardId === card.id) return;
+                      // While the dragged card is overlapping the trash, suspend
+                      // the live "push cards around" reorder so dropping deletes
+                      // cleanly rather than racing with a reorder.
+                      if (vaultTrashHover || vaultTrashHoldReady) return;
                       if (lastHoverTargetRef.current === card.id) return;
                       lastHoverTargetRef.current = card.id;
                       setDropTargetCardId(card.id);
-                      // Live reorder on enter to create "push cards around" behavior.
                       reorderActivePage(draggedCardId, card.id);
                     }}
                     onDragOver={(e) => {
                       e.preventDefault();
+                      if (vaultTrashHover || vaultTrashHoldReady) return;
                       setDropTargetCardId(card.id);
                     }}
                     onDrop={(e) => {
                       e.preventDefault();
+                      // Trash overlap takes precedence — let dragend run the
+                      // delete; don't reorder onto the hovered card.
+                      if (vaultTrashHoldReady) {
+                        setDropTargetCardId(null);
+                        return;
+                      }
                       const droppedId = e.dataTransfer.getData("application/x-lykins-vault-card-id") || draggedCardId;
                       if (droppedId && droppedId !== card.id) {
                         reorderActivePage(droppedId, card.id);
@@ -4295,17 +4640,12 @@ User: ${text}`;
           onClick={() => setShowChat(false)}
         />
       )}
-      {showChat && isMobileChat && (
-        <div
-          className="fixed inset-0 z-[63] bg-black/20 backdrop-blur-[2px]"
-          onClick={() => setShowChat(false)}
-        />
-      )}
       {showChat && (
         <div
-          className={`fixed bottom-0 flex flex-col bg-white/40 dark:bg-white/5 backdrop-blur-sm border-l border-black/10 dark:border-white/10 transition-[right] duration-300 ${isMobileChat ? "z-[80] inset-x-0 border-l-0" : "z-[64]"}`}
+          className={`fixed flex flex-col bg-white/40 dark:bg-white/5 backdrop-blur-sm border-l border-black/10 dark:border-white/10 transition-[right] duration-300 ${isMobileChat ? "z-[80] inset-x-0 border-l-0" : "z-[64]"}`}
           style={{
             top: isMobileChat ? 0 : "var(--header-height, 4.9rem)",
+            bottom: isMobileChat ? "var(--mobile-tabbar-clear, 0px)" : 0,
             right: isMobileChat ? undefined : 0,
             width: isMobileChat ? undefined : `${chatRailWidthPx}px`,
             animation: "chatRailSlideIn 350ms cubic-bezier(0.22,1,0.36,1) both",
@@ -4330,7 +4670,16 @@ User: ${text}`;
               <div key={msg.id || idx} className={`flex flex-col ${msg.role === "user" ? "items-end" : "items-start"}`}>
                 {msg.role === "user" ? (
                   <div className="max-w-[94%] rounded-2xl rounded-br-md px-3 py-2 text-xs leading-relaxed text-black/90 dark:text-white/90 border border-white/30 dark:border-white/10 bg-[linear-gradient(135deg,rgba(255,255,255,0.14),rgba(255,255,255,0.06))] dark:bg-[linear-gradient(135deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02))] backdrop-blur-md shadow-[0_4px_14px_rgba(0,0,0,0.06)] dark:shadow-[0_4px_14px_rgba(0,0,0,0.16)] [&_table]:text-[0.6875rem] [&_td]:py-1 [&_th]:py-1">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={buildChatMarkdownComponents(msg.id)}>
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      components={buildChatMarkdownComponents(msg.id)}
+                      // Block dangerous URL schemes (javascript:, vbscript:,
+                      // data:text/html, etc.) from rendering as clickable
+                      // links inside AI / chat output. The model could
+                      // be coerced into emitting these via a malicious
+                      // vault item.
+                      urlTransform={safeMarkdownUrl}
+                    >
                       {normalizeChecklistSyntax(msg.content || "")}
                     </ReactMarkdown>
                   </div>
@@ -4372,7 +4721,16 @@ User: ${text}`;
                                       <div className={`absolute left-0 top-1/2 -translate-y-1/2 opacity-0 group-hover/chunk:opacity-100 transition-opacity ${isSingle ? "hidden" : ""}`}>
                                         <GripVertical className="w-3 h-3 text-blue-400/60" />
                                       </div>
-                                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={buildChatMarkdownComponents(msg.id)}>
+                                      <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      components={buildChatMarkdownComponents(msg.id)}
+                      // Block dangerous URL schemes (javascript:, vbscript:,
+                      // data:text/html, etc.) from rendering as clickable
+                      // links inside AI / chat output. The model could
+                      // be coerced into emitting these via a malicious
+                      // vault item.
+                      urlTransform={safeMarkdownUrl}
+                    >
                                         {normalizeChecklistSyntax(chunk)}
                                       </ReactMarkdown>
                                     </div>
@@ -4395,7 +4753,7 @@ User: ${text}`;
                             <button type="button" title="Save full response as quick note" className="p-1 rounded-md text-black/30 dark:text-white/30 hover:text-amber-500 hover:bg-amber-500/10 transition-colors" onClick={() => saveChunkAsQuickNote(msg.content || "")}>
                               <StickyNote className="w-3 h-3" />
                             </button>
-                            <button type="button" title="Copy" className={`p-1 rounded-md transition-colors ${copiedMsgId === msg.id ? "text-blue-500 bg-blue-500/10" : "text-black/30 dark:text-white/30 hover:text-black/60 dark:hover:text-white/60 hover:bg-black/5 dark:hover:bg-white/5"}`} onClick={() => { void navigator.clipboard.writeText(msg.content || ""); setCopiedMsgId(msg.id); setTimeout(() => setCopiedMsgId((cur) => cur === msg.id ? null : cur), 2000); }}>
+                            <button type="button" title="Copy" className={`p-1 rounded-md transition-colors ${copiedMsgId === msg.id ? "text-blue-500 bg-blue-500/10" : "text-black/30 dark:text-white/30 hover:text-black/60 dark:hover:text-white/60 hover:bg-black/5 dark:hover:bg-white/5"}`} onClick={() => { void navigator.clipboard.writeText(msg.content || ""); setCopiedMsgId(msg.id); setTimeout(() => { if (!isMountedRef.current) return; setCopiedMsgId((cur) => cur === msg.id ? null : cur); }, 2000); }}>
                               {copiedMsgId === msg.id ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
                             </button>
                           </div>
@@ -5149,6 +5507,45 @@ User: ${text}`;
             </div>
           );
         })(),
+        document.body
+      )}
+      {!isEmbeddedMode && createPortal(
+        <div
+          className="fixed z-[200] flex items-end gap-2"
+          style={{ bottom: "16px", left: "16px", pointerEvents: "none" }}
+        >
+          <div
+            ref={vaultTrashRef}
+            className={`flex items-center justify-center rounded-full transition-all duration-150 ${
+              vaultTrashHoldReady
+                ? "p-2.5"
+                : draggedCardId
+                  ? vaultTrashHover
+                    ? "p-2.5 bg-red-500/15 ring-2 ring-red-400/40"
+                    : "p-2 bg-black/5 dark:bg-white/10"
+                  : "p-1.5"
+            }`}
+            title={
+              vaultTrashHoldReady
+                ? "Release to delete"
+                : vaultTrashHover
+                  ? "Hold for 1s to delete"
+                  : "Drag a card here and hold to delete"
+            }
+          >
+            <span className={vaultTrashHoldReady ? "omnia-canvas-trash-ready-shake" : undefined}>
+              <Trash2 className={`transition-all duration-150 ${
+                vaultTrashHoldReady
+                  ? "w-6 h-6 text-red-600 dark:text-red-400 drop-shadow-[0_0_10px_rgba(239,68,68,0.65)]"
+                  : vaultTrashHover
+                    ? "w-5 h-5 text-red-500 dark:text-red-400 drop-shadow-[0_0_6px_rgba(239,68,68,0.5)]"
+                    : draggedCardId
+                      ? "w-5 h-5 text-black/55 dark:text-white/60"
+                      : "w-4 h-4 text-black/35 dark:text-white/35"
+              }`} />
+            </span>
+          </div>
+        </div>,
         document.body
       )}
       <UpgradeModal modal={upgradeModal} onDismiss={dismissUpgradeModal} />

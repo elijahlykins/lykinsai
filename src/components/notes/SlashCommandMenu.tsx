@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useImperativeHandle, useState, forwardRef, useLayoutEffect, useRef } from "react";
 import {
   Heading1, Heading2, Type, List, ListOrdered, ListChecks,
-  ChevronRight, TextQuote, Table, Image, Mic,
+  TextQuote, Table, Image, Mic,
 } from "lucide-react";
 import type { Editor, Range } from "@tiptap/react";
 
@@ -55,13 +55,6 @@ const SLASH_ITEMS: SlashCommandItem[] = [
     icon: ListChecks,
     command: (editor, range) => {
       editor.chain().focus().deleteRange(range).toggleTaskList().run();
-    },
-  },
-  {
-    id: "toggle-list", label: "Toggle List", hint: "Collapsible section", section: "text",
-    icon: ChevronRight,
-    command: (editor, range) => {
-      editor.chain().focus().deleteRange(range).setNode("heading", { level: 3 }).run();
     },
   },
   {

@@ -68,10 +68,44 @@ async function runVaultNoteEnrichment(noteId: string): Promise<void> {
       body: JSON.stringify({ noteId }),
     });
     if (!res.ok) {
-      const t = await res.text().catch(() => "");
-      if (import.meta.env.DEV) console.warn("[Vault] enrich-note failed:", res.status);
+      const text = await res.text().catch(() => "");
+      if (import.meta.env.DEV) {
+        // eslint-disable-next-line no-console
+        console.warn("[Vault] enrich-note failed:", res.status, text.slice(0, 200));
+      }
     }
   } catch (e) {
-    if (import.meta.env.DEV) console.warn("[Vault] enrich-note error:", e);
+    if (import.meta.env.DEV) {
+      // eslint-disable-next-line no-console
+      console.warn("[Vault] enrich-note error:", e);
+    }
+  }
+}
+
+/**
+ * Cancel every pending enrich timer. Wired to Supabase auth so we
+ * don't fire enrichment requests for the previous user against the
+ * new user's session — and so signing out fully releases the
+ * timers for GC.
+ */
+export function cancelAllPendingVaultEnrichments(): void {
+  for (const t of enrichTimers.values()) {
+    clearTimeout(t);
+  }
+  enrichTimers.clear();
+}
+
+if (typeof window !== "undefined") {
+  // Subscribe at module evaluation. Stored auth listeners are cheap
+  // (one per page load) and we never need to unsubscribe — the timers
+  // map and this listener share the same lifecycle as the tab.
+  try {
+    supabase.auth.onAuthStateChange((event) => {
+      if (event === "SIGNED_OUT") {
+        cancelAllPendingVaultEnrichments();
+      }
+    });
+  } catch {
+    /* supabase auth shim missing; nothing to subscribe to */
   }
 }

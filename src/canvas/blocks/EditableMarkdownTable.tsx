@@ -134,6 +134,7 @@ export const EditableMarkdownTable = memo(function EditableMarkdownTable({
 
     const md = serializeGfmTable(r === -1 ? nextHeaders : headers, r === -1 ? rows : nextRows);
     updateBlock(blockId, { content: md } as any);
+    setTimeout(() => window.dispatchEvent(new Event("omnia_flush_save")), 200);
   }, [blockId, draft, editCell, headers, rows, updateBlock]);
 
   const startEdit = useCallback(

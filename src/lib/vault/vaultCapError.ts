@@ -20,8 +20,23 @@ function toRecord(err: MaybeError): Record<string, unknown> | null {
 export function isVaultCapError(err: MaybeError): boolean {
   const r = toRecord(err);
   if (!r) return false;
-  const haystacks = [r.message, r.details, r.hint]
-    .filter((v): v is string => typeof v === "string");
+  // PG can surface the trigger error via several fields depending on the
+  // wire format. Be robust: check message/details/hint substrings,
+  // structured error codes (some triggers RAISE with custom SQLSTATE
+  // 'P0001' + a message body that contains 'vault_cap_reached'), and any
+  // structured detail object the server may have attached.
+  const haystacks: string[] = [];
+  if (typeof r.message === "string") haystacks.push(r.message);
+  if (typeof r.details === "string") haystacks.push(r.details);
+  if (typeof r.hint === "string") haystacks.push(r.hint);
+  if (typeof r.code === "string") haystacks.push(r.code);
+  if (r.cause && typeof r.cause === "object") {
+    const c = r.cause as Record<string, unknown>;
+    for (const k of ["message", "details", "hint", "code"]) {
+      const v = c[k];
+      if (typeof v === "string") haystacks.push(v);
+    }
+  }
   return haystacks.some((s) => s.includes("vault_cap_reached"));
 }
 

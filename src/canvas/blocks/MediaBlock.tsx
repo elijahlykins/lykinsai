@@ -167,6 +167,12 @@ export const MediaBlock = memo(function MediaBlock({ id, onMinimize, onMenu }: {
       updateBlock(id, { width: Math.max(g * 16, block.width), height: Math.max(g * 12, block.height) } as any);
     } else {
       saveMedia({ mode: "link", url, src: url });
+      // Image / video / embed all grow the brick to a sensible default.
+      // Link mode used to no-op, leaving the brick at the picker's tiny
+      // 5x4 default so the link content renders cramped. Match the embed
+      // sizing (link cards have similar information density).
+      const g = gridSize || 24;
+      updateBlock(id, { width: Math.max(g * 12, block.width), height: Math.max(g * 5, block.height) } as any);
     }
 
     setUrlDraft("");

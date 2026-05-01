@@ -423,8 +423,8 @@ export async function webCodecsCompressVideo(
         frame.close();
         return;
       }
+      let outFrame: VideoFrame | null = null;
       try {
-        let outFrame: VideoFrame;
         if (pendingResize && pendingCtx) {
           pendingCtx.drawImage(frame, 0, 0, outW, outH);
           outFrame = new VideoFrame(pendingResize, {
@@ -438,9 +438,15 @@ export async function webCodecsCompressVideo(
         // Key every ~2 s to keep output seekable without bloating size.
         const keyFrame = videoProcessed % 60 === 0;
         videoEncoder.encode(outFrame, { keyFrame });
-        outFrame.close();
       } catch (err) {
         videoError = err as Error;
+      } finally {
+        // VideoFrame is a hard reference to a GPU buffer — leaking
+        // even one per encode error throttles the whole pipeline once
+        // the limit is hit. Always close, even when encode threw.
+        if (outFrame) {
+          try { outFrame.close(); } catch { /* ignore double-close */ }
+        }
       }
       videoProcessed += 1;
       if (videoProcessed % 8 === 0 && onProgress) {

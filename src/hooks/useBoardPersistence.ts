@@ -121,6 +121,14 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
   const saveTimerRef = useRef<number | null>(null);
   const savingRef = useRef(false);
   const lastSaveTimeRef = useRef<string | null>(null);
+  // Always points to the freshest saveSnapshot. The autosave / unmount
+  // effects below use this ref instead of pulling saveSnapshot in as a
+  // dep so they don't re-register (and run their cleanup → spurious
+  // `isFinal: true` save) every time chatMessages.length flips
+  // isBoardEmpty's identity. Earlier this caused saves of the just-loaded
+  // state to bump the DB updated_at past local drafts, defeating the
+  // draft-vs-remote heuristic and silently overwriting newer work.
+  const saveSnapshotRef = useRef<(opts?: { isFinal?: boolean }) => Promise<void>>(async () => {});
 
   /* ------------------------------------------------------------------ */
   /*  Tracked title setter — syncs ref immediately so save callbacks     */
@@ -355,13 +363,38 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
     const st = useCanvasStore.getState();
     const blockIds = st.blockOrder || [];
     const blocksMap = st.blocks || {};
+    const MEDIA_MODES = new Set([
+      "image",
+      "video",
+      "audio",
+      "embed",
+      "pdf",
+      "youtube",
+      "social",
+      "spreadsheet",
+      "table",
+      "media",
+      "link",
+      "file",
+    ]);
     const meaningful = blockIds.filter((id: string) => {
-      const b = blocksMap[id];
+      const b = blocksMap[id] as any;
       if (!b) return false;
-      const data = (b as any)?.data && typeof (b as any).data === "object" ? (b as any).data : {};
-      const content = String(data.content ?? data.body ?? (b as any)?.content ?? "").trim();
-      const fmt = String((b as any)?.format || data.format || "").toLowerCase();
+      const data = b?.data && typeof b.data === "object" ? b.data : {};
+      const content = String(data.content ?? data.body ?? b?.content ?? "").trim();
+      const fmt = String(b?.format || data.format || "").toLowerCase();
+      const mode = String(b?.mode || data.mode || "").toLowerCase();
+      // Any rendered media / embed / file / table brick counts. These store
+      // their payload in data.url / data.src / data.videoId / data.storagePath
+      // rather than in content, so the legacy "must have content" rule was
+      // wrong and could trigger empty-board cleanup that DELETED the row.
       if (fmt === "media" || fmt === "table" || fmt === "button") return true;
+      if (mode && MEDIA_MODES.has(mode)) return true;
+      if (b?.type === "create") return true;
+      if (
+        (data && (data.url || data.src || data.videoId || data.storagePath || data.dataUrl
+          || data.audioData || data.pdfData || data.oembedHtml || data.extractedText))
+      ) return true;
       if (content.length > 0) return true;
       return false;
     });
@@ -503,27 +536,61 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
 
       const [updateRes, initialUpsertRes] = await Promise.all([
         supabase.from("omnia_boards").update({ title: savedTitle, updated_at: now }).eq("id", boardId),
-        supabase.from("omnia_board_states").upsert(statePayload, { onConflict: "board_id" }),
+        supabase
+          .from("omnia_board_states")
+          .upsert(statePayload, { onConflict: "board_id" })
+          .select("board_id, user_id, updated_at"),
       ]);
 
       let stateSaveOk = !initialUpsertRes.error;
-
+      let needsSelfHeal = false;
+      const initialReturned = Array.isArray((initialUpsertRes as any).data) ? (initialUpsertRes as any).data : [];
       if (initialUpsertRes.error) {
+        if (import.meta.env.DEV) console.error("[LYKN] Board state upsert failed:", initialUpsertRes.error);
+        needsSelfHeal = true;
+      } else {
+        // The .select() lets us detect the silent "0 rows written" case.
+        if (initialReturned.length === 0) {
+          if (import.meta.env.DEV) console.warn("[LYKN] Board state upsert returned 0 rows; running self-heal.");
+          stateSaveOk = false;
+          needsSelfHeal = true;
+        }
+      }
+
+      if (needsSelfHeal) {
         // The DB-level blocks-per-grid trigger raises this error when a
         // tampered or stale client tries to save more blocks than the plan
         // allows. Surface the upgrade modal and stop — no point retrying.
-        if (notifyBlocksCapIfApplicable(initialUpsertRes.error)) {
+        if (initialUpsertRes.error && notifyBlocksCapIfApplicable(initialUpsertRes.error)) {
           if (import.meta.env.DEV) console.warn("[LYKN] Board save blocked by per-grid block cap.");
         } else {
-          if (import.meta.env.DEV) console.error("[LYKN] Board state save failed, attempting self-heal:", initialUpsertRes.error.message);
+          if (import.meta.env.DEV) {
+            console.error(
+              "[LYKN] Board state save failed, attempting self-heal:",
+              initialUpsertRes.error?.message || `0 rows returned (initial.length=${initialReturned.length})`,
+            );
+          }
+          // Self-heal step 1: claim any orphaned row (user_id is NULL) for
+          // this board so the upsert's UPDATE branch will match it.
           await supabase
             .from("omnia_board_states")
             .update({ user_id: userId })
             .eq("board_id", boardId)
             .is("user_id", null);
+          // Self-heal step 2: also re-claim rows that still belong to the
+          // current user but were somehow stamped with a different user_id
+          // (legacy rows from old workspaces, board-share takeovers, etc.).
+          // Without this, the UPDATE policy filters them out and we keep
+          // upserting into nothing forever.
+          await supabase
+            .from("omnia_board_states")
+            .update({ user_id: userId })
+            .eq("board_id", boardId)
+            .neq("user_id", userId);
           const retryRes = await supabase
             .from("omnia_board_states")
-            .upsert(statePayload, { onConflict: "board_id" });
+            .upsert(statePayload, { onConflict: "board_id" })
+            .select("board_id");
           if (retryRes.error) {
             if (notifyBlocksCapIfApplicable(retryRes.error)) {
               if (import.meta.env.DEV) console.warn("[LYKN] Board save retry blocked by per-grid block cap.");
@@ -531,7 +598,12 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
               console.error("[LYKN] Board state save retry failed:", retryRes.error.message);
             }
           } else {
-            stateSaveOk = true;
+            const retryReturned = Array.isArray((retryRes as any).data) ? (retryRes as any).data : [];
+            if (retryReturned.length > 0) {
+              stateSaveOk = true;
+            } else {
+              if (import.meta.env.DEV) console.error("[LYKN] Board state self-heal upsert returned 0 rows.");
+            }
           }
         }
       }
@@ -563,6 +635,14 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boardId, buildSnapshot, isBoardEmpty, userId]);
+
+  // Keep the ref pointed at the latest saveSnapshot identity so callers
+  // (autosave interval, beforeunload, unmount cleanup) can always invoke
+  // the freshest closure without taking saveSnapshot as a useEffect dep.
+  // See the saveSnapshotRef declaration above for the full reasoning.
+  useEffect(() => {
+    saveSnapshotRef.current = saveSnapshot;
+  }, [saveSnapshot]);
 
   /* ------------------------------------------------------------------ */
   /*  commitBoardTitle                                                   */
@@ -893,52 +973,82 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
   useEffect(() => {
     if (!boardId || !userId) return;
     if (isDemoGridId(boardId)) return; // demo grids never autosave
-    const onBeforeUnload = () => {
+    // The synchronous localStorage write is the *only* guaranteed save path
+    // during a tab close — the async Supabase upsert may be aborted before
+    // the request is on the wire. The next mount restores from this draft
+    // (omnia_draft_<boardId>), so the user never loses work.
+    const writeDraftSync = () => {
       try {
         const snapshot = buildSnapshot();
         (snapshot as any)._savedAt = lastSaveTimeRef.current || new Date().toISOString();
         localStorage.setItem(`omnia_draft_${boardId}`, JSON.stringify(snapshot));
       } catch { /* quota */ }
+    };
+    const onBeforeUnload = () => {
+      writeDraftSync();
       savingRef.current = false;
-      saveSnapshot({ isFinal: true });
+      // Fire async save with keepalive semantics where possible. Supabase
+      // doesn't take a `keepalive` option directly, but the browser will
+      // best-effort deliver in-flight fetches during pagehide.
+      saveSnapshotRef.current({ isFinal: true });
+    };
+    // pagehide is the modern, more reliable replacement for beforeunload —
+    // it fires for back/forward cache navigations on iOS Safari and Firefox
+    // where beforeunload silently no-ops.
+    const onPageHide = () => {
+      writeDraftSync();
+      savingRef.current = false;
+      saveSnapshotRef.current({ isFinal: true });
     };
     const onFlushSave = () => {
       savingRef.current = false;
-      saveSnapshot();
+      saveSnapshotRef.current();
     };
     const autoSaveInterval = window.setInterval(() => {
       if (hydratedRef.current && !savingRef.current) {
-        saveSnapshot();
+        saveSnapshotRef.current();
       }
     }, 30_000);
     const onVisibilityChange = () => {
       if (document.visibilityState === "hidden" && hydratedRef.current) {
+        // Always write the draft on hide too — fastest tab kill / app
+        // backgrounding may not fire pagehide but does fire visibilitychange.
+        writeDraftSync();
         savingRef.current = false;
-        saveSnapshot();
+        saveSnapshotRef.current();
       }
     };
     window.addEventListener("beforeunload", onBeforeUnload);
+    window.addEventListener("pagehide", onPageHide);
     window.addEventListener("omnia_flush_save", onFlushSave);
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       window.clearInterval(autoSaveInterval);
       window.removeEventListener("beforeunload", onBeforeUnload);
+      window.removeEventListener("pagehide", onPageHide);
       window.removeEventListener("omnia_flush_save", onFlushSave);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [boardId, buildSnapshot, saveSnapshot, userId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boardId, userId]);
 
   /* ------------------------------------------------------------------ */
   /*  Save cleanup effect (on unmount / board change)                    */
+  /*                                                                     */
+  /*  Only re-registers when the user actually navigates to a different  */
+  /*  board (or signs in/out). Keeping `saveSnapshot` out of the deps    */
+  /*  prevents the cleanup from firing on every chat-message tick (which */
+  /*  was overwriting the DB with the just-loaded state and bumping its  */
+  /*  updated_at past local drafts).                                     */
   /* ------------------------------------------------------------------ */
   useEffect(() => {
     if (!boardId || !userId) return;
     if (isDemoGridId(boardId)) return;
     return () => {
       savingRef.current = false;
-      saveSnapshot({ isFinal: true });
+      saveSnapshotRef.current({ isFinal: true });
     };
-  }, [boardId, saveSnapshot, userId]);
+  }, [boardId, userId]);
 
   /* ------------------------------------------------------------------ */
   /*  Seed removal effect                                                */

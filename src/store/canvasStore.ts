@@ -38,7 +38,14 @@ type CanvasState = {
 
   setCanvasWidth: (width: number | null) => void;
   setBlockLimit: (limit: number | null) => void;
-  addBlock: (block: Block) => void;
+  /**
+   * Adds a block to the store. Returns `true` when the block was actually
+   * added, `false` when the per-board block cap rejected it. Callers that
+   * report success to the user (PULL_MEDIA, vault drop, file drop, etc.)
+   * MUST check the return value before announcing success — otherwise the
+   * cap silently drops bricks while the UI claims they landed.
+   */
+  addBlock: (block: Block) => boolean;
   createTextBlock: (
     x: number,
     y: number,
@@ -47,7 +54,7 @@ type CanvasState = {
   ) => TextBlock;
   addTextBlockAt: (
     pos: { x: number; y: number },
-    opts?: { width?: number; height?: number; content?: string; format?: TextFormat }
+    opts?: { width?: number; height?: number; content?: string; format?: TextFormat; data?: Record<string, unknown> }
   ) => BlockId;
   addListBlockAt: (pos: { x: number; y: number }, opts: { listType: LegacyListType; width?: number }) => BlockId;
   addSpreadsheetBlockAt: (pos: { x: number; y: number }, opts?: { rows?: number; cols?: number }) => BlockId;
@@ -111,6 +118,15 @@ type CanvasState = {
 const MAX_RECENTLY_DELETED = 10;
 
 function makeId(prefix = "b") {
+  // Prefer crypto.randomUUID() — collision-free even under burst creation
+  // (vault drops + AI pulls + file drops in the same millisecond). Fall
+  // back to the legacy timestamp+random scheme in environments without
+  // a secure context (non-https local dev, very old browsers).
+  try {
+    if (typeof crypto !== "undefined" && typeof (crypto as any).randomUUID === "function") {
+      return `${prefix}-${(crypto as any).randomUUID()}`;
+    }
+  } catch { /* ignore */ }
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
@@ -151,6 +167,10 @@ function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
 }
 
+// NOTE: Currently unused — kept available for callers that need to enforce
+// a hard left/right wall on the canvas (e.g. mobile compact mode). Wire it
+// into `addBlock`/`updateBlock` if/when fixed-width canvases are revived;
+// otherwise remove. eslint-disable-next-line @typescript-eslint/no-unused-vars
 function clampXWithinCanvas(args: { x: number; width: number; canvasWidth: number | null }) {
   const { x, width, canvasWidth } = args;
   if (!Number.isFinite(canvasWidth) || (canvasWidth as number) <= 0) return x;
@@ -159,6 +179,7 @@ function clampXWithinCanvas(args: { x: number; width: number; canvasWidth: numbe
   const maxX = Math.max(0, cw - w);
   return clamp(Math.floor(x || 0), 0, maxX);
 }
+void clampXWithinCanvas;
 
 function clampWidthWithinCanvas(args: { x: number; width: number; canvasWidth: number | null }) {
   const { x, width, canvasWidth } = args;
@@ -341,26 +362,43 @@ export const useCanvasStore = create<CanvasState>()(
 
     addBlock: (block) => {
       const st = get();
-      // Enforce the plan's blocks-per-grid cap. The "create" placeholder is
-      // infrastructure, not user content, so it doesn't count against the cap.
+      // Enforce the blocks-per-grid cap. Only the empty "+" PLACEHOLDER
+      // bricks (type:"create" with no mode and no data payload) are exempt;
+      // real media/embed/video bricks are also `type:"create"` but carry
+      // user content, so they MUST count against the cap. Without this,
+      // mass image / vault drops silently bypass the limit.
+      const isPlaceholder = (b: any) => {
+        if (!b || b.type !== "create") return false;
+        const mode = String(b.mode || "").toLowerCase();
+        const data = b.data && typeof b.data === "object" ? b.data : {};
+        const hasContent = String(b.content || data.content || "").trim().length > 0;
+        const hasMedia = !!(data.url || data.src || data.videoId || data.storagePath || data.dataUrl || data.audioData || data.pdfData || data.oembedHtml);
+        return !mode && !hasContent && !hasMedia;
+      };
       if (st.blockLimit != null) {
-        const isRealBlock = (block as any)?.type !== "create";
+        const isRealBlock = !isPlaceholder(block);
         const alreadyPresent = st.blockOrder.includes(block.id);
         if (isRealBlock && !alreadyPresent) {
-          let nonCreateCount = 0;
+          let realCount = 0;
           for (const id of st.blockOrder) {
-            const b = st.blocks[id] as any;
-            if (b && b.type !== "create") nonCreateCount += 1;
+            if (!isPlaceholder(st.blocks[id])) realCount += 1;
           }
-          if (nonCreateCount >= st.blockLimit) {
+          if (realCount >= st.blockLimit) {
             if (typeof window !== "undefined") {
               window.dispatchEvent(
                 new CustomEvent("lykn:block-limit-reached", { detail: { limit: st.blockLimit } })
               );
             }
-            return;
+            return false;
           }
         }
+      }
+      // Snapshot history before adding so external sources (vault drop, AI
+      // pull, file drop) become undoable as a unit. Skip for placeholder
+      // re-inserts and for already-present blocks (re-adds would bloat).
+      const alreadyPresent = st.blockOrder.includes(block.id);
+      if (!alreadyPresent && !isPlaceholder(block)) {
+        try { get().pushHistory(); } catch { /* defensive */ }
       }
       set((state) => {
         state.blocks[block.id] = block;
@@ -370,6 +408,7 @@ export const useCanvasStore = create<CanvasState>()(
         }
         upsertBrickConnections(state, [block.id]);
       });
+      return true;
     },
 
     createTextBlock: (x, y, initialContent, format) => {
@@ -398,8 +437,15 @@ export const useCanvasStore = create<CanvasState>()(
       const b = get().createTextBlock(pos.x, pos.y, content, format);
       b.width = w;
       b.height = h;
-      get().addBlock(b);
-      return b.id;
+      // Apply caller-provided data atomically on creation so flags like
+      // `aiResponseBubble`, `textVariant`, and `listType` land on the block in
+      // the same store update as the block itself. This prevents one-frame
+      // flashes where the brick renders before its metadata is set.
+      if (opts?.data && typeof opts.data === "object") {
+        b.data = { ...(b.data || {}), ...opts.data };
+      }
+      const ok = get().addBlock(b);
+      return ok ? b.id : "";
     },
 
     addListBlockAt: (pos, opts) => {
@@ -416,8 +462,8 @@ export const useCanvasStore = create<CanvasState>()(
       const b = get().createTextBlock(pos.x, pos.y, listItemsToText(listType, [first]), format);
       b.width = w;
       b.height = grid;
-      get().addBlock(b);
-      return b.id;
+      const ok = get().addBlock(b);
+      return ok ? b.id : "";
     },
 
     addSpreadsheetBlockAt: (pos, opts) => {
@@ -436,8 +482,8 @@ export const useCanvasStore = create<CanvasState>()(
       const b = get().createTextBlock(pos.x, pos.y, JSON.stringify(sheet), "table");
       b.width = Math.max(grid * 12, grid * 18);
       b.height = Math.max(grid * 10, (rows + 1) * grid);
-      get().addBlock(b);
-      return b.id;
+      const ok = get().addBlock(b);
+      return ok ? b.id : "";
     },
 
     addSheetBlockAt: (pos, opts) => {
@@ -451,8 +497,8 @@ export const useCanvasStore = create<CanvasState>()(
       const b = get().createTextBlock(pos.x, pos.y, content, "rich");
       b.width = w;
       b.height = h;
-      get().addBlock(b);
-      return b.id;
+      const ok = get().addBlock(b);
+      return ok ? b.id : "";
     },
 
     addCodeBlockAt: (pos, opts) => {
@@ -463,8 +509,8 @@ export const useCanvasStore = create<CanvasState>()(
       b.language = opts?.language || "plaintext";
       b.width = w;
       b.height = h;
-      get().addBlock(b);
-      return b.id;
+      const ok = get().addBlock(b);
+      return ok ? b.id : "";
     },
 
     addYouTubeBlockAt: (pos, opts) => {
@@ -490,8 +536,8 @@ export const useCanvasStore = create<CanvasState>()(
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       } as any;
-      get().addBlock(b);
-      return b.id;
+      const ok = get().addBlock(b);
+      return ok ? b.id : "";
     },
 
     updateBlock: (id, patch) => {

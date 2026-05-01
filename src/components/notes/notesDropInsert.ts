@@ -290,30 +290,44 @@ async function filesToNodes(files: File[]): Promise<Record<string, unknown>[]> {
             content: [{ type: "text", text: text.length > 16000 ? `${text.slice(0, 16000)}\n\n…` : text }],
           });
         } else {
-          nodes.push(linkParagraph(`Open file: ${file.name}`, URL.createObjectURL(file)));
+          nodes.push(linkParagraph(`Open file: ${file.name}`, registerObjectUrl(file)));
         }
       } catch {
-        nodes.push(linkParagraph(`File: ${file.name}`, URL.createObjectURL(file)));
+        nodes.push(linkParagraph(`File: ${file.name}`, registerObjectUrl(file)));
       }
       continue;
     }
 
     if (mime.startsWith("audio/") || AUDIO_EXTS.has(ext)) {
-      const href = URL.createObjectURL(file);
-      nodes.push(linkParagraph(`Audio: ${file.name}`, href));
+      nodes.push(linkParagraph(`Audio: ${file.name}`, registerObjectUrl(file)));
       continue;
     }
     if (mime.startsWith("video/") || VIDEO_EXTS.has(ext)) {
-      const href = URL.createObjectURL(file);
-      nodes.push(linkParagraph(`Video: ${file.name}`, href));
+      nodes.push(linkParagraph(`Video: ${file.name}`, registerObjectUrl(file)));
       continue;
     }
 
-    const href = URL.createObjectURL(file);
-    nodes.push(linkParagraph(`File: ${file.name}`, href));
+    nodes.push(linkParagraph(`File: ${file.name}`, registerObjectUrl(file)));
   }
 
   return nodes;
+}
+
+// Object URLs created here back link nodes inside a Tiptap document. The
+// Tiptap doc lifetime is hard to track precisely, so we revoke after a
+// generous TTL (15 min). Without this, every dropped file leaks a blob
+// reference for the whole tab session.
+const OBJECT_URL_TTL_MS = 15 * 60 * 1000;
+function registerObjectUrl(file: Blob): string {
+  const url = URL.createObjectURL(file);
+  try {
+    if (typeof window !== "undefined") {
+      window.setTimeout(() => {
+        try { URL.revokeObjectURL(url); } catch { /* ignore */ }
+      }, OBJECT_URL_TTL_MS);
+    }
+  } catch { /* ignore */ }
+  return url;
 }
 
 /**

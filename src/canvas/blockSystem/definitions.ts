@@ -30,6 +30,13 @@ const def = (
   renderVariant,
 });
 
+// CONVENTION: Today the canvas only ships ONE universal definition ("brick").
+// Image / video / spreadsheet / YouTube / social embeds are NOT registered
+// here — they're rendered via dedicated React components selected from
+// `block.type` + `block.mode` in Canvas.tsx. Anything not found here falls
+// back to the brick definition. If you add new universal block types,
+// register them here too so `getBlockDefinition` returns the correct
+// metadata instead of silently coercing to "brick".
 const definitions: BlockDefinition[] = [
   // Neutral transformable brick
   def("brick", "content", "text", { w: 8, h: 4 }),

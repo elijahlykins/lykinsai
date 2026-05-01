@@ -1,8 +1,22 @@
 import { supabase } from "@/lib/supabase";
+import {
+  findAttachmentsMarker,
+  withAttachmentsMarker,
+} from "@/lib/vault/attachmentsMarker";
 
 /**
  * Fire-and-forget: asks the server to describe a vault item (image / text / file)
  * and patches the AI description back into the note's ATTACHMENTS_JSON marker.
+ *
+ * Design notes:
+ *  - Attachment marker scanning goes through `findAttachmentsMarker`, which
+ *    handles `[`/`]` characters that appear inside JSON strings. The old
+ *    bracket-count loop here would mis-find boundaries on innocuous filenames.
+ *  - The select reads `updated_at` and the update is conditional on that
+ *    value, so a user edit landing between the two calls won't be silently
+ *    overwritten with stale content + the new description.
+ *  - `attachmentIndex` defaults to 0 for backward compatibility, but callers
+ *    should pass the real index of the attachment they want enriched.
  */
 export function describeVaultItemInBackground(
   noteId: string,
@@ -11,6 +25,7 @@ export function describeVaultItemInBackground(
     textContent?: string;
     fileType?: string;
     fileName?: string;
+    attachmentIndex?: number;
   },
 ): void {
   (async () => {
@@ -25,51 +40,42 @@ export function describeVaultItemInBackground(
       const { description } = await res.json();
       if (!description) return;
 
+      const { data: sess } = await supabase.auth.getSession();
+      const userId = sess?.session?.user?.id;
+      if (!userId) return;
+
       const { data: note } = await supabase
         .from("notes")
-        .select("content")
+        .select("content, updated_at")
         .eq("id", noteId)
+        .eq("user_id", userId)
         .single();
       if (!note?.content) return;
 
-      const marker = "[ATTACHMENTS_JSON:";
-      const start = note.content.indexOf(marker);
-      if (start === -1) return;
-      const jsonStart = start + marker.length;
-      let bracketCount = 0;
-      let jsonEnd = jsonStart;
-      for (let i = jsonStart; i < note.content.length; i++) {
-        if (note.content[i] === "[") bracketCount++;
-        if (note.content[i] === "]") {
-          bracketCount--;
-          if (bracketCount === 0) {
-            jsonEnd = i + 1;
-            break;
-          }
-        }
-      }
-      if (jsonEnd <= jsonStart) return;
+      const span = findAttachmentsMarker(String(note.content));
+      if (!span) return;
 
-      let attachments: any[];
-      try {
-        attachments = JSON.parse(note.content.slice(jsonStart, jsonEnd));
-      } catch {
-        return;
-      }
-      if (!Array.isArray(attachments) || attachments.length === 0) return;
+      const attachments = span.attachments.slice();
+      const idx =
+        Number.isInteger(opts.attachmentIndex) && (opts.attachmentIndex as number) >= 0
+          ? (opts.attachmentIndex as number)
+          : 0;
+      if (idx >= attachments.length) return;
+      const target = attachments[idx];
+      if (!target || typeof target !== "object") return;
 
-      attachments[0].aiDescription = description;
-      let sliceEnd = jsonEnd;
-      if (note.content[sliceEnd] === "]") sliceEnd += 1;
-      const updatedContent =
-        note.content.slice(0, start) +
-        `[ATTACHMENTS_JSON:${JSON.stringify(attachments)}]` +
-        note.content.slice(sliceEnd);
+      attachments[idx] = { ...(target as Record<string, unknown>), aiDescription: description };
+      const updatedContent = withAttachmentsMarker(String(note.content), attachments);
 
+      // Lost-update guard: only commit if the row hasn't moved since we
+      // read it. The user could have edited the note title/content while
+      // the AI request was in flight; clobbering that would be data loss.
       await supabase
         .from("notes")
         .update({ content: updatedContent })
-        .eq("id", noteId);
+        .eq("id", noteId)
+        .eq("user_id", userId)
+        .eq("updated_at", note.updated_at);
     } catch (err: any) {
       if (import.meta.env.DEV) console.warn("Background vault item describe failed:", err?.message);
     }

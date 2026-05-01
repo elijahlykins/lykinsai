@@ -53,9 +53,13 @@ export default function GuestSignInPrompt() {
 
   return (
     <div
-      className={`fixed bottom-4 right-4 z-[85] w-[22rem] max-w-[calc(100vw-2rem)] rounded-2xl border border-blue-200/40 dark:border-white/8 bg-white/75 dark:bg-[#1e1e1e]/90 backdrop-blur-md shadow-lg shadow-blue-500/5 dark:shadow-black/40 p-5 transition-all duration-300 ${
+      className={`fixed right-4 z-[85] w-[22rem] max-w-[calc(100vw-2rem)] rounded-2xl border border-blue-200/40 dark:border-white/8 bg-white/75 dark:bg-[#1e1e1e]/90 backdrop-blur-md shadow-lg shadow-blue-500/5 dark:shadow-black/40 p-5 transition-all duration-300 ${
         visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-3 pointer-events-none"
       }`}
+      style={{
+        bottom: "max(1rem, calc(1rem + env(safe-area-inset-bottom, 0px)))",
+        marginBottom: "var(--mobile-tabbar-clear, 0px)",
+      }}
       role="dialog"
       aria-label="Sign in to save your data"
     >

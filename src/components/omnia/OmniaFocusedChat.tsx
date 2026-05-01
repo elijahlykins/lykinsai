@@ -124,6 +124,7 @@ export interface OmniaFocusedChatProps {
 
   typedWelcome: string;
   isMobileGrid: boolean;
+  isMobilePhone?: boolean;
 
   isDictating: boolean;
   isTranscribing: boolean;
@@ -178,6 +179,7 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
   onSend,
   typedWelcome,
   isMobileGrid,
+  isMobilePhone = false,
   isDictating,
   isTranscribing,
   canvasFileBlocks,
@@ -304,8 +306,11 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
       {chatMessages.length === 0 ? (
         /* Empty state: identical to the canvas first-render welcome */
         <div
-          className={`fixed top-0 bottom-0 right-0 z-[65] flex items-center justify-center px-4 transition-all duration-300 ${canvasFileBlocks.length > 0 && !isMobileGrid ? "pl-[232px]" : ""}`}
-          style={{ left: "var(--sidebar-offset, 0px)" }}
+          className={`fixed top-0 right-0 z-[65] flex items-center justify-center px-4 transition-all duration-300 ${canvasFileBlocks.length > 0 && !isMobileGrid ? "pl-[232px]" : ""}`}
+          style={{
+            left: isMobilePhone ? 0 : "var(--sidebar-offset, 0px)",
+            bottom: "var(--mobile-tabbar-clear, 0px)",
+          }}
           onDragOver={onDragOver}
           onDrop={onDrop}
         >
@@ -345,8 +350,16 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
       ) : (
         /* Active conversation: messages scrollable, input pinned to bottom */
         <div
-          className="fixed bottom-0 right-0 z-[65] flex flex-col items-center bg-transparent transition-all duration-300"
-          style={{ top: "var(--header-height-sm, 4.2rem)", left: canvasFileBlocks.length > 0 && !isMobileGrid ? `calc(220px + var(--sidebar-offset, 0px))` : "var(--sidebar-offset, 0px)" }}
+          className="fixed right-0 z-[65] flex flex-col items-center bg-transparent transition-all duration-300"
+          style={{
+            top: isMobilePhone ? "2.75rem" : "var(--header-height-sm, 4.2rem)",
+            bottom: "var(--mobile-tabbar-clear, 0px)",
+            left: isMobilePhone
+              ? 0
+              : canvasFileBlocks.length > 0 && !isMobileGrid
+                ? `calc(220px + var(--sidebar-offset, 0px))`
+                : "var(--sidebar-offset, 0px)",
+          }}
           onDragOver={onDragOver}
           onDrop={onDrop}
         >
@@ -516,7 +529,7 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
                                     {normalizeChecklistSyntax(chunk)}
                                   </ReactMarkdown>
                                 </div>
-                                {!isSingle && (
+                                {!isSingle && !isMobilePhone && (
                                   <button
                                     type="button"
                                     title={selectedChunks.size > 1 ? "Add selected sections to grid" : "Add this section to grid"}
@@ -597,9 +610,11 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
                         </div>
                       )}
                       <div className="flex items-center gap-0.5 px-3 pb-2 pt-0.5">
-                        <button type="button" title="Add to grid" className="p-1.5 rounded-md text-black/40 dark:text-white/40 hover:text-blue-500 hover:bg-blue-500/10 transition-colors" onClick={() => addChatResponseToGrid(msg.aiResponse || "")}>
-                          <GridIcon className="w-3.5 h-3.5" />
-                        </button>
+                        {!isMobilePhone && (
+                          <button type="button" title="Add to grid" className="p-1.5 rounded-md text-black/40 dark:text-white/40 hover:text-blue-500 hover:bg-blue-500/10 transition-colors" onClick={() => addChatResponseToGrid(msg.aiResponse || "")}>
+                            <GridIcon className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                         <button type="button" title="Share" className="p-1.5 rounded-md text-black/40 dark:text-white/40 hover:text-black/70 dark:hover:text-white/70 hover:bg-black/5 dark:hover:bg-white/10 transition-colors" onClick={() => { const text = msg.aiResponse || ""; if (navigator.share) { navigator.share({ text }).catch(() => {}); } else { void navigator.clipboard.writeText(text); } }}>
                           <Share2 className="w-3.5 h-3.5" />
                         </button>

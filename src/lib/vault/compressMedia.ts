@@ -183,6 +183,56 @@ let ffmpegInstancePromise: Promise<any> | null = null;
 let ffmpegDisabledThisSession = false;
 
 /**
+ * Idle-terminate window for the ffmpeg worker. After this many ms with
+ * no compression activity we tear down the wasm worker so the ~30 MB
+ * heap it pins can be reclaimed by the browser. The next compression
+ * pays the load cost again (3-8 s), which is the right trade-off for
+ * a feature most users hit a few times per session.
+ */
+const FFMPEG_IDLE_TERMINATE_MS = 5 * 60 * 1000;
+let ffmpegIdleTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleFfmpegIdleTerminate(): void {
+  if (typeof window === "undefined") return;
+  if (ffmpegIdleTimer) clearTimeout(ffmpegIdleTimer);
+  ffmpegIdleTimer = setTimeout(() => {
+    ffmpegIdleTimer = null;
+    void terminateFfmpeg();
+  }, FFMPEG_IDLE_TERMINATE_MS);
+}
+
+function cancelFfmpegIdleTerminate(): void {
+  if (ffmpegIdleTimer) {
+    clearTimeout(ffmpegIdleTimer);
+    ffmpegIdleTimer = null;
+  }
+}
+
+async function terminateFfmpeg(): Promise<void> {
+  const promise = ffmpegInstancePromise;
+  ffmpegInstancePromise = null;
+  if (!promise) return;
+  try {
+    const ff = await promise;
+    if (ff && typeof ff.terminate === "function") {
+      ff.terminate();
+    }
+  } catch {
+    /* worker may already be dead */
+  }
+}
+
+if (typeof window !== "undefined") {
+  // Best-effort: tear down the worker when the tab is being closed so
+  // we don't leave a pinned wasm heap around in browser back-forward
+  // cache slots.
+  window.addEventListener("pagehide", () => {
+    cancelFfmpegIdleTerminate();
+    void terminateFfmpeg();
+  });
+}
+
+/**
  * Serializes access to the shared FFmpeg instance. The singleton is not
  * re-entrant — if two callers fire `ffmpeg.exec()` at the same time they
  * clobber each other's in-memory file system and hang indefinitely. This
@@ -196,10 +246,17 @@ async function withFfmpegLock<T>(fn: () => Promise<T>): Promise<T> {
     release = resolve;
   });
   await previous;
+  // While we have the lock, postpone any pending idle teardown — we're
+  // about to use the worker.
+  cancelFfmpegIdleTerminate();
   try {
     return await fn();
   } finally {
     release();
+    // Once we're done (and the next caller, if any, has had a chance
+    // to grab the lock), arm the idle timer. Subsequent jobs will
+    // cancel + re-arm it.
+    scheduleFfmpegIdleTerminate();
   }
 }
 
@@ -456,45 +513,54 @@ export async function maybeCompressVideo(
       };
       ffmpeg.on("progress", progressHandler);
 
+      // Inner try/finally guarantees we tear down both MEMFS files
+      // even when ffmpeg.exec or readFile throws. Without this, a
+      // failed transcode left megabytes of input/output sitting in
+      // the wasm heap until the worker was torn down (or worse, the
+      // page was reloaded), and a second compression attempt hit
+      // out-of-memory.
       try {
-        await withTimeout(
-          ffmpeg.exec([
-            "-i",
-            inputName,
-            // Downscale so the longest side stays within VIDEO_MAX_HEIGHT
-            // and make the dimensions H.264-safe (even numbers).
-            "-vf",
-            `scale='min(iw,-2)':'min(${VIDEO_MAX_HEIGHT},ih)',scale=trunc(iw/2)*2:trunc(ih/2)*2`,
-            "-c:v",
-            "libx264",
-            "-preset",
-            VIDEO_PRESET,
-            "-crf",
-            VIDEO_CRF,
-            "-pix_fmt",
-            "yuv420p",
-            "-movflags",
-            "+faststart",
-            "-c:a",
-            "aac",
-            "-b:a",
-            AUDIO_BITRATE,
-            "-ac",
-            "2",
-            outputName,
-          ]),
-          10 * 60 * 1000,
-          "ffmpeg exec timed out",
-        );
-      } finally {
-        ffmpeg.off("progress", progressHandler);
-      }
+        try {
+          await withTimeout(
+            ffmpeg.exec([
+              "-i",
+              inputName,
+              // Downscale so the longest side stays within VIDEO_MAX_HEIGHT
+              // and make the dimensions H.264-safe (even numbers).
+              "-vf",
+              `scale='min(iw,-2)':'min(${VIDEO_MAX_HEIGHT},ih)',scale=trunc(iw/2)*2:trunc(ih/2)*2`,
+              "-c:v",
+              "libx264",
+              "-preset",
+              VIDEO_PRESET,
+              "-crf",
+              VIDEO_CRF,
+              "-pix_fmt",
+              "yuv420p",
+              "-movflags",
+              "+faststart",
+              "-c:a",
+              "aac",
+              "-b:a",
+              AUDIO_BITRATE,
+              "-ac",
+              "2",
+              outputName,
+            ]),
+            10 * 60 * 1000,
+            "ffmpeg exec timed out",
+          );
+        } finally {
+          ffmpeg.off("progress", progressHandler);
+        }
 
-      const data = (await ffmpeg.readFile(outputName)) as Uint8Array | string;
-      const out = new Blob([data as unknown as BlobPart], { type: "video/mp4" });
-      try { await ffmpeg.deleteFile(inputName); } catch { /* ignore */ }
-      try { await ffmpeg.deleteFile(outputName); } catch { /* ignore */ }
-      return out;
+        const data = (await ffmpeg.readFile(outputName)) as Uint8Array | string;
+        const out = new Blob([data as unknown as BlobPart], { type: "video/mp4" });
+        return out;
+      } finally {
+        try { await ffmpeg.deleteFile(inputName); } catch { /* ignore */ }
+        try { await ffmpeg.deleteFile(outputName); } catch { /* ignore */ }
+      }
     });
 
     // If transcoding somehow produced a LARGER file, prefer the original —

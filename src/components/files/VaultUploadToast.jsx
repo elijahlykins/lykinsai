@@ -70,7 +70,10 @@ export default function VaultUploadToast() {
 
   if (hidden) {
     return (
-      <div className="fixed bottom-6 right-6 z-[10000]">
+      <div
+        className="fixed right-6 z-[10000]"
+        style={{ bottom: "calc(1.5rem + var(--mobile-tabbar-clear, 0px))" }}
+      >
         <button
           type="button"
           onClick={showToast}
@@ -94,7 +97,10 @@ export default function VaultUploadToast() {
   }
 
   return (
-    <div className="fixed bottom-24 right-8 w-80 max-h-96 overflow-y-auto bg-white dark:bg-[#171515] border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl p-4 z-[10000] space-y-2">
+    <div
+      className="fixed right-4 sm:right-8 w-[calc(100vw-2rem)] sm:w-80 max-h-96 overflow-y-auto bg-white dark:bg-[#171515] border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl p-4 z-[10000] space-y-2"
+      style={{ bottom: "calc(6rem + var(--mobile-tabbar-clear, 0px))" }}
+    >
       <div className="flex items-center justify-between mb-3 gap-2">
         <h3 className="text-sm font-semibold text-black dark:text-white truncate">
           {active > 0
@@ -180,7 +186,8 @@ export default function VaultUploadToast() {
               {upload.status === "error" && (
                 <AlertCircle className="w-5 h-5 text-red-500" />
               )}
-              {(upload.status === "processing" ||
+              {(upload.status === "pending" ||
+                upload.status === "processing" ||
                 upload.status === "uploading" ||
                 upload.status === "compressing-video" ||
                 upload.status === "compressing-image") && (

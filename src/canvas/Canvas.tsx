@@ -28,6 +28,7 @@ import { useAuth } from "@/lib/SupabaseAuth";
 import { useUsageGate } from "@/lib/useUsageGate";
 import { notifyVaultCapIfApplicable } from "@/lib/vault/vaultCapError";
 import UpgradeModal from "@/components/UpgradeModal";
+import { toast } from "@/components/ui/use-toast";
 
 type CanvasProps = {
   liveAIMode?: boolean;
@@ -39,13 +40,25 @@ const ENABLE_CANVAS_HOTKEYS = false;
 const ENABLE_BRICK_LOGIC = canUseActiveBrickLogic();
 /** Pointer or dragged brick must stay over the trash control this long before release deletes. */
 const CANVAS_TRASH_HOLD_MS = 1000;
+/**
+ * Leading/trailing padding (in world units) around the canvas content. Sized so
+ * that at the minimum zoom level (~0.2) the pad on each side is roughly one
+ * viewport wide, which lets cursor-anchored zoom resolve to a valid scrollLeft
+ * without the browser silently clamping. Must stay in sync with the local
+ * `SURFACE_ORIGIN_PAD` used inside the Canvas component.
+ */
+const SURFACE_ORIGIN_PAD_WORLD = 10000;
 
-function consumePendingVaultDrop(dataTransfer?: DataTransfer | null): { id: string; title: string; content: string; attachments: any[]; timestamp: number } | null {
+function consumePendingVaultDrop(dataTransfer?: DataTransfer | null): { id: string; title: string; content: string; attachments: any[]; attachment?: any; attachmentIndex?: number; timestamp: number } | null {
   try {
     const pending = (window as any).__omnia_pending_vault;
-    if (pending && typeof pending === "object" && Date.now() - (pending.timestamp || 0) < 30000) {
+    if (pending && typeof pending === "object") {
+      // Always clear the stash on read — even when expired — so a stale
+      // payload from a missed drag-end can't pair with a future unrelated
+      // event. Prior behaviour only cleared on the success path, leaving
+      // the window prop dangling indefinitely after expiry.
       (window as any).__omnia_pending_vault = null;
-      return pending;
+      if (Date.now() - (pending.timestamp || 0) < 30000) return pending;
     }
   } catch { /* ignore */ }
   if (dataTransfer) {
@@ -60,6 +73,26 @@ function consumePendingVaultDrop(dataTransfer?: DataTransfer | null): { id: stri
     } catch { /* ignore */ }
   }
   return null;
+}
+
+// Always clear the stash when a vault drag ends without a drop (cancel,
+// pointer leaving the window, etc). Without this, a half-completed drag
+// can leave __omnia_pending_vault populated for up to 30s and pair with a
+// later unrelated drop event.
+if (typeof window !== "undefined") {
+  try {
+    window.addEventListener("omnia-vault-drag-end", () => {
+      try { (window as any).__omnia_pending_vault = null; } catch { /* ignore */ }
+    });
+    window.addEventListener("dragend", (e: DragEvent) => {
+      try {
+        const types = e.dataTransfer?.types;
+        if (types && Array.from(types).includes("application/x-omnia-vault")) {
+          (window as any).__omnia_pending_vault = null;
+        }
+      } catch { /* ignore */ }
+    });
+  } catch { /* ignore */ }
 }
 
 function dataUrlToFile(dataUrl: string, name: string): File | null {
@@ -77,8 +110,22 @@ function dataUrlToFile(dataUrl: string, name: string): File | null {
   }
 }
 
-async function processVaultDrop(pending: { title: string; content: string; attachments: any[] }, clientX: number, clientY: number) {
-  const attachments = Array.isArray(pending.attachments) ? pending.attachments : [];
+async function processVaultDrop(pending: { title: string; content: string; attachments: any[]; attachment?: any; attachmentIndex?: number }, clientX: number, clientY: number) {
+  const rawAttachments = Array.isArray(pending.attachments) ? pending.attachments : [];
+  // If the drag source supplied an explicit attachment (per-tile drag from
+  // the vault), honor THAT one — not "the first attachment whose mime
+  // matches". This protects multi-attachment notes from silently picking
+  // the wrong file when the user dragged tile #2 or later.
+  let attachments: any[] = rawAttachments;
+  if (pending.attachment && typeof pending.attachment === "object") {
+    attachments = [pending.attachment];
+  } else if (
+    Number.isInteger(pending.attachmentIndex)
+    && (pending.attachmentIndex as number) >= 0
+    && (pending.attachmentIndex as number) < rawAttachments.length
+  ) {
+    attachments = [rawAttachments[pending.attachmentIndex as number]];
+  }
   if (import.meta.env.DEV) console.log("[VAULT-DROP-CANVAS] processVaultDrop called, attachments:", attachments.length);
 
   const youtubeAttach = attachments.find((a: any) =>
@@ -104,8 +151,23 @@ async function processVaultDrop(pending: { title: string; content: string; attac
       ytUrl = `https://www.youtube.com/watch?v=${vid}`;
     }
     const extractedVid = extractYouTubeVideoId(ytUrl) || vid;
-    if (ytUrl && extractedVid) {
+      if (ytUrl && extractedVid) {
       const st = useCanvasStore.getState();
+      // Auto-select the added brick later so the user immediately sees it.
+      // Mirror the dedup check in OmniaGrid's overlay drop path so the same
+      // YouTube vault item dropped twice in a row doesn't create two bricks
+      // (or one via overlay + one via canvas).
+      const existingIds = Array.isArray(st.blockOrder) ? st.blockOrder : [];
+      const alreadyOnCanvas = existingIds.some((bid: string) => {
+        const blk = (st.blocks as any)?.[bid];
+        return blk && (
+          blk.videoId === extractedVid
+          || blk.data?.videoId === extractedVid
+          || blk.url === ytUrl
+          || blk.data?.url === ytUrl
+        );
+      });
+      if (alreadyOnCanvas) return;
       const g = Math.max(1, Math.floor(st.gridSize || 24));
       const canvasEl = document.querySelector<HTMLElement>("[data-omnia-canvas]");
       const rect = canvasEl?.getBoundingClientRect();
@@ -114,9 +176,10 @@ async function processVaultDrop(pending: { title: string; content: string; attac
       const scrollTop = canvasEl?.scrollTop || 0;
       const scrollLeft = canvasEl?.scrollLeft || 0;
       const z = st.camera?.zoom || 1;
-      const wx = Math.round(((scrollLeft + localX) / z - 5000) / g) * g;
-      const wy = Math.round(((scrollTop + localY) / z - 5000) / g) * g;
-      st.addYouTubeBlockAt({ x: wx, y: wy }, { url: ytUrl, videoId: extractedVid });
+      const wx = Math.round(((scrollLeft + localX) / z - SURFACE_ORIGIN_PAD_WORLD) / g) * g;
+      const wy = Math.round(((scrollTop + localY) / z - SURFACE_ORIGIN_PAD_WORLD) / g) * g;
+      const ytId = st.addYouTubeBlockAt({ x: wx, y: wy }, { url: ytUrl, videoId: extractedVid });
+      if (ytId) try { st.selectBlocks([ytId]); } catch { /* defensive */ }
     }
     return;
   }
@@ -135,27 +198,35 @@ async function processVaultDrop(pending: { title: string; content: string; attac
     const scrollTop = canvasEl?.scrollTop || 0;
     const scrollLeft = canvasEl?.scrollLeft || 0;
     const z = st.camera?.zoom || 1;
-    const wx = Math.round(((scrollLeft + localX) / z - 5000) / g) * g;
-    const wy = Math.round(((scrollTop + localY) / z - 5000) / g) * g;
+    const wx = Math.round(((scrollLeft + localX) / z - SURFACE_ORIGIN_PAD_WORLD) / g) * g;
+    const wy = Math.round(((scrollTop + localY) / z - SURFACE_ORIGIN_PAD_WORLD) / g) * g;
     const platform = socialAttach.oembedType || socialAttach.type || detectSocialPlatform(socialAttach.url) || "instagram";
-    st.addBlock({
-      type: "create",
-      mode: "embed",
-      x: wx,
-      y: wy,
-      width: g * 14,
-      height: g * 20,
-      content: "",
-      data: {
-        url: socialAttach.url,
-        oembedHtml: socialAttach.oembedHtml || "",
-        oembedType: platform,
-        ogTitle: socialAttach.title || socialAttach.name || "",
-        ogImage: socialAttach.image || socialAttach.thumbnail_url || "",
-        authorName: socialAttach.authorName || "",
-        authorHandle: socialAttach.authorHandle || "",
-      },
-    } as any);
+    // Stable id required — without it addBlock keys the block under
+    // `undefined` and every subsequent social drop overwrites the previous.
+    const socialId = `create-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const socialNow = new Date().toISOString();
+      const ok = st.addBlock({
+        id: socialId,
+        type: "create",
+        mode: "embed",
+        x: wx,
+        y: wy,
+        width: g * 14,
+        height: g * 20,
+        content: "",
+        data: {
+          url: socialAttach.url,
+          oembedHtml: socialAttach.oembedHtml || "",
+          oembedType: platform,
+          ogTitle: socialAttach.title || socialAttach.name || "",
+          ogImage: socialAttach.image || socialAttach.thumbnail_url || "",
+          authorName: socialAttach.authorName || "",
+          authorHandle: socialAttach.authorHandle || "",
+        },
+        createdAt: socialNow,
+        updatedAt: socialNow,
+      } as any);
+    if (ok) try { st.selectBlocks([socialId]); } catch { /* defensive */ }
     return;
   }
 
@@ -206,8 +277,8 @@ async function processVaultDrop(pending: { title: string; content: string; attac
       const scrollTop = canvasEl?.scrollTop || 0;
       const scrollLeft = canvasEl?.scrollLeft || 0;
       const z = st.camera?.zoom || 1;
-      const wx = Math.round(((scrollLeft + localX) / z - 5000) / g) * g;
-      const wy = Math.round(((scrollTop + localY) / z - 5000) / g) * g;
+      const wx = Math.round(((scrollLeft + localX) / z - SURFACE_ORIGIN_PAD_WORLD) / g) * g;
+      const wy = Math.round(((scrollTop + localY) / z - SURFACE_ORIGIN_PAD_WORLD) / g) * g;
 
       // Every block must have a stable id — without one, addBlock stores
       // it under the key "undefined" and later renders behave badly.
@@ -262,14 +333,19 @@ async function processVaultDrop(pending: { title: string; content: string; attac
       const scrollTop = canvasEl?.scrollTop || 0;
       const scrollLeft = canvasEl?.scrollLeft || 0;
       const z = st.camera?.zoom || 1;
-      const wx = Math.round(((scrollLeft + localX) / z - 5000) / g) * g;
-      const wy = Math.round(((scrollTop + localY) / z - 5000) / g) * g;
+      const wx = Math.round(((scrollLeft + localX) / z - SURFACE_ORIGIN_PAD_WORLD) / g) * g;
+      const wy = Math.round(((scrollTop + localY) / z - SURFACE_ORIGIN_PAD_WORLD) / g) * g;
 
       if (dropMode === "link") {
         const sheetData = { version: 1, rows: spreadsheetAttach.rows || 10, cols: spreadsheetAttach.cols || 5, cells: spreadsheetAttach.cells };
+        const ssLinkId = `create-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+        const ssLinkNow = new Date().toISOString();
         st.addBlock({
+          id: ssLinkId,
           type: "create", mode: "embed", x: wx, y: wy, width: g * 10, height: g * 3, content: "",
           data: { url: ssUrl, name: ssName, displayMode: "link-card", extractedText: JSON.stringify(sheetData) },
+          createdAt: ssLinkNow,
+          updatedAt: ssLinkNow,
         } as any);
       } else {
         const rows = Math.max(Number(spreadsheetAttach.rows) || 10, 5);
@@ -1096,6 +1172,12 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
     const el = rangeContainer instanceof Element ? rangeContainer : rangeContainer.parentElement;
     const editable = el?.closest?.("[data-canvas-brick-editor-id]") as HTMLElement | null;
     if (!editable) return;
+    // Regular text bricks now render as <textarea>, which has no rich-text
+    // children — its `innerHTML` is just the initial DOM content, not the
+    // user's typed value. Persisting that as formattedHtml would silently
+    // wipe the brick's content on next render. Highlights only apply to
+    // contenteditable surfaces (toggle lists today).
+    if (editable instanceof HTMLTextAreaElement) return;
     const bid = editable.getAttribute("data-canvas-brick-editor-id");
     if (!bid) return;
     const html = editable.innerHTML;
@@ -1480,7 +1562,17 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
   const ZOOM_MIN = 0.2;
   const ZOOM_MAX = 3;
   const ZOOM_FACTOR = 1.06;
-  const SURFACE_ORIGIN_PAD = 5000;
+  // World-space padding around the content. Leading pad shifts the world
+  // origin into positive scroll space; an equivalent trailing pad is added
+  // to the outer wrapper so the cursor-anchored zoom math can resolve to a
+  // valid scrollLeft/scrollTop from any panned position. With ZOOM_MIN=0.2
+  // this gives ~2000px of pad on each side at the minimum zoom — enough for
+  // the cursor anchor to remain stable even when the user is at a corner of
+  // the canvas. Without trailing pad, the browser silently clamps scrollLeft
+  // to [0, contentW - clientW], which manifested as the view "auto-correcting"
+  // toward a centered/edge position when zooming out from off-center.
+  // Mirrors the module-level `SURFACE_ORIGIN_PAD_WORLD`; keep in sync.
+  const SURFACE_ORIGIN_PAD = SURFACE_ORIGIN_PAD_WORLD;
   const applyZoom = useCallback((next: number) => {
     const clamped = Math.round(Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, next)) * 100) / 100;
     const el = containerRef.current;
@@ -1626,10 +1718,28 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
   }, [setCamera]);
 
   // Sync local zoom & scroll from store camera when it diverges (snapshot restore).
+  //
+  // This effect's job is to handle EXTERNAL camera changes — snapshot restores,
+  // fit-to-content, AI fit-blocks events, etc. — where the store camera was
+  // set directly without going through scroll. For in-flow wheel-zoom and
+  // pan-scroll, the corresponding layoutEffect / scroll handler already keep
+  // store camera and DOM scroll in lockstep, so this effect should be a no-op
+  // in those cases.
+  //
+  // Two guards keep the effect from interfering with active gestures:
+  //   1. `isWheelZoomingRef.current` — set by the wheel handler for the entire
+  //      gesture duration (renewed on every wheel event AND every flush, so
+  //      the window between events stays protected).
+  //   2. A scroll-aware threshold — only re-snap scroll when the divergence
+  //      is large enough to clearly indicate an external camera change. A
+  //      small (sub-viewport) divergence is more likely scroll-rounding
+  //      drift, which would cause a visible jump if we "corrected" it.
+  //      Threshold is in scroll PIXELS so it scales correctly with zoom.
   useEffect(() => {
     if (isWheelZoomingRef.current) return; // don't fight the active wheel gesture
     const z = canvasZoomRef.current;
-    if (Math.abs(camera.zoom - z) > 0.01) {
+    const zoomChanged = Math.abs(camera.zoom - z) > 0.01;
+    if (zoomChanged) {
       const next = camera.zoom;
       canvasZoomRef.current = next;
       setCanvasZoom(next);
@@ -1637,14 +1747,33 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
     const el = containerRef.current;
     if (el) {
       const zNow = canvasZoomRef.current;
-      const currentY = zNow > 0 ? el.scrollTop / zNow - SURFACE_ORIGIN_PAD : 0;
-      if (Math.abs(camera.y - currentY) > 5) {
-        el.scrollTop = (camera.y + SURFACE_ORIGIN_PAD) * zNow;
+      // Compute divergence in SCROLL pixels (not world units) so the threshold
+      // is consistent across zoom levels.
+      const desiredScrollLeft = (camera.x + SURFACE_ORIGIN_PAD) * zNow;
+      const desiredScrollTop = (camera.y + SURFACE_ORIGIN_PAD) * zNow;
+      const xPxDelta = Math.abs(desiredScrollLeft - el.scrollLeft);
+      const yPxDelta = Math.abs(desiredScrollTop - el.scrollTop);
+      // Big threshold: only re-snap on clear external changes (snapshot
+      // restore, fit-to-content), never on tiny rounding drift. The wheel
+      // layoutEffect keeps in-flow scroll/camera within sub-pixel.
+      const PX_THRESHOLD = 32;
+      const willSnapX = xPxDelta > PX_THRESHOLD;
+      const willSnapY = yPxDelta > PX_THRESHOLD;
+      if ((window as any).__lykn_zoom_debug && (zoomChanged || willSnapX || willSnapY)) {
+        // eslint-disable-next-line no-console
+        console.log("[camera-sync]", {
+          camera: `(${camera.x.toFixed(1)},${camera.y.toFixed(1)},z=${camera.zoom.toFixed(3)})`,
+          zoomChanged,
+          xPxDelta: xPxDelta.toFixed(1),
+          yPxDelta: yPxDelta.toFixed(1),
+          willSnapX,
+          willSnapY,
+          scroll: `${el.scrollLeft},${el.scrollTop}`,
+          desired: `${desiredScrollLeft.toFixed(0)},${desiredScrollTop.toFixed(0)}`,
+        });
       }
-      const currentX = zNow > 0 ? el.scrollLeft / zNow - SURFACE_ORIGIN_PAD : 0;
-      if (Math.abs(camera.x - currentX) > 5) {
-        el.scrollLeft = (camera.x + SURFACE_ORIGIN_PAD) * zNow;
-      }
+      if (willSnapY) el.scrollTop = desiredScrollTop;
+      if (willSnapX) el.scrollLeft = desiredScrollLeft;
     }
   }, [camera.zoom, camera.x, camera.y]);
 
@@ -1663,6 +1792,24 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
     let lastPointerX = 0;
     let lastPointerY = 0;
     let lastIsPinch = false;
+
+    // Renew the wheel-zoom guard. Called from BOTH onWheel and flush so that
+    // the entire gesture window — not just the moments when a successful flush
+    // is committing zoom — is protected from concurrent camera/scroll syncs.
+    // Without this, scenarios like the flush returning early (tiny delta, at
+    // ZOOM_MIN clamp) leave the guard expired mid-gesture, allowing the
+    // camera→scroll sync effect to fire on a queued state change and re-snap
+    // the view to a stale camera value.
+    const renewWheelGuard = () => {
+      isWheelZoomingRef.current = true;
+      if (wheelZoomEndTimerRef.current != null) {
+        window.clearTimeout(wheelZoomEndTimerRef.current);
+      }
+      wheelZoomEndTimerRef.current = window.setTimeout(() => {
+        isWheelZoomingRef.current = false;
+        wheelZoomEndTimerRef.current = null;
+      }, 250);
+    };
 
     const flush = () => {
       rafId = 0;
@@ -1687,7 +1834,13 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
       // Keep full float precision here (no 0.01 rounding) — rounding creates visible
       // stair-stepping during continuous gestures. The zoom panel UI rounds for display.
       const next = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z * Math.exp(zoomDelta)));
-      if (Math.abs(next - z) < 1e-4) return;
+      if (Math.abs(next - z) < 1e-4) {
+        // Even if zoom is pinned (ZOOM_MIN/MAX or tiny delta), the user is still
+        // actively gesturing — keep the guard alive so the next event picks up
+        // without giving the sync effects a chance to interject.
+        renewWheelGuard();
+        return;
+      }
 
       // Anchor "world+PAD" point under the cursor so it stays put across the zoom change.
       const anchorX = (curScrollLeft + lastPointerX) / z;
@@ -1696,9 +1849,10 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
       // Compute the scrollable range that the container will have after React commits
       // the new zoom. Clamping to this range up-front prevents the browser from silently
       // clamping the scroll (which would cause the pointer anchor to drift and the view
-      // to visibly "jump" when zooming out fast).
-      const nextContentW = (surfaceWidthRef.current + SURFACE_ORIGIN_PAD) * next;
-      const nextContentH = (surfaceHeightRef.current + SURFACE_ORIGIN_PAD) * next;
+      // to visibly "jump" when zooming out fast). Matches the outer wrapper width below
+      // (`(surface.width + SURFACE_ORIGIN_PAD * 2) * canvasZoom`) — must stay in sync.
+      const nextContentW = (surfaceWidthRef.current + SURFACE_ORIGIN_PAD * 2) * next;
+      const nextContentH = (surfaceHeightRef.current + SURFACE_ORIGIN_PAD * 2) * next;
       const maxLeft = Math.max(0, nextContentW - el.clientWidth);
       const maxTop = Math.max(0, nextContentH - el.clientHeight);
       const rawLeft = anchorX * next - lastPointerX;
@@ -1706,15 +1860,27 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
       const targetLeft = Math.max(0, Math.min(maxLeft, rawLeft));
       const targetTop = Math.max(0, Math.min(maxTop, rawTop));
 
-      // Mark gesture active so the scroll/camera sync effects don't fight us.
-      isWheelZoomingRef.current = true;
-      if (wheelZoomEndTimerRef.current != null) {
-        window.clearTimeout(wheelZoomEndTimerRef.current);
+      if ((window as any).__lykn_zoom_debug) {
+        const clampedX = targetLeft !== rawLeft;
+        const clampedY = targetTop !== rawTop;
+        // eslint-disable-next-line no-console
+        console.log("[zoom-flush]", {
+          z: z.toFixed(3), next: next.toFixed(3),
+          delta: delta.toFixed(2),
+          ptr: `${lastPointerX.toFixed(0)},${lastPointerY.toFixed(0)}`,
+          curScroll: `${curScrollLeft.toFixed(0)},${curScrollTop.toFixed(0)}`,
+          anchor: `${anchorX.toFixed(1)},${anchorY.toFixed(1)}`,
+          raw: `${rawLeft.toFixed(0)},${rawTop.toFixed(0)}`,
+          target: `${targetLeft.toFixed(0)},${targetTop.toFixed(0)}`,
+          max: `${maxLeft.toFixed(0)},${maxTop.toFixed(0)}`,
+          clamp: clampedX || clampedY ? `${clampedX ? "X" : ""}${clampedY ? "Y" : ""}` : "no",
+          surf: `${surfaceWidthRef.current}×${surfaceHeightRef.current}`,
+          pendingHit: !!pending,
+        });
       }
-      wheelZoomEndTimerRef.current = window.setTimeout(() => {
-        isWheelZoomingRef.current = false;
-        wheelZoomEndTimerRef.current = null;
-      }, 120);
+
+      // Mark gesture active so the scroll/camera sync effects don't fight us.
+      renewWheelGuard();
 
       canvasZoomRef.current = next;
       pendingZoomScrollRef.current = { left: targetLeft, top: targetTop, zoom: next };
@@ -1757,6 +1923,13 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
 
       if (shouldZoom) {
         e.preventDefault();
+
+        // Set the wheel-zoom guard IMMEDIATELY at the wheel event (not just in
+        // the rAF flush) — there's a ~16ms window before the first flush runs
+        // where any concurrent setCamera (e.g. a scroll-handler rAF that was
+        // queued before this gesture started) would otherwise sneak through
+        // and let the camera→scroll sync effect re-snap the view.
+        renewWheelGuard();
 
         // Normalize deltaY across input devices so zoom speed is consistent:
         //   - DOM_DELTA_PIXEL (0): trackpads (small values, ~1-10 per frame)
@@ -1801,6 +1974,20 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
     el.scrollTop = pending.top;
     const finalLeft = Math.max(0, el.scrollLeft);
     const finalTop = Math.max(0, el.scrollTop);
+    if ((window as any).__lykn_zoom_debug) {
+      // eslint-disable-next-line no-console
+      console.log("[zoom-apply]", {
+        zoom: pending.zoom.toFixed(3),
+        wantScroll: `${pending.left.toFixed(0)},${pending.top.toFixed(0)}`,
+        gotScroll: `${finalLeft.toFixed(0)},${finalTop.toFixed(0)}`,
+        clamped:
+          Math.abs(finalLeft - pending.left) > 0.5 || Math.abs(finalTop - pending.top) > 0.5,
+        scrollW: el.scrollWidth,
+        scrollH: el.scrollHeight,
+        clientW: el.clientWidth,
+        clientH: el.clientHeight,
+      });
+    }
     setCamera({ x: finalLeft / pending.zoom - SURFACE_ORIGIN_PAD, y: finalTop / pending.zoom - SURFACE_ORIGIN_PAD, zoom: pending.zoom });
   }, [canvasZoom, setCamera]);
 
@@ -2570,9 +2757,21 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
   };
   const focusBrickInputById = (id: string) => {
     requestAnimationFrame(() => {
-      const el = document.querySelector(`[data-canvas-brick-editor-id="${id}"]`) as HTMLDivElement | null;
+      const el = document.querySelector(`[data-canvas-brick-editor-id="${id}"]`) as HTMLElement | null;
       if (!el) return;
       el.focus();
+      // Regular text bricks now render as a real <textarea>, so the
+      // contenteditable Selection/Range APIs would silently no-op on them.
+      // Use the textarea-native caret API to put the caret at the end.
+      if (el instanceof HTMLTextAreaElement) {
+        try {
+          const len = el.value.length;
+          el.setSelectionRange(len, len);
+        } catch {
+          // ignore selection failures
+        }
+        return;
+      }
       const sel = window.getSelection();
       if (!sel) return;
       const range = document.createRange();
@@ -2900,29 +3099,53 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
     };
   };
   const minRowsForVariant = (variant: "body" | "h2" | "h1") => (variant === "h1" ? 3 : variant === "h2" ? 2 : 1);
-  const syncBrickEditorText = (id: string, text: string) => {
-    requestAnimationFrame(() => {
-      const el = document.querySelector(`[data-canvas-brick-editor-id="${id}"]`) as HTMLDivElement | null;
-      if (!el) return;
-      const cur: any = useCanvasStore.getState().blocks[id];
-      const isTodo = cur?.data?.listType === "todo";
-      const display = isTodo
-        ? String(text || "").split("\n").map((line: string) => {
+  // Only call this immediately after a slash/markdown transform that just
+  // rewrote the store's content. We compare the editor's CURRENT visible
+  // text against the source text we transformed FROM (`expectedBefore`).
+  // If they don't match exactly, the user has typed more characters since
+  // we computed the transform, so we leave the editor alone — that bail-out
+  // is the difference between a working edit and the "my edit got rolled
+  // back to the old text" bug. No requestAnimationFrame, no defer: any
+  // delay before this check turns into a race window.
+  const syncBrickEditorText = (id: string, expectedBefore: string, text: string) => {
+    const el = document.querySelector(`[data-canvas-brick-editor-id="${id}"]`) as HTMLElement | null;
+    if (!el) return;
+    // Textarea-backed bricks (every regular text brick) are React-controlled:
+    // the store update we just dispatched will rerender the textarea with the
+    // new value automatically, the same way the per-row todo <input> elements
+    // get refreshed. Touching the DOM here would only race with React's own
+    // commit, which is exactly the bug this function used to cause for
+    // contenteditable bricks. Bail out and let React do its job.
+    if (el instanceof HTMLTextAreaElement) return;
+    const div = el as HTMLDivElement;
+    const cur: any = useCanvasStore.getState().blocks[id];
+    const isTodo = cur?.data?.listType === "todo";
+    const toDisplay = (raw: string) =>
+      isTodo
+        ? String(raw || "").split("\n").map((line: string) => {
             if (/^\s*(?:[-*]\s+)?\[x\]\s*/i.test(line)) return line.replace(/^(\s*)(?:[-*]\s+)?\[x\]\s*/i, "$1\u25FC\uFE0E ");
             if (/^\s*(?:[-*]\s+)?\[\s?\]\s*/i.test(line)) return line.replace(/^(\s*)(?:[-*]\s+)?\[\s?\]\s*/i, "$1\u25FB\uFE0E ");
             return line;
           }).join("\n")
-        : text;
-      if ((el.innerText || "") === display) return;
-      el.innerText = display;
-      const sel = window.getSelection();
-      if (!sel) return;
-      const range = document.createRange();
-      range.selectNodeContents(el);
-      range.collapse(false);
-      sel.removeAllRanges();
-      sel.addRange(range);
-    });
+        : raw;
+    const editorText = div.innerText || "";
+    const expectedDisplay = toDisplay(expectedBefore);
+    // Hard race guard: only rewrite the editor if its current text is
+    // EXACTLY the source we transformed. Anything else means the user
+    // typed more, deleted, or moved the caret — leave their input alone
+    // and let the next blur/input cycle reconcile naturally.
+    if (editorText !== expectedDisplay) return;
+    const display = toDisplay(text);
+    if (editorText === display) return;
+    div.innerText = display;
+    if (document.activeElement !== div) return;
+    const sel = window.getSelection();
+    if (!sel) return;
+    const range = document.createRange();
+    range.selectNodeContents(div);
+    range.collapse(false);
+    sel.removeAllRanges();
+    sel.addRange(range);
   };
   const findBlockAtCell = (x: number, y: number) => {
     for (const id of blockOrder) {
@@ -3674,6 +3897,116 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
     return () => window.removeEventListener("omnia_fit_block", onFit as any);
   }, []);
 
+  // Recompute width/height for a brick after a content change that bypassed
+  // `onTypingChange` (e.g. toggle list collapse/expand, programmatic content
+  // updates from non-canvas surfaces). Mirrors the non-paste autogrow path
+  // in `onTypingChange` but always lets the brick fully shrink to the
+  // target rows so collapsing a toggle doesn't leave dead whitespace.
+  // `userResized` keeps manual width, but we still grow height when needed
+  // so text never gets clipped after re-entering and typing more lines.
+  useEffect(() => {
+    const onAutogrow = (e: Event) => {
+      const ce = e as CustomEvent<{ id: string }>;
+      const id = String(ce.detail?.id || "");
+      if (!id) return;
+      const st = useCanvasStore.getState() as any;
+      const cur: any = st.blocks?.[id];
+      if (!cur || cur.type !== "text") return;
+      const data = cur.data && typeof cur.data === "object" ? cur.data : {};
+      const variant = (String(data.textVariant || "body").toLowerCase() as "body" | "h2" | "h1") || "body";
+      const listType = String(data.listType || "none").toLowerCase();
+      const textValue = String(cur.content ?? "");
+      const brickScale = Math.max(0.5, Number(data.brickScale || 1));
+      const scaledGrid = gridSize * brickScale;
+      const currentWidthCells = Math.max(1, Math.round(Number(cur.width || gridSize) / gridSize));
+      const targetCells = Math.ceil(getRequiredHorizontalCells(textValue, variant) * brickScale);
+      const leadCells = listType === "todo" ? 1 : 0;
+      const desiredCells = targetCells + leadCells;
+      const widthCells = Math.max(currentWidthCells, desiredCells);
+      const newWidth = data.userResized
+        ? Math.max(gridSize * 4, Number(cur.width || gridSize * 4))
+        : Math.max(gridSize, widthCells * gridSize);
+      const effectiveBaseWidth = Math.max(gridSize * 4, newWidth / brickScale);
+      const wrappedLines = getWrappedLineCountForWidth(textValue, variant, effectiveBaseWidth);
+      const targetRows = Math.max(
+        minRowsForVariant(variant),
+        Math.max(
+          getRequiredVerticalCells(textValue) * lineRowsForVariant(variant),
+          wrappedLines * lineRowsForVariant(variant)
+        )
+      );
+      const calcHeight = Math.max(gridSize, Math.ceil((targetRows * scaledGrid) / gridSize) * gridSize);
+      const newHeight = data.userResized
+        ? Math.max(Number(cur.height || 0), calcHeight)
+        : brickScale > 1
+          ? Math.max(Number(cur.height || 0), calcHeight)
+          : calcHeight;
+      if (cur.width === newWidth && cur.height === newHeight) return;
+      const patch: any = { height: newHeight };
+      if (!data.userResized) patch.width = newWidth;
+      st.updateBlock(id as any, patch);
+    };
+    window.addEventListener("omnia_autogrow_block", onAutogrow as any);
+    return () => window.removeEventListener("omnia_autogrow_block", onAutogrow as any);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Pan (and softly zoom) the viewport so that ALL the listed blocks are
+  // visible. Used by `applyProjectActions` after the AI builds a multi-block
+  // batch (e.g. a column of shots) at coordinates that may sit far from the
+  // user's current camera. We only shrink the zoom enough to fit and never go
+  // below 0.5x — the goal is to keep the just-created bricks in frame, not to
+  // dramatically reframe the whole board.
+  useEffect(() => {
+    const onFitMany = (e: Event) => {
+      const ce = e as CustomEvent<{ ids: string[] }>;
+      const ids = Array.isArray(ce.detail?.ids) ? ce.detail.ids.filter(Boolean) : [];
+      if (!ids.length) return;
+      const el = containerRef.current;
+      if (!el) return;
+      const st = useCanvasStore.getState() as any;
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const id of ids) {
+        const b = st.blocks?.[id];
+        if (!b) continue;
+        const x = Number(b.x) || 0;
+        const y = Number(b.y) || 0;
+        const w = Number(b.width) || 0;
+        const h = Number(b.height) || 0;
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x + w > maxX) maxX = x + w;
+        if (y + h > maxY) maxY = y + h;
+      }
+      if (!Number.isFinite(minX)) return;
+      const PAD = 80;
+      const contentW = maxX - minX + PAD * 2;
+      const contentH = maxY - minY + PAD * 2;
+      const rect = el.getBoundingClientRect();
+      const vpW = rect.width;
+      const vpH = rect.height;
+      const currentZoom = canvasZoomRef.current || 1;
+      // Only zoom out if needed; never zoom past the user's current zoom in,
+      // and clamp to a comfortable minimum so the camera doesn't fly out.
+      const fitZoom = Math.min(vpW / contentW, vpH / contentH);
+      const targetZoom = Math.round(Math.max(0.5, Math.min(currentZoom, fitZoom)) * 100) / 100;
+      const cx = (minX + maxX) / 2;
+      const cy = (minY + maxY) / 2;
+      const targetLeft = (cx + SURFACE_ORIGIN_PAD) * targetZoom - vpW / 2;
+      const targetTop = (cy + SURFACE_ORIGIN_PAD) * targetZoom - vpH / 2;
+      if (targetZoom !== currentZoom) {
+        canvasZoomRef.current = targetZoom;
+        pendingZoomScrollRef.current = { left: targetLeft, top: targetTop, zoom: targetZoom };
+        setCanvasZoom(targetZoom);
+      } else {
+        // Smooth pan without changing zoom.
+        el.scrollTo({ left: Math.max(0, targetLeft), top: Math.max(0, targetTop), behavior: "smooth" });
+      }
+    };
+    window.addEventListener("omnia_fit_blocks", onFitMany as any);
+    return () => window.removeEventListener("omnia_fit_blocks", onFitMany as any);
+  }, []);
+
   useEffect(() => {
     const onMinimize = (e: Event) => {
       const ids: string[] = Array.isArray((e as CustomEvent).detail?.ids) ? (e as CustomEvent).detail.ids : [];
@@ -3981,7 +4314,7 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
       return { x: (scrollPosRef.current.left || 0) / (canvasZoomRef.current || 1) - SURFACE_ORIGIN_PAD, y: (scrollPosRef.current.top || 0) / (canvasZoomRef.current || 1) - SURFACE_ORIGIN_PAD };
     };
 
-    const isDuplicateOnCanvas = (check: { url?: string; videoId?: string; src?: string; name?: string; content?: string }): boolean => {
+    const isDuplicateOnCanvas = (check: { url?: string; videoId?: string; src?: string; name?: string; size?: number; content?: string }): boolean => {
       const st = useCanvasStore.getState();
       const ids = Array.isArray(st.blockOrder) ? st.blockOrder : [];
       for (const id of ids) {
@@ -3995,7 +4328,16 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
         }
         if (check.name && check.name !== "file" && check.name !== "Link") {
           const bName = b.name || b.data?.name || "";
-          if (bName && bName === check.name) return true;
+          if (bName && bName === check.name) {
+            // When a size is provided, only treat it as a duplicate if size
+            // also matches — distinct files that happen to share a name
+            // (different downloads of "photo.jpg") shouldn't be collapsed.
+            if (Number.isFinite(check.size)) {
+              const bSize = Number(b.data?.size ?? b.size ?? NaN);
+              if (Number.isFinite(bSize) && bSize !== check.size) continue;
+            }
+            return true;
+          }
         }
         if (check.content) {
           const bContent = b.content || b.data?.content || "";
@@ -4011,7 +4353,23 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
       if (!files.length) return;
 
       const uploadAndReplace = async (blockId: string, file: File, field: "src" | "url") => {
-        if (!user?.id) return;
+        if (!user?.id) {
+          // Guests have no storage bucket, so the brick keeps the inline
+          // data:/blob: URL. The persistence sanitiser strips those out
+          // before they hit the DB which means the brick won't survive a
+          // reload. Surface a one-time warning so the user knows to sign in.
+          try {
+            const KEY = "omnia_guest_filedrop_warned";
+            if (typeof window !== "undefined" && !sessionStorage.getItem(KEY)) {
+              sessionStorage.setItem(KEY, "1");
+              toast({
+                title: "Sign in to save uploads",
+                description: "Files dropped while signed out won't survive a reload.",
+              });
+            }
+          } catch { /* ignore */ }
+          return;
+        }
         try {
           const ext = (file.name || "file").split(".").pop()?.toLowerCase() || "bin";
           const storagePath = `${user.id}/${crypto.randomUUID()}/original.${ext}`;
@@ -4050,6 +4408,11 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
         else if (mime.startsWith("audio/")) type = "audio";
         else if (mime === "application/pdf") type = "pdf";
         const url = URL.createObjectURL(f);
+        // Revoke after 5 minutes so we don't leak object URLs for the
+        // entire tab lifetime. The chat UI consumes/clones these almost
+        // immediately; 5 min is conservative for any consumer that might
+        // hold a reference (e.g. a preview that's still mounted).
+        try { window.setTimeout(() => { try { URL.revokeObjectURL(url); } catch { /* ignore */ } }, 5 * 60 * 1000); } catch { /* ignore */ }
         return { id: crypto.randomUUID(), type, name: f.name || "File", url };
       });
       if (chatAttachments.length) {
@@ -4062,7 +4425,10 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
 
       for (let i = 0; i < files.length; i += 1) {
         const f = files[i];
-        if (isDuplicateOnCanvas({ name: f.name || "file" })) continue;
+        // Disambiguate same-name files (e.g. two `photo.jpg` from different
+        // folders or downloads) by also checking size. Before, the second
+        // distinct file with a duplicate name was silently dropped.
+        if (isDuplicateOnCanvas({ name: f.name || "file", size: f.size })) continue;
         const x = baseX;
         const y = baseY + i * gridSize * 7;
         const containerId = findCreateContainerAtWorld(x, y);
@@ -4073,7 +4439,7 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
             const { fileToDisplayableDataUrl, fileToDisplayableFile } = await import("@/lib/heifToJpeg");
             dataUrl = await fileToDisplayableDataUrl(f);
             const displayableFile = await fileToDisplayableFile(f);
-            const b = createCreateBlockSafe(x, y, "image", { src: dataUrl }, gridSize * 10, gridSize * 6);
+            const b = createCreateBlockSafe(x, y, "image", { src: dataUrl, name: f.name || "image", size: f.size }, gridSize * 10, gridSize * 6);
             if (containerId) (b as any).containerId = containerId;
             addBlock(b);
             uploadAndReplace(b.id, displayableFile, "src");
@@ -4084,7 +4450,7 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
           continue;
         }
         if (String(f.type || "").startsWith("image/") && dataUrl.startsWith("data:image/")) {
-          const b = createCreateBlockSafe(x, y, "image", { src: dataUrl }, gridSize * 10, gridSize * 6);
+          const b = createCreateBlockSafe(x, y, "image", { src: dataUrl, name: f.name || "image", size: f.size }, gridSize * 10, gridSize * 6);
           if (containerId) (b as any).containerId = containerId;
           addBlock(b);
           uploadAndReplace(b.id, f, "src");
@@ -4224,12 +4590,17 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
       }
     };
 
-    const addUrlAsBlock = async (url: string, clientX?: number, clientY?: number) => {
+    const addUrlAsBlock = async (url: string, clientX?: number, clientY?: number, worldOverride?: { worldX: number; worldY: number }) => {
       const u = String(url || "").trim();
       if (!u) return;
       if (isDuplicateOnCanvas({ url: u, src: u })) return;
       window.dispatchEvent(new CustomEvent("omnia_canvas_link_stored", { detail: { url: u } }));
-      const base = getInsertWorld(clientX, clientY);
+      // Prefer caller-supplied world coords (e.g. AI PULL_MEDIA which has
+      // already run findSmartPlacement). Falling back to clientX/Y means the
+      // legacy drop / unfurl paths still work unchanged.
+      const base = worldOverride
+        ? { x: worldOverride.worldX, y: worldOverride.worldY }
+        : getInsertWorld(clientX, clientY);
       const wx = snapToGrid(base.x, gridSize);
       const wy = snapToGrid(base.y, gridSize);
       const containerId = findCreateContainerAtWorld(wx, wy);
@@ -4394,8 +4765,17 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
     };
 
     const onLink = (e: Event) => {
-      const ce = e as CustomEvent<{ url: string; clientX?: number; clientY?: number }>;
-      void addUrlAsBlock(String(ce.detail?.url || ""), ce.detail?.clientX, ce.detail?.clientY);
+      const ce = e as CustomEvent<{ url: string; clientX?: number; clientY?: number; worldX?: number; worldY?: number }>;
+      // Callers that already have WORLD coords (e.g. AI [PULL_MEDIA] which
+      // ran findSmartPlacement before dispatching) should pass worldX/worldY.
+      // Mixing those with the legacy clientX/Y param of addUrlAsBlock would
+      // double-transform and put the brick far off-screen.
+      const detail = ce.detail || ({} as any);
+      if (Number.isFinite(detail.worldX) && Number.isFinite(detail.worldY)) {
+        void addUrlAsBlock(String(detail.url || ""), undefined, undefined, { worldX: Number(detail.worldX), worldY: Number(detail.worldY) });
+        return;
+      }
+      void addUrlAsBlock(String(detail.url || ""), detail.clientX, detail.clientY);
     };
 
     const onVaultText = (e: Event) => {
@@ -5602,10 +5982,14 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
           const h = Math.max(g * 3, Math.ceil((wrappedLines * lineH + 8) / g) * g);
           const sx = Math.round(world.x / g) * g;
           const sy = Math.round(world.y / g) * g;
-          const dropId = addTextBlockAt({ x: sx, y: sy }, { width: w, height: h, content: chatResponse, format: "rich" });
+          const dropId = addTextBlockAt({ x: sx, y: sy }, {
+            width: w,
+            height: h,
+            content: chatResponse,
+            format: "rich",
+            data: { aiResponseBubble: true },
+          });
           if (dropId) {
-            const st = useCanvasStore.getState() as any;
-            updateBlock(dropId as any, { data: { ...((st.blocks as any)?.[dropId]?.data || {}), aiResponseBubble: true } } as any);
             setTimeout(() => window.dispatchEvent(new Event("omnia_flush_save")), 500);
           }
           return;
@@ -5684,6 +6068,15 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
         window.dispatchEvent(new CustomEvent("omnia_canvas_interact"));
         commitShapeCellEditorByKey();
         setTypingShapeCellKey(null);
+        // Clicking the canvas background must exit typing mode for any
+        // brick. The contenteditable text bricks already do this through
+        // their onBlur, but todo bricks render `<input>` rows and have
+        // their own blur handling — we still clear here so the typing
+        // shell visually exits as soon as focus leaves.
+        if (typingBlockId) {
+          dropEmptyTypingBlockIfNeeded(null);
+          setTypingBlockId(null);
+        }
         el.focus();
         clearSelection();
         const world = clientToWorld(e.clientX, e.clientY);
@@ -5910,8 +6303,12 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
       <div
         className="absolute left-0 top-0"
         style={{
-          width: `${(surface.width + SURFACE_ORIGIN_PAD) * canvasZoom}px`,
-          height: `${(surface.height + SURFACE_ORIGIN_PAD) * canvasZoom}px`,
+          // Symmetric SURFACE_ORIGIN_PAD on both sides (leading + trailing) so
+          // there's always enough scrollable room for the cursor-anchored zoom
+          // math to resolve. The inner content stays translated by a single
+          // SURFACE_ORIGIN_PAD, leaving the trailing pad as empty scroll space.
+          width: `${(surface.width + SURFACE_ORIGIN_PAD * 2) * canvasZoom}px`,
+          height: `${(surface.height + SURFACE_ORIGIN_PAD * 2) * canvasZoom}px`,
         }}
       >
       <div
@@ -6682,7 +7079,11 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
               const data = cur?.data && typeof cur.data === "object" ? { ...cur.data } : {};
               suppressBrickClickRef.current = true;
               window.setTimeout(() => { suppressBrickClickRef.current = false; }, 50);
-              const nextWidth = Math.max(gridSize * 10, newWidth);
+              // Match the edge-resize floor (`resizeMinWidth: gridSize * 4`)
+              // so the corner grip can shrink small bricks symmetrically and
+              // every text-bearing source — typed, slash, AI tool, paste,
+              // dragged AI bubble — bottoms out at the same width.
+              const nextWidth = Math.max(gridSize * 4, newWidth);
               const nextHeight = Math.max(gridSize, newHeight);
               updateBlock(bid as any, { width: nextWidth, height: nextHeight, data: { ...data, brickScale: nextScale, userResized: false } } as any);
             },
@@ -6701,7 +7102,6 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
                 (String(data.listType || "none").toLowerCase() as "none" | "bullet" | "numbered" | "todo" | "toggle" | "quote") || "none";
               if (meta?.exitList) {
                 updateBlock(bid as any, { content: raw, data: { ...data, textVariant: currentVariant, listType: "none" } } as any);
-                syncBrickEditorText(bid, raw);
                 return;
               }
               const parsed = parseTextSlashVariant(raw, currentVariant, currentListType);
@@ -6743,16 +7143,35 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
               const contentSame = cur.content === textValue;
 
               if (data.userResized) {
-                if (contentSame && variantSame) {
-                  if (parsed.consumed) syncBrickEditorText(bid, textValue);
+                // User-resized bricks lock width, but should still grow in
+                // height so Enter/newline input never clips text.
+                const brickScale = Math.max(0.5, Number(data.brickScale || 1));
+                const scaledGrid = gridSize * brickScale;
+                const fixedWidth = Math.max(gridSize * 4, Number(cur.width || gridSize * 4));
+                const effectiveBaseWidth = Math.max(gridSize * 4, fixedWidth / brickScale);
+                const wrappedLines = getWrappedLineCountForWidth(textValue, nextVariant, effectiveBaseWidth);
+                const targetRows = Math.max(
+                  minRowsForVariant(nextVariant),
+                  Math.max(
+                    getRequiredVerticalCells(textValue) * lineRowsForVariant(nextVariant),
+                    wrappedLines * lineRowsForVariant(nextVariant)
+                  )
+                );
+                const calcHeight = Math.max(gridSize, Math.ceil((targetRows * scaledGrid) / gridSize) * gridSize);
+                const grownHeight = Math.max(Number(cur.height || 0), calcHeight);
+                const sizeSame = Number(cur.height || 0) === grownHeight;
+
+                if (contentSame && variantSame && sizeSame) {
+                  if (parsed.consumed) syncBrickEditorText(bid, raw, textValue);
                   return;
                 }
                 const patch: any = { content: textValue };
+                if (!sizeSame) patch.height = grownHeight;
                 if (!variantSame) {
                   patch.data = { ...data, textVariant: nextVariant, listType: nextListType };
                 }
                 updateBlock(bid as any, patch);
-                if (parsed.consumed) syncBrickEditorText(bid, textValue);
+                if (parsed.consumed) syncBrickEditorText(bid, raw, textValue);
               } else {
                 const brickScale = Math.max(0.5, Number(data.brickScale || 1));
                 const scaledGrid = gridSize * brickScale;
@@ -6762,7 +7181,20 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
                 const neededCells = targetCells;
                 const leadCells = nextListType === "todo" ? 1 : 0;
                 const desiredCells = neededCells + leadCells;
-                const widthCells = Math.max(currentWidthCells, desiredCells);
+                // Bricks whose content is rich HTML (AI response bubbles, anything
+                // restored from `formattedHtml`, anything seeded with rendered
+                // markdown on edit-entry) had their width chosen at creation
+                // time. The textContent we read back from a contenteditable is
+                // stripped of markdown markers (`**`, `##`, etc.), which makes
+                // the longest source line look much wider once the markers are
+                // gone — that triggers the auto-grow path to widen the brick on
+                // the very first keystroke (e.g. 576 → 1680 in the bug repro).
+                // The user perceives this as "all the text jumps to one line"
+                // because the wider brick wraps the content into fewer visual
+                // lines. Lock width for preserveSize bricks so the user's
+                // chosen geometry is respected; manual resize still works.
+                const preserveSize = Boolean(meta?.preserveSize) || Boolean(data.formattedHtml) || Boolean(data.aiResponseBubble);
+                const widthCells = preserveSize ? currentWidthCells : Math.max(currentWidthCells, desiredCells);
                 const newWidth = Math.max(gridSize, widthCells * gridSize);
                 const effectiveBaseWidth = Math.max(gridSize * 4, newWidth / brickScale);
                 const wrappedLines = getWrappedLineCountForWidth(textValue, nextVariant, effectiveBaseWidth);
@@ -6773,24 +7205,36 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
                     wrappedLines * lineRowsForVariant(nextVariant)
                   )
                 );
-                const neededRows =
-                  meta?.isPaste
-                    ? targetRows
-                    : targetRows > currentHeightRows
-                      ? Math.min(targetRows, currentHeightRows + 3)
-                      : targetRows;
+                // `preserveSize` was computed above for the width-lock; the
+                // same flag governs the row calculation below. Bricks whose
+                // visual is driven by rendered rich HTML have a textContent
+                // that diverges from the markdown source — `## Heading`
+                // becomes textContent `Heading`, `**bold**` becomes `bold`,
+                // etc. Using that shorter textContent to *shrink* the brick
+                // is the collapse-to-one-line bug; allow auto-grow to only
+                // grow, never to shrink, for these bricks.
+                let neededRows: number;
+                if (meta?.isPaste || meta?.isLineBreak) {
+                  neededRows = preserveSize ? Math.max(targetRows, currentHeightRows) : targetRows;
+                } else if (preserveSize) {
+                  neededRows = Math.max(targetRows, currentHeightRows);
+                } else if (targetRows > currentHeightRows) {
+                  neededRows = Math.min(targetRows, currentHeightRows + 3);
+                } else {
+                  neededRows = targetRows;
+                }
                 const calcHeight = Math.max(gridSize, Math.ceil((neededRows * scaledGrid) / gridSize) * gridSize);
-                const newHeight = brickScale > 1
+                const newHeight = (preserveSize || brickScale > 1)
                   ? Math.max(Number(cur.height || 0), calcHeight)
                   : calcHeight;
 
                 const sizeSame = cur.width === newWidth && cur.height === newHeight;
                 if (contentSame && sizeSame && variantSame) {
-                  if (parsed.consumed) syncBrickEditorText(bid, textValue);
+                  if (parsed.consumed) syncBrickEditorText(bid, raw, textValue);
                   return;
                 }
                 if (contentSame && variantSame) {
-                  if (parsed.consumed) syncBrickEditorText(bid, textValue);
+                  if (parsed.consumed) syncBrickEditorText(bid, raw, textValue);
                   return;
                 }
 
@@ -6805,7 +7249,7 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
                   patch.data = data;
                 }
                 updateBlock(bid as any, patch);
-                if (parsed.consumed) syncBrickEditorText(bid, textValue);
+                if (parsed.consumed) syncBrickEditorText(bid, raw, textValue);
               }
             },
             onTypingKeyDown: (bid, e) => {

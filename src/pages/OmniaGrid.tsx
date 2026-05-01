@@ -667,6 +667,7 @@ export default function OmniaGridPage() {
   const addListBlockAt = useCanvasStore((s) => s.addListBlockAt);
   const setListItems = useCanvasStore((s) => s.setListItems);
   const deleteBlock = useCanvasStore((s) => s.deleteBlock);
+  const undo = useCanvasStore((s) => s.undo);
   const setCamera = useCanvasStore((s) => s.setCamera);
   const loadBlocks = useCanvasStore((s) => s.loadBlocks);
   const reset = useCanvasStore((s) => s.reset);
@@ -682,6 +683,8 @@ export default function OmniaGridPage() {
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth || 1280);
   const [chatRailWidthManual, setChatRailWidthManual] = useState<number | null>(null);
   const isMobileGrid = viewportWidth < 640;
+  // Phone-class viewport: hide the grid canvas entirely and run chat-only.
+  const isMobilePhone = viewportWidth < 768;
   const vaultSidebarWidthPx = useMemo(() => getVaultSidebarWidth(viewportWidth), [viewportWidth]);
   const DialogAny = Dialog as any;
   const DialogContentAny = DialogContent as any;
@@ -773,11 +776,20 @@ export default function OmniaGridPage() {
   // grid in chat-focused mode by appending `?chat=1` to the URL. We read
   // the flag once on mount, then strip it from the URL so it doesn't
   // linger across reloads or shares.
+  // Phones default to chat-only (no canvas) regardless of the URL flag.
   const [chatMode, setChatMode] = useState(() => {
     if (typeof window === "undefined") return false;
+    if ((window.innerWidth || 1280) < 768) return true;
     const params = new URLSearchParams(window.location.search);
     return params.get("chat") === "1";
   });
+
+  // Force chat mode on whenever the viewport drops to phone size (e.g. user
+  // rotates a tablet, or resizes the browser). This is the safety net so the
+  // canvas can never be exposed on a phone.
+  useEffect(() => {
+    if (isMobilePhone && !chatMode) setChatMode(true);
+  }, [isMobilePhone, chatMode]);
   useEffect(() => {
     if (!location.search) return;
     const params = new URLSearchParams(location.search);
@@ -2282,7 +2294,20 @@ export default function OmniaGridPage() {
     if (!pending || typeof pending !== "object") { if (import.meta.env.DEV) console.log("[VAULT-DROP] no pending data"); return; }
     (window as any).__omnia_pending_vault = null;
 
-    const attachments = Array.isArray(pending.attachments) ? pending.attachments : [];
+    const rawAttachments = Array.isArray(pending.attachments) ? pending.attachments : [];
+    // Honor an explicit per-tile attachment selector so multi-attachment
+    // notes drop the file the user dragged, not "the first attachment
+    // whose mime matches" — same behavior as Canvas.tsx processVaultDrop.
+    let attachments: any[] = rawAttachments;
+    if ((pending as any).attachment && typeof (pending as any).attachment === "object") {
+      attachments = [(pending as any).attachment];
+    } else if (
+      Number.isInteger((pending as any).attachmentIndex)
+      && (pending as any).attachmentIndex >= 0
+      && (pending as any).attachmentIndex < rawAttachments.length
+    ) {
+      attachments = [rawAttachments[(pending as any).attachmentIndex]];
+    }
 
     let dropOverNotes = false;
     if (notesOpen) {
@@ -2322,20 +2347,27 @@ export default function OmniaGridPage() {
     const cx = e.clientX;
     const cy = e.clientY;
 
-    // Convert client (screen) coords to snapped world coords, matching
-    // Canvas.tsx `clientToWorld` (accounts for the canvas scroll container's
-    // position, zoom, and SURFACE_ORIGIN_PAD baked into `camera.x/y`).
+    // Convert client (screen) coords to snapped world coords. This MUST
+    // match Canvas.tsx `clientToWorld` so that drag-from-vault drops land
+    // exactly where the cursor pointed. The previous selector
+    // ".overflow-auto.overscroll-contain" matched nothing, so rect was
+    // undefined and drops landed at world coords offset by the canvas'
+    // viewport position. Now we look up the canonical `[data-omnia-canvas]`
+    // node and use the scroll-based formula directly (no dependence on
+    // possibly-stale camera.x/y).
+    const SURFACE_ORIGIN_PAD = 10000; // mirrors Canvas.tsx SURFACE_ORIGIN_PAD_WORLD
     const worldFromClient = (clientX: number, clientY: number) => {
       const st = useCanvasStore.getState() as any;
       const g = Math.max(1, Math.floor(st.gridSize || 24));
-      const cam = st.camera || { x: 0, y: 0, zoom: 1 };
-      const z = Number(cam.zoom) || 1;
-      const canvasEl = document.querySelector<HTMLElement>(".overflow-auto.overscroll-contain");
+      const z = Number(st.camera?.zoom) || 1;
+      const canvasEl = document.querySelector<HTMLElement>("[data-omnia-canvas]");
       const rect = canvasEl?.getBoundingClientRect();
       const localX = rect ? clientX - rect.left : clientX;
       const localY = rect ? clientY - rect.top : clientY;
-      const worldX = (Number(cam.x) || 0) + localX / z;
-      const worldY = (Number(cam.y) || 0) + localY / z;
+      const scrollLeft = canvasEl?.scrollLeft || 0;
+      const scrollTop = canvasEl?.scrollTop || 0;
+      const worldX = (scrollLeft + localX) / z - SURFACE_ORIGIN_PAD;
+      const worldY = (scrollTop + localY) / z - SURFACE_ORIGIN_PAD;
       return {
         wx: Math.round(worldX / g) * g,
         wy: Math.round(worldY / g) * g,
@@ -2644,6 +2676,15 @@ export default function OmniaGridPage() {
     setMediaSuggestions([]);
   }, []);
 
+  const handleTopPanelUndo = useCallback(() => {
+    const selectedIds = (useCanvasStore.getState().selectedIds || []).map((x) => String(x));
+    const detail: { handled?: boolean; selectedIds: string[] } = { selectedIds };
+    window.dispatchEvent(new CustomEvent("omnia_grid_undo_request", { detail }));
+    if (!detail.handled) {
+      undo();
+    }
+  }, [undo]);
+
   return (
     <div className="w-full h-[100svh] relative overflow-hidden omnia-grid-bg">
       {/* Match BrickEditor layout: minimal chrome + floating controls */}
@@ -2656,7 +2697,9 @@ export default function OmniaGridPage() {
         selectedModel={selectedModel}
         onModelChange={persistSelectedModel}
         chatMode={chatMode}
+        isMobilePhone={isMobilePhone}
         onChatModeToggle={() => {
+          if (isMobilePhone) return; // Phones are chat-only — toggle is a no-op.
           setChatMode((v) => {
             if (!v) setChatRailVisible(false);
             return !v;
@@ -2664,6 +2707,7 @@ export default function OmniaGridPage() {
         }}
         chatRailVisible={chatRailVisible}
         onChatRailToggle={() => {
+          if (isMobilePhone) return; // No side rail on phones (it's an overlay-only chat).
           setChatRailVisible((v) => {
             if (!v) {
               setChatRailOpen(true);
@@ -2678,6 +2722,7 @@ export default function OmniaGridPage() {
         notesOpen={notesOpen}
         modelSelectMenu={<OmniaGridModelSelectMenuBody modelTier={modelTier} />}
         onShareGrid={() => setShowShareDialog(true)}
+        onUndo={handleTopPanelUndo}
       />
 
       <GridShareDialog
@@ -2695,14 +2740,16 @@ export default function OmniaGridPage() {
         }}
       />
 
-      <div
-        className={`h-full transition-[margin-right] duration-300 ${chatMode ? "invisible pointer-events-none" : ""}`}
-        style={{
-          marginRight: isMobileGrid ? 0 : `${chatRailWidthPx + (showVaultSidebar ? vaultSidebarWidthPx : 0)}px`,
-        }}
-      >
-        <Canvas liveAIMode={false} isAiThinking={isChatLoading} thinkingStatusText={thinkingStatus} />
-      </div>
+      {!isMobilePhone && (
+        <div
+          className={`h-full transition-[margin-right] duration-300 ${chatMode ? "invisible pointer-events-none" : ""}`}
+          style={{
+            marginRight: isMobileGrid ? 0 : `${chatRailWidthPx + (showVaultSidebar ? vaultSidebarWidthPx : 0)}px`,
+          }}
+        >
+          <Canvas liveAIMode={false} isAiThinking={isChatLoading} thinkingStatusText={thinkingStatus} />
+        </div>
+      )}
 
       {vaultDragActive && (
         <OmniaVaultOverlay
@@ -2837,6 +2884,7 @@ export default function OmniaGridPage() {
           onSend={handleChatSend}
           typedWelcome={typedWelcome}
           isMobileGrid={isMobileGrid}
+          isMobilePhone={isMobilePhone}
           isDictating={isDictating}
           isTranscribing={isTranscribing}
           canvasFileBlocks={canvasFileBlocks}

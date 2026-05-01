@@ -7,6 +7,7 @@ import {
   PanelRightClose,
   Plus,
   Share2,
+  Undo2,
   X,
 } from "lucide-react";
 import {
@@ -25,6 +26,7 @@ interface OmniaToolbarProps {
   selectedModel: string;
   onModelChange: (value: string) => void;
   chatMode: boolean;
+  isMobilePhone?: boolean;
   onChatModeToggle: () => void;
   chatRailVisible: boolean;
   onChatRailToggle: () => void;
@@ -33,6 +35,7 @@ interface OmniaToolbarProps {
   notesOpen: boolean;
   modelSelectMenu: React.ReactNode;
   onShareGrid?: () => void;
+  onUndo?: () => void;
 }
 
 const OmniaToolbar = React.memo(function OmniaToolbar({
@@ -44,6 +47,7 @@ const OmniaToolbar = React.memo(function OmniaToolbar({
   selectedModel,
   onModelChange,
   chatMode,
+  isMobilePhone = false,
   onChatModeToggle,
   chatRailVisible,
   onChatRailToggle,
@@ -52,6 +56,7 @@ const OmniaToolbar = React.memo(function OmniaToolbar({
   notesOpen,
   modelSelectMenu,
   onShareGrid,
+  onUndo,
 }: OmniaToolbarProps) {
   const instructionPhrases = useMemo(
     () => [
@@ -112,6 +117,31 @@ const OmniaToolbar = React.memo(function OmniaToolbar({
       if (timer) window.clearTimeout(timer);
     };
   }, [instructionIdx, instructionPhrases, typingMsPerChar, fullPhraseHoldMs, betweenPhraseGapMs, tipsDismissed]);
+
+  // On phones we hide grid-only controls (chat-rail toggle, share, undo, vault
+  // panel, title) since the canvas is unmounted and a bottom tab bar handles
+  // navigation. We keep just the model selector so users can still pick an AI.
+  if (isMobilePhone) {
+    return (
+      <div
+        className={`fixed top-2 right-0 left-0 px-3 flex items-center justify-end pointer-events-none ${notesOpen ? "z-[235]" : "z-[70]"}`}
+      >
+        <div className="pointer-events-auto flex items-center gap-1 p-1 rounded-full bg-background/85 backdrop-blur-md border border-black/8 dark:border-white/10 shadow-sm">
+          <Select value={selectedModel} onValueChange={onModelChange}>
+            <SelectTrigger className="w-[7.5rem] h-8 rounded-full glass-control hover:opacity-90 text-[0.6875rem] font-medium">
+              <SelectValue placeholder="Model" />
+            </SelectTrigger>
+            <SelectContent
+              align="end"
+              className="z-[250] glass-control border border-white/16 dark:border-white/8 bg-white/95 dark:bg-neutral-900/95 backdrop-blur-md shadow-md max-h-[min(28rem,70vh)] overflow-y-auto"
+            >
+              {modelSelectMenu}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <>
@@ -203,6 +233,18 @@ const OmniaToolbar = React.memo(function OmniaToolbar({
               </button>
 
               <div className="w-px h-4 bg-black/10 dark:bg-white/10 mx-1" />
+
+              {onUndo && (
+                <button
+                  type="button"
+                  onClick={onUndo}
+                  className="rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center"
+                  title="Undo"
+                >
+                  <Undo2 className="w-4 h-4" />
+                  <span className="sr-only">Undo</span>
+                </button>
+              )}
 
               <button
                 type="button"

@@ -1157,7 +1157,11 @@ export default function ProjectPlaceholder() {
       ...(spreadsheetData ? { spreadsheetData } : {}),
     };
 
-    saveFileToVault({
+    // Fire-and-forget: the file is already in the project entry above,
+    // so vault failure shouldn't block the drop. Cap/rate failures
+    // dispatch their own modal events from inside saveFileToVault, so
+    // we only need to log generic errors for diagnostics.
+    void saveFileToVault({
       userId: user.id,
       filename: file.name,
       fileType: kind,
@@ -1168,7 +1172,11 @@ export default function ProjectPlaceholder() {
       mimeType: file.type,
       projectName,
       spreadsheetData: spreadsheetData ?? null,
-    }).catch(() => {});
+    }).then((result) => {
+      if (!result.ok && result.reason === "error" && import.meta.env.DEV) {
+        console.warn("[ProjectPlaceholder] vault save failed:", result.message);
+      }
+    });
 
     return entry;
   };
@@ -1215,8 +1223,12 @@ export default function ProjectPlaceholder() {
         url: urlText,
       });
       if (user?.id) {
-        saveLinkToVault({ userId: user.id, url: urlText, projectName }).catch(
-          () => {}
+        void saveLinkToVault({ userId: user.id, url: urlText, projectName }).then(
+          (result) => {
+            if (!result.ok && result.reason === "error" && import.meta.env.DEV) {
+              console.warn("[ProjectPlaceholder] link save failed:", result.message);
+            }
+          },
         );
       }
     }

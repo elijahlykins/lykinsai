@@ -2,6 +2,7 @@ import React, { memo, useMemo, useRef } from "react";
 import { useCanvasStore } from "@/store/canvasStore";
 import { snapToGrid } from "@/canvas/utils/snap";
 import { BlockHoverToolbar } from "./BlockHoverToolbar";
+import { supabase } from "@/lib/supabase";
 
 type DragState = {
   pointerId: number;
@@ -61,6 +62,10 @@ export const ImageBlock = memo(function ImageBlock({ id, onMinimize, onMenu }: {
   const activeDragPointerIdRef = useRef<number | null>(null);
   const resizeRef = useRef<ResizeState | null>(null);
   const endResizeCleanupRef = useRef<(() => void) | null>(null);
+  // Tracks whether we've already tried to re-sign the storage URL for THIS
+  // image. Without this guard a permanently-broken image would loop forever
+  // re-signing on every onError fire.
+  const reSignAttemptedRef = useRef(false);
   const style = useMemo(() => {
     if (!block) return null;
     if (block.type === "create" && ((block as any).mode === "image" || (block as any).mode === "generated")) {
@@ -517,6 +522,33 @@ export const ImageBlock = memo(function ImageBlock({ id, onMinimize, onMenu }: {
           draggable={false}
           onError={(e) => {
             const img = e.currentTarget;
+            // Signed URLs from Supabase Storage expire after 7 days. If we
+            // still have the storagePath cached on the block, mint a new
+            // signed URL once before falling back to the broken-image UI.
+            const data: any = (block as any).data || {};
+            const storagePath = String(data.storagePath || "").trim();
+            const bucket = String(data.storageBucket || "user-files").trim() || "user-files";
+            if (!reSignAttemptedRef.current && storagePath) {
+              reSignAttemptedRef.current = true;
+              (async () => {
+                try {
+                  const { data: signed } = await supabase.storage.from(bucket).createSignedUrl(storagePath, 60 * 60 * 24 * 7);
+                  const fresh = signed?.signedUrl || "";
+                  if (fresh) {
+                    updateBlock(id, { data: { ...data, src: fresh, url: fresh } } as any);
+                    return;
+                  }
+                  img.style.display = "none";
+                  const fallback = img.nextElementSibling as HTMLElement | null;
+                  if (fallback) fallback.style.display = "flex";
+                } catch {
+                  img.style.display = "none";
+                  const fallback = img.nextElementSibling as HTMLElement | null;
+                  if (fallback) fallback.style.display = "flex";
+                }
+              })();
+              return;
+            }
             img.style.display = "none";
             const fallback = img.nextElementSibling as HTMLElement | null;
             if (fallback) fallback.style.display = "flex";

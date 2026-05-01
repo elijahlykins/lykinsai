@@ -2,7 +2,14 @@ import { supabase } from "@/lib/supabase";
 import { detectSocialPlatform, getSocialEmbedLabel } from "@/canvas/utils/socialEmbed";
 import { afterVaultNoteSaved } from "@/lib/vault/afterVaultSave";
 import { describeVaultItemInBackground } from "@/lib/vault/describeVaultItem";
-import { notifyVaultCapIfApplicable } from "@/lib/vault/vaultCapError";
+import {
+  isVaultCapError,
+  notifyVaultCapIfApplicable,
+} from "@/lib/vault/vaultCapError";
+import {
+  isUploadRateLimitError,
+  notifyUploadRateLimitIfApplicable,
+} from "@/lib/vault/uploadRateLimitError";
 
 interface SaveFileToVaultOptions {
   userId: string;
@@ -28,7 +35,32 @@ interface SaveLinkToVaultOptions {
   projectName?: string;
 }
 
+/**
+ * Discriminated result of a save attempt. The legacy `null` return type
+ * collapsed every failure mode (duplicate, vault cap, rate limit, RLS,
+ * schema mismatch, network) into the same value, which forced every
+ * caller to invent their own heuristic for what to tell the user.
+ *
+ * All callers must branch on `ok`:
+ *   - `ok: true`   → note created, `id` is the new vault note row id
+ *   - `ok: false`  → check `reason`:
+ *       'duplicate' → silently no-op (file/link already saved)
+ *       'cap'       → vault cap modal will already have been opened
+ *       'rate'      → rate-limit modal will already have been opened
+ *       'error'     → real failure, show `message` to the user
+ */
+export type SaveToVaultResult =
+  | { ok: true; id: string; note: { id: string; title?: string; content?: string } }
+  | { ok: false; reason: "duplicate" | "cap" | "rate" | "error"; message?: string };
+
 // ── Dedup caches (survive for the browser session) ──────────────
+//
+// Keys are added ONLY after a successful insert, so transient errors
+// (network, RLS misfire, schema race) do not become permanent dedupes
+// for the rest of the session. The previous implementation added the
+// key BEFORE attempting the insert, which meant a single failure locked
+// the user out of re-saving that filename until the tab was reloaded —
+// and also blocked legitimate re-saves of a deleted file.
 const fileDedup = new Set<string>();
 const linkDedup = new Set<string>();
 
@@ -41,13 +73,50 @@ function linkDedupKey(userId: string, url: string) {
 }
 
 /**
+ * PostgreSQL `LIKE`/`ILIKE` treats `%` and `_` as wildcards and `\` as
+ * the escape character. We embed user-provided filenames and URLs into
+ * dedup queries so they MUST be escaped, otherwise:
+ *   - `report_2024.pdf` → matches every report-and-then-anything-2024
+ *   - `100%-coverage.png` → matches everything that ends in `-coverage.png`
+ *   - URLs containing `_` (very common) silently dedupe with unrelated rows
+ *
+ * Returns the input wrapped with leading/trailing `%` for use as the
+ * second argument to `.ilike(column, …)`.
+ */
+function buildLikePattern(searchTerm: string): string {
+  const escaped = String(searchTerm).replace(/[\\%_]/g, "\\$&");
+  return `%${escaped}%`;
+}
+
+function classifyError(
+  err: unknown,
+): { reason: "cap" | "rate" | "error"; message: string } {
+  if (isVaultCapError(err)) {
+    notifyVaultCapIfApplicable(err);
+    return { reason: "cap", message: "Vault is full — upgrade to keep saving." };
+  }
+  if (isUploadRateLimitError(err)) {
+    notifyUploadRateLimitIfApplicable(err);
+    return {
+      reason: "rate",
+      message: "You're saving too fast — try again in a moment.",
+    };
+  }
+  const msg =
+    (err && typeof err === "object" && "message" in err && typeof (err as any).message === "string"
+      ? (err as any).message
+      : String(err || "")) || "Unknown error";
+  return { reason: "error", message: msg };
+}
+
+/**
  * Saves a file that was uploaded to Supabase Storage as a vault note.
  * Skips silently if the same file (by storagePath or filename) already exists.
- * Fire-and-forget safe — catches all errors internally.
+ * Always returns a discriminated result — never throws.
  */
 export async function saveFileToVault(
   opts: SaveFileToVaultOptions
-): Promise<{ id: string } | null> {
+): Promise<SaveToVaultResult> {
   const {
     userId,
     filename,
@@ -62,11 +131,13 @@ export async function saveFileToVault(
     spreadsheetData,
   } = opts;
 
+  const dedupKey = fileDedupKey(userId, storagePath, filename);
+
   try {
     // ── In-memory dedup ──
-    const key = fileDedupKey(userId, storagePath, filename);
-    if (fileDedup.has(key)) return null;
-    fileDedup.add(key);
+    if (fileDedup.has(dedupKey)) {
+      return { ok: false, reason: "duplicate" };
+    }
 
     // ── DB dedup: check if a vault note for this file already exists ──
     const searchTerm = storagePath || filename;
@@ -74,9 +145,14 @@ export async function saveFileToVault(
       .from("notes")
       .select("id")
       .eq("user_id", userId)
-      .ilike("content", `%${searchTerm}%`)
+      .ilike("content", buildLikePattern(searchTerm))
       .limit(1);
-    if (existing && existing.length > 0) return null;
+    if (existing && existing.length > 0) {
+      // The DB already has a row matching this file — record it locally
+      // so we don't issue another query for the same key in this session.
+      fileDedup.add(dedupKey);
+      return { ok: false, reason: "duplicate" };
+    }
 
     const noteTitle = filename.replace(/\.[^/.]+$/, "") || filename;
     const fileSizeKB = (fileSize / 1024).toFixed(2);
@@ -144,65 +220,83 @@ export async function saveFileToVault(
     }
 
     if (noteError) {
-      notifyVaultCapIfApplicable(noteError);
+      const classified = classifyError(noteError);
       if (import.meta.env.DEV) console.error("[saveToVault] Error creating vault note:", noteError);
-      return null;
+      return { ok: false, reason: classified.reason, message: classified.message };
     }
 
-    if (insertedNote?.id) {
-      const ssText = spreadsheetData?.cells
-        ? Object.values(spreadsheetData.cells)
-            .flat()
-            .filter(Boolean)
-            .join(", ")
-            .slice(0, 3000)
-        : "";
-      describeVaultItemInBackground(insertedNote.id, {
-        imageUrl:
-          fileType === "image" || fileType === "video" ? fileUrl : undefined,
-        textContent: safeExtractedText || ssText || undefined,
-        fileType,
-        fileName: filename,
-      });
-      const extraEmbed = safeExtractedText || ssText || "";
-      afterVaultNoteSaved(userId, insertedNote.id, {
-        title: noteTitle,
-        content: noteContent,
-        extraPlain: extraEmbed,
-      });
+    if (!insertedNote?.id) {
+      // Insert reported no error but returned no row — treat as a real
+      // failure rather than a duplicate, so the caller can surface it.
+      return {
+        ok: false,
+        reason: "error",
+        message: "Couldn't save this file — please try again.",
+      };
     }
 
-    return insertedNote ?? null;
+    // Only NOW (after we have a confirmed row id) lock in the dedup
+    // entry, so a transient failure above can be retried without
+    // reloading the tab.
+    fileDedup.add(dedupKey);
+
+    const ssText = spreadsheetData?.cells
+      ? Object.values(spreadsheetData.cells)
+          .flat()
+          .filter(Boolean)
+          .join(", ")
+          .slice(0, 3000)
+      : "";
+    describeVaultItemInBackground(insertedNote.id, {
+      imageUrl:
+        fileType === "image" || fileType === "video" ? fileUrl : undefined,
+      textContent: safeExtractedText || ssText || undefined,
+      fileType,
+      fileName: filename,
+    });
+    const extraEmbed = safeExtractedText || ssText || "";
+    afterVaultNoteSaved(userId, insertedNote.id, {
+      title: noteTitle,
+      content: noteContent,
+      extraPlain: extraEmbed,
+    });
+
+    return { ok: true, id: insertedNote.id, note: insertedNote };
   } catch (err) {
     if (import.meta.env.DEV) console.error("[saveToVault] Unexpected error:", err);
-    return null;
+    const classified = classifyError(err);
+    return { ok: false, reason: classified.reason, message: classified.message };
   }
 }
 
 /**
  * Saves a link dropped into a project as a vault note.
  * Skips silently if the same URL already exists in the vault.
- * Fire-and-forget safe — catches all errors internally.
+ * Always returns a discriminated result — never throws.
  */
 export async function saveLinkToVault(
   opts: SaveLinkToVaultOptions
-): Promise<{ id: string } | null> {
+): Promise<SaveToVaultResult> {
   const { userId, url, projectName } = opts;
+  const dedupKey = linkDedupKey(userId, url);
 
   try {
     // ── In-memory dedup ──
-    const key = linkDedupKey(userId, url);
-    if (linkDedup.has(key)) return null;
-    linkDedup.add(key);
+    if (linkDedup.has(dedupKey)) {
+      return { ok: false, reason: "duplicate" };
+    }
 
     // ── DB dedup: check if a vault note for this URL already exists ──
     const { data: existing } = await supabase
       .from("notes")
       .select("id")
       .eq("user_id", userId)
-      .ilike("content", `%${url}%`)
+      .ilike("content", buildLikePattern(url))
       .limit(1);
-    if (existing && existing.length > 0) return null;
+    if (existing && existing.length > 0) {
+      linkDedup.add(dedupKey);
+      return { ok: false, reason: "duplicate" };
+    }
 
     const isYouTube =
       /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\//i.test(url);
@@ -319,33 +413,42 @@ export async function saveLinkToVault(
     }
 
     if (noteError) {
-      notifyVaultCapIfApplicable(noteError);
+      const classified = classifyError(noteError);
       if (import.meta.env.DEV) console.error("[saveToVault] Error creating vault link note:", noteError);
-      return null;
+      return { ok: false, reason: classified.reason, message: classified.message };
     }
 
-    if (insertedNote?.id) {
-      const att = attachmentPayload[0] || {};
-      const linkText = [att.title, att.description, att.articleText]
-        .filter(Boolean)
-        .join("\n")
-        .slice(0, 5000);
-      describeVaultItemInBackground(insertedNote.id, {
-        imageUrl: isYouTube ? undefined : att.image || att.thumbnail_url || undefined,
-        textContent: linkText || undefined,
-        fileType: isYouTube ? "youtube" : socialPlatform || "bookmark",
-        fileName: att.title || att.name || url,
-      });
-      afterVaultNoteSaved(userId, insertedNote.id, {
-        title: noteTitle,
-        content: noteContent,
-        extraPlain: linkText || undefined,
-      });
+    if (!insertedNote?.id) {
+      return {
+        ok: false,
+        reason: "error",
+        message: "Couldn't save this link — please try again.",
+      };
     }
 
-    return insertedNote ?? null;
+    linkDedup.add(dedupKey);
+
+    const att = attachmentPayload[0] || {};
+    const linkText = [att.title, att.description, att.articleText]
+      .filter(Boolean)
+      .join("\n")
+      .slice(0, 5000);
+    describeVaultItemInBackground(insertedNote.id, {
+      imageUrl: isYouTube ? undefined : att.image || att.thumbnail_url || undefined,
+      textContent: linkText || undefined,
+      fileType: isYouTube ? "youtube" : socialPlatform || "bookmark",
+      fileName: att.title || att.name || url,
+    });
+    afterVaultNoteSaved(userId, insertedNote.id, {
+      title: noteTitle,
+      content: noteContent,
+      extraPlain: linkText || undefined,
+    });
+
+    return { ok: true, id: insertedNote.id, note: insertedNote };
   } catch (err) {
     if (import.meta.env.DEV) console.error("[saveToVault] Unexpected error:", err);
-    return null;
+    const classified = classifyError(err);
+    return { ok: false, reason: classified.reason, message: classified.message };
   }
 }

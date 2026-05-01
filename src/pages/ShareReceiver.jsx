@@ -75,17 +75,33 @@ export default function ShareReceiver() {
     setMessage("Saving to Vault…");
 
     saveLinkToVault({ userId: user.id, url })
-      .then((note) => {
-        if (note) {
+      .then((result) => {
+        if (result.ok) {
           setStatus("done");
           setMessage("Saved to Vault");
           toast({ title: "Saved to Vault", description: url });
-        } else {
+          setTimeout(() => nav("/vault", { replace: true }), 900);
+          return;
+        }
+        // Discriminated failure: tell the user the truth instead of
+        // collapsing every non-ok result into "duplicate". The legacy
+        // null-return treated cap / rate / RLS errors as duplicates,
+        // which is misleading and hides real save failures.
+        if (result.reason === "duplicate") {
           setStatus("dup");
           setMessage("Already in your Vault");
           toast({ title: "Already saved", description: url });
+          setTimeout(() => nav("/vault", { replace: true }), 900);
+        } else if (result.reason === "cap") {
+          setStatus("error");
+          setMessage("Vault is full — upgrade to keep saving.");
+        } else if (result.reason === "rate") {
+          setStatus("error");
+          setMessage("You're saving too fast — try again in a moment.");
+        } else {
+          setStatus("error");
+          setMessage(result.message || "Could not save that link. Please try again.");
         }
-        setTimeout(() => nav("/vault", { replace: true }), 900);
       })
       .catch((err) => {
         if (import.meta.env.DEV) console.error("[ShareReceiver] save failed:", err);

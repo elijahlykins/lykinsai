@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
+import { cancelVaultUpload } from "@/lib/vault/uploadCancellation";
 
 export type UploadStatus =
   | "pending"
@@ -83,11 +84,52 @@ export const useVaultUploadStore = create<VaultUploadState>()(
       set((s) => {
         const idx = s.items.findIndex((it) => it.id === id);
         if (idx === -1) return;
-        s.items[idx] = { ...s.items[idx], ...patch };
+        const prev = s.items[idx];
+        const next = { ...prev, ...patch };
+
+        // Monotonic progress: the UI shouldn't appear to move
+        // backwards across stage boundaries. Compression reports
+        // 0–100 within its phase, then the upload phase resets to
+        // 1 and counts up to 95 before the post-process tick. Clamp
+        // here so the bar can never visibly regress for the user.
+        if (
+          typeof patch.progress === "number" &&
+          typeof prev.progress === "number" &&
+          // We DO want progress to reset when the status changes
+          // (e.g. compressing → uploading is a fresh stage).
+          (!patch.status || patch.status === prev.status)
+        ) {
+          if (patch.progress < prev.progress) {
+            next.progress = prev.progress;
+          }
+        }
+
+        // Revoke the local preview as soon as the item enters a
+        // terminal state — there's no UI surface that needs it any
+        // more, and it pins the original File in memory until a
+        // GC happens to fire.
+        if (
+          patch.status === "error" &&
+          prev.previewUrl &&
+          prev.status !== "error"
+        ) {
+          try {
+            URL.revokeObjectURL(prev.previewUrl);
+          } catch {
+            /* ignore */
+          }
+          next.previewUrl = null;
+        }
+
+        s.items[idx] = next;
       });
     },
 
     remove: (id) => {
+      // Cancel any in-flight pipeline work for this item BEFORE we drop it
+      // from the store, so the abort handler can still see the item if
+      // it needs to (and we don't leak bytes in the storage bucket).
+      cancelVaultUpload(id);
       set((s) => {
         const idx = s.items.findIndex((it) => it.id === id);
         if (idx === -1) return;
@@ -104,6 +146,9 @@ export const useVaultUploadStore = create<VaultUploadState>()(
     },
 
     clearCompleted: () => {
+      // Completed items are never registered with the cancellation
+      // registry by this point, so we don't need to call cancelVaultUpload
+      // here — just revoke their previews.
       set((s) => {
         s.items = s.items.filter((it) => {
           if (it.status !== "completed") return true;
@@ -120,6 +165,13 @@ export const useVaultUploadStore = create<VaultUploadState>()(
     },
 
     clearAll: () => {
+      // Snapshot ids first; cancelVaultUpload mutates the registry and
+      // also kicks off async storage cleanup that we don't want to
+      // interleave with the immer set callback below.
+      const ids = useVaultUploadStore.getState().items.map((it) => it.id);
+      for (const id of ids) {
+        cancelVaultUpload(id);
+      }
       set((s) => {
         for (const it of s.items) {
           if (it.previewUrl) {

@@ -192,8 +192,13 @@ async function uploadViaTus(args: {
 
   const endpoint = `${supabaseUrl.replace(/\/$/, "")}/storage/v1/upload/resumable`;
 
-  const { data: sessionData } = await supabase.auth.getSession();
-  const accessToken = sessionData?.session?.access_token || anonKey;
+  // Capture an access token now AND on every retry. tus-js-client's
+  // `onShouldRetry` runs after a transient error before the retry,
+  // and `onBeforeRequest` runs before every chunk request — re-pulling
+  // the latest session there means a long-running upload survives
+  // a token refresh mid-flight without the request getting 401-ed.
+  const initialSession = await supabase.auth.getSession();
+  let accessToken = initialSession?.data?.session?.access_token || anonKey;
 
   await new Promise<void>((resolve, reject) => {
     const upload = new Upload(file as File, {
@@ -203,6 +208,22 @@ async function uploadViaTus(args: {
         authorization: `Bearer ${accessToken}`,
         "x-upsert": upsert ? "true" : "false",
         apikey: anonKey,
+      },
+      // Refresh the token on each request hop so multi-hour video
+      // uploads don't die when the access token rotates.
+      onBeforeRequest: async (req: any) => {
+        try {
+          const { data } = await supabase.auth.getSession();
+          const fresh = data?.session?.access_token;
+          if (fresh && fresh !== accessToken) {
+            accessToken = fresh;
+          }
+          if (req && typeof req.setHeader === "function") {
+            req.setHeader("authorization", `Bearer ${accessToken}`);
+          }
+        } catch {
+          /* keep prior token */
+        }
       },
       uploadDataDuringCreation: true,
       removeFingerprintOnSuccess: true,

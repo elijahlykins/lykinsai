@@ -283,6 +283,8 @@ export const SpreadsheetBlock = memo(function SpreadsheetBlock({ id, onMinimize,
   const editInputRef = useRef<HTMLInputElement | null>(null);
   const colResizeRef = useRef<{ col: number; startX: number; startW: number } | null>(null);
   const emitTimerRef = useRef<number | null>(null);
+  const localUndoRef = useRef<Array<{ sheet: any; width: number; height: number }>>([]);
+  const isApplyingUndoRef = useRef(false);
   const dragRef = useRef<any>(null);
   const resizeRef = useRef<{
     pointerId: number;
@@ -320,17 +322,36 @@ export const SpreadsheetBlock = memo(function SpreadsheetBlock({ id, onMinimize,
     };
   }, [block]);
 
-  if (!block || block.type !== "text" || block.format !== "table" || !style) return null;
+  // NOTE: Do NOT early-return here. Many hooks below depend on `block`, and
+  // returning before them caused "Rendered fewer hooks than expected" when
+  // the block was deleted/changed mid-render. We guard each hook body and
+  // gate the actual JSX render at the bottom on `style` being non-null.
 
-  const sheet = useMemo(() => {
-    try {
-      const parsed = JSON.parse(String(block.content || ""));
-      if (parsed && typeof parsed === "object") return parsed;
-    } catch {
-      // ignore
+  const { sheet, parseError } = useMemo<{ sheet: any; parseError: string | null }>(() => {
+    const raw = String(block?.content || "").trim();
+    if (!raw) {
+      return {
+        sheet: { version: 1, rows: 30, cols: 20, colWidths: Array.from({ length: 20 }, () => 96), cells: {} },
+        parseError: null,
+      };
     }
-    return { version: 1, rows: 30, cols: 20, colWidths: Array.from({ length: 20 }, () => 96), cells: {} };
-  }, [block.content]);
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") return { sheet: parsed, parseError: null };
+      return { sheet: { version: 1, rows: 30, cols: 20, colWidths: Array.from({ length: 20 }, () => 96), cells: {} }, parseError: "Spreadsheet data is not an object." };
+    } catch (err: any) {
+      // Surface parse failure rather than silently rendering an empty grid;
+      // this reveals corruption (e.g. half-saved drafts) instead of looking
+      // like real data was lost.
+      return {
+        sheet: { version: 1, rows: 30, cols: 20, colWidths: Array.from({ length: 20 }, () => 96), cells: {} },
+        parseError: String(err?.message || "Spreadsheet data could not be parsed."),
+      };
+    }
+  }, [block?.content]);
+  if (parseError && import.meta.env.DEV) {
+    console.warn(`[SpreadsheetBlock ${id}] parse error:`, parseError);
+  }
   const MAX_ROWS = 1000;
   const rows = clamp(sheet.rows || 30, 1, MAX_ROWS);
   const cols = sheet.cols || 20;
@@ -342,6 +363,7 @@ export const SpreadsheetBlock = memo(function SpreadsheetBlock({ id, onMinimize,
 
   const ensureRowExists = useCallback(
     (rowIndex: number) => {
+      if (!block) return false;
       if (rowIndex <= rows - 1) return false;
       if (rows >= MAX_ROWS) return false;
 
@@ -369,7 +391,7 @@ export const SpreadsheetBlock = memo(function SpreadsheetBlock({ id, onMinimize,
       );
       return true;
     },
-    [block.height, cells, colWidths, cols, gridSize, id, rows, sheet, updateBlock]
+    [block, cells, colWidths, cols, gridSize, id, rows, sheet, updateBlock]
   );
 
   // Sync from store sheet.
@@ -379,6 +401,67 @@ export const SpreadsheetBlock = memo(function SpreadsheetBlock({ id, onMinimize,
   }, [cols, sheet.cells, sheet.colWidths]);
 
   const display = useMemo(() => computeGrid({ rows, cols, cells }), [rows, cols, cells]);
+
+  const pushLocalUndo = useCallback(() => {
+    if (!block) return;
+    if (isApplyingUndoRef.current) return;
+    const snapshot = {
+      sheet: {
+        ...sheet,
+        rows,
+        cols,
+        colWidths: [...(Array.isArray(colWidths) ? colWidths : Array.from({ length: cols }, () => 96))],
+        cells: { ...(cells || {}) },
+      },
+      width: Number(block.width) || 0,
+      height: Number(block.height) || 0,
+    };
+    localUndoRef.current.push(snapshot);
+    if (localUndoRef.current.length > 50) {
+      localUndoRef.current.splice(0, localUndoRef.current.length - 50);
+    }
+  }, [block, cells, colWidths, cols, rows, sheet]);
+
+  const undoLocalGridChange = useCallback(() => {
+    if (!block) return;
+    if (!localUndoRef.current.length) return;
+    const prev = localUndoRef.current.pop();
+    if (!prev) return;
+    if (emitTimerRef.current) {
+      window.clearTimeout(emitTimerRef.current);
+      emitTimerRef.current = null;
+    }
+    isApplyingUndoRef.current = true;
+    setEditing(null);
+    setDraft("");
+    updateBlock(
+      id,
+      {
+        content: JSON.stringify(prev.sheet),
+        width: Math.max(1, Math.floor(prev.width || block.width || 1)),
+        height: Math.max(1, Math.floor(prev.height || block.height || 1)),
+      } as any
+    );
+    setTimeout(() => {
+      isApplyingUndoRef.current = false;
+      window.dispatchEvent(new Event("omnia_flush_save"));
+    }, 0);
+  }, [block, id, updateBlock]);
+
+  useEffect(() => {
+    const onUndoRequest = (ev: Event) => {
+      const custom = ev as CustomEvent<{ handled?: boolean; selectedIds?: string[] }>;
+      const selectedIds = Array.isArray(custom?.detail?.selectedIds) ? custom.detail.selectedIds : [];
+      if (!selectedIds.includes(id)) return;
+      if (!localUndoRef.current.length) return;
+      undoLocalGridChange();
+      if (custom?.detail && typeof custom.detail === "object") {
+        custom.detail.handled = true;
+      }
+    };
+    window.addEventListener("omnia_grid_undo_request", onUndoRequest as EventListener);
+    return () => window.removeEventListener("omnia_grid_undo_request", onUndoRequest as EventListener);
+  }, [id, undoLocalGridChange]);
 
   const scheduleEmit = useCallback(
     (nextSheet: any) => {
@@ -419,6 +502,7 @@ export const SpreadsheetBlock = memo(function SpreadsheetBlock({ id, onMinimize,
 
   const updateCellRaw = useCallback(
     (r: number, c: number, value: string) => {
+      pushLocalUndo();
       setCells((prev) => {
         const next = { ...(prev || {}) };
         next[`${r},${c}`] = value;
@@ -426,7 +510,7 @@ export const SpreadsheetBlock = memo(function SpreadsheetBlock({ id, onMinimize,
         return next;
       });
     },
-    [colWidths, cols, rows, scheduleEmit, sheet]
+    [colWidths, cols, pushLocalUndo, rows, scheduleEmit, sheet]
   );
 
   const commitEdit = useCallback(() => {
@@ -434,6 +518,12 @@ export const SpreadsheetBlock = memo(function SpreadsheetBlock({ id, onMinimize,
     updateCellRaw(editing.r, editing.c, draft);
     setEditing(null);
     setDraft("");
+    // Cell edits go through a 120ms debounce in scheduleEmit. If the user
+    // commits and immediately navigates away (or the autosave tick fires
+    // mid-debounce) the write would be missed. Hand the persistence layer
+    // an explicit nudge after the debounce so the latest cell value lands
+    // in the snapshot pipeline regardless of timing.
+    setTimeout(() => window.dispatchEvent(new Event("omnia_flush_save")), 200);
   }, [draft, editing, updateCellRaw]);
 
   const startEdit = useCallback(
@@ -573,6 +663,7 @@ export const SpreadsheetBlock = memo(function SpreadsheetBlock({ id, onMinimize,
         e.preventDefault();
         const t = await pasteText();
         if (t == null) return;
+        pushLocalUndo();
         const lines = String(t).replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
         const startR = selected.r;
         const startC = selected.c;
@@ -629,35 +720,40 @@ export const SpreadsheetBlock = memo(function SpreadsheetBlock({ id, onMinimize,
         startEdit(selected.r, selected.c, e.key);
       }
     },
-    [cells, colWidths, commitEdit, copyText, editing, isSelected, moveDownOrGrow, moveSel, pasteText, rows, cols, scheduleEmit, selected, sheet, startEdit, updateCellRaw, scrollSelectedIntoView]
+    [cells, colWidths, commitEdit, copyText, editing, isSelected, moveDownOrGrow, moveSel, pasteText, pushLocalUndo, rows, cols, scheduleEmit, selected, sheet, startEdit, updateCellRaw, scrollSelectedIntoView]
   );
 
-  const isFileImport = Boolean((block as any).data?.sourceFileName);
-  const isTableMode = Boolean((block as any).data?.tableMode);
+  const isFileImport = Boolean((block as any)?.data?.sourceFileName);
+  const isTableMode = Boolean((block as any)?.data?.tableMode);
 
   const scaledFontSize = useMemo(() => {
     if (!isTableMode) return 12;
-    const cellHeight = block.height / Math.max(1, rows);
+    const h = Number(block?.height) || 0;
+    const cellHeight = h / Math.max(1, rows);
     const defaultCellHeight = (gridSize * 5) / 3;
     const fontScale = Math.max(0.5, cellHeight / defaultCellHeight);
     return Math.max(8, Math.min(72, Math.round(12 * fontScale)));
-  }, [isTableMode, block.height, rows, gridSize]);
+  }, [isTableMode, block?.height, rows, gridSize]);
 
   const addRow = useCallback(() => {
+    if (!block) return;
     if (rows >= MAX_ROWS) return;
+    pushLocalUndo();
     const nextRows = rows + 1;
     const g = Math.max(1, Math.floor(gridSize || 24));
     const nextSheet = { ...sheet, rows: nextRows, cols, colWidths, cells };
     updateBlock(id, { content: JSON.stringify(nextSheet), height: Math.max(block.height, (nextRows + 1) * g) } as any);
-  }, [block.height, cells, colWidths, cols, gridSize, id, rows, sheet, updateBlock]);
+  }, [block, cells, colWidths, cols, gridSize, id, pushLocalUndo, rows, sheet, updateBlock]);
 
   const addCol = useCallback(() => {
+    if (!block) return;
+    pushLocalUndo();
     const nextCols = cols + 1;
     const nextColWidths = [...colWidths, 96];
     const g = Math.max(1, Math.floor(gridSize || 24));
     const nextSheet = { ...sheet, rows, cols: nextCols, colWidths: nextColWidths, cells };
     updateBlock(id, { content: JSON.stringify(nextSheet), width: Math.max(block.width, nextCols * 96 + g) } as any);
-  }, [block.width, cells, colWidths, cols, gridSize, id, rows, sheet, updateBlock]);
+  }, [block, cells, colWidths, cols, gridSize, id, pushLocalUndo, rows, sheet, updateBlock]);
 
   const hideHeaders = isFileImport || isTableMode;
 
@@ -693,11 +789,12 @@ export const SpreadsheetBlock = memo(function SpreadsheetBlock({ id, onMinimize,
     (e: React.PointerEvent, col: number) => {
       e.preventDefault();
       e.stopPropagation();
+      pushLocalUndo();
       colResizeRef.current = { col, startX: e.clientX, startW: colWidths[col] || 96 };
       window.addEventListener("pointermove", onColResizeMove as any);
       window.addEventListener("pointerup", stopColResize as any);
     },
-    [colWidths, onColResizeMove, stopColResize]
+    [colWidths, onColResizeMove, pushLocalUndo, stopColResize]
   );
 
   useEffect(() => {
@@ -849,6 +946,10 @@ export const SpreadsheetBlock = memo(function SpreadsheetBlock({ id, onMinimize,
       // ignore
     }
   };
+
+  // Render guard runs AFTER all hooks above have been declared, so the hook
+  // count stays stable when the block is deleted/changed mid-render.
+  if (!block || !style) return null;
 
   return (
     <div

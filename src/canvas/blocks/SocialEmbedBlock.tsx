@@ -2,6 +2,7 @@ import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "
 import { ExternalLink, Instagram, Play, Facebook } from "lucide-react";
 import { loadAndProcessEmbed } from "@/lib/embedScripts";
 import { getSocialEmbedLabel, isVerticalSocialContent } from "@/canvas/utils/socialEmbed";
+import { sanitizeEmbedHtml } from "@/lib/sanitizeEmbedHtml";
 
 /* ------------------------------------------------------------------ */
 /*  Inline embed renderer — used by both Canvas LinkBlock and Vault   */
@@ -39,8 +40,13 @@ export const SocialEmbedInline = memo(function SocialEmbedInline({
   const [loaded, setLoaded] = useState(false);
   const [showEmbed, setShowEmbed] = useState(!compact);
 
+  // Sanitize once per html change. The oEmbed payload comes from `/api/unfurl`
+  // and is stored verbatim in the DB, so stripping scripts / inline event
+  // handlers here is defense-in-depth against poisoned upstream responses.
+  const safeOembedHtml = useMemo(() => sanitizeEmbedHtml(oembedHtml), [oembedHtml]);
+
   useEffect(() => {
-    if (!showEmbed || !oembedHtml || !containerRef.current) return;
+    if (!showEmbed || !safeOembedHtml || !containerRef.current) return;
     let cancelled = false;
 
     loadAndProcessEmbed(platform, containerRef.current).then(() => {
@@ -48,7 +54,7 @@ export const SocialEmbedInline = memo(function SocialEmbedInline({
     });
 
     return () => { cancelled = true; };
-  }, [platform, oembedHtml, showEmbed]);
+  }, [platform, safeOembedHtml, showEmbed]);
 
   // Re-process if the embed HTML changes (e.g. navigating between cards)
   useEffect(() => {
@@ -57,7 +63,7 @@ export const SocialEmbedInline = memo(function SocialEmbedInline({
       loadAndProcessEmbed(platform, containerRef.current);
     }, 100);
     return () => clearTimeout(timer);
-  }, [loaded, oembedHtml, platform]);
+  }, [loaded, safeOembedHtml, platform]);
 
   const openUrl = useCallback(() => {
     if (url) window.open(url, "_blank", "noopener,noreferrer");
@@ -70,7 +76,7 @@ export const SocialEmbedInline = memo(function SocialEmbedInline({
     : Play; // TikTok has no lucide icon; use Play
 
   // Compact mode: show thumbnail with play overlay (used in embedded vault sidebar)
-  if (compact && oembedHtml) {
+  if (compact && safeOembedHtml) {
     return (
       <button
         type="button"
@@ -118,7 +124,7 @@ export const SocialEmbedInline = memo(function SocialEmbedInline({
   }
 
   // No oEmbed HTML available — show a rich preview card with OG data
-  if (!oembedHtml) {
+  if (!safeOembedHtml) {
     return (
       <div
         className={`w-full h-full flex flex-col text-left overflow-hidden group/social ${className || ""}`}
@@ -182,7 +188,7 @@ export const SocialEmbedInline = memo(function SocialEmbedInline({
       <div
         ref={containerRef}
         className="w-full flex items-start justify-center"
-        dangerouslySetInnerHTML={{ __html: oembedHtml }}
+        dangerouslySetInnerHTML={{ __html: safeOembedHtml }}
       />
       <button
         type="button"

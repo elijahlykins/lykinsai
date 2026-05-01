@@ -1,6 +1,6 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ReactDOM from "react-dom";
-import { renderToStaticMarkup } from "react-dom/server";
+import { renderToString } from "react-dom/server";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Heading1, Heading2, Type, List, ListOrdered, ListChecks, ChevronRight, TextQuote, Image, Mic, MoreHorizontal, Minimize2, Maximize2, Table } from "lucide-react";
@@ -27,6 +27,7 @@ export type BrickShellModel = {
   height: number;
   label: string;
   content: string;
+  format: string;
   textVariant: "body" | "h2" | "h1";
   listType: "none" | "bullet" | "numbered" | "todo" | "toggle" | "quote";
   brickColor?: string;
@@ -35,6 +36,79 @@ export type BrickShellModel = {
   userResized?: boolean;
   brickScale?: number;
 };
+
+// Unified markdown detection used by every text-bearing brick (typed text,
+// slash-command bricks, AI tool-call bricks, pasted bricks, dragged AI
+// bubbles). Catches the cases the previous regex missed: single-asterisk and
+// single-underscore italics, numbered list items, and blockquotes — so AI
+// markdown like `*italic*` or `1. step` no longer renders as literal text.
+const MARKDOWN_DETECT_RE =
+  /(?:^|\n)\s*#{1,6}\s|(?:\*\*|__)[^\s][\s\S]*?(?:\*\*|__)|(?:^|[^\w*])\*[^\s*][^*\n]*\*(?=$|[^\w*])|(?:^|[^\w_])_[^\s_][^_\n]*_(?=$|[^\w_])|```|(?:^|\n)\s*[-*+]\s|(?:^|\n)\s*\d+\.\s|(?:^|\n)\|.+\||(?:^|\n)\s*>\s/m;
+
+function shouldRenderAsMarkdown(content: string, format: string, isAiBubble: boolean): boolean {
+  if (isAiBubble) return true;
+  // `rich` is the format every brick-creating path uses (typed text, slash
+  // commands, AI tool calls, paste, drag-from-AI). Always treat it as
+  // markdown so authors and AI agree on what they see.
+  if (format === "rich" || format === "markdown") return true;
+  if (!content) return false;
+  return MARKDOWN_DETECT_RE.test(content);
+}
+
+// Component overrides used when rendering markdown to HTML for the edit
+// surface and for the persisted `formattedHtml`. These mirror the styling
+// that `aiMarkdownComponents` applies in display mode — specifically
+// `whitespace-pre-wrap` on `<p>` so single `\n` line breaks inside a
+// paragraph are preserved both during edit and after the resulting HTML is
+// stored back via `dangerouslySetInnerHTML`. Without this, AI-bubble
+// content with soft line breaks collapses to a single line on the way back
+// out of edit mode. We deliberately omit any component that carries React
+// state (e.g. `InlineEditableTable`) because `renderToString` can't safely
+// round-trip those — the default `<table>` tag is fine for the edit window
+// since content with GFM tables is routed through `EditableMarkdownTable`
+// in display mode anyway.
+const editorMarkdownComponents = {
+  h1: ({ children }: any) => React.createElement("h1", { className: "font-semibold mt-2 mb-1", style: { fontSize: "1.5em" } }, children),
+  h2: ({ children }: any) => React.createElement("h2", { className: "font-semibold mt-2 mb-1", style: { fontSize: "1.3em" } }, children),
+  h3: ({ children }: any) => React.createElement("h3", { className: "font-semibold mt-1.5 mb-1", style: { fontSize: "1.15em" } }, children),
+  p: ({ children }: any) => React.createElement("p", { className: "my-1 whitespace-pre-wrap" }, children),
+  ul: ({ children }: any) => React.createElement("ul", { className: "my-1 list-disc pl-5 space-y-0.5" }, children),
+  ol: ({ children }: any) => React.createElement("ol", { className: "my-1 list-decimal pl-5 space-y-0.5" }, children),
+  li: ({ children }: any) => React.createElement("li", { className: "leading-relaxed" }, children),
+  strong: ({ children }: any) => React.createElement("strong", { className: "font-semibold" }, children),
+  blockquote: ({ children }: any) => React.createElement("blockquote", { className: "border-l-2 border-black/20 dark:border-white/20 pl-3 my-1 text-black/70 dark:text-white/70 italic" }, children),
+  code: ({ children, className }: any) => {
+    const isBlock = String(className || "").startsWith("language-");
+    if (isBlock) return React.createElement("pre", { className: "rounded-lg bg-black/5 p-2 my-1 overflow-x-auto", style: { fontSize: "0.85em" } }, React.createElement("code", null, children));
+    return React.createElement("code", { className: "rounded bg-black/10 px-1 py-0.5", style: { fontSize: "0.85em" } }, children);
+  },
+  pre: ({ children }: any) => React.createElement(React.Fragment, null, children),
+  thead: ({ children }: any) => React.createElement("thead", { className: "border-b border-black/20" }, children),
+  tbody: ({ children }: any) => React.createElement("tbody", null, children),
+  tr: ({ children }: any) => React.createElement("tr", { className: "border-b border-black/10" }, children),
+  th: ({ children }: any) => React.createElement("th", { className: "text-left px-3 py-2 font-semibold" }, children),
+  td: ({ children }: any) => React.createElement("td", { className: "px-3 py-2" }, children),
+};
+
+// Synchronous markdown -> HTML, used to seed the contenteditable surface on
+// edit-entry so the visible formatting matches the display rendering, and to
+// produce the HTML we persist as `formattedHtml` on blur. We use a component
+// map that mirrors display styling (notably `whitespace-pre-wrap` on `<p>`),
+// so the rendered HTML round-trips into `dangerouslySetInnerHTML` cleanly
+// without losing soft line breaks.
+function renderMarkdownToHtmlString(content: string): string {
+  try {
+    return renderToString(
+      React.createElement(
+        ReactMarkdown as any,
+        { remarkPlugins: [remarkGfm], components: editorMarkdownComponents },
+        String(content || "")
+      )
+    );
+  } catch {
+    return String(content || "");
+  }
+}
 
 const COLUMN_GAP_PX = 32;
 
@@ -56,7 +130,11 @@ export type BrickShellRenderOptions = {
   onPress?: (id: string, shiftKey: boolean, source: "pointerdown" | "click") => void;
   onDoubleClick?: (id: string) => void;
   isTyping?: boolean;
-  onTypingChange?: (id: string, value: string, meta?: { isPaste?: boolean; exitList?: boolean; formattedHtml?: string }) => void;
+  onTypingChange?: (
+    id: string,
+    value: string,
+    meta?: { isPaste?: boolean; isLineBreak?: boolean; exitList?: boolean; formattedHtml?: string; preserveSize?: boolean }
+  ) => void;
   onTypingKeyDown?: (id: string, e: React.KeyboardEvent<HTMLDivElement>) => void;
   onTypingBlur?: (id: string) => void;
   enableWidthResize?: boolean;
@@ -91,6 +169,7 @@ export function toBrickShellModel(block: Block | any): BrickShellModel {
     height: Math.max(1, Number(b?.height || BRICK_BEHAVIOR.gridSize)),
     label,
     content,
+    format: String(b?.format || "rich").toLowerCase(),
     textVariant,
     listType,
     brickColor: data.brickColor || undefined,
@@ -108,7 +187,11 @@ export function canUseActiveBrickLogic() {
 const BrickTextSurface = React.memo(function BrickTextSurface(props: {
   shell: BrickShellModel;
   isTyping: boolean;
-  onTypingChange?: (id: string, value: string, meta?: { isPaste?: boolean; exitList?: boolean; formattedHtml?: string }) => void;
+  onTypingChange?: (
+    id: string,
+    value: string,
+    meta?: { isPaste?: boolean; isLineBreak?: boolean; exitList?: boolean; formattedHtml?: string; preserveSize?: boolean }
+  ) => void;
   onTypingKeyDown?: (id: string, e: React.KeyboardEvent<HTMLDivElement>) => void;
   onTypingBlur?: (id: string) => void;
 }) {
@@ -120,11 +203,33 @@ const BrickTextSurface = React.memo(function BrickTextSurface(props: {
     return b?.data && typeof b.data === "object" ? b.data : {};
   });
   const editorRef = useRef<HTMLDivElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const pendingCaretRef = useRef<number | null>(null);
   const todoInputRefs = useRef<Record<number, HTMLInputElement | null>>({});
   const pendingTodoFocusIndexRef = useRef<number | null>(null);
   const wasTypingRef = useRef(false);
   const hadTodoLinesRef = useRef(false);
   const applyingSlashRef = useRef(false);
+  // Tracks whether the contenteditable was seeded with rich rendered HTML on
+  // edit-entry — either restored from saved `formattedHtml` (highlights /
+  // marks) or freshly rendered from markdown content (AI bubbles and any
+  // brick whose content has markdown structure). The blur handler uses this
+  // to decide whether the resulting innerHTML should be persisted as
+  // `formattedHtml` even when no inline mark/highlight tags are present, so
+  // the next edit reuses the rendered visual instead of falling back to raw
+  // markdown source. The `useLayoutEffect` reseed-protection below also
+  // reads this to avoid overwriting rich markup with raw textContent on
+  // intermediate re-renders.
+  const loadedRichHtmlRef = useRef(false);
+  // Editor-surface lock for the contenteditable-vs-textarea choice. Defined
+  // at the top of the component (before any conditional `return`) so the
+  // hook is always called regardless of which render path runs below — the
+  // todo-lines early-return path used to skip a useRef declared further
+  // down, which produced "Rendered more hooks than during the previous
+  // render" the moment a brick toggled in or out of having todo lines. The
+  // actual "lock" semantics (initialize once, then only update between
+  // typing sessions) live near the surface-selection logic further down.
+  const surfaceLockRef = useRef<boolean | null>(null);
   const TODO_EMPTY = "[ ]";
   const TODO_FILLED = "[x]";
   const TODO_DISPLAY_EMPTY = "◻\uFE0E";
@@ -133,8 +238,6 @@ const BrickTextSurface = React.memo(function BrickTextSurface(props: {
   const [showSlashMenu, setShowSlashMenu] = useState(false);
   const [activeSlashIndex, setActiveSlashIndex] = useState(0);
   const [slashMenuRect, setSlashMenuRect] = useState<{ left: number; top: number } | null>(null);
-  const aiEditHtmlRef = useRef("");
-  const aiDirtyRef = useRef(false);
   const scale = Math.max(0.5, Number(shell.brickScale || 1));
   const lineRows = shell.textVariant === "h1" ? 3 : shell.textVariant === "h2" ? 2 : 1;
   const lineHeightPx = BRICK_BEHAVIOR.gridSize * lineRows * scale;
@@ -182,14 +285,37 @@ const BrickTextSurface = React.memo(function BrickTextSurface(props: {
   }, [activeSlashIndex, filteredSlashOptions.length]);
 
   useLayoutEffect(() => {
-    if (!showSlashMenu || !filteredSlashOptions.length || !editorRef.current) {
+    if (!showSlashMenu || !filteredSlashOptions.length) {
       setSlashMenuRect(null);
       return;
     }
-    const el = editorRef.current;
+    const el = textareaRef.current ?? editorRef.current;
+    if (!el) return;
     const rect = el.getBoundingClientRect();
     setSlashMenuRect({ left: rect.left + 8, top: rect.bottom + 4 });
   }, [showSlashMenu, filteredSlashOptions.length]);
+
+  // After a controlled-textarea value change (Enter-marker insertion, paste,
+  // slash command), put the caret back where the user expects it. Without
+  // this, inserting `\n• ` would leave the caret jumping to the end of the
+  // text — which is exactly the kind of glitch the contenteditable path used
+  // to suffer from. Mirrors the cursor-restoration that the per-row todo
+  // inputs already get for free from React's controlled-input behavior.
+  useLayoutEffect(() => {
+    if (pendingCaretRef.current == null) return;
+    const el = textareaRef.current;
+    if (!el) {
+      pendingCaretRef.current = null;
+      return;
+    }
+    const pos = Math.max(0, Math.min(pendingCaretRef.current, el.value.length));
+    try {
+      el.setSelectionRange(pos, pos);
+    } catch {
+      // ignore selection failures
+    }
+    pendingCaretRef.current = null;
+  }, [shell.content]);
 
   const getEditorText = (el: HTMLDivElement | null) => {
     if (!el) return "";
@@ -447,6 +573,13 @@ const BrickTextSurface = React.memo(function BrickTextSurface(props: {
         const cur = useCanvasStore.getState().blocks[shell.id] as any;
         const curData = cur?.data && typeof cur.data === "object" ? { ...cur.data } : {};
         updateBlock(shell.id as any, { content: newLines.join("\n"), data: { ...curData, _tc: tc } } as any);
+        // Toggle collapse/expand bypasses onTypingChange's autogrow path
+        // (the contenteditable's onInput never fires here) so the brick
+        // would otherwise stay at its previous size and either show dead
+        // whitespace below the collapsed header or clip newly-restored
+        // children. Defer to next frame so the store update lands first.
+        window.requestAnimationFrame(() => window.dispatchEvent(new CustomEvent("omnia_autogrow_block", { detail: { id: shell.id } })));
+        setTimeout(() => window.dispatchEvent(new Event("omnia_flush_save")), 200);
       } else {
         replaceTextByAbsoluteRange(el, markerStart, markerEnd, "▷\uFE0E");
         onTypingChange?.(shell.id, getEditorText(el));
@@ -466,6 +599,8 @@ const BrickTextSurface = React.memo(function BrickTextSurface(props: {
       const cur = useCanvasStore.getState().blocks[shell.id] as any;
       const curData = cur?.data && typeof cur.data === "object" ? { ...cur.data } : {};
       updateBlock(shell.id as any, { content: newLines.join("\n"), data: { ...curData, _tc: tc } } as any);
+      window.requestAnimationFrame(() => window.dispatchEvent(new CustomEvent("omnia_autogrow_block", { detail: { id: shell.id } })));
+      setTimeout(() => window.dispatchEvent(new Event("omnia_flush_save")), 200);
     }
     return true;
   };
@@ -474,15 +609,48 @@ const BrickTextSurface = React.memo(function BrickTextSurface(props: {
   useLayoutEffect(() => {
     const next = String(shell.content ?? "");
     if (!isTyping) return;
-    if (shell.isAiResponseBubble) return;
     const el = editorRef.current;
     if (!el) return;
     if (document.activeElement === el && !justEnteredTyping) return;
     const fHtml = blockData.formattedHtml;
-    if (justEnteredTyping && fHtml && shell.listType === "none") {
+    // Bricks that already carry inline highlights/marks: restore the saved
+    // HTML so the highlights stay visible during the edit session. Todo
+    // bricks render their own per-row inputs (early-returned above) so they
+    // never reach this surface; bullet/numbered/quote bricks can carry
+    // highlights too, so we accept any non-todo listType here.
+    if (justEnteredTyping && fHtml && shell.listType !== "todo") {
       el.innerHTML = fHtml;
+      loadedRichHtmlRef.current = true;
       return;
     }
+    // Markdown-rendering bricks (AI response bubbles, anything with markdown
+    // structure in its content): render the markdown to HTML and seed it
+    // into the contenteditable so the editor surface visually matches what
+    // display mode shows. Without this, clicking into an AI bubble would
+    // drop the formatting back to raw `**bold**` text. The
+    // `loadedRichHtmlRef` tells the blur handler to persist the resulting
+    // innerHTML as `formattedHtml` so the visual round-trips on the next
+    // edit-entry.
+    if (
+      justEnteredTyping &&
+      shell.listType === "none" &&
+      (Boolean(shell.isAiResponseBubble) || MARKDOWN_DETECT_RE.test(next))
+    ) {
+      const renderedHtml = renderMarkdownToHtmlString(next);
+      el.innerHTML = renderedHtml;
+      loadedRichHtmlRef.current = true;
+      return;
+    }
+    // Don't blow away rich HTML that's already in the surface. If we seeded
+    // formattedHtml or markdown-rendered HTML on entry, the user's blur is
+    // the source of truth for promoting that HTML back into the store; an
+    // intermediate re-render here (e.g. after onInput updated `shell.content`
+    // to the new textContent) would otherwise overwrite the rich markup
+    // with raw text, causing a brief visual flash of unformatted content.
+    if (loadedRichHtmlRef.current || fHtml) {
+      return;
+    }
+    loadedRichHtmlRef.current = false;
     const display = shell.listType === "todo" ? toDisplayTodoMarkers(next) : next;
     if ((el.textContent ?? "") !== display) el.textContent = display;
   }, [shell.content, isTyping]);
@@ -545,19 +713,25 @@ const BrickTextSurface = React.memo(function BrickTextSurface(props: {
   }, [hasTodoLines]);
   const tableCounterRef = useRef(0);
   tableCounterRef.current = 0;
+  // NOTE: every block-level element below uses `first:mt-0 last:mb-0` so the
+  // first/last child of a brick's rendered markdown doesn't push the visible
+  // text away from the brick's edges. Without this, blurring out of a typed
+  // brick (textarea has 0 top/bottom padding) causes the text to "shift" by
+  // ~4px because the rendered <ol>/<ul>/<p> introduces a leading margin that
+  // wasn't there in edit mode.
   const aiMarkdownComponents = useMemo(() => ({
-    h1: ({ children }: any) => React.createElement("h1", { className: "font-semibold mt-2 mb-1", style: { fontSize: "1.5em" } }, children),
-    h2: ({ children }: any) => React.createElement("h2", { className: "font-semibold mt-2 mb-1", style: { fontSize: "1.3em" } }, children),
-    h3: ({ children }: any) => React.createElement("h3", { className: "font-semibold mt-1.5 mb-1", style: { fontSize: "1.15em" } }, children),
-    p: ({ children }: any) => React.createElement("p", { className: "my-1 whitespace-pre-wrap" }, children),
-    ul: ({ children }: any) => React.createElement("ul", { className: "my-1 list-disc pl-5 space-y-0.5" }, children),
-    ol: ({ children }: any) => React.createElement("ol", { className: "my-1 list-decimal pl-5 space-y-0.5" }, children),
+    h1: ({ children }: any) => React.createElement("h1", { className: "font-semibold mt-2 mb-1 first:mt-0 last:mb-0", style: { fontSize: "1.5em" } }, children),
+    h2: ({ children }: any) => React.createElement("h2", { className: "font-semibold mt-2 mb-1 first:mt-0 last:mb-0", style: { fontSize: "1.3em" } }, children),
+    h3: ({ children }: any) => React.createElement("h3", { className: "font-semibold mt-1.5 mb-1 first:mt-0 last:mb-0", style: { fontSize: "1.15em" } }, children),
+    p: ({ children }: any) => React.createElement("p", { className: "my-1 first:mt-0 last:mb-0 whitespace-pre-wrap" }, children),
+    ul: ({ children }: any) => React.createElement("ul", { className: "my-1 first:mt-0 last:mb-0 list-disc pl-5 space-y-0.5" }, children),
+    ol: ({ children }: any) => React.createElement("ol", { className: "my-1 first:mt-0 last:mb-0 list-decimal pl-5 space-y-0.5" }, children),
     li: ({ children }: any) => React.createElement("li", { className: "leading-relaxed" }, children),
     strong: ({ children }: any) => React.createElement("strong", { className: "font-semibold" }, children),
-    blockquote: ({ children }: any) => React.createElement("blockquote", { className: "border-l-2 border-black/20 dark:border-white/20 pl-3 my-1 text-black/70 dark:text-white/70 italic" }, children),
+    blockquote: ({ children }: any) => React.createElement("blockquote", { className: "border-l-2 border-black/20 dark:border-white/20 pl-3 my-1 first:mt-0 last:mb-0 text-black/70 dark:text-white/70 italic" }, children),
     code: ({ children, className }: any) => {
       const isBlock = className?.startsWith("language-");
-      if (isBlock) return React.createElement("pre", { className: "rounded-lg bg-black/5 p-2 my-1 overflow-x-auto", style: { fontSize: "0.85em" } }, React.createElement("code", null, children));
+      if (isBlock) return React.createElement("pre", { className: "rounded-lg bg-black/5 p-2 my-1 first:mt-0 last:mb-0 overflow-x-auto", style: { fontSize: "0.85em" } }, React.createElement("code", null, children));
       return React.createElement("code", { className: "rounded bg-black/10 px-1 py-0.5", style: { fontSize: "0.85em" } }, children);
     },
     pre: ({ children }: any) => React.createElement(React.Fragment, null, children),
@@ -576,16 +750,6 @@ const BrickTextSurface = React.memo(function BrickTextSurface(props: {
     th: ({ children }: any) => React.createElement("th", { className: "text-left px-3 py-2 font-semibold" }, children),
     td: ({ children }: any) => React.createElement("td", { className: "px-3 py-2" }, children),
   }), [shell.id]);
-
-  if (isTyping && shell.isAiResponseBubble && !aiEditHtmlRef.current) {
-    const md = String(shell.content || "");
-    const mdEl = React.createElement(ReactMarkdown as any, { remarkPlugins: [remarkGfm], components: aiMarkdownComponents }, md);
-    aiEditHtmlRef.current = renderToStaticMarkup(mdEl);
-  }
-  if (!isTyping || !shell.isAiResponseBubble) {
-    aiEditHtmlRef.current = "";
-    aiDirtyRef.current = false;
-  }
 
   if (hasTodoLines) {
     return React.createElement(
@@ -670,98 +834,31 @@ const BrickTextSurface = React.memo(function BrickTextSurface(props: {
                 onTypingChange?.(shell.id, next);
               }
             },
+            // Todo bricks render real <input> elements per row, so the
+            // outer contenteditable's onBlur never fires for them. Without
+            // this handler clicking out of a todo would never trigger a
+            // save flush, and edits would only land on the next 30s
+            // autosave tick. Re-assert the latest text into the store and
+            // dispatch the same flush event the contenteditable path uses.
+            onBlur: (e: any) => {
+              const nextText = applyTodoTextAtLine(String(shell.content || ""), index, String(e.currentTarget.value || ""));
+              const storeBlock: any = useCanvasStore.getState().blocks[shell.id];
+              if (storeBlock && storeBlock.content !== nextText) {
+                updateBlock(shell.id as any, { content: nextText } as any);
+              }
+              const root = e.currentTarget.closest?.("[data-canvas-block]") as HTMLElement | null;
+              window.requestAnimationFrame(() => {
+                const next = document.activeElement as HTMLElement | null;
+                if (root && next && root.contains(next)) return;
+                onTypingBlur?.(shell.id);
+                setTimeout(() => window.dispatchEvent(new Event("omnia_flush_save")), 500);
+              });
+            },
           })
         );
       })
     );
   }
-  if (shell.isAiResponseBubble) {
-    const isThinkingPlaceholder = !isTyping && /^AI is thinking/i.test(String(shell.content || "").trim());
-    const aiBaseFontSize = 13 * scale;
-    const aiLineHeight = 1.5;
-    const aiFontStyle = {
-      fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"',
-      fontSize: `${aiBaseFontSize}px`,
-      lineHeight: `${aiLineHeight}`,
-      color: isThinkingPlaceholder ? "transparent" : "inherit",
-      paddingLeft: "8px",
-      paddingRight: "8px",
-      paddingTop: "4px",
-      paddingBottom: "4px",
-      wordBreak: "break-word" as const,
-      overflowWrap: "anywhere" as const,
-    };
-    if (isTyping && aiEditHtmlRef.current) {
-      return React.createElement(
-        "div",
-        { key: "ai-editing", className: "relative w-full min-h-full" },
-        React.createElement("div", {
-          ref: editorRef,
-          tabIndex: 0,
-          contentEditable: true,
-          suppressContentEditableWarning: true,
-          spellCheck: false,
-          "data-canvas-brick-editor-id": shell.id,
-          className: "w-full min-h-full outline-none text-foreground overflow-auto scrollbar-hide",
-          style: { ...aiFontStyle, userSelect: "text" as const, WebkitUserSelect: "text" as const },
-          dangerouslySetInnerHTML: { __html: aiEditHtmlRef.current },
-          onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => { e.stopPropagation(); },
-          onClick: (e: React.MouseEvent<HTMLDivElement>) => { e.stopPropagation(); },
-          onDoubleClick: (e: React.MouseEvent<HTMLDivElement>) => { e.stopPropagation(); },
-          onInput: () => { aiDirtyRef.current = true; },
-          onKeyDown: (e: React.KeyboardEvent<HTMLDivElement>) => {
-            if (e.key === "Escape") { onTypingBlur?.(shell.id); return; }
-          },
-          onBlur: (e: React.FocusEvent<HTMLDivElement>) => {
-            if (aiDirtyRef.current) {
-              const text = getEditorText(e.currentTarget);
-              const storeBlock: any = useCanvasStore.getState().blocks[shell.id];
-              if (storeBlock && storeBlock.content !== text) {
-                updateBlock(shell.id as any, { content: text } as any);
-              }
-              onTypingChange?.(shell.id, text);
-            }
-            onTypingBlur?.(shell.id);
-          },
-        })
-      );
-    }
-    const aiContent = String(shell.content || "");
-    const aiTableData = parseGfmTable(aiContent);
-    if (aiTableData) {
-      return React.createElement(
-        "div",
-        { key: "ai-table", className: "relative w-full", style: { pointerEvents: "auto" as const } },
-        React.createElement(
-          "div",
-          {
-            ref: editorRef,
-            "data-canvas-brick-editor-id": shell.id,
-            className: "w-full outline-none text-foreground overflow-auto scrollbar-hide",
-            style: { ...aiFontStyle, userSelect: "text" as const, WebkitUserSelect: "text" as const },
-            onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => { e.stopPropagation(); },
-          },
-          React.createElement(EditableMarkdownTable, { blockId: shell.id, content: aiContent })
-        )
-      );
-    }
-    return React.createElement(
-      "div",
-      { key: "ai-display", className: "relative w-full", style: { pointerEvents: "auto" as const } },
-      React.createElement(
-        "div",
-        {
-          ref: editorRef,
-          "data-canvas-brick-editor-id": shell.id,
-          className: `w-full outline-none text-foreground ${isThinkingPlaceholder ? "overflow-hidden" : "overflow-auto scrollbar-hide"}`,
-          style: { ...aiFontStyle, pointerEvents: "auto" as const, userSelect: "text" as const, WebkitUserSelect: "text" as const },
-          onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => { e.stopPropagation(); },
-        },
-        React.createElement(ReactMarkdown as any, { remarkPlugins: [remarkGfm], components: aiMarkdownComponents }, aiContent)
-      )
-    );
-  }
-
   if (!isTyping) {
     const contentStr = String(shell.content || "");
 
@@ -799,6 +896,8 @@ const BrickTextSurface = React.memo(function BrickTextSurface(props: {
         const cur = useCanvasStore.getState().blocks[shell.id] as any;
         const curData = cur?.data && typeof cur.data === "object" ? { ...cur.data } : {};
         updateBlock(shell.id as any, { content: allLines.join("\n"), data: { ...curData, _tc: tc } } as any);
+        window.requestAnimationFrame(() => window.dispatchEvent(new CustomEvent("omnia_autogrow_block", { detail: { id: shell.id } })));
+        setTimeout(() => window.dispatchEvent(new Event("omnia_flush_save")), 200);
       };
       return React.createElement(
         "div",
@@ -878,7 +977,21 @@ const BrickTextSurface = React.memo(function BrickTextSurface(props: {
       });
     }
 
-    const hasMarkdown = /(?:^|\n)\s*#{1,6}\s|(?:\*\*|__).+(?:\*\*|__)|```|^\s*[-*]\s|(?:^|\n)\|.+\|/m.test(contentStr);
+    // Single source of truth for "should this brick render markdown?". Every
+    // creator (typed text, slash commands, AI tool calls, paste, drag from AI
+    // rail) sets `format: "rich"`, so this answers "yes" by default and AI
+    // markdown like `*italic*` or `1. step` no longer leaks as raw text.
+    //
+    // Exception: bricks with an explicit listType (e.g. "numbered", "bullet",
+    // "quote") edit through the plain <textarea> path above — markdown-rendering
+    // them on blur would silently re-flow the text (e.g. `1. step` becomes a
+    // proper <ol> with `pl-5`, shifting the visible text ~20px to the right
+    // every time focus leaves). The list semantics are already carried by
+    // shell.listType + the marker characters in the source, so we render the
+    // content verbatim to keep the typing/display layout pixel-identical.
+    const hasExplicitListType = shell.listType !== "none";
+    const hasMarkdown = !hasExplicitListType && shouldRenderAsMarkdown(contentStr, shell.format, Boolean(shell.isAiResponseBubble));
+    const isThinkingPlaceholder = Boolean(shell.isAiResponseBubble) && /^AI is thinking/i.test(contentStr.trim());
     return React.createElement(
       "div",
       {
@@ -888,7 +1001,7 @@ const BrickTextSurface = React.memo(function BrickTextSurface(props: {
           fontSize: `${fontSizePx}px`,
           lineHeight: hasMarkdown ? "1.5" : `${lineHeightPx}px`,
           fontWeight,
-          color: shell.textColor || "inherit",
+          color: isThinkingPlaceholder ? "transparent" : (shell.textColor || "inherit"),
           userSelect: "text",
           WebkitUserSelect: "text",
         },
@@ -902,7 +1015,9 @@ const BrickTextSurface = React.memo(function BrickTextSurface(props: {
 
   const applySlashCommand = (command: string) => {
     applyingSlashRef.current = true;
-    const current = getEditorText(editorRef.current);
+    const current = textareaRef.current
+      ? textareaRef.current.value
+      : getEditorText(editorRef.current);
     const lines = String(current || "").split("\n");
     const lastLine = lines[lines.length - 1] ?? "";
     // Find the slash token (at start of line or after a space)
@@ -923,9 +1038,339 @@ const BrickTextSurface = React.memo(function BrickTextSurface(props: {
     setActiveSlashIndex(0);
     requestAnimationFrame(() => {
       applyingSlashRef.current = false;
-      editorRef.current?.focus();
+      const ta = textareaRef.current;
+      const div = editorRef.current;
+
+      if (ta) {
+        // React has re-rendered with the transformed value; just place
+        // the caret at the end so typing continues after any inserted
+        // list marker (e.g. "• ", "1. ").
+        ta.focus();
+        const len = ta.value.length;
+        try { ta.setSelectionRange(len, len); } catch { /* ignore */ }
+        return;
+      }
+
+      if (div) {
+        // The contentEditable's reseed-effect bails out while the
+        // surface is focused, so when the slash command was applied
+        // via mouse the DOM may still hold the pre-transform text
+        // (e.g. "/toggle list") while the store carries the seeded
+        // marker (e.g. "▷ "). Force-resynchronise from the canonical
+        // store content and collapse the caret to the end so the user
+        // types *after* the marker — fixing the "marker appears after
+        // the text" glitch on toggle lists.
+        const cur = useCanvasStore.getState().blocks[shell.id] as any;
+        const canonical = String(cur?.content || "");
+        if ((div.textContent ?? "") !== canonical) {
+          div.textContent = canonical;
+        }
+        div.focus();
+        const sel = window.getSelection();
+        if (sel) {
+          const range = document.createRange();
+          range.selectNodeContents(div);
+          range.collapse(false);
+          sel.removeAllRanges();
+          sel.addRange(range);
+        }
+      }
     });
   };
+
+  // The slash-command popover is rendered into document.body so it can
+  // overlap any neighboring brick. Both editor surfaces (textarea for
+  // regular text, contenteditable for toggle lists) share it.
+  const slashMenuPortal = (() => {
+    if (!isTyping || !showSlashMenu || !filteredSlashOptions.length || !slashMenuRect || typeof document === "undefined") {
+      return null;
+    }
+    const items: React.ReactNode[] = [];
+    let lastSection = "";
+    filteredSlashOptions.forEach((opt) => {
+      if ((opt as any).section && (opt as any).section !== lastSection && lastSection !== "") {
+        items.push(
+          React.createElement("div", {
+            key: `sep-${(opt as any).section}`,
+            className: "my-1 border-t border-black/10",
+          })
+        );
+      }
+      lastSection = (opt as any).section || lastSection;
+      items.push(
+        React.createElement(
+          "button",
+          {
+            key: opt.id,
+            type: "button",
+            className: `w-full text-left px-2 py-1 rounded text-[0.75rem] text-black/85 transition-colors flex items-center justify-between ${
+              filteredSlashOptions[activeSlashIndex]?.id === opt.id ? "bg-black/10" : "hover:bg-black/10"
+            }`,
+            onPointerDown: (e: any) => {
+              e.preventDefault();
+              e.stopPropagation();
+              applySlashCommand(opt.command);
+            },
+            onMouseEnter: () => {
+              const idx = filteredSlashOptions.findIndex((x) => x.id === opt.id);
+              if (idx >= 0) setActiveSlashIndex(idx);
+            },
+            onMouseDown: (e: any) => {
+              e.preventDefault();
+              e.stopPropagation();
+              applySlashCommand(opt.command);
+            },
+            onClick: (e: any) => {
+              e.preventDefault();
+              e.stopPropagation();
+              applySlashCommand(opt.command);
+            },
+          },
+          React.createElement(
+            "span",
+            { className: "flex items-center gap-2" },
+            React.createElement(opt.icon, { size: 14, className: "text-black/50 shrink-0" }),
+            React.createElement("span", null, opt.label)
+          ),
+          React.createElement("span", { className: "text-[0.625rem] text-black/55 ml-2" }, opt.hint)
+        )
+      );
+    });
+    const menuEl = React.createElement(
+      "div",
+      {
+        className:
+          "min-w-[180px] rounded-md border border-white/25 bg-[linear-gradient(145deg,rgba(255,255,255,0.78),rgba(245,247,255,0.72))] shadow-md backdrop-blur-sm z-[9999] p-1",
+        onPointerDown: (e: any) => {
+          e.preventDefault();
+          e.stopPropagation();
+        },
+        style: { position: "fixed" as const, left: slashMenuRect.left, top: slashMenuRect.top },
+      },
+      items
+    );
+    return ReactDOM.createPortal(menuEl, document.body);
+  })();
+
+  // Regular text bricks (everything except toggle lists) edit through a
+  // React-controlled <textarea>. This is the same model the per-row todo
+  // <input> elements use — the DOM never holds state independently of
+  // shell.content, so there is no "syncBrickEditorText rolled my keystroke
+  // back" race. Toggle lists keep contenteditable below because they need
+  // in-place collapse-marker click handling that a textarea can't express.
+  // We also route the following through the contenteditable path so the
+  // visible formatting doesn't disappear the moment the user clicks in:
+  //   • bricks with `formattedHtml` (inline highlights/marks)
+  //   • AI response bubbles (always render markdown in display)
+  //   • any non-list brick whose content actually contains markdown syntax
+  // For pure plain-text bricks the textarea path is still used — there is
+  // no formatting to drop, so the simpler/safer textarea is preferred.
+  const hasInlineFormat = Boolean(blockData.formattedHtml);
+  const contentStr = String(shell.content || "");
+  const hasMarkdownStructure =
+    shell.listType === "none" &&
+    (Boolean(shell.isAiResponseBubble) || MARKDOWN_DETECT_RE.test(contentStr));
+  const computedUseContentEditable = hasInlineFormat || hasMarkdownStructure;
+  // Pin the editor surface (textarea vs. contenteditable) for the duration
+  // of an active typing session. Without this lock, typing a number + period
+  // and then pressing Enter (e.g. "1.\n") flips MARKDOWN_DETECT_RE to true
+  // mid-keystroke because `\d+\.\s` matches the trailing newline. That in
+  // turn swaps the <textarea> out for a <div contenteditable>, which React
+  // mounts unfocused — leaving the visible caret in place but routing
+  // keystrokes nowhere until the user clicks out and back in. Recomputing
+  // the choice only between typing sessions still lets the next focus-in
+  // open the correct surface for markdown-bearing bricks.
+  // (`surfaceLockRef` is declared at the top of the component to keep the
+  // hook order stable across the todo-lines early-return path.)
+  if (surfaceLockRef.current === null || !isTyping) {
+    surfaceLockRef.current = computedUseContentEditable;
+  }
+  const useContentEditable = isTyping
+    ? Boolean(surfaceLockRef.current)
+    : computedUseContentEditable;
+  if (shell.listType !== "toggle" && !useContentEditable) {
+    const value = String(shell.content || "");
+    const updateSlashFromCaret = (text: string, caret: number, anchor: HTMLElement | null) => {
+      const upToCaret = text.slice(0, Math.max(0, Math.min(caret, text.length)));
+      const lastLine = upToCaret.split("\n").pop() ?? "";
+      const m = lastLine.match(/(^|(?<=\s))\/([^\n]*)$/);
+      if (m) {
+        setShowSlashMenu(true);
+        setSlashQuery((m[2] || "").toLowerCase());
+        if (anchor) {
+          const rect = anchor.getBoundingClientRect();
+          setSlashMenuRect({ left: rect.left + 8, top: rect.bottom + 4 });
+        }
+      } else {
+        setShowSlashMenu(false);
+        setSlashMenuRect(null);
+      }
+    };
+    return React.createElement(
+      "div",
+      { className: "relative h-full w-full" },
+      React.createElement("textarea", {
+        ref: textareaRef,
+        "data-canvas-brick-editor-id": shell.id,
+        value,
+        spellCheck: false,
+        autoComplete: "off",
+        autoCorrect: "off",
+        autoCapitalize: "off",
+        className: "block h-full w-full outline-none bg-transparent border-0 resize-none text-foreground",
+        style: {
+          fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"',
+          fontSize: `${fontSizePx}px`,
+          fontWeight,
+          lineHeight: `${lineHeightPx}px`,
+          letterSpacing: "-0.01em",
+          color: "inherit",
+          paddingLeft: "8px",
+          paddingRight: "8px",
+          paddingTop: "0px",
+          paddingBottom: "0px",
+          margin: "0px",
+          minHeight: `${lineHeightPx}px`,
+          wordBreak: "break-word",
+          overflowWrap: "anywhere",
+          whiteSpace: "pre-wrap",
+          boxSizing: "border-box",
+          overflow: "hidden",
+          userSelect: "text",
+          WebkitUserSelect: "text",
+        },
+        onPointerDown: (e: any) => { e.stopPropagation(); },
+        onClick: (e: any) => { e.stopPropagation(); },
+        onChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+          const nextRaw = String(e.currentTarget.value || "");
+          const next = shell.listType === "todo" ? toStorageTodoMarkers(nextRaw) : nextRaw;
+          const native = e.nativeEvent as InputEvent | undefined;
+          const inputType = native?.inputType || "";
+          const isPaste = inputType === "insertFromPaste";
+          const isLineBreak = inputType === "insertLineBreak" || inputType === "insertParagraph";
+          onTypingChange?.(shell.id, next, { isPaste, isLineBreak });
+          const caret = e.currentTarget.selectionStart ?? nextRaw.length;
+          updateSlashFromCaret(nextRaw, caret, e.currentTarget);
+        },
+        onPaste: (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+          e.preventDefault();
+          const txt = getStructuredPasteFromEvent(e);
+          const el = textareaRef.current;
+          if (!el) return;
+          const start = el.selectionStart ?? 0;
+          const end = el.selectionEnd ?? start;
+          const cur = el.value;
+          const nextRaw = cur.slice(0, start) + txt + cur.slice(end);
+          pendingCaretRef.current = start + txt.length;
+          const next = shell.listType === "todo" ? toStorageTodoMarkers(nextRaw) : nextRaw;
+          onTypingChange?.(shell.id, next, { isPaste: true });
+          updateSlashFromCaret(nextRaw, start + txt.length, el);
+        },
+        onKeyDown: (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+          if (showSlashMenu && filteredSlashOptions.length) {
+            if (e.key === "ArrowDown") {
+              e.preventDefault();
+              setActiveSlashIndex((prev) => (prev + 1) % filteredSlashOptions.length);
+              return;
+            }
+            if (e.key === "ArrowUp") {
+              e.preventDefault();
+              setActiveSlashIndex((prev) => (prev - 1 + filteredSlashOptions.length) % filteredSlashOptions.length);
+              return;
+            }
+            if (e.key === "Enter" || e.key === "Tab") {
+              e.preventDefault();
+              const option = filteredSlashOptions[Math.max(0, Math.min(activeSlashIndex, filteredSlashOptions.length - 1))];
+              if (option) applySlashCommand(option.command);
+              return;
+            }
+            if (e.key === "Escape") {
+              e.preventDefault();
+              setShowSlashMenu(false);
+              setSlashQuery("");
+              setActiveSlashIndex(0);
+              return;
+            }
+          }
+          if (e.key === "Enter" && !(e.metaKey || e.ctrlKey) && shell.listType !== "none" && shell.listType !== "quote") {
+            e.preventDefault();
+            const el = e.currentTarget;
+            const cur = el.value;
+            const caret = el.selectionStart ?? cur.length;
+            const before = cur.slice(0, caret);
+            const after = cur.slice(caret);
+            const lines = cur.split("\n");
+            const curLineIdx = before.split("\n").length - 1;
+            const curLine = lines[curLineIdx] || "";
+
+            // Double-Enter on empty marker exits list mode
+            if (shell.listType === "bullet" || shell.listType === "numbered" || shell.listType === "todo") {
+              const isEmptyMarker =
+                (shell.listType === "bullet" && /^•\s*$/.test(curLine)) ||
+                (shell.listType === "numbered" && /^\d+\.\s*$/.test(curLine)) ||
+                (shell.listType === "todo" && /^(?:◻(?:\uFE0E|\uFE0F)?|◼(?:\uFE0E|\uFE0F)?|\[[ xX]\])\s*$/.test(curLine));
+              if (isEmptyMarker) {
+                const newLines = [...lines];
+                newLines.splice(curLineIdx, 1);
+                const cleaned = newLines.join("\n");
+                const text = shell.listType === "todo" ? toStorageTodoMarkers(cleaned) : cleaned;
+                const caretPos = newLines.slice(0, curLineIdx).join("\n").length + (curLineIdx > 0 ? 1 : 0);
+                pendingCaretRef.current = Math.max(0, Math.min(caretPos, cleaned.length));
+                onTypingChange?.(shell.id, text, { exitList: true });
+                return;
+              }
+            }
+
+            const nextMarker =
+              shell.listType === "bullet"
+                ? "• "
+                : shell.listType === "todo"
+                  ? `${TODO_DISPLAY_EMPTY} `
+                  : (() => {
+                      const m = curLine.match(/^\s*(\d+)\.\s/);
+                      const nextNum = m ? Number(m[1]) + 1 : lines.filter((l) => /^\s*\d+\.\s/.test(l)).length + 1;
+                      return `${Math.max(1, nextNum)}. `;
+                    })();
+            const insertion = "\n" + nextMarker;
+            const newValue = before + insertion + after;
+            pendingCaretRef.current = caret + insertion.length;
+            const text = shell.listType === "todo" ? toStorageTodoMarkers(newValue) : newValue;
+            onTypingChange?.(shell.id, text, { isLineBreak: true });
+            return;
+          }
+          onTypingKeyDown?.(shell.id, e as any);
+        },
+        onBlur: (e: React.FocusEvent<HTMLTextAreaElement>) => {
+          if (applyingSlashRef.current) return;
+          // The textarea's own value is the source of truth on blur. Re-assert
+          // it into the store unconditionally so a save can never be skipped
+          // because a prior onChange already happened to land at the same
+          // value the store thought it had — the same reconcile-on-blur
+          // pattern the per-row todo inputs use.
+          const nextRaw = String(e.currentTarget.value || "");
+          const text = shell.listType === "todo" ? toStorageTodoMarkers(nextRaw) : nextRaw;
+          const storeBlock: any = useCanvasStore.getState().blocks[shell.id];
+          if (storeBlock) {
+            const data = storeBlock.data && typeof storeBlock.data === "object" ? { ...storeBlock.data } : {};
+            // The textarea is plain text — any stale `formattedHtml` from a
+            // prior contenteditable session would override the new content
+            // on next render, so drop it.
+            const hadFormatted = Boolean(storeBlock.data?.formattedHtml);
+            if (hadFormatted) delete data.formattedHtml;
+            const contentChanged = storeBlock.content !== text;
+            if (contentChanged || hadFormatted) {
+              updateBlock(shell.id as any, { content: text, data } as any);
+            }
+          }
+          onTypingChange?.(shell.id, text);
+          setShowSlashMenu(false);
+          onTypingBlur?.(shell.id);
+          setTimeout(() => window.dispatchEvent(new Event("omnia_flush_save")), 500);
+        },
+      }),
+      slashMenuPortal
+    );
+  }
 
   return React.createElement(
     "div",
@@ -967,7 +1412,10 @@ const BrickTextSurface = React.memo(function BrickTextSurface(props: {
         const next = shell.listType === "todo" ? toStorageTodoMarkers(nextRaw) : nextRaw;
         const nativeInput = e.nativeEvent as InputEvent | undefined;
         const isPaste = nativeInput?.inputType === "insertFromPaste";
-        onTypingChange?.(shell.id, next, { isPaste });
+        const isLineBreak =
+          nativeInput?.inputType === "insertParagraph" ||
+          nativeInput?.inputType === "insertLineBreak";
+        onTypingChange?.(shell.id, next, { isPaste, isLineBreak, preserveSize: loadedRichHtmlRef.current });
         const state = readSlashState(next);
         setShowSlashMenu(state.open);
         setSlashQuery(state.query);
@@ -982,7 +1430,7 @@ const BrickTextSurface = React.memo(function BrickTextSurface(props: {
         insertTextAtCursor(txt);
         const nextRaw = getEditorText(editorRef.current);
         const next = shell.listType === "todo" ? toStorageTodoMarkers(nextRaw) : nextRaw;
-        onTypingChange?.(shell.id, next, { isPaste: true });
+        onTypingChange?.(shell.id, next, { isPaste: true, preserveSize: loadedRichHtmlRef.current });
         const state = readSlashState(next);
         setShowSlashMenu(state.open);
         setSlashQuery(state.query);
@@ -1103,109 +1551,46 @@ const BrickTextSurface = React.memo(function BrickTextSurface(props: {
       },
       onBlur: (e: React.FocusEvent<HTMLDivElement>) => {
         if (applyingSlashRef.current) return;
+        // The contenteditable is the source of truth on blur — every other
+        // path (onInput, slash sync, paste) feeds the store from this same
+        // surface, so re-asserting from `e.currentTarget` here means a save
+        // can't be silently skipped just because a prior onInput happened to
+        // already update the store to the same value (or, in race cases, to
+        // a stale value the syncBrickEditorText RAF rolled it to).
         const raw = getEditorText(e.currentTarget);
         const text = shell.listType === "todo" ? toStorageTodoMarkers(raw) : raw;
         const html = e.currentTarget.innerHTML;
-        const hasInlineFormat = /<mark[\s>]|<span[^>]*data-sel-color/.test(html);
+        const hasMarkOrColor = /<mark[\s>]|<span[^>]*data-sel-color/.test(html);
+        // If the surface was seeded with rich rendered HTML on entry — either
+        // restored from saved `formattedHtml` or freshly rendered from
+        // markdown content — persist the resulting HTML as `formattedHtml`
+        // on the way out, even when no inline mark/highlight tags are
+        // present. This lets the brick reuse the rendered visual on the
+        // next edit-entry instead of falling back to raw markdown source,
+        // which is exactly the "format drops on click-in" behavior we're
+        // fixing for AI response bubbles and other markdown-bearing bricks.
+        const persistAsFormatted = hasMarkOrColor || loadedRichHtmlRef.current;
         const storeBlock: any = useCanvasStore.getState().blocks[shell.id];
-        if (storeBlock && storeBlock.content !== text) {
+        if (storeBlock) {
           const data = storeBlock.data && typeof storeBlock.data === "object" ? { ...storeBlock.data } : {};
-          if (hasInlineFormat) data.formattedHtml = html;
+          if (persistAsFormatted) data.formattedHtml = html;
           else delete data.formattedHtml;
-          updateBlock(shell.id as any, { content: text, data } as any);
-        } else if (storeBlock && hasInlineFormat) {
-          const data = storeBlock.data && typeof storeBlock.data === "object" ? { ...storeBlock.data } : {};
-          const oldHtml = data.formattedHtml;
-          if (oldHtml !== html) {
-            data.formattedHtml = html;
-            updateBlock(shell.id as any, { data } as any);
+          const contentChanged = storeBlock.content !== text;
+          const formattedChanged = persistAsFormatted
+            ? storeBlock.data?.formattedHtml !== html
+            : Boolean(storeBlock.data?.formattedHtml);
+          if (contentChanged || formattedChanged) {
+            updateBlock(shell.id as any, { content: text, data } as any);
           }
-        } else if (storeBlock && !hasInlineFormat && storeBlock.data?.formattedHtml) {
-          const data = { ...storeBlock.data };
-          delete data.formattedHtml;
-          updateBlock(shell.id as any, { data } as any);
         }
-        onTypingChange?.(shell.id, text, { formattedHtml: hasInlineFormat ? html : undefined });
+        onTypingChange?.(shell.id, text, { formattedHtml: persistAsFormatted ? html : undefined, preserveSize: persistAsFormatted });
+        loadedRichHtmlRef.current = false;
         setShowSlashMenu(false);
         onTypingBlur?.(shell.id);
         setTimeout(() => window.dispatchEvent(new Event("omnia_flush_save")), 500);
       },
     }),
-    (() => {
-      const menuContent = (() => {
-        const items: React.ReactNode[] = [];
-        let lastSection = "";
-        filteredSlashOptions.forEach((opt) => {
-          if ((opt as any).section && (opt as any).section !== lastSection && lastSection !== "") {
-            items.push(
-              React.createElement("div", {
-                key: `sep-${(opt as any).section}`,
-                className: "my-1 border-t border-black/10",
-              })
-            );
-          }
-          lastSection = (opt as any).section || lastSection;
-          items.push(
-            React.createElement(
-              "button",
-              {
-                key: opt.id,
-                type: "button",
-                className: `w-full text-left px-2 py-1 rounded text-[0.75rem] text-black/85 transition-colors flex items-center justify-between ${
-                  filteredSlashOptions[activeSlashIndex]?.id === opt.id ? "bg-black/10" : "hover:bg-black/10"
-                }`,
-                onPointerDown: (e: any) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  applySlashCommand(opt.command);
-                },
-                onMouseEnter: () => {
-                  const idx = filteredSlashOptions.findIndex((x) => x.id === opt.id);
-                  if (idx >= 0) setActiveSlashIndex(idx);
-                },
-                onMouseDown: (e: any) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  applySlashCommand(opt.command);
-                },
-                onClick: (e: any) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  applySlashCommand(opt.command);
-                },
-              },
-              React.createElement(
-                "span",
-                { className: "flex items-center gap-2" },
-                React.createElement(opt.icon, { size: 14, className: "text-black/50 shrink-0" }),
-                React.createElement("span", null, opt.label)
-              ),
-              React.createElement("span", { className: "text-[0.625rem] text-black/55 ml-2" }, opt.hint)
-            )
-          );
-        });
-        return items;
-      })();
-      const menuEl = React.createElement(
-        "div",
-        {
-          className:
-            "min-w-[180px] rounded-md border border-white/25 bg-[linear-gradient(145deg,rgba(255,255,255,0.78),rgba(245,247,255,0.72))] shadow-md backdrop-blur-sm z-[9999] p-1",
-          onPointerDown: (e: any) => {
-            e.preventDefault();
-            e.stopPropagation();
-          },
-          style: slashMenuRect
-            ? { position: "fixed" as const, left: slashMenuRect.left, top: slashMenuRect.top }
-            : undefined,
-        },
-        menuContent
-      );
-      if (isTyping && showSlashMenu && filteredSlashOptions.length && slashMenuRect && typeof document !== "undefined") {
-        return ReactDOM.createPortal(menuEl, document.body);
-      }
-      return null;
-    })()
+    slashMenuPortal
   );
 }, (prev, next) => {
   if (prev.isTyping !== next.isTyping) return false;
@@ -1219,6 +1604,7 @@ const BrickTextSurface = React.memo(function BrickTextSurface(props: {
     && ps.listType === ns.listType
     && ps.brickColor === ns.brickColor
     && ps.textColor === ns.textColor
+    && ps.format === ns.format
     && ps.isAiResponseBubble === ns.isAiResponseBubble;
 });
 

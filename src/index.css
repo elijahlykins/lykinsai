@@ -356,6 +356,14 @@ html.embedded-transparent #root {
 body {
   --sidebar-offset: 0px;
   --sidebar-width: 0px;
+  /* Extra bottom clearance applied when the mobile tab bar is mounted, so any
+     fixed bottom-anchored UI (toasts, guest sign-in prompt, focused chat input)
+     sits above it without manual per-component math. */
+  --mobile-tabbar-clear: 0px;
+}
+
+body.has-mobile-tabbar {
+  --mobile-tabbar-clear: calc(4.25rem + env(safe-area-inset-bottom, 0px));
 }
 
 body.sidebar-push {
@@ -938,45 +946,69 @@ body.embedded-vault-mode .app-content {
 
 /* Touch-friendly buttons on mobile */
 @media (max-width: 768px) {
-  /* Minimum touch target size (44x44px recommended by Apple/Google) */
-  button, 
-  .clay-button-small,
-  [role="button"] {
-    min-height: 44px;
-    min-width: 44px;
-    padding: 0.75rem 1rem;
+  /* Slightly smaller root font on phones so rem-based widths fit a 360–414px viewport. */
+  html {
+    font-size: clamp(15px, 14px + 0.4vw, 17px);
   }
 
-  /* Better spacing for mobile */
-  .clay-card {
-    padding: 1rem !important;
+  /* Sidebar must NOT push content on phones — content stays full-width and the
+     desktop sidebar (when mounted at all) becomes a slide-over drawer instead. */
+  body.sidebar-push {
+    --sidebar-offset: 0px;
+    --sidebar-width: 0px;
+  }
+  body.sidebar-push .app-content {
+    padding-left: 0;
   }
 
-  /* Responsive text sizes */
-  h1 { font-size: 1.5rem; }
-  h2 { font-size: 1.25rem; }
-  h3 { font-size: 1.125rem; }
+  /* iOS Safari address-bar safe area for any bottom-anchored chrome (tab bar,
+     chat composer). Components opt in by adding the `pb-safe` utility. */
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  .mb-safe {
+    margin-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  /* Reserve space at the bottom of scrollable areas so the mobile tab bar
+     never overlaps the last item. */
+  body.has-mobile-tabbar .app-content {
+    padding-bottom: calc(4.25rem + env(safe-area-inset-bottom, 0px));
+  }
 
-  /* Prevent text selection on buttons (better UX) */
+  /* iOS-style bouncy momentum scrolling */
+  * {
+    -webkit-overflow-scrolling: touch;
+  }
+
   button {
     -webkit-tap-highlight-color: transparent;
     user-select: none;
   }
 
-  /* Better scrolling on mobile */
-  * {
-    -webkit-overflow-scrolling: touch;
-  }
-
-  /* Full width inputs on mobile */
+  /* Prevent zoom on iOS when focusing form inputs (any value <16px triggers it). */
   input[type="text"],
   input[type="email"],
   input[type="password"],
+  input[type="search"],
+  input[type="tel"],
+  input[type="url"],
+  input[type="number"],
   textarea,
   select {
-    width: 100%;
-    font-size: 16px; /* Prevents zoom on iOS */
+    font-size: 16px;
   }
+
+  /* Stop chrome that's anchored with `var(--sidebar-offset)` from leaving a
+     dead pixel column when the offset variable is unexpectedly set. */
+  [data-sidebar-anchored] {
+    left: 0 !important;
+  }
+}
+
+/* Phone-only layout overrides (no canvas grid). */
+@media (max-width: 768px) {
+  /* Hide elements explicitly marked for desktop only. */
+  .desktop-only { display: none !important; }
 }
 
 /* Tablet optimizations */

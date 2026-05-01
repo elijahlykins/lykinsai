@@ -60,36 +60,6 @@ interface DiscoverFeedResponse {
 /*  Helpers                                                           */
 /* ------------------------------------------------------------------ */
 
-// Stable colored gradient for articles missing a hero image — derived from
-// the source domain so the same publisher always gets the same colors.
-const PLACEHOLDER_PALETTES: Array<[string, string]> = [
-  ["from-rose-400/30", "to-orange-400/30"],
-  ["from-amber-400/30", "to-yellow-400/30"],
-  ["from-emerald-400/30", "to-teal-400/30"],
-  ["from-sky-400/30", "to-indigo-400/30"],
-  ["from-violet-400/30", "to-fuchsia-400/30"],
-  ["from-pink-400/30", "to-rose-400/30"],
-  ["from-cyan-400/30", "to-blue-400/30"],
-  ["from-lime-400/30", "to-green-400/30"],
-];
-
-function paletteForSource(source: string): [string, string] {
-  let hash = 0;
-  const s = source || "x";
-  for (let i = 0; i < s.length; i += 1) {
-    hash = ((hash << 5) - hash + s.charCodeAt(i)) | 0;
-  }
-  const idx = Math.abs(hash) % PLACEHOLDER_PALETTES.length;
-  return PLACEHOLDER_PALETTES[idx];
-}
-
-function publisherInitial(source: string): string {
-  const s = String(source || "").replace(/^www\./, "").trim();
-  if (!s) return "?";
-  const firstAlpha = s.match(/[a-z0-9]/i);
-  return firstAlpha ? firstAlpha[0].toUpperCase() : s[0].toUpperCase();
-}
-
 function formatViewCount(n: number | undefined): string {
   if (!n || n <= 0) return "";
   if (n < 1000) return `${n} views`;
@@ -226,7 +196,10 @@ export default function Discover() {
   const themes = pages[0]?.themes ?? [];
 
   // Merge all loaded pages into one flat list, deduped by URL/videoId so a
-  // theme rotation overlap doesn't show the same item twice.
+  // theme rotation overlap doesn't show the same item twice. Items whose
+  // hero image we couldn't resolve (server-side or in the browser) are
+  // dropped entirely — Perplexity-style, every visible card has an image,
+  // never a gradient placeholder.
   const allItems = useMemo<DiscoverItem[]>(() => {
     if (pages.length === 0) return [];
     const seen = new Set<string>();
@@ -244,6 +217,8 @@ export default function Discover() {
         });
       }
       for (const it of pgItems) {
+        if (!it.thumbnail) continue;
+        if (failedThumbnails.has(it.thumbnail)) continue;
         const key =
           it.kind === "video" ? `v:${it.videoId}` : `a:${(it.url || "").toLowerCase()}`;
         if (seen.has(key)) continue;
@@ -252,7 +227,7 @@ export default function Discover() {
       }
     }
     return out;
-  }, [pages, mode]);
+  }, [pages, mode, failedThumbnails]);
 
   // ── Infinite scroll: fetch the next page when a sentinel near the bottom
   // ── enters the viewport. Using IntersectionObserver instead of scroll
@@ -312,13 +287,23 @@ export default function Discover() {
       setSavingItems((s) => new Set(s).add(key));
       try {
         const result = await saveLinkToVault({ userId: user.id, url: item.url });
-        if (result) {
+        if (result.ok) {
           setSavedItems((s) => new Set(s).add(key));
           toast({ title: "Saved to vault", description: item.title });
-        } else {
-          // Already in vault (dedup) or silent failure.
+        } else if (result.reason === "duplicate") {
+          // Genuine dedup — show "already saved" so the button flips state.
           setSavedItems((s) => new Set(s).add(key));
           toast({ title: "Already in your vault", description: item.title });
+        } else if (result.reason === "cap") {
+          // Vault cap modal already opened by saveLinkToVault — keep
+          // the Save button enabled so the user can retry post-upgrade.
+          toast({ title: "Vault is full", description: "Upgrade your plan to keep saving." });
+        } else if (result.reason === "rate") {
+          toast({ title: "Slow down", description: "You're saving too fast — try again in a moment." });
+        } else {
+          // Real failure — surface it instead of pretending the item
+          // was saved (the previous code added it to `savedItems` here).
+          toast({ title: "Save failed", description: result.message || "Unknown error" });
         }
       } catch (e) {
         toast({ title: "Save failed", description: e instanceof Error ? e.message : "Unknown error" });
@@ -480,13 +465,6 @@ export default function Discover() {
             const key = item.kind === "video" ? `v:${item.videoId}` : `a:${item.url}`;
             const isSaving = savingItems.has(key);
             const isSaved = savedItems.has(key);
-            // For YouTube videos, the maxres → hqdefault swap happens in the
-            // onError below, so only treat the thumbnail as fully failed for
-            // articles (or videos where even hqdefault died, which is rare).
-            const effectiveThumbnail =
-              item.thumbnail && !failedThumbnails.has(item.thumbnail)
-                ? item.thumbnail
-                : null;
             return (
               <motion.div
                 key={`${key}-${idx}`}
@@ -495,100 +473,55 @@ export default function Discover() {
                 transition={{ duration: 0.18, delay: Math.min(idx * 0.015, 0.25) }}
                 className="group flex flex-col rounded-2xl overflow-hidden bg-white/55 dark:bg-white/5 border border-black/8 dark:border-white/8 hover:border-black/15 dark:hover:border-white/15 hover:shadow-[0_4px_20px_-8px_rgba(0,0,0,0.15)] transition-all"
               >
-                {effectiveThumbnail ? (
-                  <a
-                    href={item.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="relative block aspect-video overflow-hidden bg-black/5 dark:bg-white/5"
-                  >
-                    <img
-                      src={effectiveThumbnail}
-                      alt=""
-                      loading="lazy"
-                      referrerPolicy="no-referrer"
-                      className="w-full h-full object-cover group-hover:scale-[1.02] transition-transform duration-300"
-                      onError={(e) => {
-                        const img = e.currentTarget as HTMLImageElement;
-                        // YouTube: ~30% of videos don't have a maxresdefault
-                        // render but every video has hqdefault (480x360).
-                        // Swap once before giving up.
-                        if (
-                          item.kind === "video" &&
-                          item.videoId &&
-                          img.src.includes("maxresdefault.jpg")
-                        ) {
-                          img.src = `https://i.ytimg.com/vi/${item.videoId}/hqdefault.jpg`;
-                          return;
-                        }
-                        // Mark the URL as failed so the next render swaps in
-                        // the gradient placeholder instead of an empty tile.
-                        if (item.thumbnail) markThumbnailFailed(item.thumbnail);
-                      }}
-                    />
-                    <div className="absolute top-2 left-2 text-[0.6875rem] font-medium px-2 py-0.5 rounded-full bg-black/60 backdrop-blur-sm text-white flex items-center gap-1">
-                      {item.kind === "video" ? (
-                        <>
-                          <VideoIcon className="w-3 h-3" /> Video
-                        </>
-                      ) : (
-                        <>
-                          <FileText className="w-3 h-3" /> Article
-                        </>
-                      )}
+                <a
+                  href={item.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="relative block aspect-video overflow-hidden bg-black/5 dark:bg-white/5"
+                >
+                  <img
+                    src={item.thumbnail ?? ""}
+                    alt=""
+                    loading="lazy"
+                    referrerPolicy="no-referrer"
+                    className="w-full h-full object-cover group-hover:scale-[1.02] transition-transform duration-300"
+                    onError={(e) => {
+                      const img = e.currentTarget as HTMLImageElement;
+                      // YouTube: ~30% of videos don't have a maxresdefault
+                      // render but every video has hqdefault (480x360).
+                      // Swap once before giving up.
+                      if (
+                        item.kind === "video" &&
+                        item.videoId &&
+                        img.src.includes("maxresdefault.jpg")
+                      ) {
+                        img.src = `https://i.ytimg.com/vi/${item.videoId}/hqdefault.jpg`;
+                        return;
+                      }
+                      // Image is unreachable (publisher hotlink-block, 404,
+                      // mixed content). Mark the URL as failed so the next
+                      // render filters this card out of the grid entirely
+                      // — we never want to show an empty/broken tile.
+                      if (item.thumbnail) markThumbnailFailed(item.thumbnail);
+                    }}
+                  />
+                  <div className="absolute top-2 left-2 text-[0.6875rem] font-medium px-2 py-0.5 rounded-full bg-black/60 backdrop-blur-sm text-white flex items-center gap-1">
+                    {item.kind === "video" ? (
+                      <>
+                        <VideoIcon className="w-3 h-3" /> Video
+                      </>
+                    ) : (
+                      <>
+                        <FileText className="w-3 h-3" /> Article
+                      </>
+                    )}
+                  </div>
+                  {item.kind === "video" && item.durationSec ? (
+                    <div className="absolute bottom-2 right-2 text-[0.6875rem] font-medium px-1.5 py-0.5 rounded bg-black/75 text-white tabular-nums">
+                      {formatDuration(item.durationSec)}
                     </div>
-                    {item.kind === "video" && item.durationSec ? (
-                      <div className="absolute bottom-2 right-2 text-[0.6875rem] font-medium px-1.5 py-0.5 rounded bg-black/75 text-white tabular-nums">
-                        {formatDuration(item.durationSec)}
-                      </div>
-                    ) : null}
-                  </a>
-                ) : (
-                  (() => {
-                    const [from, to] = paletteForSource(item.source);
-                    return (
-                      <a
-                        href={item.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className={`relative block aspect-video overflow-hidden bg-gradient-to-br ${from} ${to} flex items-center justify-center`}
-                      >
-                        {/* Subtle dot grid for texture */}
-                        <div
-                          className="absolute inset-0 opacity-30 pointer-events-none"
-                          style={{
-                            backgroundImage:
-                              "radial-gradient(currentColor 0.5px, transparent 0.5px)",
-                            backgroundSize: "12px 12px",
-                            color: "rgba(0,0,0,0.25)",
-                          }}
-                          aria-hidden
-                        />
-                        <div className="relative flex flex-col items-center justify-center text-center px-4">
-                          <div className="w-14 h-14 rounded-2xl bg-white/85 dark:bg-white/15 backdrop-blur-sm border border-white/40 dark:border-white/10 flex items-center justify-center shadow-sm">
-                            <span className="text-2xl font-semibold text-black/70 dark:text-white/85">
-                              {publisherInitial(item.source)}
-                            </span>
-                          </div>
-                          <div className="mt-2 text-[0.6875rem] font-medium tracking-wide text-black/65 dark:text-white/75 max-w-[180px] truncate">
-                            {item.source || (item.kind === "video" ? "YouTube" : "Web")}
-                          </div>
-                        </div>
-                        <div className="absolute top-2 left-2 text-[0.6875rem] font-medium px-2 py-0.5 rounded-full bg-black/60 backdrop-blur-sm text-white flex items-center gap-1">
-                          {item.kind === "video" ? (
-                            <>
-                              <VideoIcon className="w-3 h-3" /> Video
-                            </>
-                          ) : (
-                            <>
-                              <FileText className="w-3 h-3" /> Article
-                            </>
-                          )}
-                        </div>
-                      </a>
-                    );
-                  })()
-                )}
+                  ) : null}
+                </a>
 
                 <div className="flex flex-col flex-1 p-4">
                   <div className="flex items-center gap-1.5 text-[0.6875rem] text-black/50 dark:text-white/50 mb-1.5 flex-wrap">
