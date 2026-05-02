@@ -21,6 +21,7 @@ import SharedGrid from "./pages/SharedGrid";
 import PlanGate from "./components/PlanGate";
 import AppSidebar from "./components/AppSidebar";
 import MobileTabBar from "./components/MobileTabBar";
+import MobileExperienceNotice from "./components/MobileExperienceNotice";
 import VaultNew from "./pages/new/VaultNew";
 import VaultChatNew from "./pages/new/VaultChatNew";
 import TagManagementNew from "./pages/new/TagManagementNew";
@@ -75,6 +76,7 @@ function AppShell() {
     <>
       {!isEmbeddedVault && !isStandalone && !isMobile && <AppSidebar />}
       {!isEmbeddedVault && !isStandalone && isMobile && <MobileTabBar />}
+      {!isEmbeddedVault && !isStandalone && isMobile && <MobileExperienceNotice />}
       {!isEmbeddedVault && !isStandalone && user && <IntakeModal />}
       {!isEmbeddedVault && !isSharedGridView && user && <VaultUploadToast />}
       {!isEmbeddedVault && !isStandalone && !user && <GuestSignInPrompt />}
