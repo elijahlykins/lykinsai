@@ -1,0 +1,6 @@
+User-agent: *
+Allow: /favicon.svg
+Allow: /favicon.ico
+Allow: /manifest.json
+
+Sitemap: https://lykn.io/sitemap.xml

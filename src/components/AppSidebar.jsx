@@ -166,7 +166,7 @@ export default function AppSidebar() {
     setMenuProjectId(null);
     window.dispatchEvent(new Event(PROJECTS_CHANGED_EVENT));
     window.dispatchEvent(new Event("lykinsai_boards_changed"));
-    if (location.pathname === `/project/${projectId}`) nav("/");
+    if (location.pathname === `/project/${projectId}`) nav("/app");
   };
 
   const renameProject = async (projectId) => {
@@ -193,7 +193,7 @@ export default function AppSidebar() {
     setMenuBoardId(null);
     if (localStorage.getItem("omnia_board_id") === boardId) localStorage.removeItem("omnia_board_id");
     window.dispatchEvent(new Event("lykinsai_boards_changed"));
-    if (location.pathname === `/grid/${boardId}`) nav("/");
+    if (location.pathname === `/grid/${boardId}`) nav("/app");
   };
 
   const addBoardToProject = async (boardId, projectId) => {
@@ -287,7 +287,7 @@ export default function AppSidebar() {
           <div className="mt-1.5 flex flex-col gap-0.5">
             <button
               type="button"
-              onClick={() => flushAndNavigate(nav, "/")}
+              onClick={() => flushAndNavigate(nav, "/app")}
               className="w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
             >
               <GridIcon className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />

@@ -17,6 +17,15 @@ dist
 dist-ssr
 *.local
 
+# Cursor IDE artifacts
+.cursor/
+
+# Local API test scratch files
+-w
+body.json
+resp.json
+serper_news_sample.json
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

@@ -37,8 +37,10 @@ export default function OAuthConnectDialog({ open, onOpenChange, connector }) {
   const [loading, setLoading] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [syncingId, setSyncingId] = useState(null);
+  const [prefieldValues, setPrefieldValues] = useState({});
 
   const provider = connector?.id;
+  const prefields = connector?.oauthPrefields || [];
   const myConnections = useMemo(
     () => connections.filter((c) => c.provider === provider),
     [connections, provider],
@@ -65,7 +67,10 @@ export default function OAuthConnectDialog({ open, onOpenChange, connector }) {
   }, [provider]);
 
   useEffect(() => {
-    if (open) refresh();
+    if (open) {
+      refresh();
+      setPrefieldValues({});
+    }
   }, [open, refresh]);
 
   // Listen for the popup → opener handshake. The /oauth/callback page
@@ -112,11 +117,31 @@ export default function OAuthConnectDialog({ open, onOpenChange, connector }) {
 
   const handleConnect = useCallback(async () => {
     if (!providerConfigured) return;
+
+    // For per-instance providers (Mastodon), the catalog declares
+    // oauthPrefields that must be filled in BEFORE the popup opens. Bail
+    // with a clear message rather than start an OAuth flow with missing
+    // context.
+    const missingPre = prefields
+      .filter((f) => f.required !== false)
+      .filter((f) => !String(prefieldValues[f.name] || "").trim());
+    if (missingPre.length) {
+      toast({
+        title: "Missing field",
+        description: `Please fill in ${missingPre.map((f) => f.label).join(", ")}.`,
+        variant: "destructive",
+      });
+      return;
+    }
+
     setConnecting(true);
     try {
+      const body = Object.fromEntries(
+        prefields.map((f) => [f.name, String(prefieldValues[f.name] || "").trim()]),
+      );
       const res = await authedFetch(`/api/connections/${provider}/start`, {
         method: "POST",
-        body: JSON.stringify({}),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
@@ -151,7 +176,7 @@ export default function OAuthConnectDialog({ open, onOpenChange, connector }) {
         variant: "destructive",
       });
     }
-  }, [provider, providerConfigured]);
+  }, [provider, providerConfigured, prefields, prefieldValues]);
 
   const handleSync = useCallback(
     async (id) => {
@@ -276,6 +301,42 @@ export default function OAuthConnectDialog({ open, onOpenChange, connector }) {
               </code>{" "}
               in <code>.env</code>, then restart the API.
             </span>
+          </div>
+        )}
+
+        {/* ── Pre-fields (e.g. Mastodon's instance picker) ──── */}
+        {prefields.length > 0 && (
+          <div className="space-y-3">
+            {prefields.map((f) => (
+              <div key={f.name} className="space-y-1">
+                <label
+                  htmlFor={`oauth-pre-${provider}-${f.name}`}
+                  className="text-[11.5px] font-medium text-black/70 dark:text-white/75"
+                >
+                  {f.label}
+                  {f.required === false ? (
+                    <span className="ml-1 text-black/40 dark:text-white/40">(optional)</span>
+                  ) : null}
+                </label>
+                <input
+                  id={`oauth-pre-${provider}-${f.name}`}
+                  type="text"
+                  value={prefieldValues[f.name] || ""}
+                  onChange={(e) =>
+                    setPrefieldValues((v) => ({ ...v, [f.name]: e.target.value }))
+                  }
+                  placeholder={f.placeholder || ""}
+                  autoComplete="off"
+                  spellCheck={false}
+                  className="w-full rounded-lg border border-black/10 dark:border-white/15 bg-white dark:bg-zinc-900 px-3 py-2 text-[13px] text-black/90 dark:text-white/90 placeholder:text-black/35 dark:placeholder:text-white/35 outline-none focus:border-black/30 dark:focus:border-white/30"
+                />
+                {f.helpText && (
+                  <p className="text-[10.5px] text-black/50 dark:text-white/50 leading-relaxed">
+                    {f.helpText}
+                  </p>
+                )}
+              </div>
+            ))}
           </div>
         )}
 

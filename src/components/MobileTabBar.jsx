@@ -52,7 +52,7 @@ export default function MobileTabBar() {
   const [feedbackOpen, setFeedbackOpen] = useState(false);
 
   const isChatActive =
-    location.pathname === "/" ||
+    location.pathname === "/app" ||
     location.pathname === "/dashboard" ||
     location.pathname === "/omnia" ||
     location.pathname.startsWith("/grid/") ||
@@ -76,7 +76,7 @@ export default function MobileTabBar() {
             active={isChatActive}
             label="Chat"
             icon={MessageSquare}
-            onClick={() => flushAndNavigate(nav, "/")}
+            onClick={() => flushAndNavigate(nav, "/app")}
           />
           <TabButton
             active={isVaultActive}

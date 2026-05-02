@@ -1,11 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <rect width="32" height="32" rx="8" fill="#111111"/>
-  <text
-    x="16"
-    y="22"
-    font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
-    font-size="18"
-    font-weight="700"
-    fill="#ffffff"
-    text-anchor="middle">L</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <rect width="256" height="256" fill="#ffffff"/>
+  <!-- Top-left "L" bracket -->
+  <path d="M 2 0 L 137 0 L 137 117 L 119 117 L 119 24 L 2 24 Z" fill="#111111"/>
+  <!-- Bottom-right "L" bracket -->
+  <path d="M 119 118 L 253 118 L 253 256 L 235 256 L 235 140 L 119 140 Z" fill="#111111"/>
 </svg>

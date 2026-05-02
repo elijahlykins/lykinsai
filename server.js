@@ -8883,21 +8883,59 @@ app.post('/api/connections/:provider/start', requireAuth, async (req, res) => {
       ? req.body.redirectAfter
       : null;
 
+    // Anything else on the body is treated as adapter prefields (e.g.
+    // Mastodon's instance URL). Adapters may use them to dynamically
+    // register an app on the user's chosen instance before the auth URL
+    // is built.
+    const prefields = req.body && typeof req.body === 'object'
+      ? Object.fromEntries(
+          Object.entries(req.body).filter(([k]) => k !== 'redirectAfter'),
+        )
+      : {};
+
+    // We need the state row created BEFORE we can stash adapter-specific
+    // metadata on it, but the adapter might want to influence the
+    // metadata (e.g. dynamically-registered per-instance creds). Two-pass:
+    //   1. Adapter optionally prepares per-flow context.
+    //   2. Persist state row with that context.
+    //   3. Adapter builds the auth URL using the persisted state.
+    let prepared = null;
+    if (typeof adapter.prepareAuth === 'function') {
+      prepared = await adapter.prepareAuth({
+        prefields,
+        env: process.env,
+        redirectUri: connectorRedirectUri(provider),
+      });
+    }
+
     const { state, codeVerifier } = await createOAuthState({
       supabaseAdmin,
       userId,
       provider,
       redirectAfter,
       pkce: !!adapter.needsPkce,
+      metadata: prepared?.stateMetadata || null,
     });
 
-    const creds = PROVIDER_CREDENTIALS[provider];
-    const url = adapter.buildAuthUrl({
-      clientId: creds.clientId(),
-      redirectUri: connectorRedirectUri(provider),
-      state,
-      codeVerifier,
-    });
+    const creds = PROVIDER_CREDENTIALS[provider] || {};
+    // For per-instance providers, prepareAuth supplies clientId/clientSecret
+    // dynamically; for static providers those come from PROVIDER_CREDENTIALS.
+    const clientId = prepared?.clientId || (creds.clientId ? creds.clientId() : undefined);
+    const clientSecret = prepared?.clientSecret || (creds.clientSecret ? creds.clientSecret() : undefined);
+
+    const built = await Promise.resolve(
+      adapter.buildAuthUrl({
+        clientId,
+        clientSecret,
+        redirectUri: connectorRedirectUri(provider),
+        state,
+        codeVerifier,
+        prefields,
+        stateMetadata: prepared?.stateMetadata || {},
+      }),
+    );
+    const url = typeof built === 'string' ? built : built?.url;
+    if (!url) throw new Error('Adapter did not return an auth URL');
 
     return res.json({ url });
   } catch (err) {
@@ -8957,14 +8995,23 @@ app.get('/oauth/callback/:provider', async (req, res) => {
     // Validate + consume state. If this throws, the request is fraudulent
     // or stale — no token swap happens.
     const stateRow = await consumeOAuthState({ supabaseAdmin, state, provider });
+    const stateMetadata = stateRow.metadata || {};
 
-    const creds = PROVIDER_CREDENTIALS[provider];
+    const creds = PROVIDER_CREDENTIALS[provider] || {};
+    // For per-instance providers (Mastodon, etc.) the clientId/secret were
+    // registered dynamically during /start and stashed in stateMetadata.
+    // Otherwise, fall back to the static PROVIDER_CREDENTIALS table.
+    const clientId = stateMetadata.clientId || (creds.clientId ? creds.clientId() : undefined);
+    const clientSecret = stateMetadata.clientSecret || (creds.clientSecret ? creds.clientSecret() : undefined);
+
     const exchanged = await adapter.exchangeCode({
       code: String(code || ''),
-      clientId: creds.clientId(),
-      clientSecret: creds.clientSecret(),
+      clientId,
+      clientSecret,
       redirectUri: connectorRedirectUri(provider),
       codeVerifier: stateRow.code_verifier,
+      query: req.query,
+      stateMetadata,
     });
 
     const connection = await saveConnection({
@@ -9002,6 +9049,79 @@ app.get('/oauth/callback/:provider', async (req, res) => {
       .status(400)
       .type('html')
       .send(finishHtml('Connection failed', err.message || 'Unknown error', false));
+  }
+});
+
+// ── Per-provider dynamic connect info (e.g. Trello's pre-filled authorize URL)
+// Some token-paste providers need a help URL that embeds a server-side
+// credential the frontend can't see (Trello's API key, etc.). Adapters
+// expose this via an optional `connectInfo({ env })` method that returns
+// `{ tokenHelpUrl?, tokenHelpLabel?, message? }`.
+app.get('/api/connections/:provider/connect-info', requireAuth, async (req, res) => {
+  try {
+    const { provider } = req.params;
+    const adapter = CONNECTOR_REGISTRY[provider];
+    if (!adapter) return res.status(404).json({ error: `Unknown provider "${provider}"` });
+    if (typeof adapter.connectInfo !== 'function') {
+      return res.json({}); // Nothing extra; the catalog already has everything
+    }
+    const info = await adapter.connectInfo({ env: process.env });
+    return res.json(info || {});
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'connect-info failed' });
+  }
+});
+
+// ── Token-mode connect (Readwise, Matter, Bluesky app-password, etc.) ──────
+// Some providers don't do OAuth at all — the user pastes a long-lived API
+// token (or handle + app password). The frontend POSTs the field values
+// here; the adapter validates them, returns a connection-ready object, and
+// we persist it through the same saveConnection path the OAuth flow uses.
+app.post('/api/connections/:provider/connect-token', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Not authenticated' });
+    if (!supabaseAdmin) return res.status(503).json({ error: 'Database unavailable' });
+
+    const { provider } = req.params;
+    const adapter = CONNECTOR_REGISTRY[provider];
+    if (!adapter) return res.status(404).json({ error: `Unknown provider "${provider}"` });
+    if (adapter.authMode !== 'token' || typeof adapter.connectWithToken !== 'function') {
+      return res.status(400).json({ error: `${provider} does not support token-paste connection.` });
+    }
+
+    const fields = (req.body && typeof req.body === 'object') ? req.body : {};
+    const exchanged = await adapter.connectWithToken({ fields });
+    if (!exchanged?.accessToken) {
+      return res.status(400).json({ error: 'Adapter did not return a credential.' });
+    }
+
+    const connection = await saveConnection({
+      supabaseAdmin,
+      userId,
+      provider,
+      exchanged,
+    });
+
+    // Kick off the first sync immediately, same as the OAuth callback path.
+    runSync({
+      supabaseAdmin,
+      connection: {
+        ...connection,
+        user_id: userId,
+        access_token: encryptToken(exchanged.accessToken),
+        refresh_token: exchanged.refreshToken
+          ? encryptToken(exchanged.refreshToken)
+          : null,
+        metadata: exchanged.metadata || {},
+      },
+    }).catch((e) =>
+      console.error(`[connectors] initial sync failed for ${provider}:`, e.message),
+    );
+
+    return res.json({ connection });
+  } catch (err) {
+    return res.status(400).json({ error: err.message || 'Connect failed' });
   }
 });
 
@@ -9205,9 +9325,19 @@ if (process.env.NODE_ENV !== 'test') {
       console.log('→ Connectors:');
       for (const id of providers) {
         const ok = isProviderConfigured(id);
-        const prefix = envPrefixFor(id);
+        const adapter = CONNECTOR_REGISTRY[id];
+        const hint = envPrefixFor(id);
+        // Token-mode adapters with an envHint print the full var name;
+        // OAuth adapters get the standard `<PREFIX>_CLIENT_ID/_SECRET` form.
+        const missingMsg = adapter?.envHint
+          ? `set ${hint}`
+          : adapter?.authMode === 'token'
+            ? `(uses user-supplied credentials)`
+            : adapter?.authMode === 'per-instance'
+              ? `(registers per-instance at connect time)`
+              : `set ${hint}_CLIENT_ID/_SECRET`;
         console.log(
-          `   - ${id}: ${ok ? '✅ configured' : `⚪ not configured (set ${prefix}_CLIENT_ID/_SECRET)`}`,
+          `   - ${id}: ${ok ? '✅ configured' : `⚪ not configured (${missingMsg})`}`,
         );
       }
       if (!process.env.CONNECTOR_TOKEN_KEY) {

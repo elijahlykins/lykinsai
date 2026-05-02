@@ -36,6 +36,11 @@ import { gmailAdapter } from './connectors/google/gmail.js';
 import { microsoftAdapter } from './connectors/microsoft.js';
 import { slackAdapter } from './connectors/slack.js';
 import { xAdapter } from './connectors/x.js';
+import { readwiseAdapter } from './connectors/readwise.js';
+import { blueskyAdapter } from './connectors/bluesky.js';
+import { canvaAdapter } from './connectors/canva.js';
+import { trelloAdapter } from './connectors/trello.js';
+import { mastodonAdapter } from './connectors/mastodon.js';
 
 // ---------------------------------------------------------------------------
 // Adapter spec (informal — JS, no types)
@@ -74,6 +79,14 @@ export const CONNECTOR_REGISTRY = {
   slack: slackAdapter,
   // ── X / Twitter (paid-tier required for /bookmarks) ───────────────
   x: xAdapter,
+  // ── Canva ─────────────────────────────────────────────────────────
+  canva: canvaAdapter,
+  // ── Mastodon (per-instance dynamic OAuth) ──────────────────────────
+  mastodon: mastodonAdapter,
+  // ── Token-paste providers (no OAuth — user supplies their own creds) ─
+  readwise: readwiseAdapter,
+  bluesky: blueskyAdapter,
+  trello: trelloAdapter,
 };
 
 // Where each provider's credentials live in process.env. Keeping this as a
@@ -158,18 +171,48 @@ export const PROVIDER_CREDENTIALS = {
     clientId: () => process.env.X_CLIENT_ID,
     clientSecret: () => process.env.X_CLIENT_SECRET,
   },
+  canva: {
+    clientId: () => process.env.CANVA_CLIENT_ID,
+    clientSecret: () => process.env.CANVA_CLIENT_SECRET,
+  },
 };
 
 // Returns the env-var prefix used by `<PREFIX>_CLIENT_ID` /
 // `<PREFIX>_CLIENT_SECRET` for the given provider. Used by the server's
 // boot diagnostics to print the right hint when credentials are missing.
+// Token-mode adapters can short-circuit by exposing an `envHint` (the
+// full env-var name) so the message says e.g. "set TRELLO_API_KEY"
+// instead of "set TRELLO_CLIENT_ID/_SECRET".
 export function envPrefixFor(provider) {
+  const adapter = CONNECTOR_REGISTRY[provider];
+  if (adapter?.envHint) return adapter.envHint;
   const creds = PROVIDER_CREDENTIALS[provider];
   if (!creds) return provider.toUpperCase();
   return creds.envPrefix || provider.toUpperCase().replace(/-/g, '_');
 }
 
 export function isProviderConfigured(provider) {
+  const adapter = CONNECTOR_REGISTRY[provider];
+  if (!adapter) return false;
+  // Token-mode adapters (Readwise, Matter, Bluesky app-password, etc.) have
+  // no server-side OAuth client — the user pastes their own credential.
+  // Most are always "ready", but a few (Trello) still require a server-side
+  // shared key. The optional `isReady({ env })` hook lets each adapter
+  // decide for itself.
+  if (adapter.authMode === 'token') {
+    if (typeof adapter.isReady === 'function') {
+      try {
+        return Boolean(adapter.isReady({ env: process.env }));
+      } catch {
+        return false;
+      }
+    }
+    return true;
+  }
+  // Per-instance providers (Mastodon, Lemmy, Misskey, ...) register a
+  // fresh OAuth app on whichever server the user picks at connect time.
+  // No static creds to validate — they're always "ready".
+  if (adapter.authMode === 'per-instance') return true;
   const creds = PROVIDER_CREDENTIALS[provider];
   if (!creds) return false;
   return Boolean(creds.clientId() && creds.clientSecret());
@@ -257,6 +300,10 @@ function newOpaqueId(bytes = 32) {
  * Generates a state string and persists a row in oauth_states. Returns
  * the state plus optional codeVerifier (for PKCE flows in adapters that
  * declare needsPkce).
+ *
+ * `metadata` is opaque per-flow context (per-instance OAuth creds for
+ * Mastodon, etc.) — read back by the callback so the exchange step has
+ * everything it needs. Defaults to {}.
  */
 export async function createOAuthState({
   supabaseAdmin,
@@ -264,6 +311,7 @@ export async function createOAuthState({
   provider,
   redirectAfter,
   pkce = false,
+  metadata = null,
 }) {
   const state = newOpaqueId(24);
   let codeVerifier = null;
@@ -277,6 +325,7 @@ export async function createOAuthState({
     provider,
     code_verifier: codeVerifier,
     redirect_after: redirectAfter || null,
+    metadata: metadata || {},
   });
   if (error) {
     throw new Error(`Could not create OAuth state: ${error.message}`);

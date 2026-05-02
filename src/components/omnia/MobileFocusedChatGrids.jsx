@@ -150,11 +150,11 @@ export default function MobileFocusedChatGrids() {
     }
     window.dispatchEvent(new Event("lykinsai_boards_changed"));
     // If the user just nuked the grid they were sitting on, kick them
-    // back to "/" so OmniaGrid mounts a fresh board instead of trying
+    // back to "/app" so OmniaGrid mounts a fresh board instead of trying
     // to load the one we just deleted.
     if (String(routeBoardId || "") === String(boardId) || location.pathname === `/grid/${boardId}`) {
       setOpen(false);
-      flushAndNavigate(nav, "/");
+      flushAndNavigate(nav, "/app");
     }
   };
 

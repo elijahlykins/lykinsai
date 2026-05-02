@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
@@ -52,9 +52,12 @@ import {
 } from "@/lib/skills/catalog";
 import { toast } from "@/components/ui/use-toast";
 import { useAuth } from "@/lib/SupabaseAuth";
+import { supabase } from "@/lib/supabase";
+import { API_BASE_URL } from "@/lib/api-config";
 import BookmarkletDialog from "@/components/connections/BookmarkletDialog";
 import RssDialog from "@/components/connections/RssDialog";
 import OAuthConnectDialog from "@/components/connections/OAuthConnectDialog";
+import TokenConnectDialog from "@/components/connections/TokenConnectDialog";
 
 // Connector ids that go through the OAuth framework (one row per id in
 // connectors-service.js CONNECTOR_REGISTRY on the server). Adding a new
@@ -63,7 +66,7 @@ const OAUTH_PROVIDERS = new Set([
   "github", "reddit", "notion", "spotify", "pinterest",
   "linear", "todoist", "vimeo", "raindrop", "dribbble",
   "youtube", "google-drive", "google-calendar", "gmail",
-  "outlook-365", "slack", "x",
+  "outlook-365", "slack", "x", "canva", "mastodon",
 ]);
 
 // ─── Lucide fallback icons for first-party connector surfaces ────────
@@ -332,10 +335,45 @@ export default function Connections() {
   const [view, setView] = useState("connections"); // "connections" | "skills"
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
-  const [connectionsState, setConnectionsState] = useState({});
   const [bookmarkletOpen, setBookmarkletOpen] = useState(false);
   const [rssOpen, setRssOpen] = useState(false);
   const [oauthConnector, setOauthConnector] = useState(null);
+  const [tokenConnector, setTokenConnector] = useState(null);
+  // Live connection state from /api/connections, keyed by provider id.
+  // Each value is the count of accounts the user has linked for that
+  // provider (0 = not connected, ≥1 = connected, possibly multi-account).
+  const [liveConnections, setLiveConnections] = useState({});
+
+  // Fetch the user's connections from the server. Called on mount, when
+  // the user changes, and whenever a connect/disconnect dialog closes
+  // (so the grid card pill flips immediately after a successful action).
+  const refreshConnections = useCallback(async () => {
+    if (!user) {
+      setLiveConnections({});
+      return;
+    }
+    try {
+      const { data: sess } = await supabase.auth.getSession();
+      const token = sess?.session?.access_token || "";
+      const res = await fetch(`${API_BASE_URL}/api/connections`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const counts = {};
+      for (const c of data.connections || []) {
+        counts[c.provider] = (counts[c.provider] || 0) + 1;
+      }
+      setLiveConnections(counts);
+    } catch {
+      // Silent — leaving stale state is preferable to a noisy toast on
+      // every page load if the API is briefly unreachable.
+    }
+  }, [user]);
+
+  useEffect(() => {
+    refreshConnections();
+  }, [refreshConnections]);
 
   const handleLaunchSkill = (skill) => {
     const action = skill.action || {};
@@ -369,7 +407,7 @@ export default function Connections() {
       nav(`${action.route}${suffix}`);
       return;
     }
-    nav("/");
+    nav("/app");
   };
 
   // ── Connections filtering ────────────────────────────────────────
@@ -446,6 +484,13 @@ export default function Connections() {
 
   // ── Connect / disconnect handlers (connections view only) ────────
   const handleConnect = (connector) => {
+    // Token-paste providers (Readwise, Matter, Bluesky app password, ...)
+    // route through the credential-paste dialog. Cheaper to detect off the
+    // catalog flag than to maintain a second hardcoded set.
+    if (connector.authMode === "token") {
+      setTokenConnector(connector);
+      return;
+    }
     // OAuth-backed providers route through the generic dialog, regardless
     // of catalog status. The dialog itself surfaces "not configured" if
     // the server is missing client_id/secret.
@@ -507,12 +552,28 @@ export default function Connections() {
     });
   };
 
-  const handleDisconnect = (connector) => {
-    setConnectionsState((s) => ({ ...s, [connector.id]: false }));
-    toast({
-      title: `Disconnected from ${connector.name}`,
-      description: "Existing items remain in your vault.",
-    });
+  // When a user clicks the "Connected" pill on a grid card, open the
+  // same dialog they used to connect. The dialog is the right surface
+  // for managing existing connections (sync now, pause, disconnect, add
+  // another account). Routing here keeps the grid card a one-button
+  // affordance and the dialog the source of truth for state changes.
+  const handleManage = (connector) => {
+    if (connector.authMode === "token") {
+      setTokenConnector(connector);
+      return;
+    }
+    if (OAUTH_PROVIDERS.has(connector.id)) {
+      setOauthConnector(connector);
+      return;
+    }
+    if (connector.id === "rss") {
+      setRssOpen(true);
+      return;
+    }
+    if (connector.id === "bookmarklet") {
+      setBookmarkletOpen(true);
+      return;
+    }
   };
 
   // ── View-specific filter chip set ────────────────────────────────
@@ -657,9 +718,9 @@ export default function Connections() {
                       <ConnectorCard
                         key={connector.id}
                         connector={connector}
-                        connected={!!connectionsState[connector.id]}
+                        connected={(liveConnections[connector.id] || 0) > 0}
                         onConnect={() => handleConnect(connector)}
-                        onDisconnect={() => handleDisconnect(connector)}
+                        onDisconnect={() => handleManage(connector)}
                       />
                     ))}
                   </div>
@@ -734,8 +795,26 @@ export default function Connections() {
       <RssDialog open={rssOpen} onOpenChange={setRssOpen} />
       <OAuthConnectDialog
         open={!!oauthConnector}
-        onOpenChange={(v) => !v && setOauthConnector(null)}
+        onOpenChange={(v) => {
+          if (!v) {
+            setOauthConnector(null);
+            // Pull the latest server state so the grid pill reflects any
+            // connect / disconnect / pause action the user took inside
+            // the dialog.
+            refreshConnections();
+          }
+        }}
         connector={oauthConnector}
+      />
+      <TokenConnectDialog
+        open={!!tokenConnector}
+        onOpenChange={(v) => {
+          if (!v) {
+            setTokenConnector(null);
+            refreshConnections();
+          }
+        }}
+        connector={tokenConnector}
       />
     </div>
   );

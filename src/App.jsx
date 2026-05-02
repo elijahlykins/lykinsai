@@ -12,6 +12,9 @@ import LoadingScreen from "@/components/LoadingScreen";
 import RouteErrorBoundary from '@/lib/RouteErrorBoundary';
 
 import Login from "./pages/Login";
+import Landing from "./pages/Landing";
+import Why from "./pages/Why";
+import Synthesis from "./pages/Synthesis";
 import OmniaGrid from "./pages/OmniaGrid";
 import ProjectPlaceholder from "./pages/ProjectPlaceholder";
 import Settings from "./pages/Settings";
@@ -44,7 +47,7 @@ function ProtectedRoute({ children }) {
   return children;
 }
 
-function MobileRedirect({ children, to = "/" }) {
+function MobileRedirect({ children, to = "/app" }) {
   const isMobile = useIsMobile();
   if (isMobile) return <Navigate to={to} replace />;
   return children;
@@ -57,6 +60,10 @@ function AppShell() {
   const search = new URLSearchParams(location.search);
   const isEmbeddedVault = location.pathname === "/vault" && search.get("embedded") === "1";
   const isLoginPage = location.pathname === "/login";
+  const isLandingPage =
+    location.pathname === "/" ||
+    location.pathname === "/why" ||
+    location.pathname === "/synthesis";
   const isSharedGridView = location.pathname.startsWith("/s/");
   const isSharePage = location.pathname === "/share";
 
@@ -70,7 +77,7 @@ function AppShell() {
   }, [isEmbeddedVault]);
 
   const isGuest = !loading && !user;
-  const isStandalone = isLoginPage || isSharedGridView || isSharePage;
+  const isStandalone = isLoginPage || isLandingPage || isSharedGridView || isSharePage;
 
   return (
     <>
@@ -85,14 +92,17 @@ function AppShell() {
           <Routes>
             <Route path="/login" element={<Login />} />
             <Route path="/s/:token" element={<SharedGrid />} />
-            <Route path="/" element={<OmniaGrid />} />
-            <Route path="/dashboard" element={<Navigate to="/" replace />} />
+            <Route path="/" element={<Landing />} />
+            <Route path="/why" element={<Why />} />
+            <Route path="/synthesis" element={<Synthesis />} />
+            <Route path="/app" element={<OmniaGrid />} />
+            <Route path="/dashboard" element={<Navigate to="/app" replace />} />
             <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
             <Route path="/grid/:boardId" element={<ProtectedRoute><OmniaGrid /></ProtectedRoute>} />
             <Route
               path="/project/:projectId"
               element={
-                <MobileRedirect to="/">
+                <MobileRedirect to="/app">
                   <ProjectPlaceholder />
                 </MobileRedirect>
               }

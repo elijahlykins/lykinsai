@@ -8,7 +8,7 @@ export default function Settings() {
     <div className="min-h-screen bg-transparent text-black dark:text-white">
       <SettingsModal
         isOpen
-        onClose={() => nav("/")}
+        onClose={() => nav("/app")}
       />
     </div>
   );
