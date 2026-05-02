@@ -36,10 +36,6 @@ const Landing = () => {
   const [sloganVisible, setSloganVisible] = useState(true);
 
   useEffect(() => {
-    if (!loading && user) nav("/app", { replace: true });
-  }, [loading, user, nav]);
-
-  useEffect(() => {
     const interval = setInterval(() => {
       setSloganVisible(false);
       setTimeout(() => {
@@ -55,6 +51,8 @@ const Landing = () => {
     window.addEventListener("scroll", handleScroll, { passive: true });
     return () => window.removeEventListener("scroll", handleScroll);
   }, []);
+
+  const ctaLabel = !loading && user ? "Open LYKN" : "Try LYKN";
 
   const handleTryLykn = () => {
     nav("/app");
@@ -87,7 +85,7 @@ const Landing = () => {
             onClick={handleTryLykn}
             className="px-5 py-2.5 md:px-6 md:py-3 bg-blue-300 hover:bg-blue-200 text-blue-900 rounded-full font-display font-semibold text-xs md:text-sm shadow-[0_6px_24px_rgba(96,165,250,0.4)] hover:shadow-[0_8px_30px_rgba(96,165,250,0.55)] transition-all whitespace-nowrap"
           >
-            Try LYKN
+            {ctaLabel}
           </button>
         </nav>
 
@@ -119,7 +117,7 @@ const Landing = () => {
               onClick={handleTryLykn}
               className="px-9 py-4 bg-blue-300 hover:bg-blue-200 text-blue-900 rounded-full font-display font-semibold text-sm md:text-base shadow-[0_10px_36px_rgba(96,165,250,0.45)] hover:shadow-[0_14px_46px_rgba(96,165,250,0.6)] transition-all whitespace-nowrap"
             >
-              Try LYKN
+              {ctaLabel}
             </button>
           </div>
 
@@ -222,7 +220,7 @@ const Landing = () => {
               onClick={handleTryLykn}
               className="px-9 py-4 bg-blue-300 hover:bg-blue-200 text-blue-900 rounded-full font-display font-semibold text-sm md:text-base shadow-[0_10px_36px_rgba(96,165,250,0.45)] hover:shadow-[0_14px_46px_rgba(96,165,250,0.6)] transition-all whitespace-nowrap"
             >
-              Try LYKN
+              {ctaLabel}
             </button>
           </div>
         </section>

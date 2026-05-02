@@ -1174,7 +1174,13 @@ function convertAddBlockToAction(blk: any): CreateAction | null {
     return blk.url ? { ...base, type: "create_youtube_block", url: blk.url } : { ...base, type: "create_video_block", url: blk.url };
   }
   if (rawType === "image") return { ...base, type: "create_image_block", url: blk.url || blk.src };
-  if (rawType === "embed" || rawType === "media") return { ...base, type: "create_media", url: blk.url || blk.src, mode: blk.mode };
+  if (rawType === "embed" || rawType === "website" || rawType === "site" || rawType === "iframe") {
+    return { ...base, type: "create_embed", url: blk.url || blk.src, mode: blk.mode || "embed", name: blk.name || blk.title };
+  }
+  if (rawType === "link" || rawType === "bookmark" || rawType === "url") {
+    return { ...base, type: "create_link", url: blk.url || blk.src, mode: blk.mode || "link", name: blk.name || blk.title };
+  }
+  if (rawType === "media") return { ...base, type: "create_media", url: blk.url || blk.src, mode: blk.mode };
   // Default: text-shaped block. Differentiate headings via `variant`.
   if (rawType === "text" || rawType === "brick" || rawType === "card" || rawType === "sticky" || !rawType) {
     if (variant === "h1") return { ...base, type: "create_heading", level: 1 };
@@ -1782,12 +1788,23 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
   const hasBlocks = Object.keys(st.blocks || {}).length > 0;
   const wantsBlockManipulation = /\b(move|rearrange|reposition|reorganize|arrange|align|swap|shift|place|put|drag|relocate|organize|spread|stack|line up|layout|lay out|center|scatter|space out|group together|side by side|resize|make.*(bigger|smaller|wider|taller|narrower|shorter)|delete|remove|trash|clear|get rid of|clean up|connect|wire|link|disconnect|unwire|unlink)\b/i.test(cappedText) && hasBlocks;
   const wantsBlockEdit = /\b(edit|update|change|modify|rewrite|rename|set|fill in|populate|write in|add.*(to|into|in)|append|replace|fix|correct|colou?r|paint|highlight|style|theme)\b/i.test(cappedText) && hasBlocks;
-  const wantsBlockCreate = /\b(create|make|build|add|start|new|insert|place|put|drop|generate|set\s*up|spin\s*up|spawn|throw|stick|toss|need|want|give\s*me|gimme|show\s*me)\b/i.test(cappedText) && /\b(sheet|paper|doc|document|spreadsheet|table|budget|tracker|list|todo|checklist|task\s*board|kanban|design\s*board|code\s*block|heading|h[1-3]|quote|callout|brick|text\s*(?:block|brick)?|card|sticky|note\s*(?:block|brick)|toggle|media|image|video|embed|voice|dictat(?:e|ion))\b/i.test(cappedText);
-  const wantsGridCreate = /\b(create|make|build|add|place|put|drop|generate|lay\s*out|set\s*up|write|draft|design|map\s*out|outline|sketch|plan|structure|diagram|flowchart|wireframe|spawn|throw|stick|toss|insert)\b/i.test(cappedText)
+  const wantsBlockCreate = /\b(create|make|build|add|start|new|insert|place|put|drop|generate|set\s*up|spin\s*up|spawn|throw|stick|toss|need|want|give\s*me|gimme|show\s*me|pull(?:\s*in)?|load|embed|bookmark)\b/i.test(cappedText) && /\b(sheet|paper|doc|document|spreadsheet|table|budget|tracker|list|todo|checklist|task\s*board|kanban|design\s*board|code\s*block|heading|h[1-3]|quote|callout|brick|text\s*(?:block|brick)?|card|sticky|note\s*(?:block|brick)|toggle|media|image|video|embed|website|site|page|url|link|bookmark|voice|dictat(?:e|ion))\b/i.test(cappedText);
+  const wantsGridCreate = /\b(create|make|build|add|place|put|drop|generate|lay\s*out|set\s*up|write|draft|design|map\s*out|outline|sketch|plan|structure|diagram|flowchart|wireframe|spawn|throw|stick|toss|insert|pull(?:\s*in)?|load|embed|bookmark)\b/i.test(cappedText)
     && /\b(on\s*(?:the|my|this)?\s*(?:grid|board|canvas)|in(?:to)?\s*(?:the|my|this)?\s*(?:grid|board|canvas)|(?:grid|board|canvas)\b)/i.test(cappedText);
+  // Dedicated detector for "pull / embed / drop / load this URL onto the
+  // grid"-style requests. Triggers as long as we see an embed-ish verb AND
+  // either an actual URL or a bare domain (`example.com`) or website noun
+  // ("this site", "the page", etc.). This catches phrasings the broader
+  // create regexes miss, like "embed https://example.com" or "pull google.com
+  // in" — where neither "grid/board" nor a block-noun appears.
+  const EMBED_VERBS_RE = /\b(pull(?:\s*in)?|embed|drop\s*(?:in)?|load|add|insert|put|place|paste|stick|throw)\b/i;
+  const URL_OR_DOMAIN_RE = /(https?:\/\/[^\s<>"')\]]+|\b[a-z0-9-]+\.(?:com|org|net|io|co|gov|edu|store|shop|app|dev|ai|xyz|tv|me)(?:\/[^\s]*)?)/i;
+  const WEBSITE_NOUNS_RE = /\b(this|that|the|a|an)\s+(?:site|website|page|url|link|address)\b|\b(?:site|website|page|url|link)\b/i;
+  const wantsEmbedWebsite = EMBED_VERBS_RE.test(cappedText)
+    && (URL_OR_DOMAIN_RE.test(cappedText) || WEBSITE_NOUNS_RE.test(cappedText));
   const wantsOrganize = /\b(organize|sort|tidy|clean\s*up|auto[- ]?(?:layout|arrange|organize)|layout|lay\s*out|arrange|grid\s*(?:layout|organize)|group\s*(?:by|together|all)|categorize|cluster|rearrange\s*(?:everything|all|the\s*grid|my\s*(?:bricks|blocks|board)))\b/i.test(cappedText);
   const wantsNotesAction = /\b(notes?\s*(page|panel|section|pad|area)?)\b/i.test(cappedText) && /\b(edit|update|change|modify|write|rewrite|add|append|clear|set|fill|put|type|draft|compose|replace|delete|remove)\b/i.test(cappedText);
-  const wantsActionPath = wantsBlockManipulation || wantsBlockEdit || wantsBlockCreate || wantsGridCreate || wantsOrganize || wantsNotesAction;
+  const wantsActionPath = wantsBlockManipulation || wantsBlockEdit || wantsBlockCreate || wantsGridCreate || wantsOrganize || wantsNotesAction || wantsEmbedWebsite;
   const wantsDelete = /\b(delete|remove|trash|clear|get rid of)\b/i.test(cappedText);
   const focusedBrickActionIntent = hasFocusedTextBricks && /\b(edit|update|change|modify|rewrite|rename|set|fix|correct|colou?r|paint|highlight|style|theme|delete|remove|move|resize|make\s+(this|it)\s+\w|write|fill|replace|append|add\s+(to|into)|clear|format)\b/i.test(cappedText);
 
@@ -1797,6 +1814,7 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
     const statusMsg = wantsNotesAction ? "Writing notes..."
       : wantsDelete ? "Removing blocks..."
       : wantsOrganize ? "Organizing grid..."
+      : wantsEmbedWebsite ? "Pulling site in..."
       : wantsBlockEdit ? "Editing blocks..."
       : (wantsBlockCreate || wantsGridCreate) ? "Creating blocks..."
       : wantsBlockManipulation && !focusedBrickActionIntent ? "Arranging blocks..."

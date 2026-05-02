@@ -13,6 +13,7 @@ import RouteErrorBoundary from '@/lib/RouteErrorBoundary';
 
 import Login from "./pages/Login";
 import Landing from "./pages/Landing";
+import LandingPrototype from "./pages/LandingPrototype";
 import Why from "./pages/Why";
 import Synthesis from "./pages/Synthesis";
 import OmniaGrid from "./pages/OmniaGrid";
@@ -63,7 +64,8 @@ function AppShell() {
   const isLandingPage =
     location.pathname === "/" ||
     location.pathname === "/why" ||
-    location.pathname === "/synthesis";
+    location.pathname === "/synthesis" ||
+    location.pathname === "/landing-prototype";
   const isSharedGridView = location.pathname.startsWith("/s/");
   const isSharePage = location.pathname === "/share";
 
@@ -93,6 +95,7 @@ function AppShell() {
             <Route path="/login" element={<Login />} />
             <Route path="/s/:token" element={<SharedGrid />} />
             <Route path="/" element={<Landing />} />
+            <Route path="/landing-prototype" element={<LandingPrototype />} />
             <Route path="/why" element={<Why />} />
             <Route path="/synthesis" element={<Synthesis />} />
             <Route path="/app" element={<OmniaGrid />} />

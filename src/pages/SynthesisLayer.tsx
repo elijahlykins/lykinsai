@@ -17,12 +17,12 @@ import {
   StickyNote,
   Sparkles,
   Tag,
-  X,
   ZoomIn,
   ZoomOut,
   Maximize2,
 } from "lucide-react";
 import { GridIcon } from "@/components/ui/GridIcon";
+import SynthesisScene3D from "@/pages/synthesis/SynthesisScene3D";
 import {
   DEMO_PROJECTS,
   DEMO_BOARDS,
@@ -69,6 +69,12 @@ interface MindEdge {
 interface SimNode extends MindNode {
   x: number;
   y: number;
+  /**
+   * Depth axis for the 3D renderer. 2D layout still happens in (x, y); z is
+   * assigned per-category in `simulateLayout` so categories sit on separate
+   * planes and the graph reads as layered when orbited.
+   */
+  z: number;
   vx: number;
   vy: number;
   fixed?: boolean;
@@ -501,6 +507,48 @@ function simulateLayout(
   const catSpread = (2 * Math.PI) / Math.max(catArr.length, 1);
   catArr.forEach((c, i) => catAngle.set(c.id, -Math.PI / 2 + i * catSpread));
 
+  // Depth assignment for the 3D renderer. The simulation itself is still 2D
+  // (operates only on x/y), so z is composed deterministically from a few
+  // signals so it stays stable across re-renders and reads as a real 3D
+  // cloud — not a stack of category-shaped pancakes — from any orbit angle.
+  //
+  // Total depth (~Z_SPAN) is roughly comparable to the in-plane extent so
+  // looking at the graph from the side feels as deep as looking at it from
+  // the front feels wide. Each node's z is the sum of:
+  //   • category base    — categories spread along z, but only loosely so
+  //                        they don't visually segregate into hard layers
+  //   • kind offset      — neurons forward, tags back (semantic depth)
+  //   • per-id stable    — large hash-driven jitter so siblings within a
+  //     jitter           category form a 3D cloud, not a co-planar disk
+  //   • angular bias     — nodes on opposite sides of root push opposite
+  //                        directions in z, so the graph feels twisted
+  //                        through depth instead of fanned out flat
+  //   • hub bias         — highly-connected nodes pop slightly forward so
+  //                        the busiest neurons read on top in any view
+  const Z_SPAN = 900; // total depth range across all categories
+  const catZ = new Map<string, number>();
+  catArr.forEach((c, i) => {
+    if (catArr.length <= 1) {
+      catZ.set(c.id, 0);
+    } else {
+      const t = i / (catArr.length - 1); // 0..1
+      // Soften category layering: categories sit at ±40% of Z_SPAN rather
+      // than ±50%, leaving room for child jitter to spill across category
+      // bands without nodes piling up at the front/back walls.
+      catZ.set(c.id, (t - 0.5) * Z_SPAN * 0.8);
+    }
+  });
+  const kindZOffset: Record<string, number> = {
+    neuron: 90,
+    project: 45,
+    grid: 0,
+    vault: -30,
+    tag: -80,
+    category: 0,
+    root: 0,
+  };
+  const childZNoise = 260; // ± per-child stable jitter — drives the depth feel
+
   /* Per-category child counters for section mode */
   const catChildIdx = new Map<string, number>();
   const catChildCount = new Map<string, number>();
@@ -510,19 +558,51 @@ function simulateLayout(
     });
   }
 
+  // Deterministic per-id jitter for z so the simulation iterations don't
+  // re-roll z each pass (would cause depth flicker on hover/re-render).
+  const idHash = (s: string): number => {
+    let h = 0;
+    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+    return h;
+  };
+  const stableZJitter = (id: string): number => {
+    const h = idHash(id);
+    return ((h % 2000) / 2000 - 0.5) * 2 * childZNoise;
+  };
+  // Map a category's angle around root into a z bias. Categories at angle 0
+  // (right of root) push back, those at angle π (left) push forward, so the
+  // graph corkscrews through depth instead of fanning out flat. Children
+  // inherit a fraction of their parent category's angular bias.
+  const angleZBias = (angle: number): number => Math.cos(angle) * (Z_SPAN * 0.18);
+  const hubZBias = (cc: number): number => Math.min(1, cc / 8) * 70;
+
+  const zForNode = (n: MindNode): number => {
+    if (n.kind === "root") return 0;
+    if (n.kind === "category") {
+      const base = catZ.get(n.id) ?? 0;
+      return base + angleZBias(catAngle.get(n.id) ?? 0);
+    }
+    const parentZ = catZ.get(n.categoryId || "") ?? 0;
+    const offset = kindZOffset[n.kind] ?? 0;
+    const angularBias = angleZBias(catAngle.get(n.categoryId || "") ?? 0) * 0.6;
+    const hub = hubZBias(connCount.get(n.id) || 0);
+    return parentZ + offset + stableZJitter(n.id) + angularBias + hub;
+  };
+
   const simNodes: SimNode[] = filtered.map((n) => {
     const cc = connCount.get(n.id) || 0;
     const ratio = cc / maxConn;
     const relevance = relevanceMap?.get(n.id) ?? 1;
+    const z = zForNode(n);
 
     if (n.kind === "root") {
-      return { ...n, x: cx, y: cy, vx: 0, vy: 0, fixed: true, connectionCount: cc, relevance: 1 };
+      return { ...n, x: cx, y: cy, z, vx: 0, vy: 0, fixed: true, connectionCount: cc, relevance: 1 };
     }
 
     if (n.kind === "category") {
       const angle = catAngle.get(n.id) || 0;
       const dist = mode === "section" ? 220 : mode === "topic" ? 140 : 160;
-      return { ...n, x: cx + Math.cos(angle) * dist, y: cy + Math.sin(angle) * dist, vx: 0, vy: 0, fixed: mode === "section", connectionCount: cc, relevance };
+      return { ...n, x: cx + Math.cos(angle) * dist, y: cy + Math.sin(angle) * dist, z, vx: 0, vy: 0, fixed: mode === "section", connectionCount: cc, relevance };
     }
 
     const parentAngle = catAngle.get(n.categoryId || "") || 0;
@@ -538,7 +618,7 @@ function simulateLayout(
       const catNode = filtered.find((f) => f.id === n.categoryId);
       const catX = catNode ? cx + Math.cos(parentAngle) * 220 : cx;
       const catY = catNode ? cy + Math.sin(parentAngle) * 220 : cy;
-      return { ...n, x: catX + Math.cos(angle) * dist, y: catY + Math.sin(angle) * dist, vx: 0, vy: 0, fixed: false, connectionCount: cc, relevance };
+      return { ...n, x: catX + Math.cos(angle) * dist, y: catY + Math.sin(angle) * dist, z, vx: 0, vy: 0, fixed: false, connectionCount: cc, relevance };
     }
 
     if (mode === "topic" && relevanceMap) {
@@ -548,7 +628,7 @@ function simulateLayout(
       const minDist = 100;
       const maxDist = 600;
       const dist = maxDist - relevance * (maxDist - minDist) + (Math.random() - 0.5) * 40;
-      return { ...n, x: cx + Math.cos(angle) * dist, y: cy + Math.sin(angle) * dist, vx: 0, vy: 0, fixed: false, connectionCount: cc, relevance };
+      return { ...n, x: cx + Math.cos(angle) * dist, y: cy + Math.sin(angle) * dist, z, vx: 0, vy: 0, fixed: false, connectionCount: cc, relevance };
     }
 
     // connections mode: connection-weighted distance
@@ -557,7 +637,7 @@ function simulateLayout(
     const minDist = 200;
     const maxDist = 500;
     const dist = maxDist - ratio * (maxDist - minDist) + (Math.random() - 0.5) * 60;
-    return { ...n, x: cx + Math.cos(angle) * dist, y: cy + Math.sin(angle) * dist, vx: 0, vy: 0, fixed: false, connectionCount: cc, relevance: 1 };
+    return { ...n, x: cx + Math.cos(angle) * dist, y: cy + Math.sin(angle) * dist, z, vx: 0, vy: 0, fixed: false, connectionCount: cc, relevance: 1 };
   });
 
   /* Only simulate edges between visible nodes */
@@ -633,47 +713,11 @@ function simulateLayout(
 }
 
 /* ------------------------------------------------------------------ */
-/*  Curved edge path                                                   */
+/*  (SVG renderer helpers — edgePath / NodeIcon / catIcon — were      */
+/*  removed when the visualisation moved to react-three-fiber. The 3D  */
+/*  scene draws straight 3D lines and uses sphere primitives in place  */
+/*  of in-node icons; legend + sidebar still cover icon affordance.)   */
 /* ------------------------------------------------------------------ */
-
-function edgePath(x1: number, y1: number, x2: number, y2: number): string {
-  const mx = (x1 + x2) / 2;
-  const my = (y1 + y2) / 2;
-  const dx = x2 - x1;
-  const dy = y2 - y1;
-  const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-  const curvature = dist * 0.12;
-  const nx = -dy / dist;
-  const ny = dx / dist;
-  return `M ${x1} ${y1} Q ${mx + nx * curvature} ${my + ny * curvature} ${x2} ${y2}`;
-}
-
-/* ------------------------------------------------------------------ */
-/*  Icons                                                              */
-/* ------------------------------------------------------------------ */
-
-function NodeIcon({ kind, size = 14 }: { kind: NodeKind; size?: number }) {
-  const cls = "text-white/90";
-  switch (kind) {
-    case "root": return <Brain className={cls} size={size} />;
-    case "project": return <FolderOpen className={cls} size={size} />;
-    case "grid": return <GridIcon className={cls} size={size} />;
-    case "vault": return <StickyNote className={cls} size={size} />;
-    case "tag": return <Tag className={cls} size={size} />;
-    case "neuron": return <Sparkles className={cls} size={size} />;
-    default: return null;
-  }
-}
-
-function catIcon(id: string, size = 14) {
-  const cls = "text-white/90";
-  if (id.includes("projects")) return <FolderOpen className={cls} size={size} />;
-  if (id.includes("grids")) return <GridIcon className={cls} size={size} />;
-  if (id.includes("vault")) return <Lock className={cls} size={size} />;
-  if (id.includes("tags")) return <Tag className={cls} size={size} />;
-  if (id.includes("neurons")) return <Sparkles className={cls} size={size} />;
-  return null;
-}
 
 /* ------------------------------------------------------------------ */
 /*  Welcome panel (typewriter intro)                                   */
@@ -703,13 +747,14 @@ function WelcomePanel({ onClose, neurons, onSelectNode }: { onClose: () => void;
       animate={{ x: 0, opacity: 1 }}
       exit={{ x: 380, opacity: 0 }}
       transition={{ type: "spring", stiffness: 300, damping: 30 }}
-      className="absolute top-0 right-0 z-30 h-full w-[360px] border-l border-black/5 dark:border-white/8 flex flex-col"
-      style={{ backgroundColor: "var(--app-background)" }}
+      className="absolute top-0 right-0 z-30 h-full w-[360px] border-l border-white/8 flex flex-col"
+      style={{ backgroundColor: "rgba(12,12,22,0.82)", backdropFilter: "blur(18px)", WebkitBackdropFilter: "blur(18px)" }}
+      data-stop-canvas-wheel="true"
       onWheel={(e) => e.stopPropagation()}
       onPointerDown={(e) => e.stopPropagation()}
     >
       <div className="flex items-center justify-end px-5 pt-5 pb-3">
-        <button onClick={onClose} className="w-6 h-6 rounded-md hover:bg-black/5 dark:hover:bg-white/8 flex items-center justify-center transition-colors">
+        <button onClick={onClose} className="w-6 h-6 rounded-md hover:bg-white/8 flex items-center justify-center transition-colors">
           <PanelRightClose size={15} className="text-gray-400" />
         </button>
       </div>
@@ -932,12 +977,19 @@ function DetailPanel({
   edges,
   onClose,
   onNavigate,
+  onSelectNode,
 }: {
   node: MindNode;
   allNodes: MindNode[];
   edges: MindEdge[];
   onClose: () => void;
   onNavigate: (path: string) => void;
+  /**
+   * Select a different neuron from inside the panel — drives the
+   * "click a connection in the side panel to jump to it" UX.
+   * The 3D scene watches selectedId and flies the camera to the new node.
+   */
+  onSelectNode: (id: string) => void;
 }) {
   const connected = useMemo(() => {
     const ids = new Set<string>();
@@ -982,8 +1034,9 @@ function DetailPanel({
       animate={{ x: 0, opacity: 1 }}
       exit={{ x: 380, opacity: 0 }}
       transition={{ type: "spring", stiffness: 300, damping: 30 }}
-      className="absolute top-0 right-0 z-30 h-full w-[360px] border-l border-black/5 dark:border-white/8 flex flex-col"
-      style={{ backgroundColor: "var(--app-background)" }}
+      className="absolute top-0 right-0 z-30 h-full w-[360px] border-l border-white/8 flex flex-col"
+      style={{ backgroundColor: "rgba(12,12,22,0.82)", backdropFilter: "blur(18px)", WebkitBackdropFilter: "blur(18px)" }}
+      data-stop-canvas-wheel="true"
       onWheel={(e) => e.stopPropagation()}
       onPointerDown={(e) => e.stopPropagation()}
     >
@@ -1054,21 +1107,18 @@ function DetailPanel({
                 <div className="mb-4">
                   <p className="text-[0.6875rem] font-medium text-gray-500 dark:text-gray-400 mb-2">Found in Grids</p>
                   <div className="flex flex-col gap-1">
-                    {linkedGrids.map((g) => {
-                      const gBoardId = g.meta?.boardId as string | undefined;
-                      const isDemo = isBlockedDemoId(gBoardId);
-                      const Tag: any = isDemo ? "div" : "button";
-                      return (
-                        <Tag
-                          key={g.id}
-                          {...(isDemo ? {} : { onClick: () => onNavigate(`/grid/${gBoardId}`) })}
-                          className={`flex items-center gap-2 px-2.5 py-1.5 rounded-md text-left ${isDemo ? "" : "hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-colors cursor-pointer"}`}
-                        >
-                          <GridIcon size={12} className="text-blue-400 flex-shrink-0" />
-                          <span className="text-[0.6875rem] text-gray-600 dark:text-gray-300 truncate">{g.label}</span>
-                        </Tag>
-                      );
-                    })}
+                    {linkedGrids.map((g) => (
+                      <button
+                        key={g.id}
+                        type="button"
+                        onClick={() => onSelectNode(g.id)}
+                        title={`Jump to ${g.label}`}
+                        className="flex items-center gap-2 px-2.5 py-1.5 rounded-md hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-colors text-left cursor-pointer w-full"
+                      >
+                        <GridIcon size={12} className="text-blue-400 flex-shrink-0" />
+                        <span className="text-[0.6875rem] text-gray-600 dark:text-gray-300 truncate">{g.label}</span>
+                      </button>
+                    ))}
                   </div>
                 </div>
               );
@@ -1154,10 +1204,16 @@ function DetailPanel({
                   <p className="text-[0.625rem] font-medium text-gray-400 dark:text-gray-500 mb-1.5 uppercase tracking-wider">Related Vault Notes</p>
                   <div className="flex flex-col gap-1">
                     {connectedVault.slice(0, 6).map((c) => (
-                      <div key={c.id} className="flex items-center gap-2 px-2 py-1 rounded-md bg-emerald-50/50 dark:bg-emerald-900/10">
+                      <button
+                        key={c.id}
+                        type="button"
+                        onClick={() => onSelectNode(c.id)}
+                        title={`Jump to ${c.label}`}
+                        className="flex items-center gap-2 px-2 py-1 rounded-md bg-emerald-50/50 dark:bg-emerald-900/10 hover:bg-emerald-100/60 dark:hover:bg-emerald-900/20 transition-colors text-left cursor-pointer w-full"
+                      >
                         <StickyNote size={10} className="text-emerald-400 flex-shrink-0" />
                         <span className="text-[0.6875rem] text-gray-600 dark:text-gray-300 truncate">{c.label}</span>
-                      </div>
+                      </button>
                     ))}
                   </div>
                 </div>
@@ -1167,21 +1223,22 @@ function DetailPanel({
                 <div className="mb-3">
                   <p className="text-[0.625rem] font-medium text-gray-400 dark:text-gray-500 mb-1.5 uppercase tracking-wider">Related Grids</p>
                   <div className="flex flex-col gap-1">
-                    {connectedGrids.slice(0, 6).map((c) => {
-                      const cBoardId = c.meta?.boardId as string | undefined;
-                      const isDemo = isBlockedDemoId(cBoardId);
-                      const Tag: any = isDemo ? "div" : "button";
-                      return (
-                        <Tag
-                          key={c.id}
-                          {...(isDemo ? {} : { onClick: () => onNavigate(`/grid/${cBoardId}`) })}
-                          className={`flex items-center gap-2 px-2 py-1 rounded-md bg-gray-100/50 dark:bg-white/[0.05] text-left ${isDemo ? "" : "hover:bg-gray-100 dark:hover:bg-white/[0.08] transition-colors cursor-pointer"}`}
-                        >
-                          <GridIcon size={10} className="text-blue-400 flex-shrink-0" />
-                          <span className="text-[0.6875rem] text-gray-600 dark:text-gray-300 truncate">{c.label}</span>
-                        </Tag>
-                      );
-                    })}
+                    {connectedGrids.slice(0, 6).map((c) => (
+                      // Click selects the grid neuron in the 3D graph (camera
+                      // flies to it). The Detail panel for that node carries
+                      // its own "Open Grid" footer button for users who want
+                      // to leave the synthesis view.
+                      <button
+                        key={c.id}
+                        type="button"
+                        onClick={() => onSelectNode(c.id)}
+                        title={`Jump to ${c.label}`}
+                        className="flex items-center gap-2 px-2 py-1 rounded-md bg-gray-100/50 dark:bg-white/[0.05] hover:bg-gray-100 dark:hover:bg-white/[0.08] transition-colors text-left cursor-pointer w-full"
+                      >
+                        <GridIcon size={10} className="text-blue-400 flex-shrink-0" />
+                        <span className="text-[0.6875rem] text-gray-600 dark:text-gray-300 truncate">{c.label}</span>
+                      </button>
+                    ))}
                   </div>
                 </div>
               )}
@@ -1190,21 +1247,18 @@ function DetailPanel({
                 <div className="mb-3">
                   <p className="text-[0.625rem] font-medium text-gray-400 dark:text-gray-500 mb-1.5 uppercase tracking-wider">Related Projects</p>
                   <div className="flex flex-col gap-1">
-                    {connectedProjects.slice(0, 4).map((c) => {
-                      const cProjectId = c.meta?.projectId as string | undefined;
-                      const isDemo = !cProjectId || isDemoNodeId(cProjectId);
-                      const Tag: any = isDemo ? "div" : "button";
-                      return (
-                        <Tag
-                          key={c.id}
-                          {...(isDemo ? {} : { onClick: () => onNavigate(`/project/${cProjectId}`) })}
-                          className={`flex items-center gap-2 px-2 py-1 rounded-md bg-purple-50/50 dark:bg-purple-900/10 text-left ${isDemo ? "" : "hover:bg-purple-50 dark:hover:bg-purple-900/20 transition-colors cursor-pointer"}`}
-                        >
-                          <FolderOpen size={10} className="text-purple-400 flex-shrink-0" />
-                          <span className="text-[0.6875rem] text-gray-600 dark:text-gray-300 truncate">{c.label}</span>
-                        </Tag>
-                      );
-                    })}
+                    {connectedProjects.slice(0, 4).map((c) => (
+                      <button
+                        key={c.id}
+                        type="button"
+                        onClick={() => onSelectNode(c.id)}
+                        title={`Jump to ${c.label}`}
+                        className="flex items-center gap-2 px-2 py-1 rounded-md bg-purple-50/50 dark:bg-purple-900/10 hover:bg-purple-50 dark:hover:bg-purple-900/20 transition-colors text-left cursor-pointer w-full"
+                      >
+                        <FolderOpen size={10} className="text-purple-400 flex-shrink-0" />
+                        <span className="text-[0.6875rem] text-gray-600 dark:text-gray-300 truncate">{c.label}</span>
+                      </button>
+                    ))}
                   </div>
                 </div>
               )}
@@ -1214,9 +1268,15 @@ function DetailPanel({
                   <p className="text-[0.625rem] font-medium text-gray-400 dark:text-gray-500 mb-1.5 uppercase tracking-wider">Related Tags</p>
                   <div className="flex flex-wrap gap-1.5">
                     {connectedTags.map((c) => (
-                      <span key={c.id} className="text-[0.6rem] px-1.5 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300">
+                      <button
+                        key={c.id}
+                        type="button"
+                        onClick={() => onSelectNode(c.id)}
+                        title={`Jump to ${c.label}`}
+                        className="text-[0.6rem] px-1.5 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/30 hover:bg-amber-200 dark:hover:bg-amber-900/50 text-amber-700 dark:text-amber-300 transition-colors cursor-pointer"
+                      >
                         {c.label}
-                      </span>
+                      </button>
                     ))}
                   </div>
                 </div>
@@ -1241,11 +1301,20 @@ function DetailPanel({
             </p>
             <div className="flex flex-col gap-1">
               {connected.slice(0, 30).map((c) => (
-                <div key={c.id} className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-black/[0.03] dark:hover:bg-white/[0.04] transition-colors">
-                  <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: c.color }} />
+                <button
+                  key={c.id}
+                  type="button"
+                  onClick={() => onSelectNode(c.id)}
+                  title={`Jump to ${c.label}`}
+                  className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-black/[0.03] dark:hover:bg-white/[0.06] transition-colors text-left cursor-pointer w-full"
+                >
+                  <span
+                    className="w-2 h-2 rounded-full flex-shrink-0"
+                    style={{ background: c.color, boxShadow: `0 0 6px ${c.color}80` }}
+                  />
                   <span className="text-[0.6875rem] text-gray-600 dark:text-gray-300 truncate flex-1">{c.label}</span>
                   <span className="text-[0.6rem] text-gray-400 dark:text-gray-500 capitalize">{c.kind}</span>
-                </div>
+                </button>
               ))}
             </div>
           </div>
@@ -1437,8 +1506,9 @@ export default function SynthesisLayer() {
     () => simulateLayout(allNodes, edges, dimensions.w / 2, dimensions.h / 2, layoutMode, filterTag),
     [allNodes, edges, dimensions.w, dimensions.h, layoutMode, filterTag],
   );
-  const posMap = useMemo(() => new Map(simNodes.map((n) => [n.id, n])), [simNodes]);
-  const visibleNodeIds = useMemo(() => new Set(simNodes.map((n) => n.id)), [simNodes]);
+  // posMap / visibleNodeIds were SVG-render helpers; the 3D scene builds its
+  // own internal posMap. Keeping them here would only re-allocate on every
+  // render. Hover highlight set is the only derived index we still need.
 
   /* Close dropdowns on outside click */
   useEffect(() => {
@@ -1462,37 +1532,27 @@ export default function SynthesisLayer() {
     return s;
   }, [hoveredNode, edges]);
 
-  /* Pan & zoom */
-  const isPanning = useRef(false);
-  const panStart = useRef({ x: 0, y: 0, cx: 0, cy: 0 });
-
-  const handlePointerDown = useCallback((e: React.PointerEvent) => {
-    if (e.button !== 0) return;
-    if ((e.target as HTMLElement).closest("[data-node]")) return;
-    isPanning.current = true;
-    panStart.current = { x: e.clientX, y: e.clientY, cx: camera.x, cy: camera.y };
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-  }, [camera.x, camera.y]);
-
-  const handlePointerMove = useCallback((e: React.PointerEvent) => {
-    if (!isPanning.current) return;
-    setCamera((c) => ({ ...c, x: panStart.current.cx + e.clientX - panStart.current.x, y: panStart.current.cy + e.clientY - panStart.current.y }));
+  // 3D camera: zoom is the only piece we still drive externally (the 3D
+  // scene's OrbitControls handle orbit + pan internally). resetSignal is a
+  // monotonic counter; bumping it tells the scene to re-snap the camera.
+  const [resetSignal, setResetSignal] = useState(0);
+  const resetView = useCallback(() => {
+    setCamera({ x: 0, y: 0, zoom: 1 });
+    setResetSignal((n) => n + 1);
   }, []);
 
-  const handlePointerUp = useCallback(() => { isPanning.current = false; }, []);
-  const resetView = useCallback(() => setCamera({ x: 0, y: 0, zoom: 1 }), []);
-
   /* Node click → select & show panel */
-  const handleNodeClick = useCallback((node: SimNode) => {
+  const handleNodeClick = useCallback((nodeId: string) => {
+    const node = nodeMap.get(nodeId);
+    if (!node) return;
     setShowWelcome(false);
     if (node.kind === "root") {
       setSelectedId(null);
       return;
     }
-    setSelectedId((prev) => (prev === node.id ? null : node.id));
-  }, []);
+    setSelectedId((prev) => (prev === nodeId ? null : nodeId));
+  }, [nodeMap]);
 
-  const svgTransform = `translate(${dimensions.w / 2 + camera.x}, ${dimensions.h / 2 + camera.y}) scale(${camera.zoom}) translate(${-dimensions.w / 2}, ${-dimensions.h / 2})`;
   const isEmpty = effectiveProjects.length === 0 && effectiveBoards.length === 0 && effectiveNotes.length === 0;
   const selectedNode = selectedId ? nodeMap.get(selectedId) : null;
   const panelOpen = selectedNode != null || showWelcome;
@@ -1500,10 +1560,16 @@ export default function SynthesisLayer() {
 
   const svgAreaRef = useRef<HTMLDivElement>(null);
 
+  // Wheel-on-canvas drives external zoom state. OrbitControls has its own
+  // wheel-zoom disabled in the scene so this stays the source of truth.
   useEffect(() => {
     const el = svgAreaRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
+      // Only handle wheel when the cursor is over the canvas area (not
+      // overlay HTML like the side panel that has its own scroll).
+      const target = e.target as HTMLElement | null;
+      if (target && target.closest('[data-stop-canvas-wheel="true"]')) return;
       e.preventDefault();
       const delta = e.deltaY > 0 ? 0.92 : 1.08;
       setCamera((c) => ({ ...c, zoom: Math.min(3, Math.max(0.15, c.zoom * delta)) }));
@@ -1516,205 +1582,84 @@ export default function SynthesisLayer() {
     <div
       ref={containerRef}
       className="fixed inset-0 overflow-hidden select-none"
-      style={{ backgroundColor: "var(--app-background)" }}
+      // Match the app's dark-mode background (--background = hsl(0 0% 12%)
+      // in src/index.css). Hardcoded so the 3D glow stays readable even
+      // when the user is in light mode — the bloom effect needs a dark
+      // backdrop to read regardless of the rest of the app's theme.
+      style={{ backgroundColor: "hsl(0 0% 12%)" }}
     >
-      {/* SVG interaction area — pan & zoom only happen here */}
+      {/* 3D Scene area — orbit, hover, click happen inside the Canvas. The
+          page-level wheel handler (above) still drives external zoom so the
+          existing +/- buttons remain the source of truth. */}
       <div
         ref={svgAreaRef}
         className="absolute inset-0"
-        style={{ cursor: isPanning.current ? "grabbing" : "grab" }}
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerUp}
+        style={{ cursor: "grab" }}
       >
-      {/* Subtle dot grid */}
-      <div
-        className="absolute inset-0 opacity-[0.03] dark:opacity-[0.04] pointer-events-none"
-        style={{ backgroundImage: "radial-gradient(circle, currentColor 1px, transparent 1px)", backgroundSize: "40px 40px" }}
-      />
+        {/* Soft radial spotlight — adds a subtle cool sheen at center so neurons
+            read against a slight gradient. Edges fade to fully transparent so
+            the page-level dark-mode background (hsl(0 0% 12%)) shows through
+            and the canvas matches the rest of the app's chrome. */}
+        <div
+          className="absolute inset-0 pointer-events-none"
+          style={{
+            background:
+              "radial-gradient(ellipse at center, rgba(120,130,180,0.10) 0%, rgba(31,31,31,0) 65%)",
+          }}
+        />
 
-      {/* Empty state */}
-      {isEmpty && (
-        <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
-          <div className="text-center space-y-3">
-            <Brain className="w-12 h-12 text-indigo-300 dark:text-indigo-500 mx-auto" />
-            <p className="text-sm text-gray-400 dark:text-gray-500">Your Synthesis Layer is empty.</p>
-            <p className="text-xs text-gray-400 dark:text-gray-500">Create grids, projects, or vault notes to see them here.</p>
+        {/* Subtle dot grid — kept from the SVG version for spatial reference */}
+        <div
+          className="absolute inset-0 opacity-[0.04] pointer-events-none"
+          style={{
+            backgroundImage: "radial-gradient(circle, rgba(255,255,255,0.7) 1px, transparent 1px)",
+            backgroundSize: "44px 44px",
+          }}
+        />
+
+        {/* Empty state */}
+        {isEmpty && (
+          <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
+            <div className="text-center space-y-3">
+              <Brain className="w-12 h-12 text-indigo-300 mx-auto" />
+              <p className="text-sm text-gray-300">Your Synthesis Layer is empty.</p>
+              <p className="text-xs text-gray-400">Create grids, projects, or vault notes to see them here.</p>
+            </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {/* SVG Canvas */}
-      <svg className="absolute inset-0 w-full h-full overflow-visible">
-        <defs>
-          <filter id="glow-sm"><feGaussianBlur stdDeviation="4" result="blur" /><feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge></filter>
-          <filter id="glow-lg"><feGaussianBlur stdDeviation="8" result="blur" /><feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge></filter>
-        </defs>
-
-        <g transform={svgTransform}>
-          {/* Edges */}
-          {edges.filter((e) => visibleNodeIds.has(e.from) && visibleNodeIds.has(e.to)).map((edge, i) => {
-            const a = posMap.get(edge.from);
-            const b = posMap.get(edge.to);
-            if (!a || !b) return null;
-            const isHl = hoveredNode !== null && highlightSet.has(edge.from) && highlightSet.has(edge.to);
-            const isDimmed = hoveredNode !== null && !isHl;
-            const edgeRelevance = isTopicMode ? Math.min(a.relevance, b.relevance) : 1;
-            const relevanceDim = isTopicMode && edgeRelevance < 0.3;
-            return (
-              <motion.path
-                key={`${edge.from}_${edge.to}_${i}`}
-                d={edgePath(a.x, a.y, b.x, b.y)}
-                fill="none"
-                stroke={isHl ? a.color : edge.cross ? "rgba(148,163,184,0.10)" : "rgba(148,163,184,0.20)"}
-                strokeWidth={isHl ? 2.5 : edge.cross ? 0.8 : 1.2}
-                strokeDasharray={edge.cross ? "4 4" : undefined}
-                initial={{ pathLength: 0, opacity: 0 }}
-                animate={{ pathLength: 1, opacity: isDimmed ? 0.08 : relevanceDim ? 0.12 : 1 }}
-                transition={{
-                  pathLength: { duration: 1, delay: i * 0.004 },
-                  opacity: { duration: 0.18 },
-                }}
-              />
-            );
-          })}
-
-          {/* Nodes */}
-          {simNodes.map((node, i) => {
-            const isHovered = hoveredNode === node.id;
-            const isSelected = selectedId === node.id;
-            const isDimmed = hoveredNode !== null && !highlightSet.has(node.id);
-            const nodeOpacity = isDimmed
-              ? 0.2
-              : isTopicMode
-                ? Math.max(0.12, node.relevance)
-                : 1;
-
-            return (
-              // Outer <g> carries the node's x/y as a static SVG transform
-              // so hover-triggered re-renders (which flip `isHovered` /
-              // `isDimmed` on every node) don't retrigger framer-motion's
-              // x/y transitions. Only scale + opacity animate on hover.
-              <g
-                key={node.id}
-                transform={`translate(${node.x} ${node.y})`}
-              >
-              <motion.g
-                data-node
-                style={{ cursor: node.kind === "root" ? "default" : "pointer" }}
-                initial={{ opacity: 0, scale: 0 }}
-                animate={{
-                  opacity: nodeOpacity,
-                  // Only scale up on explicit selection. Hover is expressed
-                  // purely through the glow ring + dimming of other nodes
-                  // — the hovered node itself must not resize/move, or its
-                  // growing hit-area causes adjacent nodes to flicker into
-                  // and out of hover on tiny cursor moves.
-                  scale: isSelected ? 1.08 : 1,
-                }}
-                transition={{
-                  opacity: { duration: 0.18 },
-                  scale: { type: "spring", stiffness: 260, damping: 24 },
-                }}
-                onPointerEnter={() => setHoveredNode(node.id)}
-                onPointerLeave={() => setHoveredNode(null)}
-                onClick={() => handleNodeClick(node)}
-              >
-                {/* Selection ring */}
-                {isSelected && (
-                  <motion.circle
-                    r={node.radius + 7}
-                    fill="none"
-                    stroke={node.color}
-                    strokeWidth={2.5}
-                    opacity={0.5}
-                    initial={{ scale: 0.8, opacity: 0 }}
-                    animate={{ scale: 1, opacity: 0.5 }}
-                  />
-                )}
-
-                {/* Hover glow */}
-                <circle
-                  r={node.radius + 8}
-                  fill="none"
-                  stroke={node.glow}
-                  strokeWidth={isHovered ? 3 : 0}
-                  opacity={isHovered ? 0.6 : 0}
-                  filter="url(#glow-sm)"
-                />
-
-                {/* Ambient glow */}
-                <circle
-                  r={node.radius * 1.7}
-                  fill={node.glow}
-                  opacity={node.kind === "root" ? 0.2 : 0.08}
-                  filter="url(#glow-lg)"
-                />
-
-                {/* Main circle */}
-                <circle r={node.radius} fill={node.color} opacity={0.92} stroke="rgba(255,255,255,0.15)" strokeWidth={1} />
-
-                {/* Connection count badge for highly connected nodes */}
-                {node.connectionCount > 3 && node.kind !== "root" && node.kind !== "category" && (
-                  <>
-                    <circle cx={node.radius * 0.7} cy={-node.radius * 0.7} r={7} fill="white" opacity={0.9} />
-                    <text
-                      x={node.radius * 0.7}
-                      y={-node.radius * 0.7 + 3.5}
-                      textAnchor="middle"
-                      style={{ fontSize: "8px", fontWeight: 700, fill: node.color, pointerEvents: "none" }}
-                    >
-                      {node.connectionCount}
-                    </text>
-                  </>
-                )}
-
-                {/* Icon */}
-                <foreignObject
-                  x={-node.radius * 0.45}
-                  y={-node.radius * 0.45}
-                  width={node.radius * 0.9}
-                  height={node.radius * 0.9}
-                  style={{ pointerEvents: "none" }}
-                >
-                  <div className="w-full h-full flex items-center justify-center">
-                    {node.kind === "category"
-                      ? catIcon(node.id, Math.max(12, node.radius * 0.5))
-                      : <NodeIcon kind={node.kind} size={Math.max(11, node.radius * 0.5)} />}
-                  </div>
-                </foreignObject>
-
-                {/* Label */}
-                <text
-                  y={node.radius + 14}
-                  textAnchor="middle"
-                  className="fill-gray-600 dark:fill-gray-300"
-                  style={{
-                    fontSize: node.kind === "root" ? "11px" : node.kind === "category" ? "10px" : "9px",
-                    fontWeight: node.kind === "root" || node.kind === "category" ? 600 : 400,
-                    pointerEvents: "none",
-                  }}
-                >
-                  {node.label.length > 24 ? node.label.slice(0, 22) + "…" : node.label}
-                </text>
-              </motion.g>
-              </g>
-            );
-          })}
-        </g>
-      </svg>
-      </div>{/* end SVG interaction area */}
+        {/* The actual 3D scene */}
+        {!isEmpty && (
+          <SynthesisScene3D
+            nodes={simNodes}
+            edges={edges}
+            hoveredId={hoveredNode}
+            selectedId={selectedId}
+            // Selecting a node (from canvas click OR side-panel connection
+            // click) flies the camera to it. Same source of truth as
+            // selectedId — they always move together.
+            focusNodeId={selectedId}
+            highlightSet={highlightSet}
+            isTopicMode={isTopicMode}
+            zoom={camera.zoom}
+            resetSignal={resetSignal}
+            onHoverNode={setHoveredNode}
+            onClickNode={handleNodeClick}
+            onBackgroundClick={() => setSelectedId(null)}
+          />
+        )}
+      </div>
 
       {/* Organize dropdown — positioned to the right of the sidebar signed-in pill */}
       <div className="fixed top-4 left-[13.5rem] z-[80] flex items-center gap-2">
         <div ref={modeMenuRef} className="relative">
           <button
             onClick={() => { setShowModeMenu((v) => !v); setShowTagMenu(false); }}
-            className="flex items-center gap-1.5 text-[0.6875rem] font-medium px-2.5 py-1.5 rounded-full bg-white/45 dark:bg-[rgba(60,60,60,0.14)] backdrop-blur-sm border border-black/6 dark:border-white/10 text-black/70 dark:text-white/70 hover:bg-white/60 dark:hover:bg-white/15 shadow-sm transition-colors"
+            className="flex items-center gap-1.5 text-[0.6875rem] font-medium px-2.5 py-1.5 rounded-full bg-white/8 backdrop-blur-sm border border-white/12 text-white/75 hover:bg-white/14 shadow-sm transition-colors"
           >
             {(() => { const m = layoutModes.find((l) => l.id === layoutMode); return m ? <m.icon size={13} /> : null; })()}
             {layoutModes.find((l) => l.id === layoutMode)?.label}
-            <ChevronDown size={11} className="text-black/40 dark:text-white/40" />
+            <ChevronDown size={11} className="text-white/45" />
           </button>
           <AnimatePresence>
             {showModeMenu && (
@@ -1723,7 +1668,7 @@ export default function SynthesisLayer() {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -4 }}
                 transition={{ duration: 0.12 }}
-                className="absolute top-full left-0 mt-1.5 w-48 rounded-xl bg-white/90 dark:bg-neutral-800/90 backdrop-blur-md border border-black/5 dark:border-white/8 shadow-lg py-1 z-50"
+                className="absolute top-full left-0 mt-1.5 w-48 rounded-xl bg-[rgba(20,20,32,0.92)] backdrop-blur-md border border-white/10 shadow-lg py-1 z-50"
               >
                 {layoutModes.map((m) => (
                   <button
@@ -1736,8 +1681,8 @@ export default function SynthesisLayer() {
                     }}
                     className={`w-full text-left px-3 py-2 flex items-center gap-2.5 text-[0.6875rem] transition-colors ${
                       layoutMode === m.id
-                        ? "bg-gray-100 dark:bg-white/10 text-gray-800 dark:text-gray-200 font-medium"
-                        : "text-gray-600 dark:text-gray-300 hover:bg-black/[0.03] dark:hover:bg-white/[0.05]"
+                        ? "bg-white/12 text-white font-medium"
+                        : "text-white/70 hover:bg-white/8"
                     }`}
                   >
                     <m.icon size={13} />
@@ -1753,7 +1698,7 @@ export default function SynthesisLayer() {
           <div ref={tagMenuRef} className="relative">
             <button
               onClick={() => { setShowTagMenu((v) => !v); setShowModeMenu(false); }}
-              className="flex items-center gap-1.5 text-[0.6875rem] font-medium px-2.5 py-1.5 rounded-full bg-amber-50 dark:bg-amber-900/20 border border-amber-200/50 dark:border-amber-700/30 text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900/30 shadow-sm transition-colors"
+              className="flex items-center gap-1.5 text-[0.6875rem] font-medium px-2.5 py-1.5 rounded-full bg-amber-500/15 border border-amber-400/30 text-amber-200 hover:bg-amber-500/25 shadow-sm transition-colors"
             >
               <Hash size={12} />
               {filterTag || "Select idea"}
@@ -1766,18 +1711,18 @@ export default function SynthesisLayer() {
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -4 }}
                   transition={{ duration: 0.12 }}
-                  className="absolute top-full left-0 mt-1.5 w-48 max-h-64 overflow-y-auto rounded-xl bg-white/90 dark:bg-neutral-800/90 backdrop-blur-md border border-black/5 dark:border-white/8 shadow-lg py-1 z-50 scrollbar-hide"
+                  className="absolute top-full left-0 mt-1.5 w-48 max-h-64 overflow-y-auto rounded-xl bg-[rgba(20,20,32,0.92)] backdrop-blur-md border border-white/10 shadow-lg py-1 z-50 scrollbar-hide"
                 >
                   {allIdeas.length === 0 ? (
-                      <p className="px-3 py-2 text-[0.6875rem] text-gray-400">No ideas found</p>
+                      <p className="px-3 py-2 text-[0.6875rem] text-white/45">No ideas found</p>
                   ) : allIdeas.map((t) => (
                     <button
                       key={t}
                       onClick={() => { setFilterTag(t); setShowTagMenu(false); }}
                       className={`w-full text-left px-3 py-1.5 text-[0.6875rem] transition-colors ${
                         filterTag === t
-                          ? "bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300 font-medium"
-                          : "text-gray-600 dark:text-gray-300 hover:bg-black/[0.03] dark:hover:bg-white/[0.05]"
+                          ? "bg-amber-500/20 text-amber-200 font-medium"
+                          : "text-white/70 hover:bg-white/8"
                       }`}
                     >
                       {t}
@@ -1793,18 +1738,18 @@ export default function SynthesisLayer() {
       {/* Title — centered */}
       <div className="absolute top-5 left-0 right-0 z-20 flex justify-center pointer-events-none">
         <div className="flex items-center gap-2.5">
-          <h1 className="text-sm font-semibold text-gray-700 dark:text-gray-200 tracking-wide">Synthesis Layer</h1>
+          <h1 className="text-sm font-semibold text-white/85 tracking-wide" style={{ textShadow: "0 0 14px rgba(99,102,241,0.4)" }}>Synthesis Layer</h1>
         </div>
       </div>
 
       {/* Stats */}
-      <div className="absolute top-6 z-20 flex items-center gap-4 text-[0.625rem] text-gray-400 dark:text-gray-500 pointer-events-none transition-[right] duration-300"
+      <div className="absolute top-6 z-20 flex items-center gap-4 text-[0.625rem] text-white/60 pointer-events-none transition-[right] duration-300"
         style={{ right: panelOpen ? 384 : 24 }}
       >
         <span>{effectiveProjects.length} projects</span>
-        <span className="w-px h-3 bg-gray-200 dark:bg-gray-700" />
+        <span className="w-px h-3 bg-white/15" />
         <span>{effectiveBoards.length} grids</span>
-        <span className="w-px h-3 bg-gray-200 dark:bg-gray-700" />
+        <span className="w-px h-3 bg-white/15" />
         <span>{effectiveNotes.length} notes</span>
       </div>
 
@@ -1813,24 +1758,32 @@ export default function SynthesisLayer() {
         className="absolute bottom-6 z-20 flex flex-col gap-1.5 transition-[right] duration-300"
         style={{ right: panelOpen ? 384 : 24 }}
       >
-        <button onClick={() => setCamera((c) => ({ ...c, zoom: Math.min(3, c.zoom * 1.2) }))} className="w-8 h-8 rounded-lg bg-white/60 dark:bg-gray-800/60 backdrop-blur border border-black/5 dark:border-white/8 flex items-center justify-center hover:bg-white/90 dark:hover:bg-gray-700/80 transition-colors">
-          <ZoomIn size={14} className="text-gray-600 dark:text-gray-300" />
+        <button onClick={() => setCamera((c) => ({ ...c, zoom: Math.min(3, c.zoom * 1.2) }))} className="w-8 h-8 rounded-lg bg-white/8 backdrop-blur border border-white/10 flex items-center justify-center hover:bg-white/16 transition-colors">
+          <ZoomIn size={14} className="text-white/80" />
         </button>
-        <button onClick={() => setCamera((c) => ({ ...c, zoom: Math.max(0.15, c.zoom * 0.8) }))} className="w-8 h-8 rounded-lg bg-white/60 dark:bg-gray-800/60 backdrop-blur border border-black/5 dark:border-white/8 flex items-center justify-center hover:bg-white/90 dark:hover:bg-gray-700/80 transition-colors">
-          <ZoomOut size={14} className="text-gray-600 dark:text-gray-300" />
+        <button onClick={() => setCamera((c) => ({ ...c, zoom: Math.max(0.15, c.zoom * 0.8) }))} className="w-8 h-8 rounded-lg bg-white/8 backdrop-blur border border-white/10 flex items-center justify-center hover:bg-white/16 transition-colors">
+          <ZoomOut size={14} className="text-white/80" />
         </button>
-        <button onClick={resetView} className="w-8 h-8 rounded-lg bg-white/60 dark:bg-gray-800/60 backdrop-blur border border-black/5 dark:border-white/8 flex items-center justify-center hover:bg-white/90 dark:hover:bg-gray-700/80 transition-colors">
-          <Maximize2 size={14} className="text-gray-600 dark:text-gray-300" />
+        <button onClick={resetView} className="w-8 h-8 rounded-lg bg-white/8 backdrop-blur border border-white/10 flex items-center justify-center hover:bg-white/16 transition-colors" title="Reset view">
+          <Maximize2 size={14} className="text-white/80" />
         </button>
       </div>
 
       {/* Legend */}
-      <div className="absolute bottom-6 left-6 z-20 flex flex-wrap gap-3 text-[0.625rem] text-gray-500 dark:text-gray-400 pointer-events-none">
-        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full" style={{ background: palette.projects.bg }} /> Projects</span>
-        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full" style={{ background: palette.grids.bg }} /> Grids</span>
-        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full" style={{ background: palette.vault.bg }} /> Vault</span>
-        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full" style={{ background: palette.tags.bg }} /> Tags</span>
-        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full" style={{ background: palette.neurons.bg }} /> AI Learned</span>
+      <div className="absolute bottom-6 left-6 z-20 flex flex-wrap gap-3 text-[0.625rem] text-white/55 pointer-events-none">
+        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: palette.projects.bg, color: palette.projects.bg }} /> Projects</span>
+        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: palette.grids.bg, color: palette.grids.bg }} /> Grids</span>
+        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: palette.vault.bg, color: palette.vault.bg }} /> Vault</span>
+        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: palette.tags.bg, color: palette.tags.bg }} /> Tags</span>
+        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: palette.neurons.bg, color: palette.neurons.bg }} /> AI Learned</span>
+      </div>
+
+      {/* Orbit hint — first-time users may not realise drag = orbit (not pan).
+          Fades after a few seconds via CSS animation; tiny enough to ignore. */}
+      <div
+        className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20 text-[0.6rem] text-white/40 pointer-events-none animate-pulse"
+      >
+        drag to orbit · scroll to zoom · shift+drag to pan
       </div>
 
       {/* Detail / Welcome panel */}
@@ -1843,6 +1796,12 @@ export default function SynthesisLayer() {
             edges={edges}
             onClose={() => setSelectedId(null)}
             onNavigate={navigate}
+            // Clicking a connection in the panel jumps to that neuron in the
+            // 3D graph: selectedId updates → SynthesisScene3D's focusNodeId
+            // changes → CameraController lerps the orbit pivot to it. Set
+            // unconditionally (not toggle) — clicking a connection should
+            // always navigate, never deselect.
+            onSelectNode={(id) => setSelectedId(id)}
           />
         ) : showWelcome ? (
           <WelcomePanel

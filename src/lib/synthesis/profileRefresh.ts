@@ -2,8 +2,12 @@ import { supabase } from "@/lib/supabase";
 import { API_BASE_URL } from "@/lib/api-config";
 
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
-/** Debounce so we don’t run the profile LLM on every message. */
-const DEBOUNCE_MS = 8 * 60 * 1000;
+/**
+ * Debounce so we don't run the profile LLM on every message. Kept tight so
+ * the user model feels alive after a short flurry of activity — the server
+ * still gates with PROFILE_LLM_THROTTLE_MS so this can't run away.
+ */
+const DEBOUNCE_MS = 90 * 1000;
 
 /**
  * Schedule a server-side user-model refresh (LLM distill → `lykn_user_synthesis_profile`).

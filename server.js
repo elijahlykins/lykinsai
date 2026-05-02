@@ -61,6 +61,12 @@ import {
   makeConnectorPoller,
   encryptToken,
 } from './connectors-service.js';
+import {
+  runUserModelLearningPass,
+  applyFactFeedback,
+  listActiveFactsForUser,
+  formatFactsForPrompt,
+} from './userModelLearning.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, '.env') });
@@ -92,6 +98,25 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 
 
 // ---- URL scraping ----
 const URL_RE = /https?:\/\/[^\s<>"')\]]+/gi;
+// Non-global twin for safe `.test()` calls (global regex would mutate lastIndex).
+const URL_DETECT_RE = /https?:\/\/[^\s<>"')\]]+/i;
+
+// Verbs that, combined with a URL in the prompt, signal the user is explicitly
+// asking us to read / fetch / browse the link. We use this to ALWAYS scrape
+// the URL even when the broader web-search heuristic would skip it (e.g.
+// because the prompt is long, or because the wording trips the
+// "summarize THIS" workspace-scoped filter).
+const URL_INTENT_VERBS_RE = /\b(scrape|crawl|browse|fetch|read|open|visit|navigate\s+to|go\s+to|grab|pull(?:\s+up)?|get|extract|review|examine|inspect|analy[sz]e|summari[sz]e|explore|check(?:\s+out)?|look\s+(?:at|up|into)|search\s+(?:this|that|the\s+(?:link|url|page|site|article))|do\s+(?:a\s+)?search\s+on|tell\s+me\s+(?:what(?:'s| is)\s+(?:on|at|in)|about))\b/i;
+// Noun phrases that, combined with a URL, signal the same intent even without
+// an explicit verb (e.g. "this link", "that URL", "the article").
+const URL_INTENT_NOUNS_RE = /\b(?:this|that|these|those|the)\s+(?:link|url|page|site|website|article|post|blog|tweet|video|story|doc|document)\b/i;
+
+function hasExplicitUrlScrapeIntent(text) {
+  const t = String(text || "").trim();
+  if (!t) return false;
+  if (!URL_DETECT_RE.test(t)) return false;
+  return URL_INTENT_VERBS_RE.test(t) || URL_INTENT_NOUNS_RE.test(t);
+}
 
 async function scrapeUrl(url) {
   try {
@@ -118,19 +143,25 @@ async function scrapeUrl(url) {
   }
 }
 
-async function scrapeUrlsFromText(text) {
-  if (String(text || "").length > 800) return "";
-  const urls = (String(text || "").match(URL_RE) || []).slice(0, 3);
+async function scrapeUrlsFromText(text, opts = {}) {
+  const t = String(text || "");
+  // Length cap is a heuristic to avoid scraping URLs from a giant pasted blob
+  // (article dumps, transcripts). Bypass it when the user explicitly asked us
+  // to read a URL (`force: true`).
+  if (!opts.force && t.length > 800) return "";
+  const maxUrls = opts.force ? 5 : 3;
+  const urls = (t.match(URL_RE) || []).slice(0, maxUrls);
   if (urls.length === 0) return "";
   const results = await Promise.all(urls.map(async (url) => {
     const content = await scrapeUrl(url);
-    if (!content) return "";
+    if (!content) return `[PAGE_CONTENT: ${url}]\n(Could not fetch this URL — the site may block bots or be unavailable. Tell the user the link couldn't be read; do not invent its contents.)`;
     return `[PAGE_CONTENT: ${url}]\n${content}`;
   }));
   const combined = results.filter(Boolean).join("\n\n");
   if (!combined) return "";
-  console.log(`🌐 Scraped ${results.filter(Boolean).length} URL(s)`);
-  return `[SCRAPED_WEB_PAGES]\nThe user shared URLs. Here is the extracted page content. Use it to answer their question accurately.\n\n${combined}`;
+  const successCount = results.filter((r) => r && !r.includes("Could not fetch this URL")).length;
+  console.log(`🌐 Scraped ${successCount}/${urls.length} URL(s)${opts.force ? ' [explicit intent]' : ''}`);
+  return `[SCRAPED_WEB_PAGES]\nThe user shared URLs. Here is the extracted page content. Use it to answer their question accurately. If a URL says "Could not fetch", tell the user that link couldn't be read — never invent its contents.\n\n${combined}`;
 }
 
 // ---- Web search ----
@@ -803,16 +834,28 @@ async function replaceSynthesisChunks(userId, authHeader, sourceType, sourceId, 
 // ============================================
 // USER SYNTHESIS PROFILE (incremental model + prompt injection)
 // ============================================
-const USER_MODEL_CACHE_TTL_MS = 5 * 60 * 1000;
-const USER_MODEL_EMPTY_CACHE_TTL_MS = 90 * 1000;
+// Tightened so the user model feels alive after every meaningful interaction.
+// The compute cost is bounded — fetchUserModelSection is a single Supabase
+// row read; the LLM that produces the model is gated separately by
+// PROFILE_LLM_THROTTLE_MS and the client-side debounce in profileRefresh.ts.
+const USER_MODEL_CACHE_TTL_MS = 90 * 1000;
+const USER_MODEL_EMPTY_CACHE_TTL_MS = 45 * 1000;
 const USER_MODEL_SECTION_MAX_CHARS = 3500;
-const PROFILE_LLM_THROTTLE_MS = 10 * 60 * 1000;
+const PROFILE_LLM_THROTTLE_MS = 3 * 60 * 1000;
+
+const USER_IDENTITY_CACHE_TTL_MS = 90 * 1000;
+const USER_IDENTITY_SECTION_MAX_CHARS = 1800;
 
 const userModelSectionCache = new Map();
+const userIdentitySectionCache = new Map();
 const lastProfileLlmAt = new Map();
 
 function invalidateUserModelCache(userId) {
   if (userId) userModelSectionCache.delete(userId);
+}
+
+function invalidateUserIdentityCache(userId) {
+  if (userId) userIdentitySectionCache.delete(userId);
 }
 
 /** Soft staleness hint for prompts; omitted when no timestamps exist. */
@@ -876,6 +919,7 @@ async function applyUserSynthesisProfileUpsert(client, userId, row) {
   }
   lastProfileLlmAt.set(userId, Date.now());
   invalidateUserModelCache(userId);
+  invalidateUserIdentityCache(userId);
   return true;
 }
 
@@ -1011,22 +1055,137 @@ async function fetchUserModelSection(authHeader, userId) {
   const client = supabaseAdmin || createSynthesisUserClient(authHeader);
   if (!client) return '';
   try {
-    const { data: row, error } = await client
-      .from('lykn_user_synthesis_profile')
-      .select('narrative, themes, signals, updated_at, intake_completed_at')
-      .eq('user_id', userId)
-      .maybeSingle();
-    if (error || !row) {
-      userModelSectionCache.set(userId, { text: '', at: Date.now() });
-      return '';
+    // Pull the legacy profile row + the structured facts in parallel.
+    // Either source can be empty without breaking the prompt block.
+    const [profileResult, facts] = await Promise.all([
+      client
+        .from('lykn_user_synthesis_profile')
+        .select('narrative, themes, signals, updated_at, intake_completed_at')
+        .eq('user_id', userId)
+        .maybeSingle(),
+      listActiveFactsForUser(client, userId, { minConfidence: 0.4, limit: 60 }).catch(() => []),
+    ]);
+    const row = profileResult?.data || null;
+    const factsBlock = formatFactsForPrompt(facts || [], 1800);
+    const profileBlock = row ? formatUserModelRow(row) : '';
+
+    let text = profileBlock;
+    if (factsBlock) {
+      // Append the structured facts as a sub-section so chat models see them
+      // in the same [USER_MODEL] envelope without a separate top-level block.
+      const suffix = `\n\nLearned facts (✓ confirmed by user · · stated · ? inferred):\n${factsBlock}`;
+      text = text ? `${text}${suffix}` : `[USER_MODEL]\nStructured learned facts about this user.${suffix}`;
     }
-    const text = formatUserModelRow(row);
+    if (text.length > USER_MODEL_SECTION_MAX_CHARS) text = `${text.slice(0, USER_MODEL_SECTION_MAX_CHARS)}…`;
     userModelSectionCache.set(userId, { text, at: Date.now() });
     return text;
   } catch (e) {
     console.warn('⚠️ User model fetch:', e?.message || e);
     return '';
   }
+}
+
+// ============================================
+// USER IDENTITY (name + active projects)
+// ----------------------------------------
+// A small block injected into every chat prompt so the model can:
+//  - Greet the user by their first name
+//  - Reference their actual project names ("this would slot into your X
+//    project") instead of saying "your project" generically
+// We pull the name from `req.user.user_metadata` (already populated by the
+// Supabase /auth/v1/user lookup in `requireAuth`) and the project list
+// straight from `omnia_projects`.  The result is cached per user for 90s.
+// ============================================
+function pickUserDisplayName(user) {
+  const meta = (user && user.user_metadata) || {};
+  const candidates = [
+    meta.preferred_name,
+    meta.first_name,
+    meta.given_name,
+    meta.full_name,
+    meta.name,
+    meta.user_name,
+    meta.username,
+  ];
+  for (const raw of candidates) {
+    const v = String(raw || '').trim();
+    if (!v) continue;
+    const first = v.split(/\s+/)[0].trim();
+    if (first) return first;
+  }
+  const email = String(user?.email || '').trim();
+  if (email && email.includes('@')) {
+    const handle = email.split('@')[0]
+      .replace(/[._-]+/g, ' ')
+      .trim()
+      .split(/\s+/)[0];
+    if (handle) {
+      // Capitalise the first letter so the greeting reads naturally.
+      return handle.charAt(0).toUpperCase() + handle.slice(1);
+    }
+  }
+  return '';
+}
+
+function formatUserIdentityBlock({ firstName, projects }) {
+  const lines = [];
+  if (firstName) lines.push(`First name: ${firstName}`);
+  if (Array.isArray(projects) && projects.length > 0) {
+    const projectLines = projects.map((p) => {
+      const name = String(p?.name || '').trim() || 'Untitled project';
+      const desc = String(p?.description || '').trim();
+      return desc
+        ? `- "${name}" — ${desc.slice(0, 140)}`
+        : `- "${name}"`;
+    });
+    lines.push('Active projects (most recently touched first):');
+    lines.push(...projectLines);
+  }
+  if (!lines.length) return '';
+
+  let block = [
+    '[USER_IDENTITY]',
+    "Use this to personalise. Address them by first name when it feels natural — especially in greetings, transitions, and turning points (not every sentence). When the user asks about a vague \"project\" or you spot a clear match, refer to the actual project name from the list below.",
+    '',
+    ...lines,
+  ].join('\n').trim();
+
+  if (block.length > USER_IDENTITY_SECTION_MAX_CHARS) {
+    block = `${block.slice(0, USER_IDENTITY_SECTION_MAX_CHARS)}…`;
+  }
+  return block;
+}
+
+async function fetchUserIdentitySection(authHeader, user) {
+  const userId = user?.id;
+  if (!userId) return '';
+
+  const cached = userIdentitySectionCache.get(userId);
+  if (cached && Date.now() - cached.at < USER_IDENTITY_CACHE_TTL_MS) return cached.text;
+
+  const firstName = pickUserDisplayName(user);
+
+  let projects = [];
+  const client = supabaseAdmin || createSynthesisUserClient(authHeader);
+  if (client) {
+    try {
+      const { data, error } = await client
+        .from('omnia_projects')
+        .select('name, description, updated_at')
+        .eq('user_id', userId)
+        .order('updated_at', { ascending: false })
+        .limit(10);
+      if (!error && Array.isArray(data)) {
+        projects = data.filter((p) => p && String(p.name || '').trim());
+      }
+    } catch (e) {
+      console.warn('⚠️ User identity projects fetch:', e?.message || e);
+    }
+  }
+
+  const text = formatUserIdentityBlock({ firstName, projects });
+  userIdentitySectionCache.set(userId, { text, at: Date.now() });
+  return text;
 }
 
 async function runUserProfileLlmAndUpsert(userId, authHeader, opts = {}) {
@@ -1141,6 +1300,18 @@ Refine the previous model using new evidence; do not invent facts not supported 
   if (!upOk) return { ok: false, reason: 'upsert_failed' };
 
   console.log(`👤 User synthesis profile updated for ${String(userId).slice(0, 8)}…`);
+
+  // Phase 1 of "AI that actually learns the user": fire the structured
+  // multi-source learning pass alongside the legacy narrative refresh.
+  // Failures here must not roll back the legacy upsert — they're additive.
+  runUserModelLearningPass(client, userId, { trigger: 'refresh' })
+    .then((res) => {
+      if (res?.ok && (res.factsAdded || res.factsReinforced)) {
+        invalidateUserModelCache(userId);
+      }
+    })
+    .catch((e) => console.warn('⚠️ user-model learning pass:', e?.message || e));
+
   return { ok: true, updated: true };
 }
 
@@ -1995,6 +2166,116 @@ app.post('/api/synthesis/intake', requireAuth, profileRefreshLimiter, async (req
   } catch (e) {
     console.error('❌ Synthesis intake:', e?.message || e);
     return res.status(500).json({ error: 'intake_failed' });
+  }
+});
+
+// ============================================
+// USER MODEL — structured learned facts (Phase 1 of "AI learns the user")
+// ============================================
+// Returns the active (non-dismissed) facts the AI has accumulated about the
+// user, ranked confirmed > stated > high-confidence inferred. Used by the
+// Synthesis Layer's "What the AI has learned about you" panel.
+app.get('/api/synthesis/profile/facts', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const client = supabaseAdmin || createSynthesisUserClient(req.headers.authorization);
+    if (!client) return res.status(503).json({ error: 'Database not configured' });
+
+    const minConfidenceRaw = Number(req.query?.minConfidence);
+    const minConfidence = Number.isFinite(minConfidenceRaw) ? Math.max(0, Math.min(1, minConfidenceRaw)) : 0;
+    const limitRaw = Number(req.query?.limit);
+    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(500, limitRaw)) : 200;
+
+    const facts = await listActiveFactsForUser(client, userId, { minConfidence, limit });
+
+    // Latest revision summary so the UI can show "What's new this week"
+    let latestRevision = null;
+    try {
+      const { data: rev } = await client
+        .from('lykn_user_model_revisions')
+        .select('id, trigger, fact_count, facts_added, facts_updated, facts_dismissed, diff, summary, created_at')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      latestRevision = rev || null;
+    } catch { /* non-critical */ }
+
+    return res.json({ ok: true, facts, latestRevision });
+  } catch (e) {
+    console.error('❌ /api/synthesis/profile/facts:', e?.message || e);
+    return res.status(500).json({ error: 'facts_fetch_failed' });
+  }
+});
+
+// Apply user feedback (thumbs-up confirms, thumbs-down dismisses, optional
+// correction text replaces the fact with a new stated one). The next learning
+// pass treats dismissed/corrected facts as "do not re-emit."
+app.post('/api/synthesis/profile/facts/:id/feedback', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const factId = String(req.params?.id || '').trim();
+    if (!factId) return res.status(400).json({ error: 'fact id required' });
+    const action = String(req.body?.action || '').trim().toLowerCase();
+    const correctionText = req.body?.correctionText ? String(req.body.correctionText) : null;
+
+    const client = supabaseAdmin || createSynthesisUserClient(req.headers.authorization);
+    if (!client) return res.status(503).json({ error: 'Database not configured' });
+
+    const out = await applyFactFeedback(client, userId, factId, action, correctionText);
+    if (!out.ok) {
+      if (out.reason === 'not_found') return res.status(404).json({ error: 'fact_not_found' });
+      if (out.reason === 'bad_action') return res.status(400).json({ error: 'invalid_action' });
+      if (out.reason === 'no_correction_text') return res.status(400).json({ error: 'correctionText_required' });
+      return res.status(500).json({ error: out.reason || 'feedback_failed' });
+    }
+    invalidateUserModelCache(userId);
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('❌ /api/synthesis/profile/facts/:id/feedback:', e?.message || e);
+    return res.status(500).json({ error: 'feedback_failed' });
+  }
+});
+
+// Lightweight on-demand learning pass — useful for "Refresh now" button in
+// the UI and for manual debugging. Throttled by profileRefreshLimiter (8/15min).
+app.post('/api/synthesis/profile/learn-now', requireAuth, profileRefreshLimiter, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const client = supabaseAdmin || createSynthesisUserClient(req.headers.authorization);
+    if (!client) return res.status(503).json({ error: 'Database not configured' });
+    const out = await runUserModelLearningPass(client, userId, { trigger: 'manual' });
+    if (out?.ok) invalidateUserModelCache(userId);
+    return res.json(out || { ok: false });
+  } catch (e) {
+    console.error('❌ /api/synthesis/profile/learn-now:', e?.message || e);
+    return res.status(500).json({ error: 'learn_failed' });
+  }
+});
+
+// Past revisions — for a "history of what the AI has learned" view.
+app.get('/api/synthesis/profile/revisions', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const client = supabaseAdmin || createSynthesisUserClient(req.headers.authorization);
+    if (!client) return res.status(503).json({ error: 'Database not configured' });
+    const limitRaw = Number(req.query?.limit);
+    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(50, limitRaw)) : 20;
+    const { data, error } = await client
+      .from('lykn_user_model_revisions')
+      .select('id, trigger, fact_count, facts_added, facts_updated, facts_dismissed, diff, summary, created_at')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ ok: true, revisions: data || [] });
+  } catch (e) {
+    console.error('❌ /api/synthesis/profile/revisions:', e?.message || e);
+    return res.status(500).json({ error: 'revisions_fetch_failed' });
   }
 });
 
@@ -4473,9 +4754,18 @@ ${t}
         "- [BOARD_CONTEXT]: The current board/grid the user is actively working on. This is your PRIMARY context — always prioritize it.",
         hasProject ? "- [PROJECT_KNOWLEDGE]: The project this grid belongs to — its other boards, files, and folders. This is your SECONDARY context. Use it to connect the user's current work to the broader project." : "- [PROJECT_KNOWLEDGE]: The user's project files, folders, other boards, and synthesis layer.",
         "- [WORKSPACE_CONTEXT]: The user's other boards and Vault (saved notes, files, links, videos, images). Background context — use when relevant but do NOT prioritize over the current grid" + (hasProject ? " or project." : "."),
+        "- [USER_IDENTITY] (if present): The user's first name and active projects. Use these to make every response feel personal — not the same generic chat-bot tone.",
         "- [USER_MODEL] (if present): Periodically updated themes and style summary from past chats — use for tone, not as facts.",
         "- [SYNTHESIS_RETRIEVAL] (if present): Semantic matches from their embedded workspace index.",
         "- [CONVERSATION]: The full conversation history, including YOUR OWN previous responses.",
+        "",
+        "=== PERSONALISATION (CRITICAL) ===",
+        "If [USER_IDENTITY] is present in this prompt:",
+        "- Use the user's first name. Drop it naturally in greetings, hand-offs, transitions, and turning points (\"Got it, Alex.\" / \"Here's what I'd try, Alex —\"). Aim for one to two natural uses per response. Do NOT bolt the name onto every sentence; that reads as creepy or robotic.",
+        "- When the user mentions \"my project\", \"this project\", or asks about their work generically, look at the project list in [USER_IDENTITY]. If you can confidently match what they're talking about to one of their actual projects, refer to it by NAME (e.g. \"this fits with your LYKN launch project\") instead of saying \"your project\".",
+        "- When the user shares something new about themselves, their work, or their goals — acknowledge it briefly and remember it for the rest of the conversation. Continuity is what makes you feel alive.",
+        "- Never invent a project, role, or biographical detail that isn't in [USER_IDENTITY], [USER_MODEL], or the conversation. If you don't know the user's name, do not fake one — just skip the personalisation.",
+        "=== END PERSONALISATION ===",
         "",
         "=== CONTEXT PRIORITY (CRITICAL) ===",
         "When answering, follow this priority order strictly:",
@@ -4570,7 +4860,7 @@ ${t}
         "",
         "Primary behavior:",
         "- Answer the latest user message directly and clearly.",
-        "- For greetings — simple greeting back + question about their space ('What have you been working on?' / 'Where do you want to start today?') + casual lead-in ('Whenever you're ready, I'm here.' / 'Just start throwing ideas in and we'll get to work.'). 2-3 sentences. Never 'Good to see you.' Never robotic.",
+        "- For greetings — simple greeting back + question about their space ('What have you been working on?' / 'Where do you want to start today?') + casual lead-in ('Whenever you're ready, I'm here.' / 'Just start throwing ideas in and we'll get to work.'). 2-3 sentences. If [USER_IDENTITY] gave you their first name, lead with it (\"Hey Alex —\"). Never 'Good to see you.' Never robotic.",
         "- No fluff, no filler, no unnecessary preamble or conclusions.",
         "- Match response length to the question: short for simple questions, longer and detailed for complex topics. Always finish your thought completely.",
         "- Use blank lines between paragraphs and distinct ideas. Don't stack everything into one dense wall of text — give each thought room to breathe.",
@@ -4711,6 +5001,7 @@ ${t}
         "- If the user asks to create a code block, you MUST include {\"type\":\"create_code_block\"} with language and content.",
         "- If the user asks to create a design board/canvas, you MUST include {\"type\":\"create_design_board\"}.",
         "- If the user asks to create a media/image/video/embed block, you MUST include {\"type\":\"create_media\"} or the specific variant.",
+        "- If the user asks to pull, embed, drop, add, or put a website/site/page/url/link onto the grid (e.g. 'pull this site in', 'embed this URL', 'add this link to the board', 'drop in this website'), you MUST include {\"type\":\"create_embed\",\"url\":\"https://...\"}. The URL is rendered as a live iframe. If the user explicitly says 'bookmark' or 'just the link' or wants a clickable card (not a live page), use {\"type\":\"create_link\",\"url\":\"https://...\"} instead. NEVER tell the user you can't put a website on the grid — you can.",
         "- You have FULL ABILITY to create ANY type of brick on the grid. NEVER tell the user you cannot create a block — just do it by including the right action.",
         "- If the user asks to move, rearrange, organize, align, group, spread out, or lay out blocks, you MUST include move_block, move_blocks, or organize_grid actions. NEVER just say you organized them — you must actually include the actions.",
         "- If the user asks to connect, wire, link, or relate blocks, you MUST include connect_blocks actions with the correct block IDs. If they ask to disconnect or unlink, include remove_connection or disconnect_blocks.",
@@ -4740,7 +5031,9 @@ ${t}
         '- { "type": "create_text", "content": "Any text content", "format": "rich"|"plain"|"markdown" } — generic text brick. Also accepts "create_brick", "create_text_block", "create_card", "create_sticky".',
         '- { "type": "create_quote", "content": "Quote or callout text" } — callout/quote brick (also "create_callout")',
         '- { "type": "create_toggle", "content": "Collapsible section content" } — toggle/collapsible brick',
-        '- { "type": "create_media", "url": "https://...", "mode": "image"|"video", "name": "file name" } — media/embed brick (also "create_embed", "create_image_block", "create_video_block")',
+        '- { "type": "create_media", "url": "https://...", "mode": "image"|"video"|"embed"|"link", "name": "file name" } — generic media brick (also "create_image_block", "create_video_block")',
+        '- { "type": "create_embed", "url": "https://...", "name": "Site title" } — pull a WEBSITE onto the grid as a live iframe (renders the actual page). Use this when the user says "pull this site in", "embed this", "drop in this URL", "add this website to the board". Aliases: "create_website".',
+        '- { "type": "create_link", "url": "https://...", "name": "Link title" } — bookmark-style card with the URL (clickable, no iframe). Use when the user wants a tappable link tile rather than a live embedded page. Aliases: "create_bookmark".',
         '- { "type": "create_youtube_block", "url": "https://youtube.com/watch?v=..." } — embedded YouTube video',
         '- { "type": "create_universal_block", "data": { "content": "text", "textVariant": "h1"|"h2"|"body", "listType": "none"|"bulleted"|"numbered"|"checklist"|"toggle", "brickColor": "<palette value>", "textColor": "<palette value>" } } — universal text brick (headings, lists, quotes, body text). Colors must use the predefined palette values from the COLOR / STYLE section.',
         "",
@@ -4881,6 +5174,8 @@ ${t}
         '- If user says "create a toggle section", include actions: [{"type":"create_toggle","content":"Collapsible content here"}].',
         '- If user says "add a task board for my sprint", include actions: [{"type":"create_task_board","title":"Sprint Board","columns":[{"title":"Backlog","cards":["Task 1"]},{"title":"In Progress","cards":[]},{"title":"Done","cards":[]}]}].',
         '- If user says "create a design board", include actions: [{"type":"create_design_board"}].',
+        '- If user says "pull this site in: https://example.com" or "embed https://example.com" or "drop google.com onto the grid" or "add this website https://wikipedia.org" — include actions: [{"type":"create_embed","url":"https://example.com"}]. ALWAYS extract the URL from the user message verbatim. If the user wrote a bare domain (e.g. "google.com" or "nytimes.com"), use it as-is — the app will add https:// automatically. NEVER ask the user for the URL again — it is in their message.',
+        '- If user says "bookmark https://example.com" or "save this link" or "add a link tile for https://docs.foo.com" — include actions: [{"type":"create_link","url":"https://docs.foo.com","name":"Foo Docs"}].',
         '- If user says "tidy up my board" or "organize the grid", include actions: [{"type":"organize_grid","strategy":"grid"}].',
         '- If user says "help me plan a project", create a structured set: actions: [{"type":"create_heading","level":1,"content":"Project Plan"},{"type":"create_text","content":"Overview and goals..."},{"type":"create_task_board","title":"Project Tasks","columns":[{"title":"To Do","cards":["Research","Design","Build"]},{"title":"In Progress","cards":[]},{"title":"Done","cards":[]}]}]. These will appear stacked top-to-bottom in this order.',
         '- If user says "create a notes section", create: [{"type":"create_heading","level":1,"content":"Notes"},{"type":"create_text","content":""}]. The heading appears on top, the text block below it.',
@@ -4944,13 +5239,20 @@ ${t}
     if (enrichTier === 'none') console.log('⚡ No enrichment needed — simple query / action');
     else if (enrichTier === 'light') console.log('💡 Light enrichment — synthesis + user model (no web)');
     else console.log('🔬 Full enrichment — synthesis, user model, web search, URL scraping');
-    const skipScrape    = enrichTier !== 'full';
+    // Explicit URL intent overrides the tier — if the user pasted a URL and
+    // asked us to read / browse / search it, we scrape regardless of tier.
+    const explicitUrlIntent = !wantsActions && hasExplicitUrlScrapeIntent(searchText);
+    if (explicitUrlIntent) console.log('🔗 Explicit URL scrape intent detected — forcing scrape');
+    const skipScrape    = !explicitUrlIntent && enrichTier !== 'full';
     const skipSearch    = skipWebSearch || enrichTier !== 'full';
     const skipSynthesis = enrichTier === 'none';
     const skipUserModel = enrichTier === 'none';
+    // Identity is tiny (just name + project list) and high-value for tone, so
+    // we always pull it for chat-style intents — even "none" tier benefits.
+    const skipIdentity  = !isChatIntent;
     const skipYouTube   = enrichTier === 'none' || !needsYouTubeSearch(pureUserMessage || searchText);
-    const [scrapedContent, searchResults, synthesisRetrieval, userModelSection, youtubeResults] = await Promise.all([
-      skipScrape ? Promise.resolve("") : scrapeUrlsFromText(searchText),
+    const [scrapedContent, searchResults, synthesisRetrieval, userModelSection, userIdentitySection, youtubeResults] = await Promise.all([
+      skipScrape ? Promise.resolve("") : scrapeUrlsFromText(searchText, { force: explicitUrlIntent }),
       skipSearch ? Promise.resolve("") : runWebSearchIfNeeded(searchText, { hasFocusedBricks: Boolean(hasFocusedBricks), hasContext: hasContextForSearch }),
       !skipSynthesis
         ? fetchSynthesisRetrievalSection(req.headers.authorization, pureUserMessage || searchText)
@@ -4958,8 +5260,12 @@ ${t}
       !skipUserModel
         ? fetchUserModelSection(req.headers.authorization, req.user?.id)
         : Promise.resolve(""),
+      !skipIdentity
+        ? fetchUserIdentitySection(req.headers.authorization, req.user)
+        : Promise.resolve(""),
       skipYouTube ? Promise.resolve("") : runYouTubeSearchIfNeeded(pureUserMessage || searchText),
     ]);
+    if (userIdentitySection) prompt += "\n\n" + userIdentitySection;
     if (userModelSection) prompt += "\n\n" + userModelSection;
     if (synthesisRetrieval) prompt += "\n\n" + synthesisRetrieval;
     if (scrapedContent) prompt += "\n\n" + scrapedContent;
@@ -5544,7 +5850,13 @@ ${t}
         if (rawType === 'youtube') return { ...base, type: 'create_youtube_block', url: blk.url };
         if (rawType === 'video') return { ...base, type: 'create_video_block', url: blk.url };
         if (rawType === 'image') return { ...base, type: 'create_image_block', url: blk.url || blk.src };
-        if (rawType === 'embed' || rawType === 'media') return { ...base, type: 'create_media', url: blk.url || blk.src, mode: blk.mode };
+        if (rawType === 'embed' || rawType === 'website' || rawType === 'site' || rawType === 'iframe') {
+          return { ...base, type: 'create_embed', url: blk.url || blk.src, mode: blk.mode || 'embed', name: blk.name || blk.title };
+        }
+        if (rawType === 'link' || rawType === 'bookmark' || rawType === 'url') {
+          return { ...base, type: 'create_link', url: blk.url || blk.src, mode: blk.mode || 'link', name: blk.name || blk.title };
+        }
+        if (rawType === 'media') return { ...base, type: 'create_media', url: blk.url || blk.src, mode: blk.mode };
         if (rawType === 'text' || rawType === 'brick' || rawType === 'card' || rawType === 'sticky' || !rawType) {
           if (variant === 'h1') return { ...base, type: 'create_heading', level: 1 };
           if (variant === 'h2') return { ...base, type: 'create_h2', level: 2 };
@@ -5842,7 +6154,7 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
         "=== CASUAL CONVERSATION ===",
         "When the user sends a greeting — respond with three parts:",
         "1. A simple greeting back (Hey, Hi, Good morning, Good afternoon — vary it, never 'Good to see you').",
-        "2. A question about their workspace or direction: 'What have you been working on?' / 'Where do you want to start today?' / 'What are you thinking about?' — if you know the user's name, use it.",
+        "2. A question about their workspace or direction: 'What have you been working on?' / 'Where do you want to start today?' / 'What are you thinking about?' — if [USER_IDENTITY] gave you the user's first name, lead with it (\"Hey Alex — what are you thinking about?\").",
         "3. A casual lead-in: 'Whenever you're ready, I'm here.' / 'Just start throwing ideas in and we'll get to work.' / 'Drop something in and let's go from there.' / 'I'm ready when you are.'",
         "Keep it 2-3 short sentences. Friendly, not stiff. Never 'Good to see you.' Never 'What would you like to work on?' — too robotic. Sound like a creative partner who's relaxed and ready.",
         "=== END CASUAL CONVERSATION ===",
@@ -5904,9 +6216,18 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
         "- [CONTEXT]: The current board/grid the user is actively working on. This is your PRIMARY context — always prioritize it.",
         hasProject ? "- [PROJECT_KNOWLEDGE]: The project this grid belongs to — its other boards, files, and folders. This is your SECONDARY context. Use it to connect the user's current work to the broader project." : "",
         "- [WORKSPACE_CONTEXT]: The user's other boards and Vault (saved notes, files, links, videos, images). Background context — use when relevant but do NOT prioritize over the current grid" + (hasProject ? " or project." : "."),
+        "- [USER_IDENTITY] (if present): The user's first name and active projects — the personalisation layer. Use these to make every response feel like it's for them specifically.",
         "- [USER_MODEL] (if present): A periodically updated summary of this user's themes, style, and interests from past chats — use for tone and continuity, not as factual ground truth.",
         "- [SYNTHESIS_RETRIEVAL] (if present): Semantically matched snippets from their embedded workspace index.",
         "- [CONVERSATION]: The full conversation history including your own responses.",
+        "",
+        "=== PERSONALISATION (CRITICAL) ===",
+        "If [USER_IDENTITY] is present in this prompt:",
+        "- Use the user's first name. Drop it naturally in greetings, hand-offs, transitions, and turning points (\"Got it, Alex.\" / \"Here's what I'd try, Alex —\"). Aim for one to two natural uses per response. Do NOT bolt the name onto every sentence; that reads as creepy or robotic.",
+        "- When the user says \"my project\", \"this project\", or talks about their work generically, look at the project list in [USER_IDENTITY]. If you can confidently match the topic to one of their actual projects, refer to it by NAME (e.g. \"this fits with your LYKN launch project\") instead of generic \"your project\".",
+        "- When the user shares something new about themselves, their work, or their goals — acknowledge it briefly and carry it forward in the conversation. Continuity is what makes you feel alive.",
+        "- Never invent a project, role, or biographical fact that isn't in [USER_IDENTITY], [USER_MODEL], or the conversation. If you don't have a name, just skip the personalisation rather than guessing.",
+        "=== END PERSONALISATION ===",
         "",
         "=== CONTEXT PRIORITY (CRITICAL) ===",
         "When answering, follow this priority order strictly:",
@@ -5938,6 +6259,7 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
         "CAPABILITIES — You can produce rich, multi-modal output:",
         "- Text with formatting (headings, bullets, numbered lists, checklists with [ ], toggle lists, callout quotes).",
         "- YouTube video embeds: include a YouTube URL and it becomes a playable embedded video. NEVER say you can't show videos. CRITICAL: If [YOUTUBE_SEARCH_RESULTS] are provided, you MUST use URLs from that list — never invent YouTube URLs.",
+        "- Website embeds: when the user asks you to pull a site/URL/page onto the grid, the system will create a live iframe brick rendering that page. NEVER say you can't put a website on the grid — you can. Just confirm in plain words and the action channel handles the embed.",
         "- Image generation from descriptions.",
         "- Media pull-in: pull ANY file from the user's Vault onto the current board (images, videos, audio, PDFs, documents, links — all types).",
         "  In [WORKSPACE_CONTEXT], media items show: \"title\" (id=<noteId>) — files: <type>[<index>]",
@@ -6025,13 +6347,20 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
     if (streamEnrichTier === 'none') console.log('⚡ Stream: No enrichment — simple query / non-chat');
     else if (streamEnrichTier === 'light') console.log('💡 Stream: Light enrichment — synthesis + user model (no web)');
     else console.log('🔬 Stream: Full enrichment — synthesis, user model, web search, URL scraping');
-    const streamSkipScrape    = streamEnrichTier !== 'full';
+    // Explicit URL intent overrides the tier — if the user pasted a URL and
+    // asked us to read / browse / search it, we scrape regardless of tier.
+    const streamExplicitUrlIntent = isChatIntent && hasExplicitUrlScrapeIntent(streamSearchText);
+    if (streamExplicitUrlIntent) console.log('🔗 Stream: Explicit URL scrape intent detected — forcing scrape');
+    const streamSkipScrape    = !streamExplicitUrlIntent && streamEnrichTier !== 'full';
     const streamSkipSearch    = skipWebSearch || streamEnrichTier !== 'full';
     const streamSkipSynthesis = streamEnrichTier === 'none';
     const streamSkipUserModel = streamEnrichTier === 'none';
+    // Always pull identity for chat intents — name + projects are cheap and
+    // they're what makes the assistant feel personalised.
+    const streamSkipIdentity  = !isChatIntent;
     const streamSkipYouTube   = streamEnrichTier === 'none' || !needsYouTubeSearch(streamPureUserMessage || streamSearchText);
-    const [scrapedContent, searchResults, synthesisRetrieval, userModelSection, youtubeResults] = await Promise.all([
-      streamSkipScrape ? Promise.resolve("") : scrapeUrlsFromText(streamSearchText),
+    const [scrapedContent, searchResults, synthesisRetrieval, userModelSection, userIdentitySection, youtubeResults] = await Promise.all([
+      streamSkipScrape ? Promise.resolve("") : scrapeUrlsFromText(streamSearchText, { force: streamExplicitUrlIntent }),
       streamSkipSearch ? Promise.resolve("") : runWebSearchIfNeeded(streamSearchText, { hasFocusedBricks: Boolean(hasFocusedBricks), hasContext: hasContextForStreamSearch }),
       !streamSkipSynthesis
         ? fetchSynthesisRetrievalSection(req.headers.authorization, streamPureUserMessage || userText)
@@ -6039,8 +6368,12 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
       !streamSkipUserModel
         ? fetchUserModelSection(req.headers.authorization, req.user?.id)
         : Promise.resolve(""),
+      !streamSkipIdentity
+        ? fetchUserIdentitySection(req.headers.authorization, req.user)
+        : Promise.resolve(""),
       streamSkipYouTube ? Promise.resolve("") : runYouTubeSearchIfNeeded(streamPureUserMessage || streamSearchText),
     ]);
+    if (userIdentitySection) prompt += "\n\n" + userIdentitySection;
     if (userModelSection) prompt += "\n\n" + userModelSection;
     if (synthesisRetrieval) prompt += "\n\n" + synthesisRetrieval;
     if (scrapedContent) prompt += "\n\n" + scrapedContent;

@@ -1355,21 +1355,108 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
           recordPlaceholder(raw, bid);
           created++; continue;
         }
-        if (type === "create_media" || type === "create_embed" || type === "create_image_block" || type === "create_video_block") {
-          const url = String((raw as any)?.url || (raw as any)?.src || "").trim();
-          const mode = type === "create_video_block" ? "video" : type === "create_image_block" ? "image" : (raw as any)?.mode || "image";
-          const pos = getPos(g * 12, g * 10, rawX, rawY);
+        if (
+          type === "create_media" ||
+          type === "create_embed" ||
+          type === "create_image_block" ||
+          type === "create_video_block" ||
+          type === "create_link" ||
+          type === "create_website" ||
+          type === "create_bookmark"
+        ) {
+          const rawUrl = String((raw as any)?.url || (raw as any)?.src || "").trim();
+          // Models often emit bare domains ("google.com") instead of fully
+          // qualified URLs. Promote them to https:// so the iframe / link
+          // actually points somewhere navigable. We leave http:// and https://
+          // and data: / blob: schemes alone.
+          const url = rawUrl && !/^[a-z][a-z0-9+.-]*:/i.test(rawUrl)
+            ? `https://${rawUrl.replace(/^\/+/, "")}`
+            : rawUrl;
+          // Pick the right rendering mode for the action variant. Old default
+          // was "image" for everything-not-video/-image, which silently broke
+          // embeds (the iframe-mode renderer never fired). Now create_embed /
+          // create_website default to "embed", and create_link / create_bookmark
+          // default to "link" (a tappable bookmark preview).
+          let mode: string;
+          if (type === "create_video_block") mode = "video";
+          else if (type === "create_image_block") mode = "image";
+          else if (type === "create_embed" || type === "create_website") mode = String((raw as any)?.mode || "embed");
+          else if (type === "create_link" || type === "create_bookmark") mode = String((raw as any)?.mode || "link");
+          else mode = String((raw as any)?.mode || "image");
+          // Embedded websites get the og:image preview-card treatment via
+          // LinkBlock + LinkPreview. Use modest "preview card" dimensions
+          // (16:9-ish) instead of the giant viewer-surface size we'd want for
+          // a true iframe — most sites block iframe embedding anyway, so the
+          // preview card is what actually shows up.
+          const isWebsiteEmbed = mode === "embed" && Boolean(url) && !/^data:/i.test(url);
+          const isVideoEmbed = mode === "video";
+          const defaultW = isVideoEmbed ? g * 16 : isWebsiteEmbed ? g * 14 : g * 12;
+          const defaultH = isVideoEmbed ? g * 12 : isWebsiteEmbed ? g * 10 : g * 10;
+          const pos = getPos(defaultW, defaultH, rawX, rawY);
           const bid = `create-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+          const initialName = String((raw as any)?.name || (raw as any)?.title || "").trim();
           const b: any = {
             id: bid,
             type: "create", mode,
-            x: pos.x, y: pos.y, width: g * 12, height: g * 10,
-            data: { src: url, url, name: String((raw as any)?.name || (raw as any)?.title || "").trim() },
+            x: pos.x, y: pos.y, width: defaultW, height: defaultH,
+            data: { src: url, url, name: initialName },
             createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
           };
           st.addBlock(b);
           createdBlockIds.push(bid);
-          created++; continue;
+          recordPlaceholder(raw, bid);
+          created++;
+
+          // For website embeds and bookmark links, fire off a background
+          // unfurl so the brick picks up og:image / title / favicon. Without
+          // this the brick renders as the gradient-monogram fallback (no
+          // hero image), which is what the user sees as "not loading the
+          // website's image". Fire-and-forget — failures are non-fatal,
+          // the brick keeps the monogram as the fallback.
+          const shouldUnfurl = url && /^https?:\/\//i.test(url) && (mode === "embed" || mode === "link");
+          if (shouldUnfurl) {
+            (async () => {
+              try {
+                const [{ API_BASE_URL }, { supabase }] = await Promise.all([
+                  import("@/lib/api-config"),
+                  import("@/lib/supabase").catch(() => ({ supabase: null as any })),
+                ]);
+                const headers: Record<string, string> = {};
+                try {
+                  const sess = await supabase?.auth?.getSession?.();
+                  const token = sess?.data?.session?.access_token;
+                  if (token) headers.Authorization = `Bearer ${token}`;
+                } catch { /* anonymous request */ }
+                const res = await fetch(
+                  `${API_BASE_URL}/api/unfurl?url=${encodeURIComponent(url)}`,
+                  { headers }
+                );
+                if (!res.ok) return;
+                const meta: any = await res.json();
+                const cur: any = (useCanvasStore.getState() as any).blocks?.[bid];
+                if (!cur) return;
+                const curData = cur?.data && typeof cur.data === "object" ? cur.data : {};
+                useCanvasStore.getState().updateBlock(bid, {
+                  data: {
+                    ...curData,
+                    name: curData.name || meta.title || initialName,
+                    ogTitle: meta.title || "",
+                    ogDescription: meta.description || "",
+                    ogImage: meta.image || "",
+                    ogSiteName: meta.siteName || "",
+                    ogFavicon: meta.favicon || "",
+                    ...(meta.oembedType ? { oembedType: meta.oembedType } : {}),
+                    ...(meta.oembedHtml ? { oembedHtml: meta.oembedHtml } : {}),
+                    ...(meta.authorName ? { authorName: meta.authorName } : {}),
+                    ...(meta.authorHandle ? { authorHandle: meta.authorHandle } : {}),
+                  },
+                } as any);
+              } catch {
+                // unfurl is best-effort — brick still works without preview
+              }
+            })();
+          }
+          continue;
         }
         if (type === "organize_grid" || type === "auto_organize" || type === "auto_layout") {
           const allBlocks = Object.values(st.blocks || {}).filter(Boolean) as any[];

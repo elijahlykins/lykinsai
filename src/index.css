@@ -1745,3 +1745,263 @@ mark {
     filter: none;
   }
 }
+
+/* ============================================================
+   LYKN landing prototype — "wake" experience
+   Used by /landing-prototype. Self-contained: no other surfaces
+   pull these classes, so it's safe to iterate on freely.
+   ============================================================ */
+
+/* Solid near-black stage so the burst and chat bar pop. */
+.lykn-wake-stage {
+  background: #0a0a0a;
+  color: #ffffff;
+}
+
+/* Soft, persistent ambient glow that makes the stage feel awake. */
+.lykn-wake-ambient {
+  background: radial-gradient(
+    circle at 50% 50%,
+    rgba(96, 165, 250, 0.10) 0%,
+    rgba(59, 130, 246, 0.04) 28%,
+    transparent 58%
+  );
+  animation: lykn-wake-ambient-pulse 6.5s ease-in-out infinite;
+  will-change: opacity, transform;
+}
+
+@keyframes lykn-wake-ambient-pulse {
+  0%, 100% { opacity: 0.55; transform: scale(1); }
+  50%      { opacity: 1.00; transform: scale(1.04); }
+}
+
+/* Screen-wide one-shot border trace. Same effect as
+   `.omnia-chat-border-run-once::before` on the chat shell, just scaled to
+   the viewport: a bright electric-blue spot sweeps the perimeter once on
+   mount and fades out. Reuses the existing `--omnia-border-trace`
+   @property declaration (defined further up this file). */
+.lykn-wake-screen-trace {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 50;
+}
+
+.lykn-wake-screen-trace::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  padding: 3px;
+  background: conic-gradient(
+    from var(--omnia-border-trace) at 50% 50%,
+    transparent 0deg,
+    transparent 300deg,
+    rgba(59, 130, 246, 0.18) 320deg,
+    rgba(96, 165, 250, 0.65) 338deg,
+    rgba(147, 197, 253, 1) 348deg,
+    rgba(96, 165, 250, 0.65) 352deg,
+    rgba(59, 130, 246, 0.18) 358deg,
+    transparent 360deg
+  );
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  --omnia-border-trace: 0deg;
+  animation: omnia-border-trace 2.8s cubic-bezier(0.35, 0, 0.15, 1) forwards;
+  filter: drop-shadow(0 0 12px rgba(96, 165, 250, 0.55))
+          drop-shadow(0 0 28px rgba(59, 130, 246, 0.35));
+}
+
+/* Greeting copy — white with a soft electric-blue halo. */
+.lykn-wake-greeting-text {
+  background: linear-gradient(180deg, #ffffff 0%, #d6e4ff 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  filter:
+    drop-shadow(0 0 16px rgba(96, 165, 250, 0.45))
+    drop-shadow(0 0 38px rgba(59, 130, 246, 0.22));
+}
+
+/* Typing caret. Solid bar in electric blue, blinks twice per second. */
+.lykn-wake-cursor {
+  display: inline-block;
+  width: 2px;
+  margin-left: 3px;
+  color: transparent;
+  background: linear-gradient(180deg, #93c5fd 0%, #3b82f6 100%);
+  box-shadow:
+    0 0 8px rgba(96, 165, 250, 0.95),
+    0 0 18px rgba(59, 130, 246, 0.55);
+  animation: lykn-wake-cursor-blink 1s steps(2) infinite;
+}
+
+@keyframes lykn-wake-cursor-blink {
+  0%, 49%   { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+
+/* Slate-blue override of the chat shell for the prototype only. The live
+   .dark .omnia-neu-chat-shell defaults to a near-neutral grey (#343840 →
+   #282c32); on a near-black stage we want a more clearly slate-blue body. */
+.lykn-wake-chat-shell.omnia-neu-chat-shell {
+  background: linear-gradient(145deg, #2e3a4e, #222b3a);
+  border-color: rgba(147, 197, 253, 0.06);
+  box-shadow:
+    0 4px 16px rgba(0, 0, 0, 0.55),
+    0 1.5px 4px rgba(0, 0, 0, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+/* Send button picks up the same slate-blue family so the toolbar reads
+   as one surface. */
+.lykn-wake-chat-shell .omnia-neu-chat-send-btn {
+  background: linear-gradient(145deg, #34405a, #232c40);
+  border-color: rgba(147, 197, 253, 0.08);
+  box-shadow:
+    3px 3px 8px rgba(0, 0, 0, 0.45),
+    -2px -2px 6px rgba(255, 255, 255, 0.02);
+}
+
+.lykn-wake-chat-shell .omnia-neu-chat-send-btn:hover:not(:disabled) {
+  background: linear-gradient(145deg, #344a72, #283a5d);
+  border-color: rgba(96, 165, 250, 0.4);
+  box-shadow:
+    3px 3px 8px rgba(0, 0, 0, 0.4),
+    -1px -1px 5px rgba(255, 255, 255, 0.03),
+    0 0 16px rgba(59, 130, 246, 0.22);
+}
+
+/* Persistent electric-blue ring around the chat shell.
+   Sits as a sibling pseudo-element so it doesn't interfere with the
+   one-shot conic border trace already provided by
+   .omnia-chat-border-run-once::before. */
+.lykn-wake-chat-shell {
+  position: relative;
+  isolation: isolate;
+}
+
+.lykn-wake-chat-shell::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: 16px;
+  pointer-events: none;
+  z-index: 0;
+  box-shadow:
+    0 0 0 1px rgba(147, 197, 253, 0.55),
+    0 0 24px rgba(96, 165, 250, 0.35),
+    0 0 64px rgba(59, 130, 246, 0.22);
+  animation: lykn-wake-ring-pulse 3.4s ease-in-out infinite;
+}
+
+@keyframes lykn-wake-ring-pulse {
+  0%, 100% {
+    box-shadow:
+      0 0 0 1px rgba(147, 197, 253, 0.55),
+      0 0 22px rgba(96, 165, 250, 0.32),
+      0 0 60px rgba(59, 130, 246, 0.22);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1px rgba(191, 219, 254, 0.85),
+      0 0 34px rgba(96, 165, 250, 0.55),
+      0 0 96px rgba(59, 130, 246, 0.40);
+  }
+}
+
+/* Stagger-fade for each opener question as it appears in the AI greeting. */
+.lykn-wake-question-fade {
+  animation: lykn-wake-question-fade 380ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes lykn-wake-question-fade {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Synthesis layer sidebar ─────────────────────────────────────── */
+
+.lykn-wake-synth-panel {
+  background: linear-gradient(180deg, #0f1218 0%, #0a0d12 100%);
+  border-left: 1px solid rgba(96, 165, 250, 0.18);
+  box-shadow:
+    -10px 0 40px rgba(0, 0, 0, 0.55),
+    inset 1px 0 0 rgba(96, 165, 250, 0.08);
+}
+
+/* Small icon tile in the sidebar header — soft blue-tinted glass. */
+.lykn-wake-synth-icon {
+  background: linear-gradient(145deg, rgba(96, 165, 250, 0.18), rgba(59, 130, 246, 0.06));
+  border: 1px solid rgba(96, 165, 250, 0.22);
+  box-shadow: 0 0 12px rgba(96, 165, 250, 0.18) inset;
+}
+
+/* "Neuron created" pill that lives at the end of an AI response.
+   Persistent gentle pulse so the user notices it's actionable. */
+.lykn-wake-neuron-pill {
+  animation: lykn-wake-neuron-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes lykn-wake-neuron-pulse {
+  0%, 100% {
+    box-shadow:
+      0 0 0 1px rgba(96, 165, 250, 0.35),
+      0 0 14px rgba(59, 130, 246, 0.30);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1px rgba(147, 197, 253, 0.7),
+      0 0 26px rgba(96, 165, 250, 0.55);
+  }
+}
+
+/* Each fact node card animates in with a brief electric-blue pulse so it
+   reads as "just been created" rather than "always there". */
+.lykn-wake-synth-node {
+  animation: lykn-wake-node-in 520ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  box-shadow:
+    0 4px 20px rgba(0, 0, 0, 0.35),
+    0 0 22px rgba(59, 130, 246, 0.18);
+}
+
+.lykn-wake-synth-node::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: 0 0 0 1px rgba(147, 197, 253, 0.55), 0 0 24px rgba(96, 165, 250, 0.6);
+  opacity: 0;
+  animation: lykn-wake-node-pulse 1400ms ease-out both;
+}
+
+@keyframes lykn-wake-node-in {
+  0%   { opacity: 0; transform: translateY(8px) scale(0.96); }
+  60%  { opacity: 1; transform: translateY(0)   scale(1.015); }
+  100% { opacity: 1; transform: translateY(0)   scale(1); }
+}
+
+@keyframes lykn-wake-node-pulse {
+  0%   { opacity: 0; }
+  20%  { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lykn-wake-cursor,
+  .lykn-wake-chat-shell::after,
+  .lykn-wake-screen-trace::before,
+  .lykn-wake-question-fade,
+  .lykn-wake-synth-node,
+  .lykn-wake-synth-node::before,
+  .lykn-wake-neuron-pill {
+    animation: none !important;
+  }
+  .lykn-wake-screen-trace::before { opacity: 0; }
+}

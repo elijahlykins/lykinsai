@@ -5,6 +5,7 @@ import { useCanvasStore } from "@/store/canvasStore";
 import type { Block } from "@/canvas/types";
 import { snapshotToSynthesisText } from "@/lib/synthesis/sourceText";
 import { scheduleSynthesisReindex } from "@/lib/synthesis/queueReindex";
+import { scheduleUserProfileRefresh } from "@/lib/synthesis/profileRefresh";
 import type { NotePage } from "@/components/notes/NotesPanel";
 import { notifyBlocksCapIfApplicable } from "@/lib/board/blocksCapError";
 import { isDemoGridId, getDemoGridSnapshot } from "@/lib/demoGrids";
@@ -623,6 +624,9 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
             text: embedText,
             metadata: { title: savedTitle },
           });
+          // Grid saves are real evidence about what the user is working on —
+          // feed them into the user-model learner the same way vault saves do.
+          if (userId) scheduleUserProfileRefresh(userId);
         } catch {
           /* synthesis embed is best-effort */
         }
