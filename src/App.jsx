@@ -110,19 +110,17 @@ function AppShell() {
             <Route
               path="/synthesis-layer"
               element={
-                <MobileRedirect to="/">
-                  {user ? (
-                    <PlanGate
-                      minPlan="studio"
-                      feature="Mind Map"
-                      description="The synthesis layer visualises every grid, project, and vault item as a live mind map. Upgrade to Studio to explore it."
-                    >
-                      <SynthesisLayer />
-                    </PlanGate>
-                  ) : (
+                user ? (
+                  <PlanGate
+                    minPlan="studio"
+                    feature="Mind Map"
+                    description="The synthesis layer visualises every grid, project, and vault item as a live mind map. Upgrade to Studio to explore it."
+                  >
                     <SynthesisLayer />
-                  )}
-                </MobileRedirect>
+                  </PlanGate>
+                ) : (
+                  <SynthesisLayer />
+                )
               }
             />
             <Route

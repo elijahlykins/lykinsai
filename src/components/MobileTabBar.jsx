@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import ReactDOM from "react-dom";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
+  Brain,
   Bug,
   Compass,
   CreditCard,
@@ -14,6 +15,8 @@ import {
   X,
 } from "lucide-react";
 import { useAuth } from "@/lib/SupabaseAuth";
+import { useUserPlan } from "@/lib/useUserPlan";
+import { planMeets } from "@/components/PlanGate";
 import FeedbackModal from "@/components/FeedbackModal";
 
 const flushAndNavigate = (nav, path) => {
@@ -43,6 +46,8 @@ export default function MobileTabBar() {
   const location = useLocation();
   const nav = useNavigate();
   const { user, signInWithOAuth, signOut } = useAuth();
+  const { planId } = useUserPlan();
+  const canUseSynthesis = planMeets(planId, "studio");
   const [moreOpen, setMoreOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
 
@@ -140,6 +145,19 @@ export default function MobileTabBar() {
 
               <div className="py-1">
                 <MoreItem
+                  icon={Brain}
+                  label="Synthesis Layer"
+                  trailing={
+                    !canUseSynthesis ? (
+                      <Lock className="w-3.5 h-3.5 text-black/40 dark:text-white/40" aria-label="Upgrade required" />
+                    ) : null
+                  }
+                  onClick={() => {
+                    setMoreOpen(false);
+                    flushAndNavigate(nav, "/synthesis-layer");
+                  }}
+                />
+                <MoreItem
                   icon={Compass}
                   label="Discover"
                   onClick={() => {
@@ -202,7 +220,7 @@ export default function MobileTabBar() {
   );
 }
 
-function MoreItem({ icon: Icon, label, onClick, danger }) {
+function MoreItem({ icon: Icon, label, onClick, danger, trailing }) {
   return (
     <button
       type="button"
@@ -214,7 +232,8 @@ function MoreItem({ icon: Icon, label, onClick, danger }) {
       }`}
     >
       <Icon className="w-4 h-4 opacity-80" />
-      <span className="text-sm font-medium">{label}</span>
+      <span className="flex-1 text-sm font-medium">{label}</span>
+      {trailing}
     </button>
   );
 }
