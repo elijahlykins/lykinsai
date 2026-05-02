@@ -1013,6 +1013,22 @@ export default function OmniaGridPage() {
   } = useProjectFiles(boardId, user?.id);
   projectIdRef.current = projectId ?? null;
 
+  // Keep the in-memory grid title in sync when a peer surface (mobile
+  // grids drawer, sidebar menu, etc.) renames the active board out of
+  // band. Without this, the next autosave round-trips the snapshot with
+  // the stale local title and silently undoes the rename.
+  useEffect(() => {
+    const onRenamed = (e: Event) => {
+      const detail = (e as CustomEvent<{ boardId?: string; title?: string }>)?.detail;
+      if (!detail) return;
+      if (String(detail.boardId || "") !== String(boardId || "")) return;
+      const next = String(detail.title || "").trim() || "New Grid";
+      setTitle(next);
+    };
+    window.addEventListener("omnia_board_renamed", onRenamed as EventListener);
+    return () => window.removeEventListener("omnia_board_renamed", onRenamed as EventListener);
+  }, [boardId, setTitle]);
+
   /* ------------------------------------------------------------------ */
   /*  Chat engine hook                                                    */
   /* ------------------------------------------------------------------ */

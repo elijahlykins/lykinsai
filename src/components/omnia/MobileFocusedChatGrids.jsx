@@ -1,7 +1,16 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import ReactDOM from "react-dom";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
-import { LayoutGrid, Plus, Search as SearchIcon, SquarePen, X } from "lucide-react";
+import {
+  Edit2,
+  LayoutGrid,
+  MoreHorizontal,
+  Plus,
+  Search as SearchIcon,
+  SquarePen,
+  Trash2,
+  X,
+} from "lucide-react";
 import { GridIcon } from "@/components/ui/GridIcon";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
@@ -12,6 +21,8 @@ const flushAndNavigate = (nav, path) => {
   window.dispatchEvent(new Event("omnia_flush_save"));
   setTimeout(() => nav(path), 80);
 };
+
+const isDemoId = (id) => DEMO_GRID_LIST.some((g) => g.id === String(id));
 
 /**
  * Mobile-only entry point for switching between saved grids while in
@@ -28,6 +39,8 @@ export default function MobileFocusedChatGrids() {
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
+  const [actionFor, setActionFor] = useState(null); // { id, title }
+  const actionSheetRef = useRef(null);
 
   const { data: boards = [] } = useQuery({
     queryKey: ["boards", user?.id],
@@ -89,6 +102,60 @@ export default function MobileFocusedChatGrids() {
     // viewports OmniaGrid auto-forces chatMode=true, so the user stays
     // in focused chat — no extra wiring needed here.
     flushAndNavigate(nav, `/grid/${newId}`);
+  };
+
+  const renameGrid = async (boardId, currentTitle) => {
+    if (!user?.id) return;
+    if (isDemoId(boardId)) return;
+    const next = window.prompt("Rename grid", currentTitle || "New Grid");
+    if (next === null) return;
+    const name = next.trim() || "New Grid";
+    const { error } = await supabase
+      .from("omnia_boards")
+      .update({ title: name, updated_at: new Date().toISOString() })
+      .eq("id", boardId)
+      .eq("user_id", user.id);
+    setActionFor(null);
+    if (error) {
+      window.alert("Couldn't rename grid: " + error.message);
+      return;
+    }
+    window.dispatchEvent(new Event("lykinsai_boards_changed"));
+    // Tell OmniaGrid (and anyone else mounted) so the in-memory title
+    // for the active grid stays in sync — otherwise the next autosave
+    // could clobber the new name with the stale local copy.
+    window.dispatchEvent(
+      new CustomEvent("omnia_board_renamed", { detail: { boardId, title: name } })
+    );
+  };
+
+  const deleteGrid = async (boardId) => {
+    if (!user?.id) return;
+    if (isDemoId(boardId)) return;
+    const ok = window.confirm("Delete this grid? This cannot be undone.");
+    if (!ok) return;
+    await supabase.from("omnia_board_states").delete().eq("board_id", boardId);
+    const { error } = await supabase
+      .from("omnia_boards")
+      .delete()
+      .eq("id", boardId)
+      .eq("user_id", user.id);
+    setActionFor(null);
+    if (error) {
+      window.alert("Couldn't delete grid: " + error.message);
+      return;
+    }
+    if (localStorage.getItem("omnia_board_id") === boardId) {
+      localStorage.removeItem("omnia_board_id");
+    }
+    window.dispatchEvent(new Event("lykinsai_boards_changed"));
+    // If the user just nuked the grid they were sitting on, kick them
+    // back to "/" so OmniaGrid mounts a fresh board instead of trying
+    // to load the one we just deleted.
+    if (String(routeBoardId || "") === String(boardId) || location.pathname === `/grid/${boardId}`) {
+      setOpen(false);
+      flushAndNavigate(nav, "/");
+    }
   };
 
   return (
@@ -185,42 +252,61 @@ export default function MobileFocusedChatGrids() {
                     const isActive =
                       String(routeBoardId || "") === String(b.id) ||
                       location.pathname === `/grid/${b.id}`;
+                    const canEdit = !!user && !isDemoId(b.id);
                     return (
-                      <li key={b.id}>
-                        <button
-                          type="button"
-                          onClick={() => goToGrid(b.id)}
-                          className={`w-full flex items-center gap-3 px-3 py-3 rounded-xl text-left transition-colors ${
+                      <li key={b.id} className="relative">
+                        <div
+                          className={`w-full flex items-center gap-3 pl-3 pr-1 py-2 rounded-xl transition-colors ${
                             isActive
                               ? "bg-blue-500/10 text-blue-600 dark:text-blue-400"
                               : "hover:bg-black/[0.04] dark:hover:bg-white/5 text-black/85 dark:text-white/85"
                           }`}
                         >
-                          <span
-                            className={`flex-shrink-0 w-9 h-9 rounded-lg flex items-center justify-center ${
-                              isActive
-                                ? "bg-blue-500/15 text-blue-600 dark:text-blue-400"
-                                : "bg-black/[0.05] dark:bg-white/5 text-black/55 dark:text-white/55"
-                            }`}
+                          <button
+                            type="button"
+                            onClick={() => goToGrid(b.id)}
+                            className="flex-1 min-w-0 flex items-center gap-3 py-1 text-left"
                           >
-                            <GridIcon className="w-4 h-4" />
-                          </span>
-                          <span className="flex-1 min-w-0">
-                            <span className="block text-sm font-medium truncate">
-                              {b.title || "New Grid"}
+                            <span
+                              className={`flex-shrink-0 w-9 h-9 rounded-lg flex items-center justify-center ${
+                                isActive
+                                  ? "bg-blue-500/15 text-blue-600 dark:text-blue-400"
+                                  : "bg-black/[0.05] dark:bg-white/5 text-black/55 dark:text-white/55"
+                              }`}
+                            >
+                              <GridIcon className="w-4 h-4" />
                             </span>
-                            {b.updated_at && (
-                              <span className="block text-[0.6875rem] text-black/45 dark:text-white/45 truncate">
-                                Updated {formatRelative(b.updated_at)}
+                            <span className="flex-1 min-w-0">
+                              <span className="block text-sm font-medium truncate">
+                                {b.title || "New Grid"}
+                              </span>
+                              {b.updated_at && (
+                                <span className="block text-[0.6875rem] text-black/45 dark:text-white/45 truncate">
+                                  Updated {formatRelative(b.updated_at)}
+                                </span>
+                              )}
+                            </span>
+                            {isActive && (
+                              <span className="flex-shrink-0 text-[0.625rem] uppercase tracking-wider font-semibold text-blue-600 dark:text-blue-400">
+                                Open
                               </span>
                             )}
-                          </span>
-                          {isActive && (
-                            <span className="flex-shrink-0 text-[0.625rem] uppercase tracking-wider font-semibold text-blue-600 dark:text-blue-400">
-                              Open
-                            </span>
+                          </button>
+                          {canEdit && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setActionFor({ id: b.id, title: b.title || "New Grid" });
+                              }}
+                              className="flex-shrink-0 w-9 h-9 rounded-full flex items-center justify-center text-black/55 dark:text-white/55 hover:bg-black/[0.05] dark:hover:bg-white/8 active:scale-95 transition-all"
+                              aria-label={`More options for ${b.title || "New Grid"}`}
+                              title="More"
+                            >
+                              <MoreHorizontal className="w-4 h-4" />
+                            </button>
                           )}
-                        </button>
+                        </div>
                       </li>
                     );
                   })}
@@ -228,6 +314,53 @@ export default function MobileFocusedChatGrids() {
               )}
             </div>
           </div>
+
+          {actionFor && (
+            <div
+              className="absolute inset-0 z-[10] flex items-end"
+              onClick={() => setActionFor(null)}
+            >
+              <div className="absolute inset-0 bg-black/30" />
+              <div
+                ref={actionSheetRef}
+                className="relative w-full mx-2 mb-2 rounded-2xl bg-white dark:bg-[#2a2a2c] border border-black/10 dark:border-white/10 shadow-2xl overflow-hidden"
+                style={{ marginBottom: "max(env(safe-area-inset-bottom, 0px), 8px)" }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="px-4 pt-3 pb-2 border-b border-black/5 dark:border-white/5">
+                  <p className="text-[0.6875rem] uppercase tracking-wider text-black/45 dark:text-white/45 font-semibold">
+                    Grid options
+                  </p>
+                  <p className="text-sm text-black/85 dark:text-white/85 truncate mt-0.5">
+                    {actionFor.title}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => renameGrid(actionFor.id, actionFor.title)}
+                  className="w-full flex items-center gap-3 px-4 py-3.5 text-left text-sm text-black/85 dark:text-white/85 hover:bg-black/[0.04] dark:hover:bg-white/5 active:bg-black/[0.08] dark:active:bg-white/10 transition-colors"
+                >
+                  <Edit2 className="w-4 h-4 opacity-70" />
+                  Rename grid
+                </button>
+                <button
+                  type="button"
+                  onClick={() => deleteGrid(actionFor.id)}
+                  className="w-full flex items-center gap-3 px-4 py-3.5 text-left text-sm text-red-600 dark:text-red-400 hover:bg-red-500/5 active:bg-red-500/10 transition-colors border-t border-black/5 dark:border-white/5"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  Delete grid
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActionFor(null)}
+                  className="w-full flex items-center justify-center px-4 py-3.5 text-sm font-medium text-black/70 dark:text-white/70 border-t border-black/5 dark:border-white/5 hover:bg-black/[0.04] dark:hover:bg-white/5 transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
         </div>,
         document.body
       )}
