@@ -5509,7 +5509,10 @@ User: ${text}`;
         })(),
         document.body
       )}
-      {!isEmbeddedMode && createPortal(
+      {/* Drag-to-delete trash can — desktop only. On phones the bottom-left
+          corner conflicts with the mobile tab bar and the drag-and-hold
+          gesture isn't usable on touch, so the affordance is hidden. */}
+      {!isEmbeddedMode && !isMobileChat && createPortal(
         <div
           className="fixed z-[200] flex items-end gap-2"
           style={{ bottom: "16px", left: "16px", pointerEvents: "none" }}
