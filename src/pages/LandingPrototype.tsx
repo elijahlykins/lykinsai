@@ -868,7 +868,23 @@ const LandingPrototype = () => {
                 ))}
               </div>
             </div>
-            <div className="w-full flex justify-center px-4 pb-6 pt-2">
+            {/* Chat bar fades out the moment the first neuron is created.
+                The user is now meant to graduate from typing into LYKN to
+                exploring what they've built — clicking the glowing
+                "Neuron created" pill (or the Synthesis Layer button in
+                the sidebar that mounts on the same trigger) is the only
+                forward action. We keep the bar mounted in the DOM through
+                the transition so the fade reads as a deliberate handoff
+                rather than a snap-cut. `pointer-events-none` once it's
+                gone so a stray click can't reactivate it. */}
+            <div
+              className={`w-full flex justify-center px-4 pb-6 pt-2 transition-opacity duration-[600ms] ease-out ${
+                factNodes.length > 0
+                  ? "opacity-0 pointer-events-none"
+                  : "opacity-100"
+              }`}
+              aria-hidden={factNodes.length > 0}
+            >
               <div className="w-full max-w-2xl">{chatBarBlock}</div>
             </div>
           </>

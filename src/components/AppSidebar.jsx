@@ -26,7 +26,6 @@ import { GridIcon } from "@/components/ui/GridIcon";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { DEMO_GRID_LIST } from "@/lib/demoGrids";
 import {
   hasPrototypeNeurons,
   PROTOTYPE_STEP_EVENT,
@@ -546,29 +545,13 @@ export default function AppSidebar({
           <div className="flex-1 min-h-0 overflow-y-auto scrollbar-hide">
             <div className="flex flex-col gap-0.5">
               {!user && !isPrototypePreview ? (
-                // Guest preview: show 3 demo grids so the sidebar isn't empty.
-                // Routes resolve to snapshot-backed boards (see demoGrids.js).
-                // In prototype-handoff preview mode we deliberately skip these
-                // so the workspace looks brand new.
-                <>
-                  {DEMO_GRID_LIST.map((g) => {
-                    const isActive = location.pathname === `/grid/${g.id}`;
-                    return (
-                      <div key={g.id} className="group relative flex items-center">
-                        <button
-                          type="button"
-                          onClick={() => goTo(`/grid/${g.id}`)}
-                          className={`flex-1 min-w-0 text-left text-[0.6875rem] px-2.5 py-1 rounded-md flex items-center gap-2 transition-colors ${
-                            isActive ? "bg-blue-500/15" : "hover:bg-blue-500/15"
-                          }`}
-                        >
-                          <span className={`inline-block h-1.5 w-1.5 rounded-full flex-shrink-0 ${isActive ? "bg-blue-500" : "bg-black/30 dark:bg-white/30"}`} />
-                          <span className="truncate">{g.title}</span>
-                        </button>
-                      </div>
-                    );
-                  })}
-                </>
+                // Signed-out, no walkthrough yet: show nothing. We used to
+                // render `DEMO_GRID_LIST` (3 prebuilt demo boards) here so
+                // the sidebar wasn't empty, but that surfaced fake content
+                // as if it were the visitor's own work — confusing for
+                // anyone trying out LYKN cold. Now signed-out users only
+                // ever see what THEY create through the walkthrough.
+                <div className="text-[0.6875rem] text-black/40 dark:text-white/40 px-2.5 py-1">No grids yet</div>
               ) : !user && isPrototypePreview ? (
                 // Prototype-handoff preview: the user has exactly one
                 // "grid" — the saved transcript of their first chat

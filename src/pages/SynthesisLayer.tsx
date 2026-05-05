@@ -33,13 +33,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import SynthesisScene3D from "@/pages/synthesis/SynthesisScene3D";
-import {
-  DEMO_PROJECTS,
-  DEMO_BOARDS,
-  DEMO_SYNTHESIS_PROFILE,
-  DEMO_SYNTHESIS_NOTES,
-  isDemoNodeId,
-} from "@/lib/demoSynthesis";
+import { isDemoNodeId } from "@/lib/demoSynthesis";
 import { isDemoGridId } from "@/lib/demoGrids";
 import {
   hasPrototypeNeurons,
@@ -1586,41 +1580,38 @@ export default function SynthesisLayer() {
   );
 
   // Prototype-only: neurons created during the landing onboarding live in
-  // localStorage so this page can show them on first guest visit. We read
-  // once on mount; the list is small and stable for the session.
-  const prototypeNeurons = useMemo(
-    () => (user?.id ? [] : readPrototypeNeurons()),
-    [user?.id],
-  );
+  // localStorage so this page can show them on every visit during the
+  // walkthrough — including the moment a guest signs in mid-walkthrough,
+  // when `user?.id` flips on but we still want their freshly-formed
+  // neuron to drive the scene rather than an empty / demo workspace.
+  // Read once on mount; the list is small and stable for the session.
+  const prototypeNeurons = useMemo(() => readPrototypeNeurons(), []);
   // Prototype-only: the conversation transcript from the landing chat
   // becomes the user's very first "grid" — a tangible artifact in the
   // synthesis layer that shows the moment LYKN started learning them.
-  const prototypeChat = useMemo(
-    () => (user?.id ? [] : readPrototypeChat()),
-    [user?.id],
-  );
+  // Same rationale as above: keep this around through sign-in so the
+  // walkthrough stays coherent.
+  const prototypeChat = useMemo(() => readPrototypeChat(), []);
 
-  // Demo-mode kicks in whenever the user hasn't created any projects or
-  // grids yet (guests always match; brand-new signed-in users match until
-  // they make their first one). In that state we overlay synthetic
-  // projects / boards / synthesis profile so the layer feels alive instead
-  // of flashing the "empty" placeholder. Real notes (or seeded demo notes)
-  // stay as-is.
-  const isDemoMode = projects.length === 0 && boards.length === 0;
+  // True whenever we're rendering the landing-prototype walkthrough — i.e.
+  // the visitor created at least one neuron in the landing chat and we're
+  // still inside the guided tour. Drives the entire "empty workspace
+  // showing only your freshly-formed neuron" experience. We deliberately
+  // do NOT gate this on `!user?.id` anymore: signing in mid-walkthrough
+  // (e.g. after the synthesis layer plays) used to flip this off and
+  // dump the user into a demo-content-flooded synthesis network.
+  const isPrototypeHandoff = prototypeNeurons.length > 0;
 
-  // True only when we're rendering the prototype handoff: a guest visitor
-  // who just created their first neuron in the landing prototype. In that
-  // mode we deliberately *don't* show the demo projects/boards/notes — we
-  // want to show an empty workspace that's just been "woken up", with only
-  // the user's neuron and the AI's basic capability neurons visible.
-  const isPrototypeHandoff = !user?.id && prototypeNeurons.length > 0;
-
+  // No more demo-content fallback. Brand-new signed-in users with no
+  // projects/boards used to see a synthetic "Morning practice / Harbor /
+  // Greenroom" workspace stitched in from `demoSynthesis.js`; that demo
+  // shipped the user out of the walkthrough into a fake mind that wasn't
+  // theirs. Now the synthesis layer only ever shows real data + the
+  // user's prototype handoff, with an empty workspace falling through to
+  // the standard empty-state placeholder below.
   const effectiveProjects = useMemo(
-    () => {
-      if (isPrototypeHandoff) return [];
-      return isDemoMode ? DEMO_PROJECTS : projects;
-    },
-    [isPrototypeHandoff, isDemoMode, projects],
+    () => (isPrototypeHandoff ? [] : projects),
+    [isPrototypeHandoff, projects],
   );
   const effectiveBoards = useMemo(
     () => {
@@ -1648,9 +1639,9 @@ export default function SynthesisLayer() {
           },
         ];
       }
-      return isDemoMode ? DEMO_BOARDS : boards;
+      return boards;
     },
-    [isPrototypeHandoff, isDemoMode, boards, prototypeChat.length],
+    [isPrototypeHandoff, boards, prototypeChat],
   );
   // For guests we intentionally bypass `notes` as a dependency — the
   // `useQuery` destructuring default (`= []`) produces a new empty array
@@ -1659,28 +1650,21 @@ export default function SynthesisLayer() {
   // layout with fresh random jitter.
   const effectiveNotes = useMemo<NoteRow[]>(() => {
     if (isPrototypeHandoff) return [];
-    if (!user?.id) return DEMO_SYNTHESIS_NOTES as unknown as NoteRow[];
+    if (!user?.id) return [];
     return notes as NoteRow[];
   }, [isPrototypeHandoff, user?.id, notes]);
 
   const synthesisData: SynthesisData | null = useMemo(() => {
-    if (isDemoMode) {
-      // Prototype handoff: surface only the user's freshly-created
-      // neuron(s). Everything else (projects, grids, vault, tags) renders
-      // as an empty category shell so the page reads as a brand-new mind
-      // with exactly one thing in it.
-      if (isPrototypeHandoff) {
-        return {
-          themes: prototypeNeurons.map((n) => n.text),
-          narrative:
-            "This is your synthesis layer the moment it woke up. The neuron you just created is the only thing here — your projects, grids, vault, and tags are waiting to be filled.",
-          signals: {},
-        };
-      }
+    // Prototype handoff: surface only the user's freshly-created
+    // neuron(s). Everything else (projects, grids, vault, tags) renders
+    // as an empty category shell so the page reads as a brand-new mind
+    // with exactly one thing in it.
+    if (isPrototypeHandoff) {
       return {
-        themes: DEMO_SYNTHESIS_PROFILE.themes,
-        narrative: DEMO_SYNTHESIS_PROFILE.narrative,
-        signals: DEMO_SYNTHESIS_PROFILE.signals as Record<string, any>,
+        themes: prototypeNeurons.map((n) => n.text),
+        narrative:
+          "This is your synthesis layer the moment it woke up. The neuron you just created is the only thing here — your projects, grids, vault, and tags are waiting to be filled.",
+        signals: {},
       };
     }
     if (!synthesisProfile) return null;
@@ -1689,7 +1673,7 @@ export default function SynthesisLayer() {
       narrative: synthesisProfile.narrative || "",
       signals: (synthesisProfile.signals && typeof synthesisProfile.signals === "object") ? synthesisProfile.signals as Record<string, any> : {},
     };
-  }, [isDemoMode, synthesisProfile, isPrototypeHandoff, prototypeNeurons]);
+  }, [synthesisProfile, isPrototypeHandoff, prototypeNeurons]);
 
   const synthesisThemes: string[] = useMemo(() => {
     const t: string[] = [];
@@ -1836,7 +1820,6 @@ export default function SynthesisLayer() {
   // graph centroid the moment the user pokes their freshly-formed neuron).
   // Computed before handleNodeClick so the callback closure can read it.
   const prototypeFocusId = useMemo<string | null>(() => {
-    if (user?.id) return null;
     if (prototypeNeurons.length === 0) return null;
     // buildGraph creates theme neurons with id `neuron_theme_<raw text>`,
     // taken straight from `synthesis.themes` (NOT the lowercased
@@ -1850,7 +1833,7 @@ export default function SynthesisLayer() {
     // arrival rather than the stale first one.
     const latest = prototypeNeurons[prototypeNeurons.length - 1];
     return `neuron_theme_${latest.text}`;
-  }, [user?.id, prototypeNeurons]);
+  }, [prototypeNeurons]);
 
   /* Node click → select & show panel */
   const handleNodeClick = useCallback((nodeId: string) => {
