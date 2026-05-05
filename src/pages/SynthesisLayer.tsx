@@ -3,6 +3,9 @@ import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/SupabaseAuth";
+import { useUserPlan } from "@/lib/useUserPlan";
+import PlanGate from "@/components/PlanGate";
+import { PLAN_LIMITS } from "@/lib/pricing-config";
 import { useQuery } from "@tanstack/react-query";
 import {
   Brain,
@@ -1448,8 +1451,19 @@ function DetailPanel({
 /*  Main component                                                     */
 /* ------------------------------------------------------------------ */
 
+// Free users get a real preview of the Synthesis Layer up to this many
+// user-created nodes (everything except the root + category shells).
+// Pulled from PLAN_LIMITS so the cap stays in lockstep with the rest of
+// the pricing config; falling back here is just defensive in case the
+// limits map ever drops the field.
+const FREE_SYNTHESIS_NODE_LIMIT: number =
+  Number.isFinite(PLAN_LIMITS.free?.synthesisNodes)
+    ? (PLAN_LIMITS.free.synthesisNodes as number)
+    : 50;
+
 export default function SynthesisLayer() {
   const { user, signInWithOAuth } = useAuth();
+  const { planId, loading: planLoading } = useUserPlan();
   const navigate = useNavigate();
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -1744,6 +1758,29 @@ export default function SynthesisLayer() {
   );
   const nodeMap = useMemo(() => new Map(allNodes.map((n) => [n.id, n])), [allNodes]);
 
+  // Count only the nodes the user actually created — projects, grids, vault
+  // notes, tags, and AI-learned neurons. The root node and the category
+  // shells (Projects / Grids / Vault / Tags / AI Learned) are scaffolding
+  // that exists regardless of activity, so they're excluded from the
+  // free-tier cap below.
+  const userCreatedNodeCount = useMemo(
+    () => allNodes.filter((n) => n.kind !== "root" && n.kind !== "category").length,
+    [allNodes],
+  );
+
+  // Free tier gets the full Synthesis Layer experience up to
+  // FREE_SYNTHESIS_NODE_LIMIT user-created nodes. Once they cross it the
+  // page swaps in the standard PlanGate paywall instead of the canvas.
+  // Guests bypass this entirely so the demo / prototype-handoff scenes
+  // can still run, and we wait for the plan query to resolve before
+  // gating to avoid a paywall flash for paying users.
+  const overFreeSynthesisLimit =
+    !planLoading &&
+    !!user?.id &&
+    planId === "free" &&
+    Number.isFinite(FREE_SYNTHESIS_NODE_LIMIT) &&
+    userCreatedNodeCount > FREE_SYNTHESIS_NODE_LIMIT;
+
   /* Collect all ideas: synthesis themes + note ai_signals themes + tags */
   const allIdeas = useMemo(() => {
     const s = new Set<string>();
@@ -1929,6 +1966,24 @@ export default function SynthesisLayer() {
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
   }, []);
+
+  // Free-tier paywall takeover. Routed through PlanGate (with no children)
+  // so we get the same paywall UI used everywhere else — Lock card, plan
+  // copy, "View plans" CTA — without re-implementing it here. PlanGate
+  // checks the user's plan against `minPlan="studio"`, sees free < studio,
+  // and renders its built-in fallback. This early return runs after every
+  // hook above, which is what keeps it React-rules-of-hooks safe.
+  if (overFreeSynthesisLimit) {
+    return (
+      <PlanGate
+        minPlan="studio"
+        feature="Mind Map"
+        description={`Your Free plan includes the Synthesis Layer up to ${FREE_SYNTHESIS_NODE_LIMIT} nodes. You've reached ${userCreatedNodeCount} — upgrade to Studio for the full, unlimited mind map.`}
+      >
+        {null}
+      </PlanGate>
+    );
+  }
 
   return (
     <div

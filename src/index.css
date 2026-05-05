@@ -1758,6 +1758,102 @@ mark {
   color: #ffffff;
 }
 
+/* ── Boot / "wake" intro ─────────────────────────────────────────
+   On first paint the entire stage is muted to black and the
+   "Synthetic Intelligence" wordmark fades in at center, holds,
+   then fades out. Once the wordmark is gone the mute lifts and
+   the normal wake sequence (perimeter trace, "Waking up..." chat
+   bubble, typed greeting) takes over. Both elements are fixed-
+   position, pointer-events: none, and the whole wrapper unmounts
+   after the sequence so no inert overlay nodes linger. */
+
+/* Solid black curtain over the stage. Matches the .lykn-wake-stage
+   background (#0a0a0a) exactly so the boot reads as the stage
+   itself starting blank, not as a translucent overlay floating
+   on top of a visible workspace. No backdrop blur needed — the
+   layer is fully opaque, so nothing underneath is visible while
+   the title card holds. Lifts off completely once the boot
+   intro is done so the perimeter trace + greeting can take over. */
+.lykn-wake-boot-overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 60;
+  background: #0a0a0a;
+  animation: lykn-wake-boot-overlay 5400ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+@keyframes lykn-wake-boot-overlay {
+  0%   { opacity: 1; }
+  88%  { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* Title-card group — the only thing visible while the screen is
+   muted. Centered fixed-position wrapper holding the welcome
+   line and the tagline beneath it. Pointer-events disabled so
+   nothing here intercepts clicks; the actual fade animations
+   live on the children for a slight stagger. */
+.lykn-wake-boot-title-group {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  z-index: 66;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+/* "Welcome to Synthetic Intelligence" — plain white, bold. */
+.lykn-wake-boot-title {
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  font-size: clamp(20px, 2.6vw, 32px);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #ffffff;
+  opacity: 0;
+  transform: translateY(6px);
+  animation: lykn-wake-boot-line-in 4400ms ease-out 300ms both;
+}
+
+/* "The Future of Thinking" — plain white, bold, smaller for
+   hierarchy. Arrives after the title and exits earlier (its own
+   keyframes have a shorter hold) so it's fully gone before the
+   mute overlay starts to lift, leaving the title alone for a
+   beat before everything releases into the wake sequence. */
+.lykn-wake-boot-tagline {
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  font-size: clamp(14px, 1.6vw, 19px);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #ffffff;
+  opacity: 0;
+  transform: translateY(6px);
+  animation: lykn-wake-boot-tagline-life 3000ms ease-out 1000ms both;
+}
+
+@keyframes lykn-wake-boot-line-in {
+  0%   { opacity: 0; transform: translateY(6px); }
+  14%  { opacity: 1; transform: translateY(0); }
+  82%  { opacity: 1; transform: translateY(0); }
+  100% { opacity: 0; transform: translateY(-3px); }
+}
+
+@keyframes lykn-wake-boot-tagline-life {
+  0%   { opacity: 0; transform: translateY(6px); }
+  20%  { opacity: 1; transform: translateY(0); }
+  65%  { opacity: 1; transform: translateY(0); }
+  100% { opacity: 0; transform: translateY(-3px); }
+}
+
+
 /* Soft, persistent ambient glow that makes the stage feel awake. */
 .lykn-wake-ambient {
   background: radial-gradient(
@@ -1893,27 +1989,44 @@ mark {
   border-radius: 16px;
   pointer-events: none;
   z-index: 0;
+  /* Persistent bright electric-blue 1px ring + a soft outer
+     halo. The ring itself never animates; only the outer halo
+     drifts subtly via the pulse keyframes below. */
   box-shadow:
-    0 0 0 1px rgba(147, 197, 253, 0.55),
-    0 0 24px rgba(96, 165, 250, 0.35),
-    0 0 64px rgba(59, 130, 246, 0.22);
-  animation: lykn-wake-ring-pulse 3.4s ease-in-out infinite;
+    0 0 0 1px rgba(191, 219, 254, 0.95),
+    0 0 18px rgba(96, 165, 250, 0.28),
+    0 0 48px rgba(59, 130, 246, 0.16);
+  animation: lykn-wake-ring-pulse 6s ease-in-out infinite;
 }
 
+/* The 1px ring stop is identical in both keyframes so the bright
+   electric-blue line stays rock-solid; the two outer halo stops
+   swell + brighten noticeably between keyframes to give a clearly
+   visible (but still calm) breathing pulse. */
 @keyframes lykn-wake-ring-pulse {
   0%, 100% {
     box-shadow:
-      0 0 0 1px rgba(147, 197, 253, 0.55),
-      0 0 22px rgba(96, 165, 250, 0.32),
-      0 0 60px rgba(59, 130, 246, 0.22);
+      0 0 0 1px rgba(191, 219, 254, 0.95),
+      0 0 18px rgba(96, 165, 250, 0.24),
+      0 0 48px rgba(59, 130, 246, 0.14);
   }
   50% {
     box-shadow:
-      0 0 0 1px rgba(191, 219, 254, 0.85),
-      0 0 34px rgba(96, 165, 250, 0.55),
-      0 0 96px rgba(59, 130, 246, 0.40);
+      0 0 0 1px rgba(191, 219, 254, 0.95),
+      0 0 32px rgba(96, 165, 250, 0.48),
+      0 0 80px rgba(59, 130, 246, 0.30);
   }
 }
+
+/* The chat-shell's pulsing blue ring (.lykn-wake-chat-shell::after)
+   doesn't need to be suppressed during boot anymore: the chat
+   bar itself is now gated on questionStarted in JSX, so it
+   doesn't even mount until well after the boot intro has
+   completed. There's nothing for the boot overlay to "cover up"
+   at the chat-bar position. The perimeter conic trace is
+   likewise gated on !bootActive in JSX, since that one IS a
+   load-in sweep (not a persistent element) and should fire only
+   after the title card fades. */
 
 /* Stagger-fade for each opener question as it appears in the AI greeting. */
 .lykn-wake-question-fade {
@@ -1923,6 +2036,51 @@ mark {
 @keyframes lykn-wake-question-fade {
   from { opacity: 0; transform: translateY(4px); }
   to   { opacity: 1; transform: translateY(0); }
+}
+
+/* The big prompt headline that takes over the top region after
+   the user clicks "Get started". Two animations chained on a
+   single class (must be in one comma-separated `animation`
+   value because the CSS cascade resolves the `animation`
+   shorthand as a single property — splitting them across two
+   classes would have the later class wipe the earlier one):
+     A single slow, deliberate fade-up (1.6s cubic-bezier ease-out,
+     opacity 0→1 + 10px slide). No glow — the text settles in plain
+     white and stays put. */
+.lykn-wake-prompt-in {
+  opacity: 0;
+  animation: lykn-wake-prompt-fade-in 1600ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes lykn-wake-prompt-fade-in {
+  0%   { opacity: 0; transform: translateY(10px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+/* Chat box fade-in for the empty state. Used when questionStarted
+   flips: the chat box mounts for the first time, paired with the
+   prompt headline, and eases up over 1.4s with a small slide so
+   it arrives smoothly rather than popping in. */
+.lykn-wake-chat-fade-in {
+  animation: lykn-wake-chat-fade-in 1400ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes lykn-wake-chat-fade-in {
+  0%   { opacity: 0; transform: translateY(10px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+/* Sign-in pill in the top-right of the wake stage. Mounts the
+   moment the boot intro completes, paired in time with the
+   perimeter trace sweep. Slow ease so it joins the page rather
+   than popping in over the cinematic reveal. */
+.lykn-wake-signin-fade {
+  animation: lykn-wake-signin-fade 1200ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes lykn-wake-signin-fade {
+  0%   { opacity: 0; transform: translateY(-4px); }
+  100% { opacity: 1; transform: translateY(0); }
 }
 
 /* ── Synthesis layer sidebar ─────────────────────────────────────── */
@@ -1996,11 +2154,17 @@ mark {
 @media (prefers-reduced-motion: reduce) {
   .lykn-wake-cursor,
   .lykn-wake-chat-shell::after,
+  .lykn-wake-chat-fade-in,
+  .lykn-wake-signin-fade,
   .lykn-wake-screen-trace::before,
   .lykn-wake-question-fade,
+  .lykn-wake-prompt-in,
   .lykn-wake-synth-node,
   .lykn-wake-synth-node::before,
   .lykn-wake-neuron-pill,
+  .lykn-wake-boot-overlay,
+  .lykn-wake-boot-title,
+  .lykn-wake-boot-tagline,
   .lykn-sidebar-mount-fade,
   .lykn-sidebar-synthesis-glow,
   .lykn-sidebar-vault-glow,
@@ -2008,6 +2172,21 @@ mark {
     animation: none !important;
   }
   .lykn-wake-screen-trace::before { opacity: 0; }
+  .lykn-wake-boot-overlay,
+  .lykn-wake-boot-title,
+  .lykn-wake-boot-tagline { opacity: 0; }
+  .lykn-wake-prompt-in {
+    opacity: 1;
+    transform: none;
+  }
+  .lykn-wake-chat-fade-in {
+    opacity: 1;
+    transform: none;
+  }
+  .lykn-wake-signin-fade {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 /* ── Prototype: AppSidebar fade-in + Synthesis Layer glow ──────────

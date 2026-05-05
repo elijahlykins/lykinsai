@@ -11,12 +11,43 @@ try {
   if (saved.fontSize)      document.documentElement.style.setProperty('--font-scale', fontScales[saved.fontSize] || '1');
   if (saved.layoutDensity) document.documentElement.style.setProperty('--layout-density', densities[saved.layoutDensity] || '1');
 
+  // Dark mode is the default for the LYKN walkthrough (landing →
+  // synthesis → vault → grid). Logic:
+  //   1. Detect whether a Supabase auth session is present in
+  //      localStorage. Supabase persists sessions under keys of
+  //      the form `sb-<projectref>-auth-token`, so we just look
+  //      for any localStorage key that matches that pattern with
+  //      a non-empty value.
+  //   2. If NO auth session is present, the visitor is in the
+  //      walkthrough — force dark mode regardless of any stale
+  //      saved theme. This is what fixes the case where an old
+  //      session still has `theme: 'system'` saved from before
+  //      the dark-default switch and the OS is light.
+  //   3. If an auth session IS present, respect the user's saved
+  //      theme preference (defaulting to 'dark' for new users).
+  let hasAuthSession = false;
+  try {
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const k = localStorage.key(i);
+      if (k && /^sb-.*-auth-token$/.test(k) && localStorage.getItem(k)) {
+        hasAuthSession = true;
+        break;
+      }
+    }
+  } catch {
+    // localStorage access can throw in private mode; treat as no session.
+  }
+
   const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-  const theme = saved.theme || 'system';
-  const isDark = theme === 'dark' || (theme === 'system' && prefersDark);
+  const savedTheme = saved.theme || 'dark';
+  const effectiveTheme = hasAuthSession ? savedTheme : 'dark';
+  const isDark = effectiveTheme === 'dark' || (effectiveTheme === 'system' && prefersDark);
   if (isDark) {
     document.documentElement.classList.add('dark');
     document.documentElement.style.setProperty('--app-background', '#1e1e1e');
+  } else {
+    document.documentElement.classList.remove('dark');
+    document.documentElement.style.removeProperty('--app-background');
   }
 } catch {}
 

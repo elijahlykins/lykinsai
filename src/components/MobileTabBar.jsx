@@ -6,7 +6,6 @@ import {
   Bug,
   Compass,
   CreditCard,
-  Lock,
   LogOut,
   MessageSquare,
   MoreHorizontal,
@@ -15,8 +14,6 @@ import {
   X,
 } from "lucide-react";
 import { useAuth } from "@/lib/SupabaseAuth";
-import { useUserPlan } from "@/lib/useUserPlan";
-import { planMeets } from "@/components/PlanGate";
 import FeedbackModal from "@/components/FeedbackModal";
 
 const flushAndNavigate = (nav, path) => {
@@ -46,8 +43,6 @@ export default function MobileTabBar() {
   const location = useLocation();
   const nav = useNavigate();
   const { user, signInWithOAuth, signOut } = useAuth();
-  const { planId } = useUserPlan();
-  const canUseSynthesis = planMeets(planId, "studio");
   const [moreOpen, setMoreOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
 
@@ -147,11 +142,6 @@ export default function MobileTabBar() {
                 <MoreItem
                   icon={Brain}
                   label="Synthesis Layer"
-                  trailing={
-                    !canUseSynthesis ? (
-                      <Lock className="w-3.5 h-3.5 text-black/40 dark:text-white/40" aria-label="Upgrade required" />
-                    ) : null
-                  }
                   onClick={() => {
                     setMoreOpen(false);
                     flushAndNavigate(nav, "/synthesis-layer");

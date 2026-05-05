@@ -781,8 +781,8 @@ async function handleStreamingResponse(
   let accumulated = "";
   let firstToken = true;
   let sseBuffer = "";
-  const isVideoReq = /\b(?:generate|create|make|produce|render)\b.{0,20}\b(?:video|clip|animation|footage|cinematic)\b/i.test(userText) || /\b(?:animate|film)\b.{0,30}\b(?:me|a|an|the|of|for)\b/i.test(userText);
-  const STREAM_INACTIVITY_MS = isVideoReq ? 11 * 60 * 1000 : 60000;
+  void userText;
+  const STREAM_INACTIVITY_MS = 60000;
 
   if (reader) {
     let inactivityTimer = setTimeout(() => { reader.cancel(); p.abortController.abort(); }, STREAM_INACTIVITY_MS);
@@ -811,36 +811,6 @@ async function handleStreamingResponse(
               break;
             }
             if (parsed.status) { state.setChatStatusText(String(parsed.status)); continue; }
-            if (parsed.image) {
-              state.setChatStatusText("Image generated");
-              const imageUrl = String(parsed.image);
-              state.setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: `[Generated Image]`, aiImageUrl: imageUrl } : m)));
-              {
-                const stImg = canvas.getCanvasState();
-                const gImg = Math.max(1, Math.floor(stImg.gridSize || 24));
-                let imgX: number, imgY: number;
-                if (responseBlockId && stImg.blocks?.[responseBlockId]) {
-                  imgX = stImg.blocks[responseBlockId].x ?? 100;
-                  imgY = stImg.blocks[responseBlockId].y ?? 100;
-                  try { canvas.deleteBlock(responseBlockId); } catch {}
-                } else {
-                  const imgPos = findSmartPlacementForImage(stImg, gImg);
-                  imgX = imgPos.x;
-                  imgY = imgPos.y;
-                }
-                stImg.addBlock({
-                  id: `create-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-                  type: "create" as const, mode: "image",
-                  x: imgX, y: imgY, width: gImg * 12, height: gImg * 12,
-                  data: { src: imageUrl },
-                  createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-                });
-                responseBlockId = null;
-              }
-              uploadAiImageToStorage(p, promptId, imageUrl);
-              accumulated = `[Generated Image](${imageUrl})`;
-              break;
-            }
             if (parsed.t) {
               if (firstToken) {
                 state.setChatStatusText("Responding...");
@@ -906,47 +876,6 @@ async function handleStreamingResponse(
     }
   }
   return { accumulated, responseBlockId };
-}
-
-function findSmartPlacementForImage(st: any, g: number) {
-  const allBlocks = Object.values(st.blocks || {}).filter(Boolean) as any[];
-  const cam = st.camera || { x: 0, y: 0, zoom: 1 };
-  const vw = window.innerWidth || 1280;
-  const vh = window.innerHeight || 800;
-  const cx = Math.round(((cam.x || 0) + vw / 2 - g * 6) / g) * g;
-  const cy = Math.round(((cam.y || 0) + vh / 2 - g * 6) / g) * g;
-  const overlaps = (px: number, py: number) =>
-    allBlocks.some((r: any) => px < (r.x || 0) + (r.width || g) + g && px + g * 12 > (r.x || 0) - g && py < (r.y || 0) + (r.height || g) + g && py + g * 12 > (r.y || 0) - g);
-  if (!overlaps(cx, cy)) return { x: cx, y: cy };
-  for (let r = g; r < Math.max(vw, vh); r += g) {
-    for (const [dx, dy] of [[0, -r], [r, 0], [0, r], [-r, 0]]) {
-      const px = Math.round((cx + dx) / g) * g;
-      const py = Math.round((cy + dy) / g) * g;
-      if (!overlaps(px, py)) return { x: px, y: py };
-    }
-  }
-  return { x: cx, y: cy + g * 14 };
-}
-
-function uploadAiImageToStorage(p: ChatSendParams, promptId: string, imageUrl: string) {
-  const userId = p.identity.userId;
-  const supabase = p.supabaseClient;
-  if (!userId) return;
-  (async () => {
-    try {
-      const imgRes = await fetch(imageUrl);
-      if (!imgRes.ok) return;
-      const blob = await imgRes.blob();
-      const imgExt = blob.type?.includes("png") ? "png" : "jpg";
-      const imgPath = `${userId}/chat-images/${promptId}.${imgExt}`;
-      const { error: upErr } = await supabase.storage.from("user-files").upload(imgPath, blob, { cacheControl: "3600", upsert: true });
-      if (upErr) return;
-      const { data: signed } = await supabase.storage.from("user-files").createSignedUrl(imgPath, 60 * 60 * 24 * 7);
-      if (signed?.signedUrl) {
-        p.state.setChatMessages((prev: PromptMessage[]) => prev.map((m: PromptMessage) => (m.id === promptId ? { ...m, aiImageUrl: signed.signedUrl, aiImageStoragePath: imgPath } : m)));
-      }
-    } catch { /* non-critical */ }
-  })();
 }
 
 /* ------------------------------------------------------------------ */
@@ -1697,7 +1626,6 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
   const hasFocusedBricks = (st.focusedBrickIds || []).length > 0;
   const focusedIds: string[] = Array.isArray(st.focusedBrickIds) ? st.focusedBrickIds : [];
 
-  let editImageUrl = "";
   const isImgBlock = (blk: any) => blk?.type === "image" || (blk?.type === "create" && (blk.mode === "image" || blk.mode === "generated"));
   const getImgSrc = (blk: any) => {
     const src = String(blk?.src || blk?.data?.src || "").trim();
@@ -1709,10 +1637,7 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
     const blk = st.blocks?.[fid];
     if (!isImgBlock(blk)) continue;
     const src = getImgSrc(blk);
-    if (src) {
-      if (!editImageUrl) editImageUrl = src;
-      if (!visionImageUrls.includes(src)) visionImageUrls.push(src);
-    }
+    if (src && !visionImageUrls.includes(src)) visionImageUrls.push(src);
   }
 
   const MAX_VISION_IMAGES = 8;
@@ -1796,7 +1721,6 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
     hasFocusedBricks,
     skipWebSearch: hasVideoTranscript,
     ...(mediaContext ? { mediaContext: mediaContext.slice(0, 8000) } : {}),
-    ...(editImageUrl ? { editImageUrl } : {}),
     ...(attachedImageUrls.length ? { imageUrls: attachedImageUrls } : {}),
     ...getAiPrefs(),
   };
@@ -1831,7 +1755,7 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
 
   let responseBlockId: string | null = null;
 
-  if ((focusedBrickActionIntent || wantsActionPath) && !editImageUrl) {
+  if (focusedBrickActionIntent || wantsActionPath) {
     const statusMsg = wantsNotesAction ? "Writing notes..."
       : wantsDelete ? "Removing blocks..."
       : wantsOrganize ? "Organizing grid..."
@@ -1901,35 +1825,6 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
       state.setChatStatusText("Answered");
       return;
     }
-    if ((data as any)?.type === "image" && (data as any)?.url) {
-      const imageUrl = String((data as any).url);
-      state.setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: "[Generated Image]", aiImageUrl: imageUrl } : m)));
-      p.aiThread.push({ role: "assistant", content: `[Generated Image](${imageUrl})` });
-      if (p.aiThread.length > 40) p.aiThread.splice(0, p.aiThread.length - 40);
-      const stImg = canvas.getCanvasState();
-      const gImg = Math.max(1, Math.floor(stImg.gridSize || 24));
-      let imgX: number, imgY: number;
-      if (responseBlockId && stImg.blocks?.[responseBlockId]) {
-        imgX = stImg.blocks[responseBlockId].x ?? 100;
-        imgY = stImg.blocks[responseBlockId].y ?? 100;
-        try { canvas.deleteBlock(responseBlockId); } catch {}
-      } else {
-        const imgPos = findSmartPlacementForImage(stImg, gImg);
-        imgX = imgPos.x;
-        imgY = imgPos.y;
-      }
-      stImg.addBlock({
-        id: `create-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-        type: "create", mode: "image",
-        x: imgX, y: imgY, width: gImg * 12, height: gImg * 12,
-        data: { src: imageUrl },
-        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-      });
-      uploadAiImageToStorage(p, promptId, imageUrl);
-      state.setChatStatusText("Image generated");
-      return;
-    }
-
     let invokeAiText = String(data?.response || data?.answer || data?.text || "").trim();
     await typing.typeResponseIntoChat(promptId, analysis.sanitizeAssistantResponse(invokeAiText) || "I'm not sure how to answer that. Could you rephrase?");
     await postProcessResponse(p, invokeAiText, promptId, responseBlockId, youtubeGrounding, youtubeTranscriptSource, asksAboutVideo, cappedText);

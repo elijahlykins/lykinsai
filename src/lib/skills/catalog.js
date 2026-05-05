@@ -37,7 +37,7 @@ export const SKILL_CATEGORIES = [
     id: "create",
     label: "Create & Generate",
     description:
-      "Produce text, images, mind maps, and visual workspaces from a prompt.",
+      "Produce text, mind maps, and visual workspaces from a prompt.",
     accent: "#8B5CF6", // violet
   },
   {
@@ -200,34 +200,12 @@ export const SKILLS = [
 
   // ── Create & Generate ────────────────────────────────────────────
   {
-    id: "image-gen",
-    category: "create",
-    icon: "Sparkles",
-    name: "Generate images",
-    summary:
-      "Text-to-image with state-of-the-art models. Saved straight to your canvas.",
-    example: "a moodboard hero for a coastal-luxe interior",
-    status: "live",
-    action: { route: "/grid/new" },
-  },
-  {
-    id: "image-edit",
-    category: "create",
-    icon: "Wand2",
-    name: "Edit images with prompts",
-    summary:
-      "Change anything in an image with a sentence. Powered by Nano Banana / Gemini.",
-    example: "make the wall sage green and add a brass sconce",
-    status: "live",
-    action: { route: "/grid/new" },
-  },
-  {
     id: "canvas-build",
     category: "create",
     icon: "LayoutGrid",
     name: "Build visual canvases",
     summary:
-      "Generate text, images, tables, embeds, and link previews directly on a grid.",
+      "Drop text, tables, embeds, and link previews directly on a grid.",
     status: "live",
     action: { route: "/grid/new" },
   },

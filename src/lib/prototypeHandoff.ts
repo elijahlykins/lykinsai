@@ -144,6 +144,61 @@ export const writePrototypeStep = (step: PrototypeStep | null): void => {
   } catch {
     // ignore quota / private-mode errors
   }
+  // Walkthrough → default model coupling. The first time we enter the
+  // vault we want the brand alias selected (so the user sees "LYKN" in
+  // the chat-bar picker, not whatever happened to be cached). Once they
+  // finish the walkthrough we drop them onto the free-tier Haiku so
+  // every casual question after the tour stays cheap. Each transition
+  // only fires once because writePrototypeStep guards against same-step
+  // writes upstream — see e.g. VaultNew's `step === "synthesis"` check.
+  applyWalkthroughDefaultModel(step);
+};
+
+/* ------------------------------------------------------------------ */
+/*  Default-model coupling                                              */
+/*                                                                      */
+/*  Side effect of `writePrototypeStep`: keeps the model picker's       */
+/*  default in sync with the user's progress through the walkthrough.   */
+/*  Lives next to the storage keys so all the walkthrough plumbing is   */
+/*  in one file.                                                        */
+/* ------------------------------------------------------------------ */
+const SETTINGS_LS_KEY = "lykinsai_settings";
+const SETTINGS_CHANGED_EVENT = "lykinsai_settings_changed";
+
+// Per-step default model. Keep ids in sync with `MODEL_GROUPS` in
+// `src/lib/modelCatalog.js` — anything written here must be a value the
+// picker can render or the trigger will fall back to its placeholder.
+//
+// Both "vault" and "grid" stay on the LYKN brand alias so the entire
+// guided walkthrough feels like one cohesive AI surface; the swap to
+// the cheap Haiku free-tier model only happens when the walkthrough
+// finishes and the user is exploring on their own.
+const STEP_DEFAULT_MODEL: Partial<Record<PrototypeStep, string>> = {
+  vault: "lykn",
+  grid: "lykn",
+  done: "claude-haiku-4-5-20251001",
+};
+
+const applyWalkthroughDefaultModel = (step: PrototypeStep | null): void => {
+  if (typeof window === "undefined" || step === null) return;
+  const nextModel = STEP_DEFAULT_MODEL[step];
+  if (!nextModel) return;
+  try {
+    const raw = window.localStorage.getItem(SETTINGS_LS_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    if (parsed && typeof parsed === "object" && parsed.aiModel === nextModel) {
+      // Already on the right model — don't churn the event listeners.
+      return;
+    }
+    const next = { ...(parsed || {}), aiModel: nextModel };
+    window.localStorage.setItem(SETTINGS_LS_KEY, JSON.stringify(next));
+    window.dispatchEvent(new CustomEvent(SETTINGS_CHANGED_EVENT));
+    // `storage` only fires cross-tab, so dispatch a synthetic same-tab
+    // notification too — VaultNew listens to both.
+    window.dispatchEvent(new Event("storage"));
+  } catch {
+    // ignore JSON / quota / private-mode errors
+  }
 };
 
 /* ------------------------------------------------------------------ */
@@ -184,6 +239,43 @@ export const incrementGuestChatCount = (): number => {
 
 export const guestChatCapReached = (): boolean =>
   readGuestChatCount() >= GUEST_CHAT_SESSION_CAP;
+
+/* ------------------------------------------------------------------ */
+/*  Walkthrough reset                                                   */
+/*                                                                      */
+/*  Wipes every prototype-handoff localStorage / sessionStorage key so   */
+/*  the next page load behaves like a brand-new visitor — empty          */
+/*  Synthesis Layer, no demo grid, no "Vault intro played" one-shots,    */
+/*  guest chat counter back to zero. Used by `signOut` so logging out    */
+/*  feels like "starting from the beginning" instead of dropping the     */
+/*  user back into a half-finished walkthrough.                          */
+/* ------------------------------------------------------------------ */
+export const clearPrototypeState = (): void => {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(PROTOTYPE_NEURONS_LS_KEY);
+    window.localStorage.removeItem(PROTOTYPE_CHAT_LS_KEY);
+    window.localStorage.removeItem(PROTOTYPE_STEP_LS_KEY);
+  } catch {
+    // ignore quota / private-mode errors
+  }
+  try {
+    window.sessionStorage.removeItem(PROTO_VAULT_INTRO_SS_KEY);
+    window.sessionStorage.removeItem(PROTO_GRID_INTRO_SS_KEY);
+    window.sessionStorage.removeItem(GUEST_CHAT_SESSION_COUNT_KEY);
+  } catch {
+    // ignore
+  }
+  // Notify same-window listeners (sidebar walkthrough nudges) that step
+  // state just changed back to "no session yet".
+  try {
+    window.dispatchEvent(
+      new CustomEvent(PROTOTYPE_STEP_EVENT, { detail: { step: null } }),
+    );
+  } catch {
+    // ignore
+  }
+};
 
 // Stable id for the synthetic "First Conversation" grid generated from
 // the landing-prototype chat. Treated as a demo-grid id by `demoGrids.js`

@@ -6,7 +6,8 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Send, Loader2, Bot, User, Plus, Mic, MessageSquare, X, File, ImageIcon, LinkIcon, Video, FileText, HelpCircle } from 'lucide-react';
-import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Select, SelectContent, SelectTrigger, SelectValue } from '@/components/ui/select';
+import ModelSelectOptions from '@/components/ModelSelectOptions';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { useNavigate } from 'react-router-dom';
 import { createPageUrl } from '../utils';
@@ -365,8 +366,8 @@ IMPORTANT:
 - Reference specific video content when relevant. If the user asks about a video, use the transcript to provide accurate information about what was discussed.
 - You have FULL live web browsing and search capabilities. You CAN search the internet, browse websites, read articles, and access current information in real time. NEVER say you cannot browse the web, access websites, or get live information — because you CAN. When the system provides [WEB_SEARCH_RESULTS] or [DEEP_BROWSE_CONTENT], that is live data fetched from the internet right now. Use it confidently.
 - If [WEB_SEARCH_RESULTS] or [DEEP_BROWSE_CONTENT] are present, the system already searched the web — use the results and briefly mention you looked it up. If the user asks something needing live info but no results are present, offer: "Want me to browse the web for that?"
-- If the user asks you to create or generate an image but the current model isn't an image model, suggest switching: "I can create that! Want to switch to an image model like GPT Image 1.5 or DALL-E 3? Just use the model dropdown at the top."
-- Never say "I can't do that." Instead, tell the user HOW to do it and offer to help.
+- LYKN does not currently support generating or editing images, pictures, illustrations, or videos. If the user asks you to create one, briefly tell them image/video generation isn't available right now and offer next-best help (find references, write a description, suggest a tool). Never claim you can generate images or videos and never suggest switching to an image-generation model.
+- When something genuinely isn't available, be direct and offer the next-best path. Do not invent limitations on things you can do.
 
 Provide thoughtful, insightful responses based on their memories. Reference specific memories or video content when relevant. Do not use emojis in your responses unless the user explicitly asks for them.`;
 
@@ -384,18 +385,13 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
 
       let aiText = '';
       let toolSuggestion = null;
-      let imageResponse = null;
       const contentType = aiResponse.headers.get('content-type');
-      
+
       if (contentType && contentType.includes('application/json')) {
         try {
           const data = await aiResponse.json();
-          if (data?.type === 'image' && data?.url) {
-            imageResponse = { url: data.url, prompt: data.prompt || '' };
-          } else {
-            aiText = data.response || data.content || data.text || '';
-            toolSuggestion = data.toolSuggestion || null;
-          }
+          aiText = data.response || data.content || data.text || '';
+          toolSuggestion = data.toolSuggestion || null;
         } catch (jsonError) {
           if (import.meta.env.DEV) console.error('JSON parse failed:', jsonError);
           aiText = 'Sorry, something went wrong processing the response. Please try again.';
@@ -407,16 +403,6 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
         } else {
           aiText = 'Sorry, something went wrong processing the response. Please try again.';
         }
-      }
-
-      if (imageResponse) {
-        setMessages(prev => {
-          const newMessages = [...prev];
-          newMessages[assistantMessageIndex] = { role: 'assistant', content: '', generatedImage: imageResponse };
-          return newMessages;
-        });
-        setLastMessageTime(Date.now());
-        return;
       }
 
       aiText = aiText.trim();
@@ -619,75 +605,7 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent className="bg-white dark:bg-[#171515] border-gray-200 dark:border-gray-700">
-                  <SelectGroup>
-                    <SelectLabel>Latest</SelectLabel>
-                    <SelectItem value="claude-sonnet-4-6" hint="Anthropic flagship">Claude Sonnet 4.6</SelectItem>
-                    <SelectItem value="gpt-5.4" hint="OpenAI flagship">GPT-5.4</SelectItem>
-                    <SelectItem value="gemini-3.1-pro-preview" hint="Google flagship">Gemini 3.1 Pro</SelectItem>
-                    <SelectItem value="grok-4-1-fast-reasoning" hint="xAI flagship">Grok 4.1 Fast Reasoning</SelectItem>
-                  </SelectGroup>
-                  <SelectSeparator />
-                  <SelectGroup>
-                    <SelectLabel>Fastest</SelectLabel>
-                    <SelectItem value="gemini-3-flash-preview" hint="Google, ultra-fast">Gemini 3 Flash</SelectItem>
-                    <SelectItem value="gemini-3.1-flash-lite-preview" hint="Google, cheapest">Gemini 3.1 Flash-Lite</SelectItem>
-                    <SelectItem value="gemini-2.5-flash" hint="Google, balanced">Gemini 2.5 Flash</SelectItem>
-                    <SelectItem value="gpt-4.1-nano" hint="OpenAI, smallest">GPT-4.1 Nano</SelectItem>
-                    <SelectItem value="gpt-4.1-mini" hint="OpenAI, fast + smart">GPT-4.1 Mini</SelectItem>
-                    <SelectItem value="gpt-5-mini" hint="OpenAI, near-frontier">GPT-5 Mini</SelectItem>
-                    <SelectItem value="claude-haiku-4-5-20251001" hint="Anthropic, fast">Claude Haiku 4.5</SelectItem>
-                    <SelectItem value="grok-4-1-fast-non-reasoning" hint="xAI, low latency">Grok 4.1 Fast Non-Reasoning</SelectItem>
-                  </SelectGroup>
-                  <SelectSeparator />
-                  <SelectGroup>
-                    <SelectLabel>Cheap</SelectLabel>
-                    <SelectItem value="gpt-4o-mini" hint="OpenAI, budget">GPT-4o Mini</SelectItem>
-                    <SelectItem value="o4-mini" hint="OpenAI, cheap reasoning">o4 Mini</SelectItem>
-                    <SelectItem value="grok-3-mini" hint="xAI, budget">Grok 3 Mini</SelectItem>
-                  </SelectGroup>
-                  <SelectSeparator />
-                  <SelectGroup>
-                    <SelectLabel>Image Gen</SelectLabel>
-                    <SelectItem value="gpt-image-1.5" hint="OpenAI, images">GPT Image 1.5</SelectItem>
-                    <SelectItem value="gemini-3.1-flash-image-preview" hint="Google, images">Nano Banana 2</SelectItem>
-                    <SelectItem value="grok-imagine-image-pro" hint="xAI, pro images">Grok Imagine Image Pro</SelectItem>
-                    <SelectItem value="grok-imagine-image" hint="xAI, images">Grok Imagine Image</SelectItem>
-                    <SelectItem value="grok-2-image-1212" hint="xAI, images">Grok 2 Image</SelectItem>
-                    <SelectItem value="dall-e-3" hint="OpenAI, images">DALL-E 3</SelectItem>
-                  </SelectGroup>
-                  <SelectSeparator />
-                  <SelectGroup>
-                    <SelectLabel>Deep Thinking</SelectLabel>
-                    <SelectItem value="o3" hint="OpenAI, reasoning">o3</SelectItem>
-                    <SelectItem value="o3-pro" hint="OpenAI, max reasoning">o3 Pro</SelectItem>
-                    <SelectItem value="gpt-5.4-pro" hint="OpenAI, extended">GPT-5.4 Pro</SelectItem>
-                    <SelectItem value="claude-opus-4-1-20250805" hint="Anthropic, deep">Claude Opus 4.1</SelectItem>
-                    <SelectItem value="claude-opus-4-20250514" hint="Anthropic, deep">Claude Opus 4</SelectItem>
-                    <SelectItem value="gemini-2.5-pro" hint="Google, reasoning">Gemini 2.5 Pro</SelectItem>
-                    <SelectItem value="grok-4-fast-reasoning" hint="xAI, reasoning">Grok 4 Fast Reasoning</SelectItem>
-                  </SelectGroup>
-                  <SelectSeparator />
-                  <SelectGroup>
-                    <SelectLabel>Code</SelectLabel>
-                    <SelectItem value="claude-opus-4-6-code" hint="Anthropic, top coder">Claude Opus 4.6</SelectItem>
-                    <SelectItem value="gpt-5.3-codex" hint="OpenAI, agentic code">Codex 5.3</SelectItem>
-                    <SelectItem value="gpt-4.1" hint="OpenAI, 1M ctx code">GPT-4.1</SelectItem>
-                    <SelectItem value="grok-code-fast-1" hint="xAI, code">Grok Code Fast 1</SelectItem>
-                  </SelectGroup>
-                  <SelectSeparator />
-                  <SelectGroup>
-                    <SelectLabel>General</SelectLabel>
-                    <SelectItem value="gpt-5.2" hint="OpenAI, previous gen">GPT-5.2</SelectItem>
-                    <SelectItem value="gpt-5.1" hint="OpenAI, previous gen">GPT-5.1</SelectItem>
-                    <SelectItem value="gpt-5" hint="OpenAI, previous gen">GPT-5</SelectItem>
-                    <SelectItem value="gpt-4o" hint="OpenAI, versatile">GPT-4o</SelectItem>
-                    <SelectItem value="claude-sonnet-4-20250514" hint="Anthropic, balanced">Claude Sonnet 4</SelectItem>
-                    <SelectItem value="grok-4-fast-non-reasoning" hint="xAI, general">Grok 4 Fast Non-Reasoning</SelectItem>
-                    <SelectItem value="grok-4-0709" hint="xAI, general">Grok 4 0709</SelectItem>
-                    <SelectItem value="grok-3" hint="xAI, previous gen">Grok 3</SelectItem>
-                    <SelectItem value="grok-2-vision-1212" hint="xAI, vision">Grok 2 Vision</SelectItem>
-                    <SelectItem value="unified-auto" hint="Auto-picks best">Unified AI (Auto)</SelectItem>
-                  </SelectGroup>
+                  <ModelSelectOptions />
                 </SelectContent>
                 </Select>
                 </div>
@@ -785,16 +703,6 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
                         : 'text-gray-800 dark:text-gray-200'
                     }`}>
                       {msg.content && <p className="text-sm whitespace-pre-wrap">{msg.content}</p>}
-                      {msg.generatedImage?.url && (
-                        <div className="mt-2">
-                          <img
-                            src={msg.generatedImage.url}
-                            alt={msg.generatedImage.prompt || 'Generated image'}
-                            className="rounded-xl max-w-full max-h-[480px] object-contain shadow-md"
-                            draggable={false}
-                          />
-                        </div>
-                      )}
                       {msg.attachments && msg.attachments.length > 0 && (
                         <div className="flex flex-wrap gap-2 mt-2">
                           {msg.attachments.map((att) => (
@@ -802,31 +710,6 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
                               {att.type === 'image' ? <ImageIcon className="w-3 h-3" /> : att.type === 'link' ? <LinkIcon className="w-3 h-3" /> : <File className="w-3 h-3" />}
                               {att.name}
                             </a>
-                          ))}
-                        </div>
-                      )}
-                      {msg.toolSuggestion?.type === 'switch_model' && Array.isArray(msg.toolSuggestion.models) && (
-                        <div className="mt-3 flex flex-wrap gap-2">
-                          {msg.toolSuggestion.models.map((m) => (
-                            <button
-                              key={m.id}
-                              type="button"
-                              onClick={() => {
-                                const userMsg = messages[idx - 1];
-                                const originalText = userMsg?.role === 'user' ? String(userMsg.content || '').trim() : '';
-                                handleModelChange(m.id);
-                                setMessages(prev => prev.filter((_, i) => i !== idx && i !== idx - 1));
-                                if (originalText) {
-                                  setInput(originalText);
-                                  pendingResendRef.current = true;
-                                }
-                              }}
-                              className="inline-flex items-center gap-1.5 rounded-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-[#1f1d1d]/80 px-3 py-1.5 text-xs font-medium text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#2a2828] hover:border-gray-400 dark:hover:border-gray-500 transition-all active:scale-95"
-                            >
-                              <ImageIcon className="w-3.5 h-3.5 opacity-60" />
-                              <span>{m.label}</span>
-                              {m.hint && <span className="opacity-45 text-[0.65rem]">{m.hint}</span>}
-                            </button>
                           ))}
                         </div>
                       )}

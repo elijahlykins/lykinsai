@@ -432,7 +432,9 @@ const STRIPE_PRICE_MAP = {
 const COMPED_PRO_PLAN_ID = 'studio_pro';
 const COMPED_PRO_EMAILS = new Set(
   [
+    'aj@intertwine.tv',
     'jaeminw8@gmail.com',
+    'nyuballer18@gmail.com',
     'spam.redford@gmail.com',
     'rowan@lykn.io',
     ...String(process.env.COMPED_PRO_EMAILS || '')
@@ -1532,15 +1534,12 @@ const MODEL_CATALOG = [
   { id: 'gpt-4o', label: 'GPT-4o', provider: 'openai', env: 'OPENAI_API_KEY' },
   { id: 'gpt-4o-mini', label: 'GPT-4o Mini', provider: 'openai', env: 'OPENAI_API_KEY' },
   { id: 'gpt-5.3-codex', label: 'Codex 5.3', provider: 'openai', env: 'OPENAI_API_KEY' },
-  { id: 'gpt-image-1.5', label: 'GPT Image 1.5', provider: 'openai', env: 'OPENAI_API_KEY' },
-  { id: 'dall-e-3', label: 'DALL-E 3', provider: 'openai', env: 'OPENAI_API_KEY' },
   // ── Google ───────────────────────────────────────────────────────────
   { id: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro (Preview)', provider: 'google', env: 'GOOGLE_API_KEY' },
   { id: 'gemini-3-flash-preview', label: 'Gemini 3 Flash (Preview)', provider: 'google', env: 'GOOGLE_API_KEY' },
   { id: 'gemini-3.1-flash-lite-preview', label: 'Gemini 3.1 Flash-Lite (Preview)', provider: 'google', env: 'GOOGLE_API_KEY' },
   { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro', provider: 'google', env: 'GOOGLE_API_KEY' },
   { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', provider: 'google', env: 'GOOGLE_API_KEY' },
-  { id: 'gemini-3.1-flash-image-preview', label: 'Nano Banana 2', provider: 'google', env: 'GOOGLE_API_KEY' },
   { id: 'gemini-flash-latest', label: 'Gemini Flash Latest', provider: 'google', env: 'GOOGLE_API_KEY' },
   { id: 'gemini-pro-latest', label: 'Gemini Pro Latest', provider: 'google', env: 'GOOGLE_API_KEY' },
   // ── xAI (Grok) ──────────────────────────────────────────────────────
@@ -1553,11 +1552,31 @@ const MODEL_CATALOG = [
   { id: 'grok-3-mini', label: 'Grok 3 Mini', provider: 'xai', env: 'XAI_API_KEY' },
   { id: 'grok-3', label: 'Grok 3', provider: 'xai', env: 'XAI_API_KEY' },
   { id: 'grok-2-vision-1212', label: 'Grok 2 Vision 1212', provider: 'xai', env: 'XAI_API_KEY' },
-  { id: 'grok-imagine-image-pro', label: 'Grok Imagine Image Pro', provider: 'xai', env: 'XAI_API_KEY' },
-  { id: 'grok-imagine-image', label: 'Grok Imagine Image', provider: 'xai', env: 'XAI_API_KEY' },
-  { id: 'grok-2-image-1212', label: 'Grok 2 Image 1212', provider: 'xai', env: 'XAI_API_KEY' },
   { id: 'unified-auto', label: 'Unified AI (Auto)', provider: 'system', env: null },
+  // ── LYKN brand alias ────────────────────────────────────────────────
+  // Surfaced in the UI as "LYKN", routed below to a real Google model so
+  // we can swap providers later without a client release. See
+  // `resolveLyknAlias` and `LYKN_ROUTED_MODEL`.
+  { id: 'lykn', label: 'LYKN', provider: 'system', env: null },
 ];
+
+// LYKN currently delegates to Gemini 3.1 Pro. Keep this in sync with
+// `LYKN_ROUTED_MODEL` in `src/lib/modelCatalog.js` (the client-side doc
+// constant). The server is the source of truth — clients only ever send
+// the literal `lykn` id.
+const LYKN_ROUTED_MODEL = 'gemini-3.1-pro-preview';
+const LYKN_ROUTED_FALLBACK = 'gemini-pro-latest';
+
+const resolveLyknAlias = (model) => {
+  if (model !== 'lykn') return model;
+  if (process.env.GOOGLE_API_KEY) return LYKN_ROUTED_MODEL;
+  // Last-ditch: Gemini key is missing in this env. Fall through to
+  // Anthropic/OpenAI so the request still completes — provider fallbacks
+  // downstream will pick a sensible substitute.
+  if (process.env.ANTHROPIC_API_KEY) return 'claude-sonnet-4-6';
+  if (process.env.OPENAI_API_KEY) return 'gpt-5.4';
+  return LYKN_ROUTED_FALLBACK;
+};
 
 const normalizeRequestedModel = (model) => {
   const value = String(model || '').trim();
@@ -1581,86 +1600,6 @@ function getFallbackModels(failedModel) {
   return fb;
 }
 
-const IMAGE_GEN_MODELS = new Set([
-  'gpt-image-1.5', 'dall-e-3',
-  'gemini-3.1-flash-image-preview',
-  'grok-imagine-image-pro', 'grok-imagine-image', 'grok-2-image-1212',
-]);
-const isImageGenModel = (m) => IMAGE_GEN_MODELS.has(m);
-
-const XAI_IMAGE_MODEL_IDS = new Set(['grok-imagine-image-pro', 'grok-imagine-image', 'grok-2-image-1212']);
-
-/** Text-to-image via Gemini (Nano Banana 2); tries catalog id then known image-capable fallbacks. */
-async function generateGeminiTextToImage(imagePrompt) {
-  if (!process.env.GOOGLE_API_KEY) return { ok: false, error: 'GOOGLE_API_KEY not configured' };
-  const modelsToTry = [
-    'gemini-3.1-flash-image-preview',
-    'gemini-2.5-flash-preview-image-generation',
-    'gemini-2.5-flash-image',
-  ];
-  const requestBody = {
-    contents: [{ parts: [{ text: imagePrompt }] }],
-    generationConfig: {
-      responseModalities: ['TEXT', 'IMAGE'],
-    },
-  };
-  let lastError = '';
-  for (const geminiModel of modelsToTry) {
-    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${process.env.GOOGLE_API_KEY}`;
-    try {
-      const geminiRes = await fetch(apiUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestBody),
-        signal: AbortSignal.timeout(90000),
-      });
-      if (!geminiRes.ok) {
-        const err = await geminiRes.json().catch(() => ({}));
-        lastError = err?.error?.message || geminiRes.statusText;
-        continue;
-      }
-      const data = await geminiRes.json();
-      const parts = data?.candidates?.[0]?.content?.parts || [];
-      const imagePart = parts.find((p) => p.inline_data?.data || p.inlineData?.data);
-      if (imagePart) {
-        const imgData = imagePart.inline_data || imagePart.inlineData;
-        const outMime = imgData.mimeType || imgData.mime_type || 'image/png';
-        const outBase64 = imgData.data;
-        const dataUri = `data:${outMime};base64,${outBase64}`;
-        return { ok: true, url: dataUri, geminiModel };
-      }
-      const textPart = parts.find((p) => p.text);
-      lastError = textPart?.text || 'No image in response';
-    } catch (e) {
-      lastError = e.message;
-    }
-  }
-  return { ok: false, error: lastError || 'Gemini image generation failed' };
-}
-
-const IMAGE_GEN_PATTERNS = [
-  /\b(?:generate|create|make|produce|design)\b.{0,20}\b(?:an?\s+)?(?:image|picture|photo|illustration|drawing|artwork|graphic|poster|banner|icon|logo|thumbnail|wallpaper|avatar|portrait)\b/i,
-  /\b(?:draw|paint|sketch|illustrate|render)\b.{0,30}\b(?:me|a|an|the|of|for)\b/i,
-  /\b(?:image|picture|photo|illustration)\s+of\b/i,
-  /\b(?:can you|could you|please)\b.{0,15}\b(?:draw|paint|sketch|illustrate|generate)\b/i,
-];
-
-const IMAGE_GEN_NEGATIVE_PATTERNS = [
-  /\b(?:about|regarding|like|from|with)\s+(?:the|that|this|my)\s+(?:image|picture|photo)\b/i,
-  /\b(?:the|that)\s+(?:image|picture|photo)\s+(?:you|i|we|it|was|is|looks?|came|turned)\b/i,
-  /\b(?:how|what|why|where|when)\b.{0,20}\b(?:the|that|this)\s+(?:image|picture|photo)\b/i,
-  /\b(?:instead|now|also|but|actually|forget|never\s*mind|stop)\b/i,
-];
-
-function isImageGenerationRequest(text) {
-  const t = String(text || '').trim();
-  if (!t) return false;
-  const matchesPositive = IMAGE_GEN_PATTERNS.some((rx) => rx.test(t));
-  if (!matchesPositive) return false;
-  if (IMAGE_GEN_NEGATIVE_PATTERNS.some((rx) => rx.test(t))) return false;
-  return true;
-}
-
 function extractPureUserMessage(text, prompt) {
   const raw = String(text || '').trim();
   if (!raw) return String(prompt || '').trim().slice(0, 500);
@@ -1679,33 +1618,6 @@ function extractPureUserMessage(text, prompt) {
   }
   return raw.slice(0, 500);
 }
-
-function extractImagePrompt(text) {
-  let t = String(text || '').trim();
-  t = t.replace(/^(?:please\s+)?(?:can you|could you)\s+/i, '');
-  t = t.replace(/^(?:generate|create|make|produce|draw|paint|sketch|illustrate|render|design)\s+(?:me\s+)?(?:an?\s+)?(?:image|picture|photo|illustration|drawing|artwork|graphic)\s+(?:of\s+)?/i, '');
-  return t.trim() || text.trim();
-}
-
-const IMAGE_EDIT_PATTERNS = [
-  /\b(?:edit|modify|change|update|alter|adjust|tweak|transform|restyle|redo|fix|enhance|improve|upscale)\b.{0,25}\b(?:the\s+)?(?:image|picture|photo|this|it)\b/i,
-  /\b(?:the\s+)?(?:image|picture|photo)\b.{0,15}\b(?:edit|change|modify|update|needs?|should)\b/i,
-  /\b(?:make\s+(?:it|the\s+image|the\s+picture|this))\b/i,
-  /\b(?:add|remove|replace|swap|put|delete)\b.{0,30}\b(?:to|from|in|on|with|of)\b/i,
-  /\b(?:can you|could you|please)\b.{0,20}\b(?:edit|modify|change|update|fix|redo|adjust|make)\b/i,
-  /\b(?:turn|convert|make)\s+(?:this|the\s+image|the\s+picture|it)\s+(?:into|to|look|more|less)\b/i,
-  /\b(?:change|swap|replace|update)\s+the\s+(?:background|color|colours?|style|mood|lighting|sky|face|text|font|logo)\b/i,
-  /\b(?:make\s+(?:the\s+)?(?:background|sky|water|grass|hair|eyes|text))\b/i,
-  /\b(?:remove|erase|delete|get rid of)\b.{0,20}\b(?:the|that|this)\b/i,
-  /\bedit\s+(?:the\s+)?(?:image|picture|photo|it|this)\b/i,
-];
-
-function isImageEditRequest(text) {
-  const t = String(text || '').trim();
-  if (!t) return false;
-  return IMAGE_EDIT_PATTERNS.some((rx) => rx.test(t));
-}
-
 
 const resolveAnthropicModel = (model) => {
   const value = String(model || '').trim();
@@ -1927,7 +1839,7 @@ const GUEST_SYSTEM_PROMPT = [
   '',
   '3) THE SYNTHESIS LAYER (Mind Map) — a live mind-map view that visualises every Grid, project, and Vault item as connected nodes. It reveals how ideas, notes, and boards relate so the user can see patterns across everything they\'ve ever thought about in LYKN.',
   '',
-  'LYKN also supports multiple top-tier LLMs (Claude Sonnet, GPT-5, Gemini 2.5 Pro, Grok), AI image + video generation, dictation, YouTube ingestion with transcripts, and AI-driven actions on the Grid (create/edit/move/connect blocks from chat).',
+  'LYKN also supports multiple top-tier LLMs (Claude Sonnet, GPT-5, Gemini 2.5 Pro, Grok), dictation, YouTube ingestion with transcripts, and AI-driven actions on the Grid (create/edit/move/connect blocks from chat).',
   '',
   '=== VOICE ===',
   '- Be helpful and direct. Answer the user\'s actual question first. Use markdown when it helps (short lists, bold, code blocks). Keep responses tight unless they ask for depth.',
@@ -1939,7 +1851,6 @@ const GUEST_SYSTEM_PROMPT = [
   '- Saving Grids (your work won\'t persist across reloads until sign-in)',
   '- Saving to the Vault and tagging items',
   '- The Synthesis Layer / Mind Map',
-  '- Image and video generation',
   '- Switching to other AI models',
   '- AI-driven actions on the Grid (creating and editing blocks from chat)',
   '',
@@ -1975,11 +1886,14 @@ const LANDING_ONBOARDING_ADDENDUM = [
   '=== DECIDE: did they share something personal? ===',
   'Decide whether the user just shared something genuinely PERSONAL about themselves as a HUMAN — their identity, personality, values, interests, passions, what they care about, what they\'re working on, their goals, or how they think and work. Treat "who they are" as broader than just their job or what they make.',
   '',
+  '=== FIRST USER MESSAGE — RE-ASK IF OFF-TOPIC ===',
+  'Your very first model turn in this conversation greeted the user and asked them to "Describe yourself in 1-3 sentences." Most users will answer that question directly — when they do, treat it as CASE A and emit the <learned>/<reason> tags. But some users will respond with something totally unrelated: a question back at you ("what is this?", "what can you do?"), a greeting ("hey"), a joke, a one-word reply, or random filler. In those cases DO NOT invent a neuron from thin air. Instead, fall back to CASE B and gently re-ask them to describe themselves — acknowledge what they said in 1 short line, then ask the describe-yourself question again in fresh wording (e.g. "Quick first though — give me 1-3 sentences on who you are so I have something to start from", "Before I answer that — tell me about yourself in a sentence or two so I can make this useful", etc.). Vary the phrasing every time, never use the literal "Describe yourself in 1-3 sentences" line again. Only emit a <learned> tag on turn 1 when the user actually shared something personal.',
+  '',
   '=== BIAS TOWARD LEARNING QUICKLY ===',
-  'Be GENEROUS in what counts as personal. The user just landed on a wake screen and you have nothing to synthesize from — your top priority is to learn the FIRST thing about them as fast as possible so the first neuron forms early in the conversation. If there\'s ANY genuine signal about who they are — a job, a hobby, a topic they like, a project, a mood, a city, a craft, a tool they use, a value, a preference, even a single noun about themselves like "I\'m a writer" or "I like jazz" — treat that as CASE A and create a neuron. Do NOT wait for a deep, polished personal disclosure. One real piece of signal is enough.',
+  'Be GENEROUS in what counts as personal. Your top priority is to learn the FIRST thing about them as fast as possible so the first neuron forms early in the conversation. If there\'s ANY genuine signal about who they are — a job, a hobby, a topic they like, a project, a mood, a city, a craft, a tool they use, a value, a preference, even a single noun about themselves like "I\'m a writer" or "I like jazz" — treat that as CASE A and create a neuron. Do NOT wait for a deep, polished personal disclosure. One real piece of signal is enough.',
   '- If you\'ve learned 0 neurons so far and the user gives you ANY personal scrap, you must use CASE A.',
   '- Only fall back to CASE B when the message is genuinely empty of personal signal (pure greetings like "hey", questions to you like "what do you do", small talk, jokes, vague filler).',
-  '- When in doubt between A and B on the FIRST turn, choose A. Better to learn something small than to bounce the question back and stay empty.',
+  '- When in doubt between A and B, choose A. Better to learn something small than to bounce the question back and stay empty.',
   '',
   'CASE A — they shared something personal:',
   '- Acknowledge it warmly in your reply',
@@ -4745,83 +4659,6 @@ app.post('/api/ai/invoke', requireAuth, aiLimiter, checkAiUsageLimit, async (req
       res.setHeader('X-Feature-Stripped', 'user_prompt');
     }
 
-    // Auto-detect image edit or generation requests
-    // Use ONLY the pure latest user message for intent detection — never the full prompt
-    // which may contain conversation history that confuses the regex matchers.
-    const pureUserMessage = extractPureUserMessage(text, prompt);
-    const editImageUrl = String(req.body?.editImageUrl || '').trim();
-    console.log('🧠 Intent detection — pure user message:', JSON.stringify(pureUserMessage.slice(0, 120)), '| editImageUrl:', Boolean(editImageUrl));
-
-    const userWantsImageEdit = editImageUrl && isImageEditRequest(pureUserMessage);
-
-    if (userWantsImageEdit) {
-      console.log('🎨 Image edit detected in /api/ai/invoke (editImageUrl present + edit intent), routing to Nano Banana');
-      try {
-        const editBody = { prompt: pureUserMessage, image_url: editImageUrl };
-        const internalUrl = `http://localhost:${PORT}/api/ai/image-edit`;
-        const editRes = await fetch(internalUrl, {
-          method: 'POST',
-          headers: internalHeaders(req),
-          body: JSON.stringify(editBody),
-          signal: AbortSignal.timeout(90000),
-        });
-        const editData = await editRes.json();
-        if (editData?.url) {
-          return res.json({ type: 'image', url: editData.url, provider: editData.provider, prompt: editData.prompt });
-        }
-        console.warn('⚠️ Image edit returned no URL, falling through to text flow');
-      } catch (e) {
-        console.warn('⚠️ Image edit failed, falling through to text flow:', e.message);
-      }
-    } else if (isImageGenModel(model)) {
-      console.log(`🎨 Image generation model selected in /api/ai/invoke (model: ${model}), routing to image endpoint`);
-      try {
-        let imagePrompt = pureUserMessage;
-        if (Array.isArray(conversation) && conversation.length > 0) {
-          const recentContext = conversation
-            .slice(-6)
-            .filter(m => m && m.content)
-            .map(m => `${m.role === 'assistant' ? 'AI' : 'User'}: ${String(m.content || '').slice(0, 300)}`)
-            .join('\n');
-          if (recentContext) {
-            imagePrompt = `Based on this conversation:\n${recentContext}\n\nGenerate this image: ${pureUserMessage}`;
-          }
-        }
-        const imgBody = { prompt: imagePrompt, model };
-        const internalUrl = `http://localhost:${PORT}/api/ai/image`;
-        const imgRes = await fetch(internalUrl, {
-          method: 'POST',
-          headers: internalHeaders(req),
-          body: JSON.stringify(imgBody),
-          signal: AbortSignal.timeout(90000),
-        });
-        const imgData = await imgRes.json();
-        if (imgData?.url) {
-          return res.json({ type: 'image', url: imgData.url, provider: imgData.provider, prompt: imgData.prompt });
-        }
-        console.warn('⚠️ Image generation returned no URL, falling through to text flow');
-      } catch (e) {
-        console.warn('⚠️ Image generation failed, falling through to text flow:', e.message);
-      }
-    } else if (!isImageGenModel(model) && isImageGenerationRequest(pureUserMessage)) {
-      return res.json({
-        response: `I can definitely create that for you! Pick an image generation model in the model menu, then ask again.`,
-        type: 'text',
-        toolSuggestion: {
-          type: 'switch_model',
-          reason: 'image_generation',
-          models: [
-            { id: 'grok-imagine-image', label: 'Grok Imagine', hint: 'xAI' },
-            { id: 'gpt-image-1.5', label: 'GPT Image 1.5', hint: 'OpenAI' },
-            { id: 'grok-imagine-image-pro', label: 'Grok Imagine Pro', hint: 'xAI' },
-            { id: 'dall-e-3', label: 'DALL-E 3', hint: 'OpenAI' },
-            { id: 'gemini-3.1-flash-image-preview', label: 'Nano Banana 2', hint: 'Google' },
-            { id: 'grok-2-image-1212', label: 'Grok 2 Image', hint: 'xAI' },
-          ],
-        },
-      });
-    }
-
     // Models routinely emit JSON with unescaped quotes inside string values
     // (e.g. `"content":"Text overlay: *"Think clearly."*"`). Strict JSON.parse
     // aborts at the first stray quote, so we walk the buffer and escape any
@@ -5069,7 +4906,7 @@ ${t}
         "",
         "MEDIA:",
         "- YouTube videos: include a YouTube URL and it will be embedded as a playable video block directly in the chat and on the Grid. You CAN show videos. NEVER say you cannot display, show, or play videos.",
-        "- Images: the system can generate images from your descriptions.",
+        "- You CANNOT generate or create images, pictures, illustrations, or videos. If a user asks you to make/draw/render an image or video, briefly tell them image and video generation aren't available right now and offer to help in other ways (find references, write a description, suggest a tool, etc.). Never claim you can generate images or videos.",
         "",
         "MEDIA PULL-IN (from The Vault):",
         "- You can pull ANY file from the user's Vault directly onto the current board.",
@@ -5179,18 +5016,15 @@ ${t}
         "But the user's LATEST message determines what you do NOW. Do NOT carry over the action type from previous messages.",
         "",
         "Examples of correct behavior:",
-        "- User previously asked: 'Generate an image of a mountain' → you generated an image",
-        "- User NOW says: 'That looks great, now tell me about hiking trails near me' → THIS is a TEXT response about hiking trails, NOT another image. The user is clearly asking for information now.",
         "- User previously asked: 'Search for the latest news on AI' → you used web search results",
         "- User NOW says: 'What ideas do I have on my board about AI?' → THIS requires looking at the board/vault context, NOT a web search. The user is asking about THEIR workspace data.",
         "- User previously asked: 'Show me my saved PDFs' → you pulled media",
         "- User NOW says: 'What are some good restaurants near downtown Austin?' → THIS needs a web search because the user is asking about real-world local information.",
         "",
         "Decision framework for EACH message:",
-        "1. Does the user explicitly ask to GENERATE an image/video right now? → Media generation",
-        "2. Does the user ask about real-time, current, or location-specific information? → Web search results will be provided",
-        "3. Does the user ask about THEIR workspace, board, notes, project, or saved content? → Use [BOARD_CONTEXT], [WORKSPACE_CONTEXT], [PROJECT_KNOWLEDGE]",
-        "4. Everything else → Plain text response using your knowledge + any available context",
+        "1. Does the user ask about real-time, current, or location-specific information? → Web search results will be provided",
+        "2. Does the user ask about THEIR workspace, board, notes, project, or saved content? → Use [BOARD_CONTEXT], [WORKSPACE_CONTEXT], [PROJECT_KNOWLEDGE]",
+        "3. Everything else → Plain text response using your knowledge + any available context",
         "",
         "NEVER assume the user wants the same type of output as the previous message. Each message stands alone.",
         "=== END PROMPT ISOLATION ===",
@@ -5235,11 +5069,11 @@ ${t}
         "- If [WEB_SEARCH_RESULTS] or [DEEP_BROWSE_CONTENT] are provided in this prompt, the system already searched the web for the user. Use the results naturally and mention briefly that you looked it up — e.g. 'I looked that up for you' or 'Here's what I found.'",
         "- If the user asks something that clearly needs current/live information but NO web results are present, offer: 'Want me to browse the web for that?' or 'I can search the web for the latest on that — want me to?'",
         "",
-        "Image generation:",
-        "- If the user asks you to create, generate, draw, or design an image/picture/graphic but the current model is NOT an image generation model, suggest switching: 'I can definitely create that! Want to switch to an image model like GPT Image 1.5 or DALL-E 3? Just use the model dropdown at the top.'",
-        "- Do NOT just say 'I can't generate images.' Instead, guide the user toward the right tool.",
+        "Image and video generation:",
+        "- LYKN does not currently support generating or editing images, pictures, illustrations, or videos. If the user asks you to create one, briefly let them know that capability isn't available right now and offer alternatives: pulling in something they already have in The Vault, finding a reference, writing a description, or pointing them to a dedicated tool.",
+        "- NEVER claim you can generate, draw, render, or edit an image or video. NEVER suggest switching to an image-generation model.",
         "",
-        "General principle: Never say 'I can't do that.' Instead, tell the user HOW to do it and offer to help. You are a creative partner, not a gatekeeper.",
+        "General principle: When something genuinely isn't available, be direct and offer the next-best path. You are a creative partner, not a gatekeeper.",
         "=== END TOOL SUGGESTIONS ===",
         "",
         "Primary behavior:",
@@ -5669,6 +5503,9 @@ ${t}
         actualModel = 'gpt-3.5-turbo';
         console.log(`🔄 Unified mode: using ${actualModel} (fallback)`);
       }
+    } else if (model === 'lykn') {
+      actualModel = resolveLyknAlias(model);
+      console.log(`🟣 LYKN alias → ${actualModel}`);
     }
 
     // Skip sending images when AI only needs to compute block positions (organize/move/resize)
@@ -5934,14 +5771,6 @@ ${t}
       let grokModel = actualModel;
       if (actualModel === 'grok-beta' || actualModel === 'grok') {
         grokModel = 'grok-4-fast-non-reasoning';
-      }
-
-      // This invoke endpoint is text-oriented. Image/video Grok models need dedicated endpoints.
-      const nonTextGrok = /\b(imagine|image)\b/i.test(grokModel);
-      if (nonTextGrok) {
-        return res.status(400).json({
-          error: `Selected model "${grokModel}" is an image generation model and is not supported by the text flow. Please use it for image generation requests.`,
-        });
       }
 
       const { system: grokSys, user: grokUser } = splitPromptForProvider(prompt);
@@ -6445,64 +6274,8 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
       res.setHeader('X-Feature-Stripped', 'user_prompt');
     }
 
-    // Auto-detect image edit or generation requests
-    // Use ONLY the pure latest user message for intent detection.
     const streamUserText = String(text || prompt || '').trim();
     const streamPureUserMessage = extractPureUserMessage(text, prompt);
-    const streamEditImageUrl = String(req.body?.editImageUrl || '').trim();
-
-    const sendImageSSE = (data) => {
-      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' }); res.flushHeaders(); if (req.socket) req.socket.setNoDelay(true);
-      res.write(`data: ${JSON.stringify(data)}\n\n`);
-      res.write('data: [DONE]\n\n');
-      res.end();
-    };
-
-    const streamWantsImageEdit = streamEditImageUrl && isImageEditRequest(streamPureUserMessage);
-
-    if (streamWantsImageEdit) {
-      console.log('🎨 Image edit detected in /api/ai/stream (editImageUrl present + edit intent), routing to Nano Banana');
-      try {
-        const editBody = { prompt: streamPureUserMessage, image_url: streamEditImageUrl };
-        const internalUrl = `http://localhost:${PORT}/api/ai/image-edit`;
-        const editRes = await fetch(internalUrl, {
-          method: 'POST',
-          headers: internalHeaders(req),
-          body: JSON.stringify(editBody),
-          signal: AbortSignal.timeout(90000),
-        });
-        const editData = await editRes.json();
-        if (editData?.url) {
-          return sendImageSSE({ image: editData.url, provider: editData.provider, prompt: editData.prompt });
-        }
-        console.warn('⚠️ Image edit returned no URL, falling through to text stream');
-      } catch (e) {
-        console.warn('⚠️ Image edit failed, falling through to text stream:', e.message);
-      }
-    } else if (isImageGenModel(model)) {
-      console.log(`🎨 Image generation model selected in /api/ai/stream (model: ${model}), routing to image endpoint`);
-      try {
-        const imgBody = { prompt: streamPureUserMessage, model };
-        const internalUrl = `http://localhost:${PORT}/api/ai/image`;
-        const imgRes = await fetch(internalUrl, {
-          method: 'POST',
-          headers: internalHeaders(req),
-          body: JSON.stringify(imgBody),
-          signal: AbortSignal.timeout(90000),
-        });
-        const imgData = await imgRes.json();
-        if (imgData?.url) {
-          return sendImageSSE({ image: imgData.url, provider: imgData.provider, prompt: imgData.prompt });
-        }
-        console.warn('⚠️ Image generation returned no URL, falling through to text stream');
-      } catch (e) {
-        console.warn('⚠️ Image generation failed, falling through to text stream:', e.message);
-      }
-    } else if (!isImageGenModel(model) && isImageGenerationRequest(streamPureUserMessage)) {
-      return sendImageSSE({
-        t: `To generate an image, please switch to an image generation model first. Available image models: **GPT Image 1.5**, **Nano Banana 2**, **Grok Imagine Image Pro**, **Grok Imagine Image**, **Grok 2 Image**, or **DALL-E 3**. You can switch models using the model selector dropdown, then ask me again!`,
-      });
-    }
 
     const kbText = (() => {
       if (!knowledgeBase) return "";
@@ -6644,7 +6417,7 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
         "- Text with formatting (headings, bullets, numbered lists, checklists with [ ], toggle lists, callout quotes).",
         "- YouTube video embeds: include a YouTube URL and it becomes a playable embedded video. NEVER say you can't show videos. CRITICAL: If [YOUTUBE_SEARCH_RESULTS] are provided, you MUST use URLs from that list — never invent YouTube URLs.",
         "- Website embeds: when the user asks you to pull a site/URL/page onto the grid, the system will create a live iframe brick rendering that page. NEVER say you can't put a website on the grid — you can. Just confirm in plain words and the action channel handles the embed.",
-        "- Image generation from descriptions.",
+        "- You CANNOT generate images, pictures, illustrations, or videos. If asked, briefly say image/video generation isn't available right now and offer to help in other ways (find a reference, write a description, pull something from the Vault).",
         "- Media pull-in: pull ANY file from the user's Vault onto the current board (images, videos, audio, PDFs, documents, links — all types).",
         "  In [WORKSPACE_CONTEXT], media items show: \"title\" (id=<noteId>) — files: <type>[<index>]",
         "  To pull an item, add at the END of your response: [PULL_MEDIA:noteId|attachmentIndex] (index defaults to 0 if omitted).",
@@ -6662,8 +6435,8 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
         "=== TOOL SUGGESTIONS ===",
         "When the user's message would benefit from a specialized tool that isn't currently active, proactively OFFER to use it. Be conversational.",
         "- Web browsing: If [WEB_SEARCH_RESULTS] or [DEEP_BROWSE_CONTENT] are present, the system already searched — use the results and mention you looked it up. If the user needs live info but no results are present, offer: 'Want me to browse the web for that?'",
-        "- Image generation: If the user asks to create/generate/draw an image but the current model isn't an image model, suggest switching: 'I can create that! Want to switch to an image model like GPT Image 1.5 or DALL-E 3? Just use the model dropdown at the top.'",
-        "- General principle: Never say 'I can't do that.' Tell the user HOW to do it and offer to help.",
+        "- Image and video generation: NOT available right now. If the user asks you to create, generate, draw, or render an image or video, say so directly and offer next-best help (find references, write a detailed description, pull something from their Vault). Never suggest switching to an image-generation model.",
+        "- General principle: When something genuinely isn't available, be direct and offer the next-best path — but don't manufacture limitations on things you can do.",
         "=== END TOOL SUGGESTIONS ===",
         "",
         "=== WRITING STYLE (CRITICAL) ===",
@@ -6769,6 +6542,9 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
       if (process.env.GOOGLE_API_KEY) actualModel = 'gemini-flash-latest';
       else if (process.env.OPENAI_API_KEY) actualModel = 'gpt-4o';
       else actualModel = 'gpt-3.5-turbo';
+    } else if (model === 'lykn') {
+      actualModel = resolveLyknAlias(model);
+      console.log(`🟣 LYKN alias → ${actualModel}`);
     }
 
     const hasTranscript = prompt.includes('[VIDEO TRANSCRIPT') || prompt.includes('Full transcript:');
@@ -7131,289 +6907,6 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
     } else {
       try { res.write(`data: ${JSON.stringify({ error: userMsg })}\n\n`); res.end(); } catch {}
     }
-  }
-});
-
-// ── Image Generation Endpoint ─────────────────────────────────────────────
-app.post('/api/ai/image', requireAuth, generationLimiter, checkAiUsageLimit, async (req, res) => {
-  try {
-    const { prompt, aspect_ratio, model: rawImageModel } = req.body || {};
-    const imageModel = String(rawImageModel || '').trim();
-    const cleanPrompt = String(prompt || '').trim();
-    if (!cleanPrompt) return res.status(400).json({ error: 'Missing prompt' });
-    if (!imageModel || !isImageGenModel(imageModel)) {
-      return res.status(400).json({
-        error: 'Select an image generation model in the model menu, then try again.',
-      });
-    }
-
-    // Gate image generation to Studio Pro / Studio Max only.
-    const imagePlan = await resolveUserPlan(req.user?.id, req.user?.email);
-    if (!isModelAllowedForPlan(imageModel, imagePlan.modelTier)) {
-      return res.status(403).json({
-        error: 'upgrade_required',
-        message: 'Image generation is included with Studio Pro. Upgrade to keep creating images.',
-        required_plan: 'studio_pro',
-        current_plan: imagePlan.planId,
-      });
-    }
-
-    const imagePrompt = extractImagePrompt(cleanPrompt);
-    console.log(`🎨 Image generation (${imageModel}): "${imagePrompt.slice(0, 120)}"`);
-
-    const logImageGen = (provider, modelId) => {
-      getOrCreateSession(req.user?.id, req.body?.boardId).then((session) => {
-        logAiUsage({ sessionId: session?.id, userId: req.user?.id, actionType: 'image_gen', model: modelId, provider });
-      }).catch(() => {});
-    };
-
-    const openAiImageUrlFromData = (data) => {
-      const row = data?.data?.[0];
-      if (!row) return null;
-      if (row.url) return row.url;
-      if (row.b64_json) return `data:image/png;base64,${row.b64_json}`;
-      return null;
-    };
-
-    // xAI Grok image models
-    if (XAI_IMAGE_MODEL_IDS.has(imageModel)) {
-      if (!process.env.XAI_API_KEY) {
-        return res.status(503).json({ error: 'XAI_API_KEY not configured for this image model.' });
-      }
-      const body = {
-        model: imageModel,
-        prompt: imagePrompt,
-        n: 1,
-      };
-      if (aspect_ratio) body.aspect_ratio = aspect_ratio;
-
-      const grokRes = await fetch('https://api.x.ai/v1/images/generations', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${process.env.XAI_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(60000),
-      });
-
-      if (grokRes.ok) {
-        const data = await grokRes.json();
-        const url = data?.data?.[0]?.url;
-        if (url) {
-          console.log(`✅ xAI image generated (${imageModel})`);
-          logImageGen('xai', imageModel);
-          return res.json({ type: 'image', url, provider: 'grok', prompt: imagePrompt });
-        }
-      }
-      const err = await grokRes.json().catch(() => ({}));
-      return res.status(502).json({ error: err?.error?.message || grokRes.statusText || 'xAI image generation failed' });
-    }
-
-    // OpenAI DALL-E 3
-    if (imageModel === 'dall-e-3') {
-      if (!process.env.OPENAI_API_KEY) {
-        return res.status(503).json({ error: 'OPENAI_API_KEY not configured for DALL-E 3.' });
-      }
-      const dalleRes = await fetch('https://api.openai.com/v1/images/generations', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'dall-e-3',
-          prompt: imagePrompt,
-          n: 1,
-          size: '1024x1024',
-          quality: 'standard',
-        }),
-        signal: AbortSignal.timeout(60000),
-      });
-
-      if (dalleRes.ok) {
-        const data = await dalleRes.json();
-        const url = openAiImageUrlFromData(data);
-        if (url) {
-          console.log('✅ DALL-E 3 image generated');
-          logImageGen('openai', 'dall-e-3');
-          return res.json({ type: 'image', url, provider: 'dalle', prompt: imagePrompt });
-        }
-      }
-      const err = await dalleRes.json().catch(() => ({}));
-      return res.status(502).json({ error: err?.error?.message || dalleRes.statusText || 'DALL-E 3 failed' });
-    }
-
-    // OpenAI GPT Image 1.5
-    if (imageModel === 'gpt-image-1.5') {
-      if (!process.env.OPENAI_API_KEY) {
-        return res.status(503).json({ error: 'OPENAI_API_KEY not configured for GPT Image 1.5.' });
-      }
-      const gptImgRes = await fetch('https://api.openai.com/v1/images/generations', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'gpt-image-1.5',
-          prompt: imagePrompt,
-          n: 1,
-          size: '1024x1024',
-          quality: 'medium',
-        }),
-        signal: AbortSignal.timeout(120000),
-      });
-
-      if (gptImgRes.ok) {
-        const data = await gptImgRes.json();
-        const url = openAiImageUrlFromData(data);
-        if (url) {
-          console.log('✅ GPT Image 1.5 generated');
-          logImageGen('openai', 'gpt-image-1.5');
-          return res.json({ type: 'image', url, provider: 'openai', prompt: imagePrompt });
-        }
-      }
-      const err = await gptImgRes.json().catch(() => ({}));
-      return res.status(502).json({ error: err?.error?.message || gptImgRes.statusText || 'GPT Image 1.5 failed' });
-    }
-
-    // Google Gemini (Nano Banana 2) — text-to-image
-    if (imageModel === 'gemini-3.1-flash-image-preview') {
-      const out = await generateGeminiTextToImage(imagePrompt);
-      if (out.ok && out.url) {
-        console.log(`✅ Gemini text-to-image (${out.geminiModel})`);
-        logImageGen('google', out.geminiModel || 'gemini-3.1-flash-image-preview');
-        return res.json({ type: 'image', url: out.url, provider: 'nano-banana', prompt: imagePrompt });
-      }
-      return res.status(502).json({ error: out.error || 'Gemini image generation failed' });
-    }
-
-    return res.status(400).json({ error: 'Unsupported image model.' });
-  } catch (error) {
-    console.error('❌ Image generation error:', error.message);
-    return res.status(500).json({ error: `Image generation failed: ${error.message}` });
-  }
-});
-
-// ── Image Edit Endpoint (Nano Banana 2 / Gemini via Google API) ─
-app.post('/api/ai/image-edit', requireAuth, generationLimiter, checkAiUsageLimit, async (req, res) => {
-  try {
-    const { prompt, image_url, image_urls } = req.body || {};
-    const cleanPrompt = String(prompt || '').trim();
-    if (!cleanPrompt) return res.status(400).json({ error: 'Missing prompt' });
-
-    const sourceUrls = Array.isArray(image_urls) ? image_urls : (image_url ? [image_url] : []);
-    if (!sourceUrls.length) return res.status(400).json({ error: 'Missing source image URL' });
-
-    // Image edit is a media-tier feature. Gate it to Studio Pro / Studio Max.
-    const editPlan = await resolveUserPlan(req.user?.id, req.user?.email);
-    if (editPlan.modelTier !== 'top+media') {
-      return res.status(403).json({
-        error: 'upgrade_required',
-        message: 'Image editing is included with Studio Pro. Upgrade to keep editing images.',
-        required_plan: 'studio_pro',
-        current_plan: editPlan.planId,
-      });
-    }
-
-    if (!process.env.GOOGLE_API_KEY) {
-      return res.status(500).json({ error: 'GOOGLE_API_KEY not configured. Required for image editing.' });
-    }
-
-    console.log(`🎨 Image edit request (Nano Banana): "${cleanPrompt.slice(0, 120)}" with ${sourceUrls.length} source image(s)`);
-
-    const sourceUrl = String(sourceUrls[0]).trim();
-    let imageBase64 = '';
-    let mimeType = 'image/png';
-
-    if (sourceUrl.startsWith('data:image/')) {
-      const match = sourceUrl.match(/^data:(image\/[^;]+);base64,(.+)$/);
-      if (match) {
-        mimeType = match[1];
-        imageBase64 = match[2];
-      }
-    } else {
-      try {
-        const imgFetch = await fetch(sourceUrl, { signal: AbortSignal.timeout(30000) });
-        if (!imgFetch.ok) throw new Error(`Failed to fetch source image: ${imgFetch.status}`);
-        const contentType = imgFetch.headers.get('content-type') || 'image/png';
-        mimeType = contentType.split(';')[0].trim();
-        const buffer = Buffer.from(await imgFetch.arrayBuffer());
-        imageBase64 = buffer.toString('base64');
-      } catch (e) {
-        console.error('❌ Failed to fetch source image:', e.message);
-        return res.status(400).json({ error: `Could not fetch source image: ${e.message}` });
-      }
-    }
-
-    if (!imageBase64) {
-      return res.status(400).json({ error: 'Could not process source image' });
-    }
-
-    const modelsToTry = ['gemini-2.0-flash-exp', 'gemini-2.5-flash-preview-image-generation', 'gemini-2.5-flash-image'];
-    const requestBody = {
-      contents: [{
-        parts: [
-          { inline_data: { mime_type: mimeType, data: imageBase64 } },
-          { text: cleanPrompt },
-        ],
-      }],
-      generationConfig: {
-        responseModalities: ['TEXT', 'IMAGE'],
-      },
-    };
-
-    let lastError = '';
-    for (const geminiModel of modelsToTry) {
-      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${process.env.GOOGLE_API_KEY}`;
-      console.log(`🔍 Trying Nano Banana model: ${geminiModel}`);
-
-      try {
-        const geminiRes = await fetch(apiUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(requestBody),
-          signal: AbortSignal.timeout(90000),
-        });
-
-        if (!geminiRes.ok) {
-          const err = await geminiRes.json().catch(() => ({}));
-          console.warn(`⚠️ Model ${geminiModel} returned ${geminiRes.status}:`, JSON.stringify(err).slice(0, 300));
-          lastError = err?.error?.message || geminiRes.statusText;
-          continue;
-        }
-
-        const data = await geminiRes.json();
-        const parts = data?.candidates?.[0]?.content?.parts || [];
-        const imagePart = parts.find((p) => p.inline_data?.data || p.inlineData?.data);
-
-        if (imagePart) {
-          const imgData = imagePart.inline_data || imagePart.inlineData;
-          const outMime = imgData.mimeType || imgData.mime_type || 'image/png';
-          const outBase64 = imgData.data;
-          const dataUri = `data:${outMime};base64,${outBase64}`;
-          console.log(`✅ Nano Banana image edit complete (model: ${geminiModel})`);
-          getOrCreateSession(req.user?.id, req.body?.boardId).then((session) => {
-            logAiUsage({ sessionId: session?.id, userId: req.user?.id, actionType: 'image_edit', model: geminiModel, provider: 'google' });
-          }).catch(() => {});
-          return res.json({ type: 'image', url: dataUri, provider: 'nano-banana', prompt: cleanPrompt });
-        }
-
-        const textPart = parts.find((p) => p.text);
-        console.warn(`⚠️ ${geminiModel} returned no image part. Text:`, textPart?.text?.slice(0, 500));
-        lastError = textPart?.text || 'No image in response';
-      } catch (e) {
-        console.warn(`⚠️ Model ${geminiModel} threw:`, e.message);
-        lastError = e.message;
-      }
-    }
-
-    console.error('❌ All Nano Banana models failed for image edit');
-    return res.status(500).json({ error: lastError || 'Image editing failed with all models' });
-  } catch (error) {
-    console.error('❌ Image edit error:', error.message);
-    return res.status(500).json({ error: `Image editing failed: ${error.message}` });
   }
 });
 

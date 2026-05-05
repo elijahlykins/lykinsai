@@ -21,7 +21,6 @@ import Settings from "./pages/Settings";
 import SynthesisLayer from "./pages/SynthesisLayer";
 import Discover from "./pages/Discover";
 import SharedGrid from "./pages/SharedGrid";
-import PlanGate from "./components/PlanGate";
 import AppSidebar from "./components/AppSidebar";
 import MobileTabBar from "./components/MobileTabBar";
 import MobileExperienceNotice from "./components/MobileExperienceNotice";
@@ -144,19 +143,7 @@ function AppShell() {
             />
             <Route
               path="/synthesis-layer"
-              element={
-                user ? (
-                  <PlanGate
-                    minPlan="studio"
-                    feature="Mind Map"
-                    description="The synthesis layer visualises every grid, project, and vault item as a live mind map. Upgrade to Studio to explore it."
-                  >
-                    <SynthesisLayer />
-                  </PlanGate>
-                ) : (
-                  <SynthesisLayer />
-                )
-              }
+              element={<SynthesisLayer />}
             />
             <Route
               path="/tag-management"

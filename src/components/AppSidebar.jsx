@@ -26,8 +26,6 @@ import { GridIcon } from "@/components/ui/GridIcon";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useUserPlan } from "@/lib/useUserPlan";
-import { planMeets } from "@/components/PlanGate";
 import { DEMO_GRID_LIST } from "@/lib/demoGrids";
 import {
   hasPrototypeNeurons,
@@ -55,8 +53,6 @@ export default function AppSidebar({
   const nav = useNavigate();
   const location = useLocation();
   const { user, signInWithOAuth, signOut } = useAuth();
-  const { planId } = useUserPlan();
-  const canUseSynthesis = planMeets(planId, "studio");
   // Prototype-handoff "preview" mode: when a guest came from the landing
   // prototype with at least one neuron in localStorage, suppress the demo
   // grid list so the sidebar reads as a brand-new, empty workspace.
@@ -420,7 +416,7 @@ export default function AppSidebar({
                 console.log("[AppSidebar] Synthesis Layer clicked, navigating →", "/synthesis-layer");
                 nav("/synthesis-layer");
               }}
-              title={canUseSynthesis ? "Synthesis Layer" : "Upgrade to Studio to unlock the Mind Map"}
+              title="Synthesis Layer"
               className={`w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2 ${
                 effectiveHighlightSynthesis ? "lykn-sidebar-synthesis-glow" : ""
               }`}
@@ -433,9 +429,6 @@ export default function AppSidebar({
                 }`}
               />
               <span className="flex-1">Synthesis Layer</span>
-              {!canUseSynthesis && !effectiveHighlightSynthesis && (
-                <Lock className="w-3 h-3 text-black/40 dark:text-white/40" aria-label="Upgrade required" />
-              )}
             </button>
             <button
               type="button"

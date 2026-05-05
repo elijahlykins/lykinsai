@@ -4,7 +4,6 @@ import { motion } from "framer-motion";
 import {
   ArrowUpRight,
   Brain,
-  Check,
   Columns,
   Compass,
   FileSearch,
@@ -177,27 +176,15 @@ function StatusBadge({ tone, label }) {
 }
 
 function ConnectorCard({ connector, connected, onConnect, onDisconnect }) {
-  const isCaptureLive = connector.status === "beta";
-  const isNoApi = connector.status === "no-api";
-  const isVerification = connector.status === "verification";
-  const isPaid = connector.status === "paid";
-
-  const ctaLabel = connected
-    ? "Connected"
-    : isCaptureLive
-    ? "Set up"
-    : isNoApi
-    ? "How to capture"
-    : isPaid
-    ? "Pay to enable"
-    : isVerification
-    ? "Notify me"
-    : "Connect";
-
-  const ctaDisabled = isPaid;
-
-  const meta =
-    CONNECTOR_STATUSES[connector.status] || CONNECTOR_STATUSES.soon;
+  // All connectors are temporarily surfaced as "Coming soon" regardless
+  // of their underlying catalog status. Flip back to the per-status
+  // labels (see git history) when launching.
+  const ctaLabel = "Coming soon";
+  const ctaDisabled = true;
+  const meta = CONNECTOR_STATUSES.soon;
+  const badgeLabel = meta.label;
+  void connected;
+  void onDisconnect;
 
   return (
     <motion.div
@@ -215,7 +202,7 @@ function ConnectorCard({ connector, connected, onConnect, onDisconnect }) {
             <h3 className="text-[13px] font-semibold text-black/85 dark:text-white/90 truncate">
               {connector.name}
             </h3>
-            <StatusBadge tone={meta.tone} label={connector.statusLabel || meta.label} />
+            <StatusBadge tone={meta.tone} label={badgeLabel} />
           </div>
           <p className="mt-1 text-[11px] leading-snug text-black/55 dark:text-white/55 line-clamp-3">
             {connector.summary}
@@ -246,23 +233,15 @@ function ConnectorCard({ connector, connected, onConnect, onDisconnect }) {
         </div>
         <button
           type="button"
-          onClick={connected ? onDisconnect : onConnect}
+          onClick={onConnect}
           disabled={ctaDisabled}
           className={`text-[11px] font-medium rounded-full px-3 py-1 transition-colors ${
-            connected
-              ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/25 hover:bg-emerald-500/25"
-              : ctaDisabled
+            ctaDisabled
               ? "bg-black/[0.04] dark:bg-white/[0.06] text-black/40 dark:text-white/40 cursor-not-allowed"
               : "bg-black text-white dark:bg-white dark:text-black hover:opacity-90"
           }`}
         >
-          {connected ? (
-            <span className="inline-flex items-center gap-1">
-              <Check className="h-3 w-3" /> Connected
-            </span>
-          ) : (
-            ctaLabel
-          )}
+          {ctaLabel}
         </button>
       </div>
     </motion.div>

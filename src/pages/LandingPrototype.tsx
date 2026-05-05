@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from "react";
-import { ArrowUp, ChevronDown, Mic, Plus } from "lucide-react";
+import { ArrowRight, ArrowUp, ChevronDown, Mic, Plus } from "lucide-react";
 import { API_BASE_URL } from "@/lib/api-config";
 import AppSidebar from "@/components/AppSidebar";
 import { useNavigate } from "react-router-dom";
@@ -18,9 +18,18 @@ import {
 // Prototype "wake" landing experience.
 //
 // Sequence:
-//   1. Electric blue conic-gradient sweep around the screen perimeter
-//   2. Chat bar fades in vertically centered, AI greeting + opener questions
-//      type / fade in at the top of the conversation column
+//   1. Boot intro: muted screen + "Welcome to Synthetic Intelligence /
+//      The Future of Thinking" title card, then mute lifts and the
+//      blue perimeter conic-gradient sweeps the screen edge.
+//   2. Chat bar fades in vertically centered. AI greeting types out
+//      at the top of the conversation column, followed by:
+//        a. A "Get started" button fades in beneath the greeting.
+//        b. User clicks the button → the greeting + button block
+//           opacity-fades out, and the first question
+//           ("What are you passionate about?") fades in as a large
+//           centered headline directly above the chat box. The chat
+//           box itself stays anchored at viewport center the whole
+//           time and the input gets focus.
 //   3. On each user message:
 //      a. Chat bar drops to the bottom (first send only)
 //      b. AI "thinking" bubble appears, then a real conversational reply
@@ -40,18 +49,11 @@ import {
 const GREETING =
   "I'm LYKN — your synthetic intelligence layer, custom-built for you. Right now I'm empty. Unlike general AI trained on everyone, synthetic intelligence is synthesized from you alone — your sources, your taste, the way you think.";
 
-// Opener questions, ordered to match the `fact_kind` categories in
-// `lykn_user_model_facts`: identity → focus → goal → style. Mix is
-// deliberate — half work / half "who you are" — but nothing private.
-// "What you do" + "what you're known for" + "what you're after" is
-// enough signal to start synthesizing without prying for personal
-// details a visitor wouldn't share with an empty chat.
-const QUESTIONS = [
-  "What do you do, and what are you known for?",
-  "What are you working on right now?",
-  "What are you trying to make happen next?",
-  "How do you work best — deep focus, fast iteration, lots of research?",
-];
+// After the greeting types out we don't dump every prompt at once.
+// Instead a Get Started button quietly fades in beneath the greeting,
+// and the first real question only appears once the user accepts.
+// This keeps the empty-state from feeling like an interrogation form.
+const FIRST_QUESTION = "Describe yourself in 1-3 sentences.";
 
 const FACT_KIND_ORDER = ["identity", "focus", "goal", "style"] as const;
 type FactKind = (typeof FACT_KIND_ORDER)[number];
@@ -97,14 +99,14 @@ const persistPrototypeNeurons = (nodes: FactNode[]) => {
 // freshly-formed neuron — instead of showing an empty Grids category.
 const persistPrototypeChat = (
   greeting: string,
-  questions: string[],
+  firstQuestion: string,
   messages: ChatMsg[],
 ) => {
   try {
     const turns: { role: "user" | "ai"; content: string }[] = [];
     turns.push({
       role: "ai",
-      content: `${greeting}\n\n${questions.map((q) => `• ${q}`).join("\n")}`,
+      content: `${greeting}\n\n${firstQuestion}`,
     });
     messages.forEach((m) => {
       turns.push({ role: "user", content: m.content });
@@ -133,9 +135,20 @@ interface ChatMsg {
 const TYPING_GREETING_MS = 32;
 const CHAT_REVEAL_DELAY_MS = 460;
 const THINKING_DURATION_MS = 1100;
-const QUESTION_START_DELAY_MS = 500;
-const QUESTION_STAGGER_MS = 180;
+// How long to wait after the greeting finishes typing before
+// fading in the Get Started button.
+const START_BUTTON_DELAY_MS = 500;
 const CHAT_TIMEOUT_MS = 30_000;
+
+// Boot intro on first paint. The screen sits muted (translucent
+// blurred wash) while the "Welcome to Synthetic Intelligence" /
+// "The Future of Thinking" title card fades in, holds, then
+// fades out. Once the mute lifts the regular wake sequence
+// (perimeter trace, "Waking up..." bubble, typed greeting) takes
+// over. The overlay itself animates for 4800ms; the title and
+// tagline finish their staggered fade-out around 5400ms — we
+// hold the wrapper a touch past that before unmounting.
+const WAKE_BOOT_DURATION_MS = 5500;
 
 const FALLBACK_REPLY =
   "Hmm — I had trouble responding just now. Mind trying that again?";
@@ -241,13 +254,23 @@ async function streamChatResponse(
 }
 
 const LandingPrototype = () => {
-  const { user, loading: authLoading } = useAuth();
+  const { user, loading: authLoading, signInWithOAuth, signOut } = useAuth();
   const navigate = useNavigate();
+  const [bootActive, setBootActive] = useState(true);
   const [chatVisible, setChatVisible] = useState(false);
   const [thinkingDone, setThinkingDone] = useState(false);
   const [typedGreeting, setTypedGreeting] = useState("");
   const [greetingDone, setGreetingDone] = useState(false);
-  const [visibleQuestions, setVisibleQuestions] = useState(0);
+  // Intro flow after the greeting types out:
+  //   1. startButtonVisible flips true on a short delay → the Get
+  //      Started button fades in beneath the greeting.
+  //   2. On click (or early send), oldIntroFadingOut flips true →
+  //      the greeting + button block opacity-transitions to 0.
+  //   3. ~320ms later questionStarted flips true → the FIRST_QUESTION
+  //      fades in above the chat box and the input gets focus.
+  const [startButtonVisible, setStartButtonVisible] = useState(false);
+  const [oldIntroFadingOut, setOldIntroFadingOut] = useState(false);
+  const [questionStarted, setQuestionStarted] = useState(false);
   const [draft, setDraft] = useState("");
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [factNodes, setFactNodes] = useState<FactNode[]>([]);
@@ -267,10 +290,29 @@ const LandingPrototype = () => {
   }, [authLoading, user, navigate]);
 
   const hasSentFirst = messages.length > 0;
-  const allQuestionsShown = visibleQuestions >= QUESTIONS.length;
 
+  // Boot mute timer runs on first paint and lifts the overlay
+  // after WAKE_BOOT_DURATION_MS. The greeting sequence below is
+  // deliberately gated on bootActive so the "Waking up..." bubble
+  // and the typed greeting don't run hidden underneath the mute.
   useEffect(() => {
-    const reveal = window.setTimeout(() => setChatVisible(true), CHAT_REVEAL_DELAY_MS);
+    const boot = window.setTimeout(
+      () => setBootActive(false),
+      WAKE_BOOT_DURATION_MS,
+    );
+    return () => window.clearTimeout(boot);
+  }, []);
+
+  // Greeting sequence — only kicks off once the boot mute has
+  // lifted. We give a small CHAT_REVEAL_DELAY_MS breath after
+  // the overlay clears before the "Waking up..." bubble appears,
+  // then the regular thinking → typed-greeting cadence plays.
+  useEffect(() => {
+    if (bootActive) return;
+    const reveal = window.setTimeout(
+      () => setChatVisible(true),
+      CHAT_REVEAL_DELAY_MS,
+    );
     const swap = window.setTimeout(
       () => setThinkingDone(true),
       CHAT_REVEAL_DELAY_MS + THINKING_DURATION_MS,
@@ -279,7 +321,7 @@ const LandingPrototype = () => {
       window.clearTimeout(reveal);
       window.clearTimeout(swap);
     };
-  }, []);
+  }, [bootActive]);
 
   useEffect(() => {
     if (!thinkingDone) return;
@@ -297,27 +339,23 @@ const LandingPrototype = () => {
 
   useEffect(() => {
     if (!greetingDone) return;
-    const timeoutIds: number[] = [];
-    const start = window.setTimeout(() => {
-      QUESTIONS.forEach((_, i) => {
-        const id = window.setTimeout(
-          () => setVisibleQuestions((prev) => Math.max(prev, i + 1)),
-          i * QUESTION_STAGGER_MS,
-        );
-        timeoutIds.push(id);
-      });
-    }, QUESTION_START_DELAY_MS);
-    return () => {
-      window.clearTimeout(start);
-      timeoutIds.forEach((id) => window.clearTimeout(id));
-    };
+    const id = window.setTimeout(
+      () => setStartButtonVisible(true),
+      START_BUTTON_DELAY_MS,
+    );
+    return () => window.clearTimeout(id);
   }, [greetingDone]);
 
+  // Focus the chat input only after the user clicks "Get started".
+  // We deliberately don't autofocus on chatVisible — during the
+  // greeting/intro phase the user is reading, not typing yet, and
+  // a blinking caret would compete with the typed greeting + the
+  // appearing button for attention.
   useEffect(() => {
-    if (!chatVisible) return;
+    if (!questionStarted) return;
     const raf = window.requestAnimationFrame(() => inputRef.current?.focus());
     return () => window.cancelAnimationFrame(raf);
-  }, [chatVisible]);
+  }, [questionStarted]);
 
   useEffect(() => {
     if (!hasSentFirst) return;
@@ -365,17 +403,45 @@ const LandingPrototype = () => {
   // the user's very first "grid" (an artifact of their first session
   // with LYKN).
   useEffect(() => {
-    persistPrototypeChat(GREETING, [...QUESTIONS], messages);
+    persistPrototypeChat(GREETING, FIRST_QUESTION, messages);
   }, [messages]);
 
   const sendDisabled = draft.trim().length === 0;
-  const showCursor = thinkingDone && (!greetingDone || !allQuestionsShown);
+  // Caret only blinks while the greeting is mid-typing; it
+  // disappears as soon as the greeting completes so the
+  // intro prompt + button can take focus visually.
+  const showCursor = thinkingDone && !greetingDone;
+
+  // Click handler for the Get Started button. Stages the
+  // greeting/intro/button block fading out via opacity (a slow,
+  // deliberate 600ms ease), then flips questionStarted ~620ms
+  // later to mount the big centered question above the chat
+  // box. The chat box itself never moves — it stays at viewport
+  // center the whole time and the question is absolutely
+  // positioned above it.
+  const handleStartClick = () => {
+    setOldIntroFadingOut(true);
+    window.setTimeout(() => setQuestionStarted(true), 620);
+  };
 
   const handleSend = () => {
     const text = draft.trim();
     if (!text) return;
     const idx = messages.length;
     const msgId = `msg_${Date.now()}_${idx}`;
+
+    // If the user types and sends before clicking "Get started",
+    // treat them as if they did — once a real message is in flight
+    // the intro button is meaningless and the AI block at the top
+    // should settle into its post-intro state (showing the first
+    // question) rather than still offering the button. Also flag
+    // the old intro as fading so the absolutely-positioned block
+    // at the top doesn't pop away abruptly under the message that
+    // just got submitted.
+    if (!questionStarted) {
+      setOldIntroFadingOut(true);
+      setQuestionStarted(true);
+    }
 
     // Session-scoped guest cap. Server enforces per-IP / per-day too,
     // but stopping here keeps the UI honest and saves an LLM call.
@@ -403,7 +469,7 @@ const LandingPrototype = () => {
     const history: GuestHistoryMsg[] = [
       {
         role: "model",
-        content: `${GREETING}\n\n${QUESTIONS.map((q) => `- ${q}`).join("\n")}`,
+        content: `${GREETING}\n\n${FIRST_QUESTION}`,
       },
     ];
     messages.forEach((m) => {
@@ -475,6 +541,11 @@ const LandingPrototype = () => {
             setFactNodes((prev) => [...prev, newNode!]);
           }
         }
+        // No client-side fallback neuron: if the user's first
+        // message was off-topic / not actually a self-description,
+        // we'd rather have the AI politely re-ask than mint a
+        // garbage neuron from random text. The server-side
+        // onboarding prompt handles the re-ask in CASE B.
 
         setMessages((prev) =>
           prev.map((m) =>
@@ -524,18 +595,28 @@ const LandingPrototype = () => {
               <span aria-hidden className="lykn-wake-cursor">|</span>
             )}
 
-            {greetingDone && visibleQuestions > 0 && (
-              <ul className="mt-3 space-y-1.5">
-                {QUESTIONS.slice(0, visibleQuestions).map((q, i) => (
-                  <li
-                    key={i}
-                    className="lykn-wake-question-fade flex items-start gap-2 text-white/65"
+            {/* After the greeting types out: a short pause, then a
+                Get Started button fades in. Once the user clicks
+                it (or sends a message early), questionStarted flips
+                true and we replace the button with the first
+                question. */}
+            {greetingDone && startButtonVisible && (
+              <div className="mt-4">
+                {!questionStarted ? (
+                  <button
+                    type="button"
+                    onClick={handleStartClick}
+                    className="lykn-wake-question-fade lykn-wake-start-btn inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-semibold tracking-wide text-blue-100 border border-blue-400/45 bg-blue-500/[0.10] hover:bg-blue-500/[0.20] hover:text-white hover:border-blue-300/70 transition-colors cursor-pointer"
                   >
-                    <span className="text-blue-400/80 mt-[1px] leading-tight">•</span>
-                    <span>{q}</span>
-                  </li>
-                ))}
-              </ul>
+                    Get started
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+                ) : (
+                  <p className="lykn-wake-question-fade text-white/90 font-medium">
+                    {FIRST_QUESTION}
+                  </p>
+                )}
+              </div>
             )}
           </div>
         )}
@@ -544,7 +625,7 @@ const LandingPrototype = () => {
   );
 
   const chatBarBlock = (
-    <div className="lykn-wake-chat-shell omnia-neu-chat-shell omnia-chat-border-run-once p-2.5 sm:p-3 w-full flex flex-col gap-1.5">
+    <div className="lykn-wake-chat-shell omnia-neu-chat-shell p-2.5 sm:p-3 w-full flex flex-col gap-1.5">
       <textarea
         ref={inputRef}
         data-min-h="52"
@@ -568,7 +649,7 @@ const LandingPrototype = () => {
           className="omnia-neu-chat-toolbar-select-trigger inline-flex items-center justify-start gap-0 h-9 max-w-[9rem] min-w-0 shrink rounded-lg border-0 bg-transparent text-xs px-1.5 font-medium text-white/80 shadow-none overflow-hidden"
           title="Model"
         >
-          <span className="truncate">Claude Sonnet 4.6</span>
+          <span className="truncate">LYKN</span>
           <ChevronDown className="w-3.5 h-3.5 opacity-40 shrink-0 ml-1" />
         </button>
         <div className="flex-1 min-w-[4px]" aria-hidden />
@@ -604,8 +685,68 @@ const LandingPrototype = () => {
   );
 
   return (
-    <div className="dark lykn-wake-stage relative w-screen min-h-screen overflow-hidden flex flex-col">
-      <div aria-hidden className="lykn-wake-screen-trace" />
+    <div
+      className={`dark lykn-wake-stage relative w-screen min-h-screen overflow-hidden flex flex-col ${
+        bootActive ? "lykn-wake-boot-active" : ""
+      }`}
+    >
+      {/* Perimeter conic "lightning" trace. Mounted only after the
+          boot intro finishes so its 2.8s sweep starts cleanly as
+          the title card fades out and the mute lifts — that way
+          the bright edge sweep is the visual reveal of the page,
+          not something half-played behind the mute. */}
+      {!bootActive && <div aria-hidden className="lykn-wake-screen-trace" />}
+
+      {/* Standard app sign-in pill (same component used in
+          AppSidebar's top-left). Mounted only before the AppSidebar
+          itself appears (which happens after the first neuron is
+          created — see AppSidebar mount further down) so the two
+          don't double up. Hidden during the boot mute so it doesn't
+          peek through. Matches the exact styling/behaviour of the
+          AppSidebar pill: avatar circle + "Sign in" / "Signed in"
+          label, Google OAuth on click, confirm-then-signOut for an
+          authed user. */}
+      {!bootActive && factNodes.length === 0 && (
+        <div className="lykn-wake-signin-fade fixed left-4 top-4 z-[80] flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => {
+              if (user) {
+                const ok = window.confirm("Sign out of your account?");
+                if (ok) signOut();
+              } else {
+                signInWithOAuth("google");
+              }
+            }}
+            className="flex items-center gap-1.5 rounded-full bg-white/45 dark:bg-[rgba(60,60,60,0.14)] backdrop-blur-sm border border-black/6 dark:border-white/10 pl-1 pr-3 py-1 text-[0.6875rem] text-black/70 dark:text-white/70 hover:bg-white/60 dark:hover:bg-white/15 shadow-sm transition-colors"
+            title={user ? "Sign out" : "Sign in"}
+          >
+            <div className="h-6 w-6 rounded-full bg-blue-500/15 dark:bg-blue-400/20 text-[0.6875rem] font-semibold text-blue-600 dark:text-blue-400 flex items-center justify-center flex-shrink-0">
+              {user?.email ? user.email.charAt(0).toUpperCase() : "?"}
+            </div>
+            <span>{user ? "Signed in" : "Sign in"}</span>
+          </button>
+        </div>
+      )}
+
+      {/* Boot intro — the stage is muted to full black while the
+          "Synthetic Intelligence" wordmark fades in/holds/fades
+          out at center. Once both finish the wrapper unmounts and
+          the regular wake sequence (perimeter trace, "Waking up"
+          bubble, typed greeting) is revealed. */}
+      {bootActive && (
+        <>
+          <div aria-hidden className="lykn-wake-boot-overlay" />
+          <div aria-hidden className="lykn-wake-boot-title-group">
+            <div className="lykn-wake-boot-title">
+              Welcome to Synthetic Intelligence
+            </div>
+            <div className="lykn-wake-boot-tagline">
+              The Future of Thinking
+            </div>
+          </div>
+        </>
+      )}
 
       {/* Main column shifts right when the left sidebar opens, so the
           chat conversation isn't covered by the sidebar. */}
@@ -615,16 +756,61 @@ const LandingPrototype = () => {
         }`}
       >
         {!hasSentFirst ? (
-          // Empty state — AI greeting anchored at the top, chat bar centered
-          <div className="flex-1 w-full flex flex-col">
-            <div className="w-full flex justify-center px-4 pt-6">
-              <div className="w-full max-w-2xl">{aiMessageBlock}</div>
-            </div>
-            <div className="flex-1" aria-hidden />
-            <div className="w-full flex justify-center px-4">
-              <div className="w-full max-w-2xl">{chatBarBlock}</div>
-            </div>
-            <div className="flex-1" aria-hidden />
+          // Empty state — two distinct phases. The chat bar
+          // does NOT exist yet during phase (a); it only mounts
+          // in phase (b) so the greeting feels like the entire
+          // surface, then the workspace materializes around it.
+          //   (a) Pre-click (!questionStarted): greeting +
+          //       Get Started button sit in the dead center of
+          //       the stage with no chat bar present. On click,
+          //       this whole block opacity-fades out
+          //       (oldIntroFadingOut) and then unmounts ~620ms
+          //       later when questionStarted flips.
+          //   (b) Post-click (questionStarted): the FIRST_QUESTION
+          //       mounts as a large centered headline in the upper
+          //       half of the stage and the chat bar mounts at
+          //       viewport center. Both fade in together — the
+          //       headline via lykn-wake-prompt-in, the chat bar
+          //       via lykn-wake-chat-fade-in — so the layout
+          //       arrives as one coordinated reveal.
+          <div className="relative flex-1 w-full flex items-center justify-center px-4">
+            {!questionStarted && (
+              <div
+                className={`w-full max-w-2xl transition-opacity duration-[600ms] ease-out ${
+                  oldIntroFadingOut
+                    ? "opacity-0 pointer-events-none"
+                    : "opacity-100 pointer-events-auto"
+                }`}
+              >
+                {aiMessageBlock}
+              </div>
+            )}
+
+            {questionStarted && (
+              <>
+                {/* Container spans the upper half of the stage
+                    (top-0 → bottom-1/2) and centers the question
+                    within that band, which lands the headline at
+                    ~25% from the top — visually halfway between
+                    the top edge and the centered chat bar. The
+                    headline class chains a slow fade-up + a
+                    delayed electric-blue text-shadow that settles
+                    into a persistent slight glow. */}
+                <div className="pointer-events-none absolute inset-x-0 top-0 bottom-1/2 flex items-center justify-center px-4">
+                  <h1 className="lykn-wake-prompt-in w-full max-w-2xl text-center text-2xl sm:text-3xl md:text-[34px] font-semibold leading-tight text-white">
+                    {FIRST_QUESTION}
+                  </h1>
+                </div>
+
+                {/* Chat bar appears for the first time here, paired
+                    with the headline. The wrapper handles the
+                    opacity + slide-up reveal; the chat shell's own
+                    persistent ring + halo come along for the ride. */}
+                <div className="lykn-wake-chat-fade-in w-full max-w-2xl">
+                  {chatBarBlock}
+                </div>
+              </>
+            )}
           </div>
         ) : (
           // Active conversation — messages stack from the top, chat bar pinned bottom

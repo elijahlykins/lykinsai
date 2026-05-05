@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
+import { clearPrototypeState } from '@/lib/prototypeHandoff';
 
 const AuthContext = createContext();
 
@@ -159,7 +160,29 @@ export function SupabaseAuthProvider({ children }) {
       signOutTimerRef.current = null;
     }
     setUser(null);
-    return supabase.auth.signOut({ scope: 'local' });
+
+    // Awaiting the supabase call ensures the auth tokens are cleared from
+    // localStorage *before* the hard reload below — otherwise the new page
+    // load can rehydrate the old session and momentarily look signed-in.
+    try {
+      await supabase.auth.signOut({ scope: 'local' });
+    } catch (err) {
+      if (import.meta.env.DEV) console.warn('[Auth] signOut error:', err);
+    }
+
+    // "Start from the beginning": wipe the prototype walkthrough storage
+    // so the next page load is indistinguishable from a fresh visitor —
+    // empty Synthesis Layer, no half-finished neuron list, walkthrough
+    // step pointer reset.
+    clearPrototypeState();
+
+    // Hard reload to `/` so every store, query cache, and in-memory piece
+    // of user state is dropped on the floor. The LandingPrototype route
+    // is gated by `<GuestOnly>` so a logged-out visitor reliably lands
+    // there. SSR / test guard: only call when window exists.
+    if (typeof window !== 'undefined') {
+      window.location.assign('/');
+    }
   };
 
   return (

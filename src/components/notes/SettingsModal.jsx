@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
-import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Select, SelectContent, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
 import { Save, LogOut, User, Globe, MessageSquare, Sun, Moon, Monitor, Lock, Sparkles, CreditCard } from 'lucide-react';
 
 import AboutYouSection from '@/components/intake/AboutYouSection';
+import ModelSelectOptions from '@/components/ModelSelectOptions';
 import { useAuth } from '@/lib/SupabaseAuth';
 import { supabase } from '@/lib/supabase';
 import { useNavigate } from 'react-router-dom';
@@ -43,7 +44,7 @@ export default function SettingsModal({ isOpen, onClose }) {
   // the textarea disabled with an upgrade CTA instead.
   const canUseCustomPrompt = planMeets(planId, "studio");
   const [settings, setSettings] = useState({
-    theme: 'system',
+    theme: 'dark',
     layoutDensity: 'comfortable',
     aiPersonality: 'balanced',
     aiDetailLevel: 'medium',
@@ -57,9 +58,29 @@ export default function SettingsModal({ isOpen, onClose }) {
 
   const DEFAULT_BG_DARK = '#1e1e1e';
 
+  // Mirrors the bootstrap logic in `main.jsx`: while no Supabase auth
+  // session exists in localStorage, the visitor is in the LYKN
+  // walkthrough (landing → synthesis → vault → grid) which is
+  // strictly dark mode. Once they sign in, their saved theme
+  // preference wins.
+  const hasAuthSessionInStorage = () => {
+    try {
+      for (let i = 0; i < localStorage.length; i += 1) {
+        const k = localStorage.key(i);
+        if (k && /^sb-.*-auth-token$/.test(k) && localStorage.getItem(k)) {
+          return true;
+        }
+      }
+    } catch {
+      // localStorage access may throw in private mode; treat as no session.
+    }
+    return false;
+  };
+
   const applyTheme = (theme) => {
     const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-    const isDark = theme === 'dark' || (theme === 'system' && prefersDark);
+    const effectiveTheme = hasAuthSessionInStorage() ? theme : 'dark';
+    const isDark = effectiveTheme === 'dark' || (effectiveTheme === 'system' && prefersDark);
     document.documentElement.classList.toggle('dark', isDark);
     if (isDark) {
       document.documentElement.style.setProperty('--app-background', DEFAULT_BG_DARK);
@@ -75,7 +96,7 @@ export default function SettingsModal({ isOpen, onClose }) {
       if (saved) {
         try {
           const parsed = JSON.parse(saved);
-          if (!parsed.theme) parsed.theme = 'system';
+          if (!parsed.theme) parsed.theme = 'dark';
           setSettings(parsed);
           applyTheme(parsed.theme);
         } catch (e) {
@@ -396,98 +417,7 @@ export default function SettingsModal({ isOpen, onClose }) {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent className="bg-glass-card border-white/15 dark:border-gray-700/20 backdrop-blur-md">
-                  {(() => {
-                    const gate = (value, label, hint) => {
-                      const allowed = isModelAllowedForPlan(value, modelTier);
-                      return (
-                        <SelectItem
-                          key={value}
-                          value={value}
-                          hint={hint}
-                          disabled={!allowed}
-                          className={!allowed ? 'opacity-50 cursor-not-allowed' : undefined}
-                        >
-                          <span className="inline-flex items-center gap-1.5">
-                            {label}
-                            {!allowed && <Lock className="w-3 h-3 opacity-60" aria-label="Upgrade required" />}
-                          </span>
-                        </SelectItem>
-                      );
-                    };
-                    return (
-                      <>
-                        <SelectGroup>
-                          <SelectLabel>Latest</SelectLabel>
-                          {gate('claude-sonnet-4-6', 'Claude Sonnet 4.6', 'Anthropic flagship')}
-                          {gate('gpt-5.4', 'GPT-5.4', 'OpenAI flagship')}
-                          {gate('gemini-3.1-pro-preview', 'Gemini 3.1 Pro', 'Google flagship')}
-                          {gate('grok-4-1-fast-reasoning', 'Grok 4.1 Fast Reasoning', 'xAI flagship')}
-                        </SelectGroup>
-                        <SelectSeparator />
-                        <SelectGroup>
-                          <SelectLabel>Fastest</SelectLabel>
-                          {gate('gemini-3-flash-preview', 'Gemini 3 Flash', 'Google, ultra-fast')}
-                          {gate('gemini-3.1-flash-lite-preview', 'Gemini 3.1 Flash-Lite', 'Google, cheapest')}
-                          {gate('gemini-2.5-flash', 'Gemini 2.5 Flash', 'Google, balanced')}
-                          {gate('gpt-4.1-nano', 'GPT-4.1 Nano', 'OpenAI, smallest')}
-                          {gate('gpt-4.1-mini', 'GPT-4.1 Mini', 'OpenAI, fast + smart')}
-                          {gate('gpt-5-mini', 'GPT-5 Mini', 'OpenAI, near-frontier')}
-                          {gate('claude-haiku-4-5-20251001', 'Claude Haiku 4.5', 'Anthropic, fast')}
-                          {gate('grok-4-1-fast-non-reasoning', 'Grok 4.1 Fast Non-Reasoning', 'xAI, low latency')}
-                        </SelectGroup>
-                        <SelectSeparator />
-                        <SelectGroup>
-                          <SelectLabel>Cheap</SelectLabel>
-                          {gate('gpt-4o-mini', 'GPT-4o Mini', 'OpenAI, budget')}
-                          {gate('o4-mini', 'o4 Mini', 'OpenAI, cheap reasoning')}
-                          {gate('grok-3-mini', 'Grok 3 Mini', 'xAI, budget')}
-                        </SelectGroup>
-                        <SelectSeparator />
-                        <SelectGroup>
-                          <SelectLabel>Image Gen</SelectLabel>
-                          {gate('gpt-image-1.5', 'GPT Image 1.5', 'OpenAI, images')}
-                          {gate('gemini-3.1-flash-image-preview', 'Nano Banana 2', 'Google, images')}
-                          {gate('grok-imagine-image-pro', 'Grok Imagine Image Pro', 'xAI, pro images')}
-                          {gate('grok-imagine-image', 'Grok Imagine Image', 'xAI, images')}
-                          {gate('grok-2-image-1212', 'Grok 2 Image', 'xAI, images')}
-                          {gate('dall-e-3', 'DALL-E 3', 'OpenAI, images')}
-                        </SelectGroup>
-                        <SelectSeparator />
-                        <SelectGroup>
-                          <SelectLabel>Deep Thinking</SelectLabel>
-                          {gate('o3', 'o3', 'OpenAI, reasoning')}
-                          {gate('o3-pro', 'o3 Pro', 'OpenAI, max reasoning')}
-                          {gate('gpt-5.4-pro', 'GPT-5.4 Pro', 'OpenAI, extended')}
-                          {gate('claude-opus-4-1-20250805', 'Claude Opus 4.1', 'Anthropic, deep')}
-                          {gate('claude-opus-4-20250514', 'Claude Opus 4', 'Anthropic, deep')}
-                          {gate('gemini-2.5-pro', 'Gemini 2.5 Pro', 'Google, reasoning')}
-                          {gate('grok-4-fast-reasoning', 'Grok 4 Fast Reasoning', 'xAI, reasoning')}
-                        </SelectGroup>
-                        <SelectSeparator />
-                        <SelectGroup>
-                          <SelectLabel>Code</SelectLabel>
-                          {gate('claude-opus-4-6-code', 'Claude Opus 4.6', 'Anthropic, top coder')}
-                          {gate('gpt-5.3-codex', 'Codex 5.3', 'OpenAI, agentic code')}
-                          {gate('gpt-4.1', 'GPT-4.1', 'OpenAI, 1M ctx code')}
-                          {gate('grok-code-fast-1', 'Grok Code Fast 1', 'xAI, code')}
-                        </SelectGroup>
-                        <SelectSeparator />
-                        <SelectGroup>
-                          <SelectLabel>General</SelectLabel>
-                          {gate('gpt-5.2', 'GPT-5.2', 'OpenAI, previous gen')}
-                          {gate('gpt-5.1', 'GPT-5.1', 'OpenAI, previous gen')}
-                          {gate('gpt-5', 'GPT-5', 'OpenAI, previous gen')}
-                          {gate('gpt-4o', 'GPT-4o', 'OpenAI, versatile')}
-                          {gate('claude-sonnet-4-20250514', 'Claude Sonnet 4', 'Anthropic, balanced')}
-                          {gate('grok-4-fast-non-reasoning', 'Grok 4 Fast Non-Reasoning', 'xAI, general')}
-                          {gate('grok-4-0709', 'Grok 4 0709', 'xAI, general')}
-                          {gate('grok-3', 'Grok 3', 'xAI, previous gen')}
-                          {gate('grok-2-vision-1212', 'Grok 2 Vision', 'xAI, vision')}
-                          {gate('unified-auto', 'Unified AI (Auto)', 'Auto-picks best')}
-                        </SelectGroup>
-                      </>
-                    );
-                  })()}
+                  <ModelSelectOptions modelTier={modelTier} />
                 </SelectContent>
               </Select>
             </div>

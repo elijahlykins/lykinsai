@@ -9,11 +9,12 @@ import {
 import { Canvas } from "@/canvas/Canvas";
 import { useCanvasStore } from "@/store/canvasStore";
 import type { Block } from "@/canvas/types";
-import { ChevronDown, ChevronUp, ChevronRight, Plus, Link as LinkIcon, Image as ImageIcon, MessageSquare, Mic, BookOpen, X, Clock, Edit2, Folder as FolderIcon, Link2, MoreHorizontal, PanelRightClose, PanelRight, StickyNote, Play, FileText, Music, Video, Share2, Download, Copy, Check, RefreshCw, ThumbsUp, ThumbsDown, Square, Sparkles, Save, Globe, GripVertical, ArrowUp, Lock } from "lucide-react";
+import { ChevronDown, ChevronUp, ChevronRight, Plus, Link as LinkIcon, Image as ImageIcon, MessageSquare, Mic, BookOpen, X, Clock, Edit2, Folder as FolderIcon, Link2, MoreHorizontal, PanelRightClose, PanelRight, StickyNote, Play, FileText, Music, Video, Share2, Download, Copy, Check, RefreshCw, ThumbsUp, ThumbsDown, Square, Sparkles, Save, Globe, GripVertical, ArrowUp } from "lucide-react";
 import { GridIcon } from "@/components/ui/GridIcon";
 import DraggableQuickNote from "@/components/notes/DraggableQuickNote";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Select, SelectContent, SelectTrigger, SelectValue } from "@/components/ui/select";
+import ModelSelectOptions from "@/components/ModelSelectOptions";
 import { toast } from "@/components/ui/use-toast";
 import { useUserPlan } from "@/lib/useUserPlan";
 import { isModelAllowedForPlan, defaultModelForTier } from "@/lib/modelTiers";
@@ -446,7 +447,10 @@ const makeAttId = () =>
   `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 
-/** Shared model list for top panel and chat-bar selectors.
+/** Shared model list for top panel and chat-bar selectors. Thin wrapper
+ * around the canonical `<ModelSelectOptions>` so existing call sites that
+ * pass a JSX node prop don't need to import the shared component directly.
+ *
  * `modelTier` gates which models are selectable:
  *   - "basic"     (Free / guest)   → only non-thinking fast models
  *   - "top"       (Studio)          → all text LLMs, no media gen
@@ -455,95 +459,7 @@ const makeAttId = () =>
  * upgrade path instead of hiding the tier entirely.
  */
 function OmniaGridModelSelectMenuBody({ modelTier = "basic" }: { modelTier?: string }) {
-  const gate = (value: string, children: React.ReactNode, hint: string) => {
-    const allowed = isModelAllowedForPlan(value, modelTier);
-    return (
-      <SelectItem
-        value={value}
-        hint={hint}
-        disabled={!allowed}
-        className={!allowed ? "opacity-50 cursor-not-allowed" : undefined}
-      >
-        <span className="inline-flex items-center gap-1.5">
-          {children}
-          {!allowed && <Lock className="w-3 h-3 opacity-60" aria-label="Upgrade required" />}
-        </span>
-      </SelectItem>
-    );
-  };
-  return (
-    <>
-      <SelectGroup>
-        <SelectLabel>Latest</SelectLabel>
-        {gate("claude-sonnet-4-6", "Claude Sonnet 4.6", "Anthropic flagship")}
-        {gate("gpt-5.4", "GPT-5.4", "OpenAI flagship")}
-        {gate("gemini-3.1-pro-preview", "Gemini 3.1 Pro", "Google flagship")}
-        {gate("grok-4-1-fast-reasoning", "Grok 4.1 Fast Reasoning", "xAI flagship")}
-      </SelectGroup>
-      <SelectSeparator />
-      <SelectGroup>
-        <SelectLabel>Fastest</SelectLabel>
-        {gate("gemini-3-flash-preview", "Gemini 3 Flash", "Google, ultra-fast")}
-        {gate("gemini-3.1-flash-lite-preview", "Gemini 3.1 Flash-Lite", "Google, cheapest")}
-        {gate("gemini-2.5-flash", "Gemini 2.5 Flash", "Google, balanced")}
-        {gate("gpt-4.1-nano", "GPT-4.1 Nano", "OpenAI, smallest")}
-        {gate("gpt-4.1-mini", "GPT-4.1 Mini", "OpenAI, fast + smart")}
-        {gate("gpt-5-mini", "GPT-5 Mini", "OpenAI, near-frontier")}
-        {gate("claude-haiku-4-5-20251001", "Claude Haiku 4.5", "Anthropic, fast")}
-        {gate("grok-4-1-fast-non-reasoning", "Grok 4.1 Fast Non-Reasoning", "xAI, low latency")}
-      </SelectGroup>
-      <SelectSeparator />
-      <SelectGroup>
-        <SelectLabel>Cheap</SelectLabel>
-        {gate("gpt-4o-mini", "GPT-4o Mini", "OpenAI, budget")}
-        {gate("o4-mini", "o4 Mini", "OpenAI, cheap reasoning")}
-        {gate("grok-3-mini", "Grok 3 Mini", "xAI, budget")}
-      </SelectGroup>
-      <SelectSeparator />
-      <SelectGroup>
-        <SelectLabel>Image Gen</SelectLabel>
-        {gate("gpt-image-1.5", "GPT Image 1.5", "OpenAI, images")}
-        {gate("gemini-3.1-flash-image-preview", "Nano Banana 2", "Google, images")}
-        {gate("grok-imagine-image-pro", "Grok Imagine Image Pro", "xAI, pro images")}
-        {gate("grok-imagine-image", "Grok Imagine Image", "xAI, images")}
-        {gate("grok-2-image-1212", "Grok 2 Image", "xAI, images")}
-        {gate("dall-e-3", "DALL-E 3", "OpenAI, images")}
-      </SelectGroup>
-      <SelectSeparator />
-      <SelectGroup>
-        <SelectLabel>Deep Thinking</SelectLabel>
-        {gate("o3", "o3", "OpenAI, reasoning")}
-        {gate("o3-pro", "o3 Pro", "OpenAI, max reasoning")}
-        {gate("gpt-5.4-pro", "GPT-5.4 Pro", "OpenAI, extended")}
-        {gate("claude-opus-4-1-20250805", "Claude Opus 4.1", "Anthropic, deep")}
-        {gate("claude-opus-4-20250514", "Claude Opus 4", "Anthropic, deep")}
-        {gate("gemini-2.5-pro", "Gemini 2.5 Pro", "Google, reasoning")}
-        {gate("grok-4-fast-reasoning", "Grok 4 Fast Reasoning", "xAI, reasoning")}
-      </SelectGroup>
-      <SelectSeparator />
-      <SelectGroup>
-        <SelectLabel>Code</SelectLabel>
-        {gate("claude-opus-4-6-code", "Claude Opus 4.6", "Anthropic, top coder")}
-        {gate("gpt-5.3-codex", "Codex 5.3", "OpenAI, agentic code")}
-        {gate("gpt-4.1", "GPT-4.1", "OpenAI, 1M ctx code")}
-        {gate("grok-code-fast-1", "Grok Code Fast 1", "xAI, code")}
-      </SelectGroup>
-      <SelectSeparator />
-      <SelectGroup>
-        <SelectLabel>General</SelectLabel>
-        {gate("gpt-5.2", "GPT-5.2", "OpenAI, previous gen")}
-        {gate("gpt-5.1", "GPT-5.1", "OpenAI, previous gen")}
-        {gate("gpt-5", "GPT-5", "OpenAI, previous gen")}
-        {gate("gpt-4o", "GPT-4o", "OpenAI, versatile")}
-        {gate("claude-sonnet-4-20250514", "Claude Sonnet 4", "Anthropic, balanced")}
-        {gate("grok-4-fast-non-reasoning", "Grok 4 Fast Non-Reasoning", "xAI, general")}
-        {gate("grok-4-0709", "Grok 4 0709", "xAI, general")}
-        {gate("grok-3", "Grok 3", "xAI, previous gen")}
-        {gate("grok-2-vision-1212", "Grok 2 Vision", "xAI, vision")}
-        {gate("unified-auto", "Unified AI (Auto)", "Auto-picks best")}
-      </SelectGroup>
-    </>
-  );
+  return <ModelSelectOptions modelTier={modelTier} />;
 }
 
 const OmniaChatBarToolbar = React.memo(function OmniaChatBarToolbar({

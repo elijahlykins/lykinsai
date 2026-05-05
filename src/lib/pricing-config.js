@@ -32,7 +32,7 @@ export const PLANS = [
   {
     id: "studio_pro",
     name: "Studio Pro",
-    tagline: "Everything in Studio, plus image & video generation",
+    tagline: "Everything in Studio, plus an unlimited Vault",
     monthlyPrice: 65,
     annualPrice: 624, // 65 * 12 * 0.8
     cta: "Upgrade to Studio Pro",
@@ -43,8 +43,6 @@ export const PLANS = [
     features: [
       { text: "Everything in Studio", included: true },
       { text: "Unlimited Vault items", included: true, accent: true },
-      { text: "LLM image generation", included: true, accent: true },
-      { text: "Video generation", included: true, accent: true },
     ],
   },
   {
@@ -70,17 +68,17 @@ export const FAQ_ITEMS = [
   {
     question: "What do I get on the Free plan?",
     answer:
-      "Every account starts on Free. You get unlimited Grids (up to 50 blocks per Grid), 50 Vault items, and access to fast non-thinking models like Haiku. It's a great way to feel the product out before upgrading.",
+      "Every account starts on Free. You get unlimited Grids (up to 50 blocks per Grid), 50 Vault items, a Synthesis Layer preview that grows alongside your work up to 50 nodes, and access to fast non-thinking models like Haiku. It's a great way to feel the product out before upgrading.",
   },
   {
     question: "Which AI models are included in each plan?",
     answer:
-      "Free runs on fast non-thinking models (Haiku-tier). Studio unlocks all top-tier models — Claude Sonnet 4.6, GPT-5.4, Gemini 2.5 Pro, and Grok — plus model switching and custom AI settings. Studio Pro adds LLM image and video generation on top.",
+      "Free runs on fast non-thinking models (Haiku-tier). Studio and Studio Pro unlock all top-tier models — Claude Sonnet 4.6, GPT-5.4, Gemini 2.5 Pro, and Grok — plus model switching and custom AI settings.",
   },
   {
     question: "What's the difference between Studio and Studio Pro?",
     answer:
-      "Studio gives you the top LLMs, unlimited Grids with unlimited blocks, the Mind Map, and a 1,000-item Vault. Studio Pro adds unlimited Vault items and the generative image + video tools.",
+      "Studio gives you the top LLMs, unlimited Grids with unlimited blocks, the unlimited Mind Map (Free previews up to 50 nodes), and a 1,000-item Vault. Studio Pro adds unlimited Vault items.",
   },
   {
     question: "Can I switch plans anytime?",
@@ -97,6 +95,13 @@ export const FAQ_ITEMS = [
 // Per-plan hard limits. `Infinity` = no cap. `seats` is for team plans.
 // Enforcement hooks live in server.js (AI requests) and useUsageGate.js
 // (vault/grid). Blocks-per-grid enforcement is applied at the canvas layer.
+//
+// `synthesisNodes` caps how many user-created nodes (projects + grids +
+// vault notes + tags + AI-learned neurons — i.e. everything except the
+// root and category shells) can render in the Synthesis Layer before the
+// page itself swaps in the upgrade paywall. Free users get a real preview
+// of the layer up to this number; paid plans are uncapped. Enforcement
+// lives in `src/pages/SynthesisLayer.tsx`.
 export const PLAN_LIMITS = {
   free: {
     requests: Infinity,
@@ -104,6 +109,7 @@ export const PLAN_LIMITS = {
     blocksPerGrid: 50,
     grids: Infinity,
     projects: Infinity,
+    synthesisNodes: 50,
     seats: 1,
     // Free is gated by model tier (non-thinking only), not request count.
     modelTier: "basic",
@@ -114,6 +120,7 @@ export const PLAN_LIMITS = {
     blocksPerGrid: Infinity,
     grids: Infinity,
     projects: Infinity,
+    synthesisNodes: Infinity,
     seats: 1,
     modelTier: "top",
   },
@@ -123,6 +130,7 @@ export const PLAN_LIMITS = {
     blocksPerGrid: Infinity,
     grids: Infinity,
     projects: Infinity,
+    synthesisNodes: Infinity,
     seats: 1,
     modelTier: "top+media",
   },
@@ -132,6 +140,7 @@ export const PLAN_LIMITS = {
     blocksPerGrid: Infinity,
     grids: Infinity,
     projects: Infinity,
+    synthesisNodes: Infinity,
     seats: 5,
     modelTier: "top+media",
   },
