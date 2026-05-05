@@ -701,6 +701,21 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
         // scroll to `maxTop`, visibly shooting the user to the bottom
         // of the grid on their first zoom-out gesture.
         if (snapshot) applySnapshotRef.current(snapshot);
+        // applySnapshot's chat-hydration branch is gated on the captured
+        // `boardId` state, which is still stale (the previous boardId, or
+        // `null` on first mount) at this point because `setBoardId(routeBoardId)`
+        // above hasn't flushed yet. The seeded demo grids ship with empty
+        // chat so it doesn't matter for them — but the prototype-handoff
+        // "First Conversation" grid carries the saved transcript on its
+        // snapshot, so hydrate it explicitly here.
+        if (!cancelled && snapshot && Array.isArray(snapshot.chatMessages) && snapshot.chatMessages.length > 0) {
+          setChatMessages(snapshot.chatMessages);
+          setChatRailOpen(true);
+          setChatRailVisible(true);
+          if (Array.isArray(snapshot.aiThread) && snapshot.aiThread.length > 0) {
+            aiThreadRef.current = snapshot.aiThread;
+          }
+        }
         if (!cancelled) hydratedRef.current = true;
       })();
       return () => { cancelled = true; };

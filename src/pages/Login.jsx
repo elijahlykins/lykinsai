@@ -61,7 +61,12 @@ export default function Login() {
   const [submitting, setSubmitting] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
 
-  const from = location.state?.from?.pathname || "/";
+  // Default post-login destination is the app, NOT the landing page.
+  // `/` now renders the synthetic-intelligence onboarding prototype which
+  // is a guest-only experience; signed-in users should land directly in
+  // their grid. `from` is still honored so deep links into a specific
+  // route (e.g. `/vault`, `/grid/<id>`) keep working through the auth gate.
+  const from = location.state?.from?.pathname || "/app";
   const prefilledEmail = location.state?.email;
 
   useEffect(() => {

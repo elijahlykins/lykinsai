@@ -3,6 +3,11 @@ import { getAiPrefs } from "@/lib/ai-prefs";
 import { CONTEXT_BUDGETS } from "@/lib/ai/promptBuilder";
 import { saveExchange, getMemoryForPrompt, invalidateMemoryCache } from "@/lib/conversationMemory";
 import { fetchNotesForVaultAi, buildVaultDetailForGridAi, type VaultAiNoteRow } from "@/lib/vault/vaultContentsForAi";
+import {
+  GUEST_CHAT_SESSION_CAP,
+  guestChatCapReached,
+  incrementGuestChatCount,
+} from "@/lib/prototypeHandoff";
 import { toast } from "@/components/ui/use-toast";
 
 // Show a one-shot toast when the server downgrades the model. The server
@@ -680,6 +685,22 @@ async function runGuestChat(
 ): Promise<void> {
   const { state, streamRefs, abortController } = p;
   const signal = abortController.signal;
+
+  // Session-scoped guest chat cap. Server-side per-IP limits are the
+  // real ceiling, but this short-circuit gives the user a clear
+  // sign-in nudge before we burn another LLM call.
+  if (guestChatCapReached()) {
+    const msg =
+      `You've hit the free preview limit (${GUEST_CHAT_SESSION_CAP} messages) ` +
+      "for this session — sign in (it's free) to keep chatting and save what you've made.";
+    state.setChatMessages((prev) =>
+      prev.map((m) => (m.id === promptId ? { ...m, aiResponse: msg } : m)),
+    );
+    p.aiThread.push({ role: "assistant", content: msg });
+    state.setChatStatusText("Sign in to continue");
+    return;
+  }
+  incrementGuestChatCount();
 
   state.setChatStatusText("Thinking…");
   state.setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: "" } : m)));

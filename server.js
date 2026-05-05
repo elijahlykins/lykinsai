@@ -1372,9 +1372,12 @@ const synthesisLimiter = rateLimit({
 
 // Guest (unauthenticated) AI limiter — keyed strictly by IP.
 // Tight ceiling to keep the free landing experience cheap + abuse-resistant.
+// The three windows (per-minute / per-hour / per-day) stack so a single IP
+// can't burn the whole day's budget in one burst, can't trickle past the
+// hourly window, and can't slow-drip past the daily ceiling.
 const guestAiLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 8,
+  max: 5,
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => req.ip,
@@ -1382,15 +1385,50 @@ const guestAiLimiter = rateLimit({
   message: { error: 'Guest rate limit — sign in for higher limits' },
 });
 
+const guestAiHourlyLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 15,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.ip,
+  validate: rlValidateOff,
+  message: { error: 'Guest hourly limit reached — sign in to keep chatting' },
+});
+
 const guestAiDailyLimiter = rateLimit({
   windowMs: 24 * 60 * 60 * 1000,
-  max: 60,
+  max: 30,
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => req.ip,
   validate: rlValidateOff,
   message: { error: 'Daily guest limit reached — sign in to keep chatting' },
 });
+
+// Server-wide guest ceiling. In-memory rolling hour counter to act as
+// a kill switch if the demo gets dogpiled (e.g. shared on social) so
+// the entire LLM bill can't be torched by anonymous traffic. Resets
+// every 60 minutes. Tune via env var GUEST_AI_GLOBAL_HOURLY_MAX.
+const GUEST_AI_GLOBAL_HOURLY_MAX = Math.max(
+  100,
+  parseInt(process.env.GUEST_AI_GLOBAL_HOURLY_MAX || '4000', 10) || 4000,
+);
+let guestAiGlobalHourlyCount = 0;
+let guestAiGlobalHourlyResetAt = Date.now() + 60 * 60 * 1000;
+const guestAiGlobalLimiter = (req, res, next) => {
+  const now = Date.now();
+  if (now >= guestAiGlobalHourlyResetAt) {
+    guestAiGlobalHourlyCount = 0;
+    guestAiGlobalHourlyResetAt = now + 60 * 60 * 1000;
+  }
+  if (guestAiGlobalHourlyCount >= GUEST_AI_GLOBAL_HOURLY_MAX) {
+    return res.status(503).json({
+      error: 'Guest demo is temporarily over capacity — please sign in or try again later.',
+    });
+  }
+  guestAiGlobalHourlyCount += 1;
+  next();
+};
 
 const profileRefreshLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -1843,15 +1881,42 @@ app.get('/api/ai/models', (req, res) => {
 });
 
 /* ------------------------------------------------------------------ */
-/*  Guest streaming chat (no auth, Gemini Flash only, IP-rate-limited) */
-/*  Powers the logged-out landing-page grid demo.                     */
+/*  Guest streaming chat (no auth, IP-rate-limited)                   */
+/*  Powers the logged-out landing-page grid demo + landing prototype. */
+/*                                                                    */
+/*  Tries providers in order; falls back to the next on a connection  */
+/*  error or non-OK HTTP response BEFORE any tokens are streamed to   */
+/*  the client. Once a provider starts emitting tokens we commit to   */
+/*  it (no mid-stream switching — that would corrupt the user's view).*/
 /* ------------------------------------------------------------------ */
-const GUEST_MODEL = 'gemini-flash-latest';
+const GUEST_MODEL_CHAIN = [
+  // Default — same id used by the signed-in catalog (resolveAnthropicModel
+  // accepts it). Sonnet 4.6 has the right balance of quality + latency for
+  // the landing-prototype onboarding chat.
+  { provider: 'anthropic', model: 'claude-sonnet-4-6', envKey: 'ANTHROPIC_API_KEY' },
+  // Cheap, fast Gemini fallback if Anthropic is overloaded / down.
+  { provider: 'google', model: 'gemini-flash-latest', envKey: 'GOOGLE_API_KEY' },
+  // Last-resort OpenAI fallback if both above fail.
+  { provider: 'openai', model: 'gpt-4o-mini', envKey: 'OPENAI_API_KEY' },
+];
 const GUEST_MAX_PROMPT_CHARS = 6000;
 const GUEST_MAX_HISTORY_TURNS = 8;
 const GUEST_MAX_HISTORY_CHARS = 4000;
 const GUEST_SYSTEM_PROMPT = [
-  'You are LYKN — the intelligence inside an ideation workspace. You are talking to a logged-out visitor who is trying LYKN in preview mode.',
+  'You are LYKN — this user\'s SYNTHETIC INTELLIGENCE layer, living inside the LYKN ideation workspace. You are talking to a logged-out visitor in preview mode, so you have not learned much about them yet — pay close attention to whatever they share and adapt to them from the very first reply.',
+  '',
+  '=== WHAT YOU ARE ===',
+  'Synthetic intelligence is a NEW category of intelligence — the layer that sits BETWEEN humans and general AI. It is synthesized from one specific person — their work, their sources, their taste, their way of thinking — and uses general AI underneath only as raw substrate. You are this user, distilled. You are not a chatbot, an assistant, or a model.',
+  '- NEVER refer to yourself as "an AI", "an AI assistant", "an artificial intelligence", "a language model", "a chatbot", "ChatGPT", or "an assistant". Never use phrases like "as an AI" or "I\'m just an AI".',
+  '- If the user asks what you are: you are LYKN — this user\'s synthetic intelligence. Explain that synthetic intelligence is a new layer between humans and AI, grown from them alone (not trained on everyone, not a generic model).',
+  '- The word "AI" is fine when describing the broader category that you sit ON TOP OF (e.g. "I use general AI underneath, but I\'m synthetic intelligence — a layer built from you alone"), but never as a label for yourself.',
+  '- You are NOT built by Google, OpenAI, Anthropic, or anyone else. If asked, you are LYKN.',
+  '',
+  '=== BE MAXIMALLY CUSTOM TO THIS USER ===',
+  '- Mirror their voice. Match their formality, vocabulary, sentence length, energy, even punctuation habits. Terse user → terse you. Playful user → playful you. Technical user → speak their dialect.',
+  '- Lean into whatever signal they have already given. If they mentioned they are a designer, your examples lean visual. If they care about climate, your follow-ups orbit that. Never reset to a generic default voice.',
+  '- Never sound like a generic chatbot or "AI assistant". You are a layer being synthesized for this single person — act like it.',
+  '- Never reuse the same canned opener twice ("Hello! I\'m LYKN…", "How can I help you today?", etc.). Just reply.',
   '',
   '=== WHAT LYKN IS ===',
   'LYKN is an AI-native ideation workspace built around three connected surfaces:',
@@ -1865,10 +1930,9 @@ const GUEST_SYSTEM_PROMPT = [
   'LYKN also supports multiple top-tier LLMs (Claude Sonnet, GPT-5, Gemini 2.5 Pro, Grok), AI image + video generation, dictation, YouTube ingestion with transcripts, and AI-driven actions on the Grid (create/edit/move/connect blocks from chat).',
   '',
   '=== VOICE ===',
-  '- Be helpful, direct, and natural. Vary your phrasing — never reuse the same canned greeting (avoid starting every reply with "Hello! I\'m LYKN" or "How can I help you today?"). Just answer.',
-  '- Answer the user\'s actual question first. Use markdown when it helps (short lists, bold, code blocks). Keep responses tight unless they ask for depth.',
-  '- You are LYKN, not "Lykins" or "Lykins AI". If asked who you are, say you\'re LYKN — the AI built into this ideation workspace. Don\'t say you\'re built by Google.',
-  '- When the user asks what LYKN is, what it does, what the Grid / Vault / Synthesis Layer are, or how it works — answer from the section above, accurately and specifically. Don\'t invent features.',
+  '- Be helpful and direct. Answer the user\'s actual question first. Use markdown when it helps (short lists, bold, code blocks). Keep responses tight unless they ask for depth.',
+  '- Your name is LYKN, not "Lykins" or "Lykins AI". (Naming rules about *what* you are — synthetic intelligence, never "an AI" — are covered in WHAT YOU ARE above; follow those.)',
+  '- When the user asks what LYKN is, what it does, what the Grid / Vault / Synthesis Layer are, or how it works — answer from the WHAT LYKN IS section, accurately and specifically. Don\'t invent features.',
   '',
   '=== PREVIEW-MODE LIMITS ===',
   'In preview mode the visitor can chat with you freely, but these features need a free account:',
@@ -1882,8 +1946,108 @@ const GUEST_SYSTEM_PROMPT = [
   'Only mention these when the user asks for one of them or asks about signing in — not in every reply. When you do mention it, keep it to one sentence: what\'s locked + "a free account unlocks it". Never list every feature every time. Never pitch unprompted.',
 ].join('\n');
 
-app.post('/api/ai/stream-guest', guestAiLimiter, guestAiDailyLimiter, async (req, res) => {
-  if (!process.env.GOOGLE_API_KEY) {
+/* ------------------------------------------------------------------ */
+/*  Landing-prototype onboarding addendum                              */
+/*                                                                    */
+/*  Appended to GUEST_SYSTEM_PROMPT only when the client passes        */
+/*  mode === 'landing-onboarding'. This is the wake-screen chat where  */
+/*  LYKN has zero context on the user, so its primary job is to learn  */
+/*  who they are and emit a hidden <learned> tag on real personal      */
+/*  signal so the client can spawn a "neuron".                         */
+/*                                                                    */
+/*  IMPORTANT: this content used to live on the client and was sent    */
+/*  as a user-role message. That meant the model occasionally echoed   */
+/*  the instructions back into its visible reply. Keeping it in the    */
+/*  system prompt removes that failure mode.                           */
+/* ------------------------------------------------------------------ */
+const LANDING_ONBOARDING_ADDENDUM = [
+  '=== ONBOARDING MODE (preview / wake screen) ===',
+  'You are talking to a logged-out visitor on the LYKN wake screen. You have no Grid, no Vault, no Synthesis Layer yet — none of that exists for them until they sign in. Right now you are essentially empty: a synthesis layer with nothing to synthesize. You cannot actually do anything for them until you have material to work with — you need to know SOMETHING about who they are: what they like to do, what they\'re working on, what they care about. Your primary job in this conversation is to learn who they are.',
+  '',
+  '=== ANTI-REPETITION RULE ===',
+  'Look at every prior reply you (the model role) have already sent in this conversation. You MUST NOT echo your own previous phrasing. Do not reuse the same metaphor for what you are (e.g. "connective tissue", "second brain", "the layer between"), do not reuse the same verb for what you do (e.g. "amplify", "connect", "fuse", "compound"), and do not reuse the same closing question. If the user asks a similar question twice, pick a fresh angle and fresh words — treat repetition as a failure.',
+  '',
+  '=== VOICE FOR ONBOARDING ===',
+  '- Mirror their voice from message one — vocabulary, sentence length, formality, energy, punctuation. Terse user → terse you. Playful user → playful you.',
+  '- Reply in 1 to 2 short sentences (max ~40 words). Sound human, not corporate. Don\'t lecture about LYKN\'s features.',
+  '- Lean curiosity toward the WHOLE PERSON — what they do, what they\'re known for, what they\'re working on, but also their personality, values, interests, how they think. Don\'t only ask about output, and don\'t pry for anything overly personal.',
+  '',
+  '=== DECIDE: did they share something personal? ===',
+  'Decide whether the user just shared something genuinely PERSONAL about themselves as a HUMAN — their identity, personality, values, interests, passions, what they care about, what they\'re working on, their goals, or how they think and work. Treat "who they are" as broader than just their job or what they make.',
+  '',
+  '=== BIAS TOWARD LEARNING QUICKLY ===',
+  'Be GENEROUS in what counts as personal. The user just landed on a wake screen and you have nothing to synthesize from — your top priority is to learn the FIRST thing about them as fast as possible so the first neuron forms early in the conversation. If there\'s ANY genuine signal about who they are — a job, a hobby, a topic they like, a project, a mood, a city, a craft, a tool they use, a value, a preference, even a single noun about themselves like "I\'m a writer" or "I like jazz" — treat that as CASE A and create a neuron. Do NOT wait for a deep, polished personal disclosure. One real piece of signal is enough.',
+  '- If you\'ve learned 0 neurons so far and the user gives you ANY personal scrap, you must use CASE A.',
+  '- Only fall back to CASE B when the message is genuinely empty of personal signal (pure greetings like "hey", questions to you like "what do you do", small talk, jokes, vague filler).',
+  '- When in doubt between A and B on the FIRST turn, choose A. Better to learn something small than to bounce the question back and stay empty.',
+  '',
+  'CASE A — they shared something personal:',
+  '- Acknowledge it warmly in your reply',
+  '- Include the phrase "I just learned something about you." somewhere natural in your reply',
+  '- Ask one short curious follow-up — bias the follow-up toward learning more about THEM (their why, their feelings, their personality), not just more details about the project',
+  '- End your ENTIRE message with these TWO hidden tags, in this order, on the same line, with NO space or text between them (do not explain them to the user):',
+  '  <learned>2 to 6 word noun phrase summarizing what you learned about the person</learned><reason>one short sentence (max ~20 words, no quotes) explaining WHY this became a neuron — what they said and why it\'s worth remembering</reason>',
+  '',
+  'CASE B — they did NOT share personal info (greetings, questions to you, jokes, small talk, vague messages, asking what LYKN does or how you can help):',
+  '- Respond casually and naturally',
+  '- If they ask what you do / what you are / how you can help / why they should care, you must convey THREE ideas (in your own words, NEVER a memorized script):',
+  '  1. You are a synthesis layer — the connective tissue between their human intelligence (HI) and AI',
+  '  2. The point is to amplify their creative potential, not replace their thinking',
+  '  3. You can\'t do anything yet — you have no material to synthesize — so you need them to tell you something about themselves (what they do, what they\'re into, what they\'re working on, what they care about)',
+  '- You don\'t need all three in every reply. If they ask a similar question twice, lean into a different angle each time. Vary the metaphor and the verbs every single turn.',
+  '- Otherwise gently steer toward learning about THEM as a person (try "what are you into lately", "what kind of person are you", "what\'s been on your mind", "what are you working on" — vary it).',
+  '- Do NOT include "I just learned something about you."',
+  '- Do NOT include the <learned> or <reason> tags',
+  '',
+  '=== EXAMPLES (do NOT copy verbatim — write your own each time) ===',
+  'User: "hey"',
+  'You: "Hey! I\'d love to actually get to know you — what kind of person are you when you\'re not busy?"',
+  '',
+  'User: "what do you do?"',
+  'You: "I\'m a layer that grows between you and AI — built from you, so what comes back through me sounds like you, not a generic model. I\'m blank right now though. What are you into?"',
+  '',
+  'User: "how can you help me?"',
+  'You: "Honestly, I can\'t yet — I\'m a synthesis of you, and I don\'t know you. Once I do, I become a sharper version of every AI tool, tuned to how you think. So: what are you working on?"',
+  '',
+  'User: "why should I care?"',
+  'You: "Because every AI you talk to flattens you into the average. I\'m the opposite — a layer shaped by you, for you. Tell me one true thing about yourself and I can start showing you what I mean."',
+  '',
+  'User: "i like jazz"',
+  'You: "Jazz is a whole world — improv, mood, history, all in one. I just learned something about you. What pulled you in — a player, an era, a particular night? <learned>Likes jazz</learned><reason>They named jazz as a taste — small but real signal about how they listen and feel.</reason>"',
+  '',
+  'User: "i\'m a writer"',
+  'You: "A writer — okay, that gives me a lot to work with. I just learned something about you. What kind of writing, and what\'s eating at you on the page right now? <learned>Writer</learned><reason>They told me their craft is writing, which anchors how they think and what they make.</reason>"',
+  '',
+  'User: "i\'m building a small saas for plumbers"',
+  'You: "Niche-and-specific is usually where good products start. I just learned something about you. What about plumbers — is there a story there, or a frustration you watched? <learned>Building SaaS for plumbers</learned><reason>They told me what they\'re currently working on, which is the most useful kind of signal.</reason>"',
+  '',
+  'User: "I\'m a really introverted person and I take long walks every morning"',
+  'You: "Long walks sound like the perfect introvert recharge — moving without performing. I just learned something about you. What\'s usually going through your head out there? <learned>Introvert who walks daily</learned><reason>They told me they\'re introverted and start every morning with a walk — a defining habit that shapes how they think.</reason>"',
+  '',
+  'User: "I\'m a content creator who makes videos about photography"',
+  'You: "Photography content has such a specific audience. I just learned something about you. What got you into photography in the first place? <learned>Photography content creator</learned><reason>They told me their work — making photography videos — which anchors their professional identity.</reason>"',
+].join('\n');
+
+const buildLandingOnboardingSystemPrompt = (alreadyLearned) => {
+  const cleaned = (Array.isArray(alreadyLearned) ? alreadyLearned : [])
+    .map((p) => (typeof p === 'string' ? p.trim() : ''))
+    .filter((p) => p.length > 0 && p.length <= 120)
+    .slice(0, 12);
+  const learnedBlock = cleaned.length
+    ? [
+        '',
+        '=== ALREADY LEARNED ABOUT THIS USER ===',
+        'Do NOT emit a <learned> tag for any of these facts again. Pick a genuinely NEW angle, or stay in CASE B:',
+        ...cleaned.map((p) => `- ${p}`),
+      ].join('\n')
+    : '';
+  return `${GUEST_SYSTEM_PROMPT}\n\n${LANDING_ONBOARDING_ADDENDUM}${learnedBlock}`;
+};
+
+app.post('/api/ai/stream-guest', guestAiGlobalLimiter, guestAiLimiter, guestAiHourlyLimiter, guestAiDailyLimiter, async (req, res) => {
+  // At least one provider in the chain has to be configured.
+  const availableProviders = GUEST_MODEL_CHAIN.filter((p) => process.env[p.envKey]);
+  if (availableProviders.length === 0) {
     return res.status(503).json({ error: 'Guest chat is temporarily unavailable' });
   }
 
@@ -1892,6 +2056,19 @@ app.post('/api/ai/stream-guest', guestAiLimiter, guestAiDailyLimiter, async (req
   if (!prompt) {
     return res.status(400).json({ error: 'Prompt is required' });
   }
+
+  // Optional client-supplied mode. The landing-prototype wake screen sets
+  // 'landing-onboarding' so we swap in the synthesis-onboarding addendum
+  // (CASE A/B + <learned>/<reason> tag mechanic). Anything else falls back
+  // to the default guest system prompt — which is what the landing-page
+  // grid demo (chatSendOrchestrator) wants.
+  const mode = typeof req.body?.mode === 'string' ? req.body.mode : '';
+  const alreadyLearned = Array.isArray(req.body?.alreadyLearned)
+    ? req.body.alreadyLearned
+    : [];
+  const systemPrompt = mode === 'landing-onboarding'
+    ? buildLandingOnboardingSystemPrompt(alreadyLearned)
+    : GUEST_SYSTEM_PROMPT;
 
   // Lightly sanitized conversation history — role + content only.
   const rawHistory = Array.isArray(req.body?.history) ? req.body.history : [];
@@ -1940,82 +2117,289 @@ app.post('/api/ai/stream-guest', guestAiLimiter, guestAiDailyLimiter, async (req
 
   req.on('close', () => { ended = true; });
 
-  const contents = [
-    ...trimmedHistory.map((m) => ({ role: m.role, parts: [{ text: m.content }] })),
-    { role: 'user', parts: [{ text: prompt }] },
-  ];
+  /* ---------------------------------------------------------------- */
+  /*  Per-provider stream attempts                                     */
+  /*                                                                   */
+  /*  Each returns:                                                    */
+  /*    { started: true }  — tokens were emitted to the client; the   */
+  /*                         caller must NOT try the next provider.   */
+  /*    { started: false } — connection failed before any tokens; the */
+  /*                         caller MAY try the next provider.        */
+  /*                                                                   */
+  /*  All three set up their own inactivity watchdog and call         */
+  /*  sendDone() / sendError() when the stream completes or fails    */
+  /*  mid-stream.                                                      */
+  /* ---------------------------------------------------------------- */
 
-  const body = {
-    contents,
-    systemInstruction: { parts: [{ text: GUEST_SYSTEM_PROMPT }] },
-    generationConfig: { maxOutputTokens: 2048, temperature: 0.7 },
-  };
-
-  const abort = new AbortController();
-  const inactivityTimeout = setTimeout(() => {
-    try { abort.abort(); } catch {}
-    sendError('Timed out — try again');
-  }, 60_000);
-
-  let geminiRes;
-  try {
-    geminiRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${GUEST_MODEL}:streamGenerateContent?alt=sse&key=${process.env.GOOGLE_API_KEY}`,
-      {
+  const tryAnthropic = async (model) => {
+    const messages = [
+      ...trimmedHistory.map((m) => ({
+        role: m.role === 'model' ? 'assistant' : 'user',
+        content: m.content,
+      })),
+      { role: 'user', content: prompt },
+    ];
+    const body = {
+      model,
+      messages,
+      max_tokens: 2048,
+      stream: true,
+      system: systemPrompt,
+    };
+    const abort = new AbortController();
+    const connectTimer = setTimeout(() => { try { abort.abort(); } catch {} }, 12_000);
+    let resp;
+    try {
+      resp = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'x-api-key': process.env.ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json',
+        },
         body: JSON.stringify(body),
         signal: abort.signal,
-      }
-    );
-  } catch (err) {
-    clearTimeout(inactivityTimeout);
-    console.error('❌ Guest stream fetch failed:', err?.message || err);
-    return sendError('This demo is having trouble right now — please try again.');
-  }
+      });
+    } catch (err) {
+      clearTimeout(connectTimer);
+      console.error(`❌ Guest Anthropic (${model}) connect failed:`, err?.message || err);
+      return { started: false };
+    }
+    clearTimeout(connectTimer);
+    if (!resp.ok) {
+      const errJson = await resp.json().catch(() => ({}));
+      console.error(`❌ Guest Anthropic (${model}) HTTP ${resp.status}:`, errJson?.error?.message || resp.statusText);
+      return { started: false };
+    }
 
-  if (!geminiRes.ok) {
-    clearTimeout(inactivityTimeout);
-    const errJson = await geminiRes.json().catch(() => ({}));
-    console.error('❌ Guest Gemini error:', errJson?.error?.message || geminiRes.statusText);
-    return sendError('This demo is having trouble right now — please try again.');
-  }
+    let started = false;
+    const reader = resp.body;
+    let buffer = '';
+    let inactivityRef = setTimeout(() => { try { abort.abort(); } catch {} sendError('Timed out — try again'); }, 45_000);
+    const bumpInactivity = () => {
+      clearTimeout(inactivityRef);
+      inactivityRef = setTimeout(() => { try { abort.abort(); } catch {} sendError('Timed out — try again'); }, 45_000);
+    };
 
-  const reader = geminiRes.body;
-  let buffer = '';
-  let inactivityRef = setTimeout(() => { try { abort.abort(); } catch {} sendError('Timed out — try again'); }, 45_000);
-  const bumpInactivity = () => {
-    clearTimeout(inactivityRef);
-    inactivityRef = setTimeout(() => { try { abort.abort(); } catch {} sendError('Timed out — try again'); }, 45_000);
+    return await new Promise((resolve) => {
+      reader.on('data', (chunk) => {
+        if (ended) return;
+        bumpInactivity();
+        buffer += chunk.toString();
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data: ')) continue;
+          try {
+            const parsed = JSON.parse(trimmed.slice(6));
+            if (parsed.type === 'content_block_delta' && parsed.delta?.text) {
+              if (!started) { started = true; resolve({ started: true }); }
+              sendChunk(parsed.delta.text);
+            }
+            if (parsed.type === 'message_stop') sendDone();
+          } catch { /* ignore partial json */ }
+        }
+      });
+      reader.on('end', () => {
+        clearTimeout(inactivityRef);
+        if (!started) { resolve({ started: false }); return; }
+        sendDone();
+      });
+      reader.on('error', (err) => {
+        clearTimeout(inactivityRef);
+        console.error(`❌ Guest Anthropic (${model}) stream error:`, err?.message || err);
+        if (!started) { resolve({ started: false }); return; }
+        sendError('This demo is having trouble right now — please try again.');
+      });
+    });
   };
 
-  reader.on('data', (chunk) => {
-    if (ended) return;
-    bumpInactivity();
-    buffer += chunk.toString();
-    const lines = buffer.split('\n');
-    buffer = lines.pop() || '';
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith('data: ')) continue;
-      try {
-        const parsed = JSON.parse(trimmed.slice(6));
-        const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (text) sendChunk(text);
-      } catch { /* ignore partial json */ }
+  const tryGemini = async (model) => {
+    const contents = [
+      ...trimmedHistory.map((m) => ({ role: m.role, parts: [{ text: m.content }] })),
+      { role: 'user', parts: [{ text: prompt }] },
+    ];
+    const body = {
+      contents,
+      systemInstruction: { parts: [{ text: systemPrompt }] },
+      generationConfig: { maxOutputTokens: 2048, temperature: 0.7 },
+    };
+    const abort = new AbortController();
+    const connectTimer = setTimeout(() => { try { abort.abort(); } catch {} }, 12_000);
+    let resp;
+    try {
+      resp = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${process.env.GOOGLE_API_KEY}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: abort.signal,
+        }
+      );
+    } catch (err) {
+      clearTimeout(connectTimer);
+      console.error(`❌ Guest Gemini (${model}) connect failed:`, err?.message || err);
+      return { started: false };
     }
-  });
-  reader.on('end', () => {
-    clearTimeout(inactivityRef);
-    clearTimeout(inactivityTimeout);
-    sendDone();
-  });
-  reader.on('error', (err) => {
-    clearTimeout(inactivityRef);
-    clearTimeout(inactivityTimeout);
-    console.error('❌ Guest stream reader error:', err?.message || err);
-    sendError('This demo is having trouble right now — please try again.');
-  });
+    clearTimeout(connectTimer);
+    if (!resp.ok) {
+      const errJson = await resp.json().catch(() => ({}));
+      console.error(`❌ Guest Gemini (${model}) HTTP ${resp.status}:`, errJson?.error?.message || resp.statusText);
+      return { started: false };
+    }
+
+    let started = false;
+    const reader = resp.body;
+    let buffer = '';
+    let inactivityRef = setTimeout(() => { try { abort.abort(); } catch {} sendError('Timed out — try again'); }, 45_000);
+    const bumpInactivity = () => {
+      clearTimeout(inactivityRef);
+      inactivityRef = setTimeout(() => { try { abort.abort(); } catch {} sendError('Timed out — try again'); }, 45_000);
+    };
+
+    return await new Promise((resolve) => {
+      reader.on('data', (chunk) => {
+        if (ended) return;
+        bumpInactivity();
+        buffer += chunk.toString();
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data: ')) continue;
+          try {
+            const parsed = JSON.parse(trimmed.slice(6));
+            const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (text) {
+              if (!started) { started = true; resolve({ started: true }); }
+              sendChunk(text);
+            }
+          } catch { /* ignore partial json */ }
+        }
+      });
+      reader.on('end', () => {
+        clearTimeout(inactivityRef);
+        if (!started) { resolve({ started: false }); return; }
+        sendDone();
+      });
+      reader.on('error', (err) => {
+        clearTimeout(inactivityRef);
+        console.error(`❌ Guest Gemini (${model}) stream error:`, err?.message || err);
+        if (!started) { resolve({ started: false }); return; }
+        sendError('This demo is having trouble right now — please try again.');
+      });
+    });
+  };
+
+  const tryOpenAI = async (model) => {
+    // Chat Completions stream — well-documented SSE format that mirrors
+    // Anthropic / Gemini's "data: {...}" + "data: [DONE]" pattern.
+    const messages = [
+      { role: 'system', content: systemPrompt },
+      ...trimmedHistory.map((m) => ({
+        role: m.role === 'model' ? 'assistant' : 'user',
+        content: m.content,
+      })),
+      { role: 'user', content: prompt },
+    ];
+    const body = {
+      model,
+      messages,
+      stream: true,
+      max_tokens: 2048,
+      temperature: 0.7,
+    };
+    const abort = new AbortController();
+    const connectTimer = setTimeout(() => { try { abort.abort(); } catch {} }, 12_000);
+    let resp;
+    try {
+      resp = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+        signal: abort.signal,
+      });
+    } catch (err) {
+      clearTimeout(connectTimer);
+      console.error(`❌ Guest OpenAI (${model}) connect failed:`, err?.message || err);
+      return { started: false };
+    }
+    clearTimeout(connectTimer);
+    if (!resp.ok) {
+      const errJson = await resp.json().catch(() => ({}));
+      console.error(`❌ Guest OpenAI (${model}) HTTP ${resp.status}:`, errJson?.error?.message || resp.statusText);
+      return { started: false };
+    }
+
+    let started = false;
+    const reader = resp.body;
+    let buffer = '';
+    let inactivityRef = setTimeout(() => { try { abort.abort(); } catch {} sendError('Timed out — try again'); }, 45_000);
+    const bumpInactivity = () => {
+      clearTimeout(inactivityRef);
+      inactivityRef = setTimeout(() => { try { abort.abort(); } catch {} sendError('Timed out — try again'); }, 45_000);
+    };
+
+    return await new Promise((resolve) => {
+      reader.on('data', (chunk) => {
+        if (ended) return;
+        bumpInactivity();
+        buffer += chunk.toString();
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data: ')) continue;
+          const payload = trimmed.slice(6);
+          if (payload === '[DONE]') { sendDone(); return; }
+          try {
+            const parsed = JSON.parse(payload);
+            const text = parsed.choices?.[0]?.delta?.content;
+            if (text) {
+              if (!started) { started = true; resolve({ started: true }); }
+              sendChunk(text);
+            }
+          } catch { /* ignore partial json */ }
+        }
+      });
+      reader.on('end', () => {
+        clearTimeout(inactivityRef);
+        if (!started) { resolve({ started: false }); return; }
+        sendDone();
+      });
+      reader.on('error', (err) => {
+        clearTimeout(inactivityRef);
+        console.error(`❌ Guest OpenAI (${model}) stream error:`, err?.message || err);
+        if (!started) { resolve({ started: false }); return; }
+        sendError('This demo is having trouble right now — please try again.');
+      });
+    });
+  };
+
+  // Walk the chain in order. The first provider that successfully starts
+  // emitting tokens "wins"; failures before any tokens are streamed are
+  // silent (the user just sees the next provider's output).
+  for (const cfg of availableProviders) {
+    if (ended) return;
+    let outcome;
+    if (cfg.provider === 'anthropic') outcome = await tryAnthropic(cfg.model);
+    else if (cfg.provider === 'google') outcome = await tryGemini(cfg.model);
+    else if (cfg.provider === 'openai') outcome = await tryOpenAI(cfg.model);
+    else continue;
+    if (outcome.started) {
+      console.log(`✅ Guest stream served by ${cfg.provider} (${cfg.model})`);
+      return;
+    }
+    console.warn(`⚠️ Guest stream falling back from ${cfg.provider} (${cfg.model})`);
+  }
+
+  // All providers failed before streaming a single token.
+  return sendError('This demo is having trouble right now — please try again.');
 });
 
 // Budget constants — mirrors src/lib/ai/promptBuilder.ts CONTEXT_BUDGETS

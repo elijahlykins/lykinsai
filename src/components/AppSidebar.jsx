@@ -29,6 +29,11 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useUserPlan } from "@/lib/useUserPlan";
 import { planMeets } from "@/components/PlanGate";
 import { DEMO_GRID_LIST } from "@/lib/demoGrids";
+import {
+  hasPrototypeNeurons,
+  PROTOTYPE_STEP_EVENT,
+  readPrototypeStep,
+} from "@/lib/prototypeHandoff";
 
 const PROJECTS_CHANGED_EVENT = "lykinsai_projects_changed";
 
@@ -41,19 +46,99 @@ const projectColors = [
   "rgba(240,253,250,0.55)",
 ];
 
-const flushAndNavigate = (nav, path) => {
-  window.dispatchEvent(new Event("omnia_flush_save"));
-  // Small delay to let the async save start its network requests
-  setTimeout(() => nav(path), 80);
-};
-
-export default function AppSidebar() {
+export default function AppSidebar({
+  controlledOpen,
+  onOpenChange,
+  highlightSynthesis = false,
+  restrictToSynthesis = false,
+} = {}) {
   const nav = useNavigate();
   const location = useLocation();
   const { user, signInWithOAuth, signOut } = useAuth();
   const { planId } = useUserPlan();
   const canUseSynthesis = planMeets(planId, "studio");
-  const [open, setOpen] = useState(false);
+  // Prototype-handoff "preview" mode: when a guest came from the landing
+  // prototype with at least one neuron in localStorage, suppress the demo
+  // grid list so the sidebar reads as a brand-new, empty workspace.
+  const isPrototypePreview = !user && hasPrototypeNeurons();
+
+  // Walkthrough step (read from localStorage). Drives the auto-mounted
+  // sidebar's nudges on /synthesis-layer and beyond — e.g. opens itself
+  // and glows the Vault button when the user reaches step "vault".
+  // Components that own their own AppSidebar (LandingPrototype passes
+  // `highlightSynthesis` + `restrictToSynthesis` directly) keep the
+  // explicit-prop path; this state is the fallback.
+  const [walkStep, setWalkStep] = useState(() =>
+    typeof window === "undefined" ? null : readPrototypeStep(),
+  );
+  useEffect(() => {
+    const sync = () => setWalkStep(readPrototypeStep());
+    window.addEventListener(PROTOTYPE_STEP_EVENT, sync);
+    window.addEventListener("storage", sync);
+    return () => {
+      window.removeEventListener(PROTOTYPE_STEP_EVENT, sync);
+      window.removeEventListener("storage", sync);
+    };
+  }, []);
+
+  // Effective walkthrough state — explicit props from a parent (e.g. the
+  // landing prototype) win over the localStorage-driven default. The
+  // walkthrough only nudges guests who actually came from the prototype.
+  const walkActive =
+    isPrototypePreview &&
+    (walkStep === "synthesis" || walkStep === "vault" || walkStep === "grid");
+  const effectiveHighlightSynthesis = highlightSynthesis || (walkActive && walkStep === "synthesis");
+  const effectiveHighlightVault = walkActive && walkStep === "vault";
+  const effectiveHighlightGrid = walkActive && walkStep === "grid";
+  // Centralized navigation lock: during a walkthrough step only the
+  // highlighted destination (synthesis layer, vault, or grid) is
+  // clickable. Explicit `restrictToSynthesis` from the prototype page
+  // still wins.
+  const lockedDestination = restrictToSynthesis
+    ? "/synthesis-layer"
+    : effectiveHighlightVault
+      ? "/vault"
+      : effectiveHighlightGrid
+        ? "/app"
+        : null;
+  const isLocked = restrictToSynthesis || effectiveHighlightVault || effectiveHighlightGrid;
+
+  // Centralized navigation: when locked to a single destination, every
+  // nav attempt EXCEPT that destination is silently swallowed. This is
+  // the primary lock — the matching CSS class only handles the visual
+  // dim. (Logic is inlined rather than calling flushAndNavigate so the
+  // callsite replacements `goTo(...)` stay simple.)
+  const goTo = (path) => {
+    if (lockedDestination && path !== lockedDestination) return;
+    window.dispatchEvent(new Event("omnia_flush_save"));
+    setTimeout(() => nav(path), 80);
+  };
+
+  const [internalOpen, setInternalOpen] = useState(false);
+  const isControlled = controlledOpen !== undefined && controlledOpen !== null;
+  const open = isControlled ? controlledOpen : internalOpen;
+  const setOpen = (next) => {
+    const value = typeof next === "function" ? next(open) : next;
+    if (isControlled) {
+      onOpenChange?.(value);
+    } else {
+      setInternalOpen(value);
+    }
+  };
+
+  // Auto-open the (uncontrolled) sidebar each time the walkthrough
+  // advances to a new "highlight + restrict" step. Fires once per step
+  // value so manually closing the sidebar mid-step doesn't immediately
+  // reopen it. Only fires when not controlled by a parent (e.g. the
+  // landing prototype owns its own open-state).
+  const lastAutoOpenedStepRef = useRef(null);
+  useEffect(() => {
+    if (isControlled) return;
+    if (!effectiveHighlightVault && !effectiveHighlightGrid) return;
+    if (lastAutoOpenedStepRef.current === walkStep) return;
+    lastAutoOpenedStepRef.current = walkStep;
+    setInternalOpen(true);
+  }, [isControlled, effectiveHighlightVault, effectiveHighlightGrid, walkStep]);
   const queryClient = useQueryClient();
   const [menuBoardId, setMenuBoardId] = useState(null);
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0 });
@@ -259,7 +344,7 @@ export default function AppSidebar() {
       <div
         className={`fixed top-0 left-0 z-[70] h-[100svh] w-[12rem] bg-[hsl(var(--sidebar-surface))] dark:bg-[hsl(0_0%_16%)] p-3 pt-12 transition-transform duration-200 flex flex-col ${
           open ? "translate-x-0" : "-translate-x-[120%]"
-        }`}
+        } ${isLocked ? "lykn-sidebar-locked" : ""}`}
       >
         {/* ── Top: nav links (fixed, never scrolls) ── */}
         <div className="flex-shrink-0 mt-3">
@@ -275,7 +360,7 @@ export default function AppSidebar() {
               type="button"
               onClick={() => {
                 const newId = crypto.randomUUID();
-                flushAndNavigate(nav, `/grid/${newId}`);
+                goTo(`/grid/${newId}`);
               }}
               className="flex-shrink-0 w-7 h-7 rounded-md hover:bg-blue-500/15 transition-colors flex items-center justify-center text-black/60 dark:text-white/60"
               title="New grid"
@@ -287,18 +372,34 @@ export default function AppSidebar() {
           <div className="mt-1.5 flex flex-col gap-0.5">
             <button
               type="button"
-              onClick={() => flushAndNavigate(nav, "/app")}
-              className="w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
+              onClick={() => goTo("/app")}
+              className={`w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2 ${
+                effectiveHighlightGrid ? "lykn-sidebar-grid-glow" : ""
+              }`}
             >
-              <GridIcon className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
+              <GridIcon
+                className={`w-3.5 h-3.5 ${
+                  effectiveHighlightGrid
+                    ? "text-amber-300"
+                    : "text-black/60 dark:text-white/60"
+                }`}
+              />
               Grid
             </button>
             <button
               type="button"
-              onClick={() => flushAndNavigate(nav, "/vault")}
-              className="w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
+              onClick={() => goTo("/vault")}
+              className={`w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2 ${
+                effectiveHighlightVault ? "lykn-sidebar-vault-glow" : ""
+              }`}
             >
-              <Lock className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
+              <Lock
+                className={`w-3.5 h-3.5 ${
+                  effectiveHighlightVault
+                    ? "text-emerald-300"
+                    : "text-black/60 dark:text-white/60"
+                }`}
+              />
               Vault
             </button>
           </div>
@@ -308,19 +409,37 @@ export default function AppSidebar() {
           <div className="flex flex-col gap-0.5">
             <button
               type="button"
-              onClick={() => flushAndNavigate(nav, "/synthesis-layer")}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                // Direct navigation — bypasses goTo / flushAndNavigate so
+                // there's no setTimeout, no event dispatch, nothing that
+                // could swallow the click. This is the prototype handoff's
+                // ONE escape hatch and it must just work.
+                // eslint-disable-next-line no-console
+                console.log("[AppSidebar] Synthesis Layer clicked, navigating →", "/synthesis-layer");
+                nav("/synthesis-layer");
+              }}
               title={canUseSynthesis ? "Synthesis Layer" : "Upgrade to Studio to unlock the Mind Map"}
-              className="w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
+              className={`w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2 ${
+                effectiveHighlightSynthesis ? "lykn-sidebar-synthesis-glow" : ""
+              }`}
             >
-              <Brain className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
+              <Brain
+                className={`w-3.5 h-3.5 ${
+                  effectiveHighlightSynthesis
+                    ? "text-blue-400"
+                    : "text-black/60 dark:text-white/60"
+                }`}
+              />
               <span className="flex-1">Synthesis Layer</span>
-              {!canUseSynthesis && (
+              {!canUseSynthesis && !effectiveHighlightSynthesis && (
                 <Lock className="w-3 h-3 text-black/40 dark:text-white/40" aria-label="Upgrade required" />
               )}
             </button>
             <button
               type="button"
-              onClick={() => flushAndNavigate(nav, "/discover")}
+              onClick={() => goTo("/discover")}
               className="w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
             >
               <Compass className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
@@ -328,7 +447,7 @@ export default function AppSidebar() {
             </button>
             <button
               type="button"
-              onClick={() => flushAndNavigate(nav, "/connections")}
+              onClick={() => goTo("/connections")}
               className="w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
             >
               <Plug className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
@@ -360,7 +479,7 @@ export default function AppSidebar() {
                     .single();
                   if (data?.id) {
                     window.dispatchEvent(new Event(PROJECTS_CHANGED_EVENT));
-                    flushAndNavigate(nav, `/project/${data.id}`);
+                    goTo(`/project/${data.id}`);
                   }
                 }}
                 className="w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2 text-black/60 dark:text-white/60"
@@ -378,7 +497,7 @@ export default function AppSidebar() {
                       <div key={project.id} className="group relative flex items-center">
                         <button
                           type="button"
-                          onClick={() => flushAndNavigate(nav, `/project/${project.id}`)}
+                          onClick={() => goTo(`/project/${project.id}`)}
                           className={`flex-1 min-w-0 text-left text-[0.6875rem] pl-2.5 pr-7 py-1 rounded-md flex items-center gap-2 transition-colors ${
                             isActive ? "bg-blue-500/15" : "hover:bg-blue-500/15"
                           }`}
@@ -423,7 +542,7 @@ export default function AppSidebar() {
               type="button"
               onClick={() => {
                 const newId = crypto.randomUUID();
-                flushAndNavigate(nav, `/grid/${newId}`);
+                goTo(`/grid/${newId}`);
               }}
               className="w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2 text-black/60 dark:text-white/60"
             >
@@ -433,9 +552,11 @@ export default function AppSidebar() {
           </div>
           <div className="flex-1 min-h-0 overflow-y-auto scrollbar-hide">
             <div className="flex flex-col gap-0.5">
-              {!user ? (
+              {!user && !isPrototypePreview ? (
                 // Guest preview: show 3 demo grids so the sidebar isn't empty.
                 // Routes resolve to snapshot-backed boards (see demoGrids.js).
+                // In prototype-handoff preview mode we deliberately skip these
+                // so the workspace looks brand new.
                 <>
                   {DEMO_GRID_LIST.map((g) => {
                     const isActive = location.pathname === `/grid/${g.id}`;
@@ -443,7 +564,7 @@ export default function AppSidebar() {
                       <div key={g.id} className="group relative flex items-center">
                         <button
                           type="button"
-                          onClick={() => flushAndNavigate(nav, `/grid/${g.id}`)}
+                          onClick={() => goTo(`/grid/${g.id}`)}
                           className={`flex-1 min-w-0 text-left text-[0.6875rem] px-2.5 py-1 rounded-md flex items-center gap-2 transition-colors ${
                             isActive ? "bg-blue-500/15" : "hover:bg-blue-500/15"
                           }`}
@@ -455,6 +576,30 @@ export default function AppSidebar() {
                     );
                   })}
                 </>
+              ) : !user && isPrototypePreview ? (
+                // Prototype-handoff preview: the user has exactly one
+                // "grid" — the saved transcript of their first chat
+                // with LYKN. Surfaces it in the sidebar so it's a real
+                // navigable artifact, not just a node in the synthesis
+                // layer they happened to see once.
+                (() => {
+                  const path = "/grid/__prototype_first_chat__";
+                  const isActive = location.pathname === path;
+                  return (
+                    <div className="group relative flex items-center">
+                      <button
+                        type="button"
+                        onClick={() => goTo(path)}
+                        className={`flex-1 min-w-0 text-left text-[0.6875rem] px-2.5 py-1 rounded-md flex items-center gap-2 transition-colors ${
+                          isActive ? "bg-blue-500/15" : "hover:bg-blue-500/15"
+                        }`}
+                      >
+                        <span className={`inline-block h-1.5 w-1.5 rounded-full flex-shrink-0 ${isActive ? "bg-blue-500" : "bg-black/30 dark:bg-white/30"}`} />
+                        <span className="truncate">First Conversation</span>
+                      </button>
+                    </div>
+                  );
+                })()
               ) : boards.length === 0 ? (
                 <div className="text-[0.6875rem] text-black/40 dark:text-white/40 px-2.5 py-1">No grids yet</div>
               ) : (
@@ -464,7 +609,7 @@ export default function AppSidebar() {
                     <div key={board.id} className="group relative flex items-center">
                       <button
                         type="button"
-                        onClick={() => flushAndNavigate(nav, `/grid/${board.id}`)}
+                        onClick={() => goTo(`/grid/${board.id}`)}
                         className={`flex-1 min-w-0 text-left text-[0.6875rem] pl-2.5 pr-7 py-1 rounded-md flex items-center gap-2 transition-colors ${
                           isActive ? "bg-blue-500/15" : "hover:bg-blue-500/15"
                         }`}
@@ -503,7 +648,7 @@ export default function AppSidebar() {
         <div className="flex-shrink-0 pt-2 border-t border-black/5 dark:border-white/5 mt-1 flex items-center justify-center gap-2">
           <button
             type="button"
-            onClick={() => flushAndNavigate(nav, "/settings")}
+            onClick={() => goTo("/settings")}
             className="w-7 h-7 rounded-md hover:bg-blue-500/15 transition-colors flex items-center justify-center"
             title="Settings"
           >
@@ -511,7 +656,7 @@ export default function AppSidebar() {
           </button>
           <button
             type="button"
-            onClick={() => flushAndNavigate(nav, "/billing")}
+            onClick={() => goTo("/billing")}
             className="w-7 h-7 rounded-md hover:bg-blue-500/15 transition-colors flex items-center justify-center"
             title="Billing"
           >
@@ -633,7 +778,7 @@ export default function AppSidebar() {
                       setShowProjectPicker(false);
                       window.dispatchEvent(new Event("lykinsai_boards_changed"));
                       window.dispatchEvent(new Event(PROJECTS_CHANGED_EVENT));
-                      flushAndNavigate(nav, `/project/${data.id}`);
+                      goTo(`/project/${data.id}`);
                     }
                   }}
                 >

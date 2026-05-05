@@ -238,6 +238,147 @@ export function buildGuestDemoCards() {
   });
 }
 
+/* ------------------------------------------------------------------ */
+/*  Landing-prototype preview cards                                     */
+/* ------------------------------------------------------------------ */
+
+// Five LYKN-themed starter cards shown to guests who came from the
+// landing prototype. The seeded `DEMO_VAULT_ITEMS` are suppressed for
+// these visitors (the vault should read as their workspace, not the
+// demo workspace), so this gives the page a little context — "here's
+// what the vault is" — without faking actual user content.
+//
+// Mix is intentional: a couple of quick notes for context, one image
+// to show how visual saves render, and a couple of saved-link articles
+// so the visitor sees that the vault accepts more than just text.
+export const PROTOTYPE_PREVIEW_VAULT_ITEMS = [
+  {
+    kind: "note",
+    title: "What the Vault is",
+    content:
+      "The Vault is your long-term memory in LYKN.\n\nAnything you save here — files, links, photos, quick notes — becomes part of what your synthetic intelligence layer can think with.\n\nIt's not a folder. It's the raw material LYKN uses to learn you.",
+    tags: ["lykn", "intro"],
+  },
+  {
+    kind: "image",
+    title: "Synthesis, visualized",
+    fileName: "synthesis-network.jpg",
+    // Abstract neural-network / connections imagery — matches the
+    // synthesis-layer aesthetic on the prior step.
+    url: unsplash("photo-1635070041078-e363dbe005cb"),
+    tags: ["lykn", "synthesis"],
+    fileNotes: [
+      "This is roughly what your Synthesis Layer is doing under the hood — turning saved fragments into a network you can think with.",
+    ],
+  },
+  {
+    kind: "link",
+    title: "Building a Second Brain — a primer",
+    url: "https://fortelabs.com/blog/basboverview/",
+    siteName: "Forte Labs",
+    description:
+      "A short essay on why offloading what you know into an external system frees up the part of you that actually thinks. Useful framing for what LYKN is trying to do — except LYKN does the synthesis for you.",
+    image: unsplash("photo-1455390582262-044cdead277a"),
+    tags: ["lykn", "reading"],
+  },
+  {
+    kind: "note",
+    title: "First neuron created",
+    content:
+      "You just made your first neuron in the Synthesis Layer.\n\nThat one neuron is the start of a map of you — what you focus on, what drives you, how you think. It grows every time you add to the Vault or open a Grid.",
+    tags: ["lykn", "synthesis", "milestone"],
+  },
+  {
+    kind: "link",
+    title: "LYKN — a synthetic intelligence layer for you",
+    url: "https://lykn.io",
+    siteName: "lykn.io",
+    description:
+      "Most AI tools answer questions. LYKN learns you. Every file, link, and thought you save becomes a neuron in a synthesis layer that's only ever about you.",
+    image: unsplash("photo-1620712943543-bcc4688e7485"),
+    tags: ["lykn", "intro"],
+  },
+];
+
+const PROTO_NOTE_EPOCH = "2024-01-01T12:00:00.000Z";
+
+function buildProtoFileNotes(fileNotes, keyPrefix) {
+  if (!Array.isArray(fileNotes) || fileNotes.length === 0) return [];
+  return fileNotes
+    .map((text, idx) => ({
+      id: `${keyPrefix}-fn-${idx}`,
+      text: String(text || "").trim(),
+      created_at: PROTO_NOTE_EPOCH,
+    }))
+    .filter((n) => n.text);
+}
+
+// Builds in-memory cards for the landing-prototype preview. Same shape
+// as `buildGuestDemoCards()` so the existing render path picks them up
+// without any special casing.
+export function buildPrototypePreviewCards() {
+  return PROTOTYPE_PREVIEW_VAULT_ITEMS.map((item, i) => {
+    if (item.kind === "image") {
+      return {
+        id: `proto-att-${i}`,
+        kind: "attachment",
+        noteId: `proto-vault-note-${i}`,
+        attachmentIndex: 0,
+        type: "image",
+        attachment: {
+          url: item.url,
+          name: item.fileName,
+          type: "image",
+          notes: buildProtoFileNotes(item.fileNotes, `proto-${i}`),
+        },
+        title: item.title,
+        parentTitle: item.title,
+        noteExcerpt: "",
+        dateLabel: "Just now",
+        tags: item.tags || [],
+        isDemo: true,
+      };
+    }
+    if (item.kind === "link") {
+      return {
+        id: `proto-att-${i}`,
+        kind: "attachment",
+        noteId: `proto-vault-note-${i}`,
+        attachmentIndex: 0,
+        type: "bookmark",
+        attachment: {
+          type: "bookmark",
+          url: item.url,
+          name: item.title,
+          title: item.title,
+          description: item.description || "",
+          image: item.image || "",
+          favicon: "",
+          siteName: item.siteName || "",
+          articleText: item.description || "",
+          notes: [],
+        },
+        title: item.title,
+        parentTitle: item.title,
+        noteExcerpt: item.description || "",
+        dateLabel: "Just now",
+        tags: item.tags || [],
+        isDemo: true,
+      };
+    }
+    return {
+      id: `proto-qn-${i}`,
+      kind: "quick-note",
+      noteId: `proto-vault-note-${i}`,
+      title: item.title,
+      excerpt: item.content,
+      dateLabel: "Just now",
+      tags: item.tags || [],
+      isDemo: true,
+    };
+  });
+}
+
 // Builds the rows to INSERT into the `notes` table when seeding a brand-new
 // signed-in user. Shape mirrors the existing Save Link / Quick Note inserts
 // so the read path (parseAttachmentsFromNote, etc.) picks them up without any

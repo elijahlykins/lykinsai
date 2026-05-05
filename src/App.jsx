@@ -12,7 +12,6 @@ import LoadingScreen from "@/components/LoadingScreen";
 import RouteErrorBoundary from '@/lib/RouteErrorBoundary';
 
 import Login from "./pages/Login";
-import Landing from "./pages/Landing";
 import LandingPrototype from "./pages/LandingPrototype";
 import Why from "./pages/Why";
 import Synthesis from "./pages/Synthesis";
@@ -51,6 +50,18 @@ function ProtectedRoute({ children }) {
 function MobileRedirect({ children, to = "/app" }) {
   const isMobile = useIsMobile();
   if (isMobile) return <Navigate to={to} replace />;
+  return children;
+}
+
+// Guest-only route wrapper. Used to gate the LandingPrototype + the old
+// marketing landing so signed-in users never see them — they always
+// bounce to `/app` (or whatever path is passed in). Returns null while
+// auth is still resolving so we don't flash the landing UI to a user
+// who's about to be redirected.
+function GuestOnly({ children, to = "/app" }) {
+  const { user, loading } = useAuth();
+  if (loading) return null;
+  if (user) return <Navigate to={to} replace />;
   return children;
 }
 
@@ -94,13 +105,22 @@ function AppShell() {
           <Routes>
             <Route path="/login" element={<Login />} />
             <Route path="/s/:token" element={<SharedGrid />} />
-            <Route path="/" element={<Landing />} />
-            <Route path="/landing-prototype" element={<LandingPrototype />} />
+            {/* The prototype landing experience IS the canonical home page —
+                visitors landing on `/` get the synthetic-intelligence
+                onboarding chat. `/landing-prototype` is kept as an alias for
+                any inbound links to the prototype-only URL. */}
+            <Route path="/" element={<GuestOnly><LandingPrototype /></GuestOnly>} />
+            <Route path="/landing-prototype" element={<GuestOnly><LandingPrototype /></GuestOnly>} />
             <Route path="/why" element={<Why />} />
             <Route path="/synthesis" element={<Synthesis />} />
             <Route path="/app" element={<OmniaGrid />} />
             <Route path="/dashboard" element={<Navigate to="/app" replace />} />
             <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
+            {/* `__prototype_first_chat__` is treated as a demo-grid id by
+                `demoGrids.js`, so it flows through OmniaGrid + the
+                useBoardPersistence demo path (no auth, no Supabase, chat
+                hydrated from localStorage). The dynamic route below picks
+                it up just like a real grid. */}
             <Route path="/grid/:boardId" element={<ProtectedRoute><OmniaGrid /></ProtectedRoute>} />
             <Route
               path="/project/:projectId"

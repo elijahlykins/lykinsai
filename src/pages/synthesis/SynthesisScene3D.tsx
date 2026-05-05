@@ -55,6 +55,30 @@ interface Props {
   onHoverNode: (id: string | null) => void;
   onClickNode: (id: string) => void;
   onBackgroundClick: () => void;
+  /**
+   * Prototype handoff: id of a neuron node that should "form" rather than
+   * render in place. When set, the edge from its parent category draws in
+   * over ~800ms (electric blue), then the neuron scales from 0 → 1 over
+   * the next ~600ms. After ~1500ms the parent should set this back to
+   * null and trigger camera focus separately.
+   */
+  formingNodeId?: string | null;
+  /**
+   * Optional override for the camera-to-target distance used when focusing
+   * on a single node. Lower = camera pulls in closer. Used by the landing
+   * prototype handoff so the brand-new neuron really fills the screen.
+   * When unset, the scene uses the default `NEURON_FOCUS_DISTANCE`.
+   */
+  focusDistanceOverride?: number | null;
+  /**
+   * When true, OrbitControls is disabled entirely — the camera is locked
+   * on whatever the focus target is and won't respond to drag/pan/wheel.
+   * Used by the landing prototype handoff so the user can hover/click
+   * their freshly-formed neuron without the click-and-tiny-mouse-move
+   * triggering an orbit gesture (which otherwise reads as the neuron
+   * "moving away from the cursor").
+   */
+  lockCamera?: boolean;
 }
 
 /* ------------------------------------------------------------------ */
@@ -88,11 +112,28 @@ interface NeuronProps {
   isTopicMode: boolean;
   onHover: (id: string | null) => void;
   onClick: (id: string) => void;
+  /**
+   * If true, the neuron is being "formed" — start with scale 0 and animate
+   * up to 1 only AFTER the leading edge finishes drawing. The delay matches
+   * the edge animation's duration in `Edge`.
+   */
+  isForming?: boolean;
 }
 
-function Neuron({ node, isHovered, isSelected, isDimmed, isTopicMode, onHover, onClick }: NeuronProps) {
+const NEURON_FORMATION_DELAY_S = 0.8;
+const NEURON_FORMATION_DURATION_S = 0.6;
+
+function Neuron({ node, isHovered, isSelected, isDimmed, isTopicMode, onHover, onClick, isForming = false }: NeuronProps) {
   const groupRef = useRef<THREE.Group>(null);
   const coreMatRef = useRef<THREE.MeshStandardMaterial>(null);
+  const formStartRef = useRef<number | null>(null);
+  // Smoothly-tracked hover/dim multipliers. Stepping straight to the
+  // target each frame (the previous behavior) caused the bloom post-pass
+  // to flash whenever a hovered neuron snapped from 1.0 → 1.4 emissive
+  // (and every other neuron snapped 1.0 → 0.35). Lerping these here
+  // turns each hover into a soft ~80ms fade instead of a hard flash.
+  const hoverMulRef = useRef(1);
+  const dimMulRef = useRef(1);
 
   // Map kind → base emissive intensity. Neurons (the "AI Learned" pink nodes)
   // glow brightest by design; root + category get strong glows; vault notes
@@ -115,31 +156,67 @@ function Neuron({ node, isHovered, isSelected, isDimmed, isTopicMode, onHover, o
   // the halo gone, the pulse rides on the core's emissive intensity so bloom
   // breathes in/out with it. Per-node phase offset prevents sync pulsing.
   const pulsePhase = useMemo(() => Math.random() * Math.PI * 2, []);
+  // Opacity target — also lerped each frame on the material directly so
+  // un-hovered neurons fade rather than snap when another neuron is
+  // hovered (the snap was the visible "glitch" that read as a page jump
+  // because the bloom post-pass picks up every step change).
+  const opacityTarget = isDimmed
+    ? 0.18
+    : isTopicMode
+      ? Math.max(0.2, node.relevance)
+      : 1;
   useFrame((state) => {
     if (!coreMatRef.current) return;
-    const base = glowConfig.emissive * (isHovered ? 1.4 : 1) * (isDimmed ? 0.35 : 1);
-    if (glowConfig.pulse) {
+    const hoverTarget = isHovered ? 1.4 : 1;
+    const dimTarget = isDimmed ? 0.35 : 1;
+    hoverMulRef.current += (hoverTarget - hoverMulRef.current) * 0.18;
+    dimMulRef.current += (dimTarget - dimMulRef.current) * 0.18;
+    const base = glowConfig.emissive * hoverMulRef.current * dimMulRef.current;
+    // Pulse stays off for the focused / hovered neuron. With the camera
+    // pulled in close, the bloom halo around a pulsing emissive grows
+    // and shrinks several pixels per cycle, which reads as the neuron
+    // physically wobbling up and down. The user's focal neuron should
+    // be perfectly still.
+    if (glowConfig.pulse && !isSelected && !isHovered) {
       const t = state.clock.elapsedTime;
       const wave = 0.88 + 0.12 * Math.sin(t * 1.4 + pulsePhase);
       coreMatRef.current.emissiveIntensity = base * wave;
     } else {
       coreMatRef.current.emissiveIntensity = base;
     }
+    const curOpacity = coreMatRef.current.opacity;
+    coreMatRef.current.opacity = curOpacity + (opacityTarget - curOpacity) * 0.18;
   });
-
-  // Final opacity: dimmed by hover-of-other; faded by topic relevance; full otherwise.
-  const opacity = isDimmed
-    ? 0.18
-    : isTopicMode
-      ? Math.max(0.2, node.relevance)
-      : 1;
 
   // Hover scale is animated subtly through a useFrame on the group's scale,
   // not via re-renders, so adjacent nodes don't jitter when the cursor
-  // grazes between them.
+  // grazes between them. When `isForming` is true, the same scale handle
+  // also drives the formation grow-in: scale stays at 0 until the leading
+  // edge finishes drawing, then ramps from 0 → 1 with a slight overshoot.
   const hoverScale = isHovered || isSelected ? 1.18 : 1;
-  useFrame(() => {
+  useFrame((state) => {
     if (!groupRef.current) return;
+
+    // Forming pass — overrides hover lerp until the formation completes.
+    // Lands at scale 1 (not hoverScale) so the regular hover lerp can
+    // smoothly grow it to 1.18 once isForming clears and isSelected fires.
+    if (isForming) {
+      if (formStartRef.current === null) formStartRef.current = state.clock.elapsedTime;
+      const t = state.clock.elapsedTime - formStartRef.current;
+      let scale: number;
+      if (t < NEURON_FORMATION_DELAY_S) {
+        scale = 0;
+      } else {
+        const p = Math.min(1, (t - NEURON_FORMATION_DELAY_S) / NEURON_FORMATION_DURATION_S);
+        // Cubic ease-out with a tiny overshoot mid-animation.
+        const eased = 1 - Math.pow(1 - p, 3);
+        const overshoot = p < 1 ? 1 + 0.12 * Math.sin(p * Math.PI) : 1;
+        scale = eased * overshoot;
+      }
+      groupRef.current.scale.set(scale, scale, scale);
+      return;
+    }
+
     const cur = groupRef.current.scale.x;
     const target = hoverScale;
     if (Math.abs(cur - target) > 0.001) {
@@ -193,7 +270,9 @@ function Neuron({ node, isHovered, isSelected, isDimmed, isTopicMode, onHover, o
           emissive={node.color}
           emissiveIntensity={glowConfig.emissive}
           transparent
-          opacity={opacity}
+          // Initial opacity only — useFrame above lerps the actual value
+          // toward `opacityTarget` so hover/dim transitions don't snap.
+          opacity={1}
           metalness={0.1}
           roughness={0.45}
           toneMapped={false}
@@ -286,9 +365,61 @@ interface EdgeProps {
   isCross: boolean;
   isTopicMode: boolean;
   edgeRelevance: number;
+  /**
+   * If true, this edge is the "leading line" of a neuron formation — it
+   * draws out from `a` toward `b` over EDGE_FORMATION_DURATION_S in bright
+   * electric blue, then sits at full extent.
+   */
+  isForming?: boolean;
 }
 
-function Edge({ a, b, isHl, isDimmed, isCross, isTopicMode, edgeRelevance }: EdgeProps) {
+const EDGE_FORMATION_DURATION_S = 0.8;
+
+/**
+ * Animated forming edge: a line whose endpoint travels from `a` toward `b`
+ * over a fixed duration. Drawn separately from the regular static `Edge`
+ * because <Line> from drei expects a static `points` prop and we want to
+ * mutate the endpoint every frame.
+ */
+function FormingEdge({ a, b }: { a: Scene3DNode; b: Scene3DNode }) {
+  const startRef = useRef<number | null>(null);
+  const lineRef = useRef<THREE.Line | null>(null);
+  // Two-vertex BufferGeometry; we mutate the second vertex every frame.
+  const geometry = useMemo(() => {
+    const geom = new THREE.BufferGeometry();
+    const verts = new Float32Array([a.x, a.y, a.z, a.x, a.y, a.z]);
+    geom.setAttribute("position", new THREE.BufferAttribute(verts, 3));
+    return geom;
+  }, [a.x, a.y, a.z]);
+
+  useFrame((state) => {
+    if (startRef.current === null) startRef.current = state.clock.elapsedTime;
+    const t = Math.min(1, (state.clock.elapsedTime - startRef.current) / EDGE_FORMATION_DURATION_S);
+    // Ease-out cubic for the front of the line — starts fast, settles in.
+    const p = 1 - Math.pow(1 - t, 3);
+    const x = a.x + (b.x - a.x) * p;
+    const y = a.y + (b.y - a.y) * p;
+    const z = a.z + (b.z - a.z) * p;
+    const attr = geometry.getAttribute("position") as THREE.BufferAttribute;
+    attr.setXYZ(1, x, y, z);
+    attr.needsUpdate = true;
+  });
+
+  return (
+    // @ts-expect-error - R3F intrinsic (line) typing is loose; ref typing isn't a great match for Three.Line vs LineSegments.
+    <line ref={lineRef} geometry={geometry}>
+      <lineBasicMaterial
+        color={"#60a5fa"}
+        linewidth={2.4}
+        transparent
+        opacity={0.95}
+        toneMapped={false}
+      />
+    </line>
+  );
+}
+
+function Edge({ a, b, isHl, isDimmed, isCross, isTopicMode, edgeRelevance, isForming = false }: EdgeProps) {
   const points = useMemo(
     () => [
       new THREE.Vector3(a.x, a.y, a.z),
@@ -296,6 +427,10 @@ function Edge({ a, b, isHl, isDimmed, isCross, isTopicMode, edgeRelevance }: Edg
     ],
     [a.x, a.y, a.z, b.x, b.y, b.z],
   );
+
+  if (isForming) {
+    return <FormingEdge a={a} b={b} />;
+  }
 
   const opacity = isDimmed
     ? 0.06
@@ -331,7 +466,7 @@ interface InnerProps extends Omit<Props, "zoom" | "resetSignal" | "focusNodeId" 
 }
 
 function SceneInner({
-  nodes, edges, hoveredId, selectedId, highlightSet, isTopicMode, onHoverNode, onClickNode, centroid,
+  nodes, edges, hoveredId, selectedId, highlightSet, isTopicMode, onHoverNode, onClickNode, centroid, formingNodeId,
 }: InnerProps) {
   const posMap = useMemo(() => {
     const m = new Map<string, Scene3DNode>();
@@ -358,6 +493,8 @@ function SceneInner({
         const isHl = hoveredId !== null && highlightSet.has(e.from) && highlightSet.has(e.to);
         const isDimmed = hoveredId !== null && !isHl;
         const edgeRelevance = isTopicMode ? Math.min(a.relevance, b.relevance) : 1;
+        // The forming edge is the one whose endpoint is the forming neuron.
+        const isFormingEdge = formingNodeId != null && e.to === formingNodeId;
         return (
           <Edge
             key={`${e.from}__${e.to}__${i}`}
@@ -368,6 +505,7 @@ function SceneInner({
             isCross={!!e.cross}
             isTopicMode={isTopicMode}
             edgeRelevance={edgeRelevance}
+            isForming={isFormingEdge}
           />
         );
       })}
@@ -376,6 +514,7 @@ function SceneInner({
         const isHovered = hoveredId === n.id;
         const isSelected = selectedId === n.id;
         const isDimmed = hoveredId !== null && !highlightSet.has(n.id);
+        const isForming = formingNodeId === n.id;
         return (
           <Neuron
             key={n.id}
@@ -386,6 +525,7 @@ function SceneInner({
             isTopicMode={isTopicMode}
             onHover={onHoverNode}
             onClick={onClickNode}
+            isForming={isForming}
           />
         );
       })}
@@ -402,6 +542,10 @@ interface CameraControllerProps {
   resetSignal: number;
   /** World-space coordinates to fly the orbit pivot to, or null for no focus. */
   focusPos: readonly [number, number, number] | null;
+  /** Optional close-in distance used in place of NEURON_FOCUS_DISTANCE. */
+  focusDistanceOverride?: number | null;
+  /** When true, OrbitControls is mounted with all interaction disabled. */
+  lockCamera?: boolean;
 }
 
 /**
@@ -414,7 +558,7 @@ interface CameraControllerProps {
  */
 const NEURON_FOCUS_DISTANCE = 420;
 
-function CameraController({ zoom, resetSignal, focusPos }: CameraControllerProps) {
+function CameraController({ zoom, resetSignal, focusPos, focusDistanceOverride, lockCamera = false }: CameraControllerProps) {
   const ctrlRef = useRef<any>(null);
   const focusTargetRef = useRef<THREE.Vector3 | null>(null);
 
@@ -492,9 +636,15 @@ function CameraController({ zoom, resetSignal, focusPos }: CameraControllerProps
 
     // Origin focus = "centered on the main section". Use the user's external
     // zoom for the resting distance so deselecting visually undoes the
-    // zoom-in. Anything else is a real neuron focus → pull in close.
+    // zoom-in. Anything else is a real neuron focus → pull in close. The
+    // override (when supplied) lets a caller pull in even tighter, e.g.
+    // for the landing prototype's "centered on the new neuron" beat.
     const isOriginFocus = focus.lengthSq() < 1;
-    const desiredDist = isOriginFocus ? targetDistance : NEURON_FOCUS_DISTANCE;
+    const neuronDist =
+      focusDistanceOverride != null && focusDistanceOverride > 0
+        ? focusDistanceOverride
+        : NEURON_FOCUS_DISTANCE;
+    const desiredDist = isOriginFocus ? targetDistance : neuronDist;
 
     // Direction from current target → camera. If the camera is sitting on
     // the target (shouldn't happen in practice), default to +z so we have
@@ -531,9 +681,19 @@ function CameraController({ zoom, resetSignal, focusPos }: CameraControllerProps
   return (
     <OrbitControls
       ref={ctrlRef}
-      enableDamping
-      dampingFactor={0.08}
-      enablePan
+      // Damping kept off: OrbitControls' damping decays residual angular
+      // velocity over many frames after any input. In the prototype handoff
+      // (and really anywhere with a nearby focus) that decay reads as the
+      // focused neuron drifting up/down/sideways for a beat after every
+      // hover, click, or wheel tick. Snap behavior keeps the camera dead
+      // still until the user actually drags it.
+      enableDamping={false}
+      // In `lockCamera` mode every form of user interaction is off — the
+      // camera holds whatever focus the parent set. Used by the landing
+      // prototype handoff so clicking the freshly-formed neuron doesn't
+      // also start an orbit gesture and visually drift it off-cursor.
+      enablePan={!lockCamera}
+      enableRotate={!lockCamera}
       panSpeed={0.7}
       rotateSpeed={0.55}
       // Zoom is driven externally via targetDistance — disable wheel-zoom on
@@ -636,9 +796,24 @@ export default function SynthesisScene3D(props: Props) {
         onHoverNode={props.onHoverNode}
         onClickNode={props.onClickNode}
         centroid={centroid}
+        formingNodeId={props.formingNodeId}
       />
 
-      <CameraController zoom={props.zoom} resetSignal={props.resetSignal} focusPos={focusPos} />
+      <CameraController
+        zoom={props.zoom}
+        resetSignal={props.resetSignal}
+        focusPos={focusPos}
+        // While a neuron is forming we pull the camera in closer than the
+        // standard NEURON_FOCUS_DISTANCE so the new neuron really lands
+        // dead-center on the screen. Falls back to caller-provided value
+        // (or null) once the formation completes.
+        focusDistanceOverride={
+          props.formingNodeId != null
+            ? 240
+            : (props.focusDistanceOverride ?? null)
+        }
+        lockCamera={props.lockCamera}
+      />
 
       {/* Bloom is what actually creates the "neurons glowing" effect — bright
           (high luminance) pixels bleed light into surrounding pixels. Tuned

@@ -1,0 +1,318 @@
+// Shared utilities for the landing prototype → main-app handoff.
+//
+// When a guest visits `/landing-prototype` and the AI learns something
+// about them, the prototype writes the resulting neuron(s) to
+// localStorage. The Synthesis Layer, sidebar, and vault all read from
+// here so the rest of the app can render in a stripped-down "preview"
+// state — no demo grids, no demo vault cards, no fake projects — until
+// the user signs up.
+
+export const PROTOTYPE_NEURONS_LS_KEY = "lykn_prototype_neurons";
+export const PROTOTYPE_CHAT_LS_KEY = "lykn_prototype_chat";
+
+export interface PrototypeNeuron {
+  id: string;
+  kind: "identity" | "focus" | "goal" | "style";
+  text: string;
+  /**
+   * Brief 1-sentence "why this became a neuron" supplied by the model
+   * during the landing chat. Surfaced in the Synthesis Layer detail
+   * panel so each neuron explains itself. Older sessions persisted
+   * before this field existed will simply omit it.
+   */
+  reason?: string;
+  /**
+   * 1-based index of this neuron in the order it was created. Lets
+   * downstream surfaces show "1st neuron", "2nd neuron", etc. without
+   * having to rethread the original order.
+   */
+  ordinal?: number;
+  createdAt?: number;
+}
+
+export interface PrototypeChatTurn {
+  role: "user" | "ai";
+  content: string;
+}
+
+export const readPrototypeNeurons = (): PrototypeNeuron[] => {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(PROTOTYPE_NEURONS_LS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (n): n is PrototypeNeuron =>
+        n &&
+        typeof n === "object" &&
+        typeof n.text === "string" &&
+        n.text.length > 0,
+    );
+  } catch {
+    return [];
+  }
+};
+
+export const readPrototypeChat = (): PrototypeChatTurn[] => {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(PROTOTYPE_CHAT_LS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (m): m is PrototypeChatTurn =>
+        m &&
+        typeof m === "object" &&
+        (m.role === "user" || m.role === "ai") &&
+        typeof m.content === "string" &&
+        m.content.length > 0,
+    );
+  } catch {
+    return [];
+  }
+};
+
+// Lightweight check — true when the visitor has at least one neuron in
+// localStorage from the landing prototype. Use this to gate any "preview
+// mode" UI that should hide demo content while in the handoff.
+export const hasPrototypeNeurons = (): boolean => {
+  return readPrototypeNeurons().length > 0;
+};
+
+/* ------------------------------------------------------------------ */
+/*  Walkthrough step state                                             */
+/* ------------------------------------------------------------------ */
+
+// Linear walkthrough the prototype guides a fresh visitor through:
+//   "synthesis" — first neuron created on the landing page; the sidebar
+//                 surfaces with the Synthesis Layer button glowing.
+//   "vault"     — user has just seen the neuron form in the synthesis
+//                 layer; the sidebar reopens with the Vault button
+//                 glowing as the next thing to explore.
+//   "grid"      — user has read the vault intro; the sidebar reopens
+//                 with the Grid button glowing as the third + final
+//                 surface in the guided tour.
+//   "done"      — walkthrough nudges are dismissed (e.g. user has
+//                 visited the grid, or signed in).
+export type PrototypeStep = "synthesis" | "vault" | "grid" | "done";
+
+export const PROTOTYPE_STEP_LS_KEY = "lykn_prototype_step";
+
+// Session-scoped one-shot flag — set the first time the vault types
+// out its LYKN intro chat for a guest in the prototype walkthrough,
+// so refreshing /vault doesn't keep replaying it. Cleared by
+// LandingPrototype whenever the walkthrough resets, so a brand-new
+// first neuron always re-arms the intro for the next vault visit.
+export const PROTO_VAULT_INTRO_SS_KEY = "lykn_prototype_vault_intro_played";
+
+// Same idea as PROTO_VAULT_INTRO_SS_KEY but for the Grid page — set the
+// first time LYKN types out the "what is the grid" intro for a guest in
+// the prototype walkthrough, so a refresh of `/app` doesn't keep
+// replaying it. Cleared by LandingPrototype whenever the walkthrough
+// resets so a brand-new first neuron re-arms the next visit.
+export const PROTO_GRID_INTRO_SS_KEY = "lykn_prototype_grid_intro_played";
+
+// Same-window listeners (sidebar in particular) need a way to react to
+// step changes without waiting for a `storage` event — those only fire
+// across tabs. This event is dispatched by `writePrototypeStep`.
+export const PROTOTYPE_STEP_EVENT = "lykn_prototype_step_changed";
+
+export const readPrototypeStep = (): PrototypeStep | null => {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(PROTOTYPE_STEP_LS_KEY);
+    if (raw === "synthesis" || raw === "vault" || raw === "grid" || raw === "done") {
+      return raw;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+};
+
+export const writePrototypeStep = (step: PrototypeStep | null): void => {
+  if (typeof window === "undefined") return;
+  try {
+    if (step === null) {
+      window.localStorage.removeItem(PROTOTYPE_STEP_LS_KEY);
+    } else {
+      window.localStorage.setItem(PROTOTYPE_STEP_LS_KEY, step);
+    }
+    window.dispatchEvent(new CustomEvent(PROTOTYPE_STEP_EVENT, { detail: { step } }));
+  } catch {
+    // ignore quota / private-mode errors
+  }
+};
+
+/* ------------------------------------------------------------------ */
+/*  Guest chat session cap                                              */
+/*                                                                      */
+/*  Hard ceiling on the number of LLM calls a guest can make from a    */
+/*  single browser session. Server-side per-IP limits already apply,   */
+/*  but a session-scoped client check makes the abuse path obvious to  */
+/*  the user (clear in-chat sign-in nudge) and stops us from even      */
+/*  hitting the network past the cap. Bypassable by clearing storage   */
+/*  or using a private window — that's fine, the server limits catch   */
+/*  those cases. Defense in depth.                                     */
+/* ------------------------------------------------------------------ */
+export const GUEST_CHAT_SESSION_CAP = 12;
+export const GUEST_CHAT_SESSION_COUNT_KEY = "lykn_guest_chat_session_count";
+
+export const readGuestChatCount = (): number => {
+  if (typeof window === "undefined") return 0;
+  try {
+    const raw = window.sessionStorage.getItem(GUEST_CHAT_SESSION_COUNT_KEY);
+    const n = parseInt(raw || "0", 10);
+    return Number.isFinite(n) && n >= 0 ? n : 0;
+  } catch {
+    return 0;
+  }
+};
+
+export const incrementGuestChatCount = (): number => {
+  if (typeof window === "undefined") return 0;
+  const next = readGuestChatCount() + 1;
+  try {
+    window.sessionStorage.setItem(GUEST_CHAT_SESSION_COUNT_KEY, String(next));
+  } catch {
+    // ignore (private mode, quota, etc.)
+  }
+  return next;
+};
+
+export const guestChatCapReached = (): boolean =>
+  readGuestChatCount() >= GUEST_CHAT_SESSION_CAP;
+
+// Stable id for the synthetic "First Conversation" grid generated from
+// the landing-prototype chat. Treated as a demo-grid id by `demoGrids.js`
+// so it flows through OmniaGrid + useBoardPersistence's existing demo path
+// (no Supabase reads/writes, no auth required) — making it behave like a
+// real grid in the app instead of a custom one-off page.
+export const PROTOTYPE_FIRST_CHAT_BOARD_ID = "__prototype_first_chat__";
+
+export const isPrototypeFirstChatBoardId = (id: unknown): boolean =>
+  typeof id === "string" && id === PROTOTYPE_FIRST_CHAT_BOARD_ID;
+
+interface PromptMessageLike {
+  id: string;
+  role: "user";
+  content: string;
+  aiResponse?: string;
+  kind: "prompt";
+}
+
+interface AiThreadTurn {
+  role: "user" | "assistant";
+  content: string;
+}
+
+// Fold the prototype chat (an array of {role: "user"|"ai", content}) into
+// the shape OmniaGrid's chat rail expects: each user turn becomes one
+// PromptMessage, with the next assistant turn (if any) inlined as
+// `aiResponse`. Consecutive turns from the same role are concatenated so
+// the grouping stays clean.
+function foldChatIntoPrompts(turns: PrototypeChatTurn[]): {
+  chatMessages: PromptMessageLike[];
+  aiThread: AiThreadTurn[];
+} {
+  const chatMessages: PromptMessageLike[] = [];
+  const aiThread: AiThreadTurn[] = [];
+
+  let i = 0;
+  let promptCounter = 0;
+  while (i < turns.length) {
+    const turn = turns[i];
+    if (turn.role === "user") {
+      let userText = turn.content;
+      let j = i + 1;
+      while (j < turns.length && turns[j].role === "user") {
+        userText += "\n\n" + turns[j].content;
+        j += 1;
+      }
+      let aiText: string | undefined;
+      if (j < turns.length && turns[j].role === "ai") {
+        aiText = turns[j].content;
+        let k = j + 1;
+        while (k < turns.length && turns[k].role === "ai") {
+          aiText += "\n\n" + turns[k].content;
+          k += 1;
+        }
+        j = k;
+      }
+      promptCounter += 1;
+      chatMessages.push({
+        id: `proto-prompt-${promptCounter}`,
+        role: "user",
+        content: userText,
+        aiResponse: aiText,
+        kind: "prompt",
+      });
+      aiThread.push({ role: "user", content: userText });
+      if (aiText) aiThread.push({ role: "assistant", content: aiText });
+      i = j;
+    } else {
+      // Assistant turn with no preceding user prompt — surface it as an
+      // unattached AI prompt so it isn't lost from the transcript.
+      let aiText = turn.content;
+      let j = i + 1;
+      while (j < turns.length && turns[j].role === "ai") {
+        aiText += "\n\n" + turns[j].content;
+        j += 1;
+      }
+      promptCounter += 1;
+      chatMessages.push({
+        id: `proto-prompt-${promptCounter}`,
+        role: "user",
+        content: "(LYKN)",
+        aiResponse: aiText,
+        kind: "prompt",
+      });
+      aiThread.push({ role: "assistant", content: aiText });
+      i = j;
+    }
+  }
+
+  return { chatMessages, aiThread };
+}
+
+const EMPTY_NOTES_DOC = { type: "doc", content: [{ type: "paragraph" }] };
+
+// Build a board snapshot that OmniaGrid can render as if the prototype
+// chat were a real saved grid. The snapshot intentionally has no canvas
+// blocks — the conversation lives in the chat rail, which `applySnapshot`
+// auto-opens whenever `chatMessages.length > 0`.
+export const buildPrototypeFirstChatSnapshot = (): {
+  title: string;
+  version: number;
+  blocks: Record<string, never>;
+  blockOrder: string[];
+  camera: { x: number; y: number; zoom: number };
+  gridSize: number;
+  wireConnections: never[];
+  chatMessages: PromptMessageLike[];
+  aiThread: AiThreadTurn[];
+  notesPages: { id: string; title: string; content: typeof EMPTY_NOTES_DOC }[];
+} => {
+  const turns = readPrototypeChat();
+  const { chatMessages, aiThread } = foldChatIntoPrompts(turns);
+
+  return {
+    title: "First Conversation",
+    version: 2,
+    blocks: {},
+    blockOrder: [],
+    // Empty board — let `applySnapshot`'s empty-board branch center the
+    // camera on its own (it sets a viewport-anchored camera for empty
+    // grids), so we don't have to compute one here.
+    camera: { x: 0, y: 0, zoom: 1 },
+    gridSize: 24,
+    wireConnections: [],
+    chatMessages,
+    aiThread,
+    notesPages: [
+      { id: "proto-notes-page-1", title: "Page 1", content: EMPTY_NOTES_DOC },
+    ],
+  };
+};

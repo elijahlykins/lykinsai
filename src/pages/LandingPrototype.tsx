@@ -1,6 +1,19 @@
 import { Fragment, useEffect, useRef, useState } from "react";
-import { ArrowUp, ChevronDown, Mic, Network, Plus } from "lucide-react";
+import { ArrowUp, ChevronDown, Mic, Plus } from "lucide-react";
 import { API_BASE_URL } from "@/lib/api-config";
+import AppSidebar from "@/components/AppSidebar";
+import { useNavigate } from "react-router-dom";
+import { useAuth } from "@/lib/SupabaseAuth";
+import {
+  GUEST_CHAT_SESSION_CAP,
+  guestChatCapReached,
+  incrementGuestChatCount,
+  PROTO_GRID_INTRO_SS_KEY,
+  PROTO_VAULT_INTRO_SS_KEY,
+  PROTOTYPE_CHAT_LS_KEY,
+  PROTOTYPE_NEURONS_LS_KEY,
+  writePrototypeStep,
+} from "@/lib/prototypeHandoff";
 
 // Prototype "wake" landing experience.
 //
@@ -25,17 +38,19 @@ import { API_BASE_URL } from "@/lib/api-config";
 // natural reply with NO neuron — only genuine personal info triggers one.
 
 const GREETING =
-  "Hi. I'm LYKN. Before I can be useful, I want to know you — not just what you make, but who you are. Tell me about yourself.";
+  "I'm LYKN — your synthetic intelligence layer, custom-built for you. Right now I'm empty. Unlike general AI trained on everyone, synthetic intelligence is synthesized from you alone — your sources, your taste, the way you think.";
 
 // Opener questions, ordered to match the `fact_kind` categories in
-// `lykn_user_model_facts`: identity → focus → goal → style. These are
-// intentionally about the PERSON (values, interests, personality, how they
-// think) rather than only their projects or work.
+// `lykn_user_model_facts`: identity → focus → goal → style. Mix is
+// deliberate — half work / half "who you are" — but nothing private.
+// "What you do" + "what you're known for" + "what you're after" is
+// enough signal to start synthesizing without prying for personal
+// details a visitor wouldn't share with an empty chat.
 const QUESTIONS = [
-  "Who are you, in your own words?",
-  "What lights you up right now — what are you into?",
-  "What do you want more of in your life?",
-  "How does your brain work best — lists, talking it out, sketching, walking?",
+  "What do you do, and what are you known for?",
+  "What are you working on right now?",
+  "What are you trying to make happen next?",
+  "How do you work best — deep focus, fast iteration, lots of research?",
 ];
 
 const FACT_KIND_ORDER = ["identity", "focus", "goal", "style"] as const;
@@ -45,7 +60,67 @@ interface FactNode {
   id: string;
   kind: FactKind;
   text: string;
+  /**
+   * Brief 1-sentence "why was this neuron created" description, supplied
+   * by the model alongside the learned phrase. Surfaced in the Synthesis
+   * Layer detail panel so each neuron explains itself.
+   */
+  reason?: string;
 }
+
+const persistPrototypeNeurons = (nodes: FactNode[]) => {
+  try {
+    if (nodes.length === 0) {
+      window.localStorage.removeItem(PROTOTYPE_NEURONS_LS_KEY);
+      return;
+    }
+    window.localStorage.setItem(
+      PROTOTYPE_NEURONS_LS_KEY,
+      JSON.stringify(
+        nodes.map((n, i) => ({
+          id: n.id,
+          kind: n.kind,
+          text: n.text,
+          reason: n.reason || "",
+          ordinal: i + 1,
+          createdAt: Date.now(),
+        })),
+      ),
+    );
+  } catch {
+    // localStorage can fail in private mode — non-critical.
+  }
+};
+
+// Persist the conversation transcript so the Synthesis Layer can render
+// the user's first chat as a "grid" — a tangible artifact alongside the
+// freshly-formed neuron — instead of showing an empty Grids category.
+const persistPrototypeChat = (
+  greeting: string,
+  questions: string[],
+  messages: ChatMsg[],
+) => {
+  try {
+    const turns: { role: "user" | "ai"; content: string }[] = [];
+    turns.push({
+      role: "ai",
+      content: `${greeting}\n\n${questions.map((q) => `• ${q}`).join("\n")}`,
+    });
+    messages.forEach((m) => {
+      turns.push({ role: "user", content: m.content });
+      if (m.aiStreamComplete && m.aiResponse) {
+        turns.push({ role: "ai", content: m.aiResponse });
+      }
+    });
+    if (turns.length <= 1) {
+      window.localStorage.removeItem(PROTOTYPE_CHAT_LS_KEY);
+      return;
+    }
+    window.localStorage.setItem(PROTOTYPE_CHAT_LS_KEY, JSON.stringify(turns));
+  } catch {
+    // localStorage can fail in private mode — non-critical.
+  }
+};
 
 interface ChatMsg {
   id: string;
@@ -65,52 +140,13 @@ const CHAT_TIMEOUT_MS = 30_000;
 const FALLBACK_REPLY =
   "Hmm — I had trouble responding just now. Mind trying that again?";
 
-// Onboarding instruction. The model decides on its own whether to include
-// the hidden <learned>...</learned> tag, and only does so when the user
-// actually shared something personal.
-const buildChatPrompt = (userText: string): string => {
-  return [
-    "You are LYKN, a curious and warm AI just meeting a new user. You are in casual onboarding conversation, and your PRIMARY GOAL right now is to learn about them as a PERSON — not just their job or projects.",
-    "",
-    "Reply naturally in 1 to 2 short sentences (max ~40 words). Sound human, not corporate. Don't lecture about LYKN's features.",
-    "",
-    "Lean your curiosity toward the HUMAN — their personality, values, interests, passions, how they think, what they care about, what kind of person they are. Projects and work are valid signals too, but don't only ask about output.",
-    "",
-    "Decide whether the user just shared something genuinely PERSONAL about themselves as a HUMAN — their identity, personality, values, interests, passions, what they care about, what they're working on, their goals, or how they think and work. Treat 'who they are' as broader than just their job or what they make.",
-    "",
-    "CASE A — they shared something personal:",
-    "- Acknowledge it warmly in your reply",
-    '- Include the phrase "I just learned something about you." somewhere natural in your reply',
-    "- Ask one short curious follow-up question — bias the follow-up toward learning more about THEM (their why, their feelings, their personality), not just more details about the project",
-    "- End your ENTIRE message with this hidden tag (do not explain it to the user):",
-    "  <learned>2 to 6 word noun phrase summarizing what you learned about the person</learned>",
-    "",
-    "CASE B — they did NOT share personal info (greetings, questions to you, jokes, small talk, vague messages, asking what LYKN does):",
-    "- Respond casually and naturally",
-    "- Gently steer toward learning about THEM as a person (not 'what are you working on' as the default — try 'what are you into lately', 'what kind of person are you', 'what's been on your mind', etc.)",
-    '- Do NOT include "I just learned something about you."',
-    "- Do NOT include the <learned> tag",
-    "",
-    "Examples:",
-    'User: "hey"',
-    'You: "Hey! I\'d love to actually get to know you — what kind of person are you when you\'re not busy?"',
-    "",
-    'User: "what do you do?"',
-    'You: "I\'m here to grow into your second brain, but I can\'t do much until I know you. Tell me something about yourself — what are you into?"',
-    "",
-    'User: "I\'m a really introverted person and I take long walks every morning"',
-    'You: "Long walks sound like the perfect introvert recharge — moving without performing. I just learned something about you. What\'s usually going through your head out there? <learned>Introvert who walks daily</learned>"',
-    "",
-    'User: "I care a lot about climate stuff and animal welfare"',
-    'You: "That\'s a lot to carry — both feel urgent in different ways. I just learned something about you. Which one pulls at you more day to day? <learned>Cares about climate and animals</learned>"',
-    "",
-    'User: "I\'m a content creator who makes videos about photography"',
-    'You: "Photography content has such a specific audience. I just learned something about you. What got you into photography in the first place? <learned>Photography content creator</learned>"',
-    "",
-    "Now respond to this message:",
-    `User: "${userText}"`,
-  ].join("\n");
-};
+// All onboarding instructions (CASE A/B, <learned> tag mechanic, anti-
+// repetition rule, examples) live SERVER-SIDE in the system prompt and
+// are activated by passing `mode: "landing-onboarding"` to
+// /api/ai/stream-guest. We deliberately do NOT wrap the user's text in
+// instructions on the client — when this content was sent as the user
+// message, the model occasionally echoed it back into the visible reply.
+// See server.js → buildLandingOnboardingSystemPrompt().
 
 interface GuestHistoryMsg {
   role: "user" | "model";
@@ -118,7 +154,7 @@ interface GuestHistoryMsg {
 }
 
 // During streaming, hide everything from <learned> onward so the user never
-// sees the tag flicker into view as the model writes it.
+// sees either the <learned> or trailing <reason> tag flicker into view.
 const stripLearnedTag = (text: string): string => {
   const idx = text.indexOf("<learned>");
   if (idx === -1) return text;
@@ -138,16 +174,35 @@ const extractLearnedPhrase = (text: string): string | null => {
   return phrase;
 };
 
+// Extract the model-supplied "why was this neuron created" sentence. The
+// neuron's detail panel surfaces this so each neuron explains itself.
+const extractLearnedReason = (text: string): string | null => {
+  const match = text.match(/<reason>\s*([\s\S]+?)\s*<\/reason>/i);
+  if (!match) return null;
+  const reason = match[1]
+    .trim()
+    .replace(/^["'`]|["'`]$/g, "")
+    .slice(0, 240);
+  if (!reason) return null;
+  return reason;
+};
+
 async function streamChatResponse(
   prompt: string,
   history: GuestHistoryMsg[],
+  alreadyLearned: string[],
   onChunk: (visibleText: string) => void,
   signal?: AbortSignal,
 ): Promise<string> {
   const response = await fetch(`${API_BASE_URL}/api/ai/stream-guest`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt, history }),
+    body: JSON.stringify({
+      prompt,
+      history,
+      mode: "landing-onboarding",
+      alreadyLearned,
+    }),
     signal,
   });
   if (!response.ok || !response.body) throw new Error("chat: bad response");
@@ -186,6 +241,8 @@ async function streamChatResponse(
 }
 
 const LandingPrototype = () => {
+  const { user, loading: authLoading } = useAuth();
+  const navigate = useNavigate();
   const [chatVisible, setChatVisible] = useState(false);
   const [thinkingDone, setThinkingDone] = useState(false);
   const [typedGreeting, setTypedGreeting] = useState("");
@@ -194,9 +251,20 @@ const LandingPrototype = () => {
   const [draft, setDraft] = useState("");
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [factNodes, setFactNodes] = useState<FactNode[]>([]);
-  const [synthesisOpen, setSynthesisOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Signed-in users have no business on the synthetic-intelligence
+  // onboarding chat — bounce them straight into the app. Catches both
+  // the post-login `from = "/"` case and any signed-in user who lands
+  // on `/` (or `/landing-prototype`) by typing the URL or following an
+  // old marketing link.
+  useEffect(() => {
+    if (!authLoading && user) {
+      navigate("/app", { replace: true });
+    }
+  }, [authLoading, user, navigate]);
 
   const hasSentFirst = messages.length > 0;
   const allQuestionsShown = visibleQuestions >= QUESTIONS.length;
@@ -263,6 +331,43 @@ const LandingPrototype = () => {
     el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   }, [messages]);
 
+  // Mirror created neurons into localStorage so the SynthesisLayer page can
+  // pick them up when the user navigates over from the prototype.
+  //
+  // Walkthrough nudge: when the AI learns the FIRST neuron of this
+  // session (factNodes flipping from 0 → 1+), reset the walkthrough
+  // back to the "synthesis" step. We deliberately overwrite any stale
+  // "vault" / "grid" / "done" value that may be sitting in localStorage
+  // from a previous test run — this is the canonical "user just
+  // started over" signal, so the guided tour should always replay from
+  // the top when the user creates a fresh first neuron.
+  const prevFactCountRef = useRef(0);
+  useEffect(() => {
+    persistPrototypeNeurons(factNodes);
+    const prev = prevFactCountRef.current;
+    if (prev === 0 && factNodes.length > 0) {
+      writePrototypeStep("synthesis");
+      // Re-arm any one-shot session flags downstream pages set so they
+      // don't replay across visits (e.g. the vault's typed intro chat).
+      // The walkthrough is starting over — those nudges should fire
+      // again on this run.
+      try {
+        sessionStorage.removeItem(PROTO_VAULT_INTRO_SS_KEY);
+        sessionStorage.removeItem(PROTO_GRID_INTRO_SS_KEY);
+      } catch {
+        // ignore (private mode etc.)
+      }
+    }
+    prevFactCountRef.current = factNodes.length;
+  }, [factNodes]);
+
+  // Mirror the conversation so the SynthesisLayer can render the chat as
+  // the user's very first "grid" (an artifact of their first session
+  // with LYKN).
+  useEffect(() => {
+    persistPrototypeChat(GREETING, [...QUESTIONS], messages);
+  }, [messages]);
+
   const sendDisabled = draft.trim().length === 0;
   const showCursor = thinkingDone && (!greetingDone || !allQuestionsShown);
 
@@ -271,6 +376,25 @@ const LandingPrototype = () => {
     if (!text) return;
     const idx = messages.length;
     const msgId = `msg_${Date.now()}_${idx}`;
+
+    // Session-scoped guest cap. Server enforces per-IP / per-day too,
+    // but stopping here keeps the UI honest and saves an LLM call.
+    if (guestChatCapReached()) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: msgId,
+          content: text,
+          aiResponse:
+            `You've hit the free preview limit (${GUEST_CHAT_SESSION_CAP} messages). ` +
+            "Sign in (it's free) to keep chatting and save what you've made.",
+          aiStreamComplete: true,
+        },
+      ]);
+      setDraft("");
+      return;
+    }
+    incrementGuestChatCount();
 
     // Build conversational history so Gemini sees the full thread, not just
     // the latest message in isolation. We use the visible (tag-stripped)
@@ -302,8 +426,9 @@ const LandingPrototype = () => {
     );
 
     streamChatResponse(
-      buildChatPrompt(text),
+      text,
       history,
+      factNodes.map((n) => n.text),
       (partial) => {
         setMessages((prev) =>
           prev.map((m) =>
@@ -317,22 +442,38 @@ const LandingPrototype = () => {
         window.clearTimeout(timeoutId);
         const visible = stripLearnedTag(finalRaw).trim() || FALLBACK_REPLY;
         const learned = extractLearnedPhrase(finalRaw);
+        const reason = extractLearnedReason(finalRaw);
 
         // Map the new fact onto its category. We use the message index so
         // the first thing learned is `identity`, second `focus`, etc. — but
         // only when the AI actually decided to learn something.
+        //
+        // Dedupe defensively: if the model emits a phrase we've already
+        // turned into a neuron (case-insensitive, punctuation/whitespace
+        // normalized), skip the create. Otherwise the synthesis layer
+        // ends up with multiple "Photography content creator" nodes
+        // sitting on top of each other after a chatty conversation.
         let newNode: FactNode | undefined;
         if (learned) {
-          const usedKinds = new Set(factNodes.map((n) => n.kind));
-          const nextKind: FactKind =
-            FACT_KIND_ORDER.find((k) => !usedKinds.has(k)) ??
-            FACT_KIND_ORDER[FACT_KIND_ORDER.length - 1];
-          newNode = {
-            id: `fact_${Date.now()}_${idx}`,
-            kind: nextKind,
-            text: learned,
-          };
-          setFactNodes((prev) => [...prev, newNode!]);
+          const normalize = (s: string) =>
+            s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+          const candidate = normalize(learned);
+          const isDuplicate =
+            candidate.length > 0 &&
+            factNodes.some((n) => normalize(n.text) === candidate);
+          if (!isDuplicate) {
+            const usedKinds = new Set(factNodes.map((n) => n.kind));
+            const nextKind: FactKind =
+              FACT_KIND_ORDER.find((k) => !usedKinds.has(k)) ??
+              FACT_KIND_ORDER[FACT_KIND_ORDER.length - 1];
+            newNode = {
+              id: `fact_${Date.now()}_${idx}`,
+              kind: nextKind,
+              text: learned,
+              reason: reason || undefined,
+            };
+            setFactNodes((prev) => [...prev, newNode!]);
+          }
         }
 
         setMessages((prev) =>
@@ -466,11 +607,11 @@ const LandingPrototype = () => {
     <div className="dark lykn-wake-stage relative w-screen min-h-screen overflow-hidden flex flex-col">
       <div aria-hidden className="lykn-wake-screen-trace" />
 
-      {/* Main column shifts left to make room for the synthesis sidebar
-          when it's open, so the chat conversation doesn't get covered. */}
+      {/* Main column shifts right when the left sidebar opens, so the
+          chat conversation isn't covered by the sidebar. */}
       <div
         className={`relative z-10 flex-1 w-full flex flex-col transition-all duration-500 ease-out ${
-          synthesisOpen ? "lg:pr-[380px]" : ""
+          sidebarOpen ? "lg:pl-[12rem]" : ""
         }`}
       >
         {!hasSentFirst ? (
@@ -522,9 +663,9 @@ const LandingPrototype = () => {
                             <div className="mt-3 lykn-wake-question-fade">
                               <button
                                 type="button"
-                                onClick={() => setSynthesisOpen(true)}
+                                onClick={() => setSidebarOpen(true)}
                                 className="lykn-wake-neuron-pill inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold tracking-wide text-blue-100 border border-blue-400/45 bg-blue-500/[0.08] hover:bg-blue-500/[0.16] hover:text-white transition-colors cursor-pointer"
-                                title="Open the synthesis layer"
+                                title="Open your sidebar"
                               >
                                 <span
                                   aria-hidden
@@ -548,62 +689,24 @@ const LandingPrototype = () => {
         )}
       </div>
 
-      {/* Synthesis layer sidebar — slides in when the user clicks the
-          "Click to see it" button on any AI response. */}
-      <aside
-        aria-hidden={!synthesisOpen}
-        className={`lykn-wake-synth-panel fixed top-0 right-0 bottom-0 w-[360px] max-w-[88vw] z-[60] flex flex-col transition-transform duration-500 ease-out ${
-          synthesisOpen ? "translate-x-0" : "translate-x-full"
-        }`}
-      >
-        <div className="flex items-center gap-2.5 px-5 py-4 border-b border-white/8">
-          <div className="lykn-wake-synth-icon w-7 h-7 rounded-lg flex items-center justify-center">
-            <Network className="w-3.5 h-3.5 text-blue-300" />
-          </div>
-          <div className="flex flex-col leading-tight">
-            <span className="text-[13px] font-semibold text-white/90 tracking-tight">
-              Synthesis Layer
-            </span>
-            <span className="text-[10px] text-white/40 tracking-wide">
-              {factNodes.length === 0
-                ? "Listening…"
-                : `${factNodes.length} neuron${factNodes.length === 1 ? "" : "s"}`}
-            </span>
-          </div>
-        </div>
-
-        <div className="flex-1 overflow-y-auto scrollbar-hide px-4 py-4 space-y-3">
-          {factNodes.length === 0 ? (
-            <div className="text-xs text-white/35 text-center py-8 px-4">
-              Nothing here yet. Whatever you tell LYKN about yourself will
-              appear here as a neuron it remembers.
-            </div>
-          ) : (
-            factNodes.map((node) => (
-              <div
-                key={node.id}
-                className="lykn-wake-synth-node group relative rounded-xl border border-blue-400/25 bg-gradient-to-br from-[#1a2230] to-[#131a26] p-3.5"
-              >
-                <div className="flex items-center gap-2 mb-2">
-                  <span
-                    aria-hidden
-                    className="w-2 h-2 rounded-full bg-blue-400 shadow-[0_0_10px_rgba(96,165,250,0.95)]"
-                  />
-                  <span className="text-[10px] uppercase tracking-[0.12em] text-blue-300/80 font-semibold">
-                    {node.kind}
-                  </span>
-                </div>
-                <p className="text-[13px] text-white/85 leading-snug">
-                  {node.text}
-                </p>
-                <p className="mt-2.5 text-[10px] text-white/35 tracking-wide">
-                  1 source &middot; just now
-                </p>
-              </div>
-            ))
-          )}
-        </div>
-      </aside>
+      {/* Once the AI has learned at least one thing about the user, the
+          real left sidebar mounts in. The Synthesis Layer item glows so
+          the user knows where to find the neuron they just created.
+          NOTE: AppSidebar must be rendered as a direct child of the
+          stage (no opacity-animated wrapper). A wrapper with an opacity
+          animation creates a stacking context, which trapped the
+          sidebar's fixed-position z-70/z-80 elements below the
+          screen-trace overlay (z-50, fixed) — making the synthesis
+          button visually visible but unclickable depending on the
+          mount/animation timing. */}
+      {factNodes.length > 0 && (
+        <AppSidebar
+          controlledOpen={sidebarOpen}
+          onOpenChange={setSidebarOpen}
+          highlightSynthesis
+          restrictToSynthesis
+        />
+      )}
     </div>
   );
 };

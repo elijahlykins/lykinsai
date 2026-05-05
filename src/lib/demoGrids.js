@@ -1,3 +1,9 @@
+import {
+  PROTOTYPE_FIRST_CHAT_BOARD_ID,
+  isPrototypeFirstChatBoardId,
+  buildPrototypeFirstChatSnapshot,
+} from "./prototypeHandoff";
+
 // Preloaded "starter" grids. Shown to guests (pre-sign-in) as interactive
 // preview boards so the "/grid" surface doesn't feel empty. Paired with
 // `demoVault.js` and `demoSynthesis.js` — the three files share themes,
@@ -1488,7 +1494,15 @@ export const DEMO_GRID_LIST = [
 ];
 
 export function isDemoGridId(id) {
-  return typeof id === "string" && Object.prototype.hasOwnProperty.call(DEMO_GRID_SNAPSHOTS, id);
+  if (typeof id !== "string") return false;
+  if (Object.prototype.hasOwnProperty.call(DEMO_GRID_SNAPSHOTS, id)) return true;
+  // The landing-prototype "First Conversation" grid piggy-backs on the
+  // demo-grid path so it gets the same no-auth, no-persist treatment in
+  // OmniaGrid + useBoardPersistence as the seeded demo boards. Its
+  // snapshot is built from localStorage at fetch time rather than baked
+  // into DEMO_GRID_SNAPSHOTS.
+  if (isPrototypeFirstChatBoardId(id)) return true;
+  return false;
 }
 
 // Compute a camera that frames the top of a demo grid at a zoom level
@@ -1531,9 +1545,21 @@ function computeDemoCamera(snap) {
 
 export function getDemoGridSnapshot(id) {
   if (!isDemoGridId(id)) return null;
+  // Synthetic prototype-chat snapshot is rebuilt on every fetch so the
+  // chat rail always reflects the latest localStorage state — no clone
+  // needed.
+  if (isPrototypeFirstChatBoardId(id)) {
+    const snap = buildPrototypeFirstChatSnapshot();
+    snap.camera = computeDemoCamera(snap);
+    return snap;
+  }
   // Deep-clone so callers that mutate (loadBlocks, etc.) don't poison the
   // shared template across boards.
   const snap = JSON.parse(JSON.stringify(DEMO_GRID_SNAPSHOTS[id]));
   snap.camera = computeDemoCamera(snap);
   return snap;
 }
+
+// Re-export the prototype-chat board id for convenience so callers don't
+// need to import from prototypeHandoff just to navigate to it.
+export { PROTOTYPE_FIRST_CHAT_BOARD_ID };

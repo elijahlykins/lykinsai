@@ -1,5 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
+import {
+  hasPrototypeNeurons,
+  PROTO_GRID_INTRO_SS_KEY,
+  readPrototypeStep,
+  writePrototypeStep,
+} from "@/lib/prototypeHandoff";
 import { Canvas } from "@/canvas/Canvas";
 import { useCanvasStore } from "@/store/canvasStore";
 import type { Block } from "@/canvas/types";
@@ -625,7 +631,26 @@ export default function OmniaGridPage() {
   const nav = useNavigate();
   const location = useLocation();
   const { boardId: routeBoardId } = useParams<{ boardId?: string }>();
-  const { user } = useAuth();
+  const { user, signInWithOAuth } = useAuth();
+
+  // Walkthrough closure: reaching the canonical Grid surface (`/app`)
+  // is the final beat of the landing-prototype guided tour. Mark the
+  // step "done" so the sidebar glow + restriction don't follow the
+  // user around forever.
+  //
+  // Specifically gated on `!routeBoardId` so opening a particular grid
+  // (`/grid/<id>` — e.g. the prototype "First Conversation" grid that
+  // can be clicked from the Synthesis Layer mid-walkthrough) doesn't
+  // accidentally fast-forward past the vault + grid glows.
+  useEffect(() => {
+    if (routeBoardId) return;
+    const step = readPrototypeStep();
+    if (step === "synthesis" || step === "vault" || step === "grid") {
+      writePrototypeStep("done");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const { modelTier, loading: planLoading, isGuest } = useUserPlan();
   const requireSignIn = useCallback((what: string = "save your work") => {
     try {
@@ -846,10 +871,115 @@ export default function OmniaGridPage() {
   const [showMediaSuggestion, setShowMediaSuggestion] = useState(false);
   const [importingMedia, setImportingMedia] = useState(false);
 
+  // Final beat of the landing-prototype guided tour: after the typed
+  // "what is the grid" intro finishes, we *arm* the sign-in wall. The
+  // next click anywhere on the canvas surface (or the next chat send)
+  // will surface the prompt so the user can save what they've made
+  // (their first neuron, first conversation, first grid). The wall is
+  // sticky — dismissing it re-arms instead of going away — so guests
+  // can't trivially keep poking around the empty grid for free.
+  const [prototypeSignInArmed, setPrototypeSignInArmed] = useState(false);
+  const [prototypeSignInOpen, setPrototypeSignInOpen] = useState(false);
+  // `triggered` flips true the very first time we open the modal and
+  // never flips back. We use it to gate the chat send path so any
+  // attempt to keep chatting after the tour also funnels through the
+  // wall, not just clicking on the canvas.
+  const [prototypeSignInTriggered, setPrototypeSignInTriggered] = useState(false);
+  const [prototypeSignInEmail, setPrototypeSignInEmail] = useState("");
+
   useEffect(() => {
     const onResize = () => setViewportWidth(window.innerWidth || 1280);
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  // Landing-prototype handoff (final beat): on first load of the canonical
+  // Grid surface (`/app`) for a guest who came through the walkthrough,
+  // open the chat rail and have LYKN type out a short orientation message
+  // explaining what the Grid is. Only fires once per session — the
+  // session flag is cleared by LandingPrototype whenever a brand-new
+  // walkthrough kicks off, so a fresh first neuron re-arms it.
+  useEffect(() => {
+    if (user?.id) return;
+    if (routeBoardId) return; // only on /app, not on a specific /grid/<id>
+    if (!hasPrototypeNeurons()) return;
+    let alreadyPlayed = false;
+    try {
+      alreadyPlayed = sessionStorage.getItem(PROTO_GRID_INTRO_SS_KEY) === "1";
+    } catch {
+      // private mode etc.
+    }
+    if (alreadyPlayed) return;
+    try {
+      sessionStorage.setItem(PROTO_GRID_INTRO_SS_KEY, "1");
+    } catch {
+      // ignore
+    }
+
+    const introText = [
+      "This is **the Grid** — your **spatial thinking environment**.",
+      "",
+      "**Type anywhere** on the canvas to start a quick note exactly where your cursor lands. No menus, no modals — just click an empty spot and write. Then drag, resize, and arrange your thoughts however your brain wants them.",
+      "",
+      "Hit **`/`** anywhere on the grid (or inside any block) to open the command menu. From there you can drop in **notes, links, images, files, spreadsheets, todo lists, code blocks, design boards, YouTube embeds**, anything — without lifting your hands off the keyboard.",
+      "",
+      "Each grid is its own canvas for a thought, project, or moment. Whatever you put here becomes part of your Vault and feeds back into the Synthesis Layer, so your AI keeps learning who you are with every block you add.",
+      "",
+      "Try it: click anywhere and start typing, hit `/` to summon a block, or ask me something right here in the chat.",
+    ].join("\n");
+
+    const promptId = `proto-grid-intro-${Date.now()}`;
+    const timeouts: number[] = [];
+
+    timeouts.push(window.setTimeout(() => {
+      setChatRailOpen(true);
+      setChatRailVisible(true);
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          id: promptId,
+          role: "user",
+          content: "What is the Grid?",
+          aiResponse: "",
+          kind: "prompt",
+        },
+      ]);
+    }, 600));
+
+    timeouts.push(window.setTimeout(() => {
+      const words = introText.split(/(\s+)/); // keep whitespace tokens
+      let i = 0;
+      const tick = () => {
+        i += 1;
+        const partial = words.slice(0, i).join("");
+        setChatMessages((prev) =>
+          prev.map((m) => (m.id === promptId ? { ...m, aiResponse: partial } : m))
+        );
+        if (i < words.length) {
+          timeouts.push(window.setTimeout(tick, 28));
+        } else {
+          // Walkthrough is fully consumed — close it out so glows + nav
+          // restrictions don't follow the user around forever, and arm
+          // the one-shot sign-in wall. We don't auto-open the modal —
+          // the user's next click on the canvas will trigger it. That
+          // way the prompt feels like a natural consequence of trying
+          // to use the grid, not an interruption mid-typing.
+          timeouts.push(window.setTimeout(() => {
+            const step = readPrototypeStep();
+            if (step === "synthesis" || step === "vault" || step === "grid") {
+              writePrototypeStep("done");
+            }
+            setPrototypeSignInArmed(true);
+          }, 1200));
+        }
+      };
+      tick();
+    }, 1100));
+
+    return () => {
+      for (const t of timeouts) window.clearTimeout(t);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const createWelcomeText = useMemo(() => {
@@ -1754,13 +1884,27 @@ export default function OmniaGridPage() {
   }, [user?.id, routeBoardId, boardId, requireSignIn]);
 
 
+  // Gate the underlying chat-send for guests once the prototype tour
+  // has surfaced the sign-in wall. Any further send attempt re-opens
+  // the wall instead of firing another LLM call. This pairs with the
+  // canvas mousedown trap above so neither click-to-create nor the
+  // chat input can be used to keep poking around the grid for free.
+  const gatedHandleChatSend = useCallback(async () => {
+    if (!user?.id && (prototypeSignInTriggered || prototypeSignInArmed)) {
+      setPrototypeSignInOpen(true);
+      setPrototypeSignInTriggered(true);
+      return;
+    }
+    await handleChatSend();
+  }, [user?.id, prototypeSignInTriggered, prototypeSignInArmed, handleChatSend]);
+
   const handleCenterAskSend = useCallback(async () => {
     if (!chatInputRef.current.trim() || isChatLoading) return;
     setChatRailOpen(true);
     setChatRailVisible(true);
     setCenterChatLeaving(false);
-    await handleChatSend();
-  }, [handleChatSend, isChatLoading]);
+    await gatedHandleChatSend();
+  }, [gatedHandleChatSend, isChatLoading]);
 
 
   const chatIsNearBottom = useCallback((threshold = 80) => {
@@ -2763,6 +2907,20 @@ export default function OmniaGridPage() {
           style={{
             marginRight: isMobileGrid ? 0 : `${chatRailWidthPx + (showVaultSidebar ? vaultSidebarWidthPx : 0)}px`,
           }}
+          onMouseDownCapture={(e) => {
+            // Landing-prototype handoff (final beat): once the typed
+            // grid intro has finished, any click on the canvas surface
+            // is intercepted to surface the sign-in wall. We swallow
+            // the mousedown so no quick note, selection, or block
+            // creation slips through underneath. The wall is sticky —
+            // it stays armed for guests until they actually sign in.
+            if (prototypeSignInArmed && !user?.id) {
+              e.stopPropagation();
+              e.preventDefault();
+              setPrototypeSignInOpen(true);
+              setPrototypeSignInTriggered(true);
+            }
+          }}
         >
           <Canvas liveAIMode={false} isAiThinking={isChatLoading} thinkingStatusText={thinkingStatus} />
         </div>
@@ -2858,7 +3016,7 @@ export default function OmniaGridPage() {
           thinkingStatus={thinkingStatus}
           chatInputRef={chatInputRef}
           onChatInputChange={handleChatInputChange}
-          onSend={handleChatSend}
+          onSend={gatedHandleChatSend}
           chatRailWidthPx={chatRailWidthPx}
           isMobileGrid={isMobileGrid}
           notesOpen={notesOpen}
@@ -2886,7 +3044,7 @@ export default function OmniaGridPage() {
           copiedMsgId={copiedMsgId}
           onCopyMessage={handleSideRailCopyMessage}
           addChatResponseToGrid={addChatResponseToGrid}
-          chatBarToolbar={<OmniaChatBarToolbar compact onSend={handleChatSend} {...chatBarToolbarProps} />}
+          chatBarToolbar={<OmniaChatBarToolbar compact onSend={gatedHandleChatSend} {...chatBarToolbarProps} />}
         />
       )}
 
@@ -2902,7 +3060,7 @@ export default function OmniaGridPage() {
           thinkingStatus={thinkingStatus}
           chatInputRef={chatInputRef}
           onChatInputChange={handleChatInputChange}
-          onSend={handleChatSend}
+          onSend={gatedHandleChatSend}
           typedWelcome={typedWelcome}
           isMobileGrid={isMobileGrid}
           isMobilePhone={isMobilePhone}
@@ -2930,7 +3088,7 @@ export default function OmniaGridPage() {
           renderFocusedAttachmentPreview={renderFocusedAttachmentPreview}
           onDragOver={handleFocusedChatDragOver}
           onDrop={handleFocusedChatDrop}
-          chatBarToolbar={<OmniaChatBarToolbar onSend={handleChatSend} {...chatBarToolbarProps} />}
+          chatBarToolbar={<OmniaChatBarToolbar onSend={gatedHandleChatSend} {...chatBarToolbarProps} />}
           chatReactions={chatReactions}
           onReaction={handleFocusedChatReaction}
           onRegenerate={handleFocusedChatRegenerate}
@@ -3149,6 +3307,91 @@ export default function OmniaGridPage() {
       )}
 
       <UpgradeModal modal={upgradeModal} onDismiss={dismissUpgradeModal} />
+
+      {/* Landing-prototype handoff (final beat): surfaces after the typed
+          grid intro finishes for guests who came through the walkthrough.
+          The wall is sticky — closing it re-arms the canvas trap and
+          chat-send guard so the next interaction reopens it, until the
+          guest actually signs in. */}
+      <Dialog
+        open={prototypeSignInOpen}
+        onOpenChange={(next) => {
+          setPrototypeSignInOpen(next);
+          if (!next && !user?.id) {
+            // Re-arm so any subsequent canvas click or chat send
+            // re-opens the wall instead of slipping through.
+            setPrototypeSignInArmed(true);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md border-white/10 bg-[#1a1a1a]/95 backdrop-blur-xl text-white p-7">
+          <DialogHeader>
+            <DialogTitle className="text-xl font-semibold tracking-tight">
+              That's the tour — sign in to keep going.
+            </DialogTitle>
+            <DialogDescription className="text-sm text-white/60 leading-relaxed pt-2">
+              Create a free account to save your first neuron, your conversation, and the grid you're standing in. Everything you've made so far comes with you.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="mt-2 flex flex-col gap-2.5">
+            <button
+              type="button"
+              onClick={() => { void signInWithOAuth?.("google"); }}
+              className="w-full flex items-center justify-center gap-2.5 rounded-xl border border-white/10 bg-white text-black px-3 py-2.5 text-sm font-medium hover:bg-white/90 transition-colors"
+            >
+              <svg width="16" height="16" viewBox="0 0 18 18" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <path d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844a4.14 4.14 0 01-1.796 2.716v2.259h2.908c1.702-1.567 2.684-3.875 2.684-6.615z" fill="#4285F4" />
+                <path d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 009 18z" fill="#34A853" />
+                <path d="M3.964 10.71A5.41 5.41 0 013.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.996 8.996 0 000 9c0 1.452.348 2.827.957 4.042l3.007-2.332z" fill="#FBBC05" />
+                <path d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 00.957 4.958L3.964 7.29C4.672 5.163 6.656 3.58 9 3.58z" fill="#EA4335" />
+              </svg>
+              Continue with Google
+            </button>
+          </div>
+
+          <div className="relative my-4">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-white/10" />
+            </div>
+            <div className="relative flex justify-center text-[0.625rem]">
+              <span className="px-2 text-white/40 font-medium uppercase tracking-wider bg-[#1a1a1a]">
+                or
+              </span>
+            </div>
+          </div>
+
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              const trimmed = prototypeSignInEmail.trim();
+              setPrototypeSignInOpen(false);
+              nav("/login", { state: trimmed ? { email: trimmed } : undefined });
+            }}
+            className="flex flex-col gap-2"
+          >
+            <input
+              type="email"
+              value={prototypeSignInEmail}
+              onChange={(e) => setPrototypeSignInEmail(e.target.value)}
+              placeholder="Enter your email"
+              autoComplete="email"
+              className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white/90 placeholder:text-white/35 outline-none focus:border-blue-400/40 focus:bg-white/10 transition-colors"
+            />
+            <button
+              type="submit"
+              className="w-full rounded-xl bg-blue-500/20 hover:bg-blue-500/30 text-blue-300 px-3 py-2.5 text-sm font-semibold transition-colors"
+            >
+              Continue with email
+            </button>
+          </form>
+
+          <p className="mt-1 text-center text-[10px] text-white/35 leading-relaxed">
+            Free forever. No credit card. Takes 10 seconds.
+          </p>
+        </DialogContent>
+      </Dialog>
+
       <FileDropModeDialog />
 
       {/* Notes panel — bottom drawer */}

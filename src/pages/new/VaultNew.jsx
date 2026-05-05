@@ -51,7 +51,17 @@ import {
 } from "@/lib/vault/attachmentsMarker";
 import UpgradeModal from "@/components/UpgradeModal";
 import SignInActionBlocker from "@/components/SignInActionBlocker";
-import { buildGuestDemoCards, buildSeedNoteRows } from "@/lib/demoVault";
+import {
+  buildGuestDemoCards,
+  buildPrototypePreviewCards,
+  buildSeedNoteRows,
+} from "@/lib/demoVault";
+import {
+  hasPrototypeNeurons,
+  PROTO_VAULT_INTRO_SS_KEY,
+  readPrototypeStep,
+  writePrototypeStep,
+} from "@/lib/prototypeHandoff";
 import { extractYouTubeVideoId, getYouTubeEmbedUrl } from "@/canvas/utils/youtube";
 import { detectSocialPlatform, isSocialEmbedType, isVerticalSocialContent } from "@/canvas/utils/socialEmbed";
 import { SocialEmbedInline } from "@/canvas/blocks/SocialEmbedBlock";
@@ -457,6 +467,16 @@ export default function VaultNew() {
     }
   }, [isEmbeddedMode]);
 
+  // Walkthrough handoff: arriving on the Vault clears the
+  // synthesis-step glow (covers the case where the user navigated
+  // directly to /vault before the synthesis-layer auto-advance ran).
+  // The vault → grid bump happens later, after the intro chat finishes
+  // typing — see the typing effect below.
+  useEffect(() => {
+    const step = readPrototypeStep();
+    if (step === "synthesis") writePrototypeStep("vault");
+  }, []);
+
 
   const { checkVaultLimit, incrementVaultCount, upgradeModal, dismissUpgradeModal } = useUsageGate();
   const [embeddedSearch, setEmbeddedSearch] = useState("");
@@ -506,6 +526,105 @@ export default function VaultNew() {
       isMountedRef.current = false;
     };
   }, []);
+
+  // Landing-prototype handoff: on first load of the vault, open the chat
+  // rail and have LYKN type out a short orientation message — what the
+  // vault is, how it feeds the synthesis layer, and that any file type
+  // can be dragged in. Only fires once per session for guests who came
+  // from the prototype; LandingPrototype clears the flag whenever a
+  // brand-new walkthrough kicks off, so a fresh first neuron re-arms it.
+  useEffect(() => {
+    if (user?.id) return;
+    if (!hasPrototypeNeurons()) return;
+    let alreadyPlayed = false;
+    try {
+      alreadyPlayed = sessionStorage.getItem(PROTO_VAULT_INTRO_SS_KEY) === "1";
+    } catch {
+      // ignore (private mode etc.) — falling back to "play once per mount"
+      // is fine; the alternative is never showing it at all.
+    }
+    if (alreadyPlayed) return;
+    try {
+      sessionStorage.setItem(PROTO_VAULT_INTRO_SS_KEY, "1");
+    } catch {
+      // ignore
+    }
+
+    const fullText =
+      "Welcome to your Vault — this is the long-term memory side of your synthetic intelligence layer.\n\n" +
+      "Anything you put in here (PDFs, images, videos, audio, screenshots, web links, quick notes — really any file type) gets read by LYKN and broken down into what it actually means about you. Those meanings show up as new neurons in your Synthesis Layer, connected to the ones already there.\n\n" +
+      "Try it: drag a file from your desktop anywhere on this page, or paste a link into the search bar. You'll watch the Vault and the Synthesis Layer fill in together.";
+    const introId = "lykn-vault-intro";
+
+    // Slight stagger so the rail slide-in animation lands first; typing
+    // starts a beat later so the text doesn't appear mid-transition.
+    const openTimer = window.setTimeout(() => {
+      if (!isMountedRef.current) return;
+      setShowChat(true);
+      setChatMessages((prev) => {
+        if (prev.some((m) => m.id === introId)) return prev;
+        return [...prev, { id: introId, role: "assistant", content: "" }];
+      });
+    }, 600);
+
+    const startTypingTimer = window.setTimeout(() => {
+      if (!isMountedRef.current) return;
+      const words = fullText.split(" ").filter(Boolean);
+      let i = 0;
+      let current = "";
+      const tick = () => {
+        if (!isMountedRef.current) return;
+        if (typingCancelRef.current) {
+          setChatMessages((prev) => {
+            const next = prev.slice();
+            const idx = next.findIndex((m) => m.id === introId);
+            if (idx !== -1) next[idx] = { ...next[idx], content: fullText };
+            return next;
+          });
+          return;
+        }
+        current += (i === 0 ? "" : " ") + words[i];
+        i += 1;
+        setChatMessages((prev) => {
+          const next = prev.slice();
+          const idx = next.findIndex((m) => m.id === introId);
+          if (idx !== -1) next[idx] = { ...next[idx], content: current };
+          return next;
+        });
+        if (i < words.length) {
+          typingTimerRef.current = window.setTimeout(tick, 28);
+        } else {
+          typingTimerRef.current = null;
+          // Walkthrough nudge: a beat after the intro finishes typing,
+          // advance to the Grid step. The auto-mounted AppSidebar
+          // listens for the step change and reopens itself with the
+          // Grid button glowing as the next thing to explore. Guarded
+          // so a re-mount mid-step (e.g. HMR) doesn't bump past
+          // already-advanced state.
+          window.setTimeout(() => {
+            if (!isMountedRef.current) return;
+            const cur = readPrototypeStep();
+            if (cur === "vault" || cur === "synthesis") writePrototypeStep("grid");
+          }, 1800);
+        }
+      };
+      tick();
+    }, 1100);
+
+    return () => {
+      window.clearTimeout(openTimer);
+      window.clearTimeout(startTypingTimer);
+      if (typingTimerRef.current) {
+        window.clearTimeout(typingTimerRef.current);
+        typingTimerRef.current = null;
+      }
+    };
+    // Intentionally empty deps — this is a one-shot intro keyed off the
+    // first mount for guests who have prototype neurons. Re-running when
+    // `user` flips on sign-in would replay the typing into a real chat.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const chatInputValueRef = useRef("");
   const [showQuickNote, setShowQuickNote] = useState(false);
   const [orderByPage, setOrderByPage] = useState({ everything: [] });
@@ -1246,10 +1365,16 @@ export default function VaultNew() {
   // Synthetic starter-pack cards shown ONLY to guests (no user id yet). For
   // signed-in users, the starter pack is seeded as real DB rows on first visit
   // by the `useEffect` below, so no synthetic cards are needed after sign-in.
-  const guestDemoCards = useMemo(
-    () => (user?.id ? [] : buildGuestDemoCards()),
-    [user?.id]
-  );
+  // In prototype-handoff preview mode (guest came from /landing-prototype with
+  // a neuron created), the regular guest demo cards are swapped out for a
+  // small set of LYKN-themed orientation cards that explain what the vault
+  // is and how it ties into the synthesis layer.
+  const isPrototypePreview = !user?.id && hasPrototypeNeurons();
+  const guestDemoCards = useMemo(() => {
+    if (user?.id) return [];
+    if (isPrototypePreview) return buildPrototypePreviewCards();
+    return buildGuestDemoCards();
+  }, [user?.id, isPrototypePreview]);
 
   // Ref-mirrored vaultCards for handlers that fire outside React's
   // render cycle (drag-end fires from a DOM event, by which time the

@@ -22,6 +22,13 @@ import {
   Maximize2,
 } from "lucide-react";
 import { GridIcon } from "@/components/ui/GridIcon";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import SynthesisScene3D from "@/pages/synthesis/SynthesisScene3D";
 import {
   DEMO_PROJECTS,
@@ -31,6 +38,13 @@ import {
   isDemoNodeId,
 } from "@/lib/demoSynthesis";
 import { isDemoGridId } from "@/lib/demoGrids";
+import {
+  hasPrototypeNeurons,
+  readPrototypeChat,
+  readPrototypeNeurons,
+  readPrototypeStep,
+  writePrototypeStep,
+} from "@/lib/prototypeHandoff";
 
 // Demo grid boards have real preview routes (see demoGrids.js), so they're
 // navigable even though their ids match the `demo-*` pattern. Other demo
@@ -38,9 +52,13 @@ import { isDemoGridId } from "@/lib/demoGrids";
 // routes don't exist yet.
 const isBlockedDemoId = (id: string | null | undefined): boolean => {
   if (!id) return true;
+  // The synthetic prototype "First Conversation" grid is registered as a
+  // demo-grid id (see demoGrids.js), so it routes through /grid/<id>
+  // straight into OmniaGrid like any other demo board.
   if (isDemoGridId(id)) return false;
   return isDemoNodeId(id);
 };
+
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -172,21 +190,29 @@ function buildGraph(
   synthesisThemes: string[],
   synthesis: SynthesisData | null,
   vaultGridMap: Map<string, Set<string>>,
+  // Optional: categories that should always appear even if they have no
+  // children. Used by the landing prototype so a brand-new guest sees the
+  // shell of their future workspace (Projects / Grids / Vault / Tags)
+  // sitting empty alongside the neurons they've just created.
+  forceCategoryIds: Set<string> = new Set(),
+  // Optional: override the label on the root "Your Mind" node. Used by the
+  // landing prototype handoff to render the root as "Your Synthesis Layer".
+  rootLabel: string = "Your Mind",
 ) {
   const nodes: MindNode[] = [];
   const edges: MindEdge[] = [];
 
   const rootId = "__root__";
-  nodes.push({ id: rootId, label: "Your Mind", kind: "root", radius: 42, color: palette.root.bg, glow: palette.root.glow, parentId: null, meta: { narrative: synthesis?.narrative } });
+  nodes.push({ id: rootId, label: rootLabel, kind: "root", radius: 42, color: palette.root.bg, glow: palette.root.glow, parentId: null, meta: { narrative: synthesis?.narrative } });
 
   const cats: { id: string; label: string; color: string; glow: string }[] = [];
-  if (projects.length > 0) cats.push({ id: "__cat_projects__", label: "Projects", color: palette.projects.bg, glow: palette.projects.glow });
-  if (boards.length > 0) cats.push({ id: "__cat_grids__", label: "Grids", color: palette.grids.bg, glow: palette.grids.glow });
-  if (notes.length > 0) cats.push({ id: "__cat_vault__", label: "Vault", color: palette.vault.bg, glow: palette.vault.glow });
+  if (projects.length > 0 || forceCategoryIds.has("__cat_projects__")) cats.push({ id: "__cat_projects__", label: "Projects", color: palette.projects.bg, glow: palette.projects.glow });
+  if (boards.length > 0 || forceCategoryIds.has("__cat_grids__")) cats.push({ id: "__cat_grids__", label: "Grids", color: palette.grids.bg, glow: palette.grids.glow });
+  if (notes.length > 0 || forceCategoryIds.has("__cat_vault__")) cats.push({ id: "__cat_vault__", label: "Vault", color: palette.vault.bg, glow: palette.vault.glow });
 
   const allTags = new Set<string>();
   notes.forEach((n) => (n.tags || []).forEach((t) => allTags.add(t)));
-  if (allTags.size > 0) cats.push({ id: "__cat_tags__", label: "Tags", color: palette.tags.bg, glow: palette.tags.glow });
+  if (allTags.size > 0 || forceCategoryIds.has("__cat_tags__")) cats.push({ id: "__cat_tags__", label: "Tags", color: palette.tags.bg, glow: palette.tags.glow });
 
   cats.forEach((c) => {
     nodes.push({ id: c.id, label: c.label, kind: "category", radius: 30, color: c.color, glow: c.glow, parentId: rootId });
@@ -569,6 +595,13 @@ function simulateLayout(
     const h = idHash(id);
     return ((h % 2000) / 2000 - 0.5) * 2 * childZNoise;
   };
+  // 0..1 deterministic hash. Used in place of Math.random() for in-plane
+  // jitter so the same node id always lands at the same position across
+  // re-renders / memo recomputes.
+  const idHash01 = (s: string): number => {
+    const h = idHash(s);
+    return ((h >>> 0) % 100000) / 100000;
+  };
   // Map a category's angle around root into a z bias. Categories at angle 0
   // (right of root) push back, those at angle π (left) push forward, so the
   // graph corkscrews through depth instead of fanning out flat. Children
@@ -622,21 +655,26 @@ function simulateLayout(
     }
 
     if (mode === "topic" && relevanceMap) {
-      // Position by relevance: high relevance → close to center, low → far out
-      const jitter = (Math.random() - 0.5) * 1.6;
+      // Position by relevance: high relevance → close to center, low → far out.
+      // Jitter derived from the node id (NOT Math.random) so re-running the
+      // simulation produces identical positions — otherwise nodes would
+      // teleport to fresh coords on every memo recompute, which reads as
+      // the focal neuron "bouncing" on hover/zoom.
+      const jitter = (idHash01(n.id) - 0.5) * 1.6;
       const angle = parentAngle + jitter;
       const minDist = 100;
       const maxDist = 600;
-      const dist = maxDist - relevance * (maxDist - minDist) + (Math.random() - 0.5) * 40;
+      const dist = maxDist - relevance * (maxDist - minDist) + (idHash01(n.id + "_d") - 0.5) * 40;
       return { ...n, x: cx + Math.cos(angle) * dist, y: cy + Math.sin(angle) * dist, z, vx: 0, vy: 0, fixed: false, connectionCount: cc, relevance };
     }
 
-    // connections mode: connection-weighted distance
-    const jitter = (Math.random() - 0.5) * 1.2;
+    // connections mode: connection-weighted distance. Same deterministic
+    // jitter strategy as the topic-mode branch above.
+    const jitter = (idHash01(n.id) - 0.5) * 1.2;
     const angle = parentAngle + jitter;
     const minDist = 200;
     const maxDist = 500;
-    const dist = maxDist - ratio * (maxDist - minDist) + (Math.random() - 0.5) * 60;
+    const dist = maxDist - ratio * (maxDist - minDist) + (idHash01(n.id + "_d") - 0.5) * 60;
     return { ...n, x: cx + Math.cos(angle) * dist, y: cy + Math.sin(angle) * dist, z, vx: 0, vy: 0, fixed: false, connectionCount: cc, relevance: 1 };
   });
 
@@ -978,6 +1016,7 @@ function DetailPanel({
   onClose,
   onNavigate,
   onSelectNode,
+  prototypeChat,
 }: {
   node: MindNode;
   allNodes: MindNode[];
@@ -990,7 +1029,32 @@ function DetailPanel({
    * The 3D scene watches selectedId and flies the camera to the new node.
    */
   onSelectNode: (id: string) => void;
+  /**
+   * Landing-prototype handoff: the saved transcript of the first chat.
+   * Rendered inline when the user clicks the synthetic
+   * "First Conversation" grid (since it has no real /grid route).
+   */
+  prototypeChat?: { role: "user" | "ai"; content: string }[];
 }) {
+  // Landing-prototype handoff: the buildGraph patch in SynthesisLayer
+  // stamps these onto every prototype-neuron node. When present, the
+  // panel swaps the generic "neuron" header for "Nth neuron created"
+  // and shows the AI-supplied "why was this created" sentence instead
+  // of the generic "recurring theme" copy.
+  const isPrototypeNeuron = Boolean(node.meta?.isPrototypeNeuron);
+  const prototypeOrdinal = (node.meta?.prototypeOrdinal as number | undefined) || 0;
+  const prototypeReason = (node.meta?.prototypeReason as string | undefined) || "";
+  const ordinalLabel = (n: number): string => {
+    if (n <= 0) return "";
+    const mod10 = n % 10;
+    const mod100 = n % 100;
+    if (mod10 === 1 && mod100 !== 11) return `${n}st`;
+    if (mod10 === 2 && mod100 !== 12) return `${n}nd`;
+    if (mod10 === 3 && mod100 !== 13) return `${n}rd`;
+    return `${n}th`;
+  };
+  const isPrototypeChatGrid =
+    node.kind === "grid" && node.meta?.boardId === "__prototype_first_chat__";
   const connected = useMemo(() => {
     const ids = new Set<string>();
     edges.forEach((e) => {
@@ -1042,8 +1106,14 @@ function DetailPanel({
     >
       <div className="flex items-center gap-3 px-5 pt-5 pb-3">
         <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ background: node.color }} />
-        <span className="text-xs font-semibold text-gray-700 dark:text-gray-200 capitalize flex-1 truncate">
-          {node.kind === "category" ? node.label : node.kind}
+        <span className={`text-xs font-semibold flex-1 truncate ${
+          isPrototypeNeuron
+            ? "text-pink-300 normal-case tracking-wide"
+            : "text-gray-700 dark:text-gray-200 capitalize"
+        }`}>
+          {isPrototypeNeuron
+            ? `${ordinalLabel(prototypeOrdinal || 1)} neuron created`
+            : node.kind === "category" ? node.label : node.kind}
         </span>
         <button onClick={onClose} className="w-6 h-6 rounded-md hover:bg-black/5 dark:hover:bg-white/8 flex items-center justify-center transition-colors">
           <PanelRightClose size={15} className="text-gray-400" />
@@ -1052,8 +1122,16 @@ function DetailPanel({
 
       <div className="px-5 pb-4">
         <h2 className="text-base font-semibold text-gray-800 dark:text-gray-100 leading-snug break-words">
-          {node.kind === "vault" && node.meta?.title ? node.meta.title as string : node.label}
+          {isPrototypeChatGrid
+            ? "First Conversation"
+            : node.kind === "vault" && node.meta?.title ? node.meta.title as string : node.label}
         </h2>
+        {isPrototypeChatGrid && (
+          <p className="text-[0.6875rem] text-gray-400 dark:text-gray-500 mt-1.5">
+            The chat where LYKN started learning you. Every neuron above
+            grew out of this conversation.
+          </p>
+        )}
         {tags.length > 0 && (
           <div className="flex flex-wrap gap-1.5 mt-2">
             {tags.map((t) => (
@@ -1066,6 +1144,28 @@ function DetailPanel({
       </div>
 
       <div className="flex-1 overflow-y-auto px-5 pb-5 scrollbar-hide">
+        {/* Prototype handoff: render the first-chat transcript inline */}
+        {isPrototypeChatGrid && prototypeChat && prototypeChat.length > 0 && (
+          <div className="mb-4 flex flex-col gap-2.5">
+            {prototypeChat.map((turn, i) => (
+              <div
+                key={i}
+                className={`flex ${turn.role === "user" ? "justify-end" : "justify-start"}`}
+              >
+                <div
+                  className={`max-w-[85%] rounded-2xl px-3 py-2 text-[0.75rem] leading-relaxed whitespace-pre-wrap ${
+                    turn.role === "user"
+                      ? "rounded-br-md bg-white/8 text-white/90 border border-white/10"
+                      : "rounded-bl-md bg-blue-500/10 text-blue-50/90 border border-blue-400/20"
+                  }`}
+                >
+                  {turn.content}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Vault view mode */}
         {node.kind === "vault" && (
           <>
@@ -1188,7 +1288,9 @@ function DetailPanel({
               <div className="flex items-center gap-2 mb-3">
                 <Sparkles size={13} className="text-pink-400" />
                 <span className="text-[0.6rem] px-1.5 py-0.5 rounded-full bg-pink-100 dark:bg-pink-900/30 text-pink-700 dark:text-pink-300 font-medium">
-                  {node.meta?.kindLabel || "Insight"}
+                  {isPrototypeNeuron
+                    ? `Neuron #${prototypeOrdinal || 1}`
+                    : (node.meta?.kindLabel || "Insight")}
                 </span>
                 <span className="text-[0.6rem] text-gray-400 dark:text-gray-500">
                   AI Neuron
@@ -1196,7 +1298,13 @@ function DetailPanel({
               </div>
 
               <p className="text-[0.75rem] text-gray-600 dark:text-gray-300 leading-relaxed mb-4">
-                {originDesc[source] || `The AI recognized "${node.label}" as a ${kind} based on your activity across grids, vault, and conversations.`}
+                {isPrototypeNeuron
+                  ? prototypeReason
+                    ? prototypeReason
+                    : prototypeOrdinal === 1
+                    ? `The very first thing your synthetic intelligence learned about you: "${node.label}". Every neuron after this one will branch out from what you share — your sources, your taste, the way you think — and connect into the same web you see here.`
+                    : `The ${ordinalLabel(prototypeOrdinal || 1)} thing your synthetic intelligence learned about you: "${node.label}".`
+                  : originDesc[source] || `The AI recognized "${node.label}" as a ${kind} based on your activity across grids, vault, and conversations.`}
               </p>
 
               {connectedVault.length > 0 && (
@@ -1341,12 +1449,40 @@ function DetailPanel({
 /* ------------------------------------------------------------------ */
 
 export default function SynthesisLayer() {
-  const { user } = useAuth();
+  const { user, signInWithOAuth } = useAuth();
   const navigate = useNavigate();
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // Landing-prototype handoff: a guest gets ONE free pass through the
+  // synthesis layer (the first time they land on it after creating
+  // their first neuron — that's when the formation animation plays).
+  // Any subsequent visit funnels through a sticky sign-in wall so they
+  // can't keep mining the synthesis surface for free. The wall is
+  // armed on mount based on the persisted walkthrough step: if it's
+  // anything past "synthesis" they've already seen this page once.
+  const [synthSignInOpen, setSynthSignInOpen] = useState(false);
+  const [synthSignInEmail, setSynthSignInEmail] = useState("");
+  useEffect(() => {
+    if (user?.id) return;
+    if (!hasPrototypeNeurons()) return;
+    const step = readPrototypeStep();
+    // Step is null on first-ever visit (writePrototypeStep("synthesis")
+    // ran from LandingPrototype but might be cleared) or "synthesis"
+    // on the canonical first visit. Both mean "first time here, let
+    // them through". Any other value (vault / grid / done) means they
+    // already finished this beat and are coming BACK — wall them.
+    if (step !== null && step !== "synthesis") {
+      setSynthSignInOpen(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [showWelcome, setShowWelcome] = useState(true);
+  // Welcome modal opens for fresh visits, EXCEPT during the landing-prototype
+  // handoff: those visitors just came from a chat where they explicitly
+  // created a neuron, and the synthesis layer's job in that flow is to play
+  // the formation animation, not pop a welcome modal in front of it.
+  const [showWelcome, setShowWelcome] = useState(() => !hasPrototypeNeurons());
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
   const [camera, setCamera] = useState({ x: 0, y: 0, zoom: 1 });
   const [dimensions, setDimensions] = useState({ w: 1200, h: 800 });
@@ -1435,6 +1571,21 @@ export default function SynthesisLayer() {
     [synthesisChunks],
   );
 
+  // Prototype-only: neurons created during the landing onboarding live in
+  // localStorage so this page can show them on first guest visit. We read
+  // once on mount; the list is small and stable for the session.
+  const prototypeNeurons = useMemo(
+    () => (user?.id ? [] : readPrototypeNeurons()),
+    [user?.id],
+  );
+  // Prototype-only: the conversation transcript from the landing chat
+  // becomes the user's very first "grid" — a tangible artifact in the
+  // synthesis layer that shows the moment LYKN started learning them.
+  const prototypeChat = useMemo(
+    () => (user?.id ? [] : readPrototypeChat()),
+    [user?.id],
+  );
+
   // Demo-mode kicks in whenever the user hasn't created any projects or
   // grids yet (guests always match; brand-new signed-in users match until
   // they make their first one). In that state we overlay synthetic
@@ -1443,13 +1594,49 @@ export default function SynthesisLayer() {
   // stay as-is.
   const isDemoMode = projects.length === 0 && boards.length === 0;
 
+  // True only when we're rendering the prototype handoff: a guest visitor
+  // who just created their first neuron in the landing prototype. In that
+  // mode we deliberately *don't* show the demo projects/boards/notes — we
+  // want to show an empty workspace that's just been "woken up", with only
+  // the user's neuron and the AI's basic capability neurons visible.
+  const isPrototypeHandoff = !user?.id && prototypeNeurons.length > 0;
+
   const effectiveProjects = useMemo(
-    () => (isDemoMode ? DEMO_PROJECTS : projects),
-    [isDemoMode, projects],
+    () => {
+      if (isPrototypeHandoff) return [];
+      return isDemoMode ? DEMO_PROJECTS : projects;
+    },
+    [isPrototypeHandoff, isDemoMode, projects],
   );
   const effectiveBoards = useMemo(
-    () => (isDemoMode ? DEMO_BOARDS : boards),
-    [isDemoMode, boards],
+    () => {
+      if (isPrototypeHandoff) {
+        // Synthesize the landing-prototype conversation as the user's
+        // very first grid. The grid's id (`__prototype_first_chat__`)
+        // is intercepted in DetailPanel so clicking it surfaces the
+        // chat transcript inline rather than trying to navigate to a
+        // non-existent grid route.
+        //
+        // Only surface the grid if the chat actually has user content
+        // — an empty conversation (greeting only, no user messages
+        // with non-trivial text) shouldn't save as a grid node in the
+        // mind map. We require at least one user turn whose content
+        // is more than 1 character so a stray space doesn't qualify.
+        const hasRealUserTurn = prototypeChat.some(
+          (t) => t.role === "user" && t.content.trim().length > 1,
+        );
+        if (!hasRealUserTurn) return [];
+        return [
+          {
+            id: "__prototype_first_chat__",
+            title: "First Conversation",
+            project_id: null,
+          },
+        ];
+      }
+      return isDemoMode ? DEMO_BOARDS : boards;
+    },
+    [isPrototypeHandoff, isDemoMode, boards, prototypeChat.length],
   );
   // For guests we intentionally bypass `notes` as a dependency — the
   // `useQuery` destructuring default (`= []`) produces a new empty array
@@ -1457,12 +1644,25 @@ export default function SynthesisLayer() {
   // (and every downstream memo) on every hover tick, re-seeding the force
   // layout with fresh random jitter.
   const effectiveNotes = useMemo<NoteRow[]>(() => {
+    if (isPrototypeHandoff) return [];
     if (!user?.id) return DEMO_SYNTHESIS_NOTES as unknown as NoteRow[];
     return notes as NoteRow[];
-  }, [user?.id, notes]);
+  }, [isPrototypeHandoff, user?.id, notes]);
 
   const synthesisData: SynthesisData | null = useMemo(() => {
     if (isDemoMode) {
+      // Prototype handoff: surface only the user's freshly-created
+      // neuron(s). Everything else (projects, grids, vault, tags) renders
+      // as an empty category shell so the page reads as a brand-new mind
+      // with exactly one thing in it.
+      if (isPrototypeHandoff) {
+        return {
+          themes: prototypeNeurons.map((n) => n.text),
+          narrative:
+            "This is your synthesis layer the moment it woke up. The neuron you just created is the only thing here — your projects, grids, vault, and tags are waiting to be filled.",
+          signals: {},
+        };
+      }
       return {
         themes: DEMO_SYNTHESIS_PROFILE.themes,
         narrative: DEMO_SYNTHESIS_PROFILE.narrative,
@@ -1475,7 +1675,7 @@ export default function SynthesisLayer() {
       narrative: synthesisProfile.narrative || "",
       signals: (synthesisProfile.signals && typeof synthesisProfile.signals === "object") ? synthesisProfile.signals as Record<string, any> : {},
     };
-  }, [isDemoMode, synthesisProfile]);
+  }, [isDemoMode, synthesisProfile, isPrototypeHandoff, prototypeNeurons]);
 
   const synthesisThemes: string[] = useMemo(() => {
     const t: string[] = [];
@@ -1484,10 +1684,63 @@ export default function SynthesisLayer() {
     return [...new Set(t.map((s: string) => s.toLowerCase().trim()))].filter(Boolean);
   }, [synthesisData]);
 
+  // In prototype handoff mode we want the empty Projects / Grids / Vault
+  // / Tags categories to render so the user sees the shape of their
+  // future workspace alongside the one neuron they just created.
+  const forceCategoryIds = useMemo(
+    () =>
+      isPrototypeHandoff
+        ? new Set<string>([
+            "__cat_projects__",
+            "__cat_grids__",
+            "__cat_vault__",
+            "__cat_tags__",
+          ])
+        : new Set<string>(),
+    [isPrototypeHandoff],
+  );
+
   /* Build + simulate */
+  const rootLabel = isPrototypeHandoff ? "Your Synthesis Layer" : "Your Mind";
   const { nodes: allNodes, edges } = useMemo(
-    () => buildGraph(effectiveProjects, effectiveBoards, effectiveNotes, synthesisThemes, synthesisData, vaultGridMap),
-    [effectiveProjects, effectiveBoards, effectiveNotes, synthesisThemes, synthesisData, vaultGridMap],
+    () => {
+      const built = buildGraph(effectiveProjects, effectiveBoards, effectiveNotes, synthesisThemes, synthesisData, vaultGridMap, forceCategoryIds, rootLabel);
+      // Prototype handoff: stamp each prototype-neuron node with the
+      // ordinal (1st, 2nd, ...) and the AI-supplied "why" reason so the
+      // detail panel can render "Nth neuron created" + a custom blurb
+      // for every neuron the user has built so far.
+      if (isPrototypeHandoff && prototypeNeurons.length > 0) {
+        for (let i = 0; i < prototypeNeurons.length; i++) {
+          const pn = prototypeNeurons[i];
+          const neuronId = `neuron_theme_${pn.text}`;
+          const node = built.nodes.find((n) => n.id === neuronId);
+          if (!node) continue;
+          node.meta = {
+            ...(node.meta || {}),
+            prototypeOrdinal: pn.ordinal || i + 1,
+            prototypeReason: pn.reason || "",
+            prototypeKind: pn.kind,
+            isPrototypeNeuron: true,
+          };
+        }
+        // Tie EVERY prototype neuron to the synthetic "First Conversation"
+        // grid with a cross-link edge — semantically each neuron was born
+        // out of that chat, and the visual connection makes the
+        // relationship obvious in the 3D graph.
+        const gridId = "grid___prototype_first_chat__";
+        const haveGrid = built.nodes.some((n) => n.id === gridId);
+        if (haveGrid) {
+          for (const pn of prototypeNeurons) {
+            const neuronId = `neuron_theme_${pn.text}`;
+            if (built.nodes.some((n) => n.id === neuronId)) {
+              built.edges.push({ from: neuronId, to: gridId, cross: true });
+            }
+          }
+        }
+      }
+      return built;
+    },
+    [effectiveProjects, effectiveBoards, effectiveNotes, synthesisThemes, synthesisData, vaultGridMap, forceCategoryIds, rootLabel, isPrototypeHandoff, prototypeNeurons],
   );
   const nodeMap = useMemo(() => new Map(allNodes.map((n) => [n.id, n])), [allNodes]);
 
@@ -1541,19 +1794,118 @@ export default function SynthesisLayer() {
     setResetSignal((n) => n + 1);
   }, []);
 
+  // Track the prototype-handoff neuron so click/background handlers can
+  // refuse to deselect it (otherwise the camera would yank back to the
+  // graph centroid the moment the user pokes their freshly-formed neuron).
+  // Computed before handleNodeClick so the callback closure can read it.
+  const prototypeFocusId = useMemo<string | null>(() => {
+    if (user?.id) return null;
+    if (prototypeNeurons.length === 0) return null;
+    // buildGraph creates theme neurons with id `neuron_theme_<raw text>`,
+    // taken straight from `synthesis.themes` (NOT the lowercased
+    // `synthesisThemes` dedupe list). Match that exact format here so
+    // `nodeMap.has(prototypeFocusId)` actually succeeds — otherwise the
+    // formation effect bails and we render the regular synthesis view.
+    //
+    // Focus on the LATEST neuron (the one most recently created) so
+    // returning to the synthesis layer after creating a 2nd / 3rd /
+    // ... neuron snaps the camera + formation animation onto the new
+    // arrival rather than the stale first one.
+    const latest = prototypeNeurons[prototypeNeurons.length - 1];
+    return `neuron_theme_${latest.text}`;
+  }, [user?.id, prototypeNeurons]);
+
   /* Node click → select & show panel */
   const handleNodeClick = useCallback((nodeId: string) => {
     const node = nodeMap.get(nodeId);
     if (!node) return;
     setShowWelcome(false);
     if (node.kind === "root") {
+      // In prototype-handoff mode the only "selected" neuron is the user's
+      // brand-new one; clicking root in that mode shouldn't yank the camera.
+      if (prototypeFocusId) return;
       setSelectedId(null);
       return;
     }
+    // Prototype handoff: clicking the highlighted neuron a second time
+    // would normally toggle it off and fly the camera back to the graph
+    // centroid — which feels like the neuron "jumping away" right when
+    // the user is trying to interact with it. Lock it as the focus
+    // instead so hover/click just keeps it centered.
+    if (prototypeFocusId && nodeId === prototypeFocusId) {
+      setSelectedId(prototypeFocusId);
+      return;
+    }
     setSelectedId((prev) => (prev === nodeId ? null : nodeId));
-  }, [nodeMap]);
+  }, [nodeMap, prototypeFocusId]);
 
-  const isEmpty = effectiveProjects.length === 0 && effectiveBoards.length === 0 && effectiveNotes.length === 0;
+  // Prototype handoff: when a guest arrives here right after creating their
+  // first neuron in the landing prototype, play a 3D-scene-integrated
+  // formation: an electric-blue line draws OUT from the "AI Learned"
+  // category, the neuron scales into existence at the line's end, and
+  // the camera glides in to center on it.
+  //
+  // Phase timeline:
+  //   t=0    line begins drawing from category toward neuron position
+  //   t=400  camera starts flying to the neuron (overlaps with formation)
+  //   t=800  line reaches neuron position; neuron starts scaling in
+  //   t=1400 neuron is full size; camera roughly centered by now
+  //   t=2000 formingNodeId cleared → scene returns to its normal renderer
+  //
+  // Triggering the camera focus partway through (rather than at the end)
+  // means the camera arrives and centers exactly as the neuron finishes
+  // forming, so the user sees their neuron land dead-center on screen.
+  const didPlayPrototypeIntro = useRef(false);
+  const prototypeIntroTimeouts = useRef<number[]>([]);
+  const [formingNodeId, setFormingNodeId] = useState<string | null>(null);
+  useEffect(() => {
+    if (didPlayPrototypeIntro.current) return;
+    if (!prototypeFocusId) return;
+    if (!nodeMap.has(prototypeFocusId)) return;
+    didPlayPrototypeIntro.current = true;
+    setFormingNodeId(prototypeFocusId);
+    setShowWelcome(false);
+    // CRITICAL: do NOT clear these timeouts in the effect's cleanup.
+    // Upstream memos (synthesisData / synthesisThemes / allNodes) regenerate
+    // their array references on most re-renders, which causes nodeMap to
+    // re-create → this effect re-fires. If we tied the timeouts to the
+    // effect's cleanup, they'd get killed on the very next render — meaning
+    // setSelectedId never gets called and the camera never focuses on the
+    // new neuron. Instead we store them on a ref and only clear them on
+    // unmount of the page, not on re-renders.
+    const focusAt = window.setTimeout(() => setSelectedId(prototypeFocusId), 400);
+    const clearAt = window.setTimeout(() => setFormingNodeId(null), 2000);
+    // Walkthrough nudge: a beat after the formation completes, advance
+    // the prototype step to "vault" so the auto-mounted AppSidebar
+    // re-opens with the Vault button glowing as the next thing to
+    // explore. Only fire if we haven't already passed this step (e.g.
+    // user came back to /synthesis-layer after visiting the vault).
+    const advanceAt = window.setTimeout(() => {
+      const current = readPrototypeStep();
+      if (current === "vault" || current === "done") return;
+      writePrototypeStep("vault");
+    }, 4500);
+    prototypeIntroTimeouts.current.push(focusAt, clearAt, advanceAt);
+  }, [prototypeFocusId, nodeMap]);
+
+  // Page-level unmount cleanup for the prototype-intro timeouts. Splitting
+  // this from the effect that schedules them is what keeps them alive
+  // through interim re-renders (see the long comment above).
+  useEffect(() => {
+    return () => {
+      prototypeIntroTimeouts.current.forEach((id) => window.clearTimeout(id));
+      prototypeIntroTimeouts.current = [];
+    };
+  }, []);
+
+  // The empty-state placeholder should only kick in when there is genuinely
+  // nothing to show — including no neurons. The prototype handoff has no
+  // projects/boards/notes but does have neurons, so it renders the scene.
+  const isEmpty =
+    effectiveProjects.length === 0 &&
+    effectiveBoards.length === 0 &&
+    effectiveNotes.length === 0 &&
+    (synthesisData?.themes?.length ?? 0) === 0;
   const selectedNode = selectedId ? nodeMap.get(selectedId) : null;
   const panelOpen = selectedNode != null || showWelcome;
   const isTopicMode = layoutMode === "topic" && !!filterTag;
@@ -1645,7 +1997,28 @@ export default function SynthesisLayer() {
             resetSignal={resetSignal}
             onHoverNode={setHoveredNode}
             onClickNode={handleNodeClick}
-            onBackgroundClick={() => setSelectedId(null)}
+            // Prototype handoff: empty-space clicks must NOT deselect the
+            // highlighted neuron (would fly the camera back to centroid
+            // and undo the whole "this is YOUR neuron, look at it"
+            // moment). Keep it locked there until the user signs in.
+            onBackgroundClick={() => {
+              if (prototypeFocusId) return;
+              setSelectedId(null);
+            }}
+            // Prototype handoff: when set, the scene draws an electric-blue
+            // line out from "AI Learned" and scales the neuron into being
+            // at the end of it, instead of rendering the node in place.
+            formingNodeId={formingNodeId}
+            // Prototype handoff: lock the camera ONLY while the neuron is
+            // forming so the user sees the formation play out without
+            // OrbitControls hijacking pointer events. The instant the
+            // formation completes (formingNodeId clears) we hand control
+            // back so the user can pan / rotate around their new neuron.
+            lockCamera={formingNodeId != null}
+            // Keep the camera pulled in close on the prototype neuron even
+            // after the formation animation clears, so the user doesn't
+            // see it ease back out to the wider default focus distance.
+            focusDistanceOverride={isPrototypeHandoff ? 240 : null}
           />
         )}
       </div>
@@ -1802,6 +2175,10 @@ export default function SynthesisLayer() {
             // unconditionally (not toggle) — clicking a connection should
             // always navigate, never deselect.
             onSelectNode={(id) => setSelectedId(id)}
+            // Landing-prototype handoff: pass the saved chat transcript
+            // so the synthetic "First Conversation" grid renders the
+            // actual messages instead of an empty grid stub.
+            prototypeChat={isPrototypeHandoff ? prototypeChat : undefined}
           />
         ) : showWelcome ? (
           <WelcomePanel
@@ -1812,6 +2189,89 @@ export default function SynthesisLayer() {
           />
         ) : null}
       </AnimatePresence>
+
+      {/* Landing-prototype handoff: sticky sign-in wall for guests
+          revisiting the synthesis layer after they've already done the
+          one-time formation walkthrough. Same pattern as OmniaGrid's
+          wall — closing it re-opens the next interaction so the page
+          stays gated until they actually sign in. */}
+      <Dialog
+        open={synthSignInOpen}
+        onOpenChange={(next) => {
+          // Sticky for guests — ignore close attempts (X / ESC /
+          // backdrop click) so the wall can't be dismissed. Only let
+          // the modal close if the user signs in mid-render (which
+          // also navigates away, so this is mostly a safety net).
+          if (user?.id) setSynthSignInOpen(next);
+        }}
+      >
+        <DialogContent className="sm:max-w-md border-white/10 bg-[#1a1a1a]/95 backdrop-blur-xl text-white p-7">
+          <DialogHeader>
+            <DialogTitle className="text-xl font-semibold tracking-tight">
+              Sign in to revisit your synthesis layer.
+            </DialogTitle>
+            <DialogDescription className="text-sm text-white/60 leading-relaxed pt-2">
+              The synthesis layer is your living mind map — every neuron, every connection, every grid you make. To keep growing it across visits, you'll need a free account.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="mt-2 flex flex-col gap-2.5">
+            <button
+              type="button"
+              onClick={() => { void signInWithOAuth?.("google"); }}
+              className="w-full flex items-center justify-center gap-2.5 rounded-xl border border-white/10 bg-white text-black px-3 py-2.5 text-sm font-medium hover:bg-white/90 transition-colors"
+            >
+              <svg width="16" height="16" viewBox="0 0 18 18" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <path d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844a4.14 4.14 0 01-1.796 2.716v2.259h2.908c1.702-1.567 2.684-3.875 2.684-6.615z" fill="#4285F4" />
+                <path d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 009 18z" fill="#34A853" />
+                <path d="M3.964 10.71A5.41 5.41 0 013.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.996 8.996 0 000 9c0 1.452.348 2.827.957 4.042l3.007-2.332z" fill="#FBBC05" />
+                <path d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 00.957 4.958L3.964 7.29C4.672 5.163 6.656 3.58 9 3.58z" fill="#EA4335" />
+              </svg>
+              Continue with Google
+            </button>
+          </div>
+
+          <div className="relative my-4">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-white/10" />
+            </div>
+            <div className="relative flex justify-center text-[0.625rem]">
+              <span className="px-2 text-white/40 font-medium uppercase tracking-wider bg-[#1a1a1a]">
+                or
+              </span>
+            </div>
+          </div>
+
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              const trimmed = synthSignInEmail.trim();
+              setSynthSignInOpen(false);
+              navigate("/login", { state: trimmed ? { email: trimmed } : undefined });
+            }}
+            className="flex flex-col gap-2"
+          >
+            <input
+              type="email"
+              value={synthSignInEmail}
+              onChange={(e) => setSynthSignInEmail(e.target.value)}
+              placeholder="Enter your email"
+              autoComplete="email"
+              className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white/90 placeholder:text-white/35 outline-none focus:border-blue-400/40 focus:bg-white/10 transition-colors"
+            />
+            <button
+              type="submit"
+              className="w-full rounded-xl bg-blue-500/20 hover:bg-blue-500/30 text-blue-300 px-3 py-2.5 text-sm font-semibold transition-colors"
+            >
+              Continue with email
+            </button>
+          </form>
+
+          <p className="mt-1 text-center text-[10px] text-white/35 leading-relaxed">
+            Free forever. No credit card. Takes 10 seconds.
+          </p>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

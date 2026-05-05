@@ -2000,8 +2000,178 @@ mark {
   .lykn-wake-question-fade,
   .lykn-wake-synth-node,
   .lykn-wake-synth-node::before,
-  .lykn-wake-neuron-pill {
+  .lykn-wake-neuron-pill,
+  .lykn-sidebar-mount-fade,
+  .lykn-sidebar-synthesis-glow,
+  .lykn-sidebar-vault-glow,
+  .lykn-sidebar-grid-glow {
     animation: none !important;
   }
   .lykn-wake-screen-trace::before { opacity: 0; }
 }
+
+/* ── Prototype: AppSidebar fade-in + Synthesis Layer glow ──────────
+   When the prototype mounts the real AppSidebar after the first
+   neuron is created, fade the whole thing in (toggle button + panel)
+   so it doesn't pop in abruptly. */
+.lykn-sidebar-mount-fade {
+  animation: lykn-sidebar-mount-fade 520ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes lykn-sidebar-mount-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* Pulsing electric-blue glow on the Synthesis Layer button so the
+   user knows where the neuron they just created lives. */
+.lykn-sidebar-synthesis-glow {
+  position: relative;
+  background: linear-gradient(
+    90deg,
+    rgba(59, 130, 246, 0.22) 0%,
+    rgba(59, 130, 246, 0.10) 100%
+  );
+  box-shadow:
+    0 0 0 1px rgba(96, 165, 250, 0.55) inset,
+    0 0 14px rgba(96, 165, 250, 0.45),
+    0 0 32px rgba(59, 130, 246, 0.30);
+  color: rgb(191, 219, 254);
+  animation: lykn-sidebar-synthesis-glow-pulse 2.2s ease-in-out infinite;
+}
+
+.lykn-sidebar-synthesis-glow:hover {
+  background: linear-gradient(
+    90deg,
+    rgba(59, 130, 246, 0.32) 0%,
+    rgba(59, 130, 246, 0.16) 100%
+  );
+}
+
+@keyframes lykn-sidebar-synthesis-glow-pulse {
+  0%, 100% {
+    box-shadow:
+      0 0 0 1px rgba(96, 165, 250, 0.45) inset,
+      0 0 12px rgba(96, 165, 250, 0.40),
+      0 0 28px rgba(59, 130, 246, 0.26);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1px rgba(96, 165, 250, 0.75) inset,
+      0 0 22px rgba(96, 165, 250, 0.70),
+      0 0 48px rgba(59, 130, 246, 0.50);
+  }
+}
+
+/* Restrict mode: visual-only dim on every interactive element inside the
+   sidebar EXCEPT the currently-glowing walkthrough button (Synthesis
+   Layer, Vault, or Grid). The actual click suppression is handled in
+   JS (see `goTo` in AppSidebar) — using pointer-events here previously
+   caused the highlighted button to get blocked by descendant rules.
+   Now the page just LOOKS locked; the click-handlers themselves no-op
+   for non-whitelisted paths. */
+.lykn-sidebar-locked button:not(.lykn-sidebar-synthesis-glow):not(.lykn-sidebar-vault-glow):not(.lykn-sidebar-grid-glow),
+.lykn-sidebar-locked input,
+.lykn-sidebar-locked a {
+  opacity: 0.32;
+  filter: saturate(0.4);
+  cursor: default;
+}
+
+/* Belt-and-suspenders: the highlighted walkthrough button stays
+   full-opacity / colored inside the locked panel even if a Tailwind
+   class would dim it. */
+.lykn-sidebar-locked .lykn-sidebar-synthesis-glow,
+.lykn-sidebar-locked .lykn-sidebar-vault-glow,
+.lykn-sidebar-locked .lykn-sidebar-grid-glow {
+  opacity: 1;
+  filter: none;
+  cursor: pointer;
+}
+
+/* Pulsing emerald glow on the Vault button — the "next thing to
+   explore" nudge that fires once the user has seen their first neuron
+   form in the Synthesis Layer. Same shape as the synthesis-glow but
+   tinted to read distinctly as a different walkthrough beat. */
+.lykn-sidebar-vault-glow {
+  position: relative;
+  background: linear-gradient(
+    90deg,
+    rgba(16, 185, 129, 0.22) 0%,
+    rgba(16, 185, 129, 0.10) 100%
+  );
+  box-shadow:
+    0 0 0 1px rgba(52, 211, 153, 0.55) inset,
+    0 0 14px rgba(52, 211, 153, 0.45),
+    0 0 32px rgba(16, 185, 129, 0.30);
+  color: rgb(167, 243, 208);
+  animation: lykn-sidebar-vault-glow-pulse 2.2s ease-in-out infinite;
+}
+
+.lykn-sidebar-vault-glow:hover {
+  background: linear-gradient(
+    90deg,
+    rgba(16, 185, 129, 0.32) 0%,
+    rgba(16, 185, 129, 0.16) 100%
+  );
+}
+
+@keyframes lykn-sidebar-vault-glow-pulse {
+  0%, 100% {
+    box-shadow:
+      0 0 0 1px rgba(52, 211, 153, 0.45) inset,
+      0 0 12px rgba(52, 211, 153, 0.40),
+      0 0 28px rgba(16, 185, 129, 0.26);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1px rgba(52, 211, 153, 0.75) inset,
+      0 0 22px rgba(52, 211, 153, 0.70),
+      0 0 48px rgba(16, 185, 129, 0.50);
+  }
+}
+
+/* Pulsing amber glow on the Grid button — the third + final beat of
+   the walkthrough. Same shape as synthesis / vault glow, tinted to
+   read distinctly so the user can feel the surface change. */
+.lykn-sidebar-grid-glow {
+  position: relative;
+  background: linear-gradient(
+    90deg,
+    rgba(245, 158, 11, 0.22) 0%,
+    rgba(245, 158, 11, 0.10) 100%
+  );
+  box-shadow:
+    0 0 0 1px rgba(252, 211, 77, 0.55) inset,
+    0 0 14px rgba(252, 211, 77, 0.45),
+    0 0 32px rgba(245, 158, 11, 0.30);
+  color: rgb(253, 230, 138);
+  animation: lykn-sidebar-grid-glow-pulse 2.2s ease-in-out infinite;
+}
+
+.lykn-sidebar-grid-glow:hover {
+  background: linear-gradient(
+    90deg,
+    rgba(245, 158, 11, 0.32) 0%,
+    rgba(245, 158, 11, 0.16) 100%
+  );
+}
+
+@keyframes lykn-sidebar-grid-glow-pulse {
+  0%, 100% {
+    box-shadow:
+      0 0 0 1px rgba(252, 211, 77, 0.45) inset,
+      0 0 12px rgba(252, 211, 77, 0.40),
+      0 0 28px rgba(245, 158, 11, 0.26);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1px rgba(252, 211, 77, 0.75) inset,
+      0 0 22px rgba(252, 211, 77, 0.70),
+      0 0 48px rgba(245, 158, 11, 0.50);
+  }
+}
+
+/* The "neuron forming" animation now lives inside the 3D scene
+   (SynthesisScene3D — see FormingEdge + Neuron's `isForming` path), so
+   no DOM/CSS overlay is needed for it anymore. */
