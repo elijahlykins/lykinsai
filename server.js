@@ -437,6 +437,7 @@ const COMPED_PRO_EMAILS = new Set(
     'nyuballer18@gmail.com',
     'spam.redford@gmail.com',
     'rowan@lykn.io',
+    'dlexeffect@gmail.com',
     ...String(process.env.COMPED_PRO_EMAILS || '')
       .split(',')
       .map((e) => e.trim())
