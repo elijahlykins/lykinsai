@@ -768,13 +768,14 @@ function WelcomePanel({ onClose, neurons, onSelectNode }: { onClose: () => void;
   const [charCount, setCharCount] = useState(0);
   const mountTime = useRef(Date.now());
   // On phones the right-side 360px drawer covers ~95% of the screen and
-  // hides the neuron the user just tapped. Slide up from the bottom as a
-  // draggable sheet that follows the finger 1:1 between fully-expanded
-  // (top of viewport) and dismissed (off-screen). See DetailPanel for
+  // hides the neuron the user just tapped. Slide up as a draggable
+  // sheet with three on-screen snap points (expanded / collapsed /
+  // minimized) plus a dismissed off-screen state. See DetailPanel for
   // the full mechanism notes — this mirrors it exactly.
   const isMobile = useIsMobile();
   const SHEET_HEIGHT_VH = 92;
   const COLLAPSED_VISIBLE_VH = 50;
+  const MINIMIZED_VISIBLE_VH = 5;
   const [vh, setVh] = useState(() =>
     typeof window !== "undefined" ? window.innerHeight : 800,
   );
@@ -786,9 +787,15 @@ function WelcomePanel({ onClose, neurons, onSelectNode }: { onClose: () => void;
   }, [isMobile]);
   const sheetHeightPx = (vh * SHEET_HEIGHT_VH) / 100;
   const collapsedY = (vh * (SHEET_HEIGHT_VH - COLLAPSED_VISIBLE_VH)) / 100;
+  const minimizedY = (vh * (SHEET_HEIGHT_VH - MINIMIZED_VISIBLE_VH)) / 100;
   const expandedY = 0;
   const dismissedY = sheetHeightPx;
-  const [sheetExpanded, setSheetExpanded] = useState(false);
+  type SheetState = "expanded" | "collapsed" | "minimized";
+  const [sheetState, setSheetState] = useState<SheetState>("collapsed");
+  const targetY =
+    sheetState === "expanded" ? expandedY
+    : sheetState === "minimized" ? minimizedY
+    : collapsedY;
   const dragControls = useDragControls();
 
   useEffect(() => {
@@ -806,7 +813,7 @@ function WelcomePanel({ onClose, neurons, onSelectNode }: { onClose: () => void;
   return (
     <motion.div
       initial={isMobile ? { y: dismissedY, opacity: 0 } : { x: 380, opacity: 0 }}
-      animate={isMobile ? { y: sheetExpanded ? expandedY : collapsedY, opacity: 1 } : { x: 0, opacity: 1 }}
+      animate={isMobile ? { y: targetY, opacity: 1 } : { x: 0, opacity: 1 }}
       exit={isMobile ? { y: dismissedY, opacity: 0 } : { x: 380, opacity: 0 }}
       transition={{ type: "spring", stiffness: 320, damping: 32 }}
       drag={isMobile ? "y" : false}
@@ -816,15 +823,19 @@ function WelcomePanel({ onClose, neurons, onSelectNode }: { onClose: () => void;
       dragMomentum={false}
       dragConstraints={isMobile ? { top: 0, bottom: dismissedY } : undefined}
       onDragEnd={(_, info) => {
-        const baseline = sheetExpanded ? expandedY : collapsedY;
-        const current = baseline + info.offset.y;
+        const current = targetY + info.offset.y;
         const v = info.velocity.y;
         const projected = current + v * 0.15;
-        const midCollapseDismiss = (collapsedY + dismissedY) / 2;
-        const midExpandCollapse = collapsedY / 2;
-        if (projected > midCollapseDismiss || v > 1500) { onClose(); return; }
-        if (projected < midExpandCollapse || v < -800) { setSheetExpanded(true); return; }
-        setSheetExpanded(false);
+        const dismissThresh = dismissedY - vh * 0.04;
+        if (projected > dismissThresh || v > 2500) { onClose(); return; }
+        if (v < -800) { setSheetState("expanded"); return; }
+        const distExpanded = Math.abs(projected - expandedY);
+        const distCollapsed = Math.abs(projected - collapsedY);
+        const distMinimized = Math.abs(projected - minimizedY);
+        const min = Math.min(distExpanded, distCollapsed, distMinimized);
+        if (min === distExpanded) setSheetState("expanded");
+        else if (min === distMinimized) setSheetState("minimized");
+        else setSheetState("collapsed");
       }}
       className={
         isMobile
@@ -832,7 +843,7 @@ function WelcomePanel({ onClose, neurons, onSelectNode }: { onClose: () => void;
           : "absolute top-0 right-0 z-30 h-full w-[360px] border-l border-white/8 flex flex-col"
       }
       style={{
-        backgroundColor: "rgba(12,12,22,0.82)",
+        backgroundColor: "rgba(23,23,23,0.85)",
         backdropFilter: "blur(18px)",
         WebkitBackdropFilter: "blur(18px)",
         ...(isMobile
@@ -849,11 +860,11 @@ function WelcomePanel({ onClose, neurons, onSelectNode }: { onClose: () => void;
       {isMobile && (
         <div
           onPointerDown={(e) => dragControls.start(e)}
-          onClick={() => setSheetExpanded((vv) => !vv)}
+          onClick={() => setSheetState((s) => (s === "expanded" ? "collapsed" : "expanded"))}
           className="flex justify-center items-center pt-2.5 pb-3 cursor-grab active:cursor-grabbing select-none"
           style={{ touchAction: "none" }}
           role="button"
-          aria-label={sheetExpanded ? "Collapse panel" : "Expand panel"}
+          aria-label={sheetState === "expanded" ? "Collapse panel" : "Expand panel"}
         >
           <span className="block w-10 h-1 rounded-full bg-white/25" />
         </div>
@@ -1176,9 +1187,15 @@ function DetailPanel({
   const isMobile = useIsMobile();
 
   // Bottom sheet is a 92vh-tall container anchored bottom-0. We move
-  // it via the y transform: 0 = fully expanded (top of sheet at 8vh),
-  // collapsedY = collapsed (top of sheet at ~58vh, ~50vh visible),
-  // dismissedY = off-screen.
+  // it via the y transform between four positions:
+  //   y = 0           → expanded   (top of sheet ≈ top of viewport)
+  //   y = collapsedY  → collapsed  (≈50vh visible, default reading height)
+  //   y = minimizedY  → minimized  (just the drag handle peeking above
+  //                                 the bottom edge — keeps the neuron
+  //                                 selected so the user can rotate the
+  //                                 3D scene around it without losing
+  //                                 context)
+  //   y = dismissedY  → dismissed  (off-screen, calls onClose)
   //
   // Pixel values (not vh strings) are required for dragConstraints so
   // the sheet can follow the finger 1:1 across the full range. We
@@ -1186,6 +1203,9 @@ function DetailPanel({
   // the math survives URL-bar show/hide on iOS.
   const SHEET_HEIGHT_VH = 92;
   const COLLAPSED_VISIBLE_VH = 50;
+  // Minimized leaves ~5vh of the sheet visible — enough to grab the
+  // drag handle and pull the panel back up.
+  const MINIMIZED_VISIBLE_VH = 5;
   const [vh, setVh] = useState(() =>
     typeof window !== "undefined" ? window.innerHeight : 800,
   );
@@ -1197,15 +1217,21 @@ function DetailPanel({
   }, [isMobile]);
   const sheetHeightPx = (vh * SHEET_HEIGHT_VH) / 100;
   const collapsedY = (vh * (SHEET_HEIGHT_VH - COLLAPSED_VISIBLE_VH)) / 100;
+  const minimizedY = (vh * (SHEET_HEIGHT_VH - MINIMIZED_VISIBLE_VH)) / 100;
   const expandedY = 0;
   const dismissedY = sheetHeightPx;
-  const [sheetExpanded, setSheetExpanded] = useState(false);
+  type SheetState = "expanded" | "collapsed" | "minimized";
+  const [sheetState, setSheetState] = useState<SheetState>("collapsed");
+  const targetY =
+    sheetState === "expanded" ? expandedY
+    : sheetState === "minimized" ? minimizedY
+    : collapsedY;
   const dragControls = useDragControls();
 
   return (
     <motion.div
       initial={isMobile ? { y: dismissedY, opacity: 0 } : { x: 380, opacity: 0 }}
-      animate={isMobile ? { y: sheetExpanded ? expandedY : collapsedY, opacity: 1 } : { x: 0, opacity: 1 }}
+      animate={isMobile ? { y: targetY, opacity: 1 } : { x: 0, opacity: 1 }}
       exit={isMobile ? { y: dismissedY, opacity: 0 } : { x: 380, opacity: 0 }}
       transition={{ type: "spring", stiffness: 320, damping: 32 }}
       // dragListener=false: only the drag handle can initiate drag (set
@@ -1224,21 +1250,35 @@ function DetailPanel({
         // Compute current y from the snap baseline + drag offset, then
         // project ~150ms forward by velocity so a quick flick "wins"
         // the snap decision over raw position alone.
-        const baseline = sheetExpanded ? expandedY : collapsedY;
-        const current = baseline + info.offset.y;
+        const current = targetY + info.offset.y;
         const v = info.velocity.y;
         const projected = current + v * 0.15;
-        const midCollapseDismiss = (collapsedY + dismissedY) / 2;
-        const midExpandCollapse = collapsedY / 2;
-        if (projected > midCollapseDismiss || v > 1500) {
+        // Dismissal is intentionally hard to trigger — the user has to
+        // drag the panel essentially off the bottom of the screen, OR
+        // produce an extreme downward flick (v > 2500 px/s). This lets
+        // them pull the sheet way down to "minimized" so they can
+        // rotate the 3D scene around the focused neuron without ever
+        // losing it.
+        const dismissThresh = dismissedY - vh * 0.04;
+        if (projected > dismissThresh || v > 2500) {
           onClose();
           return;
         }
-        if (projected < midExpandCollapse || v < -800) {
-          setSheetExpanded(true);
+        // Snap to whichever of the three on-screen states the
+        // projected resting position is closest to. Strong upward
+        // velocity always promotes to expanded so a flick-up always
+        // wins.
+        if (v < -800) {
+          setSheetState("expanded");
           return;
         }
-        setSheetExpanded(false);
+        const distExpanded = Math.abs(projected - expandedY);
+        const distCollapsed = Math.abs(projected - collapsedY);
+        const distMinimized = Math.abs(projected - minimizedY);
+        const min = Math.min(distExpanded, distCollapsed, distMinimized);
+        if (min === distExpanded) setSheetState("expanded");
+        else if (min === distMinimized) setSheetState("minimized");
+        else setSheetState("collapsed");
       }}
       className={
         isMobile
@@ -1246,7 +1286,7 @@ function DetailPanel({
           : "absolute top-0 right-0 z-30 h-full w-[360px] border-l border-white/8 flex flex-col"
       }
       style={{
-        backgroundColor: "rgba(12,12,22,0.82)",
+        backgroundColor: "rgba(23,23,23,0.85)",
         backdropFilter: "blur(18px)",
         WebkitBackdropFilter: "blur(18px)",
         ...(isMobile
@@ -1266,11 +1306,11 @@ function DetailPanel({
           // ONLY drag-origin for the sheet — content below scrolls
           // freely without dragging the whole sheet with it.
           onPointerDown={(e) => dragControls.start(e)}
-          onClick={() => setSheetExpanded((v) => !v)}
+          onClick={() => setSheetState((s) => (s === "expanded" ? "collapsed" : "expanded"))}
           className="flex justify-center items-center pt-2.5 pb-3 cursor-grab active:cursor-grabbing select-none"
           style={{ touchAction: "none" }}
           role="button"
-          aria-label={sheetExpanded ? "Collapse panel" : "Expand panel"}
+          aria-label={sheetState === "expanded" ? "Collapse panel" : "Expand panel"}
         >
           <span className="block w-10 h-1 rounded-full bg-white/25" />
         </div>
