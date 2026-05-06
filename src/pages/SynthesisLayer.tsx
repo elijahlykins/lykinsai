@@ -39,6 +39,7 @@ import { useIsMobile } from "@/hooks/useViewportTier";
 import { isDemoNodeId } from "@/lib/demoSynthesis";
 import { isDemoGridId } from "@/lib/demoGrids";
 import {
+  clearPrototypeState,
   hasPrototypeNeurons,
   readPrototypeChat,
   readPrototypeNeurons,
@@ -1676,7 +1677,7 @@ export default function SynthesisLayer() {
   }, []);
 
   /* Data queries */
-  const { data: projects = [] } = useQuery({
+  const { data: projects = [], isFetched: projectsFetched } = useQuery({
     queryKey: ["mindmap_projects", user?.id],
     queryFn: async () => {
       if (!user?.id) return [];
@@ -1686,7 +1687,7 @@ export default function SynthesisLayer() {
     enabled: !!user?.id,
   });
 
-  const { data: boards = [] } = useQuery({
+  const { data: boards = [], isFetched: boardsFetched } = useQuery({
     queryKey: ["mindmap_boards", user?.id],
     queryFn: async () => {
       if (!user?.id) return [];
@@ -1696,7 +1697,7 @@ export default function SynthesisLayer() {
     enabled: !!user?.id,
   });
 
-  const { data: notes = [] } = useQuery({
+  const { data: notes = [], isFetched: notesFetched } = useQuery({
     queryKey: ["mindmap_notes", user?.id],
     queryFn: async () => {
       if (!user?.id) return [];
@@ -1706,7 +1707,7 @@ export default function SynthesisLayer() {
     enabled: !!user?.id,
   });
 
-  const { data: synthesisProfile } = useQuery({
+  const { data: synthesisProfile, isFetched: profileFetched } = useQuery({
     queryKey: ["mindmap_synthesis_profile", user?.id],
     queryFn: async () => {
       if (!user?.id) return null;
@@ -1716,7 +1717,7 @@ export default function SynthesisLayer() {
     enabled: !!user?.id,
   });
 
-  const { data: synthesisChunks = [] } = useQuery({
+  const { data: synthesisChunks = [], isFetched: chunksFetched } = useQuery({
     queryKey: ["mindmap_synthesis_chunks", user?.id],
     queryFn: async () => {
       if (!user?.id) return [];
@@ -1744,25 +1745,74 @@ export default function SynthesisLayer() {
 
   // Prototype-only: neurons created during the landing onboarding live in
   // localStorage so this page can show them on every visit during the
-  // walkthrough — including the moment a guest signs in mid-walkthrough,
+  // walkthrough — including the moment a guest signs UP mid-walkthrough,
   // when `user?.id` flips on but we still want their freshly-formed
   // neuron to drive the scene rather than an empty / demo workspace.
-  // Read once on mount; the list is small and stable for the session.
-  const prototypeNeurons = useMemo(() => readPrototypeNeurons(), []);
-  // Prototype-only: the conversation transcript from the landing chat
-  // becomes the user's very first "grid" — a tangible artifact in the
-  // synthesis layer that shows the moment LYKN started learning them.
-  // Same rationale as above: keep this around through sign-in so the
-  // walkthrough stays coherent.
-  const prototypeChat = useMemo(() => readPrototypeChat(), []);
+  //
+  // Held in component state (not just a useMemo on mount) so that when
+  // an EXISTING user signs IN mid-walkthrough we can clear the
+  // prototype data reactively and re-render with their real workspace
+  // instead of being stuck on the prototype page until a refresh.
+  const [prototypeNeurons, setPrototypeNeurons] = useState(() => readPrototypeNeurons());
+  const [prototypeChat, setPrototypeChat] = useState(() => readPrototypeChat());
 
-  // True whenever we're rendering the landing-prototype walkthrough — i.e.
-  // the visitor created at least one neuron in the landing chat and we're
-  // still inside the guided tour. Drives the entire "empty workspace
-  // showing only your freshly-formed neuron" experience. We deliberately
-  // do NOT gate this on `!user?.id` anymore: signing in mid-walkthrough
-  // (e.g. after the synthesis layer plays) used to flip this off and
-  // dump the user into a demo-content-flooded synthesis network.
+  // Bug fix (2026-05): if a guest goes through the landing walkthrough
+  // and then signs into an EXISTING account, we used to keep showing
+  // the prototype's "empty workspace + 1 neuron" instead of their real
+  // synthesis layer. Detect that case here: signed in + queries
+  // finished + at least one piece of real data exists → wipe prototype
+  // state and let the real synthesisData/projects/boards render.
+  //
+  // We deliberately wait for *every* query to settle before deciding,
+  // otherwise we'd nuke the prototype during the brief loading window
+  // when all defaults are `[]` and we'd misclassify a genuinely empty
+  // brand-new account as "no data → keep prototype".
+  const allQueriesFetched =
+    projectsFetched && boardsFetched && notesFetched && profileFetched && chunksFetched;
+  useEffect(() => {
+    if (!user?.id) return;
+    if (prototypeNeurons.length === 0) return;
+    if (!allQueriesFetched) return;
+    const hasRealData =
+      (projects?.length || 0) > 0 ||
+      (boards?.length || 0) > 0 ||
+      (notes?.length || 0) > 0 ||
+      (synthesisChunks?.length || 0) > 0 ||
+      Boolean(synthesisProfile);
+    // Account-age check: a brand new sign-up triggered from inside the
+    // walkthrough will have created_at within the last few minutes —
+    // keep the prototype scene so their walkthrough continues. Anything
+    // older than this is an EXISTING account being signed into mid-
+    // walkthrough; treat it as "not the same person whose neuron is in
+    // localStorage" and drop the prototype even if their workspace is
+    // currently empty.
+    const FRESH_ACCOUNT_GRACE_MS = 5 * 60 * 1000;
+    const createdAtMs = user.created_at ? Date.parse(user.created_at) : NaN;
+    const isExistingAccount =
+      Number.isFinite(createdAtMs) &&
+      Date.now() - createdAtMs > FRESH_ACCOUNT_GRACE_MS;
+    if (!hasRealData && !isExistingAccount) return;
+    // Existing user (or new user with real data) just signed in — drop
+    // the prototype state so we render their real synthesis layer.
+    clearPrototypeState();
+    setPrototypeNeurons([]);
+    setPrototypeChat([]);
+  }, [
+    user?.id,
+    user?.created_at,
+    allQueriesFetched,
+    prototypeNeurons.length,
+    projects,
+    boards,
+    notes,
+    synthesisChunks,
+    synthesisProfile,
+  ]);
+
+  // True whenever we're rendering the landing-prototype walkthrough —
+  // i.e. the visitor created at least one neuron in the landing chat
+  // and we're still inside the guided tour. The effect above tears
+  // this back down once an existing signed-in user is detected.
   const isPrototypeHandoff = prototypeNeurons.length > 0;
 
   // No more demo-content fallback. Brand-new signed-in users with no
