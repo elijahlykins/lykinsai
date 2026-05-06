@@ -6,6 +6,7 @@ import {
   Bug,
   Compass,
   CreditCard,
+  Lock,
   LogOut,
   MessageSquare,
   MoreHorizontal,
