@@ -1837,15 +1837,31 @@ app.get('/api/ai/models', (req, res) => {
 /*  the client. Once a provider starts emitting tokens we commit to   */
 /*  it (no mid-stream switching — that would corrupt the user's view).*/
 /* ------------------------------------------------------------------ */
-const GUEST_MODEL_CHAIN = [
-  // Default — same id used by the signed-in catalog (resolveAnthropicModel
-  // accepts it). Sonnet 4.6 has the right balance of quality + latency for
-  // the landing-prototype onboarding chat.
+// Guest chat is intentionally cheap by default — logged-out visitors should
+// not be burning Sonnet calls on small-talk. The ONE exception is the very
+// first turn of the landing-prototype onboarding flow: that reply is what
+// creates the user's first synthesis-layer neuron, so it's worth spending
+// Sonnet on. Every subsequent guest message (and every non-onboarding guest
+// call) falls back to Flash → 4o-mini → Haiku.
+const GUEST_MODEL_CHAIN_ONBOARDING_FIRST = [
+  // First-turn neuron creation — Sonnet 4.6 produces a noticeably warmer,
+  // more specific reply + a better <learned>/<reason> tag than the cheap
+  // models. resolveAnthropicModel() in the signed-in catalog accepts the
+  // same id.
   { provider: 'anthropic', model: 'claude-sonnet-4-6', envKey: 'ANTHROPIC_API_KEY' },
-  // Cheap, fast Gemini fallback if Anthropic is overloaded / down.
+  // Fallbacks if Anthropic is down — never want the very first interaction
+  // a guest has with LYKN to error out.
   { provider: 'google', model: 'gemini-flash-latest', envKey: 'GOOGLE_API_KEY' },
-  // Last-resort OpenAI fallback if both above fail.
   { provider: 'openai', model: 'gpt-4o-mini', envKey: 'OPENAI_API_KEY' },
+  { provider: 'anthropic', model: 'claude-haiku-4-5-20251001', envKey: 'ANTHROPIC_API_KEY' },
+];
+const GUEST_MODEL_CHAIN_DEFAULT = [
+  // Cheap + fast default for everything else: subsequent onboarding turns,
+  // the landing-grid demo, etc. Guests don't get top-shelf models on
+  // every message.
+  { provider: 'google', model: 'gemini-flash-latest', envKey: 'GOOGLE_API_KEY' },
+  { provider: 'openai', model: 'gpt-4o-mini', envKey: 'OPENAI_API_KEY' },
+  { provider: 'anthropic', model: 'claude-haiku-4-5-20251001', envKey: 'ANTHROPIC_API_KEY' },
 ];
 const GUEST_MAX_PROMPT_CHARS = 6000;
 const GUEST_MAX_HISTORY_TURNS = 8;
@@ -1995,9 +2011,11 @@ const buildLandingOnboardingSystemPrompt = (alreadyLearned) => {
 };
 
 app.post('/api/ai/stream-guest', guestAiGlobalLimiter, guestAiLimiter, guestAiHourlyLimiter, guestAiDailyLimiter, async (req, res) => {
-  // At least one provider in the chain has to be configured.
-  const availableProviders = GUEST_MODEL_CHAIN.filter((p) => process.env[p.envKey]);
-  if (availableProviders.length === 0) {
+  // The actual chain is picked below once we know the mode + history,
+  // but bail out early if no provider key is configured at all.
+  const anyProviderConfigured = GUEST_MODEL_CHAIN_DEFAULT.some((p) => process.env[p.envKey])
+    || GUEST_MODEL_CHAIN_ONBOARDING_FIRST.some((p) => process.env[p.envKey]);
+  if (!anyProviderConfigured) {
     return res.status(503).json({ error: 'Guest chat is temporarily unavailable' });
   }
 
@@ -2038,6 +2056,20 @@ app.post('/api/ai/stream-guest', guestAiGlobalLimiter, guestAiLimiter, guestAiHo
     if (historyChars + msg.content.length > GUEST_MAX_HISTORY_CHARS) break;
     trimmedHistory.unshift(msg);
     historyChars += msg.content.length;
+  }
+
+  // Pick the model chain. The very first turn of the landing-prototype
+  // onboarding flow (no prior history yet) gets Sonnet 4.6 because that
+  // reply is what mints the user's first synthesis-layer neuron — every
+  // other guest call (subsequent onboarding turns + the landing-grid
+  // demo + anything else) goes to the cheap default chain.
+  const isFirstOnboardingTurn = mode === 'landing-onboarding' && trimmedHistory.length === 0;
+  const chain = isFirstOnboardingTurn
+    ? GUEST_MODEL_CHAIN_ONBOARDING_FIRST
+    : GUEST_MODEL_CHAIN_DEFAULT;
+  const availableProviders = chain.filter((p) => process.env[p.envKey]);
+  if (availableProviders.length === 0) {
+    return res.status(503).json({ error: 'Guest chat is temporarily unavailable' });
   }
 
   res.setHeader('Content-Type', 'text/event-stream');

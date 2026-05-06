@@ -33,7 +33,10 @@ import {
 //   3. On each user message:
 //      a. Chat bar drops to the bottom (first send only)
 //      b. AI "thinking" bubble appears, then a real conversational reply
-//         streams in from /api/ai/stream-guest (Gemini)
+//         streams in from /api/ai/stream-guest. The first turn (which
+//         mints the user's first neuron) is served by Claude Sonnet 4.6;
+//         every later turn falls back to the cheap chain (Gemini Flash →
+//         GPT-4o-mini → Haiku). See GUEST_MODEL_CHAIN_* in server.js.
 //      c. The AI itself decides whether the message contained a learnable
 //         fact about the user. If yes, it acknowledges it in its reply
 //         ("I just learned something about you.") and ends with a hidden
