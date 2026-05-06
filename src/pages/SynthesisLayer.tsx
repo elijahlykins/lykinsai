@@ -1726,7 +1726,7 @@ export default function SynthesisLayer() {
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
   const [camera, setCamera] = useState({ x: 0, y: 0, zoom: 1 });
   const [dimensions, setDimensions] = useState({ w: 1200, h: 800 });
-  const [layoutMode, setLayoutMode] = useState<LayoutMode>("section");
+  const [layoutMode, setLayoutMode] = useState<LayoutMode>("connections");
   const [filterTag, setFilterTag] = useState<string | null>(null);
   const [showModeMenu, setShowModeMenu] = useState(false);
   const [showTagMenu, setShowTagMenu] = useState(false);
@@ -2496,8 +2496,14 @@ export default function SynthesisLayer() {
         )}
       </div>
 
-      {/* Title — centered */}
-      <div className="absolute top-5 left-0 right-0 z-20 flex justify-center pointer-events-none">
+      {/* Title — centered on desktop, left-aligned on mobile so it
+          doesn't fight the centered 3D scene controls / stats overlays
+          for that narrow strip of viewport real estate. */}
+      <div className={
+        isMobile
+          ? "absolute top-5 left-3 z-20 flex pointer-events-none"
+          : "absolute top-5 left-0 right-0 z-20 flex justify-center pointer-events-none"
+      }>
         <div className="flex items-center gap-2.5">
           <h1 className="text-sm font-semibold text-white/85 tracking-wide" style={{ textShadow: "0 0 14px rgba(99,102,241,0.4)" }}>Synthesis Layer</h1>
         </div>
