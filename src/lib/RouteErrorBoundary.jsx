@@ -1,130 +1,15 @@
 import React from 'react';
-import { API_BASE_URL } from '@/lib/api-config';
-
-const OMNIA_LS_PREFIXES = [
-  'omnia_draft_',
-  'omnia_chat_',
-  'omnia_camera_',
-  'omnia_vault_saved_',
-  'omnia_board_id',
-  'omnia_title',
-];
-
-function clearOmniaLocalStorage() {
-  try {
-    const toRemove = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key && OMNIA_LS_PREFIXES.some((p) => key.startsWith(p))) {
-        toRemove.push(key);
-      }
-    }
-    toRemove.forEach((k) => localStorage.removeItem(k));
-    return toRemove.length;
-  } catch {
-    return 0;
-  }
-}
-
-// Force a fresh HTML fetch by appending a cache-bust query param. Plain
-// `location.reload()` is honored by most browsers, but iOS Safari (and
-// iOS Safari in PWA "Add to Home Screen" mode in particular) is known
-// to ignore `cache-control: must-revalidate` on the HTML doc, serving
-// the stale cached index.html which then references stale JS chunk
-// hashes. A query-string change defeats that — Safari treats it as a
-// distinct URL and revalidates against origin. Also clears any in-page
-// `cache: 'force-cache'` Request entries before navigating.
-function cacheBustReload() {
-  try {
-    if (typeof caches !== 'undefined' && caches?.keys) {
-      caches.keys().then((keys) => keys.forEach((k) => caches.delete(k))).catch(() => {});
-    }
-  } catch {
-    // ignore — Cache API unavailable / blocked in private mode
-  }
-  try {
-    const u = new URL(window.location.href);
-    u.searchParams.set('_r', String(Date.now()));
-    window.location.replace(u.toString());
-  } catch {
-    try {
-      window.location.reload();
-    } catch {
-      // give up — something is very wrong with window.location
-    }
-  }
-}
-
-// Stale-bundle errors look like one of these (Vite/Rollup, native ESM,
-// webpack-style chunk loaders). Catching by message because the error
-// constructor varies by browser and bundler version.
-function isLikelyStaleBundleError(error) {
-  const msg = String(error?.message || error || '');
-  return (
-    /Failed to fetch dynamically imported module/i.test(msg) ||
-    /Importing a module script failed/i.test(msg) ||
-    /error loading dynamically imported module/i.test(msg) ||
-    /ChunkLoadError/i.test(msg) ||
-    /Loading chunk \d+ failed/i.test(msg) ||
-    /Loading CSS chunk/i.test(msg) ||
-    /Unexpected token '<'/i.test(msg) // CDN served HTML where JS was expected
-  );
-}
-
-// Best-effort POST of the error to the backend so we get a server log entry
-// for every render-time crash a user hits in prod (no Sentry wired up). Uses
-// `fetch` with `keepalive: true` so the request survives the page being
-// torn down by a refresh / navigation. Falls back to sendBeacon if fetch
-// keepalive isn't supported (older Safari). Never throws.
-function reportClientError(error, errorInfo) {
-  try {
-    if (typeof window === 'undefined') return;
-    const lsKeysSnapshot = (() => {
-      try {
-        const keys = [];
-        for (let i = 0; i < localStorage.length; i++) {
-          const k = localStorage.key(i);
-          if (k && (k.startsWith('lykn_') || k.startsWith('omnia_') || k.startsWith('lykinsai_'))) {
-            keys.push(k);
-          }
-        }
-        return keys;
-      } catch {
-        return [];
-      }
-    })();
-    const payload = {
-      message: String(error?.message || error || 'unknown'),
-      name: String(error?.name || ''),
-      stack: String(error?.stack || '').split('\n').slice(0, 30).join('\n'),
-      componentStack: String(errorInfo?.componentStack || '').split('\n').slice(0, 30).join('\n'),
-      url: window.location.href,
-      userAgent: window.navigator?.userAgent || '',
-      viewport: { w: window.innerWidth, h: window.innerHeight },
-      lsKeys: lsKeysSnapshot,
-      timestamp: new Date().toISOString(),
-    };
-    const url = `${API_BASE_URL}/api/client-error`;
-    const body = JSON.stringify(payload);
-    if (typeof fetch === 'function') {
-      fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body,
-        keepalive: true,
-      }).catch(() => { /* swallow — best effort */ });
-    } else if (typeof navigator?.sendBeacon === 'function') {
-      navigator.sendBeacon(url, new Blob([body], { type: 'application/json' }));
-    }
-  } catch {
-    // never let the error reporter throw inside the boundary
-  }
-}
+import {
+  cacheBustReload,
+  clearOmniaLocalStorage,
+  isLikelyStaleBundleError,
+  reportClientError,
+} from '@/lib/errorRecovery';
 
 class RouteErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
-    this.state = { hasError: false, error: null, retryCount: 0, autoRecoveryAttempted: false };
+    this.state = { hasError: false, error: null, errorInfo: null, retryCount: 0, autoRecoveryAttempted: false };
   }
 
   static getDerivedStateFromError(error) {
@@ -133,15 +18,12 @@ class RouteErrorBoundary extends React.Component {
 
   componentDidCatch(error, errorInfo) {
     console.error('[RouteErrorBoundary]', error, errorInfo);
-    reportClientError(error, errorInfo);
+    reportClientError(error, errorInfo, 'route');
     this.setState({ errorInfo });
 
-    // Stale-bundle self-heal. The most common reason "everyone hits a
-    // generic error after a deploy" is iOS Safari serving a cached
-    // index.html that points at JS chunks the new build doesn't have.
-    // We hard-reload with a cache-bust query param ONCE per session
-    // (sessionStorage guard) so we can't infinite-loop if the chunk
-    // really is broken on origin.
+    // Stale-bundle self-heal. Hard-reload with cache-bust ONCE per session
+    // (sessionStorage guard) so we can't infinite-loop if the chunk really
+    // is broken on origin.
     const STALE_BUNDLE_KEY = 'lykn_route_boundary_stale_reload_done';
     if (isLikelyStaleBundleError(error)) {
       let alreadyTried = false;
@@ -165,18 +47,13 @@ class RouteErrorBoundary extends React.Component {
 
   componentDidUpdate(prevProps) {
     if (this.state.hasError && prevProps.children !== this.props.children) {
-      this.setState({ hasError: false, error: null });
+      this.setState({ hasError: false, error: null, errorInfo: null });
     }
   }
 
   render() {
     if (!this.state.hasError) return this.props.children;
 
-    // First retry is a soft re-render (in case the throw was an isolated
-    // transient — e.g. a flaky network call inside render). Every retry
-    // after that escalates to a hard cache-busting reload, since a
-    // deterministic render-time crash will never resolve by re-rendering
-    // the same code against the same state.
     const handleRetry = () => {
       if (this.state.retryCount >= 1) {
         cacheBustReload();
@@ -190,11 +67,6 @@ class RouteErrorBoundary extends React.Component {
       }));
     };
 
-    // "Clear Cache & Retry" used to only wipe a handful of localStorage
-    // keys, which never helped when the actual problem was a stale HTML
-    // pointing at stale JS chunks. Now it wipes app localStorage AND
-    // forces a fresh HTML fetch via a cache-bust query param — the only
-    // recovery path that reliably works on iOS Safari standalone PWAs.
     const handleClearAndRetry = () => {
       clearOmniaLocalStorage();
       try { sessionStorage.removeItem('lykn_route_boundary_stale_reload_done'); } catch { /* ignore */ }
