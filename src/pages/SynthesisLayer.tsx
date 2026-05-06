@@ -33,6 +33,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import SynthesisScene3D from "@/pages/synthesis/SynthesisScene3D";
+import SynthesisSceneErrorBoundary from "@/pages/synthesis/SynthesisSceneErrorBoundary";
+import { useIsMobile } from "@/hooks/useViewportTier";
 import { isDemoNodeId } from "@/lib/demoSynthesis";
 import { isDemoGridId } from "@/lib/demoGrids";
 import {
@@ -1460,6 +1462,14 @@ export default function SynthesisLayer() {
   const { planId, loading: planLoading } = useUserPlan();
   const navigate = useNavigate();
   const containerRef = useRef<HTMLDivElement>(null);
+  // Phone-class viewports get a 2D fallback instead of the 3D scene. The
+  // r3f canvas + Bloom postprocessing pipeline crashes on a non-trivial
+  // slice of mobile WebGL contexts (iOS Safari low-power, certain Android
+  // GPUs), bubbling a runtime error to RouteErrorBoundary that no amount
+  // of "Clear Cache & Retry" recovers from. Mobile is a companion build
+  // anyway (see MobileExperienceNotice — synthesis layer is desktop-first
+  // by design), so we deliberately skip the heavy renderer there.
+  const isMobile = useIsMobile();
 
   // Landing-prototype handoff: a guest gets ONE free pass through the
   // synthesis layer (the first time they land on it after creating
@@ -2018,46 +2028,106 @@ export default function SynthesisLayer() {
           </div>
         )}
 
-        {/* The actual 3D scene */}
-        {!isEmpty && (
-          <SynthesisScene3D
-            nodes={simNodes}
-            edges={edges}
-            hoveredId={hoveredNode}
-            selectedId={selectedId}
-            // Selecting a node (from canvas click OR side-panel connection
-            // click) flies the camera to it. Same source of truth as
-            // selectedId — they always move together.
-            focusNodeId={selectedId}
-            highlightSet={highlightSet}
-            isTopicMode={isTopicMode}
-            zoom={camera.zoom}
-            resetSignal={resetSignal}
-            onHoverNode={setHoveredNode}
-            onClickNode={handleNodeClick}
-            // Prototype handoff: empty-space clicks must NOT deselect the
-            // highlighted neuron (would fly the camera back to centroid
-            // and undo the whole "this is YOUR neuron, look at it"
-            // moment). Keep it locked there until the user signs in.
-            onBackgroundClick={() => {
-              if (prototypeFocusId) return;
-              setSelectedId(null);
-            }}
-            // Prototype handoff: when set, the scene draws an electric-blue
-            // line out from "AI Learned" and scales the neuron into being
-            // at the end of it, instead of rendering the node in place.
-            formingNodeId={formingNodeId}
-            // Prototype handoff: lock the camera ONLY while the neuron is
-            // forming so the user sees the formation play out without
-            // OrbitControls hijacking pointer events. The instant the
-            // formation completes (formingNodeId clears) we hand control
-            // back so the user can pan / rotate around their new neuron.
-            lockCamera={formingNodeId != null}
-            // Keep the camera pulled in close on the prototype neuron even
-            // after the formation animation clears, so the user doesn't
-            // see it ease back out to the wider default focus distance.
-            focusDistanceOverride={isPrototypeHandoff ? 240 : null}
-          />
+        {/* Mobile fallback — phone-class viewports skip the 3D scene
+            entirely (see `isMobile` declaration above). Show the user's
+            neurons as a stack of cards instead so the page still has
+            real content to anchor the walkthrough. */}
+        {!isEmpty && isMobile && (
+          <div className="absolute inset-0 z-10 overflow-y-auto px-5 py-10">
+            <div className="max-w-md mx-auto space-y-4 text-center">
+              <Brain className="w-10 h-10 text-indigo-300 mx-auto" />
+              <h2 className="text-base font-semibold text-white/90">
+                Your synthesis layer
+              </h2>
+              <p className="text-xs text-white/55 leading-relaxed">
+                Open LYKN on a desktop browser to see the full interactive
+                3D mind map. Below are the neurons LYKN has learned about
+                you so far.
+              </p>
+              <div className="pt-4 flex flex-col gap-2 text-left">
+                {allNodes
+                  .filter((n) => n.kind === "neuron")
+                  .map((n) => (
+                    <div
+                      key={n.id}
+                      className="rounded-xl border border-pink-400/30 bg-pink-500/[0.06] px-3.5 py-2.5"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span
+                          aria-hidden
+                          className="w-1.5 h-1.5 rounded-full bg-pink-300 shadow-[0_0_8px_rgba(244,114,182,0.9)]"
+                        />
+                        <span className="text-[10px] uppercase tracking-wider text-pink-300/80 font-semibold">
+                          {n.meta?.isPrototypeNeuron
+                            ? "Neuron"
+                            : (n.meta?.kindLabel as string) || "Neuron"}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-sm text-white/90 leading-snug">
+                        {n.label}
+                      </p>
+                      {typeof n.meta?.prototypeReason === "string" &&
+                        n.meta.prototypeReason && (
+                          <p className="mt-1.5 text-[11px] text-white/55 leading-relaxed">
+                            {n.meta.prototypeReason}
+                          </p>
+                        )}
+                    </div>
+                  ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* The actual 3D scene — desktop only. Wrapped in a local error
+            boundary so a WebGL / postprocessing crash falls back to a
+            simple "open on desktop" card instead of bubbling to the
+            route boundary's unrecoverable "Clear Cache & Retry" page. */}
+        {!isEmpty && !isMobile && (
+          <SynthesisSceneErrorBoundary
+            neurons={allNodes
+              .filter((n) => n.kind === "neuron")
+              .map((n) => n.label)}
+          >
+            <SynthesisScene3D
+              nodes={simNodes}
+              edges={edges}
+              hoveredId={hoveredNode}
+              selectedId={selectedId}
+              // Selecting a node (from canvas click OR side-panel connection
+              // click) flies the camera to it. Same source of truth as
+              // selectedId — they always move together.
+              focusNodeId={selectedId}
+              highlightSet={highlightSet}
+              isTopicMode={isTopicMode}
+              zoom={camera.zoom}
+              resetSignal={resetSignal}
+              onHoverNode={setHoveredNode}
+              onClickNode={handleNodeClick}
+              // Prototype handoff: empty-space clicks must NOT deselect the
+              // highlighted neuron (would fly the camera back to centroid
+              // and undo the whole "this is YOUR neuron, look at it"
+              // moment). Keep it locked there until the user signs in.
+              onBackgroundClick={() => {
+                if (prototypeFocusId) return;
+                setSelectedId(null);
+              }}
+              // Prototype handoff: when set, the scene draws an electric-blue
+              // line out from "AI Learned" and scales the neuron into being
+              // at the end of it, instead of rendering the node in place.
+              formingNodeId={formingNodeId}
+              // Prototype handoff: lock the camera ONLY while the neuron is
+              // forming so the user sees the formation play out without
+              // OrbitControls hijacking pointer events. The instant the
+              // formation completes (formingNodeId clears) we hand control
+              // back so the user can pan / rotate around their new neuron.
+              lockCamera={formingNodeId != null}
+              // Keep the camera pulled in close on the prototype neuron even
+              // after the formation animation clears, so the user doesn't
+              // see it ease back out to the wider default focus distance.
+              focusDistanceOverride={isPrototypeHandoff ? 240 : null}
+            />
+          </SynthesisSceneErrorBoundary>
         )}
       </div>
 

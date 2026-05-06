@@ -52,7 +52,10 @@ import {
 } from "@/lib/vault/attachmentsMarker";
 import UpgradeModal from "@/components/UpgradeModal";
 import SignInActionBlocker from "@/components/SignInActionBlocker";
-import { buildSeedNoteRows } from "@/lib/demoVault";
+import {
+  buildPrototypePreviewCards,
+  buildSeedNoteRows,
+} from "@/lib/demoVault";
 import {
   hasPrototypeNeurons,
   PROTO_VAULT_INTRO_SS_KEY,
@@ -1359,15 +1362,24 @@ export default function VaultNew() {
     return out;
   }, [uploadItems, notes]);
 
-  // Signed-out vault is now empty. We used to render `buildGuestDemoCards()`
-  // (the prebuilt starter-pack vault items) for cold guests and
-  // `buildPrototypePreviewCards()` (5 LYKN-themed orientation cards) for
-  // walkthrough guests, but both surfaced fake content that read as the
-  // visitor's own work. Per the walkthrough redesign: signed-out users
-  // only ever see what they themselves create. The vault's typed intro
-  // chat (further down) still plays so they know what the surface IS,
-  // and dragging in a real file fills the vault for real.
-  const guestDemoCards = useMemo(() => [], []);
+  // Vault content for signed-out users:
+  //   • Cold guests (no walkthrough yet): nothing. We used to render
+  //     `buildGuestDemoCards()` here (the prebuilt starter-pack from the
+  //     old "demoVault" set) but that surfaced fake content as if it
+  //     were the visitor's own work.
+  //   • Walkthrough guests (came from /landing-prototype with a neuron
+  //     created): the LYKN-themed orientation cards from
+  //     `buildPrototypePreviewCards()`. These aren't user data — they're
+  //     part of the guided tour and explain what the Vault is + how it
+  //     ties into the synthesis layer. Without them the page reads as
+  //     completely empty mid-walkthrough, which made the chat intro
+  //     ("drag a file…") feel disconnected from the surface.
+  const isPrototypePreview = !user?.id && hasPrototypeNeurons();
+  const guestDemoCards = useMemo(() => {
+    if (user?.id) return [];
+    if (isPrototypePreview) return buildPrototypePreviewCards();
+    return [];
+  }, [user?.id, isPrototypePreview]);
 
   // Ref-mirrored vaultCards for handlers that fire outside React's
   // render cycle (drag-end fires from a DOM event, by which time the

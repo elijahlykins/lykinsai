@@ -776,7 +776,7 @@ const LandingPrototype = () => {
           <div className="relative flex-1 w-full flex items-center justify-center px-4">
             {!questionStarted && (
               <div
-                className={`w-full max-w-2xl transition-opacity duration-[600ms] ease-out ${
+                className={`w-full max-w-2xl transition-opacity duration-700 ease-out ${
                   oldIntroFadingOut
                     ? "opacity-0 pointer-events-none"
                     : "opacity-100 pointer-events-auto"
@@ -878,7 +878,7 @@ const LandingPrototype = () => {
                 rather than a snap-cut. `pointer-events-none` once it's
                 gone so a stray click can't reactivate it. */}
             <div
-              className={`w-full flex justify-center px-4 pb-6 pt-2 transition-opacity duration-[600ms] ease-out ${
+              className={`w-full flex justify-center px-4 pb-6 pt-2 transition-opacity duration-700 ease-out ${
                 factNodes.length > 0
                   ? "opacity-0 pointer-events-none"
                   : "opacity-100"
