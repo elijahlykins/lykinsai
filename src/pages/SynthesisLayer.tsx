@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion, AnimatePresence, useDragControls } from "framer-motion";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { useUserPlan } from "@/lib/useUserPlan";
@@ -20,6 +20,7 @@ import {
   StickyNote,
   Sparkles,
   Tag,
+  X,
   ZoomIn,
   ZoomOut,
   Maximize2,
@@ -767,9 +768,16 @@ function WelcomePanel({ onClose, neurons, onSelectNode }: { onClose: () => void;
   const mountTime = useRef(Date.now());
   // On phones the right-side 360px drawer covers ~95% of the screen and
   // hides the neuron the user just tapped. Slide up from the bottom as a
-  // sheet instead so the upper half of the canvas (where the camera has
-  // centered the neuron) stays visible.
+  // draggable sheet with collapsed/expanded snap points (see DetailPanel
+  // for full mechanism notes — this mirrors that exactly).
   const isMobile = useIsMobile();
+  const SHEET_HEIGHT_VH = 90;
+  const COLLAPSED_OFFSET_VH = 35;
+  const [sheetExpanded, setSheetExpanded] = useState(false);
+  const dragControls = useDragControls();
+  const collapsedY = `${COLLAPSED_OFFSET_VH}vh`;
+  const expandedY = 0;
+  const dismissedY = `${SHEET_HEIGHT_VH}vh`;
 
   useEffect(() => {
     let raf: number;
@@ -785,28 +793,68 @@ function WelcomePanel({ onClose, neurons, onSelectNode }: { onClose: () => void;
 
   return (
     <motion.div
-      initial={isMobile ? { y: 480, opacity: 0 } : { x: 380, opacity: 0 }}
-      animate={isMobile ? { y: 0, opacity: 1 } : { x: 0, opacity: 1 }}
-      exit={isMobile ? { y: 480, opacity: 0 } : { x: 380, opacity: 0 }}
+      initial={isMobile ? { y: dismissedY, opacity: 0 } : { x: 380, opacity: 0 }}
+      animate={isMobile ? { y: sheetExpanded ? expandedY : collapsedY, opacity: 1 } : { x: 0, opacity: 1 }}
+      exit={isMobile ? { y: dismissedY, opacity: 0 } : { x: 380, opacity: 0 }}
       transition={{ type: "spring", stiffness: 300, damping: 30 }}
+      drag={isMobile ? "y" : false}
+      dragControls={dragControls}
+      dragListener={false}
+      dragElastic={0.12}
+      dragMomentum={false}
+      dragConstraints={{ top: 0, bottom: 0 }}
+      onDragEnd={(_, info) => {
+        const { offset, velocity } = info;
+        const dismissThresh = sheetExpanded ? 200 : 130;
+        if (offset.y > dismissThresh || velocity.y > 700) { onClose(); return; }
+        if (offset.y < -50 || velocity.y < -300) { setSheetExpanded(true); return; }
+        if (offset.y > 40 || velocity.y > 200) { setSheetExpanded(false); return; }
+      }}
       className={
         isMobile
-          ? "absolute left-0 right-0 bottom-0 z-30 max-h-[55vh] w-full border-t border-white/8 rounded-t-2xl flex flex-col"
+          ? "absolute left-0 right-0 bottom-0 z-30 w-full border-t border-white/8 rounded-t-2xl flex flex-col"
           : "absolute top-0 right-0 z-30 h-full w-[360px] border-l border-white/8 flex flex-col"
       }
       style={{
         backgroundColor: "rgba(12,12,22,0.82)",
         backdropFilter: "blur(18px)",
         WebkitBackdropFilter: "blur(18px)",
-        ...(isMobile ? { paddingBottom: "env(safe-area-inset-bottom, 0px)" } : null),
+        ...(isMobile
+          ? {
+              height: `${SHEET_HEIGHT_VH}vh`,
+              paddingBottom: "env(safe-area-inset-bottom, 0px)",
+            }
+          : null),
       }}
       data-stop-canvas-wheel="true"
       onWheel={(e) => e.stopPropagation()}
       onPointerDown={(e) => e.stopPropagation()}
     >
-      <div className="flex items-center justify-end px-5 pt-5 pb-3">
-        <button onClick={onClose} className="w-6 h-6 rounded-md hover:bg-white/8 flex items-center justify-center transition-colors">
-          <PanelRightClose size={15} className="text-gray-400" />
+      {isMobile && (
+        <div
+          onPointerDown={(e) => dragControls.start(e)}
+          onClick={() => setSheetExpanded((v) => !v)}
+          className="flex justify-center items-center pt-2.5 pb-3 cursor-grab active:cursor-grabbing select-none"
+          style={{ touchAction: "none" }}
+          role="button"
+          aria-label={sheetExpanded ? "Collapse panel" : "Expand panel"}
+        >
+          <span className="block w-10 h-1 rounded-full bg-white/25" />
+        </div>
+      )}
+      <div className="flex items-center justify-end px-5 pt-2 pb-3">
+        <button
+          onClick={onClose}
+          aria-label="Close panel"
+          className={
+            isMobile
+              ? "w-9 h-9 rounded-full bg-white/8 hover:bg-white/14 flex items-center justify-center transition-colors"
+              : "w-6 h-6 rounded-md hover:bg-white/8 flex items-center justify-center transition-colors"
+          }
+        >
+          {isMobile
+            ? <X size={16} className="text-white/85" />
+            : <PanelRightClose size={15} className="text-gray-400" />}
         </button>
       </div>
 
@@ -1111,33 +1159,94 @@ function DetailPanel({
   // ~55vh, the neuron stays comfortably above the sheet.
   const isMobile = useIsMobile();
 
+  // Bottom-sheet height as a translateY of a 90vh-tall container that's
+  // anchored to the bottom edge. Two snap points + an off-screen
+  // dismissed position so the user can drag to expand, drag to
+  // collapse, or swipe down to close.
+  //   y = 0      → expanded (top of sheet at 10vh)
+  //   y = 35vh   → collapsed (top of sheet at 45vh, ≈55vh visible)
+  //   y = 90vh   → dismissed (off-screen, animated out)
+  const SHEET_HEIGHT_VH = 90;
+  const COLLAPSED_OFFSET_VH = 35;
+  const [sheetExpanded, setSheetExpanded] = useState(false);
+  const dragControls = useDragControls();
+  const collapsedY = `${COLLAPSED_OFFSET_VH}vh`;
+  const expandedY = 0;
+  const dismissedY = `${SHEET_HEIGHT_VH}vh`;
+
   return (
     <motion.div
-      initial={isMobile ? { y: 480, opacity: 0 } : { x: 380, opacity: 0 }}
-      animate={isMobile ? { y: 0, opacity: 1 } : { x: 0, opacity: 1 }}
-      exit={isMobile ? { y: 480, opacity: 0 } : { x: 380, opacity: 0 }}
+      initial={isMobile ? { y: dismissedY, opacity: 0 } : { x: 380, opacity: 0 }}
+      animate={isMobile ? { y: sheetExpanded ? expandedY : collapsedY, opacity: 1 } : { x: 0, opacity: 1 }}
+      exit={isMobile ? { y: dismissedY, opacity: 0 } : { x: 380, opacity: 0 }}
       transition={{ type: "spring", stiffness: 300, damping: 30 }}
+      // dragListener=false: only the drag handle can initiate drag (set
+      // up below via dragControls.start), so scrolling the content
+      // doesn't accidentally yank the whole sheet around.
+      drag={isMobile ? "y" : false}
+      dragControls={dragControls}
+      dragListener={false}
+      dragElastic={0.12}
+      dragMomentum={false}
+      dragConstraints={{ top: 0, bottom: 0 }}
+      onDragEnd={(_, info) => {
+        const { offset, velocity } = info;
+        // Strong downward swipe → dismiss (bigger threshold from
+        // expanded so a careless drag doesn't blow away an expanded
+        // sheet).
+        const dismissThresh = sheetExpanded ? 200 : 130;
+        if (offset.y > dismissThresh || velocity.y > 700) {
+          onClose();
+          return;
+        }
+        // Upward intent → expand.
+        if (offset.y < -50 || velocity.y < -300) {
+          setSheetExpanded(true);
+          return;
+        }
+        // Downward but not enough to dismiss → collapse.
+        if (offset.y > 40 || velocity.y > 200) {
+          setSheetExpanded(false);
+          return;
+        }
+        // Below thresholds → snap back to whatever state we were in.
+      }}
       className={
         isMobile
-          ? "absolute left-0 right-0 bottom-0 z-30 max-h-[55vh] w-full border-t border-white/8 rounded-t-2xl flex flex-col"
+          ? "absolute left-0 right-0 bottom-0 z-30 w-full border-t border-white/8 rounded-t-2xl flex flex-col"
           : "absolute top-0 right-0 z-30 h-full w-[360px] border-l border-white/8 flex flex-col"
       }
       style={{
         backgroundColor: "rgba(12,12,22,0.82)",
         backdropFilter: "blur(18px)",
         WebkitBackdropFilter: "blur(18px)",
-        ...(isMobile ? { paddingBottom: "env(safe-area-inset-bottom, 0px)" } : null),
+        ...(isMobile
+          ? {
+              height: `${SHEET_HEIGHT_VH}vh`,
+              paddingBottom: "env(safe-area-inset-bottom, 0px)",
+            }
+          : null),
       }}
       data-stop-canvas-wheel="true"
       onWheel={(e) => e.stopPropagation()}
       onPointerDown={(e) => e.stopPropagation()}
     >
       {isMobile && (
-        <div className="flex justify-center pt-2 pb-1" aria-hidden>
-          <span className="block w-10 h-1 rounded-full bg-white/20" />
+        <div
+          // Handle gets a generous touch target (~36px tall) and is the
+          // ONLY drag-origin for the sheet — content below scrolls
+          // freely without dragging the whole sheet with it.
+          onPointerDown={(e) => dragControls.start(e)}
+          onClick={() => setSheetExpanded((v) => !v)}
+          className="flex justify-center items-center pt-2.5 pb-3 cursor-grab active:cursor-grabbing select-none"
+          style={{ touchAction: "none" }}
+          role="button"
+          aria-label={sheetExpanded ? "Collapse panel" : "Expand panel"}
+        >
+          <span className="block w-10 h-1 rounded-full bg-white/25" />
         </div>
       )}
-      <div className="flex items-center gap-3 px-5 pt-5 pb-3">
+      <div className="flex items-center gap-3 px-5 pt-2 pb-3">
         <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ background: node.color }} />
         <span className={`text-xs font-semibold flex-1 truncate ${
           isPrototypeNeuron
@@ -1148,8 +1257,18 @@ function DetailPanel({
             ? `${ordinalLabel(prototypeOrdinal || 1)} neuron created`
             : node.kind === "category" ? node.label : node.kind}
         </span>
-        <button onClick={onClose} className="w-6 h-6 rounded-md hover:bg-black/5 dark:hover:bg-white/8 flex items-center justify-center transition-colors">
-          <PanelRightClose size={15} className="text-gray-400" />
+        <button
+          onClick={onClose}
+          aria-label="Close panel"
+          className={
+            isMobile
+              ? "w-9 h-9 rounded-full bg-white/8 hover:bg-white/14 flex items-center justify-center transition-colors flex-shrink-0"
+              : "w-6 h-6 rounded-md hover:bg-black/5 dark:hover:bg-white/8 flex items-center justify-center transition-colors"
+          }
+        >
+          {isMobile
+            ? <X size={16} className="text-white/85" />
+            : <PanelRightClose size={15} className="text-gray-400" />}
         </button>
       </div>
 
