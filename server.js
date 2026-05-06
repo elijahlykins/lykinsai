@@ -496,6 +496,41 @@ app.post(
 app.use(express.json({ limit: '5mb' }));
 
 // ============================================
+// CLIENT ERROR REPORTING
+// ============================================
+// Frontend `RouteErrorBoundary` posts here whenever it catches a render-time
+// crash. No-op by design — we just log to stdout so the entry shows up in
+// the Render service logs and can be tailed during incident triage. There's
+// no Sentry/PostHog wired up yet; this is the fallback for "everyone is
+// hitting an error and we can't see why".
+app.post('/api/client-error', (req, res) => {
+  try {
+    const b = req.body || {};
+    const ip = req.headers['x-forwarded-for'] || req.ip || '';
+    console.error(
+      '🔴 [client-error]',
+      JSON.stringify({
+        ts: b.timestamp || new Date().toISOString(),
+        url: b.url || '',
+        ua: b.userAgent || '',
+        viewport: b.viewport || null,
+        message: b.message || '',
+        name: b.name || '',
+        stack: b.stack || '',
+        componentStack: b.componentStack || '',
+        lsKeys: Array.isArray(b.lsKeys) ? b.lsKeys : [],
+        ip: String(ip).split(',')[0].trim(),
+      }),
+    );
+  } catch (err) {
+    console.error('🔴 [client-error] failed to log:', err);
+  }
+  // Always 204 — never let the reporter become a source of additional
+  // client-side errors (CORS preflights for non-2xx, etc.).
+  res.status(204).end();
+});
+
+// ============================================
 // AUTH MIDDLEWARE — verify Supabase JWT
 // ============================================
 const SUPABASE_URL = process.env.VITE_SUPABASE_URL;
