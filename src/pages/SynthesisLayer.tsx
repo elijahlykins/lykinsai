@@ -769,16 +769,27 @@ function WelcomePanel({ onClose, neurons, onSelectNode }: { onClose: () => void;
   const mountTime = useRef(Date.now());
   // On phones the right-side 360px drawer covers ~95% of the screen and
   // hides the neuron the user just tapped. Slide up from the bottom as a
-  // draggable sheet with collapsed/expanded snap points (see DetailPanel
-  // for full mechanism notes — this mirrors that exactly).
+  // draggable sheet that follows the finger 1:1 between fully-expanded
+  // (top of viewport) and dismissed (off-screen). See DetailPanel for
+  // the full mechanism notes — this mirrors it exactly.
   const isMobile = useIsMobile();
-  const SHEET_HEIGHT_VH = 90;
-  const COLLAPSED_OFFSET_VH = 35;
+  const SHEET_HEIGHT_VH = 92;
+  const COLLAPSED_VISIBLE_VH = 50;
+  const [vh, setVh] = useState(() =>
+    typeof window !== "undefined" ? window.innerHeight : 800,
+  );
+  useEffect(() => {
+    if (!isMobile) return;
+    const onResize = () => setVh(window.innerHeight);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [isMobile]);
+  const sheetHeightPx = (vh * SHEET_HEIGHT_VH) / 100;
+  const collapsedY = (vh * (SHEET_HEIGHT_VH - COLLAPSED_VISIBLE_VH)) / 100;
+  const expandedY = 0;
+  const dismissedY = sheetHeightPx;
   const [sheetExpanded, setSheetExpanded] = useState(false);
   const dragControls = useDragControls();
-  const collapsedY = `${COLLAPSED_OFFSET_VH}vh`;
-  const expandedY = 0;
-  const dismissedY = `${SHEET_HEIGHT_VH}vh`;
 
   useEffect(() => {
     let raf: number;
@@ -797,19 +808,23 @@ function WelcomePanel({ onClose, neurons, onSelectNode }: { onClose: () => void;
       initial={isMobile ? { y: dismissedY, opacity: 0 } : { x: 380, opacity: 0 }}
       animate={isMobile ? { y: sheetExpanded ? expandedY : collapsedY, opacity: 1 } : { x: 0, opacity: 1 }}
       exit={isMobile ? { y: dismissedY, opacity: 0 } : { x: 380, opacity: 0 }}
-      transition={{ type: "spring", stiffness: 300, damping: 30 }}
+      transition={{ type: "spring", stiffness: 320, damping: 32 }}
       drag={isMobile ? "y" : false}
       dragControls={dragControls}
       dragListener={false}
-      dragElastic={0.12}
+      dragElastic={0.04}
       dragMomentum={false}
-      dragConstraints={{ top: 0, bottom: 0 }}
+      dragConstraints={isMobile ? { top: 0, bottom: dismissedY } : undefined}
       onDragEnd={(_, info) => {
-        const { offset, velocity } = info;
-        const dismissThresh = sheetExpanded ? 200 : 130;
-        if (offset.y > dismissThresh || velocity.y > 700) { onClose(); return; }
-        if (offset.y < -50 || velocity.y < -300) { setSheetExpanded(true); return; }
-        if (offset.y > 40 || velocity.y > 200) { setSheetExpanded(false); return; }
+        const baseline = sheetExpanded ? expandedY : collapsedY;
+        const current = baseline + info.offset.y;
+        const v = info.velocity.y;
+        const projected = current + v * 0.15;
+        const midCollapseDismiss = (collapsedY + dismissedY) / 2;
+        const midExpandCollapse = collapsedY / 2;
+        if (projected > midCollapseDismiss || v > 1500) { onClose(); return; }
+        if (projected < midExpandCollapse || v < -800) { setSheetExpanded(true); return; }
+        setSheetExpanded(false);
       }}
       className={
         isMobile
@@ -834,7 +849,7 @@ function WelcomePanel({ onClose, neurons, onSelectNode }: { onClose: () => void;
       {isMobile && (
         <div
           onPointerDown={(e) => dragControls.start(e)}
-          onClick={() => setSheetExpanded((v) => !v)}
+          onClick={() => setSheetExpanded((vv) => !vv)}
           className="flex justify-center items-center pt-2.5 pb-3 cursor-grab active:cursor-grabbing select-none"
           style={{ touchAction: "none" }}
           role="button"
@@ -1160,57 +1175,70 @@ function DetailPanel({
   // ~55vh, the neuron stays comfortably above the sheet.
   const isMobile = useIsMobile();
 
-  // Bottom-sheet height as a translateY of a 90vh-tall container that's
-  // anchored to the bottom edge. Two snap points + an off-screen
-  // dismissed position so the user can drag to expand, drag to
-  // collapse, or swipe down to close.
-  //   y = 0      → expanded (top of sheet at 10vh)
-  //   y = 35vh   → collapsed (top of sheet at 45vh, ≈55vh visible)
-  //   y = 90vh   → dismissed (off-screen, animated out)
-  const SHEET_HEIGHT_VH = 90;
-  const COLLAPSED_OFFSET_VH = 35;
+  // Bottom sheet is a 92vh-tall container anchored bottom-0. We move
+  // it via the y transform: 0 = fully expanded (top of sheet at 8vh),
+  // collapsedY = collapsed (top of sheet at ~58vh, ~50vh visible),
+  // dismissedY = off-screen.
+  //
+  // Pixel values (not vh strings) are required for dragConstraints so
+  // the sheet can follow the finger 1:1 across the full range. We
+  // measure window.innerHeight up front and re-measure on resize so
+  // the math survives URL-bar show/hide on iOS.
+  const SHEET_HEIGHT_VH = 92;
+  const COLLAPSED_VISIBLE_VH = 50;
+  const [vh, setVh] = useState(() =>
+    typeof window !== "undefined" ? window.innerHeight : 800,
+  );
+  useEffect(() => {
+    if (!isMobile) return;
+    const onResize = () => setVh(window.innerHeight);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [isMobile]);
+  const sheetHeightPx = (vh * SHEET_HEIGHT_VH) / 100;
+  const collapsedY = (vh * (SHEET_HEIGHT_VH - COLLAPSED_VISIBLE_VH)) / 100;
+  const expandedY = 0;
+  const dismissedY = sheetHeightPx;
   const [sheetExpanded, setSheetExpanded] = useState(false);
   const dragControls = useDragControls();
-  const collapsedY = `${COLLAPSED_OFFSET_VH}vh`;
-  const expandedY = 0;
-  const dismissedY = `${SHEET_HEIGHT_VH}vh`;
 
   return (
     <motion.div
       initial={isMobile ? { y: dismissedY, opacity: 0 } : { x: 380, opacity: 0 }}
       animate={isMobile ? { y: sheetExpanded ? expandedY : collapsedY, opacity: 1 } : { x: 0, opacity: 1 }}
       exit={isMobile ? { y: dismissedY, opacity: 0 } : { x: 380, opacity: 0 }}
-      transition={{ type: "spring", stiffness: 300, damping: 30 }}
+      transition={{ type: "spring", stiffness: 320, damping: 32 }}
       // dragListener=false: only the drag handle can initiate drag (set
       // up below via dragControls.start), so scrolling the content
       // doesn't accidentally yank the whole sheet around.
       drag={isMobile ? "y" : false}
       dragControls={dragControls}
       dragListener={false}
-      dragElastic={0.12}
+      dragElastic={0.04}
       dragMomentum={false}
-      dragConstraints={{ top: 0, bottom: 0 }}
+      // Absolute coords: y can travel from 0 (fully expanded, top of
+      // sheet at the top of the viewport-ish) all the way to dismissedY
+      // (off-screen). Sheet follows the finger 1:1 in this range.
+      dragConstraints={isMobile ? { top: 0, bottom: dismissedY } : undefined}
       onDragEnd={(_, info) => {
-        const { offset, velocity } = info;
-        // Strong downward swipe → dismiss (bigger threshold from
-        // expanded so a careless drag doesn't blow away an expanded
-        // sheet).
-        const dismissThresh = sheetExpanded ? 200 : 130;
-        if (offset.y > dismissThresh || velocity.y > 700) {
+        // Compute current y from the snap baseline + drag offset, then
+        // project ~150ms forward by velocity so a quick flick "wins"
+        // the snap decision over raw position alone.
+        const baseline = sheetExpanded ? expandedY : collapsedY;
+        const current = baseline + info.offset.y;
+        const v = info.velocity.y;
+        const projected = current + v * 0.15;
+        const midCollapseDismiss = (collapsedY + dismissedY) / 2;
+        const midExpandCollapse = collapsedY / 2;
+        if (projected > midCollapseDismiss || v > 1500) {
           onClose();
           return;
         }
-        // Upward intent → expand.
-        if (offset.y < -50 || velocity.y < -300) {
+        if (projected < midExpandCollapse || v < -800) {
           setSheetExpanded(true);
           return;
         }
-        // Downward but not enough to dismiss → collapse.
-        if (offset.y > 40 || velocity.y > 200) {
-          setSheetExpanded(false);
-          return;
-        }
-        // Below thresholds → snap back to whatever state we were in.
+        setSheetExpanded(false);
       }}
       className={
         isMobile
