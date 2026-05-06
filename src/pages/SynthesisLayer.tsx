@@ -765,6 +765,11 @@ const WELCOME_TEXT = `Welcome to the Synthesis Layer.\n\nThe Synthesis Layer is 
 function WelcomePanel({ onClose, neurons, onSelectNode }: { onClose: () => void; neurons: MindNode[]; onSelectNode: (id: string) => void }) {
   const [charCount, setCharCount] = useState(0);
   const mountTime = useRef(Date.now());
+  // On phones the right-side 360px drawer covers ~95% of the screen and
+  // hides the neuron the user just tapped. Slide up from the bottom as a
+  // sheet instead so the upper half of the canvas (where the camera has
+  // centered the neuron) stays visible.
+  const isMobile = useIsMobile();
 
   useEffect(() => {
     let raf: number;
@@ -780,12 +785,21 @@ function WelcomePanel({ onClose, neurons, onSelectNode }: { onClose: () => void;
 
   return (
     <motion.div
-      initial={{ x: 380, opacity: 0 }}
-      animate={{ x: 0, opacity: 1 }}
-      exit={{ x: 380, opacity: 0 }}
+      initial={isMobile ? { y: 480, opacity: 0 } : { x: 380, opacity: 0 }}
+      animate={isMobile ? { y: 0, opacity: 1 } : { x: 0, opacity: 1 }}
+      exit={isMobile ? { y: 480, opacity: 0 } : { x: 380, opacity: 0 }}
       transition={{ type: "spring", stiffness: 300, damping: 30 }}
-      className="absolute top-0 right-0 z-30 h-full w-[360px] border-l border-white/8 flex flex-col"
-      style={{ backgroundColor: "rgba(12,12,22,0.82)", backdropFilter: "blur(18px)", WebkitBackdropFilter: "blur(18px)" }}
+      className={
+        isMobile
+          ? "absolute left-0 right-0 bottom-0 z-30 max-h-[55vh] w-full border-t border-white/8 rounded-t-2xl flex flex-col"
+          : "absolute top-0 right-0 z-30 h-full w-[360px] border-l border-white/8 flex flex-col"
+      }
+      style={{
+        backgroundColor: "rgba(12,12,22,0.82)",
+        backdropFilter: "blur(18px)",
+        WebkitBackdropFilter: "blur(18px)",
+        ...(isMobile ? { paddingBottom: "env(safe-area-inset-bottom, 0px)" } : null),
+      }}
       data-stop-canvas-wheel="true"
       onWheel={(e) => e.stopPropagation()}
       onPointerDown={(e) => e.stopPropagation()}
@@ -1090,19 +1104,39 @@ function DetailPanel({
       : null;
 
   const tags: string[] = node.meta?.tags || [];
+  // Same rationale as WelcomePanel: the desktop right-drawer covers the
+  // tapped neuron on phones, so render as a bottom sheet on mobile and
+  // leave the top half of the canvas visible. The camera-focus already
+  // centres the neuron in the viewport; with a bottom sheet capped at
+  // ~55vh, the neuron stays comfortably above the sheet.
+  const isMobile = useIsMobile();
 
   return (
     <motion.div
-      initial={{ x: 380, opacity: 0 }}
-      animate={{ x: 0, opacity: 1 }}
-      exit={{ x: 380, opacity: 0 }}
+      initial={isMobile ? { y: 480, opacity: 0 } : { x: 380, opacity: 0 }}
+      animate={isMobile ? { y: 0, opacity: 1 } : { x: 0, opacity: 1 }}
+      exit={isMobile ? { y: 480, opacity: 0 } : { x: 380, opacity: 0 }}
       transition={{ type: "spring", stiffness: 300, damping: 30 }}
-      className="absolute top-0 right-0 z-30 h-full w-[360px] border-l border-white/8 flex flex-col"
-      style={{ backgroundColor: "rgba(12,12,22,0.82)", backdropFilter: "blur(18px)", WebkitBackdropFilter: "blur(18px)" }}
+      className={
+        isMobile
+          ? "absolute left-0 right-0 bottom-0 z-30 max-h-[55vh] w-full border-t border-white/8 rounded-t-2xl flex flex-col"
+          : "absolute top-0 right-0 z-30 h-full w-[360px] border-l border-white/8 flex flex-col"
+      }
+      style={{
+        backgroundColor: "rgba(12,12,22,0.82)",
+        backdropFilter: "blur(18px)",
+        WebkitBackdropFilter: "blur(18px)",
+        ...(isMobile ? { paddingBottom: "env(safe-area-inset-bottom, 0px)" } : null),
+      }}
       data-stop-canvas-wheel="true"
       onWheel={(e) => e.stopPropagation()}
       onPointerDown={(e) => e.stopPropagation()}
     >
+      {isMobile && (
+        <div className="flex justify-center pt-2 pb-1" aria-hidden>
+          <span className="block w-10 h-1 rounded-full bg-white/20" />
+        </div>
+      )}
       <div className="flex items-center gap-3 px-5 pt-5 pb-3">
         <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ background: node.color }} />
         <span className={`text-xs font-semibold flex-1 truncate ${
