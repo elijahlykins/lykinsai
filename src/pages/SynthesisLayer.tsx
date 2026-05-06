@@ -2028,66 +2028,67 @@ export default function SynthesisLayer() {
           </div>
         )}
 
-        {/* Mobile fallback — phone-class viewports skip the 3D scene
-            entirely (see `isMobile` declaration above). Show the user's
-            neurons as a stack of cards instead so the page still has
-            real content to anchor the walkthrough. */}
-        {!isEmpty && isMobile && (
-          <div className="absolute inset-0 z-10 overflow-y-auto px-5 py-10">
-            <div className="max-w-md mx-auto space-y-4 text-center">
-              <Brain className="w-10 h-10 text-indigo-300 mx-auto" />
-              <h2 className="text-base font-semibold text-white/90">
-                Your synthesis layer
-              </h2>
-              <p className="text-xs text-white/55 leading-relaxed">
-                Open LYKN on a desktop browser to see the full interactive
-                3D mind map. Below are the neurons LYKN has learned about
-                you so far.
-              </p>
-              <div className="pt-4 flex flex-col gap-2 text-left">
-                {allNodes
-                  .filter((n) => n.kind === "neuron")
-                  .map((n) => (
-                    <div
-                      key={n.id}
-                      className="rounded-xl border border-pink-400/30 bg-pink-500/[0.06] px-3.5 py-2.5"
-                    >
-                      <div className="flex items-center gap-2">
-                        <span
-                          aria-hidden
-                          className="w-1.5 h-1.5 rounded-full bg-pink-300 shadow-[0_0_8px_rgba(244,114,182,0.9)]"
-                        />
-                        <span className="text-[10px] uppercase tracking-wider text-pink-300/80 font-semibold">
-                          {n.meta?.isPrototypeNeuron
-                            ? "Neuron"
-                            : (n.meta?.kindLabel as string) || "Neuron"}
-                        </span>
-                      </div>
-                      <p className="mt-1 text-sm text-white/90 leading-snug">
-                        {n.label}
-                      </p>
-                      {typeof n.meta?.prototypeReason === "string" &&
-                        n.meta.prototypeReason && (
-                          <p className="mt-1.5 text-[11px] text-white/55 leading-relaxed">
-                            {n.meta.prototypeReason}
-                          </p>
-                        )}
-                    </div>
-                  ))}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* The actual 3D scene — desktop only. Wrapped in a local error
-            boundary so a WebGL / postprocessing crash falls back to a
-            simple "open on desktop" card instead of bubbling to the
-            route boundary's unrecoverable "Clear Cache & Retry" page. */}
-        {!isEmpty && !isMobile && (
+        {/* The actual 3D scene. Previously gated to desktop because of a
+            theory that r3f + Bloom postprocessing crashes on iOS Safari
+            WebGL — turned out the actual mobile crash was an
+            `Illegal constructor` from a missing `Lock` icon import in
+            MobileTabBar (commit 1700901), so the scene itself is now
+            free to attempt rendering on phones. The local error boundary
+            wraps it with a mobile-tailored fallback so we still degrade
+            to the neuron card stack on devices where WebGL really does
+            tap out. Stage 2 (mobile-tuned DPR / Bloom / touch controls)
+            is a follow-up. */}
+        {!isEmpty && (
           <SynthesisSceneErrorBoundary
             neurons={allNodes
               .filter((n) => n.kind === "neuron")
               .map((n) => n.label)}
+            fallback={isMobile ? (
+              <div className="absolute inset-0 z-10 overflow-y-auto px-5 py-10">
+                <div className="max-w-md mx-auto space-y-4 text-center">
+                  <Brain className="w-10 h-10 text-indigo-300 mx-auto" />
+                  <h2 className="text-base font-semibold text-white/90">
+                    Your synthesis layer
+                  </h2>
+                  <p className="text-xs text-white/55 leading-relaxed">
+                    Open LYKN on a desktop browser to see the full interactive
+                    3D mind map. Below are the neurons LYKN has learned about
+                    you so far.
+                  </p>
+                  <div className="pt-4 flex flex-col gap-2 text-left">
+                    {allNodes
+                      .filter((n) => n.kind === "neuron")
+                      .map((n) => (
+                        <div
+                          key={n.id}
+                          className="rounded-xl border border-pink-400/30 bg-pink-500/[0.06] px-3.5 py-2.5"
+                        >
+                          <div className="flex items-center gap-2">
+                            <span
+                              aria-hidden
+                              className="w-1.5 h-1.5 rounded-full bg-pink-300 shadow-[0_0_8px_rgba(244,114,182,0.9)]"
+                            />
+                            <span className="text-[10px] uppercase tracking-wider text-pink-300/80 font-semibold">
+                              {n.meta?.isPrototypeNeuron
+                                ? "Neuron"
+                                : (n.meta?.kindLabel as string) || "Neuron"}
+                            </span>
+                          </div>
+                          <p className="mt-1 text-sm text-white/90 leading-snug">
+                            {n.label}
+                          </p>
+                          {typeof n.meta?.prototypeReason === "string" &&
+                            n.meta.prototypeReason && (
+                              <p className="mt-1.5 text-[11px] text-white/55 leading-relaxed">
+                                {n.meta.prototypeReason}
+                              </p>
+                            )}
+                        </div>
+                      ))}
+                  </div>
+                </div>
+              </div>
+            ) : undefined}
           >
             <SynthesisScene3D
               nodes={simNodes}

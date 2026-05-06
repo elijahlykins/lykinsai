@@ -4,11 +4,19 @@ import { Brain } from "lucide-react";
 interface Props {
   children: React.ReactNode;
   /**
-   * Optional list of neuron labels to surface in the fallback so the user
-   * still sees what they've built when the 3D scene refuses to render.
-   * (E.g. on mobile WebGL contexts that crash on Bloom postprocessing.)
+   * Optional list of neuron labels to surface in the default fallback so
+   * the user still sees what they've built when the 3D scene refuses to
+   * render. (E.g. on mobile WebGL contexts that crash on Bloom
+   * postprocessing.) Ignored when `fallback` is supplied.
    */
   neurons?: string[];
+  /**
+   * Custom fallback UI to render when the 3D scene throws. Used by
+   * SynthesisLayer on mobile to fall back to the rich neuron card
+   * stack instead of the default "open on desktop" card. When omitted
+   * the boundary renders its built-in fallback.
+   */
+  fallback?: React.ReactNode;
 }
 
 interface State {
@@ -44,6 +52,8 @@ class SynthesisSceneErrorBoundary extends React.Component<Props, State> {
 
   render() {
     if (!this.state.hasError) return this.props.children;
+
+    if (this.props.fallback !== undefined) return this.props.fallback;
 
     const neurons = this.props.neurons ?? [];
 
