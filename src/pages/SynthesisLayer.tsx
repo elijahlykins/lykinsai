@@ -440,8 +440,8 @@ function buildGraph(
 type LayoutMode = "connections" | "section" | "topic";
 
 const layoutModes: { id: LayoutMode; label: string; icon: typeof Network }[] = [
-  { id: "connections", label: "Most Connected", icon: Network },
   { id: "section",     label: "By Section",     icon: LayoutGrid },
+  { id: "connections", label: "Most Connected", icon: Network },
   { id: "topic",       label: "By Idea",        icon: Sparkles },
 ];
 
@@ -1726,7 +1726,7 @@ export default function SynthesisLayer() {
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
   const [camera, setCamera] = useState({ x: 0, y: 0, zoom: 1 });
   const [dimensions, setDimensions] = useState({ w: 1200, h: 800 });
-  const [layoutMode, setLayoutMode] = useState<LayoutMode>("connections");
+  const [layoutMode, setLayoutMode] = useState<LayoutMode>("section");
   const [filterTag, setFilterTag] = useState<string | null>(null);
   const [showModeMenu, setShowModeMenu] = useState(false);
   const [showTagMenu, setShowTagMenu] = useState(false);
@@ -2403,8 +2403,16 @@ export default function SynthesisLayer() {
         )}
       </div>
 
-      {/* Organize dropdown — positioned to the right of the sidebar signed-in pill */}
-      <div className="fixed top-4 left-[13.5rem] z-[80] flex items-center gap-2">
+      {/* Organize dropdown — desktop sits to the right of the sidebar
+          signed-in pill; mobile has no sidebar, so the desktop position
+          (`left-[13.5rem]`) lands directly under the centered "Synthesis
+          Layer" title and covers it. On mobile, drop it below the title
+          and pin to the left edge. */}
+      <div className={
+        isMobile
+          ? "fixed top-12 left-3 z-[80] flex items-center gap-2"
+          : "fixed top-4 left-[13.5rem] z-[80] flex items-center gap-2"
+      }>
         <div ref={modeMenuRef} className="relative">
           <button
             onClick={() => { setShowModeMenu((v) => !v); setShowTagMenu(false); }}
@@ -2421,7 +2429,7 @@ export default function SynthesisLayer() {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -4 }}
                 transition={{ duration: 0.12 }}
-                className="absolute top-full left-0 mt-1.5 w-48 rounded-xl bg-[rgba(20,20,32,0.92)] backdrop-blur-md border border-white/10 shadow-lg py-1 z-50"
+                className="absolute top-full left-0 mt-1.5 w-48 rounded-xl bg-[rgba(23,23,23,0.92)] backdrop-blur-md border border-white/10 shadow-lg py-1 z-50"
               >
                 {layoutModes.map((m) => (
                   <button
@@ -2464,7 +2472,7 @@ export default function SynthesisLayer() {
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -4 }}
                   transition={{ duration: 0.12 }}
-                  className="absolute top-full left-0 mt-1.5 w-48 max-h-64 overflow-y-auto rounded-xl bg-[rgba(20,20,32,0.92)] backdrop-blur-md border border-white/10 shadow-lg py-1 z-50 scrollbar-hide"
+                  className="absolute top-full left-0 mt-1.5 w-48 max-h-64 overflow-y-auto rounded-xl bg-[rgba(23,23,23,0.92)] backdrop-blur-md border border-white/10 shadow-lg py-1 z-50 scrollbar-hide"
                 >
                   {allIdeas.length === 0 ? (
                       <p className="px-3 py-2 text-[0.6875rem] text-white/45">No ideas found</p>
