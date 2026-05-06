@@ -2,11 +2,35 @@
 // react/no-unknown-property fires on every R3F `position`, `args`, `attach`,
 // etc. — those are valid props for fiber primitives. Disable for this file.
 
-import { useCallback, useEffect, useMemo, useRef, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { Canvas, useFrame, type ThreeEvent } from "@react-three/fiber";
 import { OrbitControls, Line, Html } from "@react-three/drei";
 import { EffectComposer, Bloom } from "@react-three/postprocessing";
 import * as THREE from "three";
+
+// Detect any touch-capable input device (phones, tablets, hybrid laptops
+// with touchscreens). Used to enable OrbitControls' built-in pinch-zoom
+// gesture, which is grouped behind the same `enableZoom` flag as wheel
+// zoom — so the existing page-level wheel handler that drives external
+// zoom on desktop has to coexist with native pinch on touch.
+function useIsTouchDevice() {
+  const [isTouch, setIsTouch] = useState(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
+    return window.matchMedia("(any-pointer: coarse)").matches;
+  });
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    const mql = window.matchMedia("(any-pointer: coarse)");
+    const onChange = () => setIsTouch(mql.matches);
+    if (mql.addEventListener) mql.addEventListener("change", onChange);
+    else mql.addListener(onChange);
+    return () => {
+      if (mql.removeEventListener) mql.removeEventListener("change", onChange);
+      else mql.removeListener(onChange);
+    };
+  }, []);
+  return isTouch;
+}
 
 /* ------------------------------------------------------------------ */
 /*  Shape contracts (mirror SynthesisLayer.tsx — kept loose to avoid   */
@@ -678,6 +702,22 @@ function CameraController({ zoom, resetSignal, focusPos, focusDistanceOverride, 
     try { ctrl.update(); } catch { /* OrbitControls may be mid-init */ }
   });
 
+  // Touch-capable devices need OrbitControls' built-in pinch-zoom because
+  // the page-level wheel listener (which drives external zoom on desktop)
+  // never receives wheel events from a finger. `enableZoom` toggles BOTH
+  // wheel AND pinch in three.js, so we leave it false on desktop (external
+  // zoom stays the single source of truth) and turn it on for touch — at
+  // the cost of a hybrid touchscreen-laptop user double-counting wheel
+  // ticks, which is a rare papercut we can fix later if it matters.
+  const isTouch = useIsTouchDevice();
+  // One finger rotates, two fingers pinch + pan. ROTATE/DOLLY_PAN are the
+  // OrbitControls defaults already, but we set them explicitly so a future
+  // drei version that flips defaults doesn't quietly break touch UX.
+  const touchGestures = useMemo(
+    () => ({ ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN }),
+    [],
+  );
+
   return (
     <OrbitControls
       ref={ctrlRef}
@@ -695,11 +735,16 @@ function CameraController({ zoom, resetSignal, focusPos, focusDistanceOverride, 
       enablePan={!lockCamera}
       enableRotate={!lockCamera}
       panSpeed={0.7}
-      rotateSpeed={0.55}
-      // Zoom is driven externally via targetDistance — disable wheel-zoom on
-      // the controls themselves so the external zoom state stays the single
-      // source of truth (page-level wheel listener + +/- buttons both feed it).
-      enableZoom={false}
+      // Mouse rotation is dialled in for fine-grained orbit; finger
+      // gestures travel a much shorter pixel distance per intent, so we
+      // turn the speed up on touch so a half-screen drag actually rotates
+      // the scene meaningfully.
+      rotateSpeed={isTouch ? 0.9 : 0.55}
+      // On desktop, external wheel handler + +/- buttons own the zoom.
+      // On touch, OrbitControls owns it via pinch (no wheel exists).
+      enableZoom={!lockCamera && isTouch}
+      zoomSpeed={isTouch ? 1.0 : 1.0}
+      touches={touchGestures}
       // Hard caps so users can't fly inside neurons or out into oblivion.
       minDistance={120}
       maxDistance={6000}
