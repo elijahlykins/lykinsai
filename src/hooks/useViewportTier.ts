@@ -58,9 +58,47 @@ export function useViewportTier() {
   return state;
 }
 
+// A device is considered "touch-only" (i.e. an actual phone/tablet) when its
+// primary pointer is coarse AND it can't hover. Laptops/desktops — even ones
+// with touchscreens — report a fine pointer or hover capability, so this
+// stays false for them. We use this to gate mobile-mode UI so that resizing
+// or split-screening a desktop browser below 768px doesn't punt the user
+// into the phone shell.
+function getIsTouchOnlyDevice(): boolean {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return false;
+  }
+  try {
+    return (
+      window.matchMedia("(pointer: coarse)").matches &&
+      window.matchMedia("(hover: none)").matches
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function useIsMobile() {
   const { tier } = useViewportTier();
-  return tier === "mobile";
+  const [isTouchOnly, setIsTouchOnly] = useState<boolean>(() => getIsTouchOnlyDevice());
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      return;
+    }
+    const pointerMql = window.matchMedia("(pointer: coarse)");
+    const hoverMql = window.matchMedia("(hover: none)");
+    const update = () => setIsTouchOnly(getIsTouchOnlyDevice());
+    pointerMql.addEventListener("change", update);
+    hoverMql.addEventListener("change", update);
+    update();
+    return () => {
+      pointerMql.removeEventListener("change", update);
+      hoverMql.removeEventListener("change", update);
+    };
+  }, []);
+
+  return tier === "mobile" && isTouchOnly;
 }
 
 export function getVaultSidebarWidth(viewportWidth: number): number {
