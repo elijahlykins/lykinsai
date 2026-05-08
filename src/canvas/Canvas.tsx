@@ -1628,9 +1628,30 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
     const targetTop = (cy + SURFACE_ORIGIN_PAD) * clamped - vpH / 2;
 
     canvasZoomRef.current = clamped;
+
+    // If the computed fit-zoom matches the current canvas zoom, calling
+    // setCanvasZoom with the same value is a no-op — React bails on the
+    // state update, so the useLayoutEffect that consumes
+    // pendingZoomScrollRef never fires and the view doesn't recenter.
+    // That's the "first click works, every click after does nothing"
+    // bug. Apply the scroll + camera directly in that case.
+    if (clamped === canvasZoom) {
+      pendingZoomScrollRef.current = null;
+      el.scrollLeft = targetLeft;
+      el.scrollTop = targetTop;
+      const finalLeft = Math.max(0, el.scrollLeft);
+      const finalTop = Math.max(0, el.scrollTop);
+      setCamera({
+        x: finalLeft / clamped - SURFACE_ORIGIN_PAD,
+        y: finalTop / clamped - SURFACE_ORIGIN_PAD,
+        zoom: clamped,
+      });
+      return;
+    }
+
     pendingZoomScrollRef.current = { left: targetLeft, top: targetTop, zoom: clamped };
     setCanvasZoom(clamped);
-  }, []);
+  }, [canvasZoom, setCamera]);
 
   const makeCreateBlockLocal = (x: number, y: number, mode: string, data: Record<string, any>, width: number, height: number) => ({
     id: `create-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
