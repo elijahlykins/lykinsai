@@ -5,115 +5,12 @@ import {
   PLANS,
   FAQ_ITEMS,
   BILLING_PERIODS,
-  PLAN_LIMITS,
   getDisplayPrice,
   getAnnualSavings,
 } from "@/lib/pricing-config";
 import { API_BASE_URL } from "@/lib/api-config";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/SupabaseAuth";
-
-function MiniBar({ label, used, limit, unit = "" }) {
-  const isUnlimited = !isFinite(limit);
-  const pct = isUnlimited ? 12 : limit > 0 ? Math.min((used / limit) * 100, 100) : 0;
-  const isHigh = !isUnlimited && pct >= 80;
-  const isFull = !isUnlimited && pct >= 100;
-
-  const formatValue = (val) => val.toLocaleString();
-
-  return (
-    <div>
-      <div className="flex items-baseline justify-between mb-1">
-        <span className="text-xs font-medium text-black/60 dark:text-white/70">{label}</span>
-        <span className="text-[11px] text-black/40 dark:text-white/45">
-          {formatValue(used)}
-          {isUnlimited ? " used" : ` / ${formatValue(limit)}`}
-        </span>
-      </div>
-      <div className="w-full h-1.5 rounded-full bg-white/60 dark:bg-white/10 overflow-hidden">
-        <div
-          className={`h-full rounded-full transition-all duration-500 ${
-            isFull ? "bg-red-400" : isHigh ? "bg-amber-400" : "bg-blue-400/70"
-          }`}
-          style={{ width: `${Math.max(pct, 1)}%` }}
-        />
-      </div>
-    </div>
-  );
-}
-
-function AccountSection({
-  currentPlan,
-  usage,
-  onManageBilling,
-  billingStatus,
-  portalBusy,
-}) {
-  const limits = PLAN_LIMITS[currentPlan] || PLAN_LIMITS.free;
-  const canManage = Boolean(billingStatus?.has_stripe_customer);
-  const renewalLabel = billingStatus?.current_period_end
-    ? new Date(billingStatus.current_period_end).toLocaleDateString(undefined, {
-        month: "short",
-        day: "numeric",
-        year: "numeric",
-      })
-    : null;
-
-  const planDisplay =
-    currentPlan === "free"
-      ? "Free"
-      : currentPlan === "studio"
-      ? "Studio"
-      : currentPlan === "studio_pro"
-      ? "Studio Pro"
-      : currentPlan === "studio_max"
-      ? "Studio Max"
-      : currentPlan;
-
-  return (
-    <div className="rounded-2xl bg-white/28 dark:bg-zinc-900/70 backdrop-blur-md border border-white/25 dark:border-white/10 shadow-md shadow-black/[0.02] dark:shadow-black/30 p-6 mb-10">
-      <div className="flex items-start justify-between mb-5 gap-3 flex-wrap">
-        <div>
-          <h3 className="text-sm font-semibold text-black/80 dark:text-white/90">
-            Usage
-            <span className="ml-2 text-[11px] font-medium text-black/40 dark:text-white/45">
-              · Current plan: {planDisplay}
-            </span>
-          </h3>
-          {renewalLabel && (
-            <p className="text-[11px] text-black/40 dark:text-white/45 mt-0.5">
-              {billingStatus?.cancel_at_period_end
-                ? `Cancels on ${renewalLabel}`
-                : `Renews ${renewalLabel}`}
-            </p>
-          )}
-        </div>
-        {canManage && (
-          <button
-            onClick={onManageBilling}
-            disabled={portalBusy}
-            className="text-[11px] font-semibold text-black/60 dark:text-white/65 hover:text-black/90 dark:hover:text-white underline underline-offset-2 disabled:opacity-50"
-          >
-            {portalBusy ? "Opening…" : "Manage billing"}
-          </button>
-        )}
-      </div>
-
-      <div className="space-y-4">
-        <MiniBar
-          label="AI Requests"
-          used={usage.requestsUsed}
-          limit={limits.requests}
-        />
-        <MiniBar
-          label="Vault Items"
-          used={usage.vaultCardsUsed}
-          limit={limits.vaultCards}
-        />
-      </div>
-    </div>
-  );
-}
 
 function BillingToggle({ period, onChange }) {
   return (
@@ -363,58 +260,29 @@ export default function BillingNew() {
   const [period, setPeriod] = useState(BILLING_PERIODS.MONTHLY);
   const [openFaq, setOpenFaq] = useState(null);
   const [currentPlan, setCurrentPlan] = useState("free");
-  const [billingStatus, setBillingStatus] = useState({
-    status: "inactive",
-    current_period_end: null,
-    cancel_at_period_end: false,
-    has_stripe_customer: false,
-  });
-  const [usage, setUsage] = useState({ requestsUsed: 0, vaultCardsUsed: 0 });
   const [checkoutBusy, setCheckoutBusy] = useState(null);
-  const [portalBusy, setPortalBusy] = useState(false);
   const [waitlistState, setWaitlistState] = useState({ joined: false, busy: false });
 
   useEffect(() => {
     if (!user?.id) return;
     (async () => {
       const headers = await authHeaders();
-      const aiUsage = fetch(`${API_BASE_URL}/api/usage/me`, { headers })
-        .then((r) => (r.ok ? r.json() : null))
-        .catch(() => null);
 
       const billing = fetch(`${API_BASE_URL}/api/billing/me`, { headers })
         .then((r) => (r.ok ? r.json() : null))
         .catch(() => null);
 
-      const vaultCount = supabase
-        .from("notes")
-        .select("id", { count: "exact", head: true })
-        .eq("user_id", user.id)
-        .then(({ count }) => count ?? 0);
-
       const waitlist = fetch(`${API_BASE_URL}/api/billing/waitlist`, { headers })
         .then((r) => (r.ok ? r.json() : null))
         .catch(() => null);
 
-      const [aiData, billingData, cards, waitlistData] = await Promise.all([
-        aiUsage,
+      const [billingData, waitlistData] = await Promise.all([
         billing,
-        vaultCount,
         waitlist,
       ]);
 
-      setUsage({
-        requestsUsed: aiData?.log_count || 0,
-        vaultCardsUsed: cards,
-      });
       if (billingData) {
         setCurrentPlan(billingData.plan || "free");
-        setBillingStatus({
-          status: billingData.status || "inactive",
-          current_period_end: billingData.current_period_end || null,
-          cancel_at_period_end: Boolean(billingData.cancel_at_period_end),
-          has_stripe_customer: Boolean(billingData.has_stripe_customer),
-        });
       }
       if (waitlistData) {
         setWaitlistState((prev) => ({
@@ -483,19 +351,6 @@ export default function BillingNew() {
     }
   }, [user?.email, waitlistState.joined, waitlistState.busy]);
 
-  const handleManageBilling = useCallback(async () => {
-    setPortalBusy(true);
-    try {
-      const { url } = await postBilling("/api/billing/portal");
-      if (url) window.location.href = url;
-    } catch (err) {
-      console.error("[Billing] portal failed:", err);
-      alert(err.message || "Could not open billing portal.");
-    } finally {
-      setPortalBusy(false);
-    }
-  }, []);
-
   const toggleFaq = useCallback(
     (idx) => setOpenFaq((prev) => (prev === idx ? null : idx)),
     []
@@ -541,15 +396,6 @@ export default function BillingNew() {
           ))}
         </div>
         </div>
-
-        {/* Account + Usage */}
-        <AccountSection
-          currentPlan={currentPlan}
-          usage={usage}
-          onManageBilling={handleManageBilling}
-          billingStatus={billingStatus}
-          portalBusy={portalBusy}
-        />
 
         {/* FAQ */}
         <div className="max-w-2xl mx-auto mb-16">

@@ -1,31 +1,46 @@
 // Canonical AI model catalog used by every model picker in the product.
 // All `<Select>` menus in the UI render the groups below verbatim — they
-// never hard-code their own model lists. Add / rename / re-order entries
-// here and every picker updates in lockstep.
+// never hard-code their own model lists.
 //
-// Scope rule: this catalog only lists models from the four supported
-// providers — Anthropic (Claude), OpenAI (ChatGPT), Google (Gemini), and
-// xAI (Grok) — plus the in-house "LYKN" alias. The rest of the product
-// (plan gating, provider fallbacks, billing) assumes those four; don't add
-// anything else without updating server-side routing.
-//
-// "LYKN" is a brand alias that the server rewrites to a real Google model
-// before hitting any provider SDK. See `LYKN_ROUTED_MODEL` and the lykn
-// alias handling in `server.js`. The id below is what the UI sends; the
-// server is the single source of truth for what it actually runs.
+// LYKN runs exclusively on Google Gemini under the hood. The product
+// surfaces three brand-aliased tiers (Lite / Fast Reasoning / Deep
+// Thinking) and the server rewrites them to a real Gemini model before
+// hitting the SDK. This indirection lets us swap the underlying Gemini
+// version without a client release. See `resolveLyknAlias` and
+// `LYKN_ROUTED_MODELS` in `server.js` for the routing table.
 
-export const LYKN_MODEL_ID = "lykn";
+// LYKN-branded model ids the UI sends to the server. The server is the
+// single source of truth for the actual Gemini model each one resolves
+// to (kept in `LYKN_ROUTED_MODELS` in `server.js`).
+export const LYKN_LITE_ID = "lykn-lite";
+export const LYKN_FAST_ID = "lykn-fast";
+export const LYKN_DEEP_ID = "lykn-deep";
 
-// Server-side: the real model invoked when a request comes in with id
-// `lykn`. Surfaced here for documentation; the runtime mapping lives in
-// `server.js` so the client can't be tricked into bypassing routing.
-export const LYKN_ROUTED_MODEL = "gemini-3.1-pro-preview";
+// Documented for reference; the runtime mapping lives in `server.js` so
+// the client can't be tricked into bypassing routing.
+// NOTE: Google's Gemini 3.1 series does NOT include a standard non-lite
+// text-generation Flash model — only `gemini-3.1-flash-lite-preview` for
+// text plus the audio/TTS/image-gen specializations. So the middle Fast
+// Reasoning tier stays on `gemini-3-flash-preview` (Gemini 3 Flash from
+// the previous gen). This will be updated when Google ships a real 3.1
+// non-lite Flash. Server is the source of truth — see `LYKN_ROUTED_MODELS`
+// in server.js.
+export const LYKN_ROUTED_MODELS = {
+  [LYKN_LITE_ID]: "gemini-3.1-flash-lite-preview",
+  [LYKN_FAST_ID]: "gemini-3-flash-preview",
+  [LYKN_DEEP_ID]: "gemini-3.1-pro-preview",
+};
+
+// Legacy alias kept so existing client storage / DB rows that still
+// reference the old single-tier "lykn" id resolve sensibly. Treated as
+// "Fast Reasoning" because that's the workhorse middle tier.
+export const LEGACY_LYKN_ID = "lykn";
 
 /**
  * @typedef {Object} ModelOption
  * @property {string} value  Model id sent to the server.
  * @property {string} label  Display name shown in the picker.
- * @property {string} hint   Short trailing description (e.g. "Anthropic flagship").
+ * @property {string} hint   Short trailing description (e.g. "Free tier").
  */
 
 /**
@@ -37,43 +52,27 @@ export const LYKN_ROUTED_MODEL = "gemini-3.1-pro-preview";
 
 /** @type {ModelGroup[]} */
 //
-// Two groups only: the headline "Top Models" (paid flagships + LYKN) and
-// a "Free Tier" row that pairs each provider with their Haiku-equivalent
-// fast model. Keep the per-provider parallelism (one top + one fast per
-// company) — it's what makes the picker scannable. If you add a model,
-// pick the *newest* fast variant for that provider so basic-tier users
-// always get the freshest one we've green-lit.
-//
-// Every value in the "fast" group must also live in
-// `BASIC_MODEL_IDS` (src/lib/modelTiers.js) so free-plan users aren't
-// silently downgraded the moment they pick one.
+// Single group, three tiers, ordered best → worst so the most capable
+// model sits at the top of the picker. Deep Thinking is the heavyweight
+// for multi-step problems, Fast Reasoning is the everyday workhorse,
+// and Lite is the free-plan default. Group label is intentionally
+// empty — the picker skips the heading when it's blank, which keeps
+// the dropdown clean now that there's only one group.
 export const MODEL_GROUPS = [
   {
-    id: "top",
-    label: "Top Models",
+    id: "lykn",
+    label: "",
     items: [
-      { value: LYKN_MODEL_ID, label: "LYKN", hint: "" },
-      { value: "claude-sonnet-4-6", label: "Claude Sonnet 4.6", hint: "Anthropic flagship" },
-      { value: "gpt-5.4", label: "GPT-5.4", hint: "OpenAI flagship" },
-      { value: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro", hint: "Google flagship" },
-      { value: "grok-4-1-fast-reasoning", label: "Grok 4.1 Fast Reasoning", hint: "xAI flagship" },
-    ],
-  },
-  {
-    id: "fast",
-    label: "Free Tier",
-    items: [
-      { value: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5", hint: "Fast Anthropic" },
-      { value: "gpt-5-mini", label: "GPT-5 Mini", hint: "Fast OpenAI" },
-      { value: "gemini-3-flash-preview", label: "Gemini 3 Flash", hint: "Fast Google" },
-      { value: "grok-4-1-fast-non-reasoning", label: "Grok 4.1 Fast Non-Reasoning", hint: "Fast xAI" },
+      { value: LYKN_DEEP_ID, label: "LYKN Deep Thinking", hint: "Heavy" },
+      { value: LYKN_FAST_ID, label: "LYKN Fast Reasoning", hint: "Everyday" },
+      { value: LYKN_LITE_ID, label: "LYKN Lite", hint: "Free tier" },
     ],
   },
 ];
 
-// Flat list of every model id the picker can produce. Useful for "is this
-// id known?" checks; never relied on for routing — the server has its own
-// catalog.
+// Flat list of every model id the picker can produce. Used for "is this
+// id known?" checks (e.g. migrating stale localStorage values); never
+// relied on for routing — the server has its own catalog.
 export const KNOWN_MODEL_IDS = MODEL_GROUPS.flatMap((g) =>
   g.items.map((i) => i.value)
 );

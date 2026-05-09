@@ -55,7 +55,7 @@ export default function ModelSelectOptions({ modelTier }) {
         <React.Fragment key={group.id}>
           {gi > 0 && <SelectSeparator />}
           <SelectGroup>
-            <SelectLabel>{group.label}</SelectLabel>
+            {group.label ? <SelectLabel>{group.label}</SelectLabel> : null}
             {group.items.map((item) => gate(item))}
           </SelectGroup>
         </React.Fragment>

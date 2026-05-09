@@ -6,17 +6,21 @@ import { useAuth } from "@/lib/SupabaseAuth";
 import { useUserPlan } from "@/lib/useUserPlan";
 import PlanGate from "@/components/PlanGate";
 import { PLAN_LIMITS } from "@/lib/pricing-config";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Atom,
   Brain,
+  Check,
   ChevronDown,
   ExternalLink,
   FolderOpen,
   Hash,
   LayoutGrid,
+  Loader2,
   Lock,
   Network,
   PanelRightClose,
+  Plus,
   StickyNote,
   Sparkles,
   Tag,
@@ -25,6 +29,8 @@ import {
   ZoomOut,
   Maximize2,
 } from "lucide-react";
+import BeliefWindowPanel from "@/components/synthesis/BeliefWindowPanel";
+import { API_BASE_URL } from "@/lib/api-config";
 import { GridIcon } from "@/components/ui/GridIcon";
 import {
   Dialog,
@@ -65,7 +71,7 @@ const isBlockedDemoId = (id: string | null | undefined): boolean => {
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
 
-type NodeKind = "root" | "category" | "project" | "grid" | "vault" | "tag" | "neuron";
+type NodeKind = "root" | "category" | "project" | "grid" | "vault" | "tag" | "neuron" | "belief";
 
 interface MindNode {
   id: string;
@@ -112,11 +118,21 @@ const palette = {
   vault:    { bg: "#10b981", glow: "rgba(16,185,129,0.30)" },
   tags:     { bg: "#f59e0b", glow: "rgba(245,158,11,0.30)" },
   neurons:  { bg: "#ec4899", glow: "rgba(236,72,153,0.30)" },
+  // Beliefs are the layer above neurons — palette emphasizes that this is
+  // a separate, higher-order tier (deeper indigo, brighter glow) so the
+  // user reads the cluster as "principles" not just more facts.
+  beliefs:  { bg: "#818cf8", glow: "rgba(129,140,248,0.40)" },
   project:  { bg: "#a78bfa", glow: "rgba(167,139,250,0.25)" },
   grid:     { bg: "#60a5fa", glow: "rgba(96,165,250,0.25)" },
   note:     { bg: "#34d399", glow: "rgba(52,211,153,0.25)" },
   tag:      { bg: "#fbbf24", glow: "rgba(251,191,36,0.25)" },
   neuron:   { bg: "#f472b6", glow: "rgba(244,114,182,0.25)" },
+  // Core Belief nodes are pure white — they're meant to read as "lit from
+  // within" against the colored category clusters around them. White +
+  // the boosted emissive in SynthesisScene3D (3.6, pulsing) makes the
+  // principles look like little stars, which matches the intent that
+  // beliefs are the highest-order tier and the AI's brightest signal.
+  belief:   { bg: "#ffffff", glow: "rgba(255,255,255,0.45)" },
 };
 
 /* ------------------------------------------------------------------ */
@@ -191,6 +207,15 @@ function buildGraph(
   synthesisThemes: string[],
   synthesis: SynthesisData | null,
   vaultGridMap: Map<string, Set<string>>,
+  // Active beliefs (Hyrum-Smith belief-window layer). Rendered as their own
+  // category cluster so the user can see the principles the AI answers
+  // through. Empty array means we omit the category entirely.
+  beliefs: Array<{ id: string; belief_text: string; serves_need: string; confidence: number }> = [],
+  // User-stated / user-confirmed atomic facts. Rendered as additional
+  // "AI Learned" neurons so freshly-saved Basic neurons appear in the
+  // graph instantly (otherwise they'd only surface after a synthesis
+  // profile rebuild, which made the Save button look like a no-op).
+  manualFacts: Array<{ id: string; fact_kind: string; fact_text: string; confidence: number }> = [],
   // Optional: categories that should always appear even if they have no
   // children. Used by the landing prototype so a brand-new guest sees the
   // shell of their future workspace (Projects / Grids / Vault / Tags)
@@ -289,15 +314,57 @@ function buildGraph(
     }
   }
 
-  if (neuronItems.length > 0) {
+  if (neuronItems.length > 0 || manualFacts.length > 0) {
     cats.push({ id: "__cat_neurons__", label: "AI Learned", color: palette.neurons.bg, glow: palette.neurons.glow });
   }
 
+  // Beliefs — promoted, user-ratified principles that sit ABOVE atomic
+  // facts. Render as their own cluster so the user reads them as a
+  // separate, higher-order tier (visually closer to the root than the
+  // long-tail neurons).
+  if (beliefs.length > 0 || forceCategoryIds.has("__cat_beliefs__")) {
+    cats.push({ id: "__cat_beliefs__", label: "Beliefs", color: palette.beliefs.bg, glow: palette.beliefs.glow });
+  }
+
   // (categories were already pushed above, but neurons cat needs to go in too)
-  if (neuronItems.length > 0 && !nodes.some((n) => n.id === "__cat_neurons__")) {
+  if ((neuronItems.length > 0 || manualFacts.length > 0) && !nodes.some((n) => n.id === "__cat_neurons__")) {
     nodes.push({ id: "__cat_neurons__", label: "AI Learned", kind: "category", radius: 30, color: palette.neurons.bg, glow: palette.neurons.glow, parentId: rootId });
     edges.push({ from: rootId, to: "__cat_neurons__" });
   }
+  if ((beliefs.length > 0 || forceCategoryIds.has("__cat_beliefs__")) && !nodes.some((n) => n.id === "__cat_beliefs__")) {
+    nodes.push({ id: "__cat_beliefs__", label: "Beliefs", kind: "category", radius: 32, color: palette.beliefs.bg, glow: palette.beliefs.glow, parentId: rootId });
+    edges.push({ from: rootId, to: "__cat_beliefs__" });
+  }
+
+  // Belief nodes — placed under their own category. Each belief is bigger
+  // than a neuron because it represents a higher-order principle. Cross-
+  // edges to related neurons / vault notes are deliberately NOT drawn here
+  // (the BeliefWindowPanel side panel is the canonical place to inspect
+  // a belief's supporting facts) so the 3D view stays readable.
+  beliefs.forEach((b) => {
+    const nid = `belief_${b.id}`;
+    nodes.push({
+      id: nid,
+      label: b.belief_text.length > 48 ? `${b.belief_text.slice(0, 46)}…` : b.belief_text,
+      kind: "belief",
+      // Belief nodes are intentionally larger than neurons — principles
+      // should out-mass facts in the spatial map so the eye treats them as
+      // landmarks. Bumped from 19 → 24 alongside the brighter emissive in
+      // SynthesisScene3D.
+      radius: 24,
+      color: palette.belief.bg,
+      glow: palette.belief.glow,
+      parentId: "__cat_beliefs__",
+      categoryId: "__cat_beliefs__",
+      meta: {
+        beliefId: b.id,
+        beliefText: b.belief_text,
+        servesNeed: b.serves_need,
+        confidence: b.confidence,
+      },
+    });
+    edges.push({ from: "__cat_beliefs__", to: nid });
+  });
 
   const neuronNodeIds = new Set<string>();
   neuronItems.forEach((ni) => {
@@ -341,6 +408,62 @@ function buildGraph(
         edges.push({ from: ni.id, to: `tag_${tag}`, cross: true });
       }
     });
+  });
+
+  // Manual / user-stated atomic facts. We render each as its own neuron
+  // node with a stable `fact_<uuid>` id so the page-level forming-watcher
+  // (see `pendingFormingFactId`) can match the freshly-saved row and play
+  // the camera-focus pulse on it. Dedup against the synthesis-derived
+  // neurons by case-insensitive label so a fact that already shows up as
+  // a profile theme/topic doesn't render twice. fact_kind drives a small
+  // sub-label ("Identity", "Focus", etc.) so the user can tell at a
+  // glance what bucket the AI filed it under.
+  const usedNeuronLabels = new Set<string>(
+    Array.from(neuronNodeIds).map((nid) => {
+      const n = nodes.find((x) => x.id === nid);
+      return (n?.label || "").toLowerCase().trim();
+    }).filter(Boolean),
+  );
+  const factKindLabel = (k: string) => {
+    switch (k) {
+      case "identity": return "Identity";
+      case "focus": return "Focus";
+      case "theme": return "Theme";
+      case "goal": return "Goal";
+      case "preference": return "Preference";
+      case "style": return "Style";
+      case "constraint": return "Constraint";
+      case "relationship": return "Relationship";
+      default: return "Fact";
+    }
+  };
+  manualFacts.forEach((f) => {
+    const label = (f.fact_text || "").trim();
+    if (!label) return;
+    const lower = label.toLowerCase();
+    if (usedNeuronLabels.has(lower)) return;
+    usedNeuronLabels.add(lower);
+    const nid = `fact_${f.id}`;
+    nodes.push({
+      id: nid,
+      label: label.length > 56 ? `${label.slice(0, 54)}…` : label,
+      kind: "neuron",
+      radius: 16,
+      color: palette.neuron.bg,
+      glow: palette.neuron.glow,
+      parentId: "__cat_neurons__",
+      categoryId: "__cat_neurons__",
+      meta: {
+        neuronKind: "fact",
+        source: "manual_fact",
+        kindLabel: factKindLabel(f.fact_kind),
+        factId: f.id,
+        factKind: f.fact_kind,
+        factText: f.fact_text,
+        confidence: f.confidence,
+      },
+    });
+    edges.push({ from: "__cat_neurons__", to: nid });
   });
 
   // Thematic cross-links: connect items that share synthesis themes
@@ -1679,10 +1802,333 @@ const FREE_SYNTHESIS_NODE_LIMIT: number =
     ? (PLAN_LIMITS.free.synthesisNodes as number)
     : 50;
 
+// ---------------------------------------------------------------------------
+// NeuronCreationModal
+// ---------------------------------------------------------------------------
+// Centered modal launched from the "+" toolbar menu. Handles BOTH neuron
+// types (Basic neuron & Core Belief neuron) so the user gets a consistent
+// "name → description → form → save → watch it form" experience no matter
+// which kind they're authoring.
+//
+// Lifecycle phases:
+//   1. "compose"  — backdrop dims the page, the modal shows the type's
+//                   name + description + the relevant form. X or
+//                   backdrop-click cancels.
+//   2. "forming"  — after a successful save the form swaps for a brief
+//                   formation visual: a glowing neuron sphere scales in,
+//                   pulses, then fades out as the modal dismisses. This
+//                   is the moment the user "watches the neuron get
+//                   created" — even when the actual graph node won't
+//                   materialize until the next refresh (basic neurons
+//                   are derived from a downstream synthesis pass).
+//   3. closes     — onClose() and onCreated(newId) fire. For belief
+//                   neurons, onCreated provides the new belief UUID so
+//                   the page can chain into the graph-level formingNodeId
+//                   animation when the corresponding `belief_<uuid>` node
+//                   shows up after the active-beliefs refetch.
+
+// Basic neurons no longer expose the kind taxonomy in the UI — the modal
+// just collects free text and we hand it off to /api/learned with the
+// safe "identity" default. The server's reconciler reclassifies later if
+// the fact text obviously fits another bucket (focus / goal / etc.), so
+// hiding the dropdown costs nothing functional and removes a decision
+// users were never excited about making.
+
+const NEURON_TYPE_THEME = {
+  basic: {
+    title: "Basic Neuron",
+    short: "A single fact about you",
+    description:
+      "Atomic memory the AI can lean on. Anything from \"I work as a designer\" to \"I focus best in the morning.\" It joins your other learned neurons and the AI uses it for context on every reply.",
+    // Light/dark blue family — the same accent the rest of the product
+    // uses for primary signal (LandingPrototype start pill, sidebar
+    // active state, neuron pill on the wake screen). Keeping basic
+    // neurons on this palette makes them read as a first-class part of
+    // the product chrome rather than a one-off violet.
+    accent: "blue",
+    accentHex: "#60a5fa", // blue-400
+    accentRing: "border-blue-400/35",
+    accentChip: "bg-blue-500/15 text-blue-200 border-blue-400/30",
+    accentGlow: "shadow-[0_0_60px_rgba(96,165,250,0.5)]",
+  },
+  belief: {
+    title: "Core Belief Neuron",
+    short: "A principle that shapes every reply",
+    description:
+      "The principles you live by. The AI runs every reply through these before anything else — they shape how it answers, what it suggests, and what it pushes back on. Example: \"Treat others the way you want to be treated.\"",
+    // Same blue family as Basic neuron — both creation flows are
+    // first-class product chrome and should read as one consistent
+    // visual surface, not two competing palettes.
+    accent: "blue",
+    accentHex: "#60a5fa", // blue-400
+    accentRing: "border-blue-400/35",
+    accentChip: "bg-blue-500/15 text-blue-200 border-blue-400/30",
+    accentGlow: "shadow-[0_0_60px_rgba(96,165,250,0.5)]",
+  },
+} as const;
+
+type NeuronCreationModalProps = {
+  type: "basic" | "belief";
+  onClose: () => void;
+  /** Called after a successful save with the server-returned id (for
+      beliefs the lykn_beliefs UUID; for basic neurons the fact id). */
+  onCreated: (newId: string | null) => void;
+};
+
+function NeuronCreationModal({ type, onClose, onCreated }: NeuronCreationModalProps) {
+  const theme = NEURON_TYPE_THEME[type];
+  const [phase, setPhase] = useState<"compose" | "forming">("compose");
+
+  // compose-phase state — both modal types are now just a single text
+  // field, so we don't need any per-type form state. Beliefs default
+  // their `serves_need` to "value" (the closest fit for craft-identity
+  // principles, which is what most user-authored beliefs are); the user
+  // can re-categorize from the Core Beliefs panel's inline need-edit.
+  const [text, setText] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // What the forming-phase visual displays as the freshly-minted neuron's
+  // body text. Frozen at submit time so input edits don't bleed in mid-
+  // animation.
+  const [formedText, setFormedText] = useState("");
+
+  const canSubmit = !!text.trim() && !submitting;
+
+  const submit = async () => {
+    if (!canSubmit) return;
+    setSubmitting(true);
+    setError(null);
+    const t = text.trim();
+    try {
+      let res: Response;
+      if (type === "basic") {
+        // Always send 'identity' — the server's reconciler downgrades /
+        // reclassifies the kind based on text content if it obviously
+        // fits another bucket (focus / goal / etc.).
+        res = await fetch(`${API_BASE_URL}/api/learned`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: t, kind: "identity" }),
+        });
+      } else {
+        // Default servesNeed to "value" — most user-authored beliefs are
+        // about craft, identity, or how-they-work, which fits the Hyrum
+        // Smith "value" need (feeling capable / your work matters). The
+        // user can re-categorize later via the Core Beliefs panel's
+        // inline need editor.
+        res = await fetch(`${API_BASE_URL}/api/beliefs/manual`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: t, servesNeed: "value" }),
+        });
+      }
+      const body = await res.json().catch(() => null);
+      // Both endpoints can fail in two ways: HTTP non-2xx, or HTTP 200
+      // with `{ ok: false, reason }` (defensive — server wraps these
+      // now, but treat both paths as failure regardless). Surface the
+      // reason verbatim so the user sees why instead of a generic
+      // "try again" that hides bugs.
+      if (!res.ok || (body && body.ok === false)) {
+        const reason =
+          body?.error ||
+          body?.reason ||
+          (res.status === 401 ? "auth_required" : null) ||
+          `http_${res.status}`;
+        setError(`Couldn't save — ${reason}.`);
+        setSubmitting(false);
+        return;
+      }
+      const newId =
+        type === "belief"
+          ? (body?.belief?.id ?? null)
+          : (body?.fact?.id ?? null);
+
+      // Phase 2: hold the modal open through the formation animation.
+      // Roughly 1.4s of "neuron forming", then close + handoff.
+      setFormedText(t);
+      setPhase("forming");
+      window.setTimeout(() => {
+        onCreated(newId);
+        onClose();
+      }, 1400);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "network_error";
+      setError(`Couldn't save — ${msg}.`);
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    // Backdrop — full-screen, dimmed, click-outside to cancel ONLY in
+    // compose phase; once forming is playing we lock interactions so the
+    // user actually watches the animation through.
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.16 }}
+      className="fixed inset-0 z-[120] flex items-center justify-center bg-black/65 backdrop-blur-md p-4"
+      onClick={() => { if (phase === "compose") onClose(); }}
+      role="dialog"
+      aria-modal="true"
+      aria-label={theme.title}
+    >
+      <motion.div
+        initial={{ opacity: 0, y: 12, scale: 0.96 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: 12, scale: 0.96 }}
+        transition={{ type: "spring", stiffness: 320, damping: 28 }}
+        onClick={(e) => e.stopPropagation()}
+        className={`relative w-full max-w-md rounded-2xl bg-[rgba(15,15,18,0.97)] border ${theme.accentRing} shadow-[0_30px_80px_rgba(0,0,0,0.55)] overflow-hidden`}
+      >
+        {phase === "compose" ? (
+          <>
+            {/* Header — type name + short tagline + X */}
+            <div className="px-5 pt-5 pb-3 flex items-start justify-between gap-3 border-b border-white/8">
+              <div className="min-w-0">
+                <div className={`inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 border text-[0.6rem] font-medium ${theme.accentChip} mb-2`}>
+                  {type === "belief" ? <Atom size={10} /> : <Brain size={10} />}
+                  {theme.short}
+                </div>
+                <h2 className="text-base font-semibold text-white/95 tracking-tight">
+                  {theme.title}
+                </h2>
+              </div>
+              <button
+                onClick={onClose}
+                className="p-1.5 rounded-md hover:bg-white/8 text-white/55 hover:text-white/95 transition-colors flex-shrink-0"
+                aria-label="Close"
+              >
+                <X size={15} />
+              </button>
+            </div>
+
+            <div className="px-5 py-4 space-y-4">
+              {/* Description */}
+              <p className="text-[0.78rem] text-white/65 leading-relaxed">
+                {theme.description}
+              </p>
+
+              {/* Form fields (type-specific) */}
+              <div className="space-y-3">
+                <textarea
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                  autoFocus
+                  rows={3}
+                  maxLength={type === "belief" ? 140 : 240}
+                  placeholder={
+                    type === "belief"
+                      ? "e.g. 'Treat others the way you want to be treated.'"
+                      : "e.g. 'Designer building LYKN solo.'"
+                  }
+                  className="w-full bg-black/30 border border-white/15 rounded-lg px-3 py-2.5 text-[0.85rem] text-white/95 leading-snug placeholder:text-white/30 focus:outline-none focus:border-white/30 resize-none"
+                />
+
+                {error ? (
+                  <p className="text-[0.7rem] text-rose-300/85">{error}</p>
+                ) : null}
+              </div>
+            </div>
+
+            {/* Footer — Save only. Cancel/dismiss is the X in the header
+                (and clicking the dimmed backdrop), so a second cancel
+                button down here was redundant chrome. */}
+            <div className="px-5 pb-5 pt-2">
+              <button
+                onClick={submit}
+                disabled={!canSubmit}
+                className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border bg-blue-500/22 hover:bg-blue-500/32 border-blue-400/40 text-blue-100 text-[0.82rem] font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {submitting ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
+                Save neuron
+              </button>
+            </div>
+          </>
+        ) : (
+          // Forming phase — the "watch it get created" moment.
+          <NeuronFormingVisual theme={theme} text={formedText} />
+        )}
+      </motion.div>
+    </motion.div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// NeuronFormingVisual — replaces the form area when a neuron is forming.
+// A pulsing colored sphere scales in from a point, settles, then fades
+// out as the modal dismisses. Designed to be visible for ~1.4s — long
+// enough that the formation reads as deliberate, short enough that it
+// doesn't interrupt the user's flow.
+// ---------------------------------------------------------------------------
+
+function NeuronFormingVisual({
+  theme,
+  text,
+}: {
+  theme: typeof NEURON_TYPE_THEME[keyof typeof NEURON_TYPE_THEME];
+  text: string;
+}) {
+  return (
+    <div className="px-6 py-10 flex flex-col items-center gap-6">
+      <div className="relative w-32 h-32 flex items-center justify-center">
+        {/* Outer pulse ring */}
+        <motion.div
+          initial={{ scale: 0.2, opacity: 0 }}
+          animate={{ scale: [0.2, 1.4, 1.6], opacity: [0, 0.6, 0] }}
+          transition={{ duration: 1.4, ease: "easeOut" }}
+          className={`absolute inset-0 rounded-full ${theme.accentGlow}`}
+          style={{ background: `radial-gradient(circle, ${theme.accentHex}60 0%, transparent 60%)` }}
+        />
+        {/* Core sphere — settles into place */}
+        <motion.div
+          initial={{ scale: 0, opacity: 0 }}
+          animate={{ scale: [0, 1.15, 1], opacity: [0, 1, 1] }}
+          transition={{ duration: 0.9, ease: "easeOut", times: [0, 0.6, 1] }}
+          className="relative w-20 h-20 rounded-full"
+          style={{
+            background: `radial-gradient(circle at 35% 30%, ${theme.accentHex} 0%, ${theme.accentHex}80 60%, ${theme.accentHex}20 100%)`,
+            boxShadow: `0 0 40px ${theme.accentHex}80, inset 0 0 20px ${theme.accentHex}40`,
+          }}
+        />
+        {/* Inner pinpoint */}
+        <motion.div
+          initial={{ scale: 0, opacity: 0 }}
+          animate={{ scale: [0, 1, 0.8], opacity: [0, 1, 0.85] }}
+          transition={{ duration: 0.7, ease: "easeOut", delay: 0.15 }}
+          className="absolute w-3 h-3 rounded-full bg-white shadow-[0_0_18px_rgba(255,255,255,0.9)]"
+        />
+      </div>
+
+      <motion.div
+        initial={{ opacity: 0, y: 6 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.55, duration: 0.4 }}
+        className="text-center max-w-[18rem]"
+      >
+        <p className={`text-[0.62rem] font-semibold uppercase tracking-[0.2em] mb-1.5`} style={{ color: theme.accentHex }}>
+          {theme.short}
+        </p>
+        <p className="text-[0.85rem] text-white/95 leading-snug">{text}</p>
+      </motion.div>
+
+      <motion.p
+        initial={{ opacity: 0 }}
+        animate={{ opacity: [0, 1, 0] }}
+        transition={{ duration: 1.2, delay: 0.3 }}
+        className="text-[0.65rem] text-white/45"
+      >
+        Forming neuron…
+      </motion.p>
+    </div>
+  );
+}
+
 export default function SynthesisLayer() {
   const { user, signInWithOAuth } = useAuth();
   const { planId, loading: planLoading } = useUserPlan();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const containerRef = useRef<HTMLDivElement>(null);
   // Phone-class viewports get a 2D fallback instead of the 3D scene. The
   // r3f canvas + Bloom postprocessing pipeline crashes on a non-trivial
@@ -1730,8 +2176,31 @@ export default function SynthesisLayer() {
   const [filterTag, setFilterTag] = useState<string | null>(null);
   const [showModeMenu, setShowModeMenu] = useState(false);
   const [showTagMenu, setShowTagMenu] = useState(false);
+  // Core Beliefs slide-out — the user-facing surface for the layer above
+  // atomic facts (need → belief → rule → result). Lazy-mounts on first open.
+  const [beliefWindowOpen, setBeliefWindowOpen] = useState(false);
+  // The "+" toolbar menu — { Basic neuron, Core Belief neuron }. Tap a
+  // type and the menu closes; a centered creation modal takes over.
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
+  // Which neuron creation modal (if any) is currently open. Single source
+  // of truth — only one modal at a time, and the backdrop dimming is
+  // implicit in this state.
+  const [creatingNeuronType, setCreatingNeuronType] = useState<"basic" | "belief" | null>(null);
+  // After a successful belief save, we stash the new belief's id here so
+  // the graph-side formation animation can fire as soon as the refetched
+  // useQuery surfaces the corresponding `belief_<id>` node. Cleared once
+  // the animation has been triggered.
+  const [pendingFormingBeliefId, setPendingFormingBeliefId] = useState<string | null>(null);
+  // Same idea as pendingFormingBeliefId, but for Basic neurons (atomic facts
+  // saved to lykn_user_model_facts). The forming-watcher waits for the
+  // matching `fact_<uuid>` graph node to appear after the manualFacts
+  // query refetches, then plays the camera-focus pulse on it. Without
+  // this the basic-neuron Save would persist the row + invalidate the
+  // query but produce no visible feedback in the graph itself.
+  const [pendingFormingFactId, setPendingFormingFactId] = useState<string | null>(null);
   const modeMenuRef = useRef<HTMLDivElement>(null);
   const tagMenuRef = useRef<HTMLDivElement>(null);
+  const addMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const update = () => {
@@ -1797,6 +2266,60 @@ export default function SynthesisLayer() {
         .eq("chunk_index", 0)
         .limit(300);
       return (data || []) as ChunkRow[];
+    },
+    enabled: !!user?.id,
+  });
+
+  // Active beliefs (Hyrum-Smith belief-window layer). Rendered as their own
+  // category cluster in the 3D scene so the user can see the principles the
+  // AI is currently answering through. The detailed Accept/Edit/Retire
+  // affordances live in BeliefWindowPanel — this query just feeds the graph.
+  const { data: activeBeliefs = [] } = useQuery({
+    queryKey: ["mindmap_active_beliefs", user?.id, beliefWindowOpen],
+    queryFn: async () => {
+      if (!user?.id) return [] as Array<{
+        id: string; belief_text: string; serves_need: string; confidence: number;
+      }>;
+      const { data } = await supabase
+        .from("lykn_beliefs")
+        .select("id, belief_text, serves_need, confidence")
+        .eq("user_id", user.id)
+        .eq("status", "active")
+        .order("confidence", { ascending: false })
+        .limit(30);
+      return (data || []) as Array<{
+        id: string; belief_text: string; serves_need: string; confidence: number;
+      }>;
+    },
+    enabled: !!user?.id,
+  });
+
+  // User-stated and user-confirmed atomic facts. We render these as their
+  // own neuron nodes so a freshly-saved "Basic neuron" appears in the graph
+  // immediately. The synthesis profile's themes/signals lag behind by a
+  // background rebuild — without this query, hitting Save in the basic-
+  // neuron modal would persist the row but show no visible node, making
+  // the save look broken even though the data landed correctly. We
+  // deliberately scope to status IN ('stated','confirmed') so we only
+  // surface things the user explicitly authored or thumbs-upped, not the
+  // long tail of low-confidence inferred facts (those still flow through
+  // the normal synthesis profile when it next rebuilds).
+  const { data: manualFacts = [] } = useQuery({
+    queryKey: ["mindmap_manual_facts", user?.id],
+    queryFn: async () => {
+      if (!user?.id) return [] as Array<{
+        id: string; fact_kind: string; fact_text: string; status: string; confidence: number;
+      }>;
+      const { data } = await supabase
+        .from("lykn_user_model_facts")
+        .select("id, fact_kind, fact_text, status, confidence")
+        .eq("user_id", user.id)
+        .in("status", ["stated", "confirmed"])
+        .order("last_seen_at", { ascending: false })
+        .limit(60);
+      return (data || []) as Array<{
+        id: string; fact_kind: string; fact_text: string; status: string; confidence: number;
+      }>;
     },
     enabled: !!user?.id,
   });
@@ -1983,7 +2506,7 @@ export default function SynthesisLayer() {
   const rootLabel = isPrototypeHandoff ? "Your Synthesis Layer" : "Your Mind";
   const { nodes: allNodes, edges } = useMemo(
     () => {
-      const built = buildGraph(effectiveProjects, effectiveBoards, effectiveNotes, synthesisThemes, synthesisData, vaultGridMap, forceCategoryIds, rootLabel);
+      const built = buildGraph(effectiveProjects, effectiveBoards, effectiveNotes, synthesisThemes, synthesisData, vaultGridMap, activeBeliefs, manualFacts, forceCategoryIds, rootLabel);
       // Prototype handoff: stamp each prototype-neuron node with the
       // ordinal (1st, 2nd, ...) and the AI-supplied "why" reason so the
       // detail panel can render "Nth neuron created" + a custom blurb
@@ -2019,7 +2542,7 @@ export default function SynthesisLayer() {
       }
       return built;
     },
-    [effectiveProjects, effectiveBoards, effectiveNotes, synthesisThemes, synthesisData, vaultGridMap, forceCategoryIds, rootLabel, isPrototypeHandoff, prototypeNeurons],
+    [effectiveProjects, effectiveBoards, effectiveNotes, synthesisThemes, synthesisData, vaultGridMap, activeBeliefs, manualFacts, forceCategoryIds, rootLabel, isPrototypeHandoff, prototypeNeurons],
   );
   const nodeMap = useMemo(() => new Map(allNodes.map((n) => [n.id, n])), [allNodes]);
 
@@ -2070,10 +2593,16 @@ export default function SynthesisLayer() {
     const handler = (e: MouseEvent) => {
       if (showModeMenu && modeMenuRef.current && !modeMenuRef.current.contains(e.target as Node)) setShowModeMenu(false);
       if (showTagMenu && tagMenuRef.current && !tagMenuRef.current.contains(e.target as Node)) setShowTagMenu(false);
+      // Close the "+" add menu when clicking outside its anchor. The
+      // modal that opens after picking a type lives at page-root and has
+      // its own backdrop click-to-close — it doesn't share this ref.
+      if (addMenuOpen && addMenuRef.current && !addMenuRef.current.contains(e.target as Node)) {
+        setAddMenuOpen(false);
+      }
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
-  }, [showModeMenu, showTagMenu]);
+  }, [showModeMenu, showTagMenu, addMenuOpen]);
 
   /* Hover highlight */
   const highlightSet = useMemo(() => {
@@ -2126,6 +2655,17 @@ export default function SynthesisLayer() {
       // brand-new one; clicking root in that mode shouldn't yank the camera.
       if (prototypeFocusId) return;
       setSelectedId(null);
+      return;
+    }
+    // Belief nodes (or the Beliefs category itself) shortcut to the
+    // BeliefWindowPanel — that's where ratification, rule editing, and
+    // the Why log live. Selecting them in the 3D scene with no panel
+    // would just show a label nobody can act on.
+    if (node.kind === "belief" || nodeId === "__cat_beliefs__") {
+      setBeliefWindowOpen(true);
+      // Still mark it selected so the 3D camera flies to it — the user
+      // sees their principle highlighted while the panel slides in.
+      setSelectedId(nodeId);
       return;
     }
     // Prototype handoff: clicking the highlighted neuron a second time
@@ -2196,6 +2736,51 @@ export default function SynthesisLayer() {
     return () => {
       prototypeIntroTimeouts.current.forEach((id) => window.clearTimeout(id));
       prototypeIntroTimeouts.current = [];
+    };
+  }, []);
+
+  // After a successful "Core Belief neuron" save, the modal sets
+  // pendingFormingBeliefId to the new belief's UUID and triggers an
+  // active-beliefs refetch. This effect waits for the matching
+  // `belief_<uuid>` graph node to appear, then fires the same formation
+  // pulse the prototype handoff uses (line draws toward the node, neuron
+  // scales in, camera focuses on it). Bails after a 4s timeout so we
+  // don't leave the page waiting on a query that never resolves.
+  const beliefFormingWatchTimeouts = useRef<number[]>([]);
+  useEffect(() => {
+    if (!pendingFormingBeliefId) return;
+    const targetId = `belief_${pendingFormingBeliefId}`;
+    if (!nodeMap.has(targetId)) return;
+    setFormingNodeId(targetId);
+    setShowWelcome(false);
+    const focusAt = window.setTimeout(() => setSelectedId(targetId), 400);
+    const clearAt = window.setTimeout(() => setFormingNodeId(null), 2000);
+    beliefFormingWatchTimeouts.current.push(focusAt, clearAt);
+    setPendingFormingBeliefId(null);
+  }, [pendingFormingBeliefId, nodeMap]);
+
+  // Mirror of the belief-formation watcher above, but for Basic neurons.
+  // The modal sets pendingFormingFactId to the new fact's UUID and
+  // invalidates the manualFacts query. Once the query refetches and the
+  // matching `fact_<uuid>` node appears in the graph, we run the same
+  // formation pulse so the user actually watches their neuron land in
+  // the scene instead of wondering whether Save did anything.
+  useEffect(() => {
+    if (!pendingFormingFactId) return;
+    const targetId = `fact_${pendingFormingFactId}`;
+    if (!nodeMap.has(targetId)) return;
+    setFormingNodeId(targetId);
+    setShowWelcome(false);
+    const focusAt = window.setTimeout(() => setSelectedId(targetId), 400);
+    const clearAt = window.setTimeout(() => setFormingNodeId(null), 2000);
+    beliefFormingWatchTimeouts.current.push(focusAt, clearAt);
+    setPendingFormingFactId(null);
+  }, [pendingFormingFactId, nodeMap]);
+
+  useEffect(() => {
+    return () => {
+      beliefFormingWatchTimeouts.current.forEach((id) => window.clearTimeout(id));
+      beliefFormingWatchTimeouts.current = [];
     };
   }, []);
 
@@ -2403,6 +2988,63 @@ export default function SynthesisLayer() {
         )}
       </div>
 
+      {/* Core Beliefs slide-out — opens the right-side panel that lists
+          proposed/active beliefs, their rules, and the "Why" log. Lazy
+          mount: the panel only fetches /api/beliefs the first time it
+          opens (and on each subsequent open after a 5s freshness window).
+          `initialComposerOpen` is set when the user reached the panel via
+          the "+ → Core Belief neuron" entry, so it lands on the write-in
+          composer. We clear the flag after the panel honors it. */}
+      <BeliefWindowPanel
+        open={beliefWindowOpen}
+        onClose={() => setBeliefWindowOpen(false)}
+      />
+
+      {/* Core Beliefs has no standalone toolbar trigger — it's reached
+          through the bottom-right "+" menu's "Core Belief neuron" entry,
+          which opens the centered creation modal. Once the new belief
+          forms in the 3D scene the user can keep working in the layer;
+          to manage / ratify / edit existing beliefs they re-enter the
+          panel via the AppliedRulePill "Open Core Beliefs →" link or
+          the Why-log buttons under chat replies. */}
+
+      {/* Centered neuron creation modal. Single component handles both
+          neuron types (Basic neuron & Core Belief neuron) — the modal
+          dims the screen, shows the type's name + description, captures
+          the form input, and on save plays a brief "neuron forming"
+          animation before dismissing. For Core Beliefs we additionally
+          chain into the graph-level forming animation so the user sees
+          their belief land in the 3D scene. */}
+      <AnimatePresence>
+        {creatingNeuronType ? (
+          <NeuronCreationModal
+            type={creatingNeuronType}
+            onClose={() => setCreatingNeuronType(null)}
+            onCreated={(newId) => {
+              if (creatingNeuronType === "belief" && newId) {
+                // Belief nodes render directly off the active-beliefs
+                // query, so once we refetch the new node will appear in
+                // the graph and the watcher effect will trigger the
+                // formingNodeId pulse.
+                setPendingFormingBeliefId(newId);
+                queryClient.invalidateQueries({ queryKey: ["mindmap_active_beliefs", user?.id] });
+              } else {
+                // Basic neurons land in lykn_user_model_facts. We render
+                // user-stated/confirmed rows directly via the manualFacts
+                // query so the new node shows up immediately — the
+                // synthesis profile rebuild that would normally roll
+                // these into themes/topics happens out-of-band on a
+                // background cadence, way too slow to feel like a save.
+                if (newId) setPendingFormingFactId(newId);
+                queryClient.invalidateQueries({ queryKey: ["mindmap_manual_facts", user?.id] });
+                queryClient.invalidateQueries({ queryKey: ["mindmap_synthesis_profile", user?.id] });
+                queryClient.invalidateQueries({ queryKey: ["mindmap_synthesis_chunks", user?.id] });
+              }
+            }}
+          />
+        ) : null}
+      </AnimatePresence>
+
       {/* Organize dropdown — desktop sits to the right of the sidebar
           signed-in pill; mobile has no sidebar, so the desktop position
           (`left-[13.5rem]`) lands directly under the centered "Synthesis
@@ -2520,20 +3162,101 @@ export default function SynthesisLayer() {
         <span>{effectiveNotes.length} notes</span>
       </div>
 
-      {/* Zoom controls */}
+      {/* Bottom-right control cluster — add-neuron button on the LEFT,
+          zoom controls (in / out / reset) on the RIGHT. Two separate
+          flex children so the "+" can be a larger circular button while
+          the zoom controls stay as a tight square stack. The flex
+          container is bottom-anchored on the right edge of the canvas
+          and shifts left when the detail panel opens. */}
       <div
-        className="absolute bottom-6 z-20 flex flex-col gap-1.5 transition-[right] duration-300"
+        className="absolute bottom-6 z-20 flex items-end gap-2.5 transition-[right] duration-300"
         style={{ right: panelOpen ? 384 : 24 }}
       >
-        <button onClick={() => setCamera((c) => ({ ...c, zoom: Math.min(3, c.zoom * 1.2) }))} className="w-8 h-8 rounded-lg bg-white/8 backdrop-blur border border-white/10 flex items-center justify-center hover:bg-white/16 transition-colors">
-          <ZoomIn size={14} className="text-white/80" />
-        </button>
-        <button onClick={() => setCamera((c) => ({ ...c, zoom: Math.max(0.15, c.zoom * 0.8) }))} className="w-8 h-8 rounded-lg bg-white/8 backdrop-blur border border-white/10 flex items-center justify-center hover:bg-white/16 transition-colors">
-          <ZoomOut size={14} className="text-white/80" />
-        </button>
-        <button onClick={resetView} className="w-8 h-8 rounded-lg bg-white/8 backdrop-blur border border-white/10 flex items-center justify-center hover:bg-white/16 transition-colors" title="Reset view">
-          <Maximize2 size={14} className="text-white/80" />
-        </button>
+        {/* Add-neuron entry — bigger, circular, sits visually as the
+            primary action of the cluster. Picking a type opens a
+            centered creation modal. */}
+        <div ref={addMenuRef} className="relative">
+          <button
+            onClick={() => setAddMenuOpen((v) => !v)}
+            className={`w-11 h-11 rounded-full backdrop-blur border flex items-center justify-center shadow-[0_6px_20px_rgba(0,0,0,0.35)] transition-colors ${
+              addMenuOpen
+                ? "bg-blue-500/25 border-blue-400/45 text-blue-100"
+                : "bg-white/10 border-white/15 text-white/85 hover:bg-white/16 hover:border-white/25"
+            }`}
+            title="Add a neuron"
+            aria-label="Add a neuron"
+            aria-expanded={addMenuOpen}
+          >
+            <Plus size={18} />
+          </button>
+
+          <AnimatePresence>
+            {addMenuOpen ? (
+              <motion.div
+                initial={{ opacity: 0, y: 4 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 4 }}
+                transition={{ duration: 0.12 }}
+                // Anchor to the button's RIGHT edge and extend leftward.
+                // The "+" button is the leftmost item in a cluster pinned
+                // to the right side of the canvas, so the popover (224px
+                // wide) needs to grow into the open canvas to its left
+                // — anchoring `left-0` instead would push the popover off
+                // the right edge of the viewport. z-50 keeps it stacked
+                // above the zoom-column siblings.
+                className="absolute bottom-full right-0 mb-2 w-56 rounded-xl bg-[rgba(15,15,18,0.97)] backdrop-blur-xl border border-white/15 shadow-[0_14px_40px_rgba(0,0,0,0.5)] overflow-hidden z-50"
+                role="menu"
+              >
+                <button
+                  role="menuitem"
+                  onClick={() => {
+                    setAddMenuOpen(false);
+                    setCreatingNeuronType("basic");
+                  }}
+                  className="w-full flex items-start gap-2.5 px-3 py-2.5 text-left hover:bg-white/8 transition-colors"
+                >
+                  <Brain size={13} className="mt-0.5 text-blue-300/85 flex-shrink-0" />
+                  <div className="min-w-0">
+                    <div className="text-[0.72rem] font-medium text-white/90">Basic neuron</div>
+                    <div className="text-[0.62rem] text-white/45 mt-0.5 leading-snug">
+                      A single fact about you the AI should remember.
+                    </div>
+                  </div>
+                </button>
+                <div className="h-px bg-white/8" />
+                <button
+                  role="menuitem"
+                  onClick={() => {
+                    setAddMenuOpen(false);
+                    setCreatingNeuronType("belief");
+                  }}
+                  className="w-full flex items-start gap-2.5 px-3 py-2.5 text-left hover:bg-white/8 transition-colors"
+                >
+                  <Atom size={13} className="mt-0.5 text-blue-300/85 flex-shrink-0" />
+                  <div className="min-w-0">
+                    <div className="text-[0.72rem] font-medium text-white/90">Core Belief neuron</div>
+                    <div className="text-[0.62rem] text-white/45 mt-0.5 leading-snug">
+                      A principle that shapes every reply.
+                    </div>
+                  </div>
+                </button>
+              </motion.div>
+            ) : null}
+          </AnimatePresence>
+        </div>
+
+        {/* Zoom + reset stack */}
+        <div className="flex flex-col gap-1.5">
+          <button onClick={() => setCamera((c) => ({ ...c, zoom: Math.min(3, c.zoom * 1.2) }))} className="w-8 h-8 rounded-lg bg-white/8 backdrop-blur border border-white/10 flex items-center justify-center hover:bg-white/16 transition-colors">
+            <ZoomIn size={14} className="text-white/80" />
+          </button>
+          <button onClick={() => setCamera((c) => ({ ...c, zoom: Math.max(0.15, c.zoom * 0.8) }))} className="w-8 h-8 rounded-lg bg-white/8 backdrop-blur border border-white/10 flex items-center justify-center hover:bg-white/16 transition-colors">
+            <ZoomOut size={14} className="text-white/80" />
+          </button>
+          <button onClick={resetView} className="w-8 h-8 rounded-lg bg-white/8 backdrop-blur border border-white/10 flex items-center justify-center hover:bg-white/16 transition-colors" title="Reset view">
+            <Maximize2 size={14} className="text-white/80" />
+          </button>
+        </div>
       </div>
 
       {/* Legend */}
@@ -2543,6 +3266,7 @@ export default function SynthesisLayer() {
         <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: palette.vault.bg, color: palette.vault.bg }} /> Vault</span>
         <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: palette.tags.bg, color: palette.tags.bg }} /> Tags</span>
         <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: palette.neurons.bg, color: palette.neurons.bg }} /> AI Learned</span>
+        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: palette.beliefs.bg, color: palette.beliefs.bg }} /> Beliefs</span>
       </div>
 
       {/* Orbit hint — first-time users may not realise drag = orbit (not pan).

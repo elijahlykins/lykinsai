@@ -36,6 +36,7 @@ import remarkGfm from "remark-gfm";
 import { useThinkingStatus } from "@/hooks/useThinkingStatus";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/SupabaseAuth";
+import { AI_TEMPORARY_FAILURE_TEXT } from "@/lib/ai/userFacingErrors";
 import { useQuery } from "@tanstack/react-query";
 import { normalizeValueToV2, getBlockPlainText } from "@/components/notes/blockModel";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -49,6 +50,16 @@ import { afterVaultNoteSaved } from "@/lib/vault/afterVaultSave";
 import { notifyVaultCapIfApplicable } from "@/lib/vault/vaultCapError";
 import { saveExchange, getMemoryForPrompt, invalidateMemoryCache } from "@/lib/conversationMemory";
 import { splitResponseIntoChunks, normalizeChecklistSyntax, flattenNodeText, handleChunkDragStart } from "@/lib/chatChunks";
+import { useIsTouchOnlyDevice } from "@/hooks/useViewportTier";
+import {
+  parseLearnedTag,
+  stripLearnedTagsFromFinal,
+  finalizeVisibleReply,
+  postLearnedFact,
+  postAutoLearnedFact,
+} from "@/lib/ai/learnedTag";
+import NeuronPill from "@/components/synthesis/NeuronPill";
+import AppliedRulePill from "@/components/synthesis/AppliedRulePill";
 
 const PROJECTS_CHANGED_EVENT = "lykinsai_projects_changed";
 
@@ -192,7 +203,11 @@ export default function ProjectPlaceholder() {
     return Math.max(minW, Math.min(maxW, Math.floor(raw || minW)));
   }, []);
 
-  const isMobileChat = typeof window !== "undefined" && window.innerWidth < 640;
+  // We only flip into the compact phone-style chat overlay on actual
+  // touch-only devices. A laptop/desktop window resized below 640px (e.g.
+  // a split-screen window) keeps the docked desktop chat rail.
+  const isTouchOnlyDevice = useIsTouchOnlyDevice();
+  const isMobileChat = typeof window !== "undefined" && window.innerWidth < 640 && isTouchOnlyDevice;
 
   const chatRailWidthPx = showChat
     ? clampChatRailWidth(chatRailWidthManual ?? CHAT_RAIL_DEFAULT_WIDTH, window.innerWidth)
@@ -382,7 +397,7 @@ export default function ProjectPlaceholder() {
     } catch {
       // ignore
     }
-    return "claude-sonnet-4-6";
+    return "lykn-lite";
   });
 
   // --- Project Health tracking ---
@@ -1550,11 +1565,15 @@ export default function ProjectPlaceholder() {
       const personality = settings.aiPersonality || "balanced";
       const detailLevel = settings.aiDetailLevel || "medium";
 
+      // VOICE — WE, NOT YOU: LYKN is the user's synthesis layer. Default to we/our/let's
+      // when describing shared work (our project, our draft). Only step out to "I'm your
+      // synthesis layer" when the user asks what LYKN is. Never "How can I help you today?".
+      const voiceRule = "You are LYKN — this user's synthesis layer. Speak in first-person plural by default (we / our / we're / let's) — call it 'our project', 'our draft', 'let's add this', not 'your project' or 'how can I help you'. Only use 'I'm your synthesis layer' when the user asks WHAT YOU ARE. Never sound like an outside chatbot.";
       const personalityStyles = {
-        professional: "You are a professional writing assistant. Be formal, precise, and objective.",
-        balanced: "You are a helpful AI assistant. Be friendly yet professional.",
-        casual: "You are a friendly companion. Be warm, conversational, and supportive.",
-        enthusiastic: "You are an enthusiastic creative coach. Be energetic, motivating, and positive!",
+        professional: `${voiceRule} Be formal, precise, and objective in tone.`,
+        balanced: `${voiceRule} Be friendly yet professional.`,
+        casual: `${voiceRule} Be warm, conversational, and supportive.`,
+        enthusiastic: `${voiceRule} Be energetic, motivating, and positive!`,
       };
 
       const detailStyles = {
@@ -1651,7 +1670,15 @@ INSTRUCTIONS:
         throw new Error("No response from AI. Please check your API keys and try again.");
       }
 
-      const words = aiText.split(" ");
+      // Parse the hidden <learned>/<updated> tag (if the model emitted one)
+      // BEFORE the word-by-word emulated stream renders, so the user never
+      // sees the raw tag flicker into the visible bubble. Strip the tag
+      // region from the visible text and use that for both rendering and
+      // saving to conversation memory.
+      const learnedTag = parseLearnedTag(aiText);
+      const visibleAiText = finalizeVisibleReply(stripLearnedTagsFromFinal(aiText));
+
+      const words = visibleAiText.split(" ");
       let currentText = "";
 
       for (let i = 0; i < words.length; i += 1) {
@@ -1668,11 +1695,52 @@ INSTRUCTIONS:
         }
         await new Promise((resolve) => setTimeout(resolve, 30));
       }
-      if (user?.id) { invalidateMemoryCache(); saveExchange(user.id, "project", projectId || null, projectName || null, chatInput, aiText); }
+      if (user?.id) { invalidateMemoryCache(); saveExchange(user.id, "project", projectId || null, projectName || null, chatInput, visibleAiText); }
+
+      // === LEARN-A-FACT — primary path (model tag) or fallback (server
+      // classifier). The project-chat prompt above doesn't inject the
+      // learned-tag instructions today, so the fallback is the workhorse
+      // path here — but we still try the parse first so any future prompt
+      // expansion picks up the cheaper path automatically. Fire-and-
+      // forget: the bubble already rendered; pill arrives a beat later.
+      if (user?.id) {
+        const sendUserText = chatInput;
+        void (async () => {
+          try {
+            const { API_BASE_URL: apiBase } = await import("@/lib/api-config");
+            let result = null;
+            if (learnedTag) {
+              result = await postLearnedFact(apiBase, {
+                text: learnedTag.text,
+                kind: learnedTag.kind,
+                reason: learnedTag.reason,
+                sourceId: projectId ? `project:${projectId}` : "project_chat",
+                replacesText: learnedTag.mode === "update" ? learnedTag.previousText : undefined,
+              });
+            } else {
+              result = await postAutoLearnedFact(apiBase, {
+                userMessage: String(sendUserText || ""),
+                assistantReply: visibleAiText,
+                sourceId: projectId ? `project:${projectId}:auto` : "project_chat_auto",
+              });
+            }
+            if (!result || (!result.isNew && !result.isUpdate)) return;
+            setChatMessages((prev) => {
+              const next = [...prev];
+              if (next[assistantMessageIndex]) {
+                next[assistantMessageIndex] = { ...next[assistantMessageIndex], factNeuron: result };
+              }
+              return next;
+            });
+          } catch {
+            // Never let a learn miss break the chat surface.
+          }
+        })();
+      }
     } catch (error: any) {
       setChatMessages((prev) => {
         const newMessages = [...prev];
-        newMessages[assistantMessageIndex] = { ...newMessages[assistantMessageIndex], content: "This model isn\u2019t working properly right now \u2014 try another model." };
+        newMessages[assistantMessageIndex] = { ...newMessages[assistantMessageIndex], content: AI_TEMPORARY_FAILURE_TEXT };
         return newMessages;
       });
     } finally {
@@ -2722,6 +2790,8 @@ INSTRUCTIONS:
                               {copiedMsgId === msg.id ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
                             </button>
                           </div>
+                          {msg.factNeuron && <NeuronPill fact={msg.factNeuron} size="compact" />}
+                          {msg.appliedAttribution && <AppliedRulePill attribution={msg.appliedAttribution} size="compact" />}
                         </div>
                       </div>
                     </div>

@@ -37,7 +37,7 @@ import { useThinkingStatus } from "@/hooks/useThinkingStatus";
 import { getStructuredPasteFromEvent } from "@/lib/pasteFromClipboard";
 import { getAiPrefs } from "@/lib/ai-prefs";
 import { buildTieredCanvasContext, buildActionCanvasContext } from "@/lib/ai/buildCanvasContext";
-import { getVaultSidebarWidth } from "@/hooks/useViewportTier";
+import { getVaultSidebarWidth, useIsTouchOnlyDevice, getIsTouchOnlyDevice } from "@/hooks/useViewportTier";
 import { afterVaultNoteSaved } from "@/lib/vault/afterVaultSave";
 import { fetchNotesForVaultAi, buildVaultDetailForGridAi, type VaultAiNoteRow } from "@/lib/vault/vaultContentsForAi";
 import { CONTEXT_BUDGETS } from "@/lib/ai/promptBuilder";
@@ -624,9 +624,15 @@ export default function OmniaGridPage() {
   const [isQuickNoteSaving, setIsQuickNoteSaving] = useState(false);
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth || 1280);
   const [chatRailWidthManual, setChatRailWidthManual] = useState<number | null>(null);
-  const isMobileGrid = viewportWidth < 640;
+  // We only flip into the phone/compact shells on actual touch-only devices.
+  // A laptop or desktop in split-screen / narrow-window mode keeps the full
+  // desktop UI even when the viewport drops under our width thresholds —
+  // otherwise users were getting bumped into the phone-only chat shell just
+  // by snapping a window to half the screen.
+  const isTouchOnlyDevice = useIsTouchOnlyDevice();
+  const isMobileGrid = viewportWidth < 640 && isTouchOnlyDevice;
   // Phone-class viewport: hide the grid canvas entirely and run chat-only.
-  const isMobilePhone = viewportWidth < 768;
+  const isMobilePhone = viewportWidth < 768 && isTouchOnlyDevice;
   const vaultSidebarWidthPx = useMemo(() => getVaultSidebarWidth(viewportWidth), [viewportWidth]);
   const DialogAny = Dialog as any;
   const DialogContentAny = DialogContent as any;
@@ -653,7 +659,7 @@ export default function OmniaGridPage() {
     } catch {
       // ignore
     }
-    return "claude-sonnet-4-6";
+    return "lykn-lite";
   });
   const [liveAIMode, setLiveAIMode] = useState(() => {
     try {
@@ -719,9 +725,12 @@ export default function OmniaGridPage() {
   // the flag once on mount, then strip it from the URL so it doesn't
   // linger across reloads or shares.
   // Phones default to chat-only (no canvas) regardless of the URL flag.
+  // Note: we require an actual touch-only device here so that a laptop in
+  // split-screen mode (narrow viewport, but still mouse + hover) doesn't
+  // start up in the phone shell.
   const [chatMode, setChatMode] = useState(() => {
     if (typeof window === "undefined") return false;
-    if ((window.innerWidth || 1280) < 768) return true;
+    if ((window.innerWidth || 1280) < 768 && getIsTouchOnlyDevice()) return true;
     const params = new URLSearchParams(window.location.search);
     return params.get("chat") === "1";
   });
@@ -1096,7 +1105,7 @@ export default function OmniaGridPage() {
     chatInputRef, chatInputHasText, setChatInput, handleChatInputChange,
     isChatLoading, setIsChatLoading, chatFlowMode, chatStatusText, setChatStatusText,
     focusedChatAttachments, setFocusedChatAttachments,
-    expandedAiMsgIds, chatReactions, setChatReactions,
+    expandedAiMsgIds, expandedUserPromptIds, chatReactions, setChatReactions,
     copiedMsgId, setCopiedMsgId,
     assistantTaskChecks, isDictating, isTranscribing,
     chatScrollRef, chatPanelInputRef, centerChatInputRef,
@@ -1107,7 +1116,7 @@ export default function OmniaGridPage() {
     handleChatPaste, handleOpenAttachments,
     removeFocusedAttachment, addFocusedAttachment,
     applyVaultDropToChat, resizeChatInput,
-    toggleAiExpanded, getCollapsedPreview,
+    toggleAiExpanded, toggleUserPromptExpanded, getCollapsedPreview,
     updateTaskCheck, buildChatMarkdownComponents,
     typeResponseIntoChat, addChatResponseToGrid,
     replaySavedPromptResponse, applyProjectActions,
@@ -2956,6 +2965,8 @@ export default function OmniaGridPage() {
           onReplay={handleSideRailReplay}
           expandedAiMsgIds={expandedAiMsgIds}
           toggleAiExpanded={toggleAiExpanded}
+          expandedUserPromptIds={expandedUserPromptIds}
+          toggleUserPromptExpanded={toggleUserPromptExpanded}
           getCollapsedPreview={getCollapsedPreview}
           copiedMsgId={copiedMsgId}
           onCopyMessage={handleSideRailCopyMessage}
@@ -2997,6 +3008,8 @@ export default function OmniaGridPage() {
           onSaveLink={handleFocusedChatSaveLink}
           expandedAiMsgIds={expandedAiMsgIds}
           toggleAiExpanded={toggleAiExpanded}
+          expandedUserPromptIds={expandedUserPromptIds}
+          toggleUserPromptExpanded={toggleUserPromptExpanded}
           getCollapsedPreview={getCollapsedPreview}
           copiedMsgId={copiedMsgId}
           onCopyMessage={handleFocusedChatCopyMessage}

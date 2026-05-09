@@ -1,12 +1,15 @@
 import React, { useRef, useEffect, useState, useCallback } from "react";
 import {
   Check, ChevronRight, Copy, Download, FileText, Globe,
-  GripVertical, Link2, Music, Play, RefreshCw,
+  GripVertical, Link2, MoreHorizontal, Music, Play, RefreshCw,
   Save, Share2, StickyNote, ThumbsDown, ThumbsUp,
 } from "lucide-react";
 import { GridIcon } from "@/components/ui/GridIcon";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import NeuronPill from "@/components/synthesis/NeuronPill";
+import AppliedRulePill from "@/components/synthesis/AppliedRulePill";
+import type { FactNeuron } from "@/lib/ai/learnedTag";
 
 const TASK_LINE_RE = /^\s*(?:[-*]\s+)?\[([ xX])\]\s+(.+)$/;
 
@@ -100,6 +103,16 @@ type PromptMessage = {
   sources?: { title: string; url: string }[];
   kind?: "prompt";
   attachments?: FocusedChatAttachment[];
+  /**
+   * Set when the AI's reply ended with a hidden <learned>/<reason> or
+   * <updated old="..."> tag pair — meaning a neuron was either minted OR
+   * refined in the synthesis layer during this exact turn. Also set when
+   * the model forgot to tag but the server-side /api/learned/auto
+   * classifier detected a personal disclosure as a fallback. Renders the
+   * glowing "Neuron created" / "Neuron updated" pill underneath the AI
+   * response so the user sees LYKN learning about them in real time.
+   */
+  factNeuron?: FactNeuron;
 };
 
 type CanvasFileBlock = {
@@ -149,6 +162,8 @@ export interface OmniaFocusedChatProps {
 
   expandedAiMsgIds: Set<string>;
   toggleAiExpanded: (msgId: string) => void;
+  expandedUserPromptIds: Set<string>;
+  toggleUserPromptExpanded: (msgId: string) => void;
   getCollapsedPreview: (text: string) => string;
 
   copiedMsgId: string | null;
@@ -197,6 +212,8 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
   onSaveLink,
   expandedAiMsgIds,
   toggleAiExpanded,
+  expandedUserPromptIds,
+  toggleUserPromptExpanded,
   getCollapsedPreview,
   copiedMsgId,
   onCopyMessage,
@@ -434,9 +451,39 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
                         })}
                       </div>
                     )}
-                    <div className="max-w-[80%] rounded-2xl rounded-br-md px-4 py-3 text-sm leading-relaxed text-black/90 dark:text-white/90 border border-black/8 dark:border-white/10 bg-background shadow-[0_4px_14px_rgba(0,0,0,0.06)] [&_table]:my-2 [&_td]:px-2 [&_th]:px-2">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={buildChatMarkdownComponents(msg.id)}>{normalizeChecklistSyntax(msg.content || "")}</ReactMarkdown>
-                    </div>
+                    {(() => {
+                      const promptText = msg.content || "";
+                      // Long prompts get a "show more / show less" affordance so the
+                      // bubble doesn't dominate the chat scroll.
+                      const isLongPrompt = promptText.length > 320;
+                      const isPromptExpanded = msg.id ? expandedUserPromptIds.has(msg.id) : true;
+                      const collapsedClampStyle = isLongPrompt && !isPromptExpanded
+                        ? { display: "-webkit-box" as const, WebkitLineClamp: 5 as any, WebkitBoxOrient: "vertical" as any, overflow: "hidden" as const }
+                        : undefined;
+                      return (
+                        <div className="max-w-[80%] flex flex-col items-end">
+                          <div
+                            className="rounded-2xl rounded-br-md px-4 py-3 text-sm leading-relaxed text-black/90 dark:text-white/90 border border-black/8 dark:border-white/10 bg-background shadow-[0_4px_14px_rgba(0,0,0,0.06)] [&_table]:my-2 [&_td]:px-2 [&_th]:px-2"
+                            style={collapsedClampStyle}
+                          >
+                            <ReactMarkdown remarkPlugins={[remarkGfm]} components={buildChatMarkdownComponents(msg.id)}>{normalizeChecklistSyntax(promptText)}</ReactMarkdown>
+                          </div>
+                          {isLongPrompt && msg.id && (
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); toggleUserPromptExpanded(msg.id); }}
+                              title={isPromptExpanded ? "Show less" : "Show full prompt"}
+                              aria-label={isPromptExpanded ? "Show less" : "Show full prompt"}
+                              className="mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs text-black/55 dark:text-white/55 hover:text-black/85 dark:hover:text-white/85 hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
+                            >
+                              {isPromptExpanded
+                                ? <span className="leading-none">Show less</span>
+                                : <><MoreHorizontal className="w-3.5 h-3.5" /><span className="leading-none">Show more</span></>}
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
                 )}
                 {msg.role === "user" && msg.aiResponse && (() => {
@@ -637,6 +684,8 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
                       </div>
                         </div>
                       </div>
+                      {msg.factNeuron && <NeuronPill fact={msg.factNeuron} className="px-1" />}
+                      {msg.appliedAttribution && <AppliedRulePill attribution={msg.appliedAttribution} className="px-1" />}
                     </div>
                   </div>
                   );

@@ -13,8 +13,18 @@ import { useNavigate } from 'react-router-dom';
 import { createPageUrl } from '../utils';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/SupabaseAuth';
+import { AI_TEMPORARY_FAILURE_TEXT } from '@/lib/ai/userFacingErrors';
 import { useThinkingStatus } from '@/hooks/useThinkingStatus';
 import { getAiPrefs } from '@/lib/ai-prefs';
+import {
+  parseLearnedTag,
+  stripLearnedTagsFromFinal,
+  finalizeVisibleReply,
+  postLearnedFact,
+  postAutoLearnedFact,
+} from '@/lib/ai/learnedTag';
+import NeuronPill from '@/components/synthesis/NeuronPill';
+import AppliedRulePill from '@/components/synthesis/AppliedRulePill';
 
 export default function VaultChatPage() {
   const { user } = useAuth();
@@ -23,7 +33,7 @@ export default function VaultChatPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [currentModel, setCurrentModel] = useState('claude-sonnet-4-6');
+  const [currentModel, setCurrentModel] = useState('lykn-lite');
   const [inputMode, setInputMode] = useState('text');
   const [attachments, setAttachments] = useState([]);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
@@ -110,7 +120,7 @@ export default function VaultChatPage() {
 
   useEffect(() => {
     const settings = JSON.parse(localStorage.getItem('lykinsai_settings') || '{}');
-    const savedModel = settings.aiModel || 'claude-sonnet-4-6';
+    const savedModel = settings.aiModel || 'lykn-lite';
     setCurrentModel(savedModel);
     
     const storedQuestions = localStorage.getItem('chat_followup_questions');
@@ -263,11 +273,15 @@ export default function VaultChatPage() {
       const personality = settings.aiPersonality || 'balanced';
       const detailLevel = settings.aiDetailLevel || 'medium';
 
+      // VOICE — WE, NOT YOU: LYKN is the user's synthesis layer. Default to we/our/let's
+      // when describing shared work (our Vault, our notes). Only step out to "I'm your
+      // synthesis layer" when the user asks what LYKN is. Never "How can I help you today?".
+      const voiceRule = "You are LYKN — this user's synthesis layer. Speak in first-person plural by default (we / our / we're / let's) — call it 'our Vault', 'our notes', 'let's pull this in', not 'your Vault' or 'how can I help you'. Only use 'I'm your synthesis layer' when the user asks WHAT YOU ARE. Never sound like an outside chatbot.";
       const personalityStyles = {
-        professional: 'You are a professional vault assistant. Be formal, precise, and objective.',
-        balanced: 'You are a helpful AI assistant. Be friendly yet professional.',
-        casual: 'You are a friendly companion. Be warm, conversational, and supportive.',
-        enthusiastic: 'You are an enthusiastic vault coach. Be energetic, motivating, and positive!'
+        professional: `${voiceRule} Be formal, precise, and objective in tone.`,
+        balanced: `${voiceRule} Be friendly yet professional.`,
+        casual: `${voiceRule} Be warm, conversational, and supportive.`,
+        enthusiastic: `${voiceRule} Be energetic, motivating, and positive!`
       };
 
       const detailStyles = {
@@ -410,7 +424,16 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
         aiText = aiText.slice(1, -1).replace(/\\"/g, '"');
       }
 
-      const words = aiText.split(' ');
+      // Parse the hidden <learned>/<updated> tag (if the model emitted one)
+      // BEFORE the word-by-word emulated stream renders, so the user never
+      // sees the raw tag flicker into the visible bubble. Strip the tag
+      // region from the visible text and use that for both rendering and
+      // saving to the chat note. The async POST below mints the neuron and
+      // patches `factNeuron` onto the assistant message so the pill renders.
+      const learnedTag = parseLearnedTag(aiText);
+      const visibleAiText = finalizeVisibleReply(stripLearnedTagsFromFinal(aiText));
+
+      const words = visibleAiText.split(' ');
       let currentText = '';
 
       for (let i = 0; i < words.length; i++) {
@@ -425,8 +448,50 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
 
       setLastMessageTime(Date.now());
 
+      // === LEARN-A-FACT — primary path (model emitted a tag) or fallback
+      // (server-side classifier decides). VaultChat doesn't inject the
+      // learned-tag instructions into its prompt today, so the fallback
+      // is the workhorse path here — but we still try the parse first so
+      // any future prompt expansion picks up the cheaper path automatically.
+      // Fire-and-forget: chat bubble already rendered; the pill arrives a
+      // beat later as a delightful surprise rather than blocking anything.
+      if (user?.id) {
+        const sendUserText = userMessage?.content || input;
+        void (async () => {
+          try {
+            const { API_BASE_URL: apiBase } = await import('@/lib/api-config');
+            let result = null;
+            if (learnedTag) {
+              result = await postLearnedFact(apiBase, {
+                text: learnedTag.text,
+                kind: learnedTag.kind,
+                reason: learnedTag.reason,
+                sourceId: 'vault_chat',
+                replacesText: learnedTag.mode === 'update' ? learnedTag.previousText : undefined,
+              });
+            } else {
+              result = await postAutoLearnedFact(apiBase, {
+                userMessage: String(sendUserText || ''),
+                assistantReply: visibleAiText,
+                sourceId: 'vault_chat_auto',
+              });
+            }
+            if (!result || (!result.isNew && !result.isUpdate)) return;
+            setMessages(prev => {
+              const next = [...prev];
+              if (next[assistantMessageIndex]) {
+                next[assistantMessageIndex] = { ...next[assistantMessageIndex], factNeuron: result };
+              }
+              return next;
+            });
+          } catch {
+            // Never let a learn miss break the chat surface.
+          }
+        })();
+      }
+
       // Save chat to Supabase
-      const updatedMessages = [...messages, userMessage, { role: 'assistant', content: aiText }];
+      const updatedMessages = [...messages, userMessage, { role: 'assistant', content: visibleAiText }];
       const chatContent = updatedMessages.map(m => 
         `${m.role === 'user' ? 'Me' : 'AI'}: ${m.content}`
       ).join('\n\n');
@@ -447,7 +512,7 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
         const newMessages = [...prev];
         newMessages[assistantMessageIndex] = { 
           role: 'assistant', 
-          content: 'This model isn\u2019t working properly right now \u2014 try another model.' 
+          content: AI_TEMPORARY_FAILURE_TEXT 
         };
         return newMessages;
       });
@@ -712,6 +777,12 @@ Provide thoughtful, insightful responses based on their memories. Reference spec
                             </a>
                           ))}
                         </div>
+                      )}
+                      {msg.role === 'assistant' && msg.factNeuron && (
+                        <NeuronPill fact={msg.factNeuron} />
+                      )}
+                      {msg.role === 'assistant' && msg.appliedAttribution && (
+                        <AppliedRulePill attribution={msg.appliedAttribution} />
                       )}
                     </div>
                   </div>

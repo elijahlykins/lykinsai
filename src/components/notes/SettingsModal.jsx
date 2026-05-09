@@ -11,7 +11,7 @@ import { useAuth } from '@/lib/SupabaseAuth';
 import { supabase } from '@/lib/supabase';
 import { useNavigate } from 'react-router-dom';
 import { useUserPlan } from '@/lib/useUserPlan';
-import { isModelAllowedForPlan } from '@/lib/modelTiers';
+import { isModelAllowedForPlan, canonicalizeModelId, defaultModelForTier } from '@/lib/modelTiers';
 import { planMeets } from '@/components/PlanGate';
 import { API_BASE_URL } from '@/lib/api-config';
 
@@ -48,7 +48,7 @@ export default function SettingsModal({ isOpen, onClose }) {
     layoutDensity: 'comfortable',
     aiPersonality: 'balanced',
     aiDetailLevel: 'medium',
-    aiModel: 'claude-sonnet-4-6',
+    aiModel: 'lykn-lite',
     userPrompt: '',
   });
   const [email, setEmail] = useState('');
@@ -97,6 +97,11 @@ export default function SettingsModal({ isOpen, onClose }) {
         try {
           const parsed = JSON.parse(saved);
           if (!parsed.theme) parsed.theme = 'dark';
+          // Migrate stale model ids (e.g. `claude-sonnet-4-6` from older
+          // releases) to the current LYKN catalog so the picker never
+          // renders a blank trigger.
+          parsed.aiModel = canonicalizeModelId(parsed.aiModel)
+            || defaultModelForTier(modelTier);
           setSettings(parsed);
           applyTheme(parsed.theme);
         } catch (e) {
@@ -114,7 +119,7 @@ export default function SettingsModal({ isOpen, onClose }) {
     return () => {
       window.removeEventListener('lykinsai_settings_changed', handleSettingsChange);
     };
-  }, [isOpen, user]);
+  }, [isOpen, user, modelTier]);
 
   const handleSave = () => {
     localStorage.setItem('lykinsai_settings', JSON.stringify(settings));

@@ -40,7 +40,7 @@ function useIsTouchDevice() {
 export interface Scene3DNode {
   id: string;
   label: string;
-  kind: "root" | "category" | "project" | "grid" | "vault" | "tag" | "neuron";
+  kind: "root" | "category" | "project" | "grid" | "vault" | "tag" | "neuron" | "belief";
   color: string;
   glow: string;
   radius: number;
@@ -166,6 +166,11 @@ function Neuron({ node, isHovered, isSelected, isDimmed, isTopicMode, onHover, o
   const glowConfig = useMemo(() => {
     switch (node.kind) {
       case "neuron":   return { emissive: 2.6, pulse: true };
+      // Beliefs are the higher-order tier — they should READ as "lit from
+      // within" before anything else in the scene. Bumped well above neurons
+      // so even at low DPR / weak bloom the principles look like the
+      // brightest things in the room.
+      case "belief":   return { emissive: 3.6, pulse: true };
       case "root":     return { emissive: 2.2, pulse: true };
       case "category": return { emissive: 1.6, pulse: false };
       case "grid":     return { emissive: 1.2, pulse: false };
@@ -808,6 +813,70 @@ export default function SynthesisScene3D(props: Props) {
     [onBackgroundClick],
   );
 
+  // WebGL context loss + recovery. The browser fires `webglcontextlost` when
+  // the GPU resets (driver hiccup, alt-tabbing for too long with the page
+  // throttled, GPU memory pressure from too many simultaneous WebGL contexts
+  // — this page also runs the OmniaGrid canvas + bloom postprocess, so we're
+  // not dirt-cheap). Three.js's WebGLRenderer attaches its own listener that
+  // calls preventDefault and logs "Context Lost.", but on some Windows GPU
+  // drivers the browser never automatically restores even when our scene is
+  // visible — leaving the user staring at a frozen black canvas with the
+  // useFrame loop still ticking against a dead GL state.
+  //
+  // Belt-and-braces:
+  //   1. Capture-phase preventDefault so even if the three.js handler is
+  //      somehow detached or fires after a re-init, the browser still knows
+  //      we want to recover.
+  //   2. On `webglcontextrestored`, recompile materials/programs against the
+  //      new context and force a single render — this is what unsticks the
+  //      frozen frame.
+  //   3. If the browser doesn't fire a restore event within 3.5s of the loss
+  //      AND the scene is still on-screen, manually request a restore via
+  //      the WEBGL_lose_context extension. This is the workaround for the
+  //      Windows-driver "context lost forever" failure mode.
+  const handleCanvasCreated = useCallback(
+    ({ gl, scene, camera }: { gl: THREE.WebGLRenderer; scene: THREE.Scene; camera: THREE.Camera }) => {
+      const canvas = gl.domElement;
+      let manualRestoreTimer: number | null = null;
+      const onLost = (e: Event) => {
+        e.preventDefault();
+        console.warn("[SynthesisScene3D] WebGL context lost — waiting for restore…");
+        if (manualRestoreTimer != null) window.clearTimeout(manualRestoreTimer);
+        manualRestoreTimer = window.setTimeout(() => {
+          if (!document.body.contains(canvas)) return; // unmounted, give up
+          try {
+            const ext = gl.getContext().getExtension("WEBGL_lose_context");
+            if (ext) {
+              console.warn("[SynthesisScene3D] No automatic restore after 3.5s — forcing restoreContext()");
+              ext.restoreContext();
+            }
+          } catch (err) {
+            console.warn("[SynthesisScene3D] Manual restoreContext() failed:", err);
+          }
+        }, 3500);
+      };
+      const onRestored = () => {
+        if (manualRestoreTimer != null) {
+          window.clearTimeout(manualRestoreTimer);
+          manualRestoreTimer = null;
+        }
+        console.log("[SynthesisScene3D] WebGL context restored — recompiling materials");
+        try {
+          gl.compile(scene, camera);
+          gl.render(scene, camera);
+        } catch (err) {
+          console.warn("[SynthesisScene3D] Recompile after restore failed (scene may need a remount):", err);
+        }
+      };
+      // Capture-phase so we run before three.js's own handler — the browser
+      // requires the FIRST listener to call preventDefault for the restore
+      // event to ever fire.
+      canvas.addEventListener("webglcontextlost", onLost, { capture: true });
+      canvas.addEventListener("webglcontextrestored", onRestored);
+    },
+    [],
+  );
+
   return (
     <Canvas
       // dpr capped to 2 to keep bloom affordable on retina displays
@@ -823,6 +892,7 @@ export default function SynthesisScene3D(props: Props) {
       style={{ width: "100%", height: "100%", background: "transparent" }}
       onPointerDown={handlePointerDown}
       onPointerMissed={handlePointerMissed}
+      onCreated={handleCanvasCreated}
     >
       {/* Ambient + a couple of point lights so non-emissive faces of nodes
           have some directional shading; the emissive material does the

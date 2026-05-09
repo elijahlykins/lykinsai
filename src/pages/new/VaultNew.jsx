@@ -36,6 +36,7 @@ import {
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/SupabaseAuth";
+import { AI_TEMPORARY_FAILURE_TEXT } from "@/lib/ai/userFacingErrors";
 import { useQuery, useQueryClient, useInfiniteQuery } from "@tanstack/react-query";
 import { Select, SelectContent, SelectTrigger, SelectValue } from "@/components/ui/select";
 import ModelSelectOptions from "@/components/ModelSelectOptions";
@@ -220,6 +221,28 @@ function parseAttachmentNotes(attachment = {}) {
       if (!text) return null;
       return {
         id: String(item?.id || `note-${idx}`),
+        text,
+        created_at: item?.created_at || null,
+      };
+    })
+    .filter(Boolean);
+}
+
+// Quick notes don't have an attachment to hang per-file notes off, so
+// comments live in a sibling jsonb column on the row itself. Same shape
+// as parseAttachmentNotes so the UI can render either with one helper.
+function parseQuickNoteComments(note = {}) {
+  let raw = note?.comments;
+  if (typeof raw === "string") {
+    try { raw = JSON.parse(raw); } catch { raw = []; }
+  }
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((item, idx) => {
+      const text = String(item?.text || "").trim();
+      if (!text) return null;
+      return {
+        id: String(item?.id || `comment-${idx}`),
         text,
         created_at: item?.created_at || null,
       };
@@ -1003,7 +1026,7 @@ export default function VaultNew() {
     } catch {
       // ignore
     }
-    return "claude-sonnet-4-6";
+    return "lykn-lite";
   });
 
   const resolvedColumnsRef = useRef(null);
@@ -1482,6 +1505,7 @@ export default function VaultNew() {
           excerpt,
           dateLabel,
           tags: noteTags,
+          comments: parseQuickNoteComments(note),
         });
       }
     });
@@ -2927,7 +2951,7 @@ User: ${text}`;
       if (idx != null) {
         setChatMessages((prev) => {
           const next = prev.slice();
-          if (next[idx]) next[idx] = { ...next[idx], content: "This model isn\u2019t working properly right now \u2014 try another model." };
+          if (next[idx]) next[idx] = { ...next[idx], content: AI_TEMPORARY_FAILURE_TEXT };
           return next;
         });
       }
@@ -3676,6 +3700,49 @@ User: ${text}`;
         return true;
       }
       return false;
+    } finally {
+      setIsCardActionBusy(false);
+    }
+  }, [notes, user?.id]);
+
+  const addQuickNoteComment = useCallback(async (card, textInput) => {
+    if (!user?.id || !card?.noteId) return false;
+    const text = String(textInput || "").trim();
+    if (!text) return false;
+    setIsCardActionBusy(true);
+    try {
+      const note = notes.find((n) => String(n?.id) === String(card.noteId));
+      if (!note) return false;
+      const existing = parseQuickNoteComments(note);
+      const newComment = { id: crypto.randomUUID(), text, created_at: new Date().toISOString() };
+      const nextComments = [...existing, newComment];
+
+      const { error: updateError } = await supabase
+        .from("notes")
+        .update({
+          comments: nextComments,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", card.noteId)
+        .eq("user_id", user.id);
+
+      if (updateError) {
+        // Column not deployed yet — surface a clear error rather than
+        // silently dropping the comment.
+        if (updateError.code === "PGRST204" || updateError.message?.toLowerCase().includes("does not exist")) {
+          console.warn("notes.comments column missing — run migration 041_notes_comments_column.sql", updateError);
+        }
+        return false;
+      }
+
+      setNotes((prev) =>
+        prev.map((n) =>
+          String(n?.id) === String(card.noteId)
+            ? { ...n, comments: nextComments, updated_at: new Date().toISOString() }
+            : n
+        )
+      );
+      return true;
     } finally {
       setIsCardActionBusy(false);
     }
@@ -4508,7 +4575,7 @@ User: ${text}`;
                               setOpenAttachmentNotesCardId((prev) => (prev === card.id ? null : card.id));
                             }}
                             className="absolute top-2 right-2 h-6 min-w-6 px-1.5 rounded-full bg-white/45 backdrop-blur-sm border border-white/30 text-[0.6875rem] font-semibold text-black flex items-center justify-center gap-1 z-[125] shadow-sm"
-                            title="View file notes"
+                            title="View comments"
                           >
                             <MessageSquare className="w-3 h-3 text-black" />
                             <span>{parseAttachmentNotes(card.attachment).length}</span>
@@ -4552,7 +4619,7 @@ User: ${text}`;
                                 onPointerDown={(e) => e.stopPropagation()}
                                 onMouseDown={(e) => e.stopPropagation()}
                               >
-                                <div className="text-[0.6875rem] font-medium text-black/60 dark:text-white/60 mb-2">Add a note</div>
+                                <div className="text-[0.6875rem] font-medium text-black/60 dark:text-white/60 mb-2">Add a comment</div>
                                 <textarea
                                   value={attachmentNoteDraft}
                                   onChange={(e) => setAttachmentNoteDraft(e.target.value)}
@@ -4564,7 +4631,7 @@ User: ${text}`;
                                       setOpenAttachmentNotesCardId(null);
                                     }
                                   }}
-                                  placeholder="Write a note about this file…"
+                                  placeholder="Write a comment about this file…"
                                   className="w-full rounded-lg border border-black/10 dark:border-white/10 bg-white/45 dark:bg-white/4 px-2.5 py-2 text-xs outline-none resize-none placeholder:text-black/40 dark:placeholder:text-white/40"
                                   rows={3}
                                   autoFocus
@@ -4587,7 +4654,7 @@ User: ${text}`;
                                       }
                                     }}
                                     disabled={!attachmentNoteDraft.trim()}
-                                    className="rounded-lg bg-blue-500 text-white text-[0.6875rem] font-medium px-3 py-1 disabled:opacity-40 hover:bg-blue-600 transition-colors"
+                                    className="rounded-lg bg-neutral-700 hover:bg-neutral-800 dark:bg-neutral-700 dark:hover:bg-neutral-600 text-white text-[0.6875rem] font-medium px-3 py-1 disabled:opacity-40 transition-colors"
                                   >
                                     Save
                                   </button>
@@ -4638,7 +4705,7 @@ User: ${text}`;
                       </div>
                     ) : (
                       <>
-                        <div className={`glass-control rounded-2xl p-4 ${vaultView === "grid" ? "h-44 overflow-hidden" : ""}`}>
+                        <div className={`glass-control rounded-2xl p-4 relative ${vaultView === "grid" ? "h-44 overflow-hidden" : ""}`}>
                           <div className="flex items-center gap-2 text-black/70 dark:text-white/70 mb-2">
                             <StickyNote className="w-4 h-4" />
                             <span className="text-xs font-medium">Quick Note</span>
@@ -4659,28 +4726,106 @@ User: ${text}`;
                             <Clock className="w-3 h-3" />
                             <span>{card.dateLabel}</span>
                           </div>
+                          {(card.comments?.length || 0) > 0 && (
+                            <button
+                              type="button"
+                              data-no-drag="true"
+                              draggable={false}
+                              onPointerDown={(e) => e.stopPropagation()}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setOpenAttachmentNotesCardId((prev) => (prev === card.id ? null : card.id));
+                              }}
+                              className="absolute top-2 right-2 h-6 min-w-6 px-1.5 rounded-full bg-white/45 backdrop-blur-sm border border-white/30 text-[0.6875rem] font-semibold text-black flex items-center justify-center gap-1 z-[125] shadow-sm"
+                              title="View comments"
+                            >
+                              <MessageSquare className="w-3 h-3 text-black" />
+                              <span>{card.comments.length}</span>
+                            </button>
+                          )}
                         </div>
                         <div className="mt-2 flex justify-end px-1" data-no-drag="true">
-                          <button
-                            type="button"
-                            data-no-drag="true"
-                            draggable={false}
-                            onPointerDown={(e) => e.stopPropagation()}
-                            onMouseDown={(e) => e.stopPropagation()}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setOpenAttachmentNotesCardId(null);
-                              if (openCardMenuId === card.id) {
-                                setOpenCardMenuId(null);
-                                return;
-                              }
-                              openCardMenuForAnchor(card.id, e.currentTarget);
-                            }}
-                            className="px-1 py-0.5 text-black/75 dark:text-white/75 hover:text-black dark:hover:text-white leading-none text-base font-semibold"
-                            title="Quick note actions"
-                          >
-                            <MoreHorizontal className="w-4 h-4" />
-                          </button>
+                          <div className="relative" ref={openAttachmentNotesCardId === card.id ? noteComposerRef : null}>
+                            <button
+                              type="button"
+                              data-no-drag="true"
+                              draggable={false}
+                              onPointerDown={(e) => e.stopPropagation()}
+                              onMouseDown={(e) => e.stopPropagation()}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setOpenAttachmentNotesCardId(null);
+                                if (openCardMenuId === card.id) {
+                                  setOpenCardMenuId(null);
+                                  return;
+                                }
+                                openCardMenuForAnchor(card.id, e.currentTarget);
+                              }}
+                              className="px-1 py-0.5 text-black/75 dark:text-white/75 hover:text-black dark:hover:text-white leading-none text-base font-semibold"
+                              title="Quick note actions"
+                            >
+                              <MoreHorizontal className="w-4 h-4" />
+                            </button>
+                            {openAttachmentNotesCardId === card.id && (
+                              <div
+                                className="absolute right-0 bottom-full mb-2 w-64 rounded-2xl border border-white/30 dark:border-white/10 bg-white/60 dark:bg-gray-900/65 backdrop-blur-md shadow-lg p-3 z-[140]"
+                                data-no-drag="true"
+                                draggable={false}
+                                onPointerDown={(e) => e.stopPropagation()}
+                                onMouseDown={(e) => e.stopPropagation()}
+                              >
+                                <div className="text-[0.6875rem] font-medium text-black/60 dark:text-white/60 mb-2">Add a comment</div>
+                                <textarea
+                                  value={attachmentNoteDraft}
+                                  onChange={(e) => setAttachmentNoteDraft(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter" && !e.shiftKey && attachmentNoteDraft.trim()) {
+                                      e.preventDefault();
+                                      void addQuickNoteComment(card, attachmentNoteDraft);
+                                      setAttachmentNoteDraft("");
+                                      setOpenAttachmentNotesCardId(null);
+                                    }
+                                  }}
+                                  placeholder="Write a comment on this quick note…"
+                                  className="w-full rounded-lg border border-black/10 dark:border-white/10 bg-white/45 dark:bg-white/4 px-2.5 py-2 text-xs outline-none resize-none placeholder:text-black/40 dark:placeholder:text-white/40"
+                                  rows={3}
+                                  autoFocus
+                                />
+                                <div className="flex items-center justify-between mt-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => { setOpenAttachmentNotesCardId(null); setAttachmentNoteDraft(""); }}
+                                    className="text-[0.6875rem] text-black/50 dark:text-white/50 hover:text-black/70 dark:hover:text-white/70"
+                                  >
+                                    Cancel
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      if (attachmentNoteDraft.trim()) {
+                                        void addQuickNoteComment(card, attachmentNoteDraft);
+                                        setAttachmentNoteDraft("");
+                                        setOpenAttachmentNotesCardId(null);
+                                      }
+                                    }}
+                                    disabled={!attachmentNoteDraft.trim()}
+                                    className="rounded-lg bg-neutral-700 hover:bg-neutral-800 dark:bg-neutral-700 dark:hover:bg-neutral-600 text-white text-[0.6875rem] font-medium px-3 py-1 disabled:opacity-40 transition-colors"
+                                  >
+                                    Save
+                                  </button>
+                                </div>
+                                {(card.comments?.length || 0) > 0 && (
+                                  <div className="mt-3 border-t border-black/10 dark:border-white/10 pt-2 max-h-32 overflow-y-auto scrollbar-hide space-y-1.5">
+                                    {card.comments.map((comment) => (
+                                      <div key={comment.id} className="rounded-md bg-black/5 dark:bg-white/5 px-2 py-1.5">
+                                        <p className="text-xs text-black/80 dark:text-white/80 whitespace-pre-wrap break-words">{comment.text}</p>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </>
                     )}
@@ -5102,7 +5247,7 @@ User: ${text}`;
                   )}
                 </div>
               </div>
-              {menuCard.kind === "attachment" && (
+              {(menuCard.kind === "attachment" || menuCard.kind === "quick-note") && (
                 <>
                   <div className="my-1 h-px bg-black/10 dark:bg-white/10" />
                   <button
@@ -5115,8 +5260,8 @@ User: ${text}`;
                     }}
                     className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 dark:hover:bg-white/5 disabled:opacity-60 flex items-center gap-2"
                   >
-                    <StickyNote className="w-3.5 h-3.5" />
-                    Note
+                    <MessageSquare className="w-3.5 h-3.5" />
+                    Comment
                   </button>
                 </>
               )}

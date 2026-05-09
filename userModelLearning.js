@@ -376,8 +376,11 @@ Rules:
 
 /**
  * Call the LLM and return parsed structured facts. Returns null on any failure.
+ * `usageLogger` is an optional callback the caller passes in so this module
+ * doesn't have to import server-side helpers — server.js threads logAiUsage
+ * + the active userId through runUserModelLearningPass().
  */
-async function extractFactsFromLlm(evidence, existingFacts, dismissedFacts) {
+async function extractFactsFromLlm(evidence, existingFacts, dismissedFacts, usageLogger) {
   if (!process.env.OPENAI_API_KEY) return null;
 
   const evidenceBlock = buildEvidenceBlock(evidence, existingFacts, dismissedFacts);
@@ -412,14 +415,28 @@ async function extractFactsFromLlm(evidence, existingFacts, dismissedFacts) {
     return null;
   }
 
+  let data;
   let parsed;
   try {
-    const data = await res.json();
+    data = await res.json();
     const raw = data?.choices?.[0]?.message?.content || '{}';
     parsed = JSON.parse(raw);
   } catch (e) {
     console.warn('⚠️ User-model LLM parse failed:', e?.message || e);
     return null;
+  }
+
+  if (typeof usageLogger === 'function') {
+    try {
+      const u = data?.usage || {};
+      usageLogger({
+        model: 'gpt-4o-mini',
+        provider: 'openai',
+        inputTokens: u.prompt_tokens || u.input_tokens || 0,
+        outputTokens: u.completion_tokens || u.output_tokens || 0,
+        metadata: { evidence_chars: evidenceBlock.length },
+      });
+    } catch { /* never let logging crash extraction */ }
   }
 
   const facts = Array.isArray(parsed?.facts) ? parsed.facts : [];
@@ -619,7 +636,7 @@ export async function runUserModelLearningPass(client, userId, opts = {}) {
   const dismissedFacts = existingFacts.filter((f) => f.status === 'dismissed' || f.status === 'corrected');
   const activeForLlm = existingFacts.filter((f) => f.status !== 'dismissed');
 
-  const incoming = await extractFactsFromLlm(evidence, activeForLlm, dismissedFacts);
+  const incoming = await extractFactsFromLlm(evidence, activeForLlm, dismissedFacts, opts.usageLogger);
   if (!incoming) return { ok: false, reason: 'llm_failed' };
 
   const now = new Date();
@@ -632,7 +649,8 @@ export async function runUserModelLearningPass(client, userId, opts = {}) {
   // Bound table size — drop lowest-confidence inferred facts beyond the cap.
   const cappedUpserts = await capFactsForUser(client, userId, upserts);
 
-  const upserted = await persistFacts(client, userId, cappedUpserts);
+  const upsertedResult = await persistFacts(client, userId, cappedUpserts);
+  const upserted = upsertedResult.count;
   const revisionId = await writeRevision(client, userId, {
     trigger,
     factCount: upserted,
@@ -656,6 +674,403 @@ export async function runUserModelLearningPass(client, userId, opts = {}) {
     factsReinforced: diff.reinforced.length,
     factsDecayed: diff.decayed.length,
     revisionId,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Single-fact recorder (used by /api/learned for live in-chat tagging)
+// ---------------------------------------------------------------------------
+
+/**
+ * Persist a single fact the AI just inferred from a live chat message.
+ *
+ * Unlike runUserModelLearningPass — which is a periodic, multi-source LLM
+ * extraction pass — this is the realtime path: the model emitted a hidden
+ * <learned kind="...">phrase</learned><reason>why</reason> tag at the end of
+ * its visible reply, the client stripped + parsed it, and POSTed it here.
+ *
+ * Two modes, mutually exclusive:
+ *   • CREATE / REINFORCE (default) — payload has {text, kind, reason}.
+ *     Brand-new fact_text is upserted as a fresh neuron; an existing matching
+ *     fact_key gets its confidence reinforced via the same reconciler the
+ *     batch pass uses.
+ *   • UPDATE-IN-PLACE — payload has {text, kind, reason, replacesText}.
+ *     The model emitted an <updated old="..."> tag because the new info
+ *     refines / corrects / supersedes a fact already in [USER_MODEL]. We
+ *     find the existing row by normalized old-text key and rewrite its
+ *     fact_text + fact_key + (optionally) fact_kind in place — preserving
+ *     the row's UUID, evidence history, first_seen_at, and source_types so
+ *     the synthesis layer treats this as the SAME neuron with refreshed
+ *     content rather than spawning a new node next to the stale one.
+ *
+ * Behaviour:
+ *   • Validates kind against FACT_KINDS (defaults to 'identity').
+ *   • Treats the user's own utterance as direct evidence (status='stated',
+ *     high confidence) — the AI is reporting something the user just said,
+ *     not inferring it from indirect signal.
+ *   • Reuses reconcileFacts for the create path so duplicates merge cleanly
+ *     into the existing row instead of double-creating a neuron.
+ *   • For updates: handles the rare key-collision case (the new text would
+ *     collide with another existing fact's unique key) by deleting the
+ *     stale "old" row and reinforcing the collision target.
+ *   • Records a 'feedback'-trigger revision so the diff log shows that this
+ *     learning happened mid-conversation, not in a batch pass.
+ *
+ * Returns:
+ *   {
+ *     ok: true,
+ *     fact: { id, fact_kind, fact_text, status, confidence, reason,
+ *             isNew, isUpdate, previousText? },
+ *   }
+ *   ...or { ok: false, reason } on validation / DB failure.
+ */
+export async function recordLearnedFactFromChat(client, userId, payload) {
+  // Never throw out of this function — the /api/learned route has a generic
+  // catch that returns 500 with `error: 'learn_failed'` and swallows the
+  // actual reason. Anything that goes wrong below should come back as a
+  // structured `{ ok: false, reason: <human-readable-string> }` so the
+  // route can surface it in the response body for diagnosis.
+  try {
+    if (!client) return { ok: false, reason: 'no_db' };
+    if (!userId) return { ok: false, reason: 'no_user' };
+    const text = String(payload?.text || '').trim().slice(0, 240);
+    if (!text) return { ok: false, reason: 'empty_text' };
+    const rawKind = String(payload?.kind || 'identity').trim().toLowerCase();
+    const fact_kind = FACT_KIND_SET.has(rawKind) ? rawKind : 'identity';
+    const reason = String(payload?.reason || '').trim().slice(0, 240) || null;
+    const sourceId = String(payload?.sourceId || 'live_chat').slice(0, 200);
+    const replacesText = String(payload?.replacesText || '').trim().slice(0, 240);
+
+    const fact_key = normalizeFactKey(text);
+    if (!fact_key) return { ok: false, reason: 'unkeyable_text' };
+
+    const existing = await fetchAllFacts(client, userId);
+
+    // === UPDATE-IN-PLACE PATH ===========================================
+    // The model emitted <updated old="...">. Find the row whose normalized
+    // text matches the old phrase the AI quoted, then mutate it in place so
+    // the synthesis-layer node keeps its identity (same UUID, same edges,
+    // same first_seen_at) but its content evolves.
+    if (replacesText) {
+      const oldKey = normalizeFactKey(replacesText);
+      if (!oldKey) {
+        // Unrecoverable old-text — fall through to a regular create so we
+        // never silently lose a learn moment because the "old" attribute
+        // was malformed.
+        return await createOrReinforceFact(client, userId, {
+          text, fact_kind, fact_key, reason, sourceId, existing, now: new Date(),
+        });
+      }
+
+      // Match the old fact regardless of kind — the model is allowed to
+      // reclassify (e.g. constraint → focus on a pivot). Prefer same-kind
+      // matches when both exist, else accept any kind.
+      let oldRow = existing.find((f) => f.fact_key === oldKey && f.fact_kind === fact_kind);
+      if (!oldRow) oldRow = existing.find((f) => f.fact_key === oldKey);
+      if (!oldRow) {
+        // Old fact wasn't found — the AI hallucinated the old="..." attribute
+        // or the fact was already dismissed/cleaned. Treat as a fresh learn
+        // so the user still gets a neuron from the live signal.
+        return await createOrReinforceFact(client, userId, {
+          text, fact_kind, fact_key, reason, sourceId, existing, now: new Date(),
+        });
+      }
+
+      // Same text + same kind → the "update" is actually a no-op refinement.
+      // Treat as a reinforcement of the existing row.
+      if (oldRow.fact_kind === fact_kind && oldRow.fact_key === fact_key) {
+        return await createOrReinforceFact(client, userId, {
+          text, fact_kind, fact_key, reason, sourceId, existing, now: new Date(),
+        });
+      }
+
+      return await applyInPlaceUpdate(client, userId, {
+        oldRow, newText: text, newKind: fact_kind, newKey: fact_key,
+        reason, sourceId, existing,
+      });
+    }
+
+    // === CREATE / REINFORCE PATH (default) ==============================
+    return await createOrReinforceFact(client, userId, {
+      text, fact_kind, fact_key, reason, sourceId, existing, now: new Date(),
+    });
+  } catch (e) {
+    // Anything that escaped the inner handlers (TypeError, malformed Supabase
+    // response, network blip mid-operation, etc.) lands here so the route
+    // can return a real reason instead of a generic `learn_failed`.
+    const msg = e?.message || String(e);
+    console.warn('⚠️ recordLearnedFactFromChat threw:', msg);
+    return { ok: false, reason: `internal: ${msg}`.slice(0, 240) };
+  }
+}
+
+/**
+ * Default create-or-reinforce path. Used both by plain <learned> tags and
+ * as the safe fallback when an <updated> tag's old="..." attribute can't
+ * be resolved to an existing fact.
+ */
+async function createOrReinforceFact(client, userId, ctx) {
+  const { text, fact_kind, fact_key, reason, sourceId, existing, now } = ctx;
+  const dupKey = `${fact_kind}::${fact_key}`;
+  const wasNew = !existing.some((f) => `${f.fact_kind}::${f.fact_key}` === dupKey);
+
+  const incoming = [{
+    fact_kind,
+    fact_text: text,
+    fact_key,
+    confidence: 0.95,
+    evidence: [{
+      source_type: 'conversation',
+      source_id: sourceId,
+      snippet: (reason || text).slice(0, 240),
+      observed_at: now.toISOString(),
+    }],
+  }];
+
+  const activeForLlm = existing.filter((f) => f.status !== 'dismissed');
+  const { upserts, diff } = reconcileFacts({ existing: activeForLlm, incoming, now });
+
+  const targetUpsert = upserts.find((u) => u.fact_kind === fact_kind && u.fact_key === fact_key);
+  if (targetUpsert) {
+    if (wasNew) {
+      targetUpsert.status = 'stated';
+      targetUpsert.confidence = 0.95;
+    } else if (targetUpsert.status === 'inferred') {
+      targetUpsert.status = 'stated';
+      targetUpsert.confidence = Math.max(targetUpsert.confidence || 0, 0.95);
+    }
+  }
+
+  const persistResult = await persistFacts(client, userId, upserts);
+  if (persistResult.count === 0 && upserts.length > 0) {
+    // Surface the underlying DB message (constraint name / RLS / etc.) so
+    // the client doesn't see an opaque `persist_failed` and we don't have
+    // to chase it through the server console next time.
+    return {
+      ok: false,
+      reason: persistResult.error
+        ? `persist_failed: ${persistResult.error}`
+        : 'persist_failed',
+    };
+  }
+
+  const { data: row } = await client
+    .from('lykn_user_model_facts')
+    .select('id, fact_kind, fact_text, status, confidence')
+    .eq('user_id', userId)
+    .eq('fact_kind', fact_kind)
+    .eq('fact_key', fact_key)
+    .maybeSingle();
+
+  await writeRevision(client, userId, {
+    trigger: 'feedback',
+    factCount: existing.length + (wasNew ? 1 : 0),
+    factsAdded: wasNew ? 1 : 0,
+    factsUpdated: wasNew ? 0 : 1,
+    factsDismissed: 0,
+    diff: {
+      live_learned: {
+        kind: fact_kind,
+        text,
+        reason: reason || null,
+        is_new: wasNew,
+        before: diff,
+      },
+    },
+  });
+
+  return {
+    ok: true,
+    fact: {
+      id: row?.id || null,
+      fact_kind: row?.fact_kind || fact_kind,
+      fact_text: row?.fact_text || text,
+      status: row?.status || (wasNew ? 'stated' : 'inferred'),
+      confidence: typeof row?.confidence === 'number' ? row.confidence : 0.95,
+      reason,
+      isNew: wasNew,
+      isUpdate: false,
+    },
+  };
+}
+
+/**
+ * Mutate an existing fact row in place — preserving its UUID and history —
+ * so the synthesis-layer node keeps its identity but takes on the refined
+ * content the user just shared.
+ *
+ * Handles the rare collision case where the new (kind, key) already maps
+ * to a different existing row (e.g. user said "Writer" → "Horror writer"
+ * but they already had "Horror writer" as a separate inferred fact). In
+ * that case the in-place update would violate the unique constraint, so we
+ * delete the stale source row and bump confidence on the collision target
+ * instead. The UI still gets back a single "this is your refined neuron"
+ * answer either way.
+ */
+async function applyInPlaceUpdate(client, userId, ctx) {
+  const { oldRow, newText, newKind, newKey, reason, sourceId, existing } = ctx;
+  const now = new Date();
+  const nowIso = now.toISOString();
+
+  const collision = existing.find((f) =>
+    f.id !== oldRow.id && f.fact_kind === newKind && f.fact_key === newKey
+  );
+
+  if (collision) {
+    // Merge: keep the collision target, fold the old row into it.
+    const mergedEvidence = mergeEvidence(collision.evidence || [], [
+      ...(oldRow.evidence || []),
+      {
+        source_type: 'conversation',
+        source_id: sourceId,
+        snippet: (reason || newText).slice(0, 240),
+        observed_at: nowIso,
+      },
+    ]);
+    const mergedSourceTypes = uniqueArray([
+      ...(collision.source_types || []),
+      ...(oldRow.source_types || []),
+      'conversation',
+    ]);
+
+    const collisionStatus = collision.status === 'confirmed' || collision.status === 'corrected'
+      ? collision.status
+      : 'stated';
+    const collisionConf = Math.max(collision.confidence || 0, 0.95);
+
+    const { error: updErr } = await client
+      .from('lykn_user_model_facts')
+      .update({
+        fact_text: newText,
+        status: collisionStatus,
+        confidence: collisionConf,
+        evidence: mergedEvidence,
+        evidence_count: (collision.evidence_count || 0) + (oldRow.evidence_count || 0) + 1,
+        source_types: mergedSourceTypes,
+        last_seen_at: nowIso,
+        updated_at: nowIso,
+      })
+      .eq('id', collision.id)
+      .eq('user_id', userId);
+    if (updErr) return { ok: false, reason: updErr.message };
+
+    // Drop the stale source row — its content has been folded into the
+    // collision target and keeping it around would leave a duplicate node
+    // in the synthesis layer. We do NOT fail the whole update if the
+    // delete is rejected (RLS, constraint, etc.) since the merge has
+    // already succeeded; the worst case is a duplicate inferred row that
+    // the next reconciler pass will collapse. Log so we can spot it.
+    const { error: delErr } = await client
+      .from('lykn_user_model_facts')
+      .delete()
+      .eq('id', oldRow.id)
+      .eq('user_id', userId);
+    if (delErr) {
+      console.warn('⚠️ applyInPlaceUpdate stale-row delete failed:', delErr.message);
+    }
+
+    await writeRevision(client, userId, {
+      trigger: 'feedback',
+      factCount: Math.max(0, existing.length - 1),
+      factsAdded: 0,
+      factsUpdated: 1,
+      factsDismissed: 0,
+      diff: {
+        live_updated_merged: {
+          merged_into_id: collision.id,
+          dropped_id: oldRow.id,
+          previous_text: oldRow.fact_text,
+          new_text: newText,
+          new_kind: newKind,
+          reason: reason || null,
+        },
+      },
+    });
+
+    return {
+      ok: true,
+      fact: {
+        id: collision.id,
+        fact_kind: newKind,
+        fact_text: newText,
+        status: collisionStatus,
+        confidence: collisionConf,
+        reason,
+        isNew: false,
+        isUpdate: true,
+        previousText: oldRow.fact_text,
+      },
+    };
+  }
+
+  // Plain in-place rewrite — same UUID, new content.
+  const newEvidence = mergeEvidence(oldRow.evidence || [], [{
+    source_type: 'conversation',
+    source_id: sourceId,
+    snippet: (reason || newText).slice(0, 240),
+    observed_at: nowIso,
+  }]);
+  const newSourceTypes = uniqueArray([
+    ...(oldRow.source_types || []),
+    'conversation',
+  ]);
+
+  // Preserve user-pinned status (confirmed/corrected); otherwise promote
+  // to 'stated' since the user just said the refined version out loud.
+  const nextStatus = oldRow.status === 'confirmed' || oldRow.status === 'corrected'
+    ? oldRow.status
+    : 'stated';
+  const nextConfidence = Math.max(oldRow.confidence || 0, 0.95);
+
+  const { error: updErr } = await client
+    .from('lykn_user_model_facts')
+    .update({
+      fact_kind: newKind,
+      fact_text: newText,
+      fact_key: newKey,
+      status: nextStatus,
+      confidence: nextConfidence,
+      evidence: newEvidence,
+      evidence_count: (oldRow.evidence_count || 0) + 1,
+      source_types: newSourceTypes,
+      last_seen_at: nowIso,
+      updated_at: nowIso,
+    })
+    .eq('id', oldRow.id)
+    .eq('user_id', userId);
+  if (updErr) return { ok: false, reason: updErr.message };
+
+  await writeRevision(client, userId, {
+    trigger: 'feedback',
+    factCount: existing.length,
+    factsAdded: 0,
+    factsUpdated: 1,
+    factsDismissed: 0,
+    diff: {
+      live_updated: {
+        fact_id: oldRow.id,
+        previous_kind: oldRow.fact_kind,
+        previous_text: oldRow.fact_text,
+        new_kind: newKind,
+        new_text: newText,
+        reason: reason || null,
+      },
+    },
+  });
+
+  return {
+    ok: true,
+    fact: {
+      id: oldRow.id,
+      fact_kind: newKind,
+      fact_text: newText,
+      status: nextStatus,
+      confidence: nextConfidence,
+      reason,
+      isNew: false,
+      isUpdate: true,
+      previousText: oldRow.fact_text,
+    },
   };
 }
 
@@ -711,32 +1126,43 @@ async function capFactsForUser(client, userId, upserts) {
 }
 
 async function persistFacts(client, userId, upserts) {
-  if (!upserts.length) return 0;
-  const rows = upserts.map((u) => ({
-    id: u.id,
-    user_id: userId,
-    fact_kind: u.fact_kind,
-    fact_text: u.fact_text,
-    fact_key: u.fact_key,
-    confidence: u.confidence,
-    status: u.status || 'inferred',
-    correction_text: u.correction_text || null,
-    evidence: u.evidence || [],
-    evidence_count: u.evidence_count || 1,
-    source_types: u.source_types || [],
-    first_seen_at: u.first_seen_at || new Date().toISOString(),
-    last_seen_at: u.last_seen_at || new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  }));
+  if (!upserts.length) return { count: 0, error: null };
+  const rows = upserts.map((u) => {
+    // Only include `id` when reconcileFacts gave us a real one (i.e. we're
+    // updating an existing row). Brand-new facts come through with id
+    // undefined; supabase-js serializes `id: undefined` as `"id": null`
+    // which slams straight into the NOT NULL primary-key constraint and
+    // rejects the entire upsert batch — that's the silent path that
+    // surfaced as `persist_failed` even though every other column was
+    // valid. Letting the column default (`gen_random_uuid()`) fire is
+    // the correct behavior on the create path.
+    const row = {
+      user_id: userId,
+      fact_kind: u.fact_kind,
+      fact_text: u.fact_text,
+      fact_key: u.fact_key,
+      confidence: u.confidence,
+      status: u.status || 'inferred',
+      correction_text: u.correction_text || null,
+      evidence: u.evidence || [],
+      evidence_count: u.evidence_count || 1,
+      source_types: u.source_types || [],
+      first_seen_at: u.first_seen_at || new Date().toISOString(),
+      last_seen_at: u.last_seen_at || new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    if (u.id) row.id = u.id;
+    return row;
+  });
   // Upsert by (user_id, fact_kind, fact_key) — table has the matching unique constraint.
   const { error } = await client
     .from('lykn_user_model_facts')
     .upsert(rows, { onConflict: 'user_id,fact_kind,fact_key' });
   if (error) {
     console.warn('⚠️ persistFacts upsert:', error.message);
-    return 0;
+    return { count: 0, error: error.message || String(error) };
   }
-  return rows.length;
+  return { count: rows.length, error: null };
 }
 
 async function writeRevision(client, userId, payload) {

@@ -12,9 +12,9 @@ const problems = [
   },
   {
     number: "02",
-    title: "AI is powerful but fragmented",
+    title: "AI is powerful but disconnected",
     description:
-      "You have ChatGPT in one tab, Claude in another, Gemini in a third. Each conversation is siloed. You're copy-pasting between them, losing context, repeating yourself. The potential is massive, the experience is broken.",
+      "You have an AI tab open in one window, your notes in another, your bookmarks somewhere else. Each conversation is siloed from the work it's supposed to help with. You're copy-pasting between them, losing context, repeating yourself. The potential is massive, the experience is broken.",
   },
   {
     number: "03",
@@ -48,9 +48,9 @@ const solutions = [
   {
     number: "03",
     title: "AI Access",
-    subtitle: "Every model, one interface",
+    subtitle: "Three LYKN tiers, one interface",
     description:
-      "Talk to ChatGPT, Claude, Gemini, and Grok, all from one place. Switch models mid-conversation. Drag AI responses onto your Grid. Feed your Vault into AI context. The first tool where AI and your ideas actually merge.",
+      "LYKN Lite for everyday questions, Fast Reasoning for serious work, Deep Thinking for the hard ones. Switch tiers mid-conversation. Drag AI responses onto your Grid. Feed your Vault into AI context. The first tool where AI and your ideas actually merge.",
   },
 ];
 

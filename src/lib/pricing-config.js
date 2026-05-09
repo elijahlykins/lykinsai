@@ -22,7 +22,7 @@ export const PLANS = [
       { text: "Unlimited blocks per Grid", included: true },
       { text: "1,000 Vault items", included: true },
       {
-        text: "Top-tier models (Sonnet 4.6, GPT-5.4, Gemini 2.5 Pro, Grok)",
+        text: "All LYKN models (Lite, Fast Reasoning, Deep Thinking)",
         included: true,
       },
       { text: "Mind map", included: true },
@@ -68,17 +68,17 @@ export const FAQ_ITEMS = [
   {
     question: "What do I get on the Free plan?",
     answer:
-      "Every account starts on Free. You get unlimited Grids (up to 50 blocks per Grid), 50 Vault items, a Synthesis Layer preview that grows alongside your work up to 50 nodes, and access to fast non-thinking models like Haiku. It's a great way to feel the product out before upgrading.",
+      "Every account starts on Free. You get unlimited Grids (up to 50 blocks per Grid), 50 Vault items, a Synthesis Layer preview that grows alongside your work up to 50 nodes, and access to LYKN Lite — the fast everyday model. It's a great way to feel the product out before upgrading.",
   },
   {
     question: "Which AI models are included in each plan?",
     answer:
-      "Free runs on fast non-thinking models (Haiku-tier). Studio and Studio Pro unlock all top-tier models — Claude Sonnet 4.6, GPT-5.4, Gemini 2.5 Pro, and Grok — plus model switching and custom AI settings.",
+      "Free runs on LYKN Lite — fast and lightweight, perfect for everyday questions. Studio, Studio Pro, and Studio Max unlock LYKN Fast Reasoning for everyday work and LYKN Deep Thinking for heavier multi-step problems, plus model switching and custom AI settings.",
   },
   {
     question: "What's the difference between Studio and Studio Pro?",
     answer:
-      "Studio gives you the top LLMs, unlimited Grids with unlimited blocks, the unlimited Mind Map (Free previews up to 50 nodes), and a 1,000-item Vault. Studio Pro adds unlimited Vault items.",
+      "Studio gives you all LYKN models (Lite, Fast Reasoning, Deep Thinking), unlimited Grids with unlimited blocks, the unlimited Mind Map (Free previews up to 50 nodes), and a 1,000-item Vault. Studio Pro adds unlimited Vault items.",
   },
   {
     question: "Can I switch plans anytime?",

@@ -14,6 +14,10 @@ import {
   PROTOTYPE_NEURONS_LS_KEY,
   writePrototypeStep,
 } from "@/lib/prototypeHandoff";
+import {
+  stripModelTruncationNote,
+  stripModelTruncationNoteFromStream,
+} from "@/lib/ai/learnedTag";
 
 // Prototype "wake" landing experience.
 //
@@ -34,9 +38,9 @@ import {
 //      a. Chat bar drops to the bottom (first send only)
 //      b. AI "thinking" bubble appears, then a real conversational reply
 //         streams in from /api/ai/stream-guest. The first turn (which
-//         mints the user's first neuron) is served by Claude Sonnet 4.6;
-//         every later turn falls back to the cheap chain (Gemini Flash →
-//         GPT-4o-mini → Haiku). See GUEST_MODEL_CHAIN_* in server.js.
+//         mints the user's first neuron) is served by Gemini Flash for a
+//         meatier reply; every later turn drops to Gemini Flash-Lite to
+//         keep the preview cheap. See GUEST_MODEL_CHAIN_* in server.js.
 //      c. The AI itself decides whether the message contained a learnable
 //         fact about the user. If yes, it acknowledges it in its reply
 //         ("I just learned something about you.") and ends with a hidden
@@ -171,10 +175,44 @@ interface GuestHistoryMsg {
 
 // During streaming, hide everything from <learned> onward so the user never
 // sees either the <learned> or trailing <reason> tag flicker into view.
+// Tolerates partial prefixes (`<l`, `<le`, `<lea`...) at the end of the
+// buffer so half-typed tags don't flash before the closing `>` arrives.
 const stripLearnedTag = (text: string): string => {
   const idx = text.indexOf("<learned>");
-  if (idx === -1) return text;
-  return text.slice(0, idx).trimEnd();
+  if (idx !== -1) return text.slice(0, idx).trimEnd();
+  const partial = text.match(/<l(?:e(?:a(?:r(?:n(?:e(?:d)?)?)?)?)?)?$/);
+  if (partial && partial.index !== undefined) {
+    return text.slice(0, partial.index).trimEnd();
+  }
+  return text;
+};
+
+// Defensive cleanup for the FINAL message after the stream completes.
+// When the model does the wrong thing and starts the `<learned>` tag
+// mid-sentence (e.g. "...right now. We <learned>..."), our strip leaves
+// the user staring at a broken reply ending in a dangling word like
+// "We" or "the". Detect that, pop the dangling clause back to the last
+// real sentence boundary, and append an ellipsis so the message at
+// least reads as a deliberate trail-off rather than a bug.
+const FINAL_TERMINALS = /[.!?…]['"”’)]?\s*$/;
+const finalizeVisibleReply = (text: string): string => {
+  const trimmed = text.trim();
+  if (!trimmed) return trimmed;
+  if (FINAL_TERMINALS.test(trimmed)) return trimmed;
+  // Walk back to the last sentence-ending punctuation.
+  const lastTerminal = Math.max(
+    trimmed.lastIndexOf("."),
+    trimmed.lastIndexOf("!"),
+    trimmed.lastIndexOf("?"),
+    trimmed.lastIndexOf("…"),
+  );
+  if (lastTerminal > 0 && lastTerminal >= trimmed.length - 80) {
+    // The dangling fragment was short — drop it cleanly.
+    return trimmed.slice(0, lastTerminal + 1).trimEnd();
+  }
+  // No safe boundary found — keep the text as-is but make the trail-off
+  // visible with an ellipsis instead of a naked word.
+  return trimmed + "…";
 };
 
 // After the stream completes, parse out the learned phrase if present.
@@ -228,29 +266,44 @@ async function streamChatResponse(
   let buffer = "";
   let result = "";
 
+  const consumeLine = (raw: string) => {
+    const line = raw.trim();
+    if (!line.startsWith("data: ")) return;
+    const payload = line.slice(6);
+    if (payload === "[DONE]") return;
+    try {
+      const parsed = JSON.parse(payload);
+      if (typeof parsed.t === "string") {
+        result += parsed.t;
+        // Hide the hidden <learned>/<reason> tag AND any self-emitted
+        // "_…response truncated. Ask 'continue' for the rest._" style
+        // marker from the live streaming view.
+        onChunk(stripModelTruncationNoteFromStream(stripLearnedTag(result)));
+      }
+      if (parsed.error && !result) throw new Error(String(parsed.error));
+    } catch {
+      // Ignore partial JSON chunks.
+    }
+  };
+
   // eslint-disable-next-line no-constant-condition
   while (true) {
     const { done, value } = await reader.read();
-    if (done) break;
+    if (done) {
+      buffer += decoder.decode(undefined, { stream: false });
+      break;
+    }
     buffer += decoder.decode(value, { stream: true });
     const lines = buffer.split("\n");
     buffer = lines.pop() || "";
-    for (const raw of lines) {
-      const line = raw.trim();
-      if (!line.startsWith("data: ")) continue;
-      const payload = line.slice(6);
-      if (payload === "[DONE]") continue;
-      try {
-        const parsed = JSON.parse(payload);
-        if (typeof parsed.t === "string") {
-          result += parsed.t;
-          onChunk(stripLearnedTag(result));
-        }
-        if (parsed.error) throw new Error(String(parsed.error));
-      } catch {
-        // Ignore partial JSON chunks.
-      }
-    }
+    for (const raw of lines) consumeLine(raw);
+  }
+  // Drain any trailing data left in the buffer when the connection closes
+  // without a final newline (Gemini occasionally does this) so the last
+  // sentence of the reply doesn't silently get dropped.
+  if (buffer.trim()) {
+    for (const raw of buffer.split("\n")) consumeLine(raw);
+    buffer = "";
   }
 
   return result;
@@ -509,7 +562,12 @@ const LandingPrototype = () => {
     )
       .then((finalRaw) => {
         window.clearTimeout(timeoutId);
-        const visible = stripLearnedTag(finalRaw).trim() || FALLBACK_REPLY;
+        // Strip both the hidden <learned> tag AND any self-emitted
+        // truncation / "ask continue" marker before the dangling-clause
+        // repair runs (otherwise finalizeVisibleReply would treat the
+        // truncation note's last word as the model's last sentence).
+        const stripped = stripModelTruncationNote(stripLearnedTag(finalRaw));
+        const visible = finalizeVisibleReply(stripped) || FALLBACK_REPLY;
         const learned = extractLearnedPhrase(finalRaw);
         const reason = extractLearnedReason(finalRaw);
 

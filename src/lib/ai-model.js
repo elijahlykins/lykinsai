@@ -1,9 +1,14 @@
-const DEFAULT_AI_MODEL = 'claude-sonnet-4-6';
+import { canonicalizeModelId, LYKN_LITE_ID } from './modelTiers';
 
-export const normalizeModelValue = (model) => {
-  const value = String(model || '').trim();
-  if (!value) return DEFAULT_AI_MODEL;
-  return value;
+const DEFAULT_AI_MODEL = LYKN_LITE_ID;
+
+// Migrate any value (including stale ids like `claude-sonnet-4-6` from
+// older releases) to a current LYKN id, falling back to the provided
+// default if the saved value is unrecognised.
+export const normalizeModelValue = (model, fallback = DEFAULT_AI_MODEL) => {
+  const fallbackModel = canonicalizeModelId(fallback) || DEFAULT_AI_MODEL;
+  const canonical = canonicalizeModelId(model);
+  return canonical || fallbackModel;
 };
 
 export const getSelectedAiModel = (fallback = DEFAULT_AI_MODEL) => {
@@ -12,7 +17,7 @@ export const getSelectedAiModel = (fallback = DEFAULT_AI_MODEL) => {
     const raw = localStorage.getItem('lykinsai_settings');
     if (!raw) return fallbackModel;
     const parsed = JSON.parse(raw);
-    return normalizeModelValue(parsed?.aiModel || fallbackModel);
+    return normalizeModelValue(parsed?.aiModel, fallbackModel);
   } catch {
     return fallbackModel;
   }

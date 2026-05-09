@@ -89,6 +89,11 @@ const MODEL_PRICING = {
   // TTS (cost per 1K characters, stored as "input")
   'tts-1': { input: 0.015, output: 0 },
   'tts-1-hd': { input: 0.030, output: 0 },
+
+  // OpenAI Embeddings (output cost is always 0, only input tokens billed)
+  'text-embedding-3-small': { input: 0.00002, output: 0 },
+  'text-embedding-3-large': { input: 0.00013, output: 0 },
+  'text-embedding-ada-002': { input: 0.0001,  output: 0 },
 };
 
 // Fixed costs for non-token-based actions (in USD)
@@ -115,6 +120,21 @@ const CREDIT_COSTS = {
   video:                35,
   transcription:        5,
   tts:                  3,
+  // Internal / system actions (no end-user credit charge but tracked for admin)
+  guest_chat:           0,
+  embedding_retrieval:  0,
+  embedding_reindex:    0,
+  intake_profile:       0,
+  profile_refresh:      0,
+  fact_extraction:      0,
+  youtube_transcribe:   0,
+  vault_search:         1,
+  vault_enrich:         2,
+  describe_image:       2,
+  describe_text:        1,
+  summarize_conversation: 1,
+  name_grid:            0,
+  discover_takeaway:    0,
 };
 
 // ─── Cost Calculation ────────────────────────────────────────────────────────
@@ -232,6 +252,7 @@ async function updateSessionTotals(sessionId, { cost, tokens, credits }) {
 async function logAiUsage({
   sessionId,
   userId,
+  guestSessionId = null,
   actionType,
   model,
   provider,
@@ -239,7 +260,9 @@ async function logAiUsage({
   outputTokens = 0,
   metadata = null,
 }) {
-  if (!userId) return;
+  // Allow guest rows (no userId) as long as we have a guestSessionId so they
+  // still aggregate in the admin dashboard. Authenticated rows must have userId.
+  if (!userId && !guestSessionId) return;
 
   const totalTokens = inputTokens + outputTokens;
   const costUsd = (actionType === 'image_gen' || actionType === 'video' || actionType === 'image_edit')
@@ -248,7 +271,7 @@ async function logAiUsage({
   const creditsUsed = getCreditCost(actionType);
 
   const row = {
-    user_id: userId,
+    user_id: userId || null,
     action_type: actionType,
     model: model || 'unknown',
     provider: provider || 'unknown',
@@ -260,10 +283,11 @@ async function logAiUsage({
     metadata: metadata || null,
   };
   if (sessionId) row.session_id = sessionId;
+  if (guestSessionId) row.guest_session_id = String(guestSessionId).slice(0, 200);
 
   const inserted = await supabaseAdmin('POST', 'ai_usage_logs', { body: row });
 
-  // Update session totals in the background
+  // Update session totals in the background (only for logged-in users with sessions)
   if (sessionId) {
     updateSessionTotals(sessionId, {
       cost: costUsd,
@@ -272,7 +296,8 @@ async function logAiUsage({
     }).catch(() => {});
   }
 
-  console.log(`[Usage] ${actionType} | ${model} | ${totalTokens} tokens | $${costUsd.toFixed(4)} | ${creditsUsed} credits`);
+  const who = userId ? `uid=${String(userId).slice(0, 8)}` : `guest=${String(guestSessionId || '').slice(0, 8)}`;
+  console.log(`[Usage] ${who} | ${actionType} | ${model} | ${totalTokens} tokens | $${costUsd.toFixed(4)} | ${creditsUsed} credits`);
   return inserted?.[0] || null;
 }
 
@@ -408,6 +433,238 @@ function extractGrokUsage(data) {
   return extractOpenAIUsage(data); // Same format as OpenAI
 }
 
+// ─── Admin Dashboard Queries (service-role, cross-user) ──────────────────────
+// All four helpers proxy to SECURITY DEFINER RPCs defined in
+// supabase-migrations/040_admin_usage_rpcs.sql so they can join ai_usage_logs
+// to auth.users without exposing auth.users via PostgREST.
+
+async function callRpc(fnName, args) {
+  if (!getSupabaseUrl() || !getServiceRoleKey()) {
+    const msg = `[UsageTracking] Supabase not configured (missing VITE_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY) — cannot call RPC ${fnName}`;
+    console.warn(msg);
+    const err = new Error('Service role not configured on server (set SUPABASE_SERVICE_ROLE_KEY).');
+    err.code = 'no_service_role';
+    throw err;
+  }
+  const url = `${getSupabaseUrl()}/rest/v1/rpc/${fnName}`;
+  let res;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: adminHeaders(),
+      body: JSON.stringify(args || {}),
+    });
+  } catch (e) {
+    console.error(`[UsageTracking] RPC ${fnName} fetch error:`, e?.message || e);
+    const err = new Error(`Network error calling RPC ${fnName}: ${e?.message || e}`);
+    err.code = 'rpc_network';
+    throw err;
+  }
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    console.error(`[UsageTracking] RPC ${fnName} failed (${res.status}):`, body);
+    // 404 on PostgREST RPC almost always means the function doesn't exist —
+    // i.e. the migration wasn't applied. Make that loud.
+    if (res.status === 404) {
+      const err = new Error(`Database function "${fnName}" not found. Apply the latest migrations in supabase-migrations/ to your Supabase project.`);
+      err.code = 'rpc_missing';
+      err.status = 404;
+      throw err;
+    }
+    const err = new Error(`RPC ${fnName} failed (${res.status}): ${body.slice(0, 240)}`);
+    err.code = 'rpc_error';
+    err.status = res.status;
+    throw err;
+  }
+  const text = await res.text();
+  return text ? JSON.parse(text) : null;
+}
+
+function rangeStartFromKey(rangeKey) {
+  const now = new Date();
+  switch (String(rangeKey || '30d')) {
+    case 'today':
+      return new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+    case '7d':
+      return new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    case '30d':
+      return new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    case '90d':
+      return new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000).toISOString();
+    case 'mtd':
+      return new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+    case 'ytd':
+      return new Date(now.getFullYear(), 0, 1).toISOString();
+    case 'all':
+      return new Date(2000, 0, 1).toISOString();
+    default:
+      return new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  }
+}
+
+async function getAdminOverview(rangeKey = '30d') {
+  const since = rangeStartFromKey(rangeKey);
+  const result = await callRpc('admin_usage_overview', { p_since: since });
+  return result || { totals: null, today: null, all_time: null, by_action: [], by_provider: [], by_model: [], daily: [] };
+}
+
+async function getAdminUsersList(rangeKey = 'mtd') {
+  const since = rangeStartFromKey(rangeKey);
+  const rows = await callRpc('admin_users_with_usage', { p_since: since });
+  return Array.isArray(rows) ? rows : [];
+}
+
+async function getAdminUserDrilldown(userId, rangeKey = '30d') {
+  if (!userId) return null;
+  const since = rangeStartFromKey(rangeKey);
+  return await callRpc('admin_user_drilldown', { p_user: userId, p_since: since });
+}
+
+async function getAdminRecentActivity(limit = 50) {
+  const safe = Math.max(1, Math.min(Number(limit) || 50, 500));
+  const rows = await callRpc('admin_recent_activity', { p_limit: safe });
+  return Array.isArray(rows) ? rows : [];
+}
+
+// Probe each admin RPC by calling it with a trivial argument and reporting
+// success / 404 (= migration not applied) / other error.
+async function probeRpc(fnName, args) {
+  if (!getSupabaseUrl() || !getServiceRoleKey()) {
+    return { ok: false, reason: 'no_service_role' };
+  }
+  try {
+    const res = await fetch(`${getSupabaseUrl()}/rest/v1/rpc/${fnName}`, {
+      method: 'POST',
+      headers: adminHeaders(),
+      body: JSON.stringify(args || {}),
+    });
+    if (res.ok) return { ok: true };
+    if (res.status === 404) return { ok: false, reason: 'missing', status: 404 };
+    const body = await res.text().catch(() => '');
+    return { ok: false, reason: 'error', status: res.status, message: body.slice(0, 200) };
+  } catch (e) {
+    return { ok: false, reason: 'network', message: String(e?.message || e).slice(0, 200) };
+  }
+}
+
+async function getAdminDiagnostics() {
+  const serviceRoleConfigured = Boolean(getSupabaseUrl() && getServiceRoleKey());
+
+  // Raw row checks via plain PostgREST against ai_usage_logs. These bypass
+  // the new admin_* RPCs so we can tell whether the issue is "no logs at all"
+  // vs "logs exist but RPCs are missing".
+  const out = {
+    service_role_configured: serviceRoleConfigured,
+    supabase_url: getSupabaseUrl() || null,
+    table_reachable: false,
+    table_error: null,
+    total_rows: null,
+    rows_last_hour: null,
+    rows_today: null,
+    latest_row: null,
+    rpcs: {
+      admin_usage_overview: { ok: false, reason: 'untested' },
+      admin_users_with_usage: { ok: false, reason: 'untested' },
+      admin_recent_activity: { ok: false, reason: 'untested' },
+      admin_usage_live: { ok: false, reason: 'untested' },
+    },
+  };
+
+  if (!serviceRoleConfigured) return out;
+
+  // 1. Try a HEAD with Prefer: count=exact to get total rows cheaply.
+  try {
+    const url = `${getSupabaseUrl()}/rest/v1/ai_usage_logs?select=id`;
+    const res = await fetch(url, {
+      method: 'HEAD',
+      headers: { ...adminHeaders(), Prefer: 'count=exact', Range: '0-0' },
+    });
+    if (res.ok) {
+      out.table_reachable = true;
+      const cr = res.headers.get('content-range') || '';
+      const m = cr.match(/\/(\d+|\*)$/);
+      if (m && m[1] !== '*') out.total_rows = Number(m[1]);
+    } else {
+      out.table_error = `HEAD ai_usage_logs ${res.status}`;
+    }
+  } catch (e) {
+    out.table_error = String(e?.message || e).slice(0, 240);
+  }
+
+  // 2. Latest row (one round-trip).
+  try {
+    const url = `${getSupabaseUrl()}/rest/v1/ai_usage_logs?select=id,created_at,action_type,model,user_id,cost_usd&order=created_at.desc&limit=1`;
+    const res = await fetch(url, { headers: adminHeaders() });
+    if (res.ok) {
+      const rows = await res.json().catch(() => []);
+      if (Array.isArray(rows) && rows[0]) out.latest_row = rows[0];
+    }
+  } catch { /* tolerate */ }
+
+  // 3. Rows in last hour and today (counts only).
+  try {
+    const sinceHour = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const url = `${getSupabaseUrl()}/rest/v1/ai_usage_logs?select=id&created_at=gte.${encodeURIComponent(sinceHour)}`;
+    const res = await fetch(url, {
+      method: 'HEAD',
+      headers: { ...adminHeaders(), Prefer: 'count=exact', Range: '0-0' },
+    });
+    if (res.ok) {
+      const cr = res.headers.get('content-range') || '';
+      const m = cr.match(/\/(\d+|\*)$/);
+      if (m && m[1] !== '*') out.rows_last_hour = Number(m[1]);
+    }
+  } catch { /* tolerate */ }
+
+  try {
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const url = `${getSupabaseUrl()}/rest/v1/ai_usage_logs?select=id&created_at=gte.${encodeURIComponent(startOfDay.toISOString())}`;
+    const res = await fetch(url, {
+      method: 'HEAD',
+      headers: { ...adminHeaders(), Prefer: 'count=exact', Range: '0-0' },
+    });
+    if (res.ok) {
+      const cr = res.headers.get('content-range') || '';
+      const m = cr.match(/\/(\d+|\*)$/);
+      if (m && m[1] !== '*') out.rows_today = Number(m[1]);
+    }
+  } catch { /* tolerate */ }
+
+  // 4. Probe each RPC. These reveal whether migrations 040 / 042 ran.
+  const sinceProbe = new Date(Date.now() - 60_000).toISOString();
+  const fakeUuid = '00000000-0000-0000-0000-000000000000';
+  const [overviewProbe, usersProbe, recentProbe, liveProbe] = await Promise.all([
+    probeRpc('admin_usage_overview', { p_since: sinceProbe }),
+    probeRpc('admin_users_with_usage', { p_since: sinceProbe }),
+    probeRpc('admin_recent_activity', { p_limit: 1 }),
+    probeRpc('admin_usage_live', { p_minutes: 1 }),
+  ]);
+  out.rpcs.admin_usage_overview = overviewProbe;
+  out.rpcs.admin_users_with_usage = usersProbe;
+  out.rpcs.admin_recent_activity = recentProbe;
+  out.rpcs.admin_usage_live = liveProbe;
+  // Also probe drilldown (uses uuid arg type — different signature).
+  out.rpcs.admin_user_drilldown = await probeRpc('admin_user_drilldown', { p_user: fakeUuid, p_since: sinceProbe });
+
+  return out;
+}
+
+async function getAdminLiveActivity(minutes = 60) {
+  const safe = Math.max(1, Math.min(Number(minutes) || 60, 360));
+  const result = await callRpc('admin_usage_live', { p_minutes: safe });
+  return result || {
+    minutes: safe,
+    since: new Date(Date.now() - safe * 60_000).toISOString(),
+    now: new Date().toISOString(),
+    totals: null,
+    per_minute: [],
+    by_action: [],
+    top_users: [],
+    recent: [],
+  };
+}
+
 export {
   getOrCreateSession,
   updateSessionActivity,
@@ -426,6 +683,13 @@ export {
   getSessionWithLogs,
   startSessionCleanup,
   stopSessionCleanup,
+  getAdminOverview,
+  getAdminUsersList,
+  getAdminUserDrilldown,
+  getAdminRecentActivity,
+  getAdminLiveActivity,
+  getAdminDiagnostics,
+  rangeStartFromKey,
   MODEL_PRICING,
   CREDIT_COSTS,
 };

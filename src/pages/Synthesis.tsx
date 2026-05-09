@@ -93,7 +93,7 @@ const pillars = [
     eyebrow: "Personal AI",
     title: "An AI that knows what you're working on.",
     body:
-      "Most AI tools start every conversation from zero. You paste, you re-explain, you remind them who you are. LYKN's AI starts from where you are. It can read the Grid you're sitting on, search across your other boards, and pull in anything you've saved to the Vault. Switch between ChatGPT, Claude, Gemini, or Grok without losing context.",
+      "Most AI tools start every conversation from zero. You paste, you re-explain, you remind them who you are. LYKN's AI starts from where you are. It can read the Grid you're sitting on, search across your other boards, and pull in anything you've saved to the Vault. Three tiers — Lite, Fast Reasoning, and Deep Thinking — without losing context when you switch.",
     sub:
       "Drag any AI response straight onto the Grid as a brick. Drop a Vault item into the chat and let the AI work on top of it. The AI isn't a side panel — it's a participant in the studio.",
   },

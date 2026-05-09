@@ -26,7 +26,8 @@ import { supabase } from "@/lib/supabase";
 import { purgeVaultNoteEmbeddings } from "@/lib/synthesis/queueReindex";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { useUsageGate } from "@/lib/useUsageGate";
-import { notifyVaultCapIfApplicable } from "@/lib/vault/vaultCapError";
+import { isVaultCapError, notifyVaultCapIfApplicable } from "@/lib/vault/vaultCapError";
+import { afterVaultNoteSaved } from "@/lib/vault/afterVaultSave";
 import UpgradeModal from "@/components/UpgradeModal";
 import { toast } from "@/components/ui/use-toast";
 
@@ -4921,10 +4922,10 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
     const clamp = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n));
 
     const callAI = async (prompt: string, userMessage?: string): Promise<string> => {
-      let aiModel = "claude-sonnet-4-6";
+      let aiModel = "lykn-lite";
       try {
         const settings = JSON.parse(localStorage.getItem("lykinsai_settings") || "{}");
-        aiModel = settings.aiModel || "claude-sonnet-4-6";
+        aiModel = settings.aiModel || "lykn-lite";
       } catch {
         // ignore
       }
@@ -5386,11 +5387,20 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
         .join("\n");
 
       const prompt = [
-        "You are an assistant embedded in a block-based note grid.",
+        "You are LYKN — this user's synthesis layer, embedded in a block-based note grid. You speak as part of them, not at them.",
         "You can read ALL blocks on screen and you may create/update blocks using the allowed actions below.",
         "",
         "Return ONLY a JSON object (no markdown, no extra text) shaped like:",
         '{ "shouldRespond": true|false, "assistant": "string", "actions": [ ... ] }',
+        "",
+        "VOICE — WE, NOT YOU (CRITICAL for the 'assistant' field):",
+        "Default to first-person plural — we, our, we're, us, let's. The 'assistant' string is shown to the user as a chat message.",
+        "- 'your project' → 'our project'",
+        "- 'your grid / brick / list' → 'our grid / brick / list'",
+        "- 'you should ship X' → 'we should ship X' (or 'let's ship X')",
+        "- 'you might want to…' → 'we could…' / 'let's…'",
+        "- ONE allowed exception: when the user asks WHAT YOU ARE, you may introduce yourself in first-person singular ('I'm your synthesis layer'). Otherwise default to we/our.",
+        "- NEVER say 'How can I help you today?' or 'your task is to…'. We are inside the user, not next to them.",
         "",
         "Rules:",
         '- Default to helping: if the user is asking anything, requesting anything, or writing something that could benefit from an explanation/next step, set "shouldRespond": true.',
@@ -7667,10 +7677,13 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
                   ))}
                   <button
                     disabled={vaultSavedId === brickMenu.id}
-                    className={`flex items-center gap-2.5 px-3 py-1.5 text-[12px] text-left transition-colors ${vaultSavedId === brickMenu.id ? "text-green-600 dark:text-green-400" : "text-black/70 dark:text-white/80 hover:bg-black/8 dark:hover:bg-white/10"}`}
+                    className={`flex items-center gap-2.5 px-3 py-1.5 text-[12px] text-left transition-colors ${vaultSavedId === brickMenu.id ? "text-blue-600 dark:text-blue-400 bg-blue-500/10 dark:bg-blue-500/15" : "text-black/70 dark:text-white/80 hover:bg-black/8 dark:hover:bg-white/10"}`}
                     onClick={async () => {
                       const bid = brickMenu.id;
-                      if (!user?.id) return;
+                      if (!user?.id) {
+                        toast({ title: "Sign in to save to your Vault", variant: "destructive" });
+                        return;
+                      }
                       const st = useCanvasStore.getState();
                       const orig: any = (st.blocks as any)?.[bid];
                       if (!orig) return;
@@ -7687,17 +7700,20 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
                       let noteTitle = blockName || "Saved from Grid";
                       let attachments: any[] = [];
                       let bodyText = "";
+                      let saveTag = "grid";
 
                       if (bType === "youtube" || (bType === "create" && bMode === "video" && videoId)) {
                         const ytUrl = url || (videoId ? `https://www.youtube.com/watch?v=${videoId}` : "");
                         noteTitle = blockName || "YouTube Video";
                         attachments = [{ type: "youtube", url: ytUrl, name: noteTitle }];
+                        saveTag = "youtube";
                       } else if (bType === "create" && (bMode === "image" || bMode === "generated")) {
                         noteTitle = blockName || "Image";
                         const imgUrl = src || url;
                         const imgAtt: any = { type: "image", url: imgUrl, name: noteTitle };
                         if (data.storagePath) { imgAtt.storagePath = data.storagePath; imgAtt.storageBucket = data.storageBucket || "user-files"; }
                         attachments = [imgAtt];
+                        saveTag = "image";
                       } else if (bType === "create" && (bMode === "embed" || bMode === "link")) {
                         const ogTitle = String(data.ogTitle || "").trim();
                         const ogDesc = String(data.ogDescription || "").trim();
@@ -7711,15 +7727,19 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
                         if (ogTitle) {
                           noteTitle = ogTitle;
                           attachments = [{ type: "bookmark", url, name: ogTitle, title: ogTitle, description: ogDesc, image: ogImage, siteName: ogSiteName, favicon: ogFavicon, oembedType, authorName, authorHandle }];
+                          saveTag = "link";
                         } else if (mime.startsWith("audio/")) {
                           noteTitle = blockName || "Audio";
                           attachments = [{ type: "audio", url, name: noteTitle, mime }];
+                          saveTag = "audio";
                         } else if (mime === "application/pdf") {
                           noteTitle = blockName || "PDF";
                           attachments = [{ type: "pdf", url, name: noteTitle }];
+                          saveTag = "pdf";
                         } else if (url) {
                           noteTitle = blockName || url;
                           attachments = [{ type: "bookmark", url, name: noteTitle, title: noteTitle }];
+                          saveTag = "link";
                         }
                       } else if (bType === "spreadsheet") {
                         const sheet = orig.sheet || {};
@@ -7729,34 +7749,86 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
                         const srcName = String(data.sourceFileName || "").trim();
                         noteTitle = srcName || blockName || "Spreadsheet";
                         attachments = [{ type: "spreadsheet", name: noteTitle, rows, cols, cells: sheetCells }];
+                        saveTag = "spreadsheet";
                       } else if (textContent) {
                         noteTitle = textContent.slice(0, 60) || "Note";
                         bodyText = textContent;
+                        saveTag = "note";
                       }
 
-                      if (!attachments.length && !bodyText) return;
-                      if (!(await checkVaultLimit())) return;
+                      if (!attachments.length && !bodyText) {
+                        toast({ title: "Nothing to save", description: "This brick is empty." });
+                        return;
+                      }
 
+                      // Optimistic blue feedback so the click never feels dead, even
+                      // if the network round-trip takes a second. Reverted on failure.
+                      setVaultSavedId(bid);
+
+                      if (!(await checkVaultLimit())) {
+                        setVaultSavedId(null);
+                        return;
+                      }
+
+                      const safeTitle = noteTitle.slice(0, 200) || "Saved from Grid";
                       const content = attachments.length
                         ? `${noteTitle}\n\n[ATTACHMENTS_JSON:${JSON.stringify(attachments)}]`
                         : bodyText;
 
-                      const { error } = await supabase.from("notes").insert({
+                      const baseInsert: Record<string, unknown> = {
                         user_id: user.id,
-                        title: noteTitle.slice(0, 200),
+                        title: safeTitle,
                         content,
                         is_pinned: false,
-                      });
-                      if (error) {
-                        notifyVaultCapIfApplicable(error);
-                      } else {
-                        setVaultSavedId(bid);
-                        setTimeout(() => { setBrickMenu(null); setVaultSavedId(null); }, 1200);
+                      };
+                      const richInsert: Record<string, unknown> = {
+                        ...baseInsert,
+                        source: "canvas_brick",
+                        tags: [saveTag, "grid"],
+                      };
+
+                      let inserted: { id?: string } | null = null;
+                      let insertError: any = null;
+                      ({ data: inserted, error: insertError } = await supabase
+                        .from("notes")
+                        .insert(richInsert)
+                        .select("id")
+                        .single());
+
+                      const missingColumn =
+                        insertError &&
+                        (insertError.code === "PGRST204" ||
+                          /Could not find|does not exist/i.test(String(insertError.message || "")));
+                      if (missingColumn) {
+                        ({ data: inserted, error: insertError } = await supabase
+                          .from("notes")
+                          .insert(baseInsert)
+                          .select("id")
+                          .single());
                       }
+
+                      if (insertError) {
+                        notifyVaultCapIfApplicable(insertError);
+                        if (!isVaultCapError(insertError)) {
+                          toast({
+                            title: "Couldn't save to Vault",
+                            description: String(insertError.message || "Try again in a moment."),
+                            variant: "destructive",
+                          });
+                        }
+                        setVaultSavedId(null);
+                        return;
+                      }
+
+                      if (inserted?.id) {
+                        afterVaultNoteSaved(user.id, inserted.id, { title: safeTitle, content });
+                      }
+
+                      setTimeout(() => { setBrickMenu(null); setVaultSavedId(null); }, 1200);
                     }}
                   >
                     {vaultSavedId === brickMenu.id ? <Check className="w-3.5 h-3.5 shrink-0" /> : <Archive className="w-3.5 h-3.5 shrink-0" />}
-                    <span>{vaultSavedId === brickMenu.id ? "Saved" : "Save to Vault"}</span>
+                    <span>{vaultSavedId === brickMenu.id ? "Saved to Vault" : "Save to Vault"}</span>
                   </button>
                   <div className="mx-2 my-1 h-px bg-black/8 dark:bg-white/8" />
                   {[

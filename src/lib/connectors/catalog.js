@@ -640,14 +640,20 @@ export const CONNECTORS = [
   {
     id: "mcp",
     category: "automation",
-    name: "MCP Servers",
+    name: "MCP Servers (inbound)",
     color: "#0F172A",
     auth: "Per-server config",
     pulls: ["Any MCP-compatible tool"],
     realtime: "Live",
     status: "soon",
+    // NOTE: this is the INBOUND direction — LYKN as MCP CLIENT pulling
+    // data from someone else's MCP server. The opposite direction (LYKN
+    // exposing its synthesis layer TO Claude / Cursor / Claude Code via
+    // its OWN MCP server) lives in src/lib/connectors/outboundTargets.js
+    // and is rendered as a separate "Use LYKN with your AI" section on
+    // the Connections page. Don't conflate the two.
     summary:
-      "Connect any Model Context Protocol server. Frees us from writing one adapter per tool.",
+      "Future: connect any external MCP server as a LYKN data source. Today the more interesting direction is OUTBOUND — see 'Use LYKN with your AI' below.",
   },
   {
     id: "zapier",

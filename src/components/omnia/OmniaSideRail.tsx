@@ -1,11 +1,15 @@
 import React, { useRef, useEffect, useState, useCallback } from "react";
 import {
   MessageSquare, X, Check, Save, FileText, Globe, Copy,
-  ChevronRight, GripVertical,
+  ChevronRight, GripVertical, MoreHorizontal,
 } from "lucide-react";
 import { GridIcon } from "@/components/ui/GridIcon";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import NeuronPill from "@/components/synthesis/NeuronPill";
+import AppliedRulePill from "@/components/synthesis/AppliedRulePill";
+import type { AppliedAttribution } from "@/lib/ai/appliedTag";
+import type { FactNeuron } from "@/lib/ai/learnedTag";
 
 const TASK_LINE_RE = /^\s*(?:[-*]\s+)?\[([ xX])\]\s+(.+)$/;
 
@@ -99,6 +103,22 @@ type PromptMessage = {
   sources?: { title: string; url: string }[];
   kind?: "prompt";
   attachments?: FocusedChatAttachment[];
+  /**
+   * Set when the AI's reply ended with a hidden <learned>/<reason> or
+   * <updated old="..."> tag pair, OR when the server-side
+   * /api/learned/auto fallback classifier detected a personal disclosure
+   * the chat model forgot to tag. Renders the glowing "Neuron created" /
+   * "Neuron updated" pill underneath the AI response so the user sees
+   * LYKN learning about them in real time.
+   */
+  factNeuron?: FactNeuron;
+  /**
+   * Set when the AI's reply applied a ratified belief-window rule. The
+   * server validated the rule is owned + active before recording the
+   * attribution; renders the indigo "Applied a rule" pill underneath
+   * the AI response with inline good/rule-was-off/belief-was-off feedback.
+   */
+  appliedAttribution?: AppliedAttribution;
 };
 
 export interface OmniaSideRailProps {
@@ -141,6 +161,8 @@ export interface OmniaSideRailProps {
 
   expandedAiMsgIds: Set<string>;
   toggleAiExpanded: (msgId: string) => void;
+  expandedUserPromptIds: Set<string>;
+  toggleUserPromptExpanded: (msgId: string) => void;
   getCollapsedPreview: (text: string) => string;
 
   copiedMsgId: string | null;
@@ -181,6 +203,8 @@ const OmniaSideRail: React.FC<OmniaSideRailProps> = React.memo(function OmniaSid
   onReplay,
   expandedAiMsgIds,
   toggleAiExpanded,
+  expandedUserPromptIds,
+  toggleUserPromptExpanded,
   getCollapsedPreview,
   copiedMsgId,
   onCopyMessage,
@@ -264,11 +288,40 @@ const OmniaSideRail: React.FC<OmniaSideRailProps> = React.memo(function OmniaSid
               </div>
             )}
             {msg.role === "user" ? (
-              <button type="button" onClick={() => { onReplay(msg); }} disabled={!msg.aiResponse} className="group relative text-left max-w-[94%] disabled:cursor-default" title={msg.aiResponse ? "Show saved AI response" : "Waiting for AI response"}>
-                {msg.aiResponse ? (<span className="pointer-events-none absolute -top-6 right-0 rounded-md bg-black/70 px-2 py-1 text-[0.625rem] text-white opacity-0 transition-opacity duration-150 group-hover:opacity-100 whitespace-nowrap">{(msg as any).aiImageUrl ? "Tap to view generated image" : "Tap to view AI response"}</span>) : null}
-                <div className="w-full rounded-2xl rounded-br-md px-3 py-2 text-xs leading-relaxed text-black/90 dark:text-white/90 border border-black/8 dark:border-white/10 bg-background dark:bg-[linear-gradient(135deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02))] shadow-[0_4px_14px_rgba(0,0,0,0.06)] dark:shadow-[0_4px_14px_rgba(0,0,0,0.16)] [&_table]:text-[0.6875rem] [&_td]:py-1 [&_th]:py-1">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={buildChatMarkdownComponents(msg.id)}>{normalizeChecklistSyntax(msg.content || "")}</ReactMarkdown>
-                </div>
+              <div className="relative max-w-[94%]">
+                {(() => {
+                  const promptText = msg.content || "";
+                  // Threshold: long prompts get a "show more / show less"
+                  // affordance so the bubble doesn't dominate the rail.
+                  const isLongPrompt = promptText.length > 280;
+                  const isPromptExpanded = msg.id ? expandedUserPromptIds.has(msg.id) : true;
+                  const collapsedClampStyle = isLongPrompt && !isPromptExpanded
+                    ? { display: "-webkit-box" as const, WebkitLineClamp: 4 as any, WebkitBoxOrient: "vertical" as any, overflow: "hidden" as const }
+                    : undefined;
+                  return (
+                    <>
+                      <div
+                        className="w-full rounded-2xl rounded-br-md px-3 py-2 text-xs leading-relaxed text-black/90 dark:text-white/90 border border-black/8 dark:border-white/10 bg-background dark:bg-[linear-gradient(135deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02))] shadow-[0_4px_14px_rgba(0,0,0,0.06)] dark:shadow-[0_4px_14px_rgba(0,0,0,0.16)] [&_table]:text-[0.6875rem] [&_td]:py-1 [&_th]:py-1 select-text cursor-text"
+                        style={collapsedClampStyle}
+                      >
+                        <ReactMarkdown remarkPlugins={[remarkGfm]} components={buildChatMarkdownComponents(msg.id)}>{normalizeChecklistSyntax(promptText)}</ReactMarkdown>
+                      </div>
+                      {isLongPrompt && msg.id && (
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); toggleUserPromptExpanded(msg.id); }}
+                          title={isPromptExpanded ? "Show less" : "Show full prompt"}
+                          aria-label={isPromptExpanded ? "Show less" : "Show full prompt"}
+                          className="mt-1 ml-auto flex items-center gap-1 px-2 py-0.5 rounded-md text-[0.6875rem] text-black/55 dark:text-white/55 hover:text-black/85 dark:hover:text-white/85 hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
+                        >
+                          {isPromptExpanded
+                            ? <span className="leading-none">Show less</span>
+                            : <><MoreHorizontal className="w-3.5 h-3.5" /><span className="leading-none">Show more</span></>}
+                        </button>
+                      )}
+                    </>
+                  );
+                })()}
                 {(msg as any).aiImageUrl && (
                   <div className="mt-1">
                     <img src={(msg as any).aiImageUrl} alt="Generated image" className="max-w-full rounded-lg shadow-md" style={{ maxHeight: "160px" }} />
@@ -328,7 +381,7 @@ const OmniaSideRail: React.FC<OmniaSideRailProps> = React.memo(function OmniaSid
                     })}
                   </div>
                 )}
-              </button>
+              </div>
             ) : (
               <div className="max-w-[94%] rounded-2xl rounded-bl-md px-3 py-2 text-xs leading-relaxed break-words border border-transparent bg-transparent hover:bg-white/50 dark:hover:bg-white/[0.02] hover:border-blue-300/40 dark:hover:border-white/[0.03] transition-all text-black/85 dark:text-white/85">
                 <ReactMarkdown remarkPlugins={[remarkGfm]} components={buildChatMarkdownComponents(msg.id)}>
@@ -448,6 +501,8 @@ const OmniaSideRail: React.FC<OmniaSideRailProps> = React.memo(function OmniaSid
                 </div>
                   </div>
                 </div>
+                {msg.factNeuron && <NeuronPill fact={msg.factNeuron} size="compact" />}
+                {msg.appliedAttribution && <AppliedRulePill attribution={msg.appliedAttribution} size="compact" />}
               </div>
               );
             })()}

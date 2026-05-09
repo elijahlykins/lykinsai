@@ -64,7 +64,7 @@ export function useViewportTier() {
 // stays false for them. We use this to gate mobile-mode UI so that resizing
 // or split-screening a desktop browser below 768px doesn't punt the user
 // into the phone shell.
-function getIsTouchOnlyDevice(): boolean {
+export function getIsTouchOnlyDevice(): boolean {
   if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
     return false;
   }
@@ -78,8 +78,11 @@ function getIsTouchOnlyDevice(): boolean {
   }
 }
 
-export function useIsMobile() {
-  const { tier } = useViewportTier();
+// Subscribe to the touch-only-device signal. Components that previously gated
+// behaviour on raw viewport width (e.g. `< 768px = phone`) should compose this
+// with their width check so a split-screened laptop window stays on the
+// desktop UI even when narrow.
+export function useIsTouchOnlyDevice(): boolean {
   const [isTouchOnly, setIsTouchOnly] = useState<boolean>(() => getIsTouchOnlyDevice());
 
   useEffect(() => {
@@ -98,6 +101,12 @@ export function useIsMobile() {
     };
   }, []);
 
+  return isTouchOnly;
+}
+
+export function useIsMobile() {
+  const { tier } = useViewportTier();
+  const isTouchOnly = useIsTouchOnlyDevice();
   return tier === "mobile" && isTouchOnly;
 }
 

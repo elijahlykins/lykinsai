@@ -1,7 +1,25 @@
 import { extractYouTubeVideoId } from "@/canvas/utils/youtube";
 import { getAiPrefs } from "@/lib/ai-prefs";
 import { CONTEXT_BUDGETS } from "@/lib/ai/promptBuilder";
+import {
+  parseLearnedTag,
+  stripLearnedTagFromStream,
+  stripLearnedTagsFromFinal,
+  finalizeVisibleReply,
+  postLearnedFact,
+  postAutoLearnedFact,
+  stripModelTruncationNote,
+  stripModelTruncationNoteFromStream,
+} from "@/lib/ai/learnedTag";
+import {
+  parseAppliedTag,
+  stripAppliedTagFromStream,
+  stripAppliedTagFromFinal,
+  postAppliedAttribution,
+  type AppliedAttribution,
+} from "@/lib/ai/appliedTag";
 import { saveExchange, getMemoryForPrompt, invalidateMemoryCache } from "@/lib/conversationMemory";
+import { AI_TEMPORARY_FAILURE_TEXT } from "@/lib/ai/userFacingErrors";
 import { fetchNotesForVaultAi, buildVaultDetailForGridAi, type VaultAiNoteRow } from "@/lib/vault/vaultContentsForAi";
 import {
   GUEST_CHAT_SESSION_CAP,
@@ -45,6 +63,44 @@ export type PromptMessage = {
   sources?: { title: string; url: string }[];
   kind?: "prompt";
   attachments?: FocusedChatAttachment[];
+  /**
+   * Set on this message when the AI's reply ended with a hidden
+   * <learned kind="...">phrase</learned><reason>why</reason> tag pair —
+   * meaning a brand-new (or freshly reinforced) "neuron" was minted in the
+   * user's synthesis layer in real time. The chat surfaces a glowing
+   * "Neuron created" pill underneath the AI response when this is set.
+   *
+   * id may be null when the server upsert succeeded but the row lookup
+   * failed (rare); the pill still renders, click still navigates to the
+   * synthesis layer.
+   */
+  factNeuron?: {
+    id: string | null;
+    text: string;
+    kind: string;
+    reason?: string | null;
+    isNew: boolean;
+    /**
+     * True when this entry came from an <updated old="..."> tag — the AI
+     * refined an existing neuron in place rather than minting a new one.
+     * The pill renders "Neuron updated" instead of "Neuron created" in this
+     * case, and `previousText` carries what the neuron used to say.
+     */
+    isUpdate?: boolean;
+    previousText?: string | null;
+  };
+  /**
+   * Set on this message when the AI's reply ended with a hidden
+   * <applied rule_id="..."> tag — meaning a user-ratified belief-window
+   * rule shaped this specific reply. The chat surfaces a small "Why" /
+   * "Applied a rule" pill underneath the AI response when this is set.
+   *
+   * The server validated the rule exists, is owned by the user, and is
+   * currently active before inserting an attribution row; anything else
+   * is dropped server-side, so by the time this lands on a message we
+   * know the citation is honest.
+   */
+  appliedAttribution?: AppliedAttribution;
 };
 
 export type FocusedChatAttachment = {
@@ -654,14 +710,14 @@ async function handleActionPath(
       }
       state.setChatStatusText(actions.length ? "Bricks updated" : "Answered");
     } else {
-      const errText = "This model isn\u2019t working properly right now \u2014 try another model.";
+      const errText = AI_TEMPORARY_FAILURE_TEXT;
       state.setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: errText } : m)));
       p.aiThread.push({ role: "assistant", content: errText });
       if (responseBlockId) await typing.typeIntoAiResponseBlock(responseBlockId, errText);
       state.setChatStatusText("Error");
     }
   } catch {
-    const errMsg = "This model isn\u2019t working properly right now \u2014 try another model.";
+    const errMsg = AI_TEMPORARY_FAILURE_TEXT;
     state.setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: errMsg } : m)));
     if (responseBlockId) await typing.typeIntoAiResponseBlock(responseBlockId, errMsg);
     state.setChatStatusText("Error");
@@ -673,6 +729,34 @@ async function handleActionPath(
 /* ------------------------------------------------------------------ */
 /*  Phase 5: Handle streaming response                                 */
 /* ------------------------------------------------------------------ */
+
+/**
+ * Mirrors `useChatEngine.extractSourceLinks` but runs against the LIVE
+ * streaming buffer so the typewriter view doesn't pre-emptively chop the
+ * tail of a reply at the first `\nSources:\n` line. The post-stream
+ * `extractSourceLinks` only strips the tail when it actually contains
+ * citation links (markdown `[title](url)` or numbered URLs); the streaming
+ * view used to strip unconditionally with `replace(/\n+(?:Sources?|References?):?\s*\n[\s\S]*$/i, "")`,
+ * which silently truncated long replies the moment the model wrote
+ * "Sources:" or "References:" on its own line — even when the next
+ * paragraph wasn't a citation list. That looked to the user like the
+ * model "got cut off after a few sentences" right up until the
+ * post-process commit fired.
+ */
+function stripTrailingSourcesBlockIfHasLinks(text: string): string {
+  const sm = text.match(/\n+(?:Sources?|References?):?[ \t]*\n([\s\S]*?)$/i);
+  if (!sm) return text;
+  const block = String(sm[1] || "");
+  // Markdown citation links — `[title](https://...)`.
+  if (/\[[^\]]+\]\(https?:\/\/[^\s)]+\)/.test(block)) {
+    return text.slice(0, sm.index ?? 0).trimEnd();
+  }
+  // Numbered citation list — `1. https://...`.
+  if (/(?:^|\n)\s*\d+\.\s*https?:\/\/\S+/.test(block)) {
+    return text.slice(0, sm.index ?? 0).trimEnd();
+  }
+  return text;
+}
 
 /* ------------------------------------------------------------------ */
 /*  Guest (logged-out) chat flow                                       */
@@ -781,13 +865,18 @@ async function handleStreamingResponse(
   let accumulated = "";
   let firstToken = true;
   let sseBuffer = "";
+  let serverErrorMsg = "";
   void userText;
-  const STREAM_INACTIVITY_MS = 60000;
+  // 90s inactivity. The server sends a `data: ` heartbeat every ~15s
+  // during long thinking gaps so this should only fire on a truly
+  // stuck network connection or wedged provider.
+  const STREAM_INACTIVITY_MS = 90000;
 
   if (reader) {
     let inactivityTimer = setTimeout(() => { reader.cancel(); p.abortController.abort(); }, STREAM_INACTIVITY_MS);
     try {
-      while (true) {
+      let stopReading = false;
+      while (!stopReading) {
         const { done, value } = await reader.read();
         if (done) {
           sseBuffer += decoder.decode(undefined, { stream: false });
@@ -802,13 +891,18 @@ async function handleStreamingResponse(
           const trimmed = line.trim();
           if (!trimmed.startsWith("data: ")) continue;
           const payload = trimmed.slice(6);
-          if (payload === "[DONE]") break;
+          if (payload === "[DONE]") { stopReading = true; break; }
           try {
             const parsed = JSON.parse(payload);
             if (parsed.error) {
               if (import.meta.env.DEV) console.error('SSE error:', parsed.error);
-              accumulated = "Something went wrong. Please try again.";
-              break;
+              // Stash the server's message but DO NOT wipe accumulated
+              // text. If the user already saw paragraphs render, blowing
+              // them away with "something went wrong" is a worse UX than
+              // keeping the partial reply (and the server's mid-stream
+              // errors are usually transient — overload, downgrade, etc.).
+              serverErrorMsg = String(parsed.error || "").trim() || "stream_error";
+              continue;
             }
             if (parsed.status) { state.setChatStatusText(String(parsed.status)); continue; }
             if (parsed.t) {
@@ -820,10 +914,38 @@ async function handleStreamingResponse(
                 streamRefs.streamPromptIdRef.current = promptId;
               }
               accumulated += parsed.t;
+              // Hide the hidden <learned>/<reason>/<applied> tags from the
+              // live streaming view so the user never sees them flicker
+              // into the bubble before postProcessResponse strips + parses.
+              // ALSO hide any "_…response truncated. Ask 'continue' for the
+              // rest._" style note the model may emit at the tail — the
+              // system prompt forbids it, but some models still do it, and
+              // we'd rather strip it than ever flash it on screen.
+              const accumulatedForView = stripModelTruncationNoteFromStream(
+                stripAppliedTagFromStream(
+                  stripLearnedTagFromStream(accumulated),
+                ),
+              );
               const visibleText = stripStreamingActionJson(
-                accumulated.replace(/\n+(?:Sources?|References?):?\s*\n[\s\S]*$/i, "").replace(/\s*\[TAG_NOTES:[^\]]*\]/g, "")
+                stripTrailingSourcesBlockIfHasLinks(accumulatedForView).replace(/\s*\[TAG_NOTES:[^\]]*\]/g, "")
               ).trimEnd();
               streamRefs.streamTargetTextRef.current = visibleText;
+              // The typing animation only ADVANCES `streamDisplayedLenRef`,
+              // so if a leaked envelope flashed characters into the bubble
+              // and was then stripped (visibleText shrank), the chat message
+              // would keep showing the stale leaked prefix until `accumulated`
+              // grew long enough for the animation to overwrite it. Snap
+              // displayedLen back to the new (shorter) target length and push
+              // the corrected partial so the leak vanishes immediately.
+              if (streamRefs.streamDisplayedLenRef.current > visibleText.length) {
+                streamRefs.streamDisplayedLenRef.current = visibleText.length;
+                const pid = streamRefs.streamPromptIdRef.current;
+                if (pid) {
+                  state.setChatMessages((prev) =>
+                    prev.map((m) => (m.id === pid ? { ...m, aiResponse: visibleText } : m)),
+                  );
+                }
+              }
               if (responseBlockId) {
                 const normalized = canvas.normalizeAiTextForBlock(visibleText);
                 const curBlk: any = canvas.getCanvasState().blocks?.[responseBlockId];
@@ -860,20 +982,67 @@ async function handleStreamingResponse(
           } catch {}
         }
       }
+      // Drain ALL leftover lines from the SSE buffer, not just the last
+      // one. Gemini's stream sometimes ends without a trailing newline
+      // after the final `data: {...}` event AND can leave more than one
+      // un-newlined line in the buffer when the connection closes mid-
+      // chunk. Without this, the last sentence(s) of a reply silently
+      // disappear and the user sees a cut-off message.
       if (sseBuffer.trim()) {
-        const trimmed = sseBuffer.trim();
-        if (trimmed.startsWith("data: ")) {
+        for (const line of sseBuffer.split("\n")) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith("data: ")) continue;
           const payload = trimmed.slice(6);
-          if (payload !== "[DONE]") {
-            try { const parsed = JSON.parse(payload); if (parsed.t) accumulated += parsed.t; } catch {}
-          }
+          if (payload === "[DONE]") continue;
+          try {
+            const parsed = JSON.parse(payload);
+            if (parsed.t) accumulated += parsed.t;
+            if (parsed.error && !serverErrorMsg) serverErrorMsg = String(parsed.error || "stream_error");
+          } catch {}
         }
+        sseBuffer = "";
       }
+      // CRITICAL: update the typing animation's target to the full drained
+      // accumulated text. Without this, `streamTargetTextRef` would still
+      // hold the PRE-drain visible text (last in-stream chunk only). The
+      // typing animation runs at ~2-6 chars / 18ms, so for any reply long
+      // enough that the animation hasn't caught up at stream-end (which is
+      // every reply), the animation keeps firing AFTER post-process commits
+      // the full text — and each tick overwrites the committed message
+      // with `target.substring(0, displayedLen)`. Animation stops when it
+      // catches up to the stale target, leaving the user staring at a
+      // truncated reply (the visible bug: "server finished, UI cut off").
+      // Updating the target here lets the animation finish typing the
+      // ENTIRE final reply, then stop cleanly so the post-process commit
+      // sticks.
+      try {
+        const finalAccumulatedForView = stripModelTruncationNoteFromStream(
+          stripAppliedTagFromStream(
+            stripLearnedTagFromStream(accumulated),
+          ),
+        );
+        const finalVisibleText = stripStreamingActionJson(
+          stripTrailingSourcesBlockIfHasLinks(finalAccumulatedForView)
+            .replace(/\s*\[TAG_NOTES:[^\]]*\]/g, "")
+        ).trimEnd();
+        streamRefs.streamTargetTextRef.current = finalVisibleText;
+      } catch {}
     } catch {
-      if (!accumulated.trim()) accumulated = "This model isn\u2019t working properly right now \u2014 try another model.";
+      if (!accumulated.trim()) accumulated = AI_TEMPORARY_FAILURE_TEXT;
     } finally {
       clearTimeout(inactivityTimer);
     }
+  }
+
+  // If the server reported an error AND we got nothing usable back,
+  // surface a friendly message. If we already streamed real content,
+  // keep it — the partial reply is far more useful than a generic
+  // "something went wrong". The server-side cross-provider chain has
+  // already tried every available model on the user's behalf by the
+  // time we reach this branch, so the copy never tells the user to
+  // switch models — they have nothing further they could pick.
+  if (serverErrorMsg && !accumulated.trim()) {
+    accumulated = AI_TEMPORARY_FAILURE_TEXT;
   }
   return { accumulated, responseBlockId };
 }
@@ -1047,9 +1216,27 @@ function findActionJsonSpans(text: string): Array<{ start: number; end: number; 
  * first `[` to last `]` and run it through the unescaped-quote repair before
  * parsing. If that yields a recognizable shape (`{actions:[]}`, an action
  * array, or a single action object), we return its assistant text and actions.
+ *
+ * We ALSO recognize "assistant-only envelopes" — objects shaped like
+ * `{ "assistant": "...", "follow_up_questions": [...] }` (or with `response`
+ * in place of `assistant`) that have no actions or an empty actions array.
+ * The streaming chat persona forbids JSON envelopes, but models occasionally
+ * leak one anyway and the user must NEVER see raw `{ "assistant": "..." }`
+ * in the chat bubble. Returning `consumed` for these lets callers strip the
+ * wrapper and surface only the inner assistant text.
  */
-function tryExtractEnvelope(text: string): { actions: CreateAction[]; assistant: string; consumed: { start: number; end: number } | null } {
-  const result = { actions: [] as CreateAction[], assistant: "", consumed: null as { start: number; end: number } | null };
+function tryExtractEnvelope(text: string): {
+  actions: CreateAction[];
+  assistant: string;
+  consumed: { start: number; end: number } | null;
+  isEnvelope: boolean;
+} {
+  const result = {
+    actions: [] as CreateAction[],
+    assistant: "",
+    consumed: null as { start: number; end: number } | null,
+    isEnvelope: false,
+  };
   const tryShape = (candidate: any): CreateAction[] => {
     if (!candidate) return [];
     if (Array.isArray(candidate)) {
@@ -1064,6 +1251,20 @@ function tryExtractEnvelope(text: string): { actions: CreateAction[]; assistant:
     }
     return [];
   };
+  // An object that looks like the documented LYKN envelope even when actions
+  // is missing or empty: at minimum it must have an `assistant` or `response`
+  // string field, optionally alongside `follow_up_questions` / `actions`.
+  const looksLikeAssistantEnvelope = (candidate: any): boolean => {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return false;
+    const hasAssistantText =
+      typeof candidate.assistant === "string" || typeof candidate.response === "string";
+    if (!hasAssistantText) return false;
+    // Reject objects whose ONLY string field happens to be named `assistant`
+    // but that are actually action-shaped (have a `type` like `create_*`).
+    // `isActionLike` already filtered those into `tryShape`, so any object
+    // landing here is genuinely an envelope.
+    return true;
+  };
   for (const [openCh, closeCh] of [["{", "}"], ["[", "]"]] as const) {
     const start = text.indexOf(openCh);
     const end = text.lastIndexOf(closeCh);
@@ -1077,6 +1278,13 @@ function tryExtractEnvelope(text: string): { actions: CreateAction[]; assistant:
         result.assistant = String(parsed.assistant || parsed.response || "").trim();
       }
       result.consumed = { start, end: end + 1 };
+      result.isEnvelope = true;
+      return result;
+    }
+    if (looksLikeAssistantEnvelope(parsed)) {
+      result.assistant = String(parsed.assistant || parsed.response || "").trim();
+      result.consumed = { start, end: end + 1 };
+      result.isEnvelope = true;
       return result;
     }
   }
@@ -1228,7 +1436,10 @@ function rescueInlineBlockMarkup(text: string, applyActions: (actions: CreateAct
   }
   working = working.replace(/\[CREATE_BLOCK:\s*\{[^]*?\}\s*\]/g, "");
 
-  // 2. ```json ... ``` (or plain ```) code fences that wrap action JSON
+  // 2. ```json ... ``` (or plain ```) code fences that wrap action JSON or a
+  // full envelope. We replace the fence span with the envelope's assistant
+  // text (or empty) so the user sees a clean chat message instead of the
+  // raw JSON the model tried to emit.
   const fenceRe = /```(?:json|JSON|js|javascript)?\s*([\s\S]*?)```/g;
   const fenceSpansToRemove: Array<{ start: number; end: number }> = [];
   let f: RegExpExecArray | null;
@@ -1237,17 +1448,18 @@ function rescueInlineBlockMarkup(text: string, applyActions: (actions: CreateAct
     if (!inner) continue;
     let fenceActions: CreateAction[] = [];
     let fenceAssistant = "";
+    let envelopeFound = false;
     const env = tryExtractEnvelope(inner);
-    if (env.actions.length) {
+    if (env.isEnvelope) {
       fenceActions = env.actions;
       fenceAssistant = env.assistant;
+      envelopeFound = true;
     } else {
       const innerSpans = findActionJsonSpans(inner);
       for (const s of innerSpans) fenceActions.push(...s.actions);
     }
-    if (!fenceActions.length) continue;
+    if (!fenceActions.length && !envelopeFound) continue;
     for (const a of fenceActions) rescued.push(a);
-    // If the envelope had a chat message, preserve it in place of the fence.
     fenceSpansToRemove.push({
       start: f.index,
       end: f.index + f[0].length,
@@ -1265,13 +1477,15 @@ function rescueInlineBlockMarkup(text: string, applyActions: (actions: CreateAct
   // when a request hits the streaming endpoint that has no actions channel).
   // Strict JSON.parse usually fails because string values include unescaped
   // quotes, so we need the repair-aware path here, NOT the brace walker.
+  //
+  // We unwrap BOTH envelopes-with-actions AND assistant-only envelopes so the
+  // user never sees raw `{ "assistant": "..." }` in the chat bubble even if
+  // the model decided to wrap a chat-only reply in JSON.
   const trimmed = working.trim();
   if (trimmed.length > 0) {
     const env = tryExtractEnvelope(trimmed);
-    if (env.actions.length && env.consumed) {
+    if (env.isEnvelope && env.consumed) {
       for (const a of env.actions) rescued.push(a);
-      // Replace the parsed envelope with its assistant text (or empty) so the
-      // user only sees a clean chat message.
       const head = working.slice(0, working.indexOf(trimmed));
       const tail = working.slice(working.indexOf(trimmed) + env.consumed.end);
       working = head + (env.assistant || "") + tail;
@@ -1312,6 +1526,13 @@ function rescueInlineBlockMarkup(text: string, applyActions: (actions: CreateAct
 const ENVELOPE_KEY_RE = /"(?:assistant|response|actions|follow_up_questions|followUpQuestions|type)"\s*:/;
 const ACTION_KEY_HINT_RE = /"type"\s*:\s*"(?:create_|update_|delete_|move_|resize_|color_|connect_|disconnect_|organize_|append_notes|update_notes|edit_block)/;
 
+/* ------------------------------------------------------------------ */
+/*  Learn-a-fact helpers live in src/lib/ai/learnedTag.ts so VaultChat */
+/*  / ProjectPlaceholder share the exact same parser + posters. The   */
+/*  primary tag-emit + fallback classifier wiring lives in            */
+/*  postProcessResponse below.                                         */
+/* ------------------------------------------------------------------ */
+
 function stripStreamingActionJson(text: string): string {
   let working = text;
 
@@ -1338,15 +1559,18 @@ function stripStreamingActionJson(text: string): string {
   // Whole-buffer envelope: if the trimmed text already parses as an envelope
   // (or repairs into one), hide it entirely — the post-stream rescue will
   // apply the actions and surface the assistant text.
+  //
+  // We strip BOTH envelopes-with-actions AND assistant-only envelopes
+  // (`{ "assistant": "...", "actions": [] }`). The streaming chat persona
+  // forbids JSON envelopes outright, so any complete envelope reaching this
+  // path is a model leak that must never render as raw JSON in the bubble.
   const trimmed = working.trim();
   if (trimmed.length > 0 && (trimmed[0] === "{" || trimmed[0] === "[")) {
     const env = tryExtractEnvelope(trimmed);
-    if (env.actions.length) {
-      // Replace consumed range with the assistant chat text (which the
-      // model intended for the user).
+    if (env.isEnvelope && env.consumed) {
       const offset = working.indexOf(trimmed);
       const head = working.slice(0, offset);
-      const tail = env.consumed ? working.slice(offset + env.consumed.end) : "";
+      const tail = working.slice(offset + env.consumed.end);
       return (head + (env.assistant || "") + tail).replace(/\n{3,}/g, "\n\n");
     }
   }
@@ -1436,7 +1660,38 @@ async function postProcessResponse(
 ): Promise<void> {
   const { analysis, postProcessing, state, canvas, typing, identity } = p;
 
-  let aiText = analysis.sanitizeAssistantResponse(aiTextRaw.trim());
+  // === LEARN-A-FACT — parse the hidden <learned>/<reason> tag pair the
+  // model may have emitted at the very end of its reply. The tag is the
+  // signal that the user just shared something personal (positive OR
+  // negative) and we need to mint a brand-new neuron in their synthesis
+  // layer. We strip the tag from the visible text BEFORE the rest of the
+  // post-processing pipeline runs so no downstream extractor (sources,
+  // YouTube, media pull, AI connections, conversation memory, etc.) sees
+  // it. The POST to /api/learned runs async — it must not block the chat
+  // bubble from rendering. When it resolves we patch `factNeuron` onto the
+  // message so the "Neuron created" pill appears below the AI response.
+  const learned = parseLearnedTag(aiTextRaw);
+  // === BELIEF-WINDOW APPLIED — parse + strip the optional <applied> tag
+  // BEFORE the visible reply is sanitized. The model may emit BOTH a
+  // <learned>/<updated> tag AND an <applied> tag in the same reply; the
+  // applied tag is independent of the learned-fact tag and does not
+  // need any post-processing pipeline awareness beyond strip-and-post.
+  const applied = parseAppliedTag(aiTextRaw);
+  // Strip the hidden tags AND repair any dangling clause they may have
+  // amputated when the model started a tag mid-sentence (e.g.
+  // "...right now. We <learned>..." → "...right now. We"). finalizeVisibleReply
+  // pops the broken tail back to the previous sentence boundary.
+  // We also strip any self-emitted "_…response truncated. Ask 'continue'
+  // for the rest._" / "[response truncated]" style note BEFORE
+  // finalizeVisibleReply runs so the dangling-tail repair acts on the
+  // model's last real sentence rather than on the truncation marker.
+  const aiTextWithoutLearnedTag = finalizeVisibleReply(
+    stripModelTruncationNote(
+      stripAppliedTagFromFinal(stripLearnedTagsFromFinal(aiTextRaw)),
+    ),
+  );
+
+  let aiText = analysis.sanitizeAssistantResponse(aiTextWithoutLearnedTag.trim());
 
   // Rescue any block-creation markup the AI may have leaked into the chat text
   // (legacy `[CREATE_BLOCK:...]`, ```json fences, or bare action JSON). The
@@ -1447,7 +1702,27 @@ async function postProcessResponse(
     const fallback = analysis.buildDirectVideoAnswerFromGrounding(youtubeGrounding);
     if (fallback && (!aiText || analysis.looksLikeDeflectingQuestion(aiText))) aiText = fallback;
   }
-  const finalText = aiText || "I'm not sure how to answer that. Could you rephrase?";
+  // Defensive logging + better fallback: if every stripping pass (learned
+  // tag, sanitize, action rescue) ate the whole reply, the model probably
+  // emitted ONLY hidden tags / ONLY action JSON, or the stream returned
+  // no text at all. The vague "Could you rephrase?" fallback hid the real
+  // issue; log the raw text in dev so we can see exactly what came back.
+  if (!aiText && import.meta.env.DEV) {
+    const rawSummary = String(aiTextRaw || "").trim();
+    const rawPreview = rawSummary.slice(0, 200).replace(/\s+/g, " ");
+    console.warn(
+      `[chatSendOrchestrator] visible reply empty after post-processing. ` +
+        `Raw=${rawSummary.length} chars: "${rawPreview}${rawSummary.length > 200 ? "…" : ""}". ` +
+        `Likely: model emitted only hidden tags / action JSON, or stream returned no text.`,
+    );
+  }
+  // Reaching this fallback means the server's cross-provider chain ran to
+  // completion AND every provider returned zero visible text. (The server
+  // already retries gemini → openai → claude → grok internally.) Telling
+  // the user to "switch models" here is misleading because every model has
+  // already been tried; surface the centralized transient-failure copy
+  // instead so they know to just retry the same prompt in a moment.
+  const finalText = aiText || AI_TEMPORARY_FAILURE_TEXT;
   const { connections: aiConnections, cleanText: textWithoutConnections } = postProcessing.extractAiConnections(finalText);
   if (aiConnections.length > 0) {
     const boardConns = aiConnections.filter((c) => c.sourceType === "board");
@@ -1480,6 +1755,18 @@ async function postProcessResponse(
   // breaking the prompt-level "hidden from user" contract.
   const finalDisplayText = mediaResult.cleanText !== textAfterYt ? mediaResult.cleanText : textAfterYt;
   const webLinks = postProcessing.extractWebLinksFromText(finalDisplayText);
+  // Stop the typewriter animation BEFORE we commit the final text. Otherwise
+  // the next typeTick fires ~18ms later with a stale `streamTargetTextRef`
+  // and overwrites our final commit with a substring of the in-stream view,
+  // which is how a user sees "server finished but UI is cut off". We also
+  // sync the target ref to the final text so any in-flight tick that already
+  // started can't introduce regressions.
+  if (p.streamRefs.streamTypingRafRef.current) {
+    clearTimeout(p.streamRefs.streamTypingRafRef.current);
+    p.streamRefs.streamTypingRafRef.current = null;
+  }
+  p.streamRefs.streamTargetTextRef.current = finalDisplayText;
+  p.streamRefs.streamDisplayedLenRef.current = finalDisplayText.length;
   state.setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: finalDisplayText, sources, aiYouTubeUrls: ytResult.urls.length ? ytResult.urls : undefined, aiWebLinks: webLinks.length ? webLinks : undefined } : m)));
   // Push the post-cleanup display text into conversation memory so future
   // turns and saved exchanges don't reference internal markers / source tags.
@@ -1499,6 +1786,102 @@ async function postProcessResponse(
     if (sources.length > 0) postProcessing.attachSourcesToBlock(responseBlockId, sources);
   }
   state.setChatStatusText(mediaResult.pulled > 0 ? "Media added to board" : ytResult.urls.length ? "Video embedded" : aiConnections.length > 0 ? "Connection found" : "Answered");
+
+  // Fire the live-learn upsert AFTER the chat has rendered the visible
+  // reply, so the "Neuron created" pill shows up as a delightful surprise
+  // a beat later rather than blocking the bubble. Guests (no userId) skip
+  // this entirely — the landing-prototype path owns its own client-side
+  // neuron creation.
+  //
+  // Two paths, mutually exclusive per turn:
+  //
+  //   • PRIMARY (learned !== null) — chat model emitted the hidden
+  //     <learned>/<updated> tag; we trust it and POST /api/learned.
+  //
+  //   • FALLBACK (learned === null) — the chat model forgot to tag.
+  //     Cheaper models skip the tag a noticeable fraction of the time
+  //     even when the user clearly disclosed something personal, so we
+  //     POST the raw user message + assistant reply to /api/learned/auto
+  //     and let the server-side gpt-4.1-nano classifier decide whether
+  //     to mint a neuron anyway. Same factNeuron shape comes back, so
+  //     the pill renders identically for either source.
+  if (learned && identity.userId) {
+    void (async () => {
+      try {
+        const { API_BASE_URL: apiBase } = await import("@/lib/api-config");
+        const result = await postLearnedFact(apiBase, {
+          text: learned.text,
+          kind: learned.kind,
+          reason: learned.reason,
+          sourceId: identity.routeBoardId || identity.boardId || "live_chat",
+          // Only set replacesText for the update path — the server treats
+          // an undefined replacesText as the plain create-or-reinforce flow.
+          replacesText: learned.mode === "update" ? learned.previousText : undefined,
+        });
+        if (!result) return;
+        // Surface the pill in two cases:
+        //   • Brand-new neuron (isNew === true)            → "Neuron created"
+        //   • Existing neuron refined in place (isUpdate)  → "Neuron updated"
+        // Plain reinforcements (same text, same kind) get neither — there's
+        // nothing visually new in the synthesis layer to nudge toward.
+        if (!result.isNew && !result.isUpdate) return;
+        state.setChatMessages((prev) => prev.map((m) => (m.id === promptId
+          ? { ...m, factNeuron: result }
+          : m)));
+      } catch {
+        // Never let a learn miss break the chat surface.
+      }
+    })();
+  } else if (!learned && identity.userId) {
+    void (async () => {
+      try {
+        const { API_BASE_URL: apiBase } = await import("@/lib/api-config");
+        const result = await postAutoLearnedFact(apiBase, {
+          // cappedText is the post-truncation user message the chat send
+          // pipeline actually used; finalDisplayText is the cleaned
+          // assistant reply (no source tags, no internal markers). The
+          // classifier needs both to judge personal disclosure in
+          // context.
+          userMessage: cappedText,
+          assistantReply: finalDisplayText,
+          sourceId: identity.routeBoardId || identity.boardId || "auto",
+        });
+        if (!result || (!result.isNew && !result.isUpdate)) return;
+        state.setChatMessages((prev) => prev.map((m) => (m.id === promptId
+          ? { ...m, factNeuron: result }
+          : m)));
+      } catch {
+        // Classifier failures are silent — the next turn will try again.
+      }
+    })();
+  }
+
+  // === BELIEF-WINDOW APPLIED — independent of the learned-fact path.
+  // If the model emitted an <applied rule_id="..."> tag, post it to the
+  // server which validates ownership + active status before recording an
+  // attribution. Failures here MUST NOT break the chat — a missed
+  // attribution just means the audit trail for this turn is missing,
+  // not that the user gets a broken bubble.
+  if (applied && identity.userId) {
+    void (async () => {
+      try {
+        const { API_BASE_URL: apiBase } = await import("@/lib/api-config");
+        const attribution = await postAppliedAttribution(apiBase, {
+          ruleId: applied.ruleId,
+          messageId: promptId,
+          reason: applied.reason,
+          surface: "grid",
+          surfaceId: identity.routeBoardId || identity.boardId || undefined,
+        });
+        if (!attribution) return;
+        state.setChatMessages((prev) => prev.map((m) => (m.id === promptId
+          ? { ...m, appliedAttribution: attribution }
+          : m)));
+      } catch {
+        // Honest by default: a missed attribution just means no Why pill.
+      }
+    })();
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1731,8 +2114,18 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
     return blk?.type === "text" && !isImgBlock(blk);
   });
   const hasBlocks = Object.keys(st.blocks || {}).length > 0;
-  const wantsBlockManipulation = /\b(move|rearrange|reposition|reorganize|arrange|align|swap|shift|place|put|drag|relocate|organize|spread|stack|line up|layout|lay out|center|scatter|space out|group together|side by side|resize|make.*(bigger|smaller|wider|taller|narrower|shorter)|delete|remove|trash|clear|get rid of|clean up|connect|wire|link|disconnect|unwire|unlink)\b/i.test(cappedText) && hasBlocks;
-  const wantsBlockEdit = /\b(edit|update|change|modify|rewrite|rename|set|fill in|populate|write in|add.*(to|into|in)|append|replace|fix|correct|colou?r|paint|highlight|style|theme)\b/i.test(cappedText) && hasBlocks;
+  // Generic verbs alone (move / change / edit / update / set / make / put /
+  // place / fix) match plenty of conversational turns ("let's change my
+  // approach", "we should fix this thinking", "edit my view of it"). When the
+  // user has ANY block on the board, those used to route to the action path
+  // and got capped at the json_action token limit — which is why long replies
+  // looked like they "got cut off after a few sentences". Require a real
+  // brick / block / grid / board / "this" / "it" / "them" reference so a
+  // plain conversational turn falls through to the streaming chat path.
+  const BLOCK_TARGET_RE = /\b(brick|bricks|block|blocks|note|notes|sheet|paper|doc|document|spreadsheet|table|list|todo|checklist|task\s*board|kanban|design\s*board|code\s*block|heading|h[1-3]|quote|callout|toggle|image|video|youtube|embed|website|grid|board|canvas|widget|tile|card|sticky|all\s+(?:of\s+)?(?:them|these|those)|every\s+(?:one|brick|block)|each\s+(?:one|brick|block)|both|this|that|these|those|it|them|they)\b/i;
+  const mentionsTarget = BLOCK_TARGET_RE.test(cappedText) || hasFocusedTextBricks;
+  const wantsBlockManipulation = /\b(move|rearrange|reposition|reorganize|arrange|align|swap|shift|place|put|drag|relocate|organize|spread|stack|line up|layout|lay out|center|scatter|space out|group together|side by side|resize|make.*(bigger|smaller|wider|taller|narrower|shorter)|delete|remove|trash|clear|get rid of|clean up|connect|wire|link|disconnect|unwire|unlink)\b/i.test(cappedText) && hasBlocks && mentionsTarget;
+  const wantsBlockEdit = /\b(edit|update|change|modify|rewrite|rename|set|fill in|populate|write in|add.*(to|into|in)|append|replace|fix|correct|colou?r|paint|highlight|style|theme)\b/i.test(cappedText) && hasBlocks && mentionsTarget;
   const wantsBlockCreate = /\b(create|make|build|add|start|new|insert|place|put|drop|generate|set\s*up|spin\s*up|spawn|throw|stick|toss|need|want|give\s*me|gimme|show\s*me|pull(?:\s*in)?|load|embed|bookmark)\b/i.test(cappedText) && /\b(sheet|paper|doc|document|spreadsheet|table|budget|tracker|list|todo|checklist|task\s*board|kanban|design\s*board|code\s*block|heading|h[1-3]|quote|callout|brick|text\s*(?:block|brick)?|card|sticky|note\s*(?:block|brick)|toggle|media|image|video|embed|website|site|page|url|link|bookmark|voice|dictat(?:e|ion))\b/i.test(cappedText);
   const wantsGridCreate = /\b(create|make|build|add|place|put|drop|generate|lay\s*out|set\s*up|write|draft|design|map\s*out|outline|sketch|plan|structure|diagram|flowchart|wireframe|spawn|throw|stick|toss|insert|pull(?:\s*in)?|load|embed|bookmark)\b/i.test(cappedText)
     && /\b(on\s*(?:the|my|this)?\s*(?:grid|board|canvas)|in(?:to)?\s*(?:the|my|this)?\s*(?:grid|board|canvas)|(?:grid|board|canvas)\b)/i.test(cappedText);
@@ -1817,7 +2210,7 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
     maybeNotifyModelDowngrade(res);
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      const finalText = "This model isn\u2019t working properly right now \u2014 try another model.";
+      const finalText = AI_TEMPORARY_FAILURE_TEXT;
       state.setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: finalText } : m)));
       p.aiThread.push({ role: "assistant", content: finalText });
       if (p.aiThread.length > 40) p.aiThread.splice(0, p.aiThread.length - 40);

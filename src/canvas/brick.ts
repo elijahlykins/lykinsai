@@ -39,47 +39,64 @@ export type BrickShellModel = {
 
 // Unified markdown detection used by every text-bearing brick (typed text,
 // slash-command bricks, AI tool-call bricks, pasted bricks, dragged AI
-// bubbles). Catches the cases the previous regex missed: single-asterisk and
-// single-underscore italics, numbered list items, and blockquotes — so AI
-// markdown like `*italic*` or `1. step` no longer renders as literal text.
+// bubbles). Catches headers, bold (** / __), single-asterisk and
+// single-underscore italics, fenced code blocks, inline code (`foo`),
+// links and images (`[text](url)`, `![alt](src)`), bulleted and numbered
+// lists, GFM tables, blockquotes, and strikethrough (~~foo~~).
+//
+// The regex covers the full set of inline + block features we actually
+// render, so `shouldRenderAsMarkdown` can require a real match before
+// flipping a brick from the plain `<textarea>` path to the markdown
+// `contenteditable` path. That alignment is what stops display and edit
+// from disagreeing on whether a brick is "rich" (which used to produce a
+// visible layout shift on click-in).
 const MARKDOWN_DETECT_RE =
-  /(?:^|\n)\s*#{1,6}\s|(?:\*\*|__)[^\s][\s\S]*?(?:\*\*|__)|(?:^|[^\w*])\*[^\s*][^*\n]*\*(?=$|[^\w*])|(?:^|[^\w_])_[^\s_][^_\n]*_(?=$|[^\w_])|```|(?:^|\n)\s*[-*+]\s|(?:^|\n)\s*\d+\.\s|(?:^|\n)\|.+\||(?:^|\n)\s*>\s/m;
+  /(?:^|\n)\s*#{1,6}\s|(?:\*\*|__)[^\s][\s\S]*?(?:\*\*|__)|(?:^|[^\w*])\*[^\s*][^*\n]*\*(?=$|[^\w*])|(?:^|[^\w_])_[^\s_][^_\n]*_(?=$|[^\w_])|```|`[^`\n]+`|(?:^|\n)\s*[-*+]\s|(?:^|\n)\s*\d+\.\s|(?:^|\n)\|.+\||(?:^|\n)\s*>\s|!?\[[^\]]*?\]\([^)\s]+\)|~~[^~\n]+~~/m;
 
 function shouldRenderAsMarkdown(content: string, format: string, isAiBubble: boolean): boolean {
   if (isAiBubble) return true;
-  // `rich` is the format every brick-creating path uses (typed text, slash
-  // commands, AI tool calls, paste, drag-from-AI). Always treat it as
-  // markdown so authors and AI agree on what they see.
-  if (format === "rich" || format === "markdown") return true;
   if (!content) return false;
+  // `rich` and `markdown` bricks render as markdown only when actual
+  // markdown syntax is present. This way the edit surface (textarea for
+  // plain text, contenteditable for markdown) and the display surface
+  // always agree on what gets rendered, eliminating the visible "format
+  // jump" on click-in for both formats. MARKDOWN_DETECT_RE covers the
+  // full set of inline + block markdown we render, so a `[link](url)` or
+  // `~~strike~~` in an otherwise-plain brick still renders correctly.
+  if (format === "markdown" || format === "rich") {
+    return MARKDOWN_DETECT_RE.test(content);
+  }
   return MARKDOWN_DETECT_RE.test(content);
 }
 
 // Component overrides used when rendering markdown to HTML for the edit
-// surface and for the persisted `formattedHtml`. These mirror the styling
-// that `aiMarkdownComponents` applies in display mode — specifically
-// `whitespace-pre-wrap` on `<p>` so single `\n` line breaks inside a
-// paragraph are preserved both during edit and after the resulting HTML is
-// stored back via `dangerouslySetInnerHTML`. Without this, AI-bubble
-// content with soft line breaks collapses to a single line on the way back
-// out of edit mode. We deliberately omit any component that carries React
-// state (e.g. `InlineEditableTable`) because `renderToString` can't safely
-// round-trip those — the default `<table>` tag is fine for the edit window
-// since content with GFM tables is routed through `EditableMarkdownTable`
-// in display mode anyway.
+// surface and for the persisted `formattedHtml`. These mirror the
+// `aiMarkdownComponents` map exactly so the seeded edit HTML and the
+// display HTML are byte-for-byte identical — every block element carries
+// `first:mt-0 last:mb-0` so the first/last child doesn't push text away
+// from the brick edges, and `<p>` keeps `whitespace-pre-wrap` so single
+// `\n` line breaks inside a paragraph survive the round-trip. Without the
+// `first:mt-0 last:mb-0` parity, clicking into a markdown-bearing brick
+// used to introduce a few-pixel layout shift because the seeded HTML
+// silently picked up `mt-2`/`my-1` margins the display version didn't
+// have. We deliberately omit any component that carries React state
+// (e.g. `InlineEditableTable`) because `renderToString` can't safely
+// round-trip those — the default `<table>` tag is fine for the edit
+// window since content with GFM tables is routed through
+// `EditableMarkdownTable` in display mode anyway.
 const editorMarkdownComponents = {
-  h1: ({ children }: any) => React.createElement("h1", { className: "font-semibold mt-2 mb-1", style: { fontSize: "1.5em" } }, children),
-  h2: ({ children }: any) => React.createElement("h2", { className: "font-semibold mt-2 mb-1", style: { fontSize: "1.3em" } }, children),
-  h3: ({ children }: any) => React.createElement("h3", { className: "font-semibold mt-1.5 mb-1", style: { fontSize: "1.15em" } }, children),
-  p: ({ children }: any) => React.createElement("p", { className: "my-1 whitespace-pre-wrap" }, children),
-  ul: ({ children }: any) => React.createElement("ul", { className: "my-1 list-disc pl-5 space-y-0.5" }, children),
-  ol: ({ children }: any) => React.createElement("ol", { className: "my-1 list-decimal pl-5 space-y-0.5" }, children),
+  h1: ({ children }: any) => React.createElement("h1", { className: "font-semibold mt-2 mb-1 first:mt-0 last:mb-0", style: { fontSize: "1.5em" } }, children),
+  h2: ({ children }: any) => React.createElement("h2", { className: "font-semibold mt-2 mb-1 first:mt-0 last:mb-0", style: { fontSize: "1.3em" } }, children),
+  h3: ({ children }: any) => React.createElement("h3", { className: "font-semibold mt-1.5 mb-1 first:mt-0 last:mb-0", style: { fontSize: "1.15em" } }, children),
+  p: ({ children }: any) => React.createElement("p", { className: "my-1 first:mt-0 last:mb-0 whitespace-pre-wrap" }, children),
+  ul: ({ children }: any) => React.createElement("ul", { className: "my-1 first:mt-0 last:mb-0 list-disc pl-5 space-y-0.5" }, children),
+  ol: ({ children }: any) => React.createElement("ol", { className: "my-1 first:mt-0 last:mb-0 list-decimal pl-5 space-y-0.5" }, children),
   li: ({ children }: any) => React.createElement("li", { className: "leading-relaxed" }, children),
   strong: ({ children }: any) => React.createElement("strong", { className: "font-semibold" }, children),
-  blockquote: ({ children }: any) => React.createElement("blockquote", { className: "border-l-2 border-black/20 dark:border-white/20 pl-3 my-1 text-black/70 dark:text-white/70 italic" }, children),
+  blockquote: ({ children }: any) => React.createElement("blockquote", { className: "border-l-2 border-black/20 dark:border-white/20 pl-3 my-1 first:mt-0 last:mb-0 text-black/70 dark:text-white/70 italic" }, children),
   code: ({ children, className }: any) => {
     const isBlock = String(className || "").startsWith("language-");
-    if (isBlock) return React.createElement("pre", { className: "rounded-lg bg-black/5 p-2 my-1 overflow-x-auto", style: { fontSize: "0.85em" } }, React.createElement("code", null, children));
+    if (isBlock) return React.createElement("pre", { className: "rounded-lg bg-black/5 p-2 my-1 first:mt-0 last:mb-0 overflow-x-auto", style: { fontSize: "0.85em" } }, React.createElement("code", null, children));
     return React.createElement("code", { className: "rounded bg-black/10 px-1 py-0.5", style: { fontSize: "0.85em" } }, children);
   },
   pre: ({ children }: any) => React.createElement(React.Fragment, null, children),
@@ -961,19 +978,28 @@ const BrickTextSurface = React.memo(function BrickTextSurface(props: {
     }
 
     if (blockData.formattedHtml) {
+      // Pick the same line-height the live markdown render would have
+      // chosen for this content, so toggling between "live ReactMarkdown
+      // render" (pre-edit) and "saved formattedHtml render" (post-edit)
+      // doesn't shift the text vertically. Block-level markdown HTML
+      // matches the display markdown path's `1.5`; inline-only HTML
+      // (e.g. plain text with a `<mark>` highlight) stays on the brick
+      // grid's `lineHeightPx`.
+      const fHtml = String(blockData.formattedHtml || "");
+      const hasBlocks = /<(?:p|h[1-6]|ul|ol|blockquote|pre|table)[\s>]/i.test(fHtml);
       return React.createElement("div", {
         className: "px-2 py-0 tracking-[-0.01em] whitespace-pre-wrap break-words select-text",
         style: {
           overflowWrap: "anywhere",
           fontSize: `${fontSizePx}px`,
-          lineHeight: `${lineHeightPx}px`,
+          lineHeight: hasBlocks ? "1.5" : `${lineHeightPx}px`,
           fontWeight,
           color: shell.textColor || "inherit",
           userSelect: "text",
           WebkitUserSelect: "text",
         },
         onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => { e.stopPropagation(); },
-        dangerouslySetInnerHTML: { __html: blockData.formattedHtml },
+        dangerouslySetInnerHTML: { __html: fHtml },
       });
     }
 
@@ -1372,6 +1398,17 @@ const BrickTextSurface = React.memo(function BrickTextSurface(props: {
     );
   }
 
+  // Pick the contenteditable's line-height the same way the display
+  // formattedHtml path picks it: `1.5` when the surface holds block-level
+  // markdown HTML (matches the live ReactMarkdown render's `1.5`),
+  // `lineHeightPx` when it only holds inline highlights on plain text
+  // (matches the brick grid). Without this, clicking into a markdown
+  // brick used to shift line-height from `1.5` to `lineHeightPx`, and
+  // then back again on blur — visible as a vertical text "jump".
+  const editorFormattedHtml = String(blockData.formattedHtml || "");
+  const editorHasBlocks = /<(?:p|h[1-6]|ul|ol|blockquote|pre|table)[\s>]/i.test(editorFormattedHtml);
+  const editorLineHeight =
+    hasMarkdownStructure || editorHasBlocks ? "1.5" : `${lineHeightPx}px`;
   return React.createElement(
     "div",
     { className: "relative h-full w-full" },
@@ -1387,7 +1424,7 @@ const BrickTextSurface = React.memo(function BrickTextSurface(props: {
         fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"',
         fontSize: `${fontSizePx}px`,
         fontWeight,
-        lineHeight: `${lineHeightPx}px`,
+        lineHeight: editorLineHeight,
         letterSpacing: "-0.01em",
         color: "inherit",
         paddingLeft: "8px",

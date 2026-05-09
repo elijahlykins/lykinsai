@@ -23,6 +23,7 @@ import { markdownToTiptap } from "@/lib/markdownToTiptap";
 import { isDemoGridId } from "@/lib/demoGrids";
 import { toast } from "@/components/ui/use-toast";
 import { parseAttachmentsFromContent } from "@/lib/vault/attachmentsMarker";
+import { AI_TEMPORARY_FAILURE_TEXT, AI_GUEST_TEMPORARY_FAILURE_TEXT } from "@/lib/ai/userFacingErrors";
 
 export type { PromptMessage, FocusedChatAttachment, CreateAction, OrchestratorResult };
 
@@ -120,6 +121,7 @@ export interface UseChatEngineReturn {
   focusedChatAttachments: FocusedChatAttachment[];
   setFocusedChatAttachments: Dispatch<SetStateAction<FocusedChatAttachment[]>>;
   expandedAiMsgIds: Set<string>;
+  expandedUserPromptIds: Set<string>;
   chatReactions: Record<string, "like" | "dislike" | null>;
   setChatReactions: Dispatch<SetStateAction<Record<string, "like" | "dislike" | null>>>;
   copiedMsgId: string | null;
@@ -151,6 +153,7 @@ export interface UseChatEngineReturn {
   applyVaultDropToChat: (payload: any) => Promise<void>;
   resizeChatInput: (el: HTMLTextAreaElement | null) => void;
   toggleAiExpanded: (msgId: string) => void;
+  toggleUserPromptExpanded: (msgId: string) => void;
   getCollapsedPreview: (text: string) => string;
   updateTaskCheck: (msgId: string, taskKey: string, checked: boolean) => void;
   buildChatMarkdownComponents: (msgId: string) => Record<string, React.ComponentType<any>>;
@@ -249,6 +252,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   const [chatStatusText, setChatStatusText] = useState("");
   const [focusedChatAttachments, setFocusedChatAttachments] = useState<FocusedChatAttachment[]>([]);
   const [expandedAiMsgIds, setExpandedAiMsgIds] = useState<Set<string>>(new Set());
+  const [expandedUserPromptIds, setExpandedUserPromptIds] = useState<Set<string>>(new Set());
   const [chatReactions, setChatReactions] = useState<Record<string, "like" | "dislike" | null>>({});
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
   const [assistantTaskChecks, setAssistantTaskChecks] = useState<Record<string, Record<string, boolean>>>({});
@@ -424,6 +428,10 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
 
   const toggleAiExpanded = useCallback((msgId: string) => {
     setExpandedAiMsgIds((prev) => { const next = new Set(prev); if (next.has(msgId)) next.delete(msgId); else next.add(msgId); return next; });
+  }, []);
+
+  const toggleUserPromptExpanded = useCallback((msgId: string) => {
+    setExpandedUserPromptIds((prev) => { const next = new Set(prev); if (next.has(msgId)) next.delete(msgId); else next.add(msgId); return next; });
   }, []);
 
   const getCollapsedPreview = useCallback((text: string) => {
@@ -1794,8 +1802,10 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     setChatStatusText("");
     setChatFlowMode("idle");
     const promptId = `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-    const displayText = text.length > 500 ? text.slice(0, 500) + "…" : text;
-    setChatMessages((prev) => [...prev, { id: promptId, role: "user", content: displayText, kind: "prompt", ...(sentAttachments.length ? { attachments: sentAttachments } : {}) }]);
+    // Keep the FULL prompt as the message content. The bubble UI handles
+    // long-prompt collapse + "show more" affordance via expandedUserPromptIds
+    // — the user must always be able to read back what they actually sent.
+    setChatMessages((prev) => [...prev, { id: promptId, role: "user", content: text, kind: "prompt", ...(sentAttachments.length ? { attachments: sentAttachments } : {}) }]);
 
     try {
       await orchestrateChatSend({
@@ -1859,8 +1869,8 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       if (err?.name === "AbortError" && sendAbort !== activeAiAbortRef.current) { setChatStatusText(""); return; }
       setChatFlowMode("idle");
       const errMsg = user?.id
-        ? "This model isn\u2019t working properly right now \u2014 try another model."
-        : "The preview chat is having trouble right now \u2014 please try again in a moment.";
+        ? AI_TEMPORARY_FAILURE_TEXT
+        : AI_GUEST_TEMPORARY_FAILURE_TEXT;
       setChatStatusText(errMsg);
       setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: errMsg } : m)));
     } finally {
@@ -2041,7 +2051,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     isChatLoading, setIsChatLoading,
     chatFlowMode, chatStatusText, setChatStatusText,
     focusedChatAttachments, setFocusedChatAttachments,
-    expandedAiMsgIds, chatReactions, setChatReactions,
+    expandedAiMsgIds, expandedUserPromptIds, chatReactions, setChatReactions,
     copiedMsgId, setCopiedMsgId,
     assistantTaskChecks,
     isDictating, isTranscribing,
@@ -2054,7 +2064,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     handleChatPaste, handleOpenAttachments,
     removeFocusedAttachment, addFocusedAttachment,
     applyVaultDropToChat, resizeChatInput,
-    toggleAiExpanded, getCollapsedPreview,
+    toggleAiExpanded, toggleUserPromptExpanded, getCollapsedPreview,
     updateTaskCheck, buildChatMarkdownComponents,
     typeResponseIntoChat, addChatResponseToGrid,
     replaySavedPromptResponse, applyProjectActions,

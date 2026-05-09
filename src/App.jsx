@@ -32,6 +32,7 @@ import VaultUploadToast from "./components/files/VaultUploadToast";
 import GuestSignInPrompt from "./components/GuestSignInPrompt";
 import ShareReceiver from "./pages/ShareReceiver";
 import Connections from "./pages/Connections";
+import AdminUsage from "./pages/AdminUsage";
 import { useIsMobile } from "@/hooks/useViewportTier";
 
 
@@ -43,6 +44,21 @@ const loadingFallback = <LoadingScreen isLoading={true} />;
 function ProtectedRoute({ children }) {
   const { loading } = useAuth();
   if (loading) return null;
+  return children;
+}
+
+// Admin-only wrapper: silently 404s for everyone whose email is not on the
+// allowlist. The server enforces the same rule on /api/admin/* — this is just
+// UX so non-admins don't even see the dashboard exists.
+function AdminOnly({ children }) {
+  const { user, loading } = useAuth();
+  if (loading) return null;
+  const allowed = (import.meta.env.VITE_ADMIN_EMAILS || "admin@lykn.io")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  const email = String(user?.email || "").toLowerCase();
+  if (!email || !allowed.includes(email)) return <PageNotFound />;
   return children;
 }
 
@@ -193,6 +209,22 @@ function AppShell() {
                 <ProtectedRoute>
                   <BillingNew />
                 </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/admin/usage"
+              element={
+                <AdminOnly>
+                  <AdminUsage />
+                </AdminOnly>
+              }
+            />
+            <Route
+              path="/admin/usage/:userId"
+              element={
+                <AdminOnly>
+                  <AdminUsage />
+                </AdminOnly>
               }
             />
             <Route path="*" element={<PageNotFound />} />

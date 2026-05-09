@@ -57,6 +57,7 @@ import BookmarkletDialog from "@/components/connections/BookmarkletDialog";
 import RssDialog from "@/components/connections/RssDialog";
 import OAuthConnectDialog from "@/components/connections/OAuthConnectDialog";
 import TokenConnectDialog from "@/components/connections/TokenConnectDialog";
+import UseLyknWithSection from "@/components/connections/UseLyknWithSection";
 
 // Connector ids that go through the OAuth framework (one row per id in
 // connectors-service.js CONNECTOR_REGISTRY on the server). Adding a new
@@ -686,26 +687,33 @@ export default function Connections() {
         {/* ── Body grid ───────────────────────────────────── */}
         <div className="mt-8 space-y-10">
           {isConnections ? (
-            filteredConnections.length === 0 ? (
-              <EmptyState message="No connections match that filter." />
-            ) : (
-              filteredConnections.map((cat) => (
-                <section key={cat.id}>
-                  <CategoryHeader cat={cat} count={cat.items.length} />
-                  <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
-                    {cat.items.map((connector) => (
-                      <ConnectorCard
-                        key={connector.id}
-                        connector={connector}
-                        connected={(liveConnections[connector.id] || 0) > 0}
-                        onConnect={() => handleConnect(connector)}
-                        onDisconnect={() => handleManage(connector)}
-                      />
-                    ))}
-                  </div>
-                </section>
-              ))
-            )
+            <>
+              {filteredConnections.length === 0 ? (
+                <EmptyState message="No connections match that filter." />
+              ) : (
+                filteredConnections.map((cat) => (
+                  <section key={cat.id}>
+                    <CategoryHeader cat={cat} count={cat.items.length} />
+                    <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
+                      {cat.items.map((connector) => (
+                        <ConnectorCard
+                          key={connector.id}
+                          connector={connector}
+                          connected={(liveConnections[connector.id] || 0) > 0}
+                          onConnect={() => handleConnect(connector)}
+                          onDisconnect={() => handleManage(connector)}
+                        />
+                      ))}
+                    </div>
+                  </section>
+                ))
+              )}
+              {/* OUTBOUND — "Use LYKN with your AI" section. Sibling to the
+                  inbound grid above. Mounted only in the connections view
+                  (not the skills view) and only when the user could plausibly
+                  mint a token — sign-in check happens inside the dialog. */}
+              <UseLyknWithSection user={user} />
+            </>
           ) : filteredSkills.length === 0 ? (
             <EmptyState message="No skills match that filter." />
           ) : (

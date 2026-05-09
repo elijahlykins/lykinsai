@@ -598,6 +598,21 @@ export async function getTranscriptPriority(videoId, options = {}) {
     const whisperResult = await whisperHybridTranscribe({ videoId: id, quality: "standard" });
     if (whisperResult?.segments?.length) {
       const segs = whisperResult.segments.map((s) => ({ ...s, source: "whisper_full", confidence: Math.max(0.62, Number(s.confidence || 0.72)) }));
+      // Whisper actually ran (not a cache hit) — surface the audio length so
+      // the caller can log usage. Only the openai_whisper strategy is metered.
+      if (typeof options.onWhisperUsage === "function" && whisperResult.strategy === "openai_whisper") {
+        try {
+          const lastSeg = segs[segs.length - 1];
+          const seconds = Math.max(1, Math.round(Number(lastSeg?.endSec || 0)));
+          options.onWhisperUsage({
+            seconds,
+            videoId: id,
+            strategy: whisperResult.strategy,
+            model: whisperResult.model || "whisper-1",
+            kind: "full",
+          });
+        } catch { /* never crash transcript on logging error */ }
+      }
       const value = {
         videoId: id,
         source: "whisper_full",
@@ -747,7 +762,7 @@ export async function localizeQuestion(videoId, question, options = {}) {
   return result;
 }
 
-export async function retranscribeSegment(videoId, startSec, endSec, quality = "high") {
+export async function retranscribeSegment(videoId, startSec, endSec, quality = "high", options = {}) {
   const id = String(videoId || "").trim();
   const start = Math.max(0, Number(startSec || 0));
   const end = Math.max(start, Number(endSec || start + 30));
@@ -765,6 +780,17 @@ export async function retranscribeSegment(videoId, startSec, endSec, quality = "
   });
   if (!whisper?.segments?.length) {
     throw new Error("High-accuracy retranscription unavailable");
+  }
+  if (typeof options.onWhisperUsage === "function" && whisper.strategy === "openai_whisper") {
+    try {
+      options.onWhisperUsage({
+        seconds: Math.max(1, Math.round(end - start)),
+        videoId: id,
+        strategy: whisper.strategy,
+        model: whisper.model || "whisper-1",
+        kind: "segment",
+      });
+    } catch { /* never crash */ }
   }
   const segmentText = whisper.segments.map((s) => s.text).join(" ").replace(/\s+/g, " ").trim();
   const out = {
@@ -881,7 +907,7 @@ export async function answerVideoQuestion(videoId, question, opts = {}) {
     }
     for (const win of windows) {
       try {
-        const segmentRefined = await retranscribeSegment(id, win.startSec, win.endSec, "high");
+        const segmentRefined = await retranscribeSegment(id, win.startSec, win.endSec, "high", opts);
         if (segmentRefined?.text) {
           refined = segmentRefined;
           evidence = [
