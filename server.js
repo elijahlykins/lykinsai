@@ -102,7 +102,7 @@ import {
   revokeMcpToken,
   MCP_CLIENT_KINDS,
 } from './mcp-service.js';
-import { buildMcpHandler, mcpMethodNotAllowed, MCP_DISCOVERY } from './mcp-server.js';
+import { buildMcpHandler, buildMcpStreamHandler, mcpMethodNotAllowed, MCP_DISCOVERY } from './mcp-server.js';
 import { MCP_TOOLS, MCP_TOOLS_BY_NAME } from './mcp-tools/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -4126,6 +4126,244 @@ app.get('/api/beliefs', requireAuth, async (req, res) => {
   }
 });
 
+// GET — unified "what's been happening to my synthesis layer lately"
+// feed. Combines events from 5 sources:
+//
+//   1. lykn_project_state         → "Cursor pushed tech_stack on LYKN MCP"
+//   2. lykn_projects              → "Claude Desktop started project: …"
+//   3. lykn_beliefs               → "Belief added to active layer: …"
+//   4. lykn_user_model_facts      → "Identity fact noticed: works as designer"
+//   5. lykn_result_attributions   → "Rule shaped a reply: <belief snapshot>"
+//
+// Each row is normalised into { id, type, when, by_client, summary,
+// detail?, target_id?, target_label? } so the synthesis-layer UI's
+// activity panel can render them as a single chronological stream
+// without per-type branching for sort/group.
+//
+// Read-only, JWT-only (this is internal LYKN UI — outside MCP clients
+// don't need to see what other clients did, that's the user's view).
+// Limit is hard-capped server-side at 100 to keep the payload small.
+app.get('/api/v1/synthesis/activity', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const client = supabaseAdmin || createSynthesisUserClient(req.headers.authorization);
+    if (!client) return res.status(503).json({ error: 'Database not configured' });
+
+    const limit = Math.max(1, Math.min(100, parseInt(req.query.limit, 10) || 50));
+    // Per-source overfetch buffer — we pull more than `limit` from each
+    // source then merge-sort, otherwise a chatty source could starve a
+    // slower one out of the final list.
+    const perSource = Math.min(40, Math.ceil(limit * 0.8));
+
+    // Fan out. Each block tolerates its source not existing yet —
+    // migration 045 may not have been applied on every environment, so
+    // a "table not found" on lykn_projects shouldn't 500 the whole
+    // endpoint; we just swallow that source's events.
+    const [
+      projectStateRes,
+      projectsRes,
+      beliefsRes,
+      factsRes,
+      attributionsRes,
+    ] = await Promise.allSettled([
+      client
+        .from('lykn_project_state')
+        .select('id, project_id, state_key, state_value, set_by_client, created_at, reason')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(perSource),
+      client
+        .from('lykn_projects')
+        .select('id, name, description, status, created_by_client, created_at, last_active_at')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(perSource),
+      client
+        .from('lykn_beliefs')
+        .select('id, belief_text, serves_need, status, rationale, source, proposed_by_clients, ratified_by, created_at')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(perSource),
+      client
+        .from('lykn_user_model_facts')
+        .select('id, fact_kind, fact_text, status, confidence, first_seen_at')
+        .eq('user_id', userId)
+        .order('first_seen_at', { ascending: false })
+        .limit(perSource),
+      client
+        .from('lykn_result_attributions')
+        .select('id, message_id, surface, surface_id, rule_id, belief_id, rule_snapshot, belief_snapshot, feedback, created_at')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(perSource),
+    ]);
+
+    const events = [];
+
+    // --- Project state pushes ---------------------------------------
+    if (projectStateRes.status === 'fulfilled') {
+      const rows = projectStateRes.value?.data || [];
+      // Resolve project names in one round-trip to avoid N+1.
+      const projectIds = Array.from(new Set(rows.map((r) => r.project_id).filter(Boolean)));
+      let projectMap = {};
+      if (projectIds.length) {
+        const { data: pjRows } = await client
+          .from('lykn_projects')
+          .select('id, name')
+          .eq('user_id', userId)
+          .in('id', projectIds);
+        projectMap = Object.fromEntries((pjRows || []).map((p) => [p.id, p.name]));
+      }
+      for (const row of rows) {
+        const projectName = projectMap[row.project_id] || '(unknown project)';
+        events.push({
+          id: `state:${row.id}`,
+          type: 'project_state',
+          when: row.created_at,
+          by_client: row.set_by_client || null,
+          summary: `Updated "${row.state_key}" on "${projectName}"`,
+          detail: row.state_value,
+          reason: row.reason,
+          target_id: row.project_id,
+          target_label: projectName,
+          state_key: row.state_key,
+        });
+      }
+    }
+
+    // --- Project create / activate ----------------------------------
+    if (projectsRes.status === 'fulfilled') {
+      for (const row of projectsRes.value?.data || []) {
+        events.push({
+          id: `project:${row.id}`,
+          type: 'project_created',
+          when: row.created_at,
+          by_client: row.created_by_client || null,
+          summary: `Started project: "${row.name}"`,
+          detail: row.description || null,
+          target_id: row.id,
+          target_label: row.name,
+          status: row.status,
+        });
+      }
+    }
+
+    // --- Belief activity --------------------------------------------
+    // Provenance now lives on first-class columns added in migration 046:
+    //   • source                — single client kind that wrote this row
+    //   • proposed_by_clients   — full deduped set across upserts
+    //   • ratified_by           — how it became active
+    // Pre-046 rows have all three NULL — we fall back to the legacy
+    // rationale-regex parser only for those, so existing beliefs still
+    // render with provenance during the rollover.
+    if (beliefsRes.status === 'fulfilled') {
+      for (const row of beliefsRes.value?.data || []) {
+        const isActive = row.status === 'active';
+        const isProposed = row.status === 'proposed';
+        const verb = isActive ? 'added to active layer' : isProposed ? 'proposed for ratification' : `marked ${row.status}`;
+        const byClient = row.source || extractClientFromRationale(row.rationale);
+        events.push({
+          id: `belief:${row.id}`,
+          type: isActive ? 'belief_active' : isProposed ? 'belief_proposed' : 'belief_other',
+          when: row.created_at,
+          by_client: byClient,
+          proposed_by_clients: Array.isArray(row.proposed_by_clients) ? row.proposed_by_clients : [],
+          ratified_by: row.ratified_by || null,
+          summary: `Belief ${verb}: "${row.belief_text}"`,
+          detail: row.rationale,
+          target_id: row.id,
+          target_label: row.belief_text,
+          serves_need: row.serves_need,
+          status: row.status,
+        });
+      }
+    }
+
+    // --- Fact additions ---------------------------------------------
+    if (factsRes.status === 'fulfilled') {
+      for (const row of factsRes.value?.data || []) {
+        // Skip dismissed — those aren't "developing" the layer.
+        if (row.status === 'dismissed') continue;
+        events.push({
+          id: `fact:${row.id}`,
+          type: 'fact_added',
+          when: row.first_seen_at,
+          by_client: null, // facts don't carry client provenance yet
+          summary: `Identity fact noticed (${row.fact_kind}): "${row.fact_text}"`,
+          detail: null,
+          target_id: row.id,
+          target_label: row.fact_text,
+          fact_kind: row.fact_kind,
+          confidence: row.confidence,
+        });
+      }
+    }
+
+    // --- Rule applications ------------------------------------------
+    if (attributionsRes.status === 'fulfilled') {
+      for (const row of attributionsRes.value?.data || []) {
+        events.push({
+          id: `attribution:${row.id}`,
+          type: 'rule_applied',
+          when: row.created_at,
+          by_client: surfaceToClient(row.surface),
+          summary: row.belief_snapshot
+            ? `Rule shaped a reply: "${row.belief_snapshot}"`
+            : 'Rule shaped a reply',
+          detail: row.rule_snapshot || null,
+          target_id: row.rule_id,
+          target_label: row.belief_snapshot || row.rule_snapshot || null,
+          feedback: row.feedback,
+        });
+      }
+    }
+
+    // Merge-sort by `when` DESC, slice to limit. Stable on equal
+    // timestamps because Array.prototype.sort is stable in V8.
+    events.sort((a, b) => {
+      const at = a.when ? Date.parse(a.when) : 0;
+      const bt = b.when ? Date.parse(b.when) : 0;
+      return bt - at;
+    });
+
+    return res.json({
+      ok: true,
+      events: events.slice(0, limit),
+      count: Math.min(events.length, limit),
+      total_seen: events.length,
+    });
+  } catch (e) {
+    console.error('❌ /api/v1/synthesis/activity:', e?.message || e);
+    return res.status(500).json({ error: 'activity_fetch_failed' });
+  }
+});
+
+// Helpers used by /api/v1/synthesis/activity.
+//
+// LEGACY-ONLY since migration 046. Beliefs written before 046 don't
+// have the `source` column populated, so we fall back to scraping
+// provenance out of the rationale string the old proposeBelief.js used
+// to stamp ("...via mcp:claude-desktop", "user confirmed in chat via
+// mcp:cursor"). Once all rows have a non-NULL `source`, this helper and
+// its caller fallback can be deleted.
+function extractClientFromRationale(rationale) {
+  if (!rationale) return null;
+  const m = String(rationale).match(/via\s+(mcp:[a-z0-9-]+|lykn-chat|claude-[a-z0-9-]+|cursor|chatgpt)/i);
+  if (!m) return null;
+  return m[1].replace(/^mcp:/, '');
+}
+
+// Attribution surface → client label. recordRuleApplication.js stamps
+// surface with `attributionSurfaceForClientKind` output (e.g.
+// 'mcp:claude-desktop', 'lykn-chat'). Strip the mcp prefix for display.
+function surfaceToClient(surface) {
+  if (!surface) return null;
+  const s = String(surface);
+  if (s.startsWith('mcp:')) return s.slice(4);
+  return s;
+}
+
 // POST — kick off a belief promotion pass. Cheap to call (the LLM gates
 // itself on insufficient evidence); rate-limited to once a minute per user
 // via profileRefreshLimiter.
@@ -4354,7 +4592,7 @@ app.patch('/api/rules/:id', requireAuth, async (req, res) => {
 // This endpoint is the IN-LYKN half of the attribution funnel — fed by
 // the client-side <applied> tag parser in src/lib/ai/appliedTag.ts when
 // the in-LYKN model emits a hidden tag. The OUTSIDE-LYKN half is the
-// MCP tool `lykn.recordRuleApplication` (mcp-tools/recordRuleApplication.js),
+// MCP tool `lykn_recordRuleApplication` (mcp-tools/recordRuleApplication.js),
 // which calls the same `recordRuleApplication` function with a different
 // `surface` value. One funnel, one row schema, one feedback loop.
 app.post('/api/applied', requireAuth, async (req, res) => {
@@ -4606,28 +4844,44 @@ async function runRestTool(toolName, req, res) {
 }
 
 // Read endpoints — both transports (JWT + MCP token), per-token rate-limited.
-app.get('/api/v1/synthesis/beliefs', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn.getBeliefs', req, res));
-app.get('/api/v1/synthesis/rules', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn.getRules', req, res));
-app.get('/api/v1/synthesis/facts', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn.getFacts', req, res));
-app.get('/api/v1/synthesis/vault/search', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn.searchVault', req, res));
-app.get('/api/v1/synthesis/context-block', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn.getContextBlock', req, res));
+app.get('/api/v1/synthesis/beliefs', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_getBeliefs', req, res));
+app.get('/api/v1/synthesis/rules', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_getRules', req, res));
+app.get('/api/v1/synthesis/facts', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_getFacts', req, res));
+app.get('/api/v1/synthesis/vault/search', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_searchVault', req, res));
+app.get('/api/v1/synthesis/context-block', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_getContextBlock', req, res));
+app.get('/api/v1/synthesis/projects/state', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_getProjectState', req, res));
 
 // Write endpoints — same auth, but tools internally enforce 'write' scope
 // for MCP-token requests (free-plan tokens are read-only).
-app.post('/api/v1/synthesis/attributions', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn.recordRuleApplication', req, res));
-app.post('/api/v1/synthesis/beliefs/proposals', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn.proposeBelief', req, res));
-app.post('/api/v1/synthesis/facts/proposals', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn.proposeFact', req, res));
+app.post('/api/v1/synthesis/attributions', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_recordRuleApplication', req, res));
+app.post('/api/v1/synthesis/beliefs/proposals', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_proposeBelief', req, res));
+app.post('/api/v1/synthesis/facts/proposals', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_proposeFact', req, res));
+app.post('/api/v1/synthesis/projects/active', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_setActiveProject', req, res));
+app.post('/api/v1/synthesis/projects/state', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_pushProjectState', req, res));
 
 // --- Streamable HTTP MCP server -------------------------------------------
 //
-// Stateless: every POST is a complete JSON-RPC roundtrip. /mcp uses the
-// same auth bridge so MCP traffic and REST traffic converge on the same
-// req.user.id + req.mcpAuth shape downstream.
+// POST /mcp:  full JSON-RPC roundtrip per request (initialize, tools/list,
+//             tools/call, ping, notifications). Auth-bridged so MCP traffic
+//             and REST traffic share the same req.user.id + req.mcpAuth
+//             shape downstream.
+//
+// GET /mcp:   long-running SSE notification stream. The single notification
+//             we push today is `notifications/tools/list_changed`, fired on
+//             every new connection so post-deploy clients invalidate their
+//             cached tools/list immediately on reconnect (closes out the
+//             "MCP tool-list staleness" current_blocker). Daily-limiter is
+//             skipped because a single client opens at most one persistent
+//             stream per session and the stream itself doesn't consume
+//             daily quota — the client's downstream tools/call requests
+//             already do. We do gate it with the per-minute limiter so a
+//             rogue client can't spawn unbounded streams.
 const mcpHandler = buildMcpHandler({
   logUsage: (info) => logAiUsage(info).catch(() => {}),
 });
+const mcpStreamHandler = buildMcpStreamHandler();
 app.post('/mcp', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, mcpHandler);
-app.get('/mcp', mcpMethodNotAllowed);
+app.get('/mcp', requireAuthOrMcpToken, mcpMinuteLimiter, mcpStreamHandler);
 app.delete('/mcp', mcpMethodNotAllowed);
 
 // Public discovery descriptor — handy for "is LYKN's MCP server alive?"

@@ -10,7 +10,7 @@ import { listActiveRulesForUser } from '../beliefSystem.js';
 import { jsonContent, errorContent } from './index.js';
 
 export const getRulesTool = {
-  name: 'lykn.getRules',
+  name: 'lykn_getRules',
   title: 'Get the user\'s active if-then rules',
   scope: 'read',
   description: [
@@ -19,9 +19,9 @@ export const getRulesTool = {
     'rule has a `trigger_text` describing when it applies and an',
     '`action_text` describing what to do.',
     '',
-    'Use this tool together with lykn.getBeliefs at the start of a',
+    'Use this tool together with lykn_getBeliefs at the start of a',
     'conversation. When the current user message matches a rule\'s trigger,',
-    'follow that rule\'s action — and then call lykn.recordRuleApplication',
+    'follow that rule\'s action — and then call lykn_recordRuleApplication',
     'with the rule_id so LYKN can show the user an audit trail.',
     '',
     'Honesty over attribution: only record an application when the rule',

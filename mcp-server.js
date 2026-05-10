@@ -8,16 +8,39 @@
 // vault, attributions).
 //
 // Why hand-rolled instead of @modelcontextprotocol/sdk?
-//   • Our tool surface is small (~8 tools) and stateless: every request is
-//     a full JSON-RPC roundtrip. No streaming, no notifications back to
-//     the client, no resource subscriptions.
+//   • Our tool surface is small (~8 tools) and mostly stateless: every
+//     POST is a full JSON-RPC roundtrip. The one exception is the GET
+//     /mcp SSE stream, which we need to push `notifications/tools/list_changed`
+//     so clients invalidate their cached tools/list after a deploy.
 //   • The SDK has churned its transport layer twice in the last ~12 months
 //     (SSE → Streamable HTTP, separate SDK packages, etc.) and pinning is
 //     painful. Our hand-rolled core is ~150 lines and covers exactly the
 //     four JSON-RPC methods clients actually call against us:
 //         initialize | tools/list | tools/call | ping
 //   • The Streamable HTTP spec is "POST a JSON-RPC envelope, get JSON
-//     back." That's it for stateless servers. We don't need the rest.
+//     back" + an optional GET to receive server-initiated notifications.
+//     We implement both.
+//
+// Why the GET stream matters
+// --------------------------
+// Clients (Claude Desktop especially) cache tools/list aggressively for
+// the lifetime of their session. Without a way to invalidate that cache
+// every Render deploy strands the client on a stale tool list — added
+// tools are invisible until the user restarts the client, removed tools
+// produce "method not found" errors. The MCP fix is:
+//
+//   1. capabilities.tools.listChanged = true (advertise the capability).
+//   2. Server pushes `notifications/tools/list_changed` over an open SSE
+//      stream when its tool surface changes.
+//   3. Client refetches tools/list on receiving that notification.
+//
+// We don't actually mutate the tool surface at runtime (it's frozen at
+// process start), so the natural place to fire the notification is on
+// every new SSE connection: the client just (re)connected, which on the
+// post-deploy code path means it survived the TCP reset that killed its
+// previous stream and is now talking to the new server. Nudging it to
+// refetch is exactly what we want, and the cost on healthy reconnects
+// is one extra tools/list call per client session — negligible.
 //
 // Auth shape
 // ----------
@@ -59,10 +82,14 @@ const SERVER_INFO = {
 };
 
 // We only support tools — no resources / prompts / sampling. Keep this
-// minimal so clients don't try features we haven't implemented. Tools
-// listChanged=false because our tool surface is static per server start.
+// minimal so clients don't try features we haven't implemented.
+//
+// tools.listChanged=true: clients should expect notifications/tools/list_changed
+// on the GET /mcp SSE stream. We fire it on every new SSE connection
+// (see openMcpStream) which catches the post-Render-deploy stale-cache
+// scenario without needing actual runtime tool mutations.
 const SERVER_CAPABILITIES = {
-  tools: { listChanged: false },
+  tools: { listChanged: true },
 };
 
 // ---------------------------------------------------------------------------
@@ -309,15 +336,139 @@ export function buildMcpHandler(deps = {}) {
 }
 
 /**
- * 405 handler for GET/DELETE on /mcp. Mount with:
- *   app.get('/mcp', mcpMethodNotAllowed);
- *   app.delete('/mcp', mcpMethodNotAllowed);
+ * 405 handler for DELETE on /mcp (we don't implement session deletion;
+ * the server is restartable so any "session" is best-effort). GET is
+ * implemented by buildMcpStreamHandler — don't use this for GET.
  */
 export function mcpMethodNotAllowed(req, res) {
-  res.set('Allow', 'POST');
+  res.set('Allow', 'POST, GET');
   return res.status(405).json(
-    jsonRpcError(null, RPC_INVALID_REQUEST, 'Use POST. /mcp is a stateless JSON-RPC endpoint.'),
+    jsonRpcError(null, RPC_INVALID_REQUEST, 'Use POST for tool calls or GET for the notification stream.'),
   );
+}
+
+// ---------------------------------------------------------------------------
+// SSE stream — GET /mcp
+// ---------------------------------------------------------------------------
+// In-process registry of open streams. Keyed by sessionId so we can
+// later target individual clients (not used today, but the shape is
+// ready for it). Values are { res, userId, sessionId, openedAt }.
+//
+// Note: this set is per-process. In a multi-instance Render deploy we
+// would only push notifications to clients that happen to be talking to
+// our instance — the rest get covered when their own server's SSE
+// stream pushes them. Since we send on every new connection (the
+// "post-deploy nudge" pattern), every client gets nudged regardless of
+// which instance they reconnect to. So the per-process registry is
+// sufficient even at >1 replica.
+const activeStreams = new Map();
+
+function makeSessionId() {
+  // 16 bytes of randomness, base16. Plenty unique for the session
+  // lifetime; not security-sensitive (auth is upstream).
+  const bytes = new Uint8Array(16);
+  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+    crypto.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+  }
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Send a JSON-RPC notification down an SSE stream. Notifications have
+ * no `id` and are written as a single SSE `data:` line (the spec allows
+ * arbitrary line content but most MCP clients expect a single JSON
+ * envelope per event with no event-name prefix).
+ */
+function sendStreamNotification(res, method, params) {
+  const envelope = { jsonrpc: '2.0', method };
+  if (params !== undefined) envelope.params = params;
+  try {
+    res.write(`data: ${JSON.stringify(envelope)}\n\n`);
+  } catch {
+    // Stream is dead — caller will discover and remove on the next
+    // heartbeat. Don't throw out of the per-stream handlers.
+  }
+}
+
+/**
+ * Broadcast `notifications/tools/list_changed` to every open SSE stream.
+ * Exported so future runtime tool mutations (e.g. user-installed
+ * connectors that gate tools by entitlement) can fire it.
+ */
+export function broadcastListChanged() {
+  for (const stream of activeStreams.values()) {
+    sendStreamNotification(stream.res, 'notifications/tools/list_changed');
+  }
+}
+
+/**
+ * Build the Express handler for GET /mcp. Returns a long-running
+ * text/event-stream response and registers the stream so the server
+ * can push notifications to it.
+ *
+ * Mount it like:
+ *   app.get('/mcp', requireAuthOrMcpToken, buildMcpStreamHandler());
+ */
+export function buildMcpStreamHandler() {
+  return function mcpStreamHandler(req, res) {
+    // SSE response headers. `X-Accel-Buffering: no` keeps reverse
+    // proxies (nginx, Render's edge) from collecting events in a
+    // buffer before flushing. `Cache-Control: no-cache` because event
+    // streams MUST NOT be cached anywhere.
+    res.set({
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+    res.flushHeaders?.();
+
+    const sessionId = makeSessionId();
+    res.set('Mcp-Session-Id', sessionId);
+
+    const stream = {
+      res,
+      userId: req.user?.id || null,
+      sessionId,
+      openedAt: Date.now(),
+    };
+    activeStreams.set(sessionId, stream);
+
+    // Heartbeat — SSE comments (lines starting with ":") that keep
+    // intermediate proxies from idling the connection. 25s interval
+    // is comfortably below the typical 30-60s idle timeouts on Render
+    // / nginx / Cloudflare.
+    const heartbeat = setInterval(() => {
+      try {
+        res.write(`: keepalive ${Date.now()}\n\n`);
+      } catch {
+        cleanup();
+      }
+    }, 25_000);
+
+    function cleanup() {
+      clearInterval(heartbeat);
+      activeStreams.delete(sessionId);
+      try { res.end(); } catch { /* already ended */ }
+    }
+
+    req.on('close', cleanup);
+    req.on('error', cleanup);
+    res.on('close', cleanup);
+    res.on('error', cleanup);
+
+    // The reason this handler exists: nudge the client to invalidate
+    // its cached tools/list. Every NEW connection to this endpoint —
+    // first-time or post-deploy reconnect — gets this notification, so
+    // the client always re-fetches against whichever server instance
+    // it ended up routed to. We delay 100ms so the client has a chance
+    // to wire up its event handler before we push.
+    setTimeout(() => {
+      sendStreamNotification(res, 'notifications/tools/list_changed');
+    }, 100);
+  };
 }
 
 // ---------------------------------------------------------------------------

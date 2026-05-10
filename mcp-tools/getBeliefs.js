@@ -8,7 +8,7 @@ import { listActiveBeliefsForUser } from '../beliefSystem.js';
 import { jsonContent, errorContent } from './index.js';
 
 export const getBeliefsTool = {
-  name: 'lykn.getBeliefs',
+  name: 'lykn_getBeliefs',
   title: 'Get the user\'s active beliefs',
   scope: 'read',
   description: [
@@ -24,7 +24,7 @@ export const getBeliefsTool = {
     'want to weight which beliefs apply to the current question.',
     '',
     'When a reply is materially shaped by one of these beliefs (or a rule',
-    'derived from it — see lykn.getRules), call lykn.recordRuleApplication',
+    'derived from it — see lykn_getRules), call lykn_recordRuleApplication',
     'so LYKN can show the user an audit trail.',
   ].join('\n'),
   inputSchema: {

@@ -2,7 +2,7 @@
 // mcp-tools/recordRuleApplication.js — outside-client attribution write
 // ============================================================================
 // Write. Outside AI clients (Claude.ai, Cursor, Claude Code, etc.) call
-// this when a rule they fetched via lykn.getRules / lykn.getContextBlock
+// this when a rule they fetched via lykn_getRules / lykn_getContextBlock
 // genuinely shaped a reply. The handler is the SAME `recordRuleApplication`
 // function the in-LYKN hidden-tag parser calls — `surface` distinguishes
 // where the attribution came from.
@@ -21,13 +21,13 @@ import { recordRuleApplication } from '../beliefSystem.js';
 import { jsonContent, errorContent, requireWrite } from './index.js';
 
 export const recordRuleApplicationTool = {
-  name: 'lykn.recordRuleApplication',
+  name: 'lykn_recordRuleApplication',
   title: 'Record that one of the user\'s rules shaped this reply',
   scope: 'write',
   description: [
     'Record that one of the LYKN user\'s active rules genuinely shaped your',
-    'most recent reply. Pass the exact `rule_id` you got from lykn.getRules',
-    'or the [BELIEFS_AND_RULES] block from lykn.getContextBlock.',
+    'most recent reply. Pass the exact `rule_id` you got from lykn_getRules',
+    'or the [BELIEFS_AND_RULES] block from lykn_getContextBlock.',
     '',
     'CALL THIS SPARINGLY. Only when the rule actually changed your answer —',
     'tone, structure, what you recommended, what you refused. Generic',
@@ -44,7 +44,7 @@ export const recordRuleApplicationTool = {
     properties: {
       rule_id: {
         type: 'string',
-        description: 'UUID of the rule from lykn.getRules / [BELIEFS_AND_RULES]. Verbatim — do not invent.',
+        description: 'UUID of the rule from lykn_getRules / [BELIEFS_AND_RULES]. Verbatim — do not invent.',
       },
       message_id: {
         type: 'string',
@@ -91,7 +91,7 @@ export const recordRuleApplicationTool = {
         reason: out.reason,
         message:
           out.reason === 'rule_not_found'
-            ? 'That rule_id is not in the user\'s active rule set. Re-fetch via lykn.getRules.'
+            ? 'That rule_id is not in the user\'s active rule set. Re-fetch via lykn_getRules.'
             : out.reason === 'rule_not_active' || out.reason === 'belief_not_active'
               ? 'That rule (or its parent belief) has been retired. Stop attributing to it.'
               : 'Attribution rejected.',

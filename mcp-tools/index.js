@@ -11,7 +11,7 @@
 //
 // Tool shape:
 //   {
-//     name        : 'lykn.getBeliefs'              // dotted, namespaced
+//     name        : 'lykn_getBeliefs'              // namespaced (underscore — Claude Desktop rejects dots in tool names per `^[a-zA-Z0-9_-]{1,64}$`)
 //     title       : 'Get the user\'s active beliefs'
 //     description : Long, LLM-facing prose describing WHEN to call it.
 //                  This shows up in Claude / Cursor / etc. and is the
@@ -43,16 +43,26 @@ import { getContextBlockTool } from './getContextBlock.js';
 import { recordRuleApplicationTool } from './recordRuleApplication.js';
 import { proposeBeliefTool } from './proposeBelief.js';
 import { proposeFactTool } from './proposeFact.js';
+import { setActiveProjectTool } from './setActiveProject.js';
+import { pushProjectStateTool } from './pushProjectState.js';
+import { getProjectStateTool } from './getProjectState.js';
 
 export const MCP_TOOLS = [
+  // Tier 1 — Core beliefs (governance, ratified)
   getBeliefsTool,
   getRulesTool,
-  getFactsTool,
-  searchVaultTool,
-  getContextBlockTool,
-  recordRuleApplicationTool,
   proposeBeliefTool,
+  recordRuleApplicationTool,
+  // Tier 2 — Project state (working memory, git-style)
+  setActiveProjectTool,
+  pushProjectStateTool,
+  getProjectStateTool,
+  // Tier 3 — Identity facts (background, light-weight)
+  getFactsTool,
   proposeFactTool,
+  // Cross-tier helpers
+  getContextBlockTool,
+  searchVaultTool,
 ];
 
 export const MCP_TOOLS_BY_NAME = Object.freeze(

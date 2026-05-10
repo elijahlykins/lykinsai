@@ -18,6 +18,29 @@
 // that the profile row will be derived from once Phase 2 (UI) ships.
 
 import fetch from 'node-fetch';
+import { embedAndPersistFact } from './factEmbedding.js';
+
+// ---------------------------------------------------------------------------
+// Provenance helpers (see migration 047)
+// ---------------------------------------------------------------------------
+// Every fact-write path threads the same provenance payload through to
+// persistFacts: which client wrote it, which project (if any) it ties
+// to, and host-provided conversation/message ids. None are required —
+// older callers that don't pass them leave the columns NULL, which is
+// fine for the synthesis job (it just treats those facts as
+// project-agnostic / single-client).
+const MAX_OBSERVED_CLIENTS = 8;
+
+function normalizeClientSlug(s) {
+  if (!s) return null;
+  return String(s).toLowerCase().slice(0, 64) || null;
+}
+
+function dedupMergeClient(prior, next) {
+  const priorArr = Array.isArray(prior) ? prior : [];
+  if (!next || priorArr.includes(next)) return priorArr;
+  return [...priorArr, next].slice(0, MAX_OBSERVED_CLIENTS);
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -741,6 +764,19 @@ export async function recordLearnedFactFromChat(client, userId, payload) {
     const sourceId = String(payload?.sourceId || 'live_chat').slice(0, 200);
     const replacesText = String(payload?.replacesText || '').trim().slice(0, 240);
 
+    // Provenance plumbing (migration 047). All optional — when callers
+    // don't pass these the columns stay NULL.
+    const provenance = {
+      source: normalizeClientSlug(payload?.client),
+      projectId: payload?.projectId || null,
+      conversationId: payload?.conversationId
+        ? String(payload.conversationId).slice(0, 128)
+        : null,
+      messageId: payload?.messageId
+        ? String(payload.messageId).slice(0, 128)
+        : null,
+    };
+
     const fact_key = normalizeFactKey(text);
     if (!fact_key) return { ok: false, reason: 'unkeyable_text' };
 
@@ -754,45 +790,34 @@ export async function recordLearnedFactFromChat(client, userId, payload) {
     if (replacesText) {
       const oldKey = normalizeFactKey(replacesText);
       if (!oldKey) {
-        // Unrecoverable old-text — fall through to a regular create so we
-        // never silently lose a learn moment because the "old" attribute
-        // was malformed.
         return await createOrReinforceFact(client, userId, {
-          text, fact_kind, fact_key, reason, sourceId, existing, now: new Date(),
+          text, fact_kind, fact_key, reason, sourceId, existing, now: new Date(), provenance,
         });
       }
 
-      // Match the old fact regardless of kind — the model is allowed to
-      // reclassify (e.g. constraint → focus on a pivot). Prefer same-kind
-      // matches when both exist, else accept any kind.
       let oldRow = existing.find((f) => f.fact_key === oldKey && f.fact_kind === fact_kind);
       if (!oldRow) oldRow = existing.find((f) => f.fact_key === oldKey);
       if (!oldRow) {
-        // Old fact wasn't found — the AI hallucinated the old="..." attribute
-        // or the fact was already dismissed/cleaned. Treat as a fresh learn
-        // so the user still gets a neuron from the live signal.
         return await createOrReinforceFact(client, userId, {
-          text, fact_kind, fact_key, reason, sourceId, existing, now: new Date(),
+          text, fact_kind, fact_key, reason, sourceId, existing, now: new Date(), provenance,
         });
       }
 
-      // Same text + same kind → the "update" is actually a no-op refinement.
-      // Treat as a reinforcement of the existing row.
       if (oldRow.fact_kind === fact_kind && oldRow.fact_key === fact_key) {
         return await createOrReinforceFact(client, userId, {
-          text, fact_kind, fact_key, reason, sourceId, existing, now: new Date(),
+          text, fact_kind, fact_key, reason, sourceId, existing, now: new Date(), provenance,
         });
       }
 
       return await applyInPlaceUpdate(client, userId, {
         oldRow, newText: text, newKind: fact_kind, newKey: fact_key,
-        reason, sourceId, existing,
+        reason, sourceId, existing, provenance,
       });
     }
 
     // === CREATE / REINFORCE PATH (default) ==============================
     return await createOrReinforceFact(client, userId, {
-      text, fact_kind, fact_key, reason, sourceId, existing, now: new Date(),
+      text, fact_kind, fact_key, reason, sourceId, existing, now: new Date(), provenance,
     });
   } catch (e) {
     // Anything that escaped the inner handlers (TypeError, malformed Supabase
@@ -810,7 +835,7 @@ export async function recordLearnedFactFromChat(client, userId, payload) {
  * be resolved to an existing fact.
  */
 async function createOrReinforceFact(client, userId, ctx) {
-  const { text, fact_kind, fact_key, reason, sourceId, existing, now } = ctx;
+  const { text, fact_kind, fact_key, reason, sourceId, existing, now, provenance } = ctx;
   const dupKey = `${fact_kind}::${fact_key}`;
   const wasNew = !existing.some((f) => `${f.fact_kind}::${f.fact_key}` === dupKey);
 
@@ -841,11 +866,8 @@ async function createOrReinforceFact(client, userId, ctx) {
     }
   }
 
-  const persistResult = await persistFacts(client, userId, upserts);
+  const persistResult = await persistFacts(client, userId, upserts, { provenance });
   if (persistResult.count === 0 && upserts.length > 0) {
-    // Surface the underlying DB message (constraint name / RLS / etc.) so
-    // the client doesn't see an opaque `persist_failed` and we don't have
-    // to chase it through the server console next time.
     return {
       ok: false,
       reason: persistResult.error
@@ -861,6 +883,8 @@ async function createOrReinforceFact(client, userId, ctx) {
     .eq('fact_kind', fact_kind)
     .eq('fact_key', fact_key)
     .maybeSingle();
+
+  // (embed-on-write happens inside persistFacts; nothing needed here)
 
   await writeRevision(client, userId, {
     trigger: 'feedback',
@@ -908,9 +932,20 @@ async function createOrReinforceFact(client, userId, ctx) {
  * answer either way.
  */
 async function applyInPlaceUpdate(client, userId, ctx) {
-  const { oldRow, newText, newKind, newKey, reason, sourceId, existing } = ctx;
+  const { oldRow, newText, newKind, newKey, reason, sourceId, existing, provenance } = ctx;
   const now = new Date();
   const nowIso = now.toISOString();
+
+  // Build the provenance patch once — applied to both branches (collision
+  // merge + plain rewrite) below. NULLs are intentional: an update with no
+  // new provenance shouldn't blow away whatever the row already carries
+  // (e.g. an old observed_by_clients set), so we conditionally include
+  // only the fields the caller actually provided.
+  const provPatch = {};
+  if (provenance?.source) provPatch.source = provenance.source;
+  if (provenance?.projectId) provPatch.project_id = provenance.projectId;
+  if (provenance?.conversationId) provPatch.proposed_in_conversation_id = provenance.conversationId;
+  if (provenance?.messageId) provPatch.proposed_in_message_id = provenance.messageId;
 
   const collision = existing.find((f) =>
     f.id !== oldRow.id && f.fact_kind === newKind && f.fact_key === newKey
@@ -938,6 +973,13 @@ async function applyInPlaceUpdate(client, userId, ctx) {
       : 'stated';
     const collisionConf = Math.max(collision.confidence || 0, 0.95);
 
+    // Dedup-merge the incoming client into the collision row's
+    // observed_by_clients[] set without clobbering whatever it had.
+    const mergedObservedByClients = dedupMergeClient(
+      collision.observed_by_clients,
+      provenance?.source || null,
+    );
+
     const { error: updErr } = await client
       .from('lykn_user_model_facts')
       .update({
@@ -947,12 +989,21 @@ async function applyInPlaceUpdate(client, userId, ctx) {
         evidence: mergedEvidence,
         evidence_count: (collision.evidence_count || 0) + (oldRow.evidence_count || 0) + 1,
         source_types: mergedSourceTypes,
+        observed_by_clients: mergedObservedByClients,
         last_seen_at: nowIso,
         updated_at: nowIso,
+        ...provPatch,
       })
       .eq('id', collision.id)
       .eq('user_id', userId);
     if (updErr) return { ok: false, reason: updErr.message };
+
+    // Re-embed because the fact_text changed.
+    embedAndPersistFact(client, {
+      factId: collision.id,
+      userId,
+      factText: newText,
+    }).catch(() => {});
 
     // Drop the stale source row — its content has been folded into the
     // collision target and keeping it around would leave a duplicate node
@@ -1014,6 +1065,10 @@ async function applyInPlaceUpdate(client, userId, ctx) {
     ...(oldRow.source_types || []),
     'conversation',
   ]);
+  const newObservedByClients = dedupMergeClient(
+    oldRow.observed_by_clients,
+    provenance?.source || null,
+  );
 
   // Preserve user-pinned status (confirmed/corrected); otherwise promote
   // to 'stated' since the user just said the refined version out loud.
@@ -1033,12 +1088,20 @@ async function applyInPlaceUpdate(client, userId, ctx) {
       evidence: newEvidence,
       evidence_count: (oldRow.evidence_count || 0) + 1,
       source_types: newSourceTypes,
+      observed_by_clients: newObservedByClients,
       last_seen_at: nowIso,
       updated_at: nowIso,
+      ...provPatch,
     })
     .eq('id', oldRow.id)
     .eq('user_id', userId);
   if (updErr) return { ok: false, reason: updErr.message };
+
+  embedAndPersistFact(client, {
+    factId: oldRow.id,
+    userId,
+    factText: newText,
+  }).catch(() => {});
 
   await writeRevision(client, userId, {
     trigger: 'feedback',
@@ -1104,6 +1167,9 @@ function normalizeFactRow(row) {
     evidence: Array.isArray(row.evidence) ? row.evidence : [],
     evidence_count: Number(row.evidence_count) || 1,
     source_types: Array.isArray(row.source_types) ? row.source_types : [],
+    observed_by_clients: Array.isArray(row.observed_by_clients) ? row.observed_by_clients : [],
+    source: row.source || null,
+    project_id: row.project_id || null,
     first_seen_at: row.first_seen_at,
     last_seen_at: row.last_seen_at,
   };
@@ -1125,8 +1191,35 @@ async function capFactsForUser(client, userId, upserts) {
   return sorted;
 }
 
-async function persistFacts(client, userId, upserts) {
+async function persistFacts(client, userId, upserts, opts = {}) {
   if (!upserts.length) return { count: 0, error: null };
+  const provenance = opts.provenance || null;
+  const incomingClient = provenance?.source || null;
+
+  // For dedup-merging observed_by_clients on upsert we need the prior
+  // arrays. One range query keyed off the (kind, key) pairs in this
+  // batch — cheaper and more correct than per-row reads. If a row is
+  // brand new the lookup returns nothing and we start from [].
+  let priorByCompositeKey = new Map();
+  if (incomingClient || provenance) {
+    const factKinds = Array.from(new Set(upserts.map((u) => u.fact_kind)));
+    const factKeys = Array.from(new Set(upserts.map((u) => u.fact_key)));
+    if (factKinds.length && factKeys.length) {
+      const { data: priorRows } = await client
+        .from('lykn_user_model_facts')
+        .select('fact_kind, fact_key, observed_by_clients')
+        .eq('user_id', userId)
+        .in('fact_kind', factKinds)
+        .in('fact_key', factKeys);
+      for (const r of priorRows || []) {
+        priorByCompositeKey.set(
+          `${r.fact_kind}::${r.fact_key}`,
+          Array.isArray(r.observed_by_clients) ? r.observed_by_clients : [],
+        );
+      }
+    }
+  }
+
   const rows = upserts.map((u) => {
     // Only include `id` when reconcileFacts gave us a real one (i.e. we're
     // updating an existing row). Brand-new facts come through with id
@@ -1136,6 +1229,10 @@ async function persistFacts(client, userId, upserts) {
     // surfaced as `persist_failed` even though every other column was
     // valid. Letting the column default (`gen_random_uuid()`) fire is
     // the correct behavior on the create path.
+    const compositeKey = `${u.fact_kind}::${u.fact_key}`;
+    const priorClients = priorByCompositeKey.get(compositeKey) || [];
+    const observedByClients = dedupMergeClient(priorClients, incomingClient);
+
     const row = {
       user_id: userId,
       fact_kind: u.fact_kind,
@@ -1150,18 +1247,40 @@ async function persistFacts(client, userId, upserts) {
       first_seen_at: u.first_seen_at || new Date().toISOString(),
       last_seen_at: u.last_seen_at || new Date().toISOString(),
       updated_at: new Date().toISOString(),
+      observed_by_clients: observedByClients,
     };
+    if (incomingClient) row.source = incomingClient;
+    if (provenance?.projectId) row.project_id = provenance.projectId;
+    if (provenance?.conversationId) row.proposed_in_conversation_id = provenance.conversationId;
+    if (provenance?.messageId) row.proposed_in_message_id = provenance.messageId;
     if (u.id) row.id = u.id;
     return row;
   });
   // Upsert by (user_id, fact_kind, fact_key) — table has the matching unique constraint.
-  const { error } = await client
+  const { data: upsertedRows, error } = await client
     .from('lykn_user_model_facts')
-    .upsert(rows, { onConflict: 'user_id,fact_kind,fact_key' });
+    .upsert(rows, { onConflict: 'user_id,fact_kind,fact_key' })
+    .select('id, fact_kind, fact_key, fact_text');
   if (error) {
     console.warn('⚠️ persistFacts upsert:', error.message);
     return { count: 0, error: error.message || String(error) };
   }
+
+  // Embed-on-write fan-out for the create-or-reinforce *batch* path
+  // (the LLM reconciliation pass that lands many facts at once). The
+  // single-fact MCP path is already handled by createOrReinforceFact;
+  // this catches the bulk path so refresh runs don't ship facts
+  // without embeddings either.
+  if (opts.embedOnWrite !== false) {
+    for (const r of upsertedRows || []) {
+      embedAndPersistFact(client, {
+        factId: r.id,
+        userId,
+        factText: r.fact_text,
+      }).catch(() => {});
+    }
+  }
+
   return { count: rows.length, error: null };
 }
 

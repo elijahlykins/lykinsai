@@ -245,6 +245,21 @@ export async function runBeliefPromotionPass(client, userId, opts = {}) {
 
     const rationale = String(raw?.rationale || '').trim().slice(0, 240) || null;
 
+    // Pull existing proposed_by_clients to dedup-merge "lykn-promotion"
+    // into it without clobbering anything earlier clients added.
+    const { data: priorRow } = await client
+      .from('lykn_beliefs')
+      .select('proposed_by_clients')
+      .eq('user_id', userId)
+      .eq('belief_key', key)
+      .maybeSingle();
+    const priorClients = Array.isArray(priorRow?.proposed_by_clients)
+      ? priorRow.proposed_by_clients
+      : [];
+    const proposedByClients = priorClients.includes('lykn-promotion')
+      ? priorClients
+      : [...priorClients, 'lykn-promotion'].slice(0, 8);
+
     const insertRow = {
       user_id: userId,
       belief_text: text,
@@ -255,6 +270,8 @@ export async function runBeliefPromotionPass(client, userId, opts = {}) {
       promoted_from_facts: supporting,
       rationale,
       first_seen_at: new Date().toISOString(),
+      source: 'lykn-promotion',
+      proposed_by_clients: proposedByClients,
     };
 
     const { data, error } = await client
@@ -422,7 +439,7 @@ export async function ratifyBelief(client, userId, beliefId, opts = {}) {
   const now = new Date().toISOString();
   const { data: row, error } = await client
     .from('lykn_beliefs')
-    .update({ status: 'active', ratified_at: now, updated_at: now })
+    .update({ status: 'active', ratified_at: now, updated_at: now, ratified_by: 'user' })
     .eq('id', beliefId)
     .eq('user_id', userId)
     .select('id, belief_text, serves_need, status')
@@ -527,6 +544,22 @@ export async function createManualBelief(client, userId, payload = {}, opts = {}
   const rationale = String(payload?.rationale || '').trim().slice(0, 240) || 'User-authored belief.';
 
   const now = new Date().toISOString();
+
+  // Merge "manual" into proposed_by_clients without clobbering whatever
+  // an earlier MCP client may have surfaced for the same belief_key.
+  const { data: priorRow } = await client
+    .from('lykn_beliefs')
+    .select('proposed_by_clients')
+    .eq('user_id', userId)
+    .eq('belief_key', key)
+    .maybeSingle();
+  const priorClients = Array.isArray(priorRow?.proposed_by_clients)
+    ? priorRow.proposed_by_clients
+    : [];
+  const proposedByClients = priorClients.includes('manual')
+    ? priorClients
+    : [...priorClients, 'manual'].slice(0, 8);
+
   const insertRow = {
     user_id: userId,
     belief_text: text,
@@ -539,6 +572,9 @@ export async function createManualBelief(client, userId, payload = {}, opts = {}
     first_seen_at: now,
     ratified_at: now,
     updated_at: now,
+    source: 'manual',
+    proposed_by_clients: proposedByClients,
+    ratified_by: 'manual',
   };
 
   const { data, error } = await client
@@ -897,7 +933,7 @@ export function formatBeliefsAndRulesForPrompt(beliefs, rules, opts = {}) {
  * Outside the LYKN process there is no post-stream tag parser — we cannot
  * strip / parse `<applied>` tags from someone else's chat surface. So the
  * outside-client variant tells the model to **call the MCP tool**
- * `lykn.recordRuleApplication` instead. Same `recordRuleApplication`
+ * `lykn_recordRuleApplication` instead. Same `recordRuleApplication`
  * function ends up writing to `lykn_result_attributions`; the only
  * difference is how the model signals "I just used a rule".
  *
@@ -907,21 +943,110 @@ export function formatBeliefsAndRulesForPrompt(beliefs, rules, opts = {}) {
  */
 export function formatBeliefsAndRulesForPromptOutsideClient(beliefs, rules, opts = {}) {
   const body = buildBeliefsAndRulesBody(beliefs, rules, opts);
-  if (!body) return '';
-  const lines = [
-    '[BELIEFS_AND_RULES]',
-    'These are the LYKN user\'s ratified principles + the if-then rules they\'ve agreed should shape an AI\'s replies.',
-    'PREFER answering through these. They are user-ratified, falsifiable, and revocable.',
-    '',
-    'When a reply is materially shaped by one of the rules below, call the MCP tool:',
-    '  lykn.recordRuleApplication({ rule_id: "<uuid>", message_id: "<your reply id>", reason: "<≤25 words on how the rule shaped this reply>" })',
-    'Use a rule_id from the list below verbatim. Do NOT invent rule_ids.',
-    '',
-    'Honesty over attribution: if your reply was generic and didn\'t actually lean on a rule, do NOT call the tool — most turns are not rule-driven and that\'s expected.',
-    '',
-    body,
-  ];
+  const projectBlock = formatProjectStateForPromptOutsideClient(opts.projectContext);
+
+  // If neither beliefs nor a project exist, the prompt block has nothing
+  // to say — return empty so callers can decide whether to emit anything
+  // at all (mcp-tools/getContextBlock.js handles the "no beliefs yet"
+  // case explicitly with a friendlier message).
+  if (!body && !projectBlock) return '';
+
+  const lines = [];
+
+  if (body) {
+    lines.push(
+      '[BELIEFS_AND_RULES]',
+      'These are the LYKN user\'s ratified principles + the if-then rules they\'ve agreed should shape an AI\'s replies.',
+      'PREFER answering through these. They are user-ratified, falsifiable, and revocable.',
+      '',
+      'When a reply is materially shaped by one of the rules below, call the MCP tool:',
+      '  lykn_recordRuleApplication({ rule_id: "<uuid>", message_id: "<your reply id>", reason: "<≤25 words on how the rule shaped this reply>" })',
+      'Use a rule_id from the list below verbatim. Do NOT invent rule_ids.',
+      '',
+      'Honesty over attribution: if your reply was generic and didn\'t actually lean on a rule, do NOT call the tool — most turns are not rule-driven and that\'s expected.',
+      '',
+      body,
+    );
+  }
+
+  if (projectBlock) {
+    if (lines.length) lines.push('', '');
+    lines.push(projectBlock);
+  }
+
   return lines.join('\n').trim();
+}
+
+/**
+ * Format the user's active project + its current state as a prompt
+ * block suitable for outside-AI clients. Returns '' when there's no
+ * active project or when the project has no state pushes yet.
+ *
+ *   projectContext = {
+ *     project: { id, name, description, last_active_at, ... },
+ *     state:   { tech_stack: { value, set_by_client, set_at }, ... }
+ *   }
+ *
+ * The block tells the model TWO things:
+ *   1. What's already known about this project (state kv-pairs).
+ *   2. How to push back when this conversation produces a new decision
+ *      (lykn_pushProjectState contract, named so the model can find
+ *      and call it without re-reading tool descriptors mid-turn).
+ *
+ * Keep this terse. It runs before BELIEFS_AND_RULES, takes ~150–400
+ * tokens depending on state count, and is included in EVERY
+ * getContextBlock response — so density matters.
+ */
+export function formatProjectStateForPromptOutsideClient(projectContext) {
+  if (!projectContext || !projectContext.project) return '';
+  const { project, state } = projectContext;
+  const stateEntries = state && typeof state === 'object' ? Object.entries(state) : [];
+
+  // Header. We tell the model the project name + description (if any)
+  // + when it was last touched + by which client. The "by which client"
+  // bit lets the model say "Cursor was on this yesterday" naturally.
+  const lastActive = project.last_active_at
+    ? new Date(project.last_active_at).toISOString()
+    : null;
+
+  const header = [
+    '[CURRENT_PROJECT]',
+    `Name: ${project.name || '(unnamed)'}`,
+  ];
+  if (project.description) header.push(`Description: ${project.description}`);
+  if (lastActive) header.push(`Last activity: ${lastActive}`);
+  if (project.created_by_client) header.push(`Started in: ${project.created_by_client}`);
+
+  // State kv-pairs. Sort so the most-recently-set keys appear first —
+  // the model is more likely to lean on recent decisions, and recency
+  // also doubles as "what we last cared about." Cap to keep prompt
+  // size sane; lykn_getProjectState is available for the long tail.
+  const sorted = stateEntries
+    .filter(([, v]) => v && v.value)
+    .sort((a, b) => {
+      const aSet = a[1]?.set_at ? Date.parse(a[1].set_at) : 0;
+      const bSet = b[1]?.set_at ? Date.parse(b[1].set_at) : 0;
+      return bSet - aSet;
+    })
+    .slice(0, 24);
+
+  const stateLines = sorted.length
+    ? sorted.map(([key, entry]) => {
+        const client = entry.set_by_client ? ` [${entry.set_by_client}]` : '';
+        return `- ${key}${client}: ${String(entry.value).replace(/\s+/g, ' ').trim()}`;
+      })
+    : ['(no state pushes yet — this project was just created)'];
+
+  const footer = [
+    '',
+    'When this conversation produces a meaningful decision, milestone, or',
+    'change to one of the keys above, call:',
+    '  lykn_pushProjectState({ state_key: "<slug>", state_value: "<≤2000 chars>" })',
+    'Reuse keys (e.g. "current_blocker", "tech_stack") so the value replaces,',
+    'not appends. New keys are fine when the topic is genuinely new.',
+  ];
+
+  return [...header, '', 'Current state (most recent first):', ...stateLines, ...footer].join('\n').trim();
 }
 
 // ---------------------------------------------------------------------------

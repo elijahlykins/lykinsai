@@ -11,7 +11,7 @@ import { listActiveFactsForUser } from '../userModelLearning.js';
 import { jsonContent, errorContent } from './index.js';
 
 export const getFactsTool = {
-  name: 'lykn.getFacts',
+  name: 'lykn_getFacts',
   title: 'Get the user\'s identity facts',
   scope: 'read',
   description: [
@@ -20,7 +20,7 @@ export const getFactsTool = {
     'preferences, constraints, goals, etc. ("works as a designer", "is',
     'building a spatial AI workspace", "prefers terse replies").',
     '',
-    'Prefer lykn.getBeliefs / lykn.getRules first; fall back here when:',
+    'Prefer lykn_getBeliefs / lykn_getRules first; fall back here when:',
     '  • the user asks a recall question ("what do you know about me?")',
     '  • the user is choosing between options where their stated preferences',
     '    matter ("which of these tools fits my workflow?")',

@@ -23,7 +23,7 @@ const FACT_KIND_LIST = Array.isArray(FACT_KINDS) && FACT_KINDS.length
   : ['identity', 'focus', 'theme', 'preference', 'constraint', 'goal'];
 
 export const proposeFactTool = {
-  name: 'lykn.proposeFact',
+  name: 'lykn_proposeFact',
   title: 'Add an atomic fact to the user\'s synthesis profile',
   scope: 'write',
   description: [
@@ -35,7 +35,7 @@ export const proposeFactTool = {
     'Call this when the user discloses something concrete and durable',
     'about themselves — identity, focus, preferences, constraints, goals.',
     'NOT for casual / transient state ("I\'m tired", "I\'m at the airport")',
-    'and NOT for principles / values (use lykn.proposeBelief instead).',
+    'and NOT for principles / values (use lykn_proposeBelief instead).',
     '',
     'Facts inserted here flow into the same synthesis-profile review surface',
     'the user already uses; they can thumbs-down anything that\'s wrong. No',
@@ -58,6 +58,14 @@ export const proposeFactTool = {
         type: 'string',
         description: 'Optional one-sentence justification (<=240 chars) — what the user said that justifies this fact.',
       },
+      conversation_id: {
+        type: 'string',
+        description: 'Optional host-provided id for the conversation this fact was observed in. Lets the synthesis layer group facts by source thread.',
+      },
+      message_id: {
+        type: 'string',
+        description: 'Optional host-provided id for the specific message that disclosed this fact. Lets the digest UI deep-link to the source message.',
+      },
     },
     required: ['text'],
     additionalProperties: false,
@@ -74,11 +82,43 @@ export const proposeFactTool = {
     const reason = args?.reason ? String(args.reason).trim().slice(0, 240) : null;
     const sourceId = `mcp:${ctx.attribSurface || 'mcp:other'}`.slice(0, 200);
 
+    // Provenance plumbing (migration 047). The MCP context tells us which
+    // client wrote this fact; the user's synthesis profile tells us
+    // which project (if any) is currently active. Both stamp first-class
+    // columns the nightly synthesis job will use for cluster thresholds.
+    const clientSlug = ctx.mcpAuth?.clientKind
+      ? String(ctx.mcpAuth.clientKind).toLowerCase().slice(0, 64)
+      : 'lykn-chat';
+
+    let activeProjectId = null;
+    try {
+      const { data: profile } = await ctx.supabaseAdmin
+        .from('lykn_user_synthesis_profile')
+        .select('active_project_id')
+        .eq('user_id', ctx.userId)
+        .maybeSingle();
+      activeProjectId = profile?.active_project_id || null;
+    } catch {
+      // Profile lookup failure shouldn't block the fact write — the
+      // synthesis job just treats the fact as project-agnostic.
+    }
+
+    const conversationId = args?.conversation_id
+      ? String(args.conversation_id).slice(0, 128)
+      : null;
+    const messageId = args?.message_id
+      ? String(args.message_id).slice(0, 128)
+      : null;
+
     const out = await recordLearnedFactFromChat(ctx.supabaseAdmin, ctx.userId, {
       text,
       kind,
       reason,
       sourceId,
+      client: clientSlug,
+      projectId: activeProjectId,
+      conversationId,
+      messageId,
     });
     if (!out?.ok) {
       return jsonContent({

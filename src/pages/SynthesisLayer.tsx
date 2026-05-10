@@ -12,6 +12,8 @@ import {
   Brain,
   Check,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   ExternalLink,
   FolderOpen,
   Hash,
@@ -30,6 +32,7 @@ import {
   Maximize2,
 } from "lucide-react";
 import BeliefWindowPanel from "@/components/synthesis/BeliefWindowPanel";
+import SynthesisUpdatesPanel from "@/components/synthesis/SynthesisUpdatesPanel";
 import { API_BASE_URL } from "@/lib/api-config";
 import { GridIcon } from "@/components/ui/GridIcon";
 import {
@@ -811,6 +814,20 @@ function simulateLayout(
   const EDGE_ATTRACTION = 0.001;
   const DAMPING = 0.85;
   const ITERATIONS = 100;
+  // Hard floors / caps on the simulation. Without these, two co-seeded
+  // siblings (same parentAngle + similar jitter) yield dist ≈ 1, so the
+  // inverse-square repulsion produces a one-tick impulse big enough to
+  // launch a node thousands of units away. Sparsely-populated clusters
+  // (e.g. Beliefs in section mode) are especially prone to this because
+  // they absorb cumulative repulsion from dense neighbour clusters with
+  // very little edge-attraction to pull them back.
+  const MIN_REPULSION_DIST = 30;
+  const MAX_VELOCITY = 25;
+  const MAX_RADIUS = mode === "section" ? 720 : 900;
+  // In section mode each cluster is supposed to read as a self-contained
+  // group, so we additionally clamp non-fixed nodes within a fixed radius
+  // of their parent category.
+  const PARENT_MAX_RADIUS = 340;
 
   for (let iter = 0; iter < ITERATIONS; iter++) {
     for (let i = 0; i < simNodes.length; i++) {
@@ -821,7 +838,8 @@ function simulateLayout(
         if (b.fixed) continue;
         const dx = b.x - a.x;
         const dy = b.y - a.y;
-        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        const rawDist = Math.sqrt(dx * dx + dy * dy) || 1;
+        const dist = Math.max(rawDist, MIN_REPULSION_DIST);
         const force = REPULSION / (dist * dist);
         const fx = (dx / dist) * force;
         const fy = (dy / dist) * force;
@@ -866,8 +884,52 @@ function simulateLayout(
       }
       node.vx *= DAMPING;
       node.vy *= DAMPING;
+
+      // Cap per-tick velocity. A single bad repulsion impulse from a
+      // co-seeded neighbour can otherwise punt a node into outer space
+      // before damping has a chance to bleed it off.
+      const vMag = Math.sqrt(node.vx * node.vx + node.vy * node.vy);
+      if (vMag > MAX_VELOCITY) {
+        const k = MAX_VELOCITY / vMag;
+        node.vx *= k;
+        node.vy *= k;
+      }
+
       node.x += node.vx;
       node.y += node.vy;
+
+      // Section mode: keep each child within a fixed radius of its parent
+      // category. This is what makes "Beliefs" actually look like a
+      // cluster instead of a stray belief floating across the canvas.
+      if (mode === "section") {
+        const parent = map.get(node.categoryId || node.parentId || "");
+        if (parent) {
+          const pdx = node.x - parent.x;
+          const pdy = node.y - parent.y;
+          const pr = Math.sqrt(pdx * pdx + pdy * pdy);
+          if (pr > PARENT_MAX_RADIUS) {
+            const k = PARENT_MAX_RADIUS / pr;
+            node.x = parent.x + pdx * k;
+            node.y = parent.y + pdy * k;
+            node.vx *= 0.4;
+            node.vy *= 0.4;
+          }
+        }
+      }
+
+      // Global outer-radius clamp. Catches any stragglers that escaped
+      // their parent (or in non-section modes, drifted past the playing
+      // field). Bleed velocity so they don't immediately re-launch.
+      const rdx = node.x - cx;
+      const rdy = node.y - cy;
+      const r = Math.sqrt(rdx * rdx + rdy * rdy);
+      if (r > MAX_RADIUS) {
+        const k = MAX_RADIUS / r;
+        node.x = cx + rdx * k;
+        node.y = cy + rdy * k;
+        node.vx *= 0.5;
+        node.vy *= 0.5;
+      }
     }
   }
 
@@ -1438,7 +1500,19 @@ function DetailPanel({
           <span className="block w-10 h-1 rounded-full bg-white/25" />
         </div>
       )}
-      <div className="flex items-center gap-3 px-5 pt-2 pb-3">
+      {/* Header. Desktop has no internal close button — the page-level
+          chevron toggle (z-[100], right-4) is the canonical close
+          affordance for every right-side panel, mirroring how
+          SynthesisUpdatesPanel handles dismissal. We right-pad the row
+          so the kind label clears the always-visible chevron. Mobile
+          keeps an X because the bottom-sheet form factor lives at the
+          bottom of the screen and reaching the top-right corner mid-
+          read is awkward; the sheet also supports drag-to-dismiss. */}
+      <div className={
+        isMobile
+          ? "flex items-center gap-3 px-5 pt-2 pb-3"
+          : "flex items-center gap-3 pl-5 pr-12 pt-2 pb-3"
+      }>
         <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ background: node.color }} />
         <span className={`text-xs font-semibold flex-1 truncate ${
           isPrototypeNeuron
@@ -1449,19 +1523,15 @@ function DetailPanel({
             ? `${ordinalLabel(prototypeOrdinal || 1)} neuron created`
             : node.kind === "category" ? node.label : node.kind}
         </span>
-        <button
-          onClick={onClose}
-          aria-label="Close panel"
-          className={
-            isMobile
-              ? "w-9 h-9 rounded-full bg-white/8 hover:bg-white/14 flex items-center justify-center transition-colors flex-shrink-0"
-              : "w-6 h-6 rounded-md hover:bg-black/5 dark:hover:bg-white/8 flex items-center justify-center transition-colors"
-          }
-        >
-          {isMobile
-            ? <X size={16} className="text-white/85" />
-            : <PanelRightClose size={15} className="text-gray-400" />}
-        </button>
+        {isMobile ? (
+          <button
+            onClick={onClose}
+            aria-label="Close panel"
+            className="w-9 h-9 rounded-full bg-white/8 hover:bg-white/14 flex items-center justify-center transition-colors flex-shrink-0"
+          >
+            <X size={16} className="text-white/85" />
+          </button>
+        ) : null}
       </div>
 
       <div className="px-5 pb-4">
@@ -2164,11 +2234,20 @@ export default function SynthesisLayer() {
   }, []);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  // Welcome modal opens for fresh visits, EXCEPT during the landing-prototype
-  // handoff: those visitors just came from a chat where they explicitly
-  // created a neuron, and the synthesis layer's job in that flow is to play
-  // the formation animation, not pop a welcome modal in front of it.
-  const [showWelcome, setShowWelcome] = useState(() => !hasPrototypeNeurons());
+  // The welcome modal is no longer the on-page-load greeter for the
+  // synthesis layer — the SynthesisUpdatesPanel ("Recent activity" right-
+  // side pullout) is. We keep the showWelcome state and setter around so
+  // the prototype-handoff animation flow's `setShowWelcome(false)` calls
+  // still compile, but the WelcomePanel itself is no longer rendered
+  // anywhere on this page. Default is false unconditionally.
+  const [showWelcome, setShowWelcome] = useState(false);
+
+  // Recent-activity panel open state. Lifted to the page so the toolbar
+  // can render a "Recent activity" reopen pill when the panel is closed,
+  // and so the page is the single source of truth for "is the right-
+  // side updates pullout currently visible." Auto-opens on mount; close
+  // is in-memory only (no persisted dismissal) so reload reopens.
+  const [updatesOpen, setUpdatesOpen] = useState(true);
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
   const [camera, setCamera] = useState({ x: 0, y: 0, zoom: 1 });
   const [dimensions, setDimensions] = useState({ w: 1200, h: 800 });
@@ -2212,6 +2291,75 @@ export default function SynthesisLayer() {
     window.addEventListener("resize", update);
     return () => window.removeEventListener("resize", update);
   }, []);
+
+  // ------------------------------------------------------------------
+  // Supabase Realtime — live graph updates across AI clients.
+  // ------------------------------------------------------------------
+  // The 3D graph is fed by six React Query hooks below. Without this
+  // effect the graph is static-on-load + invalidation-driven by LOCAL
+  // mutations only, so a belief Cursor pushes via MCP from another
+  // tool wouldn't appear until the user reloads. We don't patch the
+  // graph directly — we just invalidate the relevant query keys, the
+  // hooks refetch, and the buildGraph useMemo rebuilds. Cheap and
+  // reuses every existing code path.
+  //
+  // Subscriptions:
+  //   • lykn_user_model_facts INSERT/UPDATE/DELETE → fact node lifecycle
+  //   • lykn_beliefs INSERT/UPDATE/DELETE          → belief node lifecycle
+  //   • lykn_project_state UPDATE                  → updates panel + project state
+  //
+  // Filters: all three are scoped server-side to user_id=eq.<uid>. The
+  // `supabase_realtime` publication enrolment + REPLICA IDENTITY FULL
+  // are set up in migration 048; without those, filtered UPDATE events
+  // silently drop. RLS SELECT policies on every table key off auth.uid()
+  // = user_id, so even without the filter Realtime would refuse to
+  // deliver other users' rows — the filter is a belt-and-suspenders
+  // bandwidth optimisation, not the security boundary.
+  //
+  // Channel cleanup on unmount AND on user change so a sign-out doesn't
+  // leak a subscription bound to the prior user_id filter.
+  useEffect(() => {
+    if (!user?.id) return;
+    const uid = user.id;
+
+    const channel = supabase
+      .channel(`synthesis-live:${uid}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "lykn_user_model_facts", filter: `user_id=eq.${uid}` },
+        () => {
+          queryClient.invalidateQueries({ queryKey: ["mindmap_manual_facts", uid] });
+          // Synthesis profile + chunks roll fact-derived themes/topics
+          // into the AI Learned cluster — invalidate them too so the
+          // graph picks up the new neuron alongside the raw fact.
+          queryClient.invalidateQueries({ queryKey: ["mindmap_synthesis_profile", uid] });
+          queryClient.invalidateQueries({ queryKey: ["mindmap_synthesis_chunks", uid] });
+        },
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "lykn_beliefs", filter: `user_id=eq.${uid}` },
+        () => {
+          queryClient.invalidateQueries({ queryKey: ["mindmap_active_beliefs", uid] });
+        },
+      )
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "lykn_project_state", filter: `user_id=eq.${uid}` },
+        () => {
+          // SynthesisUpdatesPanel refetches /api/v1/synthesis/activity
+          // every time it opens, so we don't need to invalidate it
+          // here. We DO want the projects list to refresh in case a
+          // remote push created/renamed/archived a project.
+          queryClient.invalidateQueries({ queryKey: ["mindmap_projects", uid] });
+        },
+      )
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [user?.id, queryClient]);
 
   /* Data queries */
   const { data: projects = [], isFetched: projectsFetched } = useQuery({
@@ -2794,6 +2942,19 @@ export default function SynthesisLayer() {
     (synthesisData?.themes?.length ?? 0) === 0;
   const selectedNode = selectedId ? nodeMap.get(selectedId) : null;
   const panelOpen = selectedNode != null || showWelcome;
+  // Unified "is any right-side pullout open?" so the top-right chevron
+  // toggle can act as the single close affordance for ALL right-edge
+  // panels (Recent activity, Core Beliefs, Detail, Welcome). Previously
+  // each panel had its own internal X button and the chevron only knew
+  // about Recent activity, which made the close UX inconsistent.
+  const anyRightPanelOpen =
+    updatesOpen || beliefWindowOpen || selectedNode != null || showWelcome;
+  const closeAllRightPanels = useCallback(() => {
+    setUpdatesOpen(false);
+    setBeliefWindowOpen(false);
+    setSelectedId(null);
+    setShowWelcome(false);
+  }, []);
   const isTopicMode = layoutMode === "topic" && !!filterTag;
 
   const svgAreaRef = useRef<HTMLDivElement>(null);
@@ -3000,6 +3161,67 @@ export default function SynthesisLayer() {
         onClose={() => setBeliefWindowOpen(false)}
       />
 
+      {/* "What's new" right-side pullout — auto-opens once per browser
+          session when there are events newer than the user's last visit.
+          Replaces both the prior bottom-right card stack iteration AND
+          the standalone "Activity" toolbar button: this surface is the
+          one entry point for "what changed in my synthesis layer." See
+          ui_updates_experience in project state (claude-desktop revised
+          spec) for the design intent. Panel is graph-agnostic; we wire
+          onFocusTarget here because the page owns camera/selection state.
+          Belief / fact / project node ids follow the existing
+          `<kind>_<uuid>` convention used by buildGraph. */}
+      <SynthesisUpdatesPanel
+        active
+        open={updatesOpen}
+        onClose={() => setUpdatesOpen(false)}
+        onFocusTarget={(target) => {
+          if (target.kind === "rule") return;
+          const nodeId =
+            target.kind === "belief"
+              ? `belief_${target.id}`
+              : target.kind === "fact"
+                ? `fact_${target.id}`
+                : `project_${target.id}`;
+          setSelectedId(nodeId);
+        }}
+      />
+
+      {/* Universal right-side pullout toggle — mirrors the AppSidebar's
+          chevron on the left edge. Always visible, always at the same
+          fixed corner, and sits at z-[100] so it stays on top of every
+          right-edge panel (Recent activity z-[80], Core Beliefs z-[90],
+          Detail panel z-30) and acts as a single close affordance for
+          all of them. Behavior:
+            • If any right-side panel is open → close them all.
+            • If none are open → open the Recent activity panel (the
+              default, since that's the panel users open most often).
+          Each panel still ships with its own internal X for proximity,
+          but the chevron is the canonical "dismiss the right side" UI. */}
+      <button
+        type="button"
+        onClick={() => {
+          if (anyRightPanelOpen) {
+            closeAllRightPanels();
+          } else {
+            setUpdatesOpen(true);
+          }
+        }}
+        className={
+          isMobile
+            ? "fixed top-3 right-3 z-[100] rounded-full w-8 h-8 hover:bg-blue-500/15 dark:hover:bg-blue-400/20 transition-colors flex items-center justify-center"
+            : "fixed top-4 right-4 z-[100] rounded-full w-8 h-8 hover:bg-blue-500/15 dark:hover:bg-blue-400/20 transition-colors flex items-center justify-center"
+        }
+        title={anyRightPanelOpen ? "Hide panel" : "Show panel"}
+        aria-label={anyRightPanelOpen ? "Hide right-side panel" : "Show recent activity"}
+      >
+        {anyRightPanelOpen ? (
+          <ChevronRight className="w-4 h-4" />
+        ) : (
+          <ChevronLeft className="w-4 h-4" />
+        )}
+      </button>
+
       {/* Core Beliefs has no standalone toolbar trigger — it's reached
           through the bottom-right "+" menu's "Core Belief neuron" entry,
           which opens the centered creation modal. Once the new belief
@@ -3097,6 +3319,7 @@ export default function SynthesisLayer() {
           </AnimatePresence>
         </div>
 
+
         {layoutMode === "topic" && (
           <div ref={tagMenuRef} className="relative">
             <button
@@ -3151,9 +3374,12 @@ export default function SynthesisLayer() {
         </div>
       </div>
 
-      {/* Stats */}
+      {/* Stats. Right offset always leaves room for the always-visible
+          recent-activity toggle button (sidebar-style chevron pinned at
+          right-4, w-8). When the detail panel or recent-activity panel
+          covers the right edge entirely, push further. */}
       <div className="absolute top-6 z-20 flex items-center gap-4 text-[0.625rem] text-white/60 pointer-events-none transition-[right] duration-300"
-        style={{ right: panelOpen ? 384 : 24 }}
+        style={{ right: anyRightPanelOpen ? 396 : 56 }}
       >
         <span>{effectiveProjects.length} projects</span>
         <span className="w-px h-3 bg-white/15" />
@@ -3170,7 +3396,7 @@ export default function SynthesisLayer() {
           and shifts left when the detail panel opens. */}
       <div
         className="absolute bottom-6 z-20 flex items-end gap-2.5 transition-[right] duration-300"
-        style={{ right: panelOpen ? 384 : 24 }}
+        style={{ right: panelOpen || beliefWindowOpen || updatesOpen ? 384 : 24 }}
       >
         {/* Add-neuron entry — bigger, circular, sits visually as the
             primary action of the cluster. Picking a type opens a
@@ -3277,7 +3503,11 @@ export default function SynthesisLayer() {
         drag to orbit · scroll to zoom · shift+drag to pan
       </div>
 
-      {/* Detail / Welcome panel */}
+      {/* Neuron detail panel — opens when a node is selected (from a graph
+          tap, an updates-panel row click, or a programmatic focus). The
+          welcome modal that used to live in this slot has been retired:
+          on-page-load greeting is now the SynthesisUpdatesPanel auto-open
+          on the right edge. */}
       <AnimatePresence>
         {selectedNode ? (
           <DetailPanel
@@ -3297,13 +3527,6 @@ export default function SynthesisLayer() {
             // so the synthetic "First Conversation" grid renders the
             // actual messages instead of an empty grid stub.
             prototypeChat={isPrototypeHandoff ? prototypeChat : undefined}
-          />
-        ) : showWelcome ? (
-          <WelcomePanel
-            key="__welcome__"
-            onClose={() => setShowWelcome(false)}
-            neurons={allNodes.filter((n) => n.kind === "neuron")}
-            onSelectNode={(id) => { setShowWelcome(false); setSelectedId(id); }}
           />
         ) : null}
       </AnimatePresence>

@@ -24,6 +24,8 @@ import {
   buildCursorDeeplink,
   buildCursorMcpJsonSnippet,
   buildRawInstallInfo,
+  buildLyknProjectInstructions,
+  LYKN_PROJECT_INSTRUCTIONS_TARGETS,
 } from "@/lib/connectors/outboundTargets";
 
 /**
@@ -172,6 +174,15 @@ export default function UseLyknWithDialog({ open, onOpenChange, target, onMinted
     [plaintext, mcpUrl, restBase],
   );
 
+  const projectInstructions = useMemo(() => buildLyknProjectInstructions(), []);
+  const projectInstructionsTarget = useMemo(
+    () =>
+      LYKN_PROJECT_INSTRUCTIONS_TARGETS[clientKind] ||
+      LYKN_PROJECT_INSTRUCTIONS_TARGETS.other,
+    [clientKind],
+  );
+  const showProjectInstructions = clientKind !== "chatgpt"; // ChatGPT is OpenAPI-only for now
+
   if (!target) return null;
 
   return (
@@ -267,6 +278,16 @@ export default function UseLyknWithDialog({ open, onOpenChange, target, onMinted
 
             {installType === "raw" && (
               <RawSection raw={rawInfo} copied={copied} onCopy={copyTo} />
+            )}
+
+            {/* ── Project Instructions (the "always-on" trigger) ─── */}
+            {showProjectInstructions && (
+              <ProjectInstructionsSection
+                target={projectInstructionsTarget}
+                snippet={projectInstructions}
+                copied={copied["lykn-project-instructions"]}
+                onCopy={() => copyTo("lykn-project-instructions", projectInstructions)}
+              />
             )}
 
             {/* ── Plan note ─────────────────────────────────── */}
@@ -587,6 +608,123 @@ function CliSection({ clientName, command, copied, onCopy, helpUrl, helpLabel })
           className="inline-flex items-center gap-1 text-[10.5px] text-black/55 dark:text-white/55 underline underline-offset-2 hover:text-black/85 dark:hover:text-white/85"
         >
           {helpLabel || "Help"} <ExternalLink className="h-3 w-3" />
+        </a>
+      )}
+    </div>
+  );
+}
+
+/**
+ * ProjectInstructionsSection — the "always-on" half of the LYKN install.
+ *
+ * The MCP config snippet (above this section) tells the AI client where
+ * LYKN lives. This section tells the AI client HOW TO USE LYKN — the
+ * paste-once contract that makes Claude/Cursor reflexively call
+ * lykn_getContextBlock at conversation start, push project state when
+ * decisions happen, and ask before promoting beliefs.
+ *
+ * Without this snippet, the user has to remember to prompt their AI
+ * to use the tools every conversation. With it, the synthesis layer
+ * is "always on" — the AI silently keeps it in sync without being asked.
+ *
+ * Why this is a SEPARATE section, not merged into the install snippet
+ * above: install lives in a *config file* the user edits once; this
+ * lives in the AI client's *prompt surface* (Project knowledge, CLAUDE.md,
+ * .cursorrules) which is a different file and a different mental model.
+ * Keeping them visually distinct prevents users from pasting one into
+ * the wrong place.
+ */
+function ProjectInstructionsSection({ target, snippet, copied, onCopy }) {
+  const downloadSnippet = useCallback(() => {
+    try {
+      const blob = new Blob([snippet], { type: "text/markdown" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "lykn-project-instructions.md";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      toast({
+        title: "Download failed",
+        description: "Use Copy instructions instead.",
+        variant: "destructive",
+      });
+    }
+  }, [snippet]);
+
+  return (
+    <div className="space-y-3 rounded-xl border border-emerald-500/25 bg-emerald-500/[0.04] dark:bg-emerald-500/[0.06] p-3">
+      <div className="space-y-1">
+        <SectionTitle>
+          <span className="text-emerald-700 dark:text-emerald-400">
+            Then: paste these instructions into {target.surfaceLabel}
+          </span>
+        </SectionTitle>
+        <p className="text-[11.5px] text-black/65 dark:text-white/70 leading-relaxed">
+          The config above wires LYKN's tools in. <strong>This snippet teaches the
+          AI when to use them</strong> — silently load context at conversation start,
+          push project state on decisions, ask before promoting core beliefs.
+          Without it, you'd have to prompt the AI every chat. With it, the
+          synthesis layer stays in sync on its own.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        <button
+          type="button"
+          onClick={onCopy}
+          className="inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-600 hover:bg-emerald-600/90 dark:bg-emerald-500 dark:hover:bg-emerald-500/90 text-white px-4 py-2 text-[12.5px] font-medium transition-colors"
+        >
+          {copied ? (
+            <>
+              <CheckCircle2 className="h-3.5 w-3.5" />
+              Copied
+            </>
+          ) : (
+            <>
+              <Copy className="h-3.5 w-3.5" />
+              Copy instructions
+            </>
+          )}
+        </button>
+        <button
+          type="button"
+          onClick={downloadSnippet}
+          className="inline-flex items-center justify-center gap-2 rounded-xl border border-emerald-500/40 bg-white/70 dark:bg-zinc-900/70 px-4 py-2 text-[12.5px] font-medium text-black/85 dark:text-white/90 hover:bg-white dark:hover:bg-zinc-900 transition-colors"
+        >
+          <Download className="h-3.5 w-3.5" />
+          Download .md
+        </button>
+      </div>
+
+      <ol className="list-decimal pl-5 space-y-1 text-[11.5px] text-black/65 dark:text-white/70 leading-relaxed marker:text-black/40 dark:marker:text-white/40">
+        {target.steps.map((step, i) => (
+          <li key={i}>{step}</li>
+        ))}
+      </ol>
+
+      <details className="rounded-lg border border-black/[0.06] dark:border-white/10 bg-white/60 dark:bg-zinc-900/60 px-3 py-2">
+        <summary className="cursor-pointer list-none text-[11px] font-medium text-black/65 dark:text-white/70 hover:text-black/90 dark:hover:text-white select-none">
+          Preview the instructions
+        </summary>
+        <div className="mt-2">
+          <pre className="whitespace-pre-wrap break-words rounded-md border border-black/[0.08] dark:border-white/10 bg-white/70 dark:bg-zinc-900/70 px-3 py-2 text-[11px] font-mono leading-relaxed text-black/85 dark:text-white/85 max-h-72 overflow-y-auto">
+{snippet}
+          </pre>
+        </div>
+      </details>
+
+      {target.helpUrl && (
+        <a
+          href={target.helpUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-1 text-[10.5px] text-black/55 dark:text-white/55 underline underline-offset-2 hover:text-black/85 dark:hover:text-white/85"
+        >
+          {target.helpLabel} <ExternalLink className="h-3 w-3" />
         </a>
       )}
     </div>

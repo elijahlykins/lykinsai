@@ -16,7 +16,7 @@ const MAX_QUERY_LEN = 200;
 const MAX_RESULTS = 25;
 
 export const searchVaultTool = {
-  name: 'lykn.searchVault',
+  name: 'lykn_searchVault',
   title: 'Search the user\'s LYKN vault for notes / saved items',
   scope: 'read',
   description: [

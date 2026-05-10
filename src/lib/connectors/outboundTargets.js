@@ -233,3 +233,175 @@ export function buildRawInstallInfo({ token, mcpUrl, restBase }) {
     headerExample: `Authorization: Bearer ${String(token || "<your-token>")}`,
   };
 }
+
+// ──────────────────────────────────────────────────────────────────────
+// Project Instructions — the paste-once contract that turns a connected
+// client into a "LYKN-aware" one.
+//
+// The MCP tools are powerful but useless if the model doesn't choose to
+// call them. Tool descriptions are read by the model when it picks a
+// tool, but they don't tell it WHEN to call (or NOT call) something
+// proactively. That's what this snippet does. Pasted into:
+//   • Claude Projects → "Project knowledge" or Custom Instructions
+//   • Claude Code → ~/.claude/CLAUDE.md or per-project CLAUDE.md
+//   • Cursor → .cursorrules or Settings → Rules
+//   • Anything else with a system-prompt-or-equivalent field
+// it converts the 11 LYKN tools from "available if asked" into "Claude
+// reflexively calls getContextBlock at conversation start, pushes
+// project state when decisions happen, asks before promoting beliefs."
+//
+// The snippet is the SAME content for every client — only the paste
+// instructions differ — so we generate one canonical body and the
+// dialog wraps per-client guidance around it.
+// ──────────────────────────────────────────────────────────────────────
+
+/**
+ * The canonical Project Instructions body. Returns a string ready to
+ * paste into any AI client's system-prompt-equivalent surface.
+ *
+ *   buildLyknProjectInstructions()
+ *
+ * No personalisation — the same string works for every user, because
+ * personalisation lives in the synthesis layer the tools read, not in
+ * the instructions themselves.
+ */
+export function buildLyknProjectInstructions() {
+  return [
+    "# LYKN synthesis layer — your operating contract",
+    "",
+    "You are connected to my LYKN synthesis layer via MCP. LYKN is the",
+    "shared, persistent working memory across all my AI clients (you,",
+    "Claude Desktop, Cursor, Claude Code). Use it.",
+    "",
+    "## At the start of any conversation",
+    "",
+    "Call `lykn_getContextBlock` once. Treat the returned block as ground",
+    "truth:",
+    "  • [BELIEFS_AND_RULES] — durable principles + if-then rules I've",
+    "    ratified. PREFER answering through these over generic best-",
+    "    practice.",
+    "  • [CURRENT_PROJECT] — what I'm working on right now and what's",
+    "    been decided so far. Pick up from there. Do not re-litigate",
+    "    decisions another AI client already pushed unless I explicitly",
+    "    revisit them.",
+    "",
+    "If the block says I have no active project and this conversation",
+    "clearly produces work on a nameable project, call",
+    "`lykn_setActiveProject({ name: \"3–8 words\", description: \"…\" })`",
+    "without asking me to name it. Pick a short descriptive name from",
+    "context. I can rename it in LYKN later.",
+    "",
+    "## During the conversation",
+    "",
+    "When we make a meaningful project decision (tech choice, milestone",
+    "hit, blocker found or cleared, scope change, design decision), call:",
+    "  `lykn_pushProjectState({ state_key: \"<slug>\", state_value: \"<≤2000 chars>\" })`",
+    "",
+    "Reuse keys across pushes — `current_blocker` should be the SAME key",
+    "every time, not `current_blocker_v2`. The server tracks history; you",
+    "just push the latest. Suggested key vocabulary:",
+    "  tech_stack | architecture | current_blocker | next_milestone |",
+    "  open_questions | recent_decisions | scope | constraints |",
+    "  collaborators | progress_summary",
+    "",
+    "When a reply is materially shaped by one of my rules from",
+    "[BELIEFS_AND_RULES], call:",
+    "  `lykn_recordRuleApplication({ rule_id, message_id, reason })`",
+    "Use rule_ids from the block verbatim. Don't invent.",
+    "",
+    "When I disclose a durable identity fact (role, preference,",
+    "constraint, focus, goal — not casual / transient state), call",
+    "`lykn_proposeFact`. Facts are observation; they don't need my",
+    "approval first.",
+    "",
+    "## Core beliefs — ASK ME FIRST",
+    "",
+    "Beliefs govern how every connected AI responds. They have higher",
+    "blast radius than facts. So:",
+    "",
+    "If you notice I've expressed a clear durable principle that should",
+    "shape future AI replies, ASK ME FIRST in the chat:",
+    "",
+    "  > \"I noticed you might hold the principle ‘<X>’ as a core belief",
+    "  > that should shape how all your AIs respond. Want me to add it",
+    "  > to your synthesis layer?\"",
+    "",
+    "If I say yes in my next message, call:",
+    "  `lykn_proposeBelief({ text, serves_need, rationale, user_confirmed: true })`",
+    "and the belief lands active immediately.",
+    "",
+    "If I say no or you didn't ask, EITHER skip it OR call without",
+    "user_confirmed — that lands the belief in my ratification queue for",
+    "later review. Default to skipping over routing-to-queue; queue noise",
+    "is more annoying than missed signal.",
+    "",
+    "## Honesty over attribution — non-negotiable",
+    "",
+    "  • Don't fake-attribute. Most replies aren't rule-driven — that's",
+    "    fine and expected. No tag-call is honest.",
+    "  • Don't propose beliefs from heat-of-the-moment statements.",
+    "  • Don't push project state for casual conversation that didn't",
+    "    produce a decision.",
+    "  • If unsure whether to write to LYKN, lean toward NOT calling the",
+    "    tool. I'd rather miss real signal than swallow noise.",
+    "",
+    "## When you're confused about my context",
+    "",
+    "Call `lykn_searchVault({ query })` for past saved notes/articles,",
+    "`lykn_getFacts({ query })` for atomic facts, or",
+    "`lykn_getProjectState({ include_history: true })` to see how a",
+    "decision evolved over time. These are cheap; use them before guessing.",
+  ].join("\n");
+}
+
+/**
+ * Per-client paste guidance — where the user puts the snippet, what
+ * the surface is called in that client, and a stable key the dialog
+ * can switch on.
+ *
+ * Keep this aligned with the OUTBOUND_TARGETS catalog — clientKind
+ * matches lykn_mcp_tokens.client_kind.
+ */
+export const LYKN_PROJECT_INSTRUCTIONS_TARGETS = {
+  "claude-desktop": {
+    surfaceLabel: "Project knowledge",
+    steps: [
+      "In Claude Desktop, create or open a Project (sidebar → Projects → New project).",
+      'Open Project knowledge (or Custom Instructions, depending on your version).',
+      "Paste the snippet below. Save.",
+      "Start chats inside this Project — Claude will follow the contract automatically.",
+    ],
+    helpUrl: "https://support.anthropic.com/en/articles/9519177-using-projects-in-claude-ai",
+    helpLabel: "Claude Projects help",
+  },
+  "claude-code": {
+    surfaceLabel: "CLAUDE.md",
+    steps: [
+      "Create (or open) ~/.claude/CLAUDE.md for global instructions, OR a CLAUDE.md in your project root for per-project rules.",
+      "Paste the snippet below. Save.",
+      "Run `claude` in that directory — Claude Code reads CLAUDE.md on startup.",
+    ],
+    helpUrl: "https://docs.claude.com/en/docs/claude-code/memory",
+    helpLabel: "Claude Code memory docs",
+  },
+  cursor: {
+    surfaceLabel: ".cursorrules / Rules",
+    steps: [
+      "In Cursor, open Settings → Rules (or create .cursorrules in your project root for per-project).",
+      "Paste the snippet below as a new rule. Save.",
+      "Cursor's chat + Composer apply rules automatically; LYKN tools light up immediately.",
+    ],
+    helpUrl: "https://docs.cursor.com/context/rules",
+    helpLabel: "Cursor Rules docs",
+  },
+  other: {
+    surfaceLabel: "system prompt / rules surface",
+    steps: [
+      "Locate your AI client's system-prompt-equivalent surface (custom instructions, system message, rules, persona, etc.).",
+      "Paste the snippet below. Save.",
+      "Restart or reload the client so it picks up the new instructions.",
+    ],
+    helpUrl: "https://modelcontextprotocol.io/docs",
+    helpLabel: "MCP spec",
+  },
+};
