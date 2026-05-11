@@ -33,6 +33,7 @@ import GuestSignInPrompt from "./components/GuestSignInPrompt";
 import ShareReceiver from "./pages/ShareReceiver";
 import Connections from "./pages/Connections";
 import AdminUsage from "./pages/AdminUsage";
+import OAuthConsent from "./pages/OAuthConsent";
 import { useIsMobile } from "@/hooks/useViewportTier";
 
 
@@ -119,6 +120,11 @@ function AppShell() {
         <RouteErrorBoundary>
           <Routes>
             <Route path="/login" element={<Login />} />
+            {/* OAuth consent screen — reached via 302 from API's /oauth/authorize.
+                Intentionally NOT wrapped in ProtectedRoute: the page handles its
+                own auth-gate inline so OAuth params survive the sign-in round-trip
+                (react-router's `from` doesn't preserve query strings). */}
+            <Route path="/oauth/consent" element={<OAuthConsent />} />
             <Route path="/s/:token" element={<SharedGrid />} />
             {/* The prototype landing experience IS the canonical home page —
                 visitors landing on `/` get the synthetic-intelligence

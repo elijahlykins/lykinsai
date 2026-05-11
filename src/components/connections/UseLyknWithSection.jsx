@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import {
+  ArrowDownToLine,
+  ArrowLeftRight,
   ArrowUpRight,
   RefreshCw,
-  Sparkles,
   ShieldAlert,
   Trash2,
   Loader2,
@@ -15,6 +16,7 @@ import { toast } from "@/components/ui/use-toast";
 import {
   OUTBOUND_TARGETS,
   OUTBOUND_INSTALL_TYPES,
+  OUTBOUND_TIERS,
 } from "@/lib/connectors/outboundTargets";
 import UseLyknWithDialog from "@/components/connections/UseLyknWithDialog";
 
@@ -98,19 +100,8 @@ export default function UseLyknWithSection({ user }) {
   );
 
   return (
-    <section className="mt-12">
-      <div className="flex items-end justify-between gap-4 flex-wrap mb-4">
-        <div>
-          <h2 className="text-[16px] font-semibold tracking-tight text-black/85 dark:text-white/90 inline-flex items-center gap-2">
-            <Sparkles className="h-4 w-4 text-amber-500" />
-            Use LYKN with your AI
-          </h2>
-          <p className="mt-1 max-w-2xl text-[12px] leading-relaxed text-black/55 dark:text-white/60">
-            The other direction. Hook LYKN's synthesis layer (your beliefs, rules, facts, vault)
-            into the AI tools you already use — Claude Desktop, Claude Code, Cursor, and anything
-            else that speaks MCP. One token per device, revocable any time.
-          </p>
-        </div>
+    <section className="mt-8">
+      <div className="flex items-center justify-end gap-4 flex-wrap mb-4">
         <button
           type="button"
           onClick={refresh}
@@ -126,31 +117,57 @@ export default function UseLyknWithSection({ user }) {
         </button>
       </div>
 
-      {/* ── Outbound target cards ───────────────────────── */}
-      <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
-        {OUTBOUND_TARGETS.map((target) => (
-          <OutboundCard
-            key={target.id}
-            target={target}
-            onLaunch={() => {
-              if (!user) {
-                toast({
-                  title: "Sign in to mint a token",
-                  description: "Tokens are tied to your LYKN account.",
-                });
-                return;
-              }
-              if (target.comingSoon) {
-                toast({
-                  title: `${target.name} support is on the way`,
-                  description: target.summary,
-                });
-                return;
-              }
-              setActive(target);
-            }}
-          />
-        ))}
+      {/* ── Outbound target cards, grouped by tier ─────────── */}
+      <div className="space-y-8">
+        {OUTBOUND_TIERS.map((tier) => {
+          const items = OUTBOUND_TARGETS.filter((t) => t.tier === tier.id);
+          if (items.length === 0) return null;
+          return (
+            <div key={tier.id}>
+              <div className="flex items-baseline justify-between gap-3 mb-3">
+                <div>
+                  <h3 className="text-[13px] font-semibold tracking-tight text-black/85 dark:text-white/90 inline-flex items-center gap-2">
+                    <span className="inline-flex items-center justify-center h-4 min-w-4 px-1 rounded-full bg-black/[0.06] dark:bg-white/[0.08] text-[10px] font-semibold text-black/65 dark:text-white/70">
+                      T{tier.id}
+                    </span>
+                    {tier.label}
+                  </h3>
+                  <p className="mt-1 text-[11.5px] leading-snug text-black/55 dark:text-white/55 max-w-2xl">
+                    {tier.description}
+                  </p>
+                </div>
+                <span className="text-[10.5px] text-black/40 dark:text-white/40">
+                  {items.length}
+                </span>
+              </div>
+              <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
+                {items.map((target) => (
+                  <OutboundCard
+                    key={target.id}
+                    target={target}
+                    onLaunch={() => {
+                      if (!user) {
+                        toast({
+                          title: "Sign in to mint a token",
+                          description: "Tokens are tied to your LYKN account.",
+                        });
+                        return;
+                      }
+                      if (target.comingSoon) {
+                        toast({
+                          title: `${target.name} support is on the way`,
+                          description: target.summary,
+                        });
+                        return;
+                      }
+                      setActive(target);
+                    }}
+                  />
+                ))}
+              </div>
+            </div>
+          );
+        })}
       </div>
 
       {/* ── Connected clients table ───────────────────── */}
@@ -277,6 +294,24 @@ function OutboundCard({ target, onLaunch }) {
             >
               {installMeta.label}
             </span>
+            {target.direction === "bidirectional" && (
+              <span
+                className="inline-flex items-center gap-1 rounded-full border border-violet-500/25 bg-violet-500/10 text-violet-700 dark:text-violet-300 px-2 py-[2px] text-[10px] font-medium"
+                title="Two-way: LYKN feeds the client, and we pull saved threads/history back into your vault."
+              >
+                <ArrowLeftRight className="h-2.5 w-2.5" strokeWidth={2.25} />
+                Two-way
+              </span>
+            )}
+            {target.direction === "input-only" && (
+              <span
+                className="inline-flex items-center gap-1 rounded-full border border-teal-500/25 bg-teal-500/10 text-teal-700 dark:text-teal-300 px-2 py-[2px] text-[10px] font-medium"
+                title="Input-only: LYKN learns from this tool. No context is injected back into it."
+              >
+                <ArrowDownToLine className="h-2.5 w-2.5" strokeWidth={2.25} />
+                Input only
+              </span>
+            )}
             {target.comingSoon && (
               <span className="inline-flex items-center gap-1 rounded-full border border-blue-500/20 bg-blue-500/10 text-blue-700 dark:text-blue-400 px-2 py-[2px] text-[10px] font-medium">
                 Soon
@@ -361,11 +396,27 @@ function toneClass(tone) {
 
 function clientKindLabel(kind) {
   switch (kind) {
-    case "claude-desktop": return "Claude Desktop";
-    case "claude-code":    return "Claude Code";
-    case "cursor":         return "Cursor";
-    case "chatgpt":        return "ChatGPT";
-    default:               return "Other";
+    case "claude-desktop":  return "Claude Desktop";
+    case "claude-code":     return "Claude Code";
+    case "claude-web":      return "Claude (web)";
+    case "cursor":          return "Cursor";
+    case "chatgpt":         return "ChatGPT";
+    case "perplexity":      return "Perplexity";
+    case "gemini":          return "Gemini";
+    case "grok":            return "Grok";
+    case "windsurf":        return "Windsurf";
+    case "replit":          return "Replit";
+    case "github-copilot":  return "GitHub Copilot";
+    case "notion-ai":       return "Notion AI";
+    case "fathom":          return "Fathom";
+    case "mem-ai":          return "Mem.ai";
+    case "midjourney":      return "Midjourney";
+    case "elevenlabs":      return "ElevenLabs";
+    case "sora-veo":        return "Sora / Veo 3";
+    case "figma-ai":        return "Figma AI";
+    case "zapier-ai":       return "Zapier AI";
+    case "v0-lovable":      return "v0 / Lovable";
+    default:                return "Other";
   }
 }
 

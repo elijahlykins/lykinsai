@@ -113,11 +113,15 @@ export function SupabaseAuthProvider({ children }) {
     };
   }, []);
 
-  const signInWithOAuth = async (provider) => {
+  const signInWithOAuth = async (provider, opts = {}) => {
     setAuthError(null);
+    // Default redirect is the app root; callers (e.g. the OAuth consent
+    // page) can override with `{ redirectTo: window.location.href }` to
+    // preserve their query string across the Supabase OAuth round-trip.
+    const redirectTo = opts.redirectTo || window.location.origin;
     const { data, error } = await supabase.auth.signInWithOAuth({
       provider,
-      options: { redirectTo: window.location.origin },
+      options: { redirectTo },
     });
     if (error) {
       setAuthError("Sign-in failed. Please try again later.");

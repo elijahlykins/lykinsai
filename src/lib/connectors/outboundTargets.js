@@ -1,33 +1,35 @@
 // ──────────────────────────────────────────────────────────────────────
-// Outbound targets catalog — "Use LYKN WITH your AI tools"
+// AI integration catalog
 //
-// The mirror image of catalog.js. catalog.js answers:
-//   "what services pull data INTO LYKN?"
-// This file answers:
-//   "what AI clients can connect TO LYKN's synthesis layer (via MCP)?"
+// Sourced from the integration_targets + integration_strategy keys that
+// Claude pushed into LYKN project state during the "LYKN product vision
+// and positioning" project. Pull with `lykn_getProjectState` to confirm
+// the current spec — this file is the rendered surface of that thinking.
 //
-// One row per AI client we publish install instructions for. The
-// Connections page renders these as cards in a separate "Use LYKN with..."
-// section so the directionality is obvious to the user — outbound here,
-// inbound in catalog.js.
+// Each entry carries three roadmap fields:
 //
-// `installType` controls which install path the dialog shows:
-//   "deeplink"       — single-button install via a custom URL scheme
-//                      (Cursor: cursor://anysphere.cursor-deeplink/mcp/install)
-//   "config-json"    — copy-paste JSON snippet for a config file
-//                      (Claude Desktop: claude_desktop_config.json)
-//   "cli"            — copy-paste shell command
-//                      (Claude Code: `claude mcp add lykn …`)
-//   "openapi"        — pointer at the REST mirror's OpenAPI spec
-//                      (ChatGPT custom GPT Action — placeholder for v1.5)
-//   "raw"            — just show the URL + token. The user knows what they're doing.
+//   tier         — 1 = launch lineup, 2 = next wave, 3 = creative
+//                  specialist, 4 = bring-your-own catch-all.
 //
-// `clientKind` matches lykn_mcp_tokens.client_kind so the issued token
-// gets stamped with the right kind and can be filtered/labeled in the
-// Connected Clients list.
+//   direction    — "bidirectional" = LYKN feeds the tool AND learns from
+//                                    it (the AI assistant integrations).
+//                  "input-only"    = LYKN learns from it, no context
+//                                    injection back (creative tools that
+//                                    don't accept external context).
+//                  "outbound"      = LYKN → tool only (catch-all MCP).
+//
+//   installType  — what install flow the dialog shows.
+//
+// Connection-method strategy lives in project state under
+// `integration_strategy`. Short version, the four-layer stack:
+//   1. Remote MCP URL (power users)
+//   2. OAuth "Connect LYKN" button (primary consumer onboarding)
+//   3. Custom GPT in OpenAI's GPT Store (distribution)
+//   4. Browser extension (ambient, platform-independent)
 // ──────────────────────────────────────────────────────────────────────
 
 export const OUTBOUND_TARGETS = [
+  // ─── Tier 1 — launch lineup ───────────────────────────────────────
   {
     id: "claude-desktop",
     clientKind: "claude-desktop",
@@ -41,6 +43,8 @@ export const OUTBOUND_TARGETS = [
     helpUrl: "https://docs.anthropic.com/claude/docs/mcp",
     helpLabel: "Claude MCP docs",
     available: true,
+    tier: 1,
+    direction: "bidirectional",
   },
   {
     id: "claude-code",
@@ -55,6 +59,25 @@ export const OUTBOUND_TARGETS = [
     helpUrl: "https://docs.anthropic.com/claude/docs/claude-code",
     helpLabel: "Claude Code docs",
     available: true,
+    tier: 1,
+    direction: "bidirectional",
+  },
+  {
+    id: "claude-web",
+    clientKind: "claude-web",
+    name: "Claude (web)",
+    domain: "claude.ai",
+    color: "#D97757",
+    installType: "oauth",
+    transport: "Remote MCP via Connectors (OAuth)",
+    summary:
+      "claude.ai in the browser. Click Connect once and Anthropic's Connectors flow links your Claude Projects to LYKN — no config files, no CLI.",
+    helpUrl: "https://docs.anthropic.com/claude/docs/connectors",
+    helpLabel: "Claude Connectors docs",
+    available: false,
+    comingSoon: true,
+    tier: 1,
+    direction: "bidirectional",
   },
   {
     id: "cursor",
@@ -65,10 +88,12 @@ export const OUTBOUND_TARGETS = [
     installType: "deeplink",
     transport: "Streamable HTTP MCP",
     summary:
-      "Click once. The Cursor deeplink registers LYKN as an MCP server inside Cursor with your token pre-filled — no JSON editing.",
+      "Dominant AI-native IDE — agent-first. Click once and the Cursor deeplink registers LYKN as an MCP server with your token pre-filled.",
     helpUrl: "https://docs.cursor.com/context/model-context-protocol",
     helpLabel: "Cursor MCP docs",
     available: true,
+    tier: 1,
+    direction: "bidirectional",
   },
   {
     id: "chatgpt",
@@ -76,15 +101,278 @@ export const OUTBOUND_TARGETS = [
     name: "ChatGPT",
     domain: "chatgpt.com",
     color: "#10A37F",
-    installType: "openapi",
-    transport: "REST (OpenAPI Action)",
+    installType: "oauth",
+    transport: "Connectors (paid) + OpenAPI Action + Custom GPT",
     summary:
-      "Use LYKN inside a custom GPT via Actions. Read-only in v1; ChatGPT MCP support arrives later.",
+      "OpenAI's web app, Custom GPT Store, and API. Two paths: 'Connect LYKN' via OAuth for Pro/Team/Enterprise, plus a LYKN Custom GPT in the GPT Store for distribution.",
     helpUrl: "https://platform.openai.com/docs/actions",
     helpLabel: "OpenAI Actions docs",
     available: false,
     comingSoon: true,
+    tier: 1,
+    direction: "bidirectional",
   },
+  {
+    id: "perplexity",
+    clientKind: "perplexity",
+    name: "Perplexity",
+    domain: "perplexity.ai",
+    color: "#20808D",
+    installType: "oauth",
+    transport: "OAuth Connector + browser extension",
+    summary:
+      "AI research and search you'll use daily. Connect LYKN to Perplexity Comet / Spaces so its answers pull from your beliefs and vault — and so your searches flow back into LYKN.",
+    helpUrl: "https://docs.perplexity.ai/",
+    helpLabel: "Perplexity docs",
+    available: false,
+    comingSoon: true,
+    tier: 1,
+    direction: "bidirectional",
+  },
+  {
+    id: "gemini",
+    clientKind: "gemini",
+    name: "Gemini",
+    domain: "gemini.google.com",
+    color: "#4285F4",
+    installType: "oauth",
+    transport: "OAuth Connector across web + Workspace",
+    summary:
+      "Google's Gemini across web, Workspace, and CLI. One OAuth click and Gemini answers reference your synthesis layer wherever you're using it — docs, sheets, chat.",
+    helpUrl: "https://ai.google.dev/gemini-api/docs",
+    helpLabel: "Gemini docs",
+    available: false,
+    comingSoon: true,
+    tier: 1,
+    direction: "bidirectional",
+  },
+  {
+    id: "grok",
+    clientKind: "grok",
+    name: "Grok",
+    domain: "x.ai",
+    color: "#000000",
+    installType: "oauth",
+    transport: "OAuth Connector + Grok Studio",
+    summary:
+      "xAI's Grok — deep reasoning, live web, and Grok Studio. Wire LYKN into Studio threads so research and saved artifacts both flow back into your vault.",
+    helpUrl: "https://docs.x.ai/",
+    helpLabel: "xAI docs",
+    available: false,
+    comingSoon: true,
+    tier: 1,
+    direction: "bidirectional",
+  },
+
+  // ─── Tier 2 — next wave ──────────────────────────────────────────
+  {
+    id: "windsurf",
+    clientKind: "windsurf",
+    name: "Windsurf",
+    domain: "windsurf.com",
+    color: "#09B6A2",
+    installType: "config-json",
+    transport: "Streamable HTTP MCP",
+    summary:
+      "AI-native IDE, strong Cursor competitor. Drop LYKN into Cascade's mcp_config.json and Windsurf's coding agent can query your vault, project state, and rules.",
+    helpUrl: "https://docs.windsurf.com/windsurf/cascade/mcp",
+    helpLabel: "Windsurf MCP docs",
+    available: false,
+    comingSoon: true,
+    tier: 2,
+    direction: "bidirectional",
+  },
+  {
+    id: "replit",
+    clientKind: "replit",
+    name: "Replit",
+    domain: "replit.com",
+    color: "#F26207",
+    installType: "config-json",
+    transport: "Streamable HTTP MCP",
+    summary:
+      "AI app builder + deploy — natural language to running code. LYKN as an MCP source means Replit's agent inherits your stack preferences and project state.",
+    helpUrl: "https://docs.replit.com/",
+    helpLabel: "Replit docs",
+    available: false,
+    comingSoon: true,
+    tier: 2,
+    direction: "bidirectional",
+  },
+  {
+    id: "github-copilot",
+    clientKind: "github-copilot",
+    name: "GitHub Copilot",
+    domain: "github.com",
+    color: "#171515",
+    installType: "config-json",
+    transport: "Streamable HTTP MCP",
+    summary:
+      "GitHub Copilot + Microsoft 365 Copilot. Add LYKN as an MCP server in your Copilot config so inline suggestions and chat both see your synthesis layer.",
+    helpUrl: "https://docs.github.com/copilot",
+    helpLabel: "Copilot docs",
+    available: false,
+    comingSoon: true,
+    tier: 2,
+    direction: "bidirectional",
+  },
+  {
+    id: "notion-ai",
+    clientKind: "notion-ai",
+    name: "Notion AI",
+    domain: "notion.so",
+    color: "#000000",
+    installType: "oauth",
+    transport: "OAuth — Notion API",
+    summary:
+      "Docs, wikis, team workflows. Input-only: LYKN learns from the pages you let it see, then makes that knowledge available to your other AI tools.",
+    helpUrl: "https://developers.notion.com/",
+    helpLabel: "Notion API docs",
+    available: false,
+    comingSoon: true,
+    tier: 2,
+    direction: "input-only",
+  },
+  {
+    id: "fathom",
+    clientKind: "fathom",
+    name: "Fathom",
+    domain: "fathom.video",
+    color: "#5C2EBC",
+    installType: "oauth",
+    transport: "OAuth — Fathom webhooks",
+    summary:
+      "AI meeting transcripts + summaries with CRM sync. Input-only: every meeting recap lands in LYKN so 'what did we decide last Tuesday?' actually has an answer.",
+    helpUrl: "https://help.fathom.video/",
+    helpLabel: "Fathom docs",
+    available: false,
+    comingSoon: true,
+    tier: 2,
+    direction: "input-only",
+  },
+  {
+    id: "mem-ai",
+    clientKind: "mem-ai",
+    name: "Mem.ai",
+    domain: "mem.ai",
+    color: "#1F1F1F",
+    installType: "oauth",
+    transport: "OAuth — Mem API",
+    summary:
+      "AI notes with auto-organization. Input-only: your Mem corpus flows into LYKN's synthesis layer so its beliefs about you compound across tools.",
+    helpUrl: "https://docs.mem.ai/",
+    helpLabel: "Mem docs",
+    available: false,
+    comingSoon: true,
+    tier: 2,
+    direction: "input-only",
+  },
+
+  // ─── Tier 3 — creative + specialist ──────────────────────────────
+  {
+    id: "midjourney",
+    clientKind: "midjourney",
+    name: "Midjourney",
+    domain: "midjourney.com",
+    color: "#000000",
+    installType: "browser-extension",
+    transport: "LYKN browser extension",
+    summary:
+      "Image gen for creative pros and visual inspiration. Input-only: the LYKN extension observes prompts + outputs so your visual taste becomes synthesis signal.",
+    helpUrl: "https://docs.midjourney.com/",
+    helpLabel: "Midjourney docs",
+    available: false,
+    comingSoon: true,
+    tier: 3,
+    direction: "input-only",
+  },
+  {
+    id: "elevenlabs",
+    clientKind: "elevenlabs",
+    name: "ElevenLabs",
+    domain: "elevenlabs.io",
+    color: "#000000",
+    installType: "api-key",
+    transport: "API key + browser extension",
+    summary:
+      "AI voice + audio for creators and podcasters. Input-only: voice projects, scripts, and audio metadata feed back into LYKN so your style is portable.",
+    helpUrl: "https://elevenlabs.io/docs",
+    helpLabel: "ElevenLabs docs",
+    available: false,
+    comingSoon: true,
+    tier: 3,
+    direction: "input-only",
+  },
+  {
+    id: "sora-veo",
+    clientKind: "sora-veo",
+    name: "Sora / Veo 3",
+    domain: "openai.com",
+    color: "#10A37F",
+    installType: "browser-extension",
+    transport: "LYKN browser extension",
+    summary:
+      "OpenAI Sora + Google Veo 3 video generation. Input-only: the extension captures prompts, references, and outputs so LYKN learns the visual systems you build.",
+    helpUrl: "https://openai.com/sora",
+    helpLabel: "Sora docs",
+    available: false,
+    comingSoon: true,
+    tier: 3,
+    direction: "input-only",
+  },
+  {
+    id: "figma-ai",
+    clientKind: "figma-ai",
+    name: "Figma AI",
+    domain: "figma.com",
+    color: "#F24E1E",
+    installType: "oauth",
+    transport: "OAuth — Figma plugin / REST",
+    summary:
+      "Design, auto-layout, component variants. Input-only: LYKN observes the design system you're converging on, then surfaces it inside every AI conversation.",
+    helpUrl: "https://www.figma.com/developers/api",
+    helpLabel: "Figma docs",
+    available: false,
+    comingSoon: true,
+    tier: 3,
+    direction: "input-only",
+  },
+  {
+    id: "zapier-ai",
+    clientKind: "zapier-ai",
+    name: "Zapier AI",
+    domain: "zapier.com",
+    color: "#FF4A00",
+    installType: "browser-extension",
+    transport: "Zapier app + webhooks",
+    summary:
+      "Workflow automation that connects everything. Input-only: any Zap can pipe events into LYKN, so the automations you build become part of how your AIs reason about you.",
+    helpUrl: "https://zapier.com/developer",
+    helpLabel: "Zapier docs",
+    available: false,
+    comingSoon: true,
+    tier: 3,
+    direction: "input-only",
+  },
+  {
+    id: "v0-lovable",
+    clientKind: "v0-lovable",
+    name: "v0 / Lovable",
+    domain: "v0.dev",
+    color: "#000000",
+    installType: "browser-extension",
+    transport: "Browser extension + remote MCP",
+    summary:
+      "UI generation and vibe-coding. Bidirectional: LYKN feeds taste + stack context into prompts, then captures the components you ship for next time.",
+    helpUrl: "https://v0.dev/docs",
+    helpLabel: "v0 docs",
+    available: false,
+    comingSoon: true,
+    tier: 3,
+    direction: "bidirectional",
+  },
+
+  // ─── Tier 4 — bring your own client ──────────────────────────────
   {
     id: "other-mcp",
     clientKind: "other",
@@ -94,10 +382,41 @@ export const OUTBOUND_TARGETS = [
     installType: "raw",
     transport: "Streamable HTTP MCP",
     summary:
-      "Any MCP-aware client (Cline, Continue, Windsurf, Goose, Zed) — point it at /mcp with your bearer token. You're on your own for client-side config.",
+      "Any other MCP-aware client (Zed, Codex CLI, Cline, Continue, Goose, Warp, Jan, etc.) — point it at /mcp with your bearer token. You're on your own for client-side config.",
     helpUrl: "https://modelcontextprotocol.io/docs",
     helpLabel: "MCP spec",
     available: true,
+    tier: 4,
+    direction: "outbound",
+  },
+];
+
+// Tier metadata for the Connections page. The page groups cards by
+// tier id and renders these labels/descriptions as subheaders.
+export const OUTBOUND_TIERS = [
+  {
+    id: 1,
+    label: "Launch lineup",
+    description:
+      "The AI tools we're shipping with on day one. Each is bidirectional — LYKN feeds it context AND learns from it.",
+  },
+  {
+    id: 2,
+    label: "Next wave",
+    description:
+      "Bidirectional code agents (Windsurf, Replit, Copilot) plus input-only knowledge tools (Notion AI, Fathom, Mem.ai) that feed LYKN with what you've already captured elsewhere.",
+  },
+  {
+    id: 3,
+    label: "Creative + specialist",
+    description:
+      "Image, audio, video, design, and automation. Mostly input-only — LYKN observes what you create so your taste and systems become portable across every AI session.",
+  },
+  {
+    id: 4,
+    label: "Bring your own client",
+    description:
+      "Any MCP-aware client we don't ship a one-click flow for. Point it at /mcp with your bearer token.",
   },
 ];
 
@@ -105,7 +424,10 @@ export const OUTBOUND_INSTALL_TYPES = {
   deeplink: { label: "One-click install", tone: "emerald" },
   "config-json": { label: "Copy JSON snippet", tone: "blue" },
   cli: { label: "Copy CLI command", tone: "blue" },
+  oauth: { label: "Connect with OAuth", tone: "emerald" },
   openapi: { label: "Custom GPT Action", tone: "amber" },
+  "api-key": { label: "Paste API key", tone: "blue" },
+  "browser-extension": { label: "Via LYKN extension", tone: "amber" },
   raw: { label: "Raw URL + token", tone: "neutral" },
 };
 

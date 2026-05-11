@@ -140,6 +140,25 @@ export async function createMcpToken(supabaseAdmin, userId, opts = {}) {
     status: 'active',
   };
 
+  // OAuth-lineage columns (added in migration 050). When the caller is
+  // the OAuth /token endpoint, these get populated so the Connections UI
+  // can label the row as "Issued via OAuth (ChatGPT)" and so revoking
+  // the consent cascade-deletes every token minted under it. PAT mints
+  // (the original Connections "Mint a token" path) leave them undefined,
+  // which the DB stores as NULL — same row shape, two provenance lanes.
+  if (opts.oauthClientId) {
+    insertRow.oauth_client_id = String(opts.oauthClientId);
+  }
+  if (opts.oauthConsentId) {
+    insertRow.oauth_consent_id = String(opts.oauthConsentId);
+  }
+  if (opts.expiresAt) {
+    insertRow.expires_at =
+      opts.expiresAt instanceof Date
+        ? opts.expiresAt.toISOString()
+        : String(opts.expiresAt);
+  }
+
   const { data, error } = await supabaseAdmin
     .from('lykn_mcp_tokens')
     .insert(insertRow)
@@ -205,11 +224,23 @@ export async function resolveMcpToken(supabaseAdmin, plaintext, meta = {}) {
 
   const { data, error } = await supabaseAdmin
     .from('lykn_mcp_tokens')
-    .select('id, user_id, label, client_kind, scopes, status, use_count')
+    .select('id, user_id, label, client_kind, scopes, status, use_count, expires_at')
     .eq('token_hash', tokenHash)
     .eq('status', 'active')
     .maybeSingle();
   if (error || !data) return null;
+
+  // OAuth-issued bearers carry an expires_at; PATs leave it NULL (non-
+  // expiring). Reject if the token has aged out — a sweeper job will
+  // flip status='expired' eventually but until then this guard keeps
+  // expired tokens from reaching tool handlers. Cheap clock check, no
+  // round-trip.
+  if (data.expires_at) {
+    const exp = Date.parse(data.expires_at);
+    if (Number.isFinite(exp) && exp <= Date.now()) {
+      return null;
+    }
+  }
 
   // Async telemetry — do not await, do not let it fail the request.
   bumpTokenUsage(supabaseAdmin, data.id, data.use_count, meta).catch(() => {});

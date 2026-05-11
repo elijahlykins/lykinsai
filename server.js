@@ -103,6 +103,7 @@ import {
   MCP_CLIENT_KINDS,
 } from './mcp-service.js';
 import { buildMcpHandler, buildMcpStreamHandler, mcpMethodNotAllowed, MCP_DISCOVERY } from './mcp-server.js';
+import { mountOauthServer } from './oauth-server.js';
 import { MCP_TOOLS, MCP_TOOLS_BY_NAME } from './mcp-tools/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -4890,6 +4891,45 @@ app.delete('/mcp', mcpMethodNotAllowed);
 app.get('/.well-known/mcp.json', (req, res) => {
   res.setHeader('Cache-Control', 'public, max-age=300');
   res.json(MCP_DISCOVERY);
+});
+
+// ============================================
+// OAUTH 2.1 PROVIDER — "Connect LYKN" inside other apps
+// ============================================
+// Layer 2 of LYKN's four-layer integration strategy. PATs (Layer 1)
+// stay the power-user path; this is the consumer path that ChatGPT
+// Connectors / Cursor's MCP-OAuth / a future LYKN GPT in the GPT
+// Store all expect. The /.well-known docs ship today; the
+// /oauth/* endpoints (register, authorize, token, revoke,
+// introspect, userinfo) land in subsequent commits.
+//
+// Tokens minted via this flow are stored in the same lykn_mcp_tokens
+// table as PATs (extended in migration 050 with oauth_client_id +
+// oauth_consent_id + expires_at), so /mcp's existing middleware
+// validates them with no changes required.
+mountOauthServer(app, {
+  supabaseAdmin,
+  // /oauth/authorize/decide is JWT-authenticated (the SPA calls it with
+  // the user's Supabase session). Reuse the same requireAuth used by
+  // every other JWT-only route so the auth surface stays uniform.
+  requireAuth,
+  // The publicly-visible https origin of this API server. The OAuth
+  // metadata documents MUST advertise absolute URLs (RFC 8414 §3), so
+  // we resolve here at request time rather than at boot in case the
+  // server moves between hosts (Render preview vs. prod).
+  getPublicBaseUrl: () =>
+    process.env.PUBLIC_API_BASE_URL ||
+    process.env.RENDER_EXTERNAL_URL ||
+    `http://localhost:${PORT}`,
+  // The SPA origin /oauth/authorize redirects users to. In single-origin
+  // production the API + SPA share a host (e.g. https://lykn.io serves
+  // both); in dev the SPA runs on Vite at :5173 while the API is at
+  // :3001. FRONTEND_BASE_URL / FRONTEND_URL already exist as env vars
+  // for the inbound-OAuth flow, so reuse them.
+  getFrontendBaseUrl: () =>
+    process.env.FRONTEND_BASE_URL ||
+    process.env.FRONTEND_URL ||
+    'http://localhost:5173',
 });
 
 // ============================================

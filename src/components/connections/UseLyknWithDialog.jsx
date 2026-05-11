@@ -85,10 +85,18 @@ export default function UseLyknWithDialog({ open, onOpenChange, target, onMinted
   }, []);
 
   // Mint a fresh token whenever the dialog opens with a target.
+  // Exception: the OAuth-MCP install path (ChatGPT Connectors) doesn't
+  // need a PAT — the OAuth flow is the proof of access — so we skip
+  // minting entirely and let the OauthMcpSection render directly off
+  // target.installType. This avoids issuing an orphan token the user
+  // never sees on their Connected Clients list.
   useEffect(() => {
     if (!open || !targetId) {
       reset();
       mintedForKeyRef.current = null;
+      return;
+    }
+    if (installType === "oauth-mcp") {
       return;
     }
     const key = `${targetId}::${clientKind}`;
@@ -139,7 +147,7 @@ export default function UseLyknWithDialog({ open, onOpenChange, target, onMinted
       }
     })();
     return () => { cancelled = true; };
-  }, [open, targetId, targetName, clientKind, reset]);
+  }, [open, targetId, targetName, clientKind, installType, reset]);
 
   const copyTo = useCallback(async (key, text) => {
     try {
@@ -198,21 +206,26 @@ export default function UseLyknWithDialog({ open, onOpenChange, target, onMinted
           </DialogDescription>
         </DialogHeader>
 
+        {/* ── OAuth-MCP path: no token mint, just URL + steps ────────── */}
+        {installType === "oauth-mcp" && (
+          <OauthMcpSection target={target} mcpUrl={mcpUrl} />
+        )}
+
         {/* ── Token issue state ──────────────────────────── */}
-        {minting && (
+        {installType !== "oauth-mcp" && minting && (
           <div className="flex items-center gap-2 rounded-xl border border-black/[0.08] dark:border-white/10 bg-black/[0.02] dark:bg-white/[0.04] p-3 text-[12px] text-black/60 dark:text-white/65">
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
             Issuing a fresh token for {target.name}…
           </div>
         )}
 
-        {error && (
+        {installType !== "oauth-mcp" && error && (
           <div className="rounded-xl border border-red-500/20 bg-red-500/10 px-3 py-2 text-[12px] text-red-700 dark:text-red-300">
             {error}
           </div>
         )}
 
-        {token && (
+        {installType !== "oauth-mcp" && token && (
           <>
             {/* ── Token (shown once) ─────────────────────────── */}
             <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 dark:bg-amber-500/10 p-3 space-y-2">
@@ -725,6 +738,106 @@ function ProjectInstructionsSection({ target, snippet, copied, onCopy }) {
           className="inline-flex items-center gap-1 text-[10.5px] text-black/55 dark:text-white/55 underline underline-offset-2 hover:text-black/85 dark:hover:text-white/85"
         >
           {target.helpLabel} <ExternalLink className="h-3 w-3" />
+        </a>
+      )}
+    </div>
+  );
+}
+
+/**
+ * OauthMcpSection — install path for clients that speak BOTH MCP and
+ * OAuth (ChatGPT Connectors today; native ChatGPT MCP later; Cursor's
+ * MCP-OAuth flow eventually).
+ *
+ * The user's only job is to paste LYKN's MCP base URL into the client's
+ * Add-Connector flow. The client then:
+ *   1. GETs /.well-known/oauth-authorization-server (auto-discovery)
+ *   2. POSTs /oauth/register (Dynamic Client Registration)
+ *   3. Pops up /oauth/authorize → user approves at /oauth/consent
+ *   4. POSTs /oauth/token, gets a bearer, starts hitting /mcp
+ *
+ * No token paste, no JSON snippet, no CLI command. The OAuth flow IS
+ * the install. That's why this dialog skips the PAT mint entirely
+ * for installType="oauth-mcp" — it would just produce orphan tokens.
+ */
+function OauthMcpSection({ target, mcpUrl }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(mcpUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      toast({ title: "Copy failed", description: "Select the URL manually.", variant: "destructive" });
+    }
+  }, [mcpUrl]);
+
+  return (
+    <div className="space-y-3">
+      <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/[0.04] dark:bg-emerald-500/[0.06] p-3 space-y-2">
+        <div className="flex items-center gap-1.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-300">
+          <CheckCircle2 className="h-3 w-3" />
+          No token to copy — {target.name} signs you in via OAuth
+        </div>
+        <p className="text-[12px] leading-relaxed text-black/65 dark:text-white/70">
+          When {target.name} hits LYKN it auto-discovers our OAuth provider,
+          registers itself, and pops up a consent screen. Approve once and
+          you're done — no manual config, no PAT to leak.
+        </p>
+      </div>
+
+      <div>
+        <SectionTitle>LYKN's MCP URL</SectionTitle>
+        <div className="mt-1.5 flex items-center gap-2">
+          <code className="flex-1 min-w-0 truncate rounded-md bg-white dark:bg-zinc-900 px-2 py-1.5 text-[11.5px] font-mono text-black/85 dark:text-white/85 border border-black/[0.06] dark:border-white/[0.08]">
+            {mcpUrl}
+          </code>
+          <button
+            type="button"
+            onClick={handleCopy}
+            className="inline-flex items-center gap-1 rounded-md border border-black/15 dark:border-white/20 bg-white dark:bg-zinc-900 px-2 py-1.5 text-[11px] font-medium text-black/85 dark:text-white/90 hover:bg-black/[0.03] dark:hover:bg-white/[0.06] transition-colors"
+          >
+            {copied ? (
+              <>
+                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+                Copied
+              </>
+            ) : (
+              <>
+                <Copy className="h-3.5 w-3.5" />
+                Copy URL
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+
+      <div>
+        <SectionTitle>Install in {target.name}</SectionTitle>
+        <ol className="mt-1.5 list-decimal pl-5 space-y-1 text-[11.5px] text-black/65 dark:text-white/70 leading-relaxed marker:text-black/40 dark:marker:text-white/40">
+          <li>Open ChatGPT → click your avatar → <strong>Settings</strong>.</li>
+          <li>Pick <strong>Connectors</strong> in the left rail.</li>
+          <li>Click <strong>Add connector</strong> → choose <strong>MCP server</strong>.</li>
+          <li>Paste the URL above and click <strong>Add</strong>.</li>
+          <li>
+            ChatGPT pops up a LYKN sign-in / consent screen — approve it and the
+            11 LYKN tools are available in any new chat.
+          </li>
+        </ol>
+        <p className="mt-2 text-[10.5px] text-black/45 dark:text-white/45 leading-relaxed">
+          Connectors require ChatGPT Pro, Team, or Enterprise. Free accounts
+          can still use the personal-access-token paths above.
+        </p>
+      </div>
+
+      {target.helpUrl && (
+        <a
+          href={target.helpUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-1 text-[10.5px] text-black/55 dark:text-white/55 underline underline-offset-2 hover:text-black/85 dark:hover:text-white/85"
+        >
+          {target.helpLabel || "ChatGPT Connectors help"} <ExternalLink className="h-3 w-3" />
         </a>
       )}
     </div>
