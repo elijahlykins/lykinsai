@@ -816,6 +816,7 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
           "Paste the URL above and approve the LYKN consent screen.",
         ];
   const planNote = target?.planNote || null;
+  const successHint = target?.successHint || null;
   const helpLabel = target?.helpLabel || `${targetName} connectors help`;
 
   // Snapshot of OAuth-issued tokens that already existed BEFORE the user
@@ -961,6 +962,11 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
             <em>"Use my LYKN context — what beliefs do you have about me?"</em>{" "}
             {targetName} will call your synthesis layer directly.
           </p>
+          {successHint && (
+            <p className="text-[11px] leading-relaxed text-emerald-700/90 dark:text-emerald-300/90 border-t border-emerald-500/20 pt-2 mt-1">
+              <strong>Heads up:</strong> {successHint}
+            </p>
+          )}
           <p className="text-[10.5px] text-black/45 dark:text-white/45 leading-relaxed">
             You can revoke {targetName}'s access any time from <strong>Connected Clients</strong> below.
           </p>

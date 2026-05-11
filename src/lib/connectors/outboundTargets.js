@@ -85,13 +85,21 @@ export const OUTBOUND_TARGETS = [
     //    the user a navigation step.
     openUrl: "https://claude.ai/settings/connectors",
     planNote:
-      "Available on Free, Pro, and Max — no special toggle. Team / Enterprise admins enable it from Admin → Connectors first; members then add via Settings.",
+      "Available on Free (one custom connector), Pro, and Max — no special toggle. Team / Enterprise admins enable it from Admin → Connectors first; members then add via Settings.",
     installSteps: [
       "Open Claude → Settings → Connectors (we deep-linked you there).",
       "Click Add custom connector.",
       "Paste the URL above into Remote MCP server URL → Add.",
       "Approve the LYKN consent screen when it pops — that's it.",
     ],
+    // Surfaced after the connection is detected. Claude Connectors
+    // sync across all of Anthropic's clients (web, Desktop, mobile,
+    // Cowork, Claude Code) — once the user adds LYKN here it shows up
+    // everywhere they use Claude with no extra config. Worth shouting
+    // about because it's a meaningful UX win over the per-app config
+    // dance Claude Desktop / Claude Code traditionally require.
+    successHint:
+      "This connection auto-syncs to Claude Desktop, mobile, Cowork, and Claude Code — no extra setup on any of those. We're also working with Anthropic on a one-click Directory listing so future users won't have to paste the URL at all.",
   },
   {
     id: "cursor",

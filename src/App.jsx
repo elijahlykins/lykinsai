@@ -35,6 +35,7 @@ import Connections from "./pages/Connections";
 import AdminUsage from "./pages/AdminUsage";
 import OAuthConsent from "./pages/OAuthConsent";
 import AppsChatGPT from "./pages/AppsChatGPT";
+import AppsClaude from "./pages/AppsClaude";
 import Privacy from "./pages/Privacy";
 import Terms from "./pages/Terms";
 import { useIsMobile } from "@/hooks/useViewportTier";
@@ -137,8 +138,15 @@ function AppShell() {
                 today. Intentionally not gated — OpenAI's reviewers visit
                 this URL during app submission. */}
             <Route path="/apps/chatgpt" element={<AppsChatGPT />} />
-            {/* Public privacy + terms — required by ChatGPT Apps catalog
-                submission, Stripe, and consumer-protection law. */}
+            {/* Sister page for the Anthropic Connectors Directory listing.
+                Same dual purpose: directory submission gate + marketing
+                page that the existing Connect button already deep-links
+                to via /connections#claude-web. Anthropic's reviewers
+                visit this URL during directory review. */}
+            <Route path="/apps/claude" element={<AppsClaude />} />
+            {/* Public privacy + terms — required by ChatGPT Apps catalog,
+                Anthropic Connectors Directory, Stripe, and consumer-
+                protection law (GDPR/CCPA). */}
             <Route path="/privacy" element={<Privacy />} />
             <Route path="/terms" element={<Terms />} />
             <Route path="/s/:token" element={<SharedGrid />} />

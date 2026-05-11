@@ -97,11 +97,40 @@ const SERVER_CAPABILITIES = {
 // ---------------------------------------------------------------------------
 
 function toMcpToolDescriptor(tool) {
+  // MCP tool annotations (spec: 2025-06-18). These hints tell hosts
+  // whether a tool is safe to call without confirmation, whether it
+  // can damage state, and whether it touches the outside world.
+  // Anthropic's Connectors Directory submission requires `title` plus
+  // `readOnlyHint` and `destructiveHint` on every tool, so we derive
+  // them from the `scope` field we already track ('read' vs 'write').
+  //
+  // None of the LYKN write tools delete anything — they append rows
+  // (proposeBelief / proposeFact / recordRuleApplication) or update a
+  // single named cell (setActiveProject / pushProjectState) — so
+  // destructiveHint is false everywhere.
+  //
+  // openWorldHint is false because every LYKN tool reads/writes
+  // exclusively the calling user's own synthesis state in our own DB;
+  // there is no third-party API surface behind any of them.
+  const isRead = tool.scope === 'read';
+  const annotations = {
+    title: tool.title || tool.name,
+    readOnlyHint: isRead,
+    destructiveHint: false,
+    // Append-only writes are not idempotent (each call adds a row);
+    // reads ARE idempotent. setActive/pushProjectState are technically
+    // idempotent in the "same input → same end state" sense but we err
+    // on the side of false for writes to keep hosts cautious.
+    idempotentHint: isRead,
+    openWorldHint: false,
+  };
+
   return {
     name: tool.name,
-    title: tool.title || tool.name,
+    title: tool.title || tool.name, // keep top-level for back-compat
     description: tool.description || '',
     inputSchema: tool.inputSchema || { type: 'object', properties: {}, additionalProperties: false },
+    annotations,
   };
 }
 
