@@ -7,12 +7,18 @@ need to produce by hand (logo, screenshots).
 
 When you're ready to submit:
 
-1. Make sure all four predicates below are green (production checklist).
+1. Make sure the production checklist below is green.
 2. Sign into <https://platform.openai.com/> with the LYKN-owned developer
    account (same OpenAI org you use for `OPENAI_API_KEY`).
-3. Open <https://platform.openai.com/apps> → **Create app**.
-4. Walk through the form, copy-pasting from each section below.
-5. Hit submit. OpenAI's review currently takes **1–4 weeks**.
+3. **Verify your org as a Business** at
+   <https://platform.openai.com/settings/organization/general> →
+   **Verifications** → **Verify identity**. Supply: legal name
+   "Omnia Technologies LLC", state Utah, EIN, government-issued ID.
+   This MUST show ✓ before the next step works.
+4. Open <https://platform.openai.com/apps-manage> → **+ Create app**.
+5. Walk through the form, copy-pasting from each section below.
+6. Click **Submit for review**. You'll get a confirmation email with a
+   Case ID — save it. Review currently takes **1–4 weeks**.
 
 ---
 
