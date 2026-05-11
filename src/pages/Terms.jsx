@@ -63,9 +63,10 @@ export default function Terms() {
         <Section title="The agreement" anchor="agreement">
           <p>
             "LYKN" and "we" mean the LYKN service operated at lykn.io by{" "}
-            <strong>Omnia Technologies LLC</strong>. "You" means the person
-            using LYKN under their own account. By creating a LYKN account or
-            connecting LYKN to an AI tool you agree to these Terms and to our{" "}
+            <strong>Omnia Technologies LLC</strong>, a Utah limited liability
+            company. "You" means the person using LYKN under their own account.
+            By creating a LYKN account or connecting LYKN to an AI tool you
+            agree to these Terms and to our{" "}
             <Link
               to="/privacy"
               className="underline underline-offset-2 hover:text-black/85 dark:hover:text-white/90"
@@ -288,11 +289,11 @@ export default function Terms() {
 
         <Section title="Governing law and disputes" anchor="law">
           <p>
-            These Terms are governed by the laws of the State of Delaware,
+            These Terms are governed by the laws of the State of Utah,
             USA, without regard to conflict-of-laws principles. Any dispute
             arising from these Terms or LYKN will be resolved in the state
-            or federal courts located in Delaware, and you and LYKN consent
-            to personal jurisdiction there.
+            or federal courts located in Salt Lake County, Utah, and you and
+            LYKN consent to personal jurisdiction there.
           </p>
           <p className="mt-3">
             If you're a consumer in the EU/UK, this clause does not deprive
