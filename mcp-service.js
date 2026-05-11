@@ -180,7 +180,7 @@ export async function listMcpTokens(supabaseAdmin, userId) {
   if (!supabaseAdmin || !userId) return [];
   const { data, error } = await supabaseAdmin
     .from('lykn_mcp_tokens')
-    .select('id, label, client_kind, token_prefix, scopes, status, last_used_at, last_used_client, last_used_tool, use_count, revoked_at, created_at')
+    .select('id, label, client_kind, token_prefix, scopes, status, last_used_at, last_used_client, last_used_tool, use_count, revoked_at, created_at, oauth_client_id, expires_at')
     .eq('user_id', userId)
     .order('created_at', { ascending: false })
     .limit(100);

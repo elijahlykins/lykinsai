@@ -17,6 +17,8 @@ import {
   Loader2,
   ShieldAlert,
   Sparkles,
+  ArrowRight,
+  Circle,
 } from "lucide-react";
 import {
   buildClaudeDesktopSnippet,
@@ -208,7 +210,19 @@ export default function UseLyknWithDialog({ open, onOpenChange, target, onMinted
 
         {/* ── OAuth-MCP path: no token mint, just URL + steps ────────── */}
         {installType === "oauth-mcp" && (
-          <OauthMcpSection target={target} mcpUrl={mcpUrl} />
+          <OauthMcpSection
+            target={target}
+            mcpUrl={mcpUrl}
+            onConnected={(tok) => {
+              // Reuse the same refresh hook PAT mint uses. The Connected
+              // Clients table below the dialog will repaint immediately
+              // and show ChatGPT's new bearer.
+              const cb = onMintedRef.current;
+              if (typeof cb === "function") {
+                try { cb(tok); } catch { /* swallow */ }
+              }
+            }}
+          />
         )}
 
         {/* ── Token issue state ──────────────────────────── */}
@@ -745,90 +759,263 @@ function ProjectInstructionsSection({ target, snippet, copied, onCopy }) {
 }
 
 /**
- * OauthMcpSection — install path for clients that speak BOTH MCP and
- * OAuth (ChatGPT Connectors today; native ChatGPT MCP later; Cursor's
- * MCP-OAuth flow eventually).
+ * OauthMcpSection — guided "press Connect, follow the steps" UX for
+ * clients that speak both MCP and OAuth (ChatGPT Connectors today).
  *
- * The user's only job is to paste LYKN's MCP base URL into the client's
- * Add-Connector flow. The client then:
- *   1. GETs /.well-known/oauth-authorization-server (auto-discovery)
- *   2. POSTs /oauth/register (Dynamic Client Registration)
- *   3. Pops up /oauth/authorize → user approves at /oauth/consent
- *   4. POSTs /oauth/token, gets a bearer, starts hitting /mcp
+ * What the user actually does:
+ *   1. Click "Connect ChatGPT". We copy LYKN's MCP URL into their
+ *      clipboard AND open chatgpt.com in a new tab in one gesture.
+ *   2. In ChatGPT they paste the URL into Settings → Connectors.
+ *   3. ChatGPT auto-discovers our OAuth provider, registers itself,
+ *      and pops a consent screen at lykn.io/oauth/consent.
+ *   4. They approve. Done.
  *
- * No token paste, no JSON snippet, no CLI command. The OAuth flow IS
- * the install. That's why this dialog skips the PAT mint entirely
- * for installType="oauth-mcp" — it would just produce orphan tokens.
+ * What we do for them:
+ *   - Auto-copy + auto-open on a single button press (no two-step).
+ *   - Live polling against /api/v1/synthesis/tokens watching for a new
+ *     ChatGPT-tagged OAuth token to appear in their account, so the
+ *     UI flips to a clear "Connected!" state without them refreshing.
+ *   - The PAT mint is intentionally skipped (installType==="oauth-mcp")
+ *     so a user who closes the dialog mid-flow doesn't leave behind
+ *     orphan personal-access tokens.
  */
-function OauthMcpSection({ target, mcpUrl }) {
-  const [copied, setCopied] = useState(false);
-  const handleCopy = useCallback(async () => {
+function OauthMcpSection({ target, mcpUrl, onConnected }) {
+  // Step machine: 0 = "click Connect", 1 = "in ChatGPT, paste & approve",
+  // 2 = "we detected it" (terminal). The polling loop advances 1 → 2 the
+  // moment it sees a new chatgpt-tagged active token in the user's list.
+  const [step, setStep] = useState(0);
+  const [copyJustWorked, setCopyJustWorked] = useState(false);
+
+  // Snapshot of OAuth-issued ChatGPT tokens that already existed BEFORE
+  // the user pressed Connect, so we can detect the diff (= new token from
+  // this connect attempt). Without the baseline we'd flash "Connected!"
+  // immediately if they'd ever connected ChatGPT before.
+  const baselineRef = useRef(null);
+  const [pollingError, setPollingError] = useState(null);
+
+  // ── Establish the baseline as soon as the user is on this section ──
+  // This runs once per dialog-open. We don't poll yet; we poll once they
+  // click the primary button (state moves to step >= 1).
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await authedFetch("/api/v1/synthesis/tokens");
+        const data = await res.json();
+        if (cancelled) return;
+        if (res.ok && Array.isArray(data?.tokens)) {
+          baselineRef.current = new Set(
+            data.tokens
+              .filter((t) => isOauthChatgptToken(t))
+              .map((t) => t.id),
+          );
+        } else {
+          baselineRef.current = new Set();
+        }
+      } catch {
+        if (!cancelled) baselineRef.current = new Set();
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // ── Poll for a new ChatGPT OAuth token ────────────────────────────
+  // Only runs while the user is mid-flow (step 1). 3s cadence is a tight
+  // enough loop that the "Connected!" flip feels instant after they hit
+  // Approve, and loose enough that a stuck dialog doesn't hammer the
+  // backend (≤20 req/min).
+  useEffect(() => {
+    if (step !== 1) return undefined;
+    let cancelled = false;
+    let timer;
+    const tick = async () => {
+      try {
+        const res = await authedFetch("/api/v1/synthesis/tokens");
+        const data = await res.json();
+        if (cancelled) return;
+        if (res.ok && Array.isArray(data?.tokens)) {
+          const baseline = baselineRef.current || new Set();
+          const fresh = data.tokens.find(
+            (t) => isOauthChatgptToken(t) && !baseline.has(t.id),
+          );
+          if (fresh) {
+            setStep(2);
+            if (typeof onConnected === "function") {
+              try { onConnected(fresh); } catch { /* swallow */ }
+            }
+            return; // stop scheduling
+          }
+        }
+        timer = setTimeout(tick, 3000);
+      } catch (err) {
+        if (cancelled) return;
+        setPollingError(err?.message || "Couldn't check for connection.");
+        timer = setTimeout(tick, 6000); // back off on error
+      }
+    };
+    timer = setTimeout(tick, 2000); // first check after 2s
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+  }, [step, onConnected]);
+
+  const handleConnect = useCallback(async () => {
+    // Copy first (synchronous user-gesture path is most reliable for
+    // clipboard permissions), then open the new tab. If the copy fails
+    // we still open ChatGPT — the user can right-click the URL field.
+    let copyOk = false;
     try {
       await navigator.clipboard.writeText(mcpUrl);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      copyOk = true;
     } catch {
-      toast({ title: "Copy failed", description: "Select the URL manually.", variant: "destructive" });
+      copyOk = false;
     }
+    setCopyJustWorked(copyOk);
+    if (!copyOk) {
+      toast({
+        title: "Couldn't copy automatically",
+        description: "Use the Copy URL button below before pasting in ChatGPT.",
+        variant: "destructive",
+      });
+    }
+    window.open("https://chatgpt.com/", "_blank", "noopener,noreferrer");
+    setStep((s) => (s < 1 ? 1 : s));
+    setTimeout(() => setCopyJustWorked(false), 4000);
   }, [mcpUrl]);
 
   return (
     <div className="space-y-3">
-      <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/[0.04] dark:bg-emerald-500/[0.06] p-3 space-y-2">
-        <div className="flex items-center gap-1.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-300">
-          <CheckCircle2 className="h-3 w-3" />
-          No token to copy — {target.name} signs you in via OAuth
-        </div>
-        <p className="text-[12px] leading-relaxed text-black/65 dark:text-white/70">
-          When {target.name} hits LYKN it auto-discovers our OAuth provider,
-          registers itself, and pops up a consent screen. Approve once and
-          you're done — no manual config, no PAT to leak.
-        </p>
-      </div>
-
-      <div>
-        <SectionTitle>LYKN's MCP URL</SectionTitle>
-        <div className="mt-1.5 flex items-center gap-2">
-          <code className="flex-1 min-w-0 truncate rounded-md bg-white dark:bg-zinc-900 px-2 py-1.5 text-[11.5px] font-mono text-black/85 dark:text-white/85 border border-black/[0.06] dark:border-white/[0.08]">
-            {mcpUrl}
-          </code>
+      {/* ── Hero: single primary action ─────────────────────────── */}
+      {step < 2 && (
+        <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/[0.04] dark:bg-emerald-500/[0.06] p-3 space-y-2.5">
+          <div className="text-[12px] leading-relaxed text-black/70 dark:text-white/75">
+            One button copies LYKN's MCP URL and opens ChatGPT for you.
+            From there it's three clicks: <strong>Settings → Connectors → Add</strong>,
+            then paste and approve. We'll detect when it's hooked up.
+          </div>
           <button
             type="button"
-            onClick={handleCopy}
-            className="inline-flex items-center gap-1 rounded-md border border-black/15 dark:border-white/20 bg-white dark:bg-zinc-900 px-2 py-1.5 text-[11px] font-medium text-black/85 dark:text-white/90 hover:bg-black/[0.03] dark:hover:bg-white/[0.06] transition-colors"
+            onClick={handleConnect}
+            className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 hover:bg-emerald-600/90 dark:bg-emerald-500 dark:hover:bg-emerald-500/90 text-white px-4 py-2.5 text-[13px] font-semibold transition-colors"
           >
-            {copied ? (
+            {copyJustWorked ? (
               <>
-                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
-                Copied
+                <CheckCircle2 className="h-4 w-4" />
+                URL copied — finish in ChatGPT
+                <ArrowRight className="h-4 w-4" />
               </>
             ) : (
               <>
-                <Copy className="h-3.5 w-3.5" />
-                Copy URL
+                Connect ChatGPT <ArrowRight className="h-4 w-4" />
               </>
             )}
           </button>
         </div>
-      </div>
+      )}
 
-      <div>
-        <SectionTitle>Install in {target.name}</SectionTitle>
-        <ol className="mt-1.5 list-decimal pl-5 space-y-1 text-[11.5px] text-black/65 dark:text-white/70 leading-relaxed marker:text-black/40 dark:marker:text-white/40">
-          <li>Open ChatGPT → click your avatar → <strong>Settings</strong>.</li>
-          <li>Pick <strong>Connectors</strong> in the left rail.</li>
-          <li>Click <strong>Add connector</strong> → choose <strong>MCP server</strong>.</li>
-          <li>Paste the URL above and click <strong>Add</strong>.</li>
-          <li>
-            ChatGPT pops up a LYKN sign-in / consent screen — approve it and the
-            11 LYKN tools are available in any new chat.
-          </li>
-        </ol>
-        <p className="mt-2 text-[10.5px] text-black/45 dark:text-white/45 leading-relaxed">
-          Connectors require ChatGPT Pro, Team, or Enterprise. Free accounts
-          can still use the personal-access-token paths above.
-        </p>
-      </div>
+      {/* ── Success state ─────────────────────────────────────────── */}
+      {step === 2 && (
+        <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 dark:bg-emerald-500/15 p-3 space-y-2">
+          <div className="flex items-center gap-2 text-[13px] font-semibold text-emerald-700 dark:text-emerald-300">
+            <CheckCircle2 className="h-4 w-4" />
+            ChatGPT is connected to LYKN
+          </div>
+          <p className="text-[12px] leading-relaxed text-black/70 dark:text-white/75">
+            Open a new chat in ChatGPT and try a prompt like{" "}
+            <em>"Use my LYKN context — what beliefs do you have about me?"</em>{" "}
+            ChatGPT will call your synthesis layer directly.
+          </p>
+          <p className="text-[10.5px] text-black/45 dark:text-white/45 leading-relaxed">
+            You can revoke ChatGPT's access any time from <strong>Connected Clients</strong> below.
+          </p>
+        </div>
+      )}
+
+      {/* ── Stepper checklist ─────────────────────────────────────── */}
+      <ol className="space-y-2">
+        <StepRow
+          n={1}
+          done={step >= 1}
+          active={step === 0}
+          title={
+            step >= 1
+              ? "URL copied + ChatGPT opened in a new tab"
+              : "Press Connect — we'll copy the URL and open ChatGPT"
+          }
+        />
+        <StepRow
+          n={2}
+          done={step >= 2}
+          active={step === 1}
+          title="In ChatGPT: Settings → Connectors → Add → MCP server → paste → Add"
+          subtitle={
+            step === 1 ? (
+              <span className="text-emerald-700 dark:text-emerald-400">
+                ChatGPT will pop up a LYKN consent screen — click Approve.
+              </span>
+            ) : undefined
+          }
+        />
+        <StepRow
+          n={3}
+          done={step >= 2}
+          active={step === 1}
+          title={
+            step === 2
+              ? "LYKN detected the connection — you're done"
+              : "We'll auto-detect the connection here"
+          }
+          subtitle={
+            step === 1 ? (
+              <span className="inline-flex items-center gap-1.5 text-black/55 dark:text-white/55">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                Waiting for ChatGPT to finish the OAuth handshake…
+              </span>
+            ) : undefined
+          }
+        />
+      </ol>
+
+      {/* ── Manual URL fallback (collapsed) ───────────────────────── */}
+      <details className="rounded-xl border border-black/[0.06] dark:border-white/10 bg-black/[0.02] dark:bg-white/[0.04] px-3 py-2">
+        <summary className="cursor-pointer list-none text-[11px] font-medium text-black/65 dark:text-white/70 hover:text-black/90 dark:hover:text-white select-none">
+          Need the URL by itself? (or copy didn't work)
+        </summary>
+        <div className="mt-2 space-y-1.5">
+          <div className="flex items-center gap-2">
+            <code className="flex-1 min-w-0 truncate rounded-md bg-white dark:bg-zinc-900 px-2 py-1.5 text-[11.5px] font-mono text-black/85 dark:text-white/85 border border-black/[0.06] dark:border-white/[0.08]">
+              {mcpUrl}
+            </code>
+            <CopyButton
+              copied={copyJustWorked}
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(mcpUrl);
+                  setCopyJustWorked(true);
+                  setTimeout(() => setCopyJustWorked(false), 2000);
+                } catch {
+                  toast({
+                    title: "Copy failed",
+                    description: "Select the URL manually.",
+                    variant: "destructive",
+                  });
+                }
+              }}
+              label="Copy URL"
+            />
+          </div>
+          <p className="text-[10.5px] text-black/55 dark:text-white/55 leading-relaxed">
+            ChatGPT Connectors require Pro, Team, or Enterprise. On Free,
+            use the Claude / Cursor cards above (personal-access tokens).
+          </p>
+        </div>
+      </details>
+
+      {/* ── Polling diagnostics + help link ───────────────────────── */}
+      {pollingError && step === 1 && (
+        <div className="text-[10.5px] text-amber-700 dark:text-amber-400">
+          Couldn't reach LYKN to check for the new connection ({pollingError}).
+          We'll keep retrying — or refresh this dialog after approving in ChatGPT.
+        </div>
+      )}
 
       {target.helpUrl && (
         <a
@@ -842,6 +1029,54 @@ function OauthMcpSection({ target, mcpUrl }) {
       )}
     </div>
   );
+}
+
+/**
+ * StepRow — one row of the stepper. Three visual states (done / active /
+ * pending) drive the icon + text emphasis. Kept as a small component so
+ * the OauthMcpSection body reads like the user's actual flow.
+ */
+function StepRow({ n, title, subtitle, done, active }) {
+  const Icon = done ? CheckCircle2 : active ? Loader2 : Circle;
+  const iconClass = done
+    ? "text-emerald-500"
+    : active
+      ? "text-emerald-500 animate-spin"
+      : "text-black/30 dark:text-white/30";
+  const titleClass = done
+    ? "text-black/55 dark:text-white/55 line-through decoration-black/30 dark:decoration-white/30"
+    : active
+      ? "text-black/85 dark:text-white/90 font-medium"
+      : "text-black/65 dark:text-white/70";
+  return (
+    <li className="flex items-start gap-2.5 text-[11.5px] leading-relaxed">
+      <Icon className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${iconClass}`} />
+      <div className="min-w-0 flex-1">
+        <div className={titleClass}>
+          <span className="text-black/35 dark:text-white/35 mr-1.5">{n}.</span>
+          {title}
+        </div>
+        {subtitle && <div className="mt-0.5 text-[11px]">{subtitle}</div>}
+      </div>
+    </li>
+  );
+}
+
+/**
+ * isOauthChatgptToken — returns true for tokens that we'd recognise as a
+ * fresh ChatGPT connection (i.e. minted via the OAuth flow with a
+ * client_kind classifier of 'chatgpt'). The expires_at carve-out is
+ * what distinguishes an OAuth-issued bearer from a long-lived PAT.
+ */
+function isOauthChatgptToken(t) {
+  if (!t) return false;
+  if (t.status !== "active") return false;
+  if (t.client_kind !== "chatgpt") return false;
+  // OAuth bearers always carry an oauth_client_id + expires_at. PATs
+  // never do — that's the signal that this token came from a real
+  // Connectors handshake, not from someone clicking the old PAT path.
+  if (!t.oauth_client_id) return false;
+  return true;
 }
 
 function OpenApiSection({ target, restBase }) {
