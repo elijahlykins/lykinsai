@@ -83,7 +83,7 @@ from lykn.io/connections.
 | **Privacy Policy URL** | `https://lykn.io/privacy` |
 | **Terms of Service URL** | `https://lykn.io/terms` |
 | **Support contact** | `support@lykn.io` |
-| **Developer / Publisher name** | `LYKN` (or your registered legal entity name) |
+| **Developer / Publisher name** | `Omnia Technologies LLC` (legal entity that operates LYKN) |
 
 ### 4. MCP server configuration
 

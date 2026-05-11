@@ -62,10 +62,10 @@ export default function Terms() {
 
         <Section title="The agreement" anchor="agreement">
           <p>
-            "LYKN" and "we" mean the LYKN service operated at lykn.io. "You"
-            means the person using LYKN under their own account. By creating
-            a LYKN account or connecting LYKN to an AI tool you agree to
-            these Terms and to our{" "}
+            "LYKN" and "we" mean the LYKN service operated at lykn.io by{" "}
+            <strong>Omnia Technologies LLC</strong>. "You" means the person
+            using LYKN under their own account. By creating a LYKN account or
+            connecting LYKN to an AI tool you agree to these Terms and to our{" "}
             <Link
               to="/privacy"
               className="underline underline-offset-2 hover:text-black/85 dark:hover:text-white/90"

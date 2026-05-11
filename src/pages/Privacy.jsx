@@ -55,6 +55,18 @@ export default function Privacy() {
             connect. This policy explains exactly what we collect, why,
             who else sees it, and how to make it disappear.
           </p>
+          <p className="mt-3 text-[12.5px] leading-relaxed text-black/55 dark:text-white/60">
+            The data controller for the purposes of GDPR and CCPA is{" "}
+            <strong>Omnia Technologies LLC</strong>, the company that operates
+            LYKN. Contact us at{" "}
+            <a
+              href="mailto:privacy@lykn.io"
+              className="underline underline-offset-2 hover:text-black/85 dark:hover:text-white/90"
+            >
+              privacy@lykn.io
+            </a>
+            .
+          </p>
         </header>
 
         <Section title="The short version" anchor="tldr">
