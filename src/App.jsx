@@ -34,6 +34,9 @@ import ShareReceiver from "./pages/ShareReceiver";
 import Connections from "./pages/Connections";
 import AdminUsage from "./pages/AdminUsage";
 import OAuthConsent from "./pages/OAuthConsent";
+import AppsChatGPT from "./pages/AppsChatGPT";
+import Privacy from "./pages/Privacy";
+import Terms from "./pages/Terms";
 import { useIsMobile } from "@/hooks/useViewportTier";
 
 
@@ -92,7 +95,10 @@ function AppShell() {
     location.pathname === "/" ||
     location.pathname === "/why" ||
     location.pathname === "/synthesis" ||
-    location.pathname === "/landing-prototype";
+    location.pathname === "/landing-prototype" ||
+    location.pathname === "/privacy" ||
+    location.pathname === "/terms" ||
+    location.pathname.startsWith("/apps/");
   const isSharedGridView = location.pathname.startsWith("/s/");
   const isSharePage = location.pathname === "/share";
 
@@ -125,6 +131,16 @@ function AppShell() {
                 own auth-gate inline so OAuth params survive the sign-in round-trip
                 (react-router's `from` doesn't preserve query strings). */}
             <Route path="/oauth/consent" element={<OAuthConsent />} />
+            {/* Public app-store landing page for the LYKN ChatGPT App.
+                Linked from the OpenAI Apps catalog listing once approved;
+                serves double duty as the marketing page for the connector
+                today. Intentionally not gated — OpenAI's reviewers visit
+                this URL during app submission. */}
+            <Route path="/apps/chatgpt" element={<AppsChatGPT />} />
+            {/* Public privacy + terms — required by ChatGPT Apps catalog
+                submission, Stripe, and consumer-protection law. */}
+            <Route path="/privacy" element={<Privacy />} />
+            <Route path="/terms" element={<Terms />} />
             <Route path="/s/:token" element={<SharedGrid />} />
             {/* The prototype landing experience IS the canonical home page —
                 visitors landing on `/` get the synthetic-intelligence
