@@ -68,16 +68,30 @@ export const OUTBOUND_TARGETS = [
     name: "Claude (web)",
     domain: "claude.ai",
     color: "#D97757",
-    installType: "oauth",
-    transport: "Remote MCP via Connectors (OAuth)",
+    installType: "oauth-mcp",
+    transport: "Streamable HTTP MCP via Connectors (OAuth)",
     summary:
-      "claude.ai in the browser. Click Connect once and Anthropic's Connectors flow links your Claude Projects to LYKN — no config files, no CLI.",
-    helpUrl: "https://docs.anthropic.com/claude/docs/connectors",
+      "claude.ai in the browser. Click Connect — we open Claude for you, you paste LYKN's MCP URL into Settings → Connectors, approve once, done. Available on Free, Pro, and Max.",
+    helpUrl: "https://claude.com/docs/connectors/custom/remote-mcp",
     helpLabel: "Claude Connectors docs",
-    available: false,
-    comingSoon: true,
+    available: true,
     tier: 1,
     direction: "bidirectional",
+    // ── Per-target metadata for the generic OauthMcpSection stepper.
+    //    Claude.ai is the easiest connector experience of the bunch
+    //    today — Free/Pro/Max plans all have the Add UI, no Developer
+    //    Mode toggle, native oauth_dcr support means our IdP just
+    //    works. The deep link straight to Settings → Connectors saves
+    //    the user a navigation step.
+    openUrl: "https://claude.ai/settings/connectors",
+    planNote:
+      "Available on Free, Pro, and Max — no special toggle. Team / Enterprise admins enable it from Admin → Connectors first; members then add via Settings.",
+    installSteps: [
+      "Open Claude → Settings → Connectors (we deep-linked you there).",
+      "Click Add custom connector.",
+      "Paste the URL above into Remote MCP server URL → Add.",
+      "Approve the LYKN consent screen when it pops — that's it.",
+    ],
   },
   {
     id: "cursor",
@@ -110,6 +124,23 @@ export const OUTBOUND_TARGETS = [
     available: true,
     tier: 1,
     direction: "bidirectional",
+    // ── Per-target metadata for the generic OauthMcpSection stepper.
+    //    `openUrl` is what we open in a new tab when the user clicks
+    //    Connect (deep link if the host has a stable settings URL,
+    //    homepage otherwise). `installSteps` is the per-target script
+    //    inside the dialog — written to match each tool's actual UI
+    //    so the user can follow it without alt-tabbing back here.
+    openUrl: "https://chatgpt.com/",
+    planNote:
+      "Custom MCP connectors require ChatGPT Pro / Team / Enterprise + Developer Mode. Free / Plus accounts can still use the personal-access-token paths above.",
+    installSteps: [
+      "Open ChatGPT → click your avatar → Settings.",
+      "Pick Apps & Connectors in the left rail.",
+      "Scroll to the bottom → Advanced settings → toggle Developer Mode on (only needed once).",
+      "Back at the top of Apps & Connectors, click Create.",
+      "Paste the URL above into MCP Server URL, set Authentication = OAuth, click Create.",
+      "Approve the LYKN consent screen when it pops — that's it.",
+    ],
   },
   {
     id: "perplexity",

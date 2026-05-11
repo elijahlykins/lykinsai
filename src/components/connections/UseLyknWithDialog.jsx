@@ -44,7 +44,9 @@ import {
  *   • cursor          → one-button deeplink that registers LYKN inside Cursor
  *   • claude-desktop  → copy-pasteable JSON snippet for claude_desktop_config.json
  *   • claude-code     → copy-pasteable `claude mcp add` CLI command
- *   • chatgpt         → placeholder (Custom GPT Action) — read-only for now
+ *   • chatgpt / claude-web → installType "oauth-mcp" — one-button OAuth
+ *                            flow handled by OauthMcpSection (no PAT mint)
+ *   • chatgpt (legacy) → placeholder (Custom GPT Action) — read-only for now
  *   • other           → just the URL + token, the user wires it up
  */
 export default function UseLyknWithDialog({ open, onOpenChange, target, onMinted }) {
@@ -87,11 +89,12 @@ export default function UseLyknWithDialog({ open, onOpenChange, target, onMinted
   }, []);
 
   // Mint a fresh token whenever the dialog opens with a target.
-  // Exception: the OAuth-MCP install path (ChatGPT Connectors) doesn't
-  // need a PAT — the OAuth flow is the proof of access — so we skip
-  // minting entirely and let the OauthMcpSection render directly off
-  // target.installType. This avoids issuing an orphan token the user
-  // never sees on their Connected Clients list.
+  // Exception: the OAuth-MCP install path (ChatGPT Connectors,
+  // Claude.ai Custom Connectors) doesn't need a PAT — the OAuth flow
+  // is the proof of access — so we skip minting entirely and let the
+  // OauthMcpSection render directly off target.installType. This
+  // avoids issuing an orphan token the user never sees on their
+  // Connected Clients list.
   useEffect(() => {
     if (!open || !targetId) {
       reset();
@@ -760,36 +763,65 @@ function ProjectInstructionsSection({ target, snippet, copied, onCopy }) {
 
 /**
  * OauthMcpSection — guided "press Connect, follow the steps" UX for
- * clients that speak both MCP and OAuth (ChatGPT Connectors today).
+ * any client that speaks both MCP and OAuth (ChatGPT Connectors and
+ * Claude.ai Custom Connectors today; Cursor MCP-OAuth eventually).
+ *
+ * Everything client-specific (the URL we open in a new tab, the
+ * step-by-step instructions, the plan-availability footnote) is read
+ * from `target` — see openUrl / installSteps / planNote on the entries
+ * in src/lib/connectors/outboundTargets.js. Adding a new OAuth-MCP
+ * target is just three fields in that catalog; this component is
+ * already generic.
  *
  * What the user actually does:
- *   1. Click "Connect ChatGPT". We copy LYKN's MCP URL into their
- *      clipboard AND open chatgpt.com in a new tab in one gesture.
- *   2. In ChatGPT they paste the URL into Settings → Connectors.
- *   3. ChatGPT auto-discovers our OAuth provider, registers itself,
- *      and pops a consent screen at lykn.io/oauth/consent.
+ *   1. Click "Connect {target.name}". We copy LYKN's MCP URL into
+ *      their clipboard AND open the target's settings page (or
+ *      homepage) in a new tab in one gesture.
+ *   2. They follow target.installSteps inside the host app.
+ *   3. The host auto-discovers our OAuth provider, registers itself
+ *      via DCR, and pops a consent screen at lykn.io/oauth/consent.
  *   4. They approve. Done.
  *
  * What we do for them:
  *   - Auto-copy + auto-open on a single button press (no two-step).
- *   - Live polling against /api/v1/synthesis/tokens watching for a new
- *     ChatGPT-tagged OAuth token to appear in their account, so the
- *     UI flips to a clear "Connected!" state without them refreshing.
+ *   - Live polling against /api/v1/synthesis/tokens watching for any
+ *     new OAuth-issued bearer to appear in their account; the moment
+ *     the diff is non-empty, we flip to "Connected!" without them
+ *     having to refresh. The match is deliberately generic (any new
+ *     `oauth_client_id` token, regardless of `client_kind`) — different
+ *     hosts name themselves differently in DCR and our classifier
+ *     can't keep up with all of them; "anything new since this dialog
+ *     opened" is the bulletproof signal.
  *   - The PAT mint is intentionally skipped (installType==="oauth-mcp")
  *     so a user who closes the dialog mid-flow doesn't leave behind
  *     orphan personal-access tokens.
  */
 function OauthMcpSection({ target, mcpUrl, onConnected }) {
-  // Step machine: 0 = "click Connect", 1 = "in ChatGPT, paste & approve",
+  // Step machine: 0 = "click Connect", 1 = "in {target}, paste & approve",
   // 2 = "we detected it" (terminal). The polling loop advances 1 → 2 the
-  // moment it sees a new chatgpt-tagged active token in the user's list.
+  // moment it sees ANY new oauth-issued bearer in the user's list (we
+  // don't filter by client_kind because DCR-registered hosts name
+  // themselves inconsistently — see comment on isOauthMcpToken).
   const [step, setStep] = useState(0);
   const [copyJustWorked, setCopyJustWorked] = useState(false);
 
-  // Snapshot of OAuth-issued ChatGPT tokens that already existed BEFORE
-  // the user pressed Connect, so we can detect the diff (= new token from
-  // this connect attempt). Without the baseline we'd flash "Connected!"
-  // immediately if they'd ever connected ChatGPT before.
+  const targetName = target?.name || "this AI tool";
+  const openUrl = target?.openUrl || `https://${target?.domain || "example.com"}/`;
+  const installSteps =
+    Array.isArray(target?.installSteps) && target.installSteps.length > 0
+      ? target.installSteps
+      : [
+          `Open ${targetName}.`,
+          "Find the connectors / MCP settings page.",
+          "Paste the URL above and approve the LYKN consent screen.",
+        ];
+  const planNote = target?.planNote || null;
+  const helpLabel = target?.helpLabel || `${targetName} connectors help`;
+
+  // Snapshot of OAuth-issued tokens that already existed BEFORE the user
+  // pressed Connect, so we can detect the diff (= new token from this
+  // connect attempt). Without the baseline we'd flash "Connected!"
+  // immediately for users who already had an OAuth client linked.
   const baselineRef = useRef(null);
   const [pollingError, setPollingError] = useState(null);
 
@@ -806,7 +838,7 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
         if (res.ok && Array.isArray(data?.tokens)) {
           baselineRef.current = new Set(
             data.tokens
-              .filter((t) => isOauthChatgptToken(t))
+              .filter((t) => isOauthMcpToken(t))
               .map((t) => t.id),
           );
         } else {
@@ -819,7 +851,7 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
     return () => { cancelled = true; };
   }, []);
 
-  // ── Poll for a new ChatGPT OAuth token ────────────────────────────
+  // ── Poll for a new OAuth-issued token ─────────────────────────────
   // Only runs while the user is mid-flow (step 1). 3s cadence is a tight
   // enough loop that the "Connected!" flip feels instant after they hit
   // Approve, and loose enough that a stuck dialog doesn't hammer the
@@ -836,7 +868,7 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
         if (res.ok && Array.isArray(data?.tokens)) {
           const baseline = baselineRef.current || new Set();
           const fresh = data.tokens.find(
-            (t) => isOauthChatgptToken(t) && !baseline.has(t.id),
+            (t) => isOauthMcpToken(t) && !baseline.has(t.id),
           );
           if (fresh) {
             setStep(2);
@@ -860,7 +892,7 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
   const handleConnect = useCallback(async () => {
     // Copy first (synchronous user-gesture path is most reliable for
     // clipboard permissions), then open the new tab. If the copy fails
-    // we still open ChatGPT — the user can right-click the URL field.
+    // we still open the host — the user can right-click the URL field.
     let copyOk = false;
     try {
       await navigator.clipboard.writeText(mcpUrl);
@@ -872,14 +904,20 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
     if (!copyOk) {
       toast({
         title: "Couldn't copy automatically",
-        description: "Use the Copy URL button below before pasting in ChatGPT.",
+        description: `Use the Copy URL button below before pasting in ${targetName}.`,
         variant: "destructive",
       });
     }
-    window.open("https://chatgpt.com/", "_blank", "noopener,noreferrer");
+    window.open(openUrl, "_blank", "noopener,noreferrer");
     setStep((s) => (s < 1 ? 1 : s));
     setTimeout(() => setCopyJustWorked(false), 4000);
-  }, [mcpUrl]);
+  }, [mcpUrl, openUrl, targetName]);
+
+  // Pull a short tagline out of installSteps[1] for the stepper's
+  // step-2 row, so users don't have to look down at the detailed list
+  // to know what they're doing right now. Falls back to a generic
+  // string if the catalog entry only has one step.
+  const stepTwoHeadline = installSteps[1] || `Configure inside ${targetName}`;
 
   return (
     <div className="space-y-3">
@@ -887,9 +925,9 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
       {step < 2 && (
         <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/[0.04] dark:bg-emerald-500/[0.06] p-3 space-y-2.5">
           <div className="text-[12px] leading-relaxed text-black/70 dark:text-white/75">
-            One button copies LYKN's MCP URL and opens ChatGPT for you.
-            From there it's three clicks: <strong>Settings → Connectors → Add</strong>,
-            then paste and approve. We'll detect when it's hooked up.
+            One button copies LYKN's MCP URL and opens {targetName} for you.
+            Follow the {installSteps.length}-step checklist below — we'll detect
+            when it's hooked up and flip this to Connected automatically.
           </div>
           <button
             type="button"
@@ -899,12 +937,12 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
             {copyJustWorked ? (
               <>
                 <CheckCircle2 className="h-4 w-4" />
-                URL copied — finish in ChatGPT
+                URL copied — finish in {targetName}
                 <ArrowRight className="h-4 w-4" />
               </>
             ) : (
               <>
-                Connect ChatGPT <ArrowRight className="h-4 w-4" />
+                Connect {targetName} <ArrowRight className="h-4 w-4" />
               </>
             )}
           </button>
@@ -916,20 +954,20 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
         <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 dark:bg-emerald-500/15 p-3 space-y-2">
           <div className="flex items-center gap-2 text-[13px] font-semibold text-emerald-700 dark:text-emerald-300">
             <CheckCircle2 className="h-4 w-4" />
-            ChatGPT is connected to LYKN
+            {targetName} is connected to LYKN
           </div>
           <p className="text-[12px] leading-relaxed text-black/70 dark:text-white/75">
-            Open a new chat in ChatGPT and try a prompt like{" "}
+            Open a new chat in {targetName} and try a prompt like{" "}
             <em>"Use my LYKN context — what beliefs do you have about me?"</em>{" "}
-            ChatGPT will call your synthesis layer directly.
+            {targetName} will call your synthesis layer directly.
           </p>
           <p className="text-[10.5px] text-black/45 dark:text-white/45 leading-relaxed">
-            You can revoke ChatGPT's access any time from <strong>Connected Clients</strong> below.
+            You can revoke {targetName}'s access any time from <strong>Connected Clients</strong> below.
           </p>
         </div>
       )}
 
-      {/* ── Stepper checklist ─────────────────────────────────────── */}
+      {/* ── High-level stepper (Press → Configure → Auto-detect) ── */}
       <ol className="space-y-2">
         <StepRow
           n={1}
@@ -937,19 +975,19 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
           active={step === 0}
           title={
             step >= 1
-              ? "URL copied + ChatGPT opened in a new tab"
-              : "Press Connect — we'll copy the URL and open ChatGPT"
+              ? `URL copied + ${targetName} opened in a new tab`
+              : `Press Connect — we'll copy the URL and open ${targetName}`
           }
         />
         <StepRow
           n={2}
           done={step >= 2}
           active={step === 1}
-          title="In ChatGPT: Settings → Connectors → Add → MCP server → paste → Add"
+          title={stepTwoHeadline}
           subtitle={
             step === 1 ? (
               <span className="text-emerald-700 dark:text-emerald-400">
-                ChatGPT will pop up a LYKN consent screen — click Approve.
+                {targetName} will pop up a LYKN consent screen — click Approve.
               </span>
             ) : undefined
           }
@@ -967,12 +1005,27 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
             step === 1 ? (
               <span className="inline-flex items-center gap-1.5 text-black/55 dark:text-white/55">
                 <Loader2 className="h-3 w-3 animate-spin" />
-                Waiting for ChatGPT to finish the OAuth handshake…
+                Waiting for {targetName} to finish the OAuth handshake…
               </span>
             ) : undefined
           }
         />
       </ol>
+
+      {/* ── Detailed per-target instructions (always visible while
+              setting up; collapses post-connect since they're done) ── */}
+      {step < 2 && installSteps.length > 1 && (
+        <div className="rounded-xl border border-black/[0.06] dark:border-white/10 bg-black/[0.02] dark:bg-white/[0.04] px-3 py-2.5">
+          <div className="text-[10.5px] font-semibold uppercase tracking-wide text-black/55 dark:text-white/55 mb-1.5">
+            Inside {targetName}
+          </div>
+          <ol className="space-y-1 text-[11.5px] leading-relaxed text-black/70 dark:text-white/80 list-decimal list-inside">
+            {installSteps.map((s, i) => (
+              <li key={i}>{s}</li>
+            ))}
+          </ol>
+        </div>
+      )}
 
       {/* ── Manual URL fallback (collapsed) ───────────────────────── */}
       <details className="rounded-xl border border-black/[0.06] dark:border-white/10 bg-black/[0.02] dark:bg-white/[0.04] px-3 py-2">
@@ -1002,10 +1055,11 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
               label="Copy URL"
             />
           </div>
-          <p className="text-[10.5px] text-black/55 dark:text-white/55 leading-relaxed">
-            ChatGPT Connectors require Pro, Team, or Enterprise. On Free,
-            use the Claude / Cursor cards above (personal-access tokens).
-          </p>
+          {planNote && (
+            <p className="text-[10.5px] text-black/55 dark:text-white/55 leading-relaxed">
+              {planNote}
+            </p>
+          )}
         </div>
       </details>
 
@@ -1013,7 +1067,7 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
       {pollingError && step === 1 && (
         <div className="text-[10.5px] text-amber-700 dark:text-amber-400">
           Couldn't reach LYKN to check for the new connection ({pollingError}).
-          We'll keep retrying — or refresh this dialog after approving in ChatGPT.
+          We'll keep retrying — or refresh this dialog after approving in {targetName}.
         </div>
       )}
 
@@ -1024,7 +1078,7 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
           rel="noreferrer"
           className="inline-flex items-center gap-1 text-[10.5px] text-black/55 dark:text-white/55 underline underline-offset-2 hover:text-black/85 dark:hover:text-white/85"
         >
-          {target.helpLabel || "ChatGPT Connectors help"} <ExternalLink className="h-3 w-3" />
+          {helpLabel} <ExternalLink className="h-3 w-3" />
         </a>
       )}
     </div>
@@ -1063,18 +1117,30 @@ function StepRow({ n, title, subtitle, done, active }) {
 }
 
 /**
- * isOauthChatgptToken — returns true for tokens that we'd recognise as a
- * fresh ChatGPT connection (i.e. minted via the OAuth flow with a
- * client_kind classifier of 'chatgpt'). The expires_at carve-out is
- * what distinguishes an OAuth-issued bearer from a long-lived PAT.
+ * isOauthMcpToken — returns true for any active token that was minted
+ * via the OAuth flow (as opposed to a long-lived PAT). We deliberately
+ * do NOT filter by `client_kind` here:
+ *
+ *   - ChatGPT registers itself via DCR with names like "ChatGPT
+ *     Connector", which our classifier maps to client_kind='chatgpt'.
+ *   - Claude.ai registers via DCR with names that may or may not
+ *     contain the word "claude" — the classifier sometimes drops it
+ *     into 'claude-desktop' or 'other'.
+ *   - Cursor / future hosts will look different again.
+ *
+ * Combined with the per-dialog `baselineRef` (which captures the set
+ * of OAuth tokens that existed *before* the user clicked Connect),
+ * "any new oauth_client_id-bearing token in the user's account" is the
+ * cleanest, most future-proof signal that the handshake we're watching
+ * for has just completed. The dialog already knows which target the
+ * user is trying to connect — we don't need the token to confirm it.
  */
-function isOauthChatgptToken(t) {
+function isOauthMcpToken(t) {
   if (!t) return false;
   if (t.status !== "active") return false;
-  if (t.client_kind !== "chatgpt") return false;
   // OAuth bearers always carry an oauth_client_id + expires_at. PATs
   // never do — that's the signal that this token came from a real
-  // Connectors handshake, not from someone clicking the old PAT path.
+  // OAuth handshake, not from someone clicking the legacy PAT path.
   if (!t.oauth_client_id) return false;
   return true;
 }

@@ -885,7 +885,10 @@ async function handleAuthorizationCodeGrant({
   const expiresAt = new Date(Date.now() + ACCESS_TOKEN_TTL_SEC * 1000);
   const mintRes = await createMcpToken(supabaseAdmin, codeRow.user_id, {
     label: client.client_name || 'OAuth client',
-    clientKind: classifyClientKind(client.client_name),
+    clientKind: classifyClientKind({
+      name: client.client_name,
+      redirect_uris: client.redirect_uris,
+    }),
     scopes: internalScopes,
     oauthClientId: client.client_id,
     oauthConsentId: consent.id,
@@ -982,7 +985,10 @@ async function handleRefreshTokenGrant({ req, res, body, client, supabaseAdmin }
   const expiresAt = new Date(Date.now() + ACCESS_TOKEN_TTL_SEC * 1000);
   const mintRes = await createMcpToken(supabaseAdmin, refreshRow.user_id, {
     label: client.client_name || 'OAuth client',
-    clientKind: classifyClientKind(client.client_name),
+    clientKind: classifyClientKind({
+      name: client.client_name,
+      redirect_uris: client.redirect_uris,
+    }),
     scopes: internalScopes,
     oauthClientId: client.client_id,
     oauthConsentId: consent.id,
@@ -1269,13 +1275,37 @@ function scopeToOauth(internalScope) {
 }
 
 // Best-effort kind classification so the Connections "Connected clients"
-// table shows a sensible icon. We pattern-match on client_name because
-// DCR doesn't give us a stable identifier — every ChatGPT instance is
-// a fresh client_id.
-function classifyClientKind(name) {
+// table shows the right icon and the OauthMcpSection polling can route
+// post-connect telemetry. DCR doesn't give us a stable identifier —
+// every ChatGPT / Claude.ai instance is a fresh client_id — so we
+// fingerprint on:
+//   1. redirect_uris (most reliable: Claude.ai sends users to
+//      claude.ai/api/mcp/auth_callback; ChatGPT to chatgpt.com)
+//   2. client_name (fallback for anything bespoke)
+//
+// Pass either a string (legacy single-arg callers) or
+// { name, redirect_uris } for the redirect-aware path.
+function classifyClientKind(input) {
+  // Back-compat: callers that pass a bare string only get the
+  // name-based path. Internal callers should pass the object form.
+  const name = typeof input === 'string' ? input : input?.name;
+  const redirectUris = typeof input === 'string' ? [] : (input?.redirect_uris || []);
+
+  // ── Redirect-URI fingerprint (highest confidence) ─────────────────
+  for (const uri of redirectUris) {
+    let host = '';
+    try { host = new URL(uri).hostname.toLowerCase(); } catch { continue; }
+    if (host === 'claude.ai' || host.endsWith('.claude.ai')) return 'claude-web';
+    if (host === 'chatgpt.com' || host.endsWith('.chatgpt.com')) return 'chatgpt';
+    if (host === 'openai.com' || host.endsWith('.openai.com')) return 'chatgpt';
+    if (host === 'cursor.com' || host.endsWith('.cursor.com')) return 'cursor';
+  }
+
+  // ── client_name fallback ──────────────────────────────────────────
   const n = String(name || '').toLowerCase();
   if (n.includes('chatgpt') || n.includes('openai')) return 'chatgpt';
   if (n.includes('claude') && n.includes('code')) return 'claude-code';
+  if (n.includes('claude.ai') || n.includes('claude-web')) return 'claude-web';
   if (n.includes('claude')) return 'claude-desktop';
   if (n.includes('cursor')) return 'cursor';
   return 'other';
