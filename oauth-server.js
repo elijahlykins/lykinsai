@@ -166,10 +166,26 @@ export function mountOauthServer(app, deps) {
   //   • The client_id alone grants nothing; the user still has to
   //     log in and approve at /oauth/authorize.
   app.post('/oauth/register', oauthBodyParser, async (req, res) => {
+    // Capture caller fingerprint up front so every rejection path can log
+    // a consistent line. Perplexity (and any other DCR client) only
+    // surfaces "no client_id returned" — it never tells the user which
+    // validation we tripped. Without these logs the failure is opaque.
+    const reqUA = String(req.headers['user-agent'] || '').slice(0, 200);
+    const reqIp = req.ip || '';
+    const safeBodyForLog = redactDcrBodyForLog(req.body);
+    const logReject = (status, errCode, desc) => {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[oauth/register] reject ${status} ${errCode}: ${desc} ` +
+          `ip=${reqIp} ua="${reqUA}" body=${JSON.stringify(safeBodyForLog)}`,
+      );
+    };
+
     try {
       // Rate limit by client IP. Express puts the resolved IP in req.ip
       // when trust-proxy is set on the app (server.js does that).
       if (!checkRegisterRateLimit(req.ip)) {
+        logReject(429, 'too_many_requests', 'per-IP DCR cap hit');
         return res.status(429).json({
           error: 'too_many_requests',
           error_description: 'Registration rate limit exceeded — try again in an hour.',
@@ -177,6 +193,7 @@ export function mountOauthServer(app, deps) {
       }
 
       if (!supabaseAdmin) {
+        logReject(503, 'temporarily_unavailable', 'supabaseAdmin not configured');
         return res.status(503).json({
           error: 'temporarily_unavailable',
           error_description: 'OAuth provider not configured on the server.',
@@ -189,6 +206,7 @@ export function mountOauthServer(app, deps) {
       const redirectUris = Array.isArray(body.redirect_uris) ? body.redirect_uris : [];
       const redirectErr = validateRedirectUris(redirectUris);
       if (redirectErr) {
+        logReject(400, 'invalid_redirect_uri', redirectErr);
         return res.status(400).json({ error: 'invalid_redirect_uri', error_description: redirectErr });
       }
 
@@ -215,6 +233,7 @@ export function mountOauthServer(app, deps) {
       // authorization_code grant is required to start a flow; refresh
       // is optional but ALL major clients ask for it.
       if (!grantTypes.includes('authorization_code')) {
+        logReject(400, 'invalid_client_metadata', 'authorization_code grant missing');
         return res.status(400).json({
           error: 'invalid_client_metadata',
           error_description: 'authorization_code grant is required.',
@@ -266,9 +285,21 @@ export function mountOauthServer(app, deps) {
         .select('client_id, created_at')
         .single();
       if (error) {
-        console.error('[oauth/register] insert failed:', error.message);
+        console.error(
+          `[oauth/register] insert failed: ${error.message} ` +
+            `ip=${reqIp} ua="${reqUA}" body=${JSON.stringify(safeBodyForLog)}`,
+        );
         return res.status(500).json({ error: 'server_error', error_description: 'Could not register client.' });
       }
+
+      // Success — surface a single line per registered client so we can
+      // correlate later /authorize / /token failures back to a DCR row.
+      // eslint-disable-next-line no-console
+      console.log(
+        `[oauth/register] ok client_id=${data.client_id} name="${clientName}" ` +
+          `auth=${tokenEndpointAuthMethod} scope="${scope}" ` +
+          `redirects=${JSON.stringify(redirectUris)} ip=${reqIp} ua="${reqUA}"`,
+      );
 
       // RFC 7591 §3.2.1 response. `client_secret_expires_at: 0` means
       // never expires (we don't rotate secrets in v1). `client_id_issued_at`
@@ -1363,6 +1394,40 @@ function classifyClientKind(input) {
   if (n.includes('zapier')) return 'zapier';
   if (n.includes('grok') || n.includes('xai')) return 'grok';
   return 'other';
+}
+
+// Pull a compact, log-safe snapshot of an incoming DCR body. Keeps the
+// fields we need for debugging client failures (Perplexity et al. only
+// surface "no client_id returned"; the only way to see WHY we said no
+// is to log what they sent), drops anything secret-shaped so we don't
+// leak credentials into the application log.
+function redactDcrBodyForLog(body) {
+  if (!body || typeof body !== 'object') return {};
+  const safe = {};
+  const KEEP = [
+    'client_name',
+    'client_uri',
+    'logo_uri',
+    'tos_uri',
+    'policy_uri',
+    'software_id',
+    'software_version',
+    'redirect_uris',
+    'grant_types',
+    'response_types',
+    'token_endpoint_auth_method',
+    'scope',
+    'application_type',
+    'subject_type',
+    'contacts',
+  ];
+  for (const k of KEEP) {
+    if (body[k] !== undefined) safe[k] = body[k];
+  }
+  // Surface the full set of incoming keys so we can spot weird ones
+  // (e.g. an extra `actor` field) without dumping their values.
+  safe._unknown_keys = Object.keys(body).filter((k) => !KEEP.includes(k));
+  return safe;
 }
 
 function sanitizeText(s, maxLen) {
