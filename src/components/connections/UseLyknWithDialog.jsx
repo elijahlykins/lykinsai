@@ -40,12 +40,18 @@ import {
  *
  * Per-client install paths (all driven by OauthMcpSection — NO PAT
  * minting on the modern paths, just OAuth handshakes):
- *   • cursor          → cursor:// deeplink, in-app install dialog,  OAuth
- *   • claude-web      → claude.ai `?modal=add-custom-connector` deep link
- *   • claude-desktop  → same claude.ai deep link (Anthropic auto-syncs
- *                       custom connectors to the Desktop app)
+ *   • cursor          → cursor:// deeplink, in-app install dialog, OAuth
+ *   • claude          → claude.ai `?modal=add-custom-connector` deep link.
+ *                       ONE click covers Claude web, Desktop, mobile, and
+ *                       Cowork — Anthropic shares the connector list
+ *                       across every Claude surface signed into the same
+ *                       account, so we collapsed the old separate
+ *                       claude-web / claude-desktop cards into this.
  *   • claude-code     → copy `claude mcp add … --transport http` command
- *                       to clipboard; OAuth handshake fires on first run
+ *                       to clipboard; OAuth handshake fires on first run.
+ *                       Separate from `claude` because the CLI has its
+ *                       own MCP registry independent of the user's
+ *                       claude.ai connector list.
  *   • chatgpt         → guided open-tab + paste-URL flow (no deep link)
  *   • other           → raw URL + minted PAT — the legacy escape hatch
  */
@@ -557,8 +563,9 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
     //    query string that opens claude.ai with the Add Custom
     //    Connector dialog already populated. New tab (not same-tab)
     //    so users don't lose LYKN, and no clipboard step needed —
-    //    the URL is in the deep link itself. Used by both claude-web
-    //    AND claude-desktop (Desktop auto-syncs from claude.ai).
+    //    the URL is in the deep link itself. ONE click via this path
+    //    covers every Claude surface (web / Desktop / mobile / Cowork)
+    //    because Anthropic shares the connector list across them.
     if (connectMode === "claude-prefill") {
       const deeplink = buildClaudeWebOauthDeeplink({ mcpUrl });
       window.open(deeplink, "_blank", "noopener,noreferrer");

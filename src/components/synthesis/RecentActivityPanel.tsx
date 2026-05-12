@@ -135,7 +135,9 @@ const TYPE_THEME: Record<
 // Friendlier display names for the by_client field. Anything not in
 // the map renders verbatim (truncated) so unknown clients still show up.
 const CLIENT_LABEL: Record<string, string> = {
+  claude: "Claude",
   "claude-desktop": "Claude Desktop",
+  "claude-web": "Claude (web)",
   "claude-code": "Claude Code",
   cursor: "Cursor",
   "lykn-chat": "LYKN",

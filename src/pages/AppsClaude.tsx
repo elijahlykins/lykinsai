@@ -13,9 +13,9 @@
 //
 //   2. CONVERSION SURFACE for users landing here from search, the
 //      eventual directory listing, or our own marketing. The primary
-//      CTA points at /connections#claude-web today (the working
-//      paste-the-URL flow), and flips to the directory deep-link
-//      once Anthropic approves us.
+//      CTA points at /connections#claude today (the one-click
+//      prefill-modal flow that covers web / Desktop / mobile / Cowork),
+//      and flips to the directory deep-link once Anthropic approves us.
 //
 // Visual idiom mirrors AppsChatGPT.tsx exactly so the two read as a
 // matched set — same hero shape, same animation primitives, same
@@ -195,7 +195,7 @@ export default function AppsClaude() {
       }
     : {
         label: "Connect Claude to LYKN",
-        href: "/connections#claude-web",
+        href: "/connections#claude",
         external: false as const,
       };
 
@@ -553,7 +553,7 @@ export default function AppsClaude() {
                     auto-syncs to Desktop, mobile, Cowork, and Claude Code.
                   </p>
                   <Link
-                    to="/connections#claude-web"
+                    to="/connections#claude"
                     className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#C5654A] hover:bg-[#B85841] dark:bg-[#D97757] dark:hover:bg-[#C5654A] text-white px-4 py-2 text-[12.5px] font-semibold transition-colors w-full"
                   >
                     Open Connections

@@ -396,9 +396,14 @@ function toneClass(tone) {
 
 function clientKindLabel(kind) {
   switch (kind) {
+    // Merged "claude" target covers web / Desktop / mobile / Cowork —
+    // the older "claude-desktop" / "claude-web" kinds may still show up
+    // on legacy tokens issued before the merge, so keep them aliased
+    // here so the Connected Clients list renders them readably.
+    case "claude":          return "Claude";
     case "claude-desktop":  return "Claude Desktop";
-    case "claude-code":     return "Claude Code";
     case "claude-web":      return "Claude (web)";
+    case "claude-code":     return "Claude Code";
     case "cursor":          return "Cursor";
     case "chatgpt":         return "ChatGPT";
     case "perplexity":      return "Perplexity";

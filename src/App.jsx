@@ -142,7 +142,7 @@ function AppShell() {
             {/* Sister page for the Anthropic Connectors Directory listing.
                 Same dual purpose: directory submission gate + marketing
                 page that the existing Connect button already deep-links
-                to via /connections#claude-web. Anthropic's reviewers
+                to via /connections#claude. Anthropic's reviewers
                 visit this URL during directory review. */}
             <Route path="/apps/claude" element={<AppsClaude />} />
             {/* Public privacy + terms — required by ChatGPT Apps catalog,

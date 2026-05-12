@@ -238,7 +238,7 @@ export default function Onboarding() {
             id="claude"
             name="Claude"
             domain="claude.ai"
-            tagline="One click opens Claude with the Add Custom Connector dialog already filled in. Hit Add, Approve."
+            tagline="One click opens Claude with the Add Connector dialog pre-filled. Hit Add, Approve — covers web, Desktop, mobile, and Cowork."
             badge="1-click"
             connected={connected.has("claude")}
             pending={pending === "claude" && !connected.has("claude")}
@@ -249,8 +249,9 @@ export default function Onboarding() {
             onCopyUrl={handleCopyUrl}
             secondaryNote={
               <>
-                Available on Free, Pro, and Max — the connection auto-syncs
-                to Claude Desktop, mobile, and Claude Code with no extra setup.
+                Available on Free, Pro, and Max. One approval syncs LYKN to
+                every Claude surface signed into your account — Desktop, mobile,
+                Cowork, and Claude Code all pick it up automatically.
               </>
             }
           />
@@ -439,6 +440,9 @@ function mapClientKindToSlot(kind) {
   switch (kind) {
     case "cursor":
       return "cursor";
+    // All Claude surfaces (the new merged "claude" kind plus legacy
+    // tokens from before the merge) route into the single Claude slot.
+    case "claude":
     case "claude-web":
     case "claude-desktop":
     case "claude-code":

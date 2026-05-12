@@ -31,39 +31,6 @@
 export const OUTBOUND_TARGETS = [
   // ─── Tier 1 — launch lineup ───────────────────────────────────────
   {
-    id: "claude-desktop",
-    clientKind: "claude-desktop",
-    name: "Claude Desktop",
-    domain: "claude.ai",
-    color: "#D97757",
-    installType: "oauth-mcp",
-    transport: "Streamable HTTP MCP via Connectors (OAuth)",
-    summary:
-      "Anthropic's desktop app. Custom connectors added on claude.ai auto-sync to Desktop instantly — so this card fires the same one-click prefill flow as Claude (web). Approve once, LYKN shows up in Desktop with zero extra setup.",
-    helpUrl: "https://claude.com/docs/connectors/custom/remote-mcp",
-    helpLabel: "Claude Connectors docs",
-    available: true,
-    tier: 1,
-    direction: "bidirectional",
-    // ── Claude Desktop pulls its custom-connector list from the user's
-    //    claude.ai account, so installing it is literally "install it on
-    //    claude.ai and it shows up in Desktop." We reuse the exact same
-    //    prefill deep link as claude-web — opens claude.ai with the Add
-    //    Custom Connector modal populated, user clicks Add, approves
-    //    consent, and the next time they open Desktop LYKN is there.
-    connectMode: "claude-prefill",
-    openUrl: "https://claude.ai/settings/connectors",
-    planNote:
-      "Available on Free (one custom connector), Pro, and Max. Adding the connector via claude.ai is the canonical path — Desktop pulls the list from your Anthropic account, not from a local config file.",
-    installSteps: [
-      "Press Connect Claude Desktop — we open claude.ai with the Add Custom Connector dialog already filled in.",
-      "Inside Claude: click Add.",
-      "Approve the LYKN consent screen — Desktop picks it up automatically next time it syncs.",
-    ],
-    successHint:
-      "Open Claude Desktop and check Settings → Connectors — LYKN will appear within ~10s of approving (or instantly on the next app launch). Same connection works in Claude mobile, Cowork, and Claude Code.",
-  },
-  {
     id: "claude-code",
     clientKind: "claude-code",
     name: "Claude Code",
@@ -98,15 +65,21 @@ export const OUTBOUND_TARGETS = [
       "LYKN is now registered as a Claude Code MCP server — confirm with `claude mcp list`. Run `claude` and the synthesis-layer tools are wired into your coding agent.",
   },
   {
-    id: "claude-web",
-    clientKind: "claude-web",
-    name: "Claude (web)",
+    id: "claude",
+    clientKind: "claude",
+    name: "Claude",
     domain: "claude.ai",
     color: "#D97757",
     installType: "oauth-mcp",
     transport: "Streamable HTTP MCP via Connectors (OAuth)",
+    // ── ONE card covers every Claude surface. Anthropic ties custom
+    //    connectors to the user account, not the app install — so
+    //    adding LYKN once via claude.ai's prefilled modal auto-syncs
+    //    to Claude Desktop, Claude mobile, Cowork, AND Claude Code.
+    //    The old separate web / Desktop cards just confused users
+    //    ("do I need to do both?"). One card, one click, all surfaces.
     summary:
-      "claude.ai in the browser. One click opens Claude with the Add Custom Connector dialog already filled in for LYKN — you just approve. No URL to copy, no settings to dig through. Available on Free, Pro, and Max.",
+      "Anthropic's assistant — web, Desktop, mobile, and Cowork all share the same connector list. One click opens claude.ai with the Add Custom Connector dialog already filled in for LYKN — you approve once and every Claude surface you sign into picks it up automatically. Available on Free, Pro, and Max.",
     helpUrl: "https://claude.com/docs/connectors/custom/remote-mcp",
     helpLabel: "Claude Connectors docs",
     available: true,
@@ -125,18 +98,16 @@ export const OUTBOUND_TARGETS = [
     planNote:
       "Available on Free (one custom connector), Pro, and Max — no special toggle. Team / Enterprise admins enable it from Admin → Connectors first; members then add via Settings.",
     installSteps: [
-      "Press Connect Claude — we open Claude with the Add Custom Connector dialog already filled in.",
+      "Press Connect Claude — we open claude.ai with the Add Custom Connector dialog already filled in.",
       "Inside Claude: click Add.",
       "Approve the LYKN consent screen when it pops — that's it.",
     ],
-    // Surfaced after the connection is detected. Claude Connectors
-    // sync across all of Anthropic's clients (web, Desktop, mobile,
-    // Cowork, Claude Code) — once the user adds LYKN here it shows up
-    // everywhere they use Claude with no extra config. Worth shouting
-    // about because it's a meaningful UX win over the per-app config
-    // dance Claude Desktop / Claude Code traditionally require.
+    // Surfaced after the connection is detected. The fact that ONE
+    // approval covers every Claude surface is genuinely the headline
+    // — make sure users notice they don't need to do anything in
+    // Desktop, mobile, or Cowork separately.
     successHint:
-      "This connection auto-syncs to Claude Desktop, mobile, Cowork, and Claude Code — no extra setup on any of those. We're also working with Anthropic on a one-click Directory listing so future users won't have to paste the URL at all.",
+      "This connection auto-syncs to every Claude surface — Desktop, mobile, Cowork, and Claude Code all pick it up automatically. Nothing to install on any of those. We're also working with Anthropic on a one-click Directory listing for future users.",
   },
   {
     id: "cursor",
@@ -792,11 +763,41 @@ export function buildLyknProjectInstructions() {
  * matches lykn_mcp_tokens.client_kind.
  */
 export const LYKN_PROJECT_INSTRUCTIONS_TARGETS = {
+  // Unified "claude" key — same Projects surface across web, Desktop,
+  // mobile, and Cowork (Anthropic shares the user's Project list across
+  // every Claude client). Used by the merged "claude" target.
+  claude: {
+    surfaceLabel: "Project knowledge",
+    steps: [
+      "In Claude (web, Desktop, mobile, or Cowork — any surface works), create or open a Project (sidebar → Projects → New project).",
+      "Open Project knowledge (or Custom Instructions, depending on your version).",
+      "Paste the snippet below. Save.",
+      "Start chats inside this Project — Claude will follow the contract automatically on every surface signed into the same account.",
+    ],
+    helpUrl: "https://support.anthropic.com/en/articles/9519177-using-projects-in-claude-ai",
+    helpLabel: "Claude Projects help",
+  },
+  // Legacy aliases — DCR-issued tokens may still arrive with these
+  // client_kind values (Claude's web SDK reports "claude-web", the
+  // Desktop bridge reports "claude-desktop"). Aliasing them to the
+  // same Projects flow means the dialog still shows useful steps if
+  // someone opens it from a "Connected as claude-desktop" row.
   "claude-desktop": {
     surfaceLabel: "Project knowledge",
     steps: [
-      "In Claude Desktop, create or open a Project (sidebar → Projects → New project).",
-      'Open Project knowledge (or Custom Instructions, depending on your version).',
+      "Open Claude Desktop → sidebar → Projects → New project (or open an existing one).",
+      "Open Project knowledge (or Custom Instructions, depending on your version).",
+      "Paste the snippet below. Save.",
+      "Start chats inside this Project — Claude will follow the contract automatically.",
+    ],
+    helpUrl: "https://support.anthropic.com/en/articles/9519177-using-projects-in-claude-ai",
+    helpLabel: "Claude Projects help",
+  },
+  "claude-web": {
+    surfaceLabel: "Project knowledge",
+    steps: [
+      "Open claude.ai → sidebar → Projects → New project (or open an existing one).",
+      "Open Project knowledge (or Custom Instructions, depending on your version).",
       "Paste the snippet below. Save.",
       "Start chats inside this Project — Claude will follow the contract automatically.",
     ],

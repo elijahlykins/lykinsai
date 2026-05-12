@@ -173,7 +173,9 @@ type UpdateRow =
 // --------------------------------------------------------------------------
 
 const CLIENT_LABEL: Record<string, string> = {
+  claude: "Claude",
   "claude-desktop": "Claude Desktop",
+  "claude-web": "Claude (web)",
   "claude-code": "Claude Code",
   cursor: "Cursor",
   "lykn-chat": "LYKN",
