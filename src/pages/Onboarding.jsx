@@ -53,26 +53,34 @@ import {
  *        that pre-populates Add MCP Server. Hit Test & Save, approve,
  *        done. Paid plan (Replit Core+) required.
  *
- *     5. Claude Code — CLI install. We copy `claude mcp add --transport
+ *     5. Notion AI — guided OAuth. Notion's Custom Agents support
+ *        custom MCP servers (per notion.com/help/mcp-connections-for-
+ *        custom-agents) but the form is buried inside each Agent's
+ *        Settings → Tools & Access panel — no URL to deep link to.
+ *        We open the help page + copy LYKN's URL; user pastes it per
+ *        Agent. Business / Enterprise only + workspace admin has to
+ *        first toggle Custom MCP on.
+ *
+ *     6. Claude Code — CLI install. We copy `claude mcp add --transport
  *        http --scope user lykn "<mcp-url>"` to the clipboard so the
  *        user can paste it in their terminal. Same OAuth dance fires
  *        once they run it.
  *
- *     6. Gemini CLI — CLI install. We copy `gemini mcp add --transport
+ *     7. Gemini CLI — CLI install. We copy `gemini mcp add --transport
  *        http lykn "<mcp-url>"`. Same shape as Claude Code; the
  *        gemini-cli docs confirm built-in OAuth auto-discovery on
  *        remote http MCP servers. Note: only the Gemini CLI surface
  *        supports custom MCP today — gemini.google.com / Workspace
  *        consumer have no Add Custom Connector UI.
  *
- *     7. Perplexity — guided. Open
+ *     8. Perplexity — guided. Open
  *        https://www.perplexity.ai/account/connectors and copy the URL.
  *        Paid-only (Pro / Enterprise Pro).
  *
- *     8. Grok — guided. Open https://grok.com/manage-connectors and
+ *     9. Grok — guided. Open https://grok.com/manage-connectors and
  *        copy the URL. Paid (SuperGrok / Premium).
  *
- *     9. Zapier — guided. Open https://zapier.com/app/connections (MCP
+ *    10. Zapier — guided. Open https://zapier.com/app/connections (MCP
  *        Client beta) and copy the URL.
  *
  * Connection detection: poll /api/v1/synthesis/tokens. Any new active
@@ -108,8 +116,9 @@ export default function Onboarding() {
 
   // Track which clients have connected this session. Each entry is one
   // of "cursor" | "claude" | "chatgpt" | "claude-code" | "gemini" |
-  // "replit" | "perplexity" | "grok" | "zapier"; presence in the set
-  // means we've observed an OAuth bearer attributed to that client.
+  // "replit" | "notion-ai" | "perplexity" | "grok" | "zapier";
+  // presence in the set means we've observed an OAuth bearer attributed
+  // to that client.
   const [connected, setConnected] = useState(() => new Set());
   // Which client did the user most recently CLICK? Used to choose the
   // best client_kind→logical-client mapping when a new bearer appears
@@ -139,13 +148,13 @@ export default function Onboarding() {
   }, [user]);
 
   // Poll for new OAuth-issued bearers while at least one client is
-  // pending. Stops once all 9 are connected or the user navigates
+  // pending. Stops once all 10 are connected or the user navigates
   // away. 3s cadence — tight enough to feel instant, loose enough to
   // not hammer the backend.
   useEffect(() => {
     if (!user) return undefined;
     if (!pending) return undefined;
-    if (connected.size >= 9) return undefined;
+    if (connected.size >= 10) return undefined;
     let cancelled = false;
     let timer;
     const tick = async () => {
@@ -295,6 +304,38 @@ export default function Onboarding() {
   // LYKN /mcp URL to the clipboard so the user just hits paste +
   // approve. Same OAuth dance triggers on first request from their
   // side and polls below pick it up.
+  // Notion Custom Agents have NO prefill deep link (the Add MCP server
+  // form lives inside an Agent's settings panel which has no URL of
+  // its own), so we use the same guided pattern as Perplexity / Grok /
+  // Zapier: copy LYKN's MCP URL to the clipboard, open Notion's
+  // Custom-Agents-MCP help page in a new tab. User follows the 5-step
+  // checklist on the card, ending with an OAuth approval that mints
+  // the bearer our poller is waiting for.
+  const handleNotionAi = useCallback(async () => {
+    setPending("notion-ai");
+    let copyOk = false;
+    try {
+      await navigator.clipboard.writeText(mcpUrl);
+      copyOk = true;
+    } catch {
+      copyOk = false;
+    }
+    setCopyJustWorked(copyOk);
+    setTimeout(() => setCopyJustWorked(false), 4000);
+    if (!copyOk) {
+      toast({
+        title: "Couldn't copy automatically",
+        description: "Use the copy-URL button in the card before pasting in Notion.",
+        variant: "destructive",
+      });
+    }
+    window.open(
+      "https://www.notion.com/help/mcp-connections-for-custom-agents",
+      "_blank",
+      "noopener,noreferrer",
+    );
+  }, [mcpUrl]);
+
   const handlePerplexity = useCallback(async () => {
     setPending("perplexity");
     let copyOk = false;
@@ -521,6 +562,28 @@ export default function Onboarding() {
                 Requires a paid Replit account (Core or above — same tier
                 that unlocks Replit Agent). LYKN tools then show up in
                 every Repl's Agent chat.
+              </>
+            }
+          />
+          <ConnectCard
+            id="notion-ai"
+            name="Notion AI"
+            domain="notion.so"
+            tagline="We open Notion's Custom Agents MCP docs and copy the URL. Paste it into your Agent's Tools & Access panel, approve, done."
+            badge="Guided"
+            connected={connected.has("notion-ai")}
+            pending={pending === "notion-ai" && !connected.has("notion-ai")}
+            disabled={!user}
+            onConnect={handleNotionAi}
+            urlToCopy={mcpUrl}
+            urlCopied={copyJustWorked && pending === "notion-ai"}
+            onCopyUrl={handleCopyUrl}
+            secondaryNote={
+              <>
+                Business or Enterprise workspaces only — Personal / Plus
+                don't expose Custom Agents. A workspace admin also has to
+                toggle Custom MCP on once under Settings → Notion AI →
+                AI connectors before you can add LYKN per-agent.
               </>
             }
           />
@@ -829,6 +892,8 @@ function mapClientKindToSlot(kind) {
       return "gemini";
     case "replit":
       return "replit";
+    case "notion-ai":
+      return "notion-ai";
     case "perplexity":
       return "perplexity";
     case "grok":

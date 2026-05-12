@@ -418,16 +418,48 @@ export const OUTBOUND_TARGETS = [
     name: "Notion AI",
     domain: "notion.so",
     color: "#000000",
-    installType: "oauth",
-    transport: "OAuth — Notion API",
+    installType: "oauth-mcp",
+    transport: "Streamable HTTP MCP via Notion AI Custom Agents (OAuth)",
+    // ── Notion shipped custom MCP support for AI Custom Agents in
+    //    2025/2026. Reference: notion.com/help/mcp-connections-for-
+    //    custom-agents. Path is: workspace admin enables custom MCP
+    //    under Settings → Notion AI → AI connectors (one-time, per
+    //    workspace), THEN each user can add LYKN per-agent under
+    //    Custom Agent → Settings → Tools & Access → Add connection
+    //    → Custom MCP server → paste URL + auth = OAuth → save.
+    //    No prefill deep link exists (the form lives inside a Custom
+    //    Agent's panel which has no URL of its own), so we fall back
+    //    to the guided pattern: copy LYKN's MCP URL + open Notion's
+    //    Custom Agents docs, then show the install checklist. Same
+    //    DCR-issued bearer is what we poll for, so connection
+    //    detection is identical to Perplexity / Grok / Zapier.
     summary:
-      "Docs, wikis, team workflows. Input-only: LYKN learns from the pages you let it see, then makes that knowledge available to your other AI tools.",
-    helpUrl: "https://developers.notion.com/",
-    helpLabel: "Notion API docs",
-    available: false,
-    comingSoon: true,
-    tier: 2,
-    direction: "input-only",
+      "Notion's Custom Agents — Business and Enterprise workspaces can wire LYKN into any agent. One click copies the MCP URL and opens Notion's Custom Agents docs; you paste once inside the agent's Tools & Access panel, approve, done. Agent answers + writebacks then ground in your synthesis layer.",
+    helpUrl: "https://www.notion.com/help/mcp-connections-for-custom-agents",
+    helpLabel: "Notion Custom Agents MCP help",
+    available: true,
+    tier: 1,
+    direction: "bidirectional",
+    // No connectMode set → defaults to "open-url" (copy URL + open new
+    // tab) in UseLyknWithDialog.handleConnect.
+    openUrl: "https://www.notion.com/help/mcp-connections-for-custom-agents",
+    // Plan + admin gating: surface BOTH gates up front so users on
+    // Personal / Plus / Free don't click in vain, and so members of
+    // Business+ workspaces know to ping their admin first. Notion's
+    // help doc is explicit: custom MCP servers are admin-toggled per
+    // workspace under Settings → Notion AI → AI connectors before
+    // members can add their own per-agent.
+    planNote:
+      "Requires a Notion Business or Enterprise workspace AND a workspace admin to first enable custom MCP servers under Settings → Notion AI → AI connectors. Once that's on, any member can add LYKN to their Custom Agents. Personal / Plus / Free plans don't expose Custom Agents at all.",
+    installSteps: [
+      "(One-time, admin only) In your workspace: Settings → Notion AI → AI connectors → toggle Custom MCP servers on.",
+      "Open the Custom Agent you want LYKN wired into (or create a new one).",
+      "Inside the agent: Settings → Tools & Access → Add connection → Custom MCP server.",
+      "Paste the URL above into Server URL. Set Display name = LYKN. Authentication = OAuth.",
+      "Click Save → approve the LYKN consent screen when it pops — that's it.",
+    ],
+    successHint:
+      "Each Custom Agent has its own MCP connections — adding LYKN to one agent does NOT auto-add it to the others. Repeat the Tools & Access step on any other agent you want LYKN in. Workspace admins can also gate which agents members are allowed to connect LYKN to under the AI connectors panel.",
   },
   {
     id: "fathom",
@@ -1084,6 +1116,19 @@ export const LYKN_PROJECT_INSTRUCTIONS_TARGETS = {
     ],
     helpUrl: "https://docs.replit.com/replitai/agent",
     helpLabel: "Replit Agent docs",
+  },
+  // Notion Custom Agents have per-agent instructions in their settings
+  // panel — that's the canonical place to drop a system-prompt-style
+  // contract that tells the agent how + when to reach for LYKN.
+  "notion-ai": {
+    surfaceLabel: "Custom Agent instructions",
+    steps: [
+      "Open the Custom Agent you wired LYKN into.",
+      "In its Settings → Instructions panel, paste the snippet below at the end of (or above) any existing instructions.",
+      "Save the agent — Notion AI reloads instructions on the next message.",
+    ],
+    helpUrl: "https://www.notion.com/help/guides/custom-agents",
+    helpLabel: "Notion Custom Agents help",
   },
   other: {
     surfaceLabel: "system prompt / rules surface",

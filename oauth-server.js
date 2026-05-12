@@ -1387,6 +1387,14 @@ function classifyClientKind(input) {
     // hosted MCP install link that proxies through their CDN.
     if (host === 'replit.com' || host.endsWith('.replit.com')) return 'replit';
     if (host === 'replit.app' || host.endsWith('.replit.app')) return 'replit';
+    // Notion Custom Agents use either notion.com or notion.so for the
+    // OAuth redirect (both serve the workspace; notion.com is the
+    // canonical marketing/help host, notion.so the legacy app host).
+    // Their MCP server runs at mcp.notion.com per the makenotion/
+    // notion-mcp-server repo, but that's outbound from us → them, not
+    // their callback URL. Cover both root hosts.
+    if (host === 'notion.com' || host.endsWith('.notion.com')) return 'notion-ai';
+    if (host === 'notion.so' || host.endsWith('.notion.so')) return 'notion-ai';
   }
 
   // ── client_name fallback ──────────────────────────────────────────
@@ -1407,6 +1415,7 @@ function classifyClientKind(input) {
   if (n.includes('zapier')) return 'zapier';
   if (n.includes('grok') || n.includes('xai')) return 'grok';
   if (n.includes('replit')) return 'replit';
+  if (n.includes('notion')) return 'notion-ai';
   return 'other';
 }
 

@@ -142,6 +142,7 @@ const CLIENT_LABEL: Record<string, string> = {
   cursor: "Cursor",
   gemini: "Gemini CLI",
   replit: "Replit",
+  "notion-ai": "Notion AI",
   perplexity: "Perplexity",
   grok: "Grok",
   zapier: "Zapier",
