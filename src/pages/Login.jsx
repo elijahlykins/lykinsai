@@ -49,6 +49,21 @@ function friendlyError(raw) {
   return "Something went wrong. Please try again.";
 }
 
+// 10-minute window — long enough to cover a slow email-confirmation
+// click (open the inbox tab, find the email, click the link) but
+// short enough that returning users a day later don't accidentally
+// get re-routed through onboarding. Both Supabase email signups and
+// Google-OAuth signups populate user.created_at the moment the
+// account is provisioned, so a single check covers both paths.
+const NEW_USER_WINDOW_MS = 10 * 60 * 1000;
+
+function isFreshlyCreatedUser(user) {
+  if (!user?.created_at) return false;
+  const createdMs = Date.parse(user.created_at);
+  if (!Number.isFinite(createdMs)) return false;
+  return Date.now() - createdMs < NEW_USER_WINDOW_MS;
+}
+
 export default function Login() {
   const nav = useNavigate();
   const location = useLocation();
@@ -73,9 +88,30 @@ export default function Login() {
     if (prefilledEmail) setEmail(prefilledEmail);
   }, [prefilledEmail]);
 
+  // Post-auth routing. NEW users (signup auto-confirmed OR landing
+  // here right after clicking the email-confirmation link) should hit
+  // /onboarding/connect so they actually see the AI-tool cards we
+  // built. Existing users go to `from` (default /app), preserving
+  // deep-link behavior. The "new user" signal is twofold:
+  //   1. user.created_at within the last 10 minutes — handles BOTH
+  //      email signups (auto-confirm or post-confirm sign-in) and
+  //      Google OAuth signups (where we don't run our own form code)
+  //      without needing a server migration or DB column.
+  //   2. The user manually choosing to skip / coming back to /login
+  //      after already onboarded is the existing case — created_at
+  //      is older, so they bypass onboarding.
+  // Explicit `from` (location.state?.from?.pathname set by ProtectedRoute
+  // when they tried to hit a specific deep link) ALWAYS wins. Don't
+  // hijack their intent.
   useEffect(() => {
-    if (!loading && user) nav(from, { replace: true });
-  }, [loading, nav, user, from]);
+    if (loading || !user) return;
+    const hasExplicitFrom = !!location.state?.from?.pathname;
+    if (!hasExplicitFrom && isFreshlyCreatedUser(user)) {
+      nav("/onboarding/connect", { replace: true });
+      return;
+    }
+    nav(from, { replace: true });
+  }, [loading, nav, user, from, location.state]);
 
   const displayError = friendlyError(error || authError);
 

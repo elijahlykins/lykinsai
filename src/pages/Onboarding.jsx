@@ -16,38 +16,55 @@ import { toast } from "@/components/ui/use-toast";
 import {
   buildCursorOauthDeeplink,
   buildClaudeWebOauthDeeplink,
+  buildClaudeCodeOauthInstallCommand,
 } from "@/lib/connectors/outboundTargets";
 
 /**
  * Post-signup "Connect your AI tools" onboarding screen.
  *
- * Three buttons, three different UX realities (per the discovery
- * pushed to project state under client_install_ux_research):
+ * Seven cards spanning the full OAuth-MCP catalog we've shipped. Two
+ * tiers of friction:
  *
- *   1. Cursor — true 1-click via cursor:// deeplink. The deeplink
- *      points Cursor at LYKN's /mcp with NO baked-in PAT; on first
- *      connect Cursor 401s, reads the `WWW-Authenticate:
- *      ... resource_metadata=…` header from /mcp, discovers our OAuth
- *      provider via /.well-known, registers itself via DCR, and pops
- *      a tab to /oauth/consent for the user to Approve. Because the
- *      user is already authed in this browser, that's a single click.
+ *   Headliners (top, 1-click or near-1-click, free-plan-friendly):
  *
- *   2. Claude.ai — 1-click prefilled-modal deep link. We open
- *      https://claude.ai/customize/connectors?modal=add-custom-connector
- *      &connectorName=LYKN&connectorUrl=<mcp> in a new tab. Claude
- *      surfaces the Add Custom Connector dialog ALREADY populated;
- *      user clicks Add inside the dialog, then approves the LYKN
- *      consent screen on the OAuth redirect. Same poll detects it.
+ *     1. Cursor — true 1-click via cursor:// deeplink. Cursor opens,
+ *        401s on /mcp, reads `WWW-Authenticate: ... resource_metadata`,
+ *        discovers our OAuth provider via /.well-known, registers via
+ *        DCR, and pops /oauth/consent for the user to Approve. The
+ *        user is already authed in this browser → single click.
  *
- *   3. ChatGPT — guided overlay. No deeplink / URL-prefill exists, so
- *      we open chatgpt.com + copy the URL, then show a 5-step
- *      walkthrough. Plan-gated (Plus/Pro/Team/Enterprise + Developer
- *      Mode); we surface this caveat up front.
+ *     2. Claude — 1-click prefilled-modal deep link to
+ *        https://claude.ai/customize/connectors?modal=add-custom-connector
+ *        &connectorName=LYKN&connectorUrl=<mcp>. Claude surfaces the
+ *        Add Custom Connector dialog ALREADY populated; user clicks
+ *        Add → approves consent. One approval syncs to web, Desktop,
+ *        mobile, and Cowork — Anthropic's connector store is per-account.
+ *
+ *     3. ChatGPT — guided overlay (no deeplink exists). We open
+ *        chatgpt.com + copy the URL, then surface the 5-step
+ *        walkthrough. Plus / Pro / Team / Enterprise + Developer Mode.
+ *
+ *   More tools (below, mix of CLI and guided OAuth flows):
+ *
+ *     4. Claude Code — CLI install. We copy `claude mcp add --transport
+ *        http --scope user lykn "<mcp-url>"` to the clipboard so the
+ *        user can paste it in their terminal. Same OAuth dance fires
+ *        once they run it.
+ *
+ *     5. Perplexity — guided. Open
+ *        https://www.perplexity.ai/account/connectors and copy the URL.
+ *        Paid-only (Pro / Enterprise Pro).
+ *
+ *     6. Grok — guided. Open https://grok.com/manage-connectors and
+ *        copy the URL. Paid (SuperGrok / Premium).
+ *
+ *     7. Zapier — guided. Open https://zapier.com/app/connections (MCP
+ *        Client beta) and copy the URL.
  *
  * Connection detection: poll /api/v1/synthesis/tokens. Any new active
  * token with `oauth_client_id` populated = a successful OAuth
- * handshake from one of the three clients. We snapshot the baseline
- * the moment the page loads so we only react to NEW connections.
+ * handshake. We snapshot the baseline the moment the page loads so we
+ * only react to NEW connections.
  */
 export default function Onboarding() {
   const navigate = useNavigate();
@@ -62,10 +79,15 @@ export default function Onboarding() {
     () => buildClaudeWebOauthDeeplink({ mcpUrl }),
     [mcpUrl],
   );
+  const claudeCodeCommand = useMemo(
+    () => buildClaudeCodeOauthInstallCommand({ mcpUrl }),
+    [mcpUrl],
+  );
 
   // Track which clients have connected this session. Each entry is one
-  // of "cursor" | "claude" | "chatgpt"; presence in the set means we've
-  // observed an OAuth bearer attributed to that client.
+  // of "cursor" | "claude" | "chatgpt" | "claude-code" | "perplexity" |
+  // "grok" | "zapier"; presence in the set means we've observed an
+  // OAuth bearer attributed to that client.
   const [connected, setConnected] = useState(() => new Set());
   // Which client did the user most recently CLICK? Used to choose the
   // best client_kind→logical-client mapping when a new bearer appears
@@ -95,13 +117,13 @@ export default function Onboarding() {
   }, [user]);
 
   // Poll for new OAuth-issued bearers while at least one client is
-  // pending. Stops once all three are connected or the user navigates
+  // pending. Stops once all 7 are connected or the user navigates
   // away. 3s cadence — tight enough to feel instant, loose enough to
   // not hammer the backend.
   useEffect(() => {
     if (!user) return undefined;
     if (!pending) return undefined;
-    if (connected.size >= 3) return undefined;
+    if (connected.size >= 7) return undefined;
     let cancelled = false;
     let timer;
     const tick = async () => {
@@ -181,6 +203,112 @@ export default function Onboarding() {
     window.open("https://chatgpt.com/", "_blank", "noopener,noreferrer");
   }, [mcpUrl]);
 
+  // Claude Code is a CLI install, NOT a tab. We copy the
+  // `claude mcp add --transport http --scope user lykn "<url>"`
+  // command so the user can paste it directly in their terminal.
+  // No window.open — there's no web destination. Toast nudges them
+  // to paste; the OAuth dance fires the first time `claude` connects
+  // to /mcp, same as Cursor.
+  const handleClaudeCode = useCallback(async () => {
+    setPending("claude-code");
+    let copyOk = false;
+    try {
+      await navigator.clipboard.writeText(claudeCodeCommand);
+      copyOk = true;
+    } catch {
+      copyOk = false;
+    }
+    setCopyJustWorked(copyOk);
+    setTimeout(() => setCopyJustWorked(false), 4000);
+    toast({
+      title: copyOk ? "Install command copied" : "Couldn't copy automatically",
+      description: copyOk
+        ? "Paste it in your terminal. Claude Code will pop the OAuth approval next."
+        : "Use the copy button in the card to copy the install command manually.",
+      variant: copyOk ? undefined : "destructive",
+    });
+  }, [claudeCodeCommand]);
+
+  // Perplexity / Grok / Zapier all share the same shape: open the
+  // client's connector-settings page in a new tab and pre-copy the
+  // LYKN /mcp URL to the clipboard so the user just hits paste +
+  // approve. Same OAuth dance triggers on first request from their
+  // side and polls below pick it up.
+  const handlePerplexity = useCallback(async () => {
+    setPending("perplexity");
+    let copyOk = false;
+    try {
+      await navigator.clipboard.writeText(mcpUrl);
+      copyOk = true;
+    } catch {
+      copyOk = false;
+    }
+    setCopyJustWorked(copyOk);
+    setTimeout(() => setCopyJustWorked(false), 4000);
+    if (!copyOk) {
+      toast({
+        title: "Couldn't copy automatically",
+        description: "Use the copy-URL button in the card before pasting in Perplexity.",
+        variant: "destructive",
+      });
+    }
+    window.open(
+      "https://www.perplexity.ai/account/connectors",
+      "_blank",
+      "noopener,noreferrer",
+    );
+  }, [mcpUrl]);
+
+  const handleGrok = useCallback(async () => {
+    setPending("grok");
+    let copyOk = false;
+    try {
+      await navigator.clipboard.writeText(mcpUrl);
+      copyOk = true;
+    } catch {
+      copyOk = false;
+    }
+    setCopyJustWorked(copyOk);
+    setTimeout(() => setCopyJustWorked(false), 4000);
+    if (!copyOk) {
+      toast({
+        title: "Couldn't copy automatically",
+        description: "Use the copy-URL button in the card before pasting in Grok.",
+        variant: "destructive",
+      });
+    }
+    window.open(
+      "https://grok.com/manage-connectors",
+      "_blank",
+      "noopener,noreferrer",
+    );
+  }, [mcpUrl]);
+
+  const handleZapier = useCallback(async () => {
+    setPending("zapier");
+    let copyOk = false;
+    try {
+      await navigator.clipboard.writeText(mcpUrl);
+      copyOk = true;
+    } catch {
+      copyOk = false;
+    }
+    setCopyJustWorked(copyOk);
+    setTimeout(() => setCopyJustWorked(false), 4000);
+    if (!copyOk) {
+      toast({
+        title: "Couldn't copy automatically",
+        description: "Use the copy-URL button in the card before pasting in Zapier.",
+        variant: "destructive",
+      });
+    }
+    window.open(
+      "https://zapier.com/app/connections",
+      "_blank",
+      "noopener,noreferrer",
+    );
+  }, [mcpUrl]);
+
   const handleCopyUrl = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(mcpUrl);
@@ -194,6 +322,20 @@ export default function Onboarding() {
       });
     }
   }, [mcpUrl]);
+
+  const handleCopyCommand = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(claudeCodeCommand);
+      setCopyJustWorked(true);
+      setTimeout(() => setCopyJustWorked(false), 2000);
+    } catch {
+      toast({
+        title: "Copy failed",
+        description: "Select the command manually.",
+        variant: "destructive",
+      });
+    }
+  }, [claudeCodeCommand]);
 
   return (
     <div className="min-h-screen w-full px-6 md:px-10 py-12">
@@ -279,6 +421,106 @@ export default function Onboarding() {
           />
         </div>
 
+        {/* ── More tools ────────────────────────────────────────── */}
+        <div className="mt-10 flex items-center gap-3">
+          <div className="flex-1 h-px bg-black/[0.06] dark:bg-white/10" />
+          <span className="text-[10.5px] font-medium uppercase tracking-wider text-black/45 dark:text-white/45">
+            More tools
+          </span>
+          <div className="flex-1 h-px bg-black/[0.06] dark:bg-white/10" />
+        </div>
+
+        <div className="mt-4 space-y-3">
+          <ConnectCard
+            id="claude-code"
+            name="Claude Code"
+            domain="claude.com"
+            tagline="CLI install. We copy the `claude mcp add` command — paste it in your terminal and Claude Code pops the OAuth approval."
+            badge="CLI"
+            connected={connected.has("claude-code")}
+            pending={pending === "claude-code" && !connected.has("claude-code")}
+            disabled={!user}
+            onConnect={handleClaudeCode}
+            urlToCopy={claudeCodeCommand}
+            urlCopied={copyJustWorked && pending === "claude-code"}
+            onCopyUrl={handleCopyCommand}
+            copyLabel="command"
+            secondaryNote={
+              <>
+                Requires Claude Code installed locally. Runs with{" "}
+                <code className="font-mono text-[10px] px-1 py-[1px] rounded bg-black/[0.06] dark:bg-white/10">
+                  --scope user
+                </code>{" "}
+                so the connection persists across every project on your
+                machine — you only do this once.
+              </>
+            }
+          />
+          <ConnectCard
+            id="perplexity"
+            name="Perplexity"
+            domain="perplexity.ai"
+            tagline="We open Perplexity's connector settings and copy the URL. Paste, approve, done."
+            badge="Guided"
+            connected={connected.has("perplexity")}
+            pending={pending === "perplexity" && !connected.has("perplexity")}
+            disabled={!user}
+            onConnect={handlePerplexity}
+            urlToCopy={mcpUrl}
+            urlCopied={copyJustWorked && pending === "perplexity"}
+            onCopyUrl={handleCopyUrl}
+            secondaryNote={
+              <>
+                Custom connectors require Perplexity Pro or Enterprise
+                Pro. On the page we open: + Add connector → paste URL →
+                authenticate with LYKN.
+              </>
+            }
+          />
+          <ConnectCard
+            id="grok"
+            name="Grok"
+            domain="grok.com"
+            tagline="We open Grok's connector manager and copy the URL. Paste, approve, done."
+            badge="Guided"
+            connected={connected.has("grok")}
+            pending={pending === "grok" && !connected.has("grok")}
+            disabled={!user}
+            onConnect={handleGrok}
+            urlToCopy={mcpUrl}
+            urlCopied={copyJustWorked && pending === "grok"}
+            onCopyUrl={handleCopyUrl}
+            secondaryNote={
+              <>
+                Remote MCP connectors require a paid Grok plan (SuperGrok
+                or Premium). On the page we open: Add connector → paste
+                URL → approve.
+              </>
+            }
+          />
+          <ConnectCard
+            id="zapier"
+            name="Zapier"
+            domain="zapier.com"
+            tagline="We open Zapier's MCP Client (beta) and copy the URL. Paste, approve — LYKN becomes a tool every Zap can read."
+            badge="Beta"
+            connected={connected.has("zapier")}
+            pending={pending === "zapier" && !connected.has("zapier")}
+            disabled={!user}
+            onConnect={handleZapier}
+            urlToCopy={mcpUrl}
+            urlCopied={copyJustWorked && pending === "zapier"}
+            onCopyUrl={handleCopyUrl}
+            secondaryNote={
+              <>
+                Zapier's MCP Client is in beta and currently available on
+                paid plans. On the page we open: + Add connection → MCP
+                Client → paste URL → approve.
+              </>
+            }
+          />
+        </div>
+
         {/* ── Footer ────────────────────────────────────────────── */}
         <div className="mt-8 flex items-center justify-between gap-4 pt-4 border-t border-black/[0.06] dark:border-white/10">
           <button
@@ -325,6 +567,10 @@ function ConnectCard({
   urlToCopy,
   urlCopied,
   onCopyUrl,
+  // Defaults to "URL" for the canonical case (paste-into-modal). Claude
+  // Code overrides to "command" since what's on the clipboard is the
+  // `claude mcp add ...` CLI line, not a URL.
+  copyLabel = "URL",
   secondaryNote,
 }) {
   const StatusIcon = connected ? CheckCircle2 : pending ? Loader2 : Circle;
@@ -412,12 +658,12 @@ function ConnectCard({
               {urlCopied ? (
                 <>
                   <CheckCircle2 className="h-3 w-3 text-emerald-500" />
-                  URL copied
+                  {copyLabel === "command" ? "Command copied" : "URL copied"}
                 </>
               ) : (
                 <>
                   <Copy className="h-3 w-3" />
-                  Copy URL
+                  {copyLabel === "command" ? "Copy command" : "Copy URL"}
                 </>
               )}
             </button>
@@ -440,15 +686,28 @@ function mapClientKindToSlot(kind) {
   switch (kind) {
     case "cursor":
       return "cursor";
-    // All Claude surfaces (the new merged "claude" kind plus legacy
-    // tokens from before the merge) route into the single Claude slot.
+    // Claude (web/desktop/mobile/cowork) is ONE merged slot — Anthropic
+    // syncs custom connectors per-account so a single OAuth approval
+    // covers every surface they're signed into. Legacy claude-web /
+    // claude-desktop tokens from before the merge still resolve here.
     case "claude":
     case "claude-web":
     case "claude-desktop":
-    case "claude-code":
       return "claude";
+    // Claude Code is a SEPARATE card on this screen because it's a
+    // distinct install path (CLI command vs. web modal) — surface
+    // tokens issued to the CLI under their own slot so the user sees
+    // it light up green when they paste & run.
+    case "claude-code":
+      return "claude-code";
     case "chatgpt":
       return "chatgpt";
+    case "perplexity":
+      return "perplexity";
+    case "grok":
+      return "grok";
+    case "zapier":
+      return "zapier";
     default:
       return null;
   }

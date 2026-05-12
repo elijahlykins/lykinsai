@@ -79,10 +79,31 @@ function MobileRedirect({ children, to = "/app" }) {
 // bounce to `/app` (or whatever path is passed in). Returns null while
 // auth is still resolving so we don't flash the landing UI to a user
 // who's about to be redirected.
+//
+// Newly-created users (account age < 10 minutes) get routed to
+// `/onboarding/connect` instead of `/app` so they actually see the
+// "Connect your AI tools" cards. This handles the email-confirmation
+// path specifically: Supabase's confirmation link redirects to
+// `window.location.origin` (i.e. `/`), and without this branch those
+// users would skip onboarding entirely. Google-OAuth signups also land
+// on `/` after the OAuth callback, so they're covered too. After 10
+// minutes the heuristic flips off and returning users get the normal
+// `/app` destination.
+const NEW_USER_WINDOW_MS = 10 * 60 * 1000;
+function isFreshlyCreatedUser(user) {
+  if (!user?.created_at) return false;
+  const createdMs = Date.parse(user.created_at);
+  if (!Number.isFinite(createdMs)) return false;
+  return Date.now() - createdMs < NEW_USER_WINDOW_MS;
+}
+
 function GuestOnly({ children, to = "/app" }) {
   const { user, loading } = useAuth();
   if (loading) return null;
-  if (user) return <Navigate to={to} replace />;
+  if (user) {
+    const dest = isFreshlyCreatedUser(user) ? "/onboarding/connect" : to;
+    return <Navigate to={dest} replace />;
+  }
   return children;
 }
 
