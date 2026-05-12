@@ -140,6 +140,7 @@ const CLIENT_LABEL: Record<string, string> = {
   "claude-web": "Claude (web)",
   "claude-code": "Claude Code",
   cursor: "Cursor",
+  perplexity: "Perplexity",
   "lykn-chat": "LYKN",
   chatgpt: "ChatGPT",
   other: "External AI",

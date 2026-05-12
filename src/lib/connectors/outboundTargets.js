@@ -183,16 +183,44 @@ export const OUTBOUND_TARGETS = [
     name: "Perplexity",
     domain: "perplexity.ai",
     color: "#20808D",
-    installType: "oauth",
-    transport: "OAuth Connector + browser extension",
+    installType: "oauth-mcp",
+    transport: "Streamable HTTP MCP via Perplexity Connectors (OAuth)",
+    // ── Perplexity launched custom remote MCP connectors in 2026 on
+    //    Pro and Enterprise. Same OAuth handshake as Claude / Cursor
+    //    once installed (our /mcp 401 → discovery → DCR → consent),
+    //    but Perplexity does NOT ship a prefill deep link for the
+    //    Add Custom Connector modal — closest analog would be the
+    //    open issue at github.com/anthropics/claude-ai-mcp#74 asking
+    //    Anthropic for the same; nothing comparable from Perplexity
+    //    yet. So we fall back to the ChatGPT-style guided pattern:
+    //    auto-copy LYKN's MCP URL, open the Connectors settings
+    //    page in a new tab, show the 4-step checklist inside the
+    //    dialog. Connection auto-detection works identically because
+    //    the resulting DCR-issued bearer is what we poll for.
     summary:
-      "AI research and search you'll use daily. Connect LYKN to Perplexity Comet / Spaces so its answers pull from your beliefs and vault — and so your searches flow back into LYKN.",
-    helpUrl: "https://docs.perplexity.ai/",
-    helpLabel: "Perplexity docs",
-    available: false,
-    comingSoon: true,
+      "AI search + research. Pro and Enterprise plans get custom remote MCP connectors with full OAuth. Click Connect — we copy LYKN's URL and open Perplexity's Connectors settings, you paste once, approve, and Perplexity's answers start drawing from your beliefs, rules, facts, and vault.",
+    helpUrl: "https://www.perplexity.ai/help-center/en/articles/11502712-custom-connectors-on-perplexity",
+    helpLabel: "Perplexity Connectors help",
+    available: true,
     tier: 1,
     direction: "bidirectional",
+    // No connectMode set → falls through to the default "open-url"
+    // path in OauthMcpSection.handleConnect (copy URL + open new tab).
+    openUrl: "https://www.perplexity.ai/account/connectors",
+    // Front-loaded plan-gating: the LAST thing we want is a Free-plan
+    // user clicking Connect, getting a tab to Perplexity, and discovering
+    // there's no Add Custom Connector button. Surface this BEFORE the
+    // click so they self-select out.
+    planNote:
+      "Requires Perplexity Pro or Enterprise (custom remote connectors aren't available on the Free plan). The Connectors page will just show built-in integrations if you're not on Pro.",
+    installSteps: [
+      "Open Perplexity → Settings → Connectors (we deep-linked you there).",
+      "Click + Custom connector → choose Remote.",
+      "Paste the URL above into the Server URL field. Authentication = OAuth.",
+      "Click Connect / Save → approve the LYKN consent screen when it pops — that's it.",
+    ],
+    successHint:
+      "Add a custom instruction to your Spaces or default profile telling Perplexity to call LYKN when it needs context about you — e.g. \"Before answering personal questions, consult my LYKN context with lykn_getContextBlock.\" Without that nudge, Perplexity won't reach for it on its own the way Claude does.",
   },
   {
     id: "gemini",
