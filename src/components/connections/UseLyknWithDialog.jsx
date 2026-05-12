@@ -23,9 +23,7 @@ import {
 import {
   buildClaudeDesktopSnippet,
   buildClaudeCodeCommand,
-  buildCursorDeeplink,
   buildCursorOauthDeeplink,
-  buildCursorMcpJsonSnippet,
   buildRawInstallInfo,
   buildLyknProjectInstructions,
   LYKN_PROJECT_INSTRUCTIONS_TARGETS,
@@ -175,14 +173,6 @@ export default function UseLyknWithDialog({ open, onOpenChange, target, onMinted
     () => buildClaudeCodeCommand({ token: plaintext, mcpUrl }),
     [plaintext, mcpUrl],
   );
-  const cursorDeeplink = useMemo(
-    () => buildCursorDeeplink({ token: plaintext, mcpUrl }),
-    [plaintext, mcpUrl],
-  );
-  const cursorMcpJson = useMemo(
-    () => buildCursorMcpJsonSnippet({ token: plaintext, mcpUrl }),
-    [plaintext, mcpUrl],
-  );
   const rawInfo = useMemo(
     () => buildRawInstallInfo({ token: plaintext, mcpUrl, restBase }),
     [plaintext, mcpUrl, restBase],
@@ -269,16 +259,6 @@ export default function UseLyknWithDialog({ open, onOpenChange, target, onMinted
             </div>
 
             {/* ── Per-client install path ────────────────────── */}
-            {installType === "deeplink" && (
-              <CursorInstallSection
-                clientName={target.name}
-                deeplink={cursorDeeplink}
-                snippet={cursorMcpJson}
-                copied={copied["cursor-mcp-json"]}
-                onCopy={() => copyTo("cursor-mcp-json", cursorMcpJson)}
-              />
-            )}
-
             {installType === "config-json" && (
               <ConfigJsonSection
                 clientName={target.name}
@@ -337,116 +317,6 @@ export default function UseLyknWithDialog({ open, onOpenChange, target, onMinted
 // ─── Per-install-type sections ────────────────────────────────────────────
 
 /**
- * CursorInstallSection — a deliberately simple two-button flow.
- *
- * Why two buttons (download + deeplink) instead of one?
- *
- * The official `cursor://anysphere.cursor-deeplink/...` deeplink is the
- * "best path" on machines where Cursor is correctly registered as the
- * URI-scheme handler — one click and Cursor pops the install dialog.
- * BUT on Windows that registration is unreliable: clicking the link
- * often does nothing visible, no error, no toast, just silence. Worse,
- * the user has no way to tell the difference between "installed!" and
- * "browser swallowed the request".
- *
- * So we make the foolproof "save the file" path the PRIMARY action
- * (download mcp.json + clear instructions for where it goes), and
- * keep the deeplink as a smaller "or, shortcut" affordance for users
- * whose protocol handler does work. Worst case: download always works.
- */
-function CursorInstallSection({
-  clientName,
-  deeplink,
-  snippet,
-  copied,
-  onCopy,
-}) {
-  const downloadConfig = useCallback(() => {
-    try {
-      const blob = new Blob([snippet], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "mcp.json";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-    } catch {
-      toast({
-        title: "Download failed",
-        description: "Use the Copy config button below instead.",
-        variant: "destructive",
-      });
-    }
-  }, [snippet]);
-
-  return (
-    <div className="space-y-3">
-      <div className="space-y-2">
-        <SectionTitle>Install in {clientName}</SectionTitle>
-        <button
-          type="button"
-          onClick={downloadConfig}
-          className="inline-flex items-center justify-center gap-2 rounded-xl bg-black text-white dark:bg-white dark:text-black px-4 py-2 text-[12.5px] font-medium hover:opacity-90 transition-opacity w-full"
-        >
-          <Download className="h-3.5 w-3.5" />
-          Download mcp.json
-        </button>
-        <ol className="list-decimal pl-5 space-y-1 text-[11.5px] text-black/65 dark:text-white/70 leading-relaxed marker:text-black/40 dark:marker:text-white/40">
-          <li>
-            Move the downloaded <code className="text-[10.5px] text-black/80 dark:text-white/85">mcp.json</code>
-            {" "}to:{" "}
-            <code className="text-[10.5px] text-black/80 dark:text-white/85 break-all">
-              C:\Users\&lt;you&gt;\.cursor\mcp.json
-            </code>
-            {" "}(global, recommended) or{" "}
-            <code className="text-[10.5px] text-black/80 dark:text-white/85">.cursor/mcp.json</code>
-            {" "}in any project (per-project).
-          </li>
-          <li>
-            In {clientName}: <code className="text-[10.5px]">Ctrl+Shift+P</code>{" "}
-            → <strong>Reload Window</strong> (or just close + reopen Cursor).
-          </li>
-          <li>
-            LYKN appears in <code className="text-[10.5px]">Settings → MCP</code>{" "}
-            with 8 tools. Done.
-          </li>
-        </ol>
-      </div>
-
-      {/* Secondary: copy-paste fallback */}
-      <details className="rounded-xl border border-black/[0.06] dark:border-white/10 bg-black/[0.02] dark:bg-white/[0.04] px-3 py-2 group">
-        <summary className="cursor-pointer list-none text-[11px] font-medium text-black/65 dark:text-white/70 hover:text-black/90 dark:hover:text-white select-none">
-          Prefer to copy-paste? Show the JSON
-        </summary>
-        <div className="mt-2 space-y-2">
-          <div className="relative">
-            <pre className="overflow-x-auto rounded-lg border border-black/[0.08] dark:border-white/10 bg-white/70 dark:bg-zinc-900/70 px-3 py-2 text-[11px] font-mono text-black/85 dark:text-white/85 max-h-60">
-{snippet}
-            </pre>
-            <div className="absolute top-1.5 right-1.5">
-              <CopyButton copied={copied} onClick={onCopy} label="Copy config" />
-            </div>
-          </div>
-        </div>
-      </details>
-
-      {/* Tertiary: the deeplink — "lucky button" for users with protocol handler set up */}
-      <div className="text-[10.5px] text-black/45 dark:text-white/45 leading-relaxed">
-        Got the protocol handler set up?{" "}
-        <a
-          href={deeplink}
-          className="underline underline-offset-2 text-black/65 dark:text-white/70 hover:text-black/90 dark:hover:text-white"
-        >
-          Try the one-click deeplink
-        </a>
-        {" "}— may not work on every machine.
-      </div>
-    </div>
-  );
-}
-
 /**
  * ConfigJsonSection — same UX shape as Cursor + Claude Code: the actual
  * useful action (Download or Copy) is the BIG button at top, with the
@@ -573,7 +443,7 @@ function ConfigJsonSection({
 }
 
 /**
- * CliSection — same UX shape as CursorInstallSection: BIG primary action
+ * CliSection — same UX shape as ConfigJsonSection: BIG primary action
  * up top, supporting context below.
  *
  * The Claude Code command is long (~150 chars with the URL + token), so

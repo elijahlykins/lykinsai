@@ -119,7 +119,7 @@ export const OUTBOUND_TARGETS = [
     // ── Cursor uses a CUSTOM URL SCHEME deeplink rather than the
     //    open-tab+paste flow Claude.ai / ChatGPT use. Same OauthMcpSection
     //    underneath; connectMode just swaps the Connect button's action
-    //    from window.open(openUrl) to window.location=cursorDeeplink.
+    //    from window.open(openUrl) to window.location=cursorOauthDeeplink.
     //    The post-install OAuth dance (Cursor → /mcp 401 → discovery →
     //    DCR → consent → token) is identical, and the same baseline-diff
     //    polling flips the dialog to Connected.
@@ -478,7 +478,6 @@ export const OUTBOUND_TIERS = [
 ];
 
 export const OUTBOUND_INSTALL_TYPES = {
-  deeplink: { label: "One-click install", tone: "emerald" },
   "config-json": { label: "Copy JSON snippet", tone: "blue" },
   cli: { label: "Copy CLI command", tone: "blue" },
   oauth: { label: "Connect with OAuth", tone: "emerald" },
@@ -543,46 +542,19 @@ export function buildClaudeCodeCommand({ token, mcpUrl }) {
 }
 
 /**
- * Build the Cursor install deeplink. Per Cursor's docs the spec is:
+ * Build a Cursor install deeplink. Per Cursor's docs the spec is:
  *
  *   cursor://anysphere.cursor-deeplink/mcp/install?name=NAME&config=BASE64
  *
- * The `config` value is base64-encoded JSON of the *inner* server config
- * (NOT wrapped in `mcpServers`). Clicking the link opens Cursor with an
- * install confirmation pre-filled with the token.
- *
- * NOTE: On Windows the protocol handler can fail silently if Cursor
- * isn't registered as the default for `cursor://` — the user clicks
- * and nothing visible happens. We therefore ALWAYS pair this with a
- * downloadable `mcp.json` fallback in the dialog (see below).
+ * The `config` value is base64url-encoded JSON of the *inner* server
+ * config (NOT wrapped in `mcpServers`). We deliberately ship NO auth
+ * inside the config — Cursor discovers OAuth on first connect via
+ * the standard MCP-OAuth dance: `/mcp` 401 → `WWW-Authenticate:
+ * ... resource_metadata=…` → DCR → `/oauth/authorize` consent →
+ * `/oauth/token`. Means no PAT for the user to manage and the token
+ * lifecycle (rotation, revoke) lives in /Connections.
  *
  * Spec: https://cursor.com/docs/mcp/install-links
- */
-export function buildCursorDeeplink({ token, mcpUrl }) {
-  const config = {
-    url: String(mcpUrl || "https://lykn.io/mcp"),
-    headers: {
-      Authorization: `Bearer ${String(token || "")}`,
-    },
-  };
-  const encoded = base64UrlEncode(JSON.stringify(config));
-  return `cursor://anysphere.cursor-deeplink/mcp/install?name=lykn&config=${encoded}`;
-}
-
-/**
- * Build a Cursor install deeplink that DOES NOT bake in a PAT — Cursor
- * will discover OAuth on first connect via the standard MCP-OAuth dance
- * (`/mcp` 401 → `WWW-Authenticate: ... resource_metadata=…` → DCR →
- * `/oauth/authorize` consent → `/oauth/token`).
- *
- * Use this in onboarding when the user is already signed into LYKN in
- * the browser — they click the deeplink, Cursor opens, Cursor pops a
- * browser tab to LYKN's consent screen (which they're already authed
- * for), they hit Approve, and Cursor finishes the handshake silently.
- *
- * The PAT-baking sibling (`buildCursorDeeplink` above) stays the right
- * call for power users on /Connections who want a long-lived,
- * non-rotating token they manage by hand.
  */
 export function buildCursorOauthDeeplink({ mcpUrl }) {
   const config = {
@@ -590,28 +562,6 @@ export function buildCursorOauthDeeplink({ mcpUrl }) {
   };
   const encoded = base64UrlEncode(JSON.stringify(config));
   return `cursor://anysphere.cursor-deeplink/mcp/install?name=lykn&config=${encoded}`;
-}
-
-/**
- * The exact JSON a user would paste into `.cursor/mcp.json` (per-project)
- * or `~/.cursor/mcp.json` (global). Used by the Cursor install dialog as
- * a fallback when the HTTPS install button doesn't work for whatever
- * reason — the user can always copy this and paste it into the file.
- */
-export function buildCursorMcpJsonSnippet({ token, mcpUrl }) {
-  const url = String(mcpUrl || "https://lykn.io/mcp");
-  const t = String(token || "<paste-your-lykn-token-here>");
-  const snippet = {
-    mcpServers: {
-      lykn: {
-        url,
-        headers: {
-          Authorization: `Bearer ${t}`,
-        },
-      },
-    },
-  };
-  return JSON.stringify(snippet, null, 2);
 }
 
 function base64UrlEncode(str) {
