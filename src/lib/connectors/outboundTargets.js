@@ -36,15 +36,32 @@ export const OUTBOUND_TARGETS = [
     name: "Claude Desktop",
     domain: "claude.ai",
     color: "#D97757",
-    installType: "config-json",
-    transport: "Streamable HTTP MCP",
+    installType: "oauth-mcp",
+    transport: "Streamable HTTP MCP via Connectors (OAuth)",
     summary:
-      "Anthropic's desktop app. Paste a JSON snippet into claude_desktop_config.json and Claude can read your beliefs, rules, facts, and vault on demand.",
-    helpUrl: "https://docs.anthropic.com/claude/docs/mcp",
-    helpLabel: "Claude MCP docs",
+      "Anthropic's desktop app. Custom connectors added on claude.ai auto-sync to Desktop instantly — so this card fires the same one-click prefill flow as Claude (web). Approve once, LYKN shows up in Desktop with zero extra setup.",
+    helpUrl: "https://claude.com/docs/connectors/custom/remote-mcp",
+    helpLabel: "Claude Connectors docs",
     available: true,
     tier: 1,
     direction: "bidirectional",
+    // ── Claude Desktop pulls its custom-connector list from the user's
+    //    claude.ai account, so installing it is literally "install it on
+    //    claude.ai and it shows up in Desktop." We reuse the exact same
+    //    prefill deep link as claude-web — opens claude.ai with the Add
+    //    Custom Connector modal populated, user clicks Add, approves
+    //    consent, and the next time they open Desktop LYKN is there.
+    connectMode: "claude-prefill",
+    openUrl: "https://claude.ai/settings/connectors",
+    planNote:
+      "Available on Free (one custom connector), Pro, and Max. Adding the connector via claude.ai is the canonical path — Desktop pulls the list from your Anthropic account, not from a local config file.",
+    installSteps: [
+      "Press Connect Claude Desktop — we open claude.ai with the Add Custom Connector dialog already filled in.",
+      "Inside Claude: click Add.",
+      "Approve the LYKN consent screen — Desktop picks it up automatically next time it syncs.",
+    ],
+    successHint:
+      "Open Claude Desktop and check Settings → Connectors — LYKN will appear within ~10s of approving (or instantly on the next app launch). Same connection works in Claude mobile, Cowork, and Claude Code.",
   },
   {
     id: "claude-code",
@@ -52,15 +69,33 @@ export const OUTBOUND_TARGETS = [
     name: "Claude Code",
     domain: "claude.ai",
     color: "#D97757",
-    installType: "cli",
-    transport: "Streamable HTTP MCP",
+    installType: "oauth-mcp",
+    transport: "Streamable HTTP MCP via `claude mcp add` (OAuth)",
     summary:
-      "Anthropic's CLI coding agent. One `claude mcp add lykn …` and the synthesis layer is available wherever you run it — terminal, CI, scripts.",
-    helpUrl: "https://docs.anthropic.com/claude/docs/claude-code",
-    helpLabel: "Claude Code docs",
+      "Anthropic's CLI coding agent. One click copies a `claude mcp add` command — paste it in your terminal and Claude Code does the OAuth handshake against LYKN automatically. No token to bake in, no JSON to edit.",
+    helpUrl: "https://docs.anthropic.com/en/docs/claude-code/mcp",
+    helpLabel: "Claude Code MCP docs",
     available: true,
     tier: 1,
     direction: "bidirectional",
+    // ── Claude Code is a terminal-only surface; no browser deep link
+    //    can pop it. Best UX is to copy one canonical install command
+    //    that uses HTTP transport (so Claude Code's built-in OAuth
+    //    handshake runs against /mcp → 401 → discovery → DCR → consent,
+    //    same flow as Cursor). User pastes, hits Enter, browser tab
+    //    opens for Approve, we auto-detect the resulting bearer.
+    connectMode: "claude-code-cli",
+    openUrl: "https://docs.anthropic.com/en/docs/claude-code/mcp",
+    planNote:
+      "Requires Claude Code v0.4+ (which ships built-in OAuth for HTTP-transport MCP servers). No API key or token baking required.",
+    installSteps: [
+      "Press Connect Claude Code — we copy the install command to your clipboard.",
+      "Paste it into your terminal and press Enter.",
+      "Claude Code pops a browser tab to the LYKN consent screen — click Approve.",
+      "Claude Code finishes the handshake silently. We auto-detect the new bearer here.",
+    ],
+    successHint:
+      "LYKN is now registered as a Claude Code MCP server — confirm with `claude mcp list`. Run `claude` and the synthesis-layer tools are wired into your coding agent.",
   },
   {
     id: "claude-web",
@@ -230,7 +265,7 @@ export const OUTBOUND_TARGETS = [
     name: "Windsurf",
     domain: "windsurf.com",
     color: "#09B6A2",
-    installType: "config-json",
+    installType: "oauth-mcp",
     transport: "Streamable HTTP MCP",
     summary:
       "AI-native IDE, strong Cursor competitor. Drop LYKN into Cascade's mcp_config.json and Windsurf's coding agent can query your vault, project state, and rules.",
@@ -247,7 +282,7 @@ export const OUTBOUND_TARGETS = [
     name: "Replit",
     domain: "replit.com",
     color: "#F26207",
-    installType: "config-json",
+    installType: "oauth-mcp",
     transport: "Streamable HTTP MCP",
     summary:
       "AI app builder + deploy — natural language to running code. LYKN as an MCP source means Replit's agent inherits your stack preferences and project state.",
@@ -264,7 +299,7 @@ export const OUTBOUND_TARGETS = [
     name: "GitHub Copilot",
     domain: "github.com",
     color: "#171515",
-    installType: "config-json",
+    installType: "oauth-mcp",
     transport: "Streamable HTTP MCP",
     summary:
       "GitHub Copilot + Microsoft 365 Copilot. Add LYKN as an MCP server in your Copilot config so inline suggestions and chat both see your synthesis layer.",
@@ -480,8 +515,6 @@ export const OUTBOUND_TIERS = [
 ];
 
 export const OUTBOUND_INSTALL_TYPES = {
-  "config-json": { label: "Copy JSON snippet", tone: "blue" },
-  cli: { label: "Copy CLI command", tone: "blue" },
   oauth: { label: "Connect with OAuth", tone: "emerald" },
   "oauth-mcp": { label: "One-click connect (OAuth)", tone: "emerald" },
   openapi: { label: "Custom GPT Action", tone: "amber" },
@@ -491,56 +524,26 @@ export const OUTBOUND_INSTALL_TYPES = {
 };
 
 /**
- * Build the JSON config snippet a user pastes into their
- * claude_desktop_config.json. The token + base URL are injected so the
- * snippet works without further editing. Returns a STRING (already
- * pretty-printed) for direct render in a <pre> + clipboard copy.
- *
- *   buildClaudeDesktopSnippet({ token, mcpUrl })
- *
- * NOTE on transport: Claude Desktop (as of late 2025/early 2026) does
- * NOT support remote-HTTP MCP servers via a `transport: "http"` field
- * in claude_desktop_config.json — it only spawns stdio subprocesses
- * via `command`. We bridge that with `mcp-remote`, a small npm stdio
- * adapter that proxies stdio<->HTTP. Users get one-click install via
- * `npx -y mcp-remote …` and we don't have to ship a binary.
- */
-export function buildClaudeDesktopSnippet({ token, mcpUrl }) {
-  const url = String(mcpUrl || "https://lykn.io/mcp");
-  const t = String(token || "<paste-your-lykn-token-here>");
-  const snippet = {
-    mcpServers: {
-      lykn: {
-        command: "npx",
-        args: [
-          "-y",
-          "mcp-remote",
-          url,
-          "--header",
-          `Authorization: Bearer ${t}`,
-        ],
-      },
-    },
-  };
-  return JSON.stringify(snippet, null, 2);
-}
-
-/**
- * Build the `claude mcp add` command for Claude Code. Single-line CLI
- * command with the token + URL embedded.
+ * Build the canonical `claude mcp add` command for Claude Code. This
+ * is intentionally a CLI string with NO embedded token — Claude Code
+ * v0.4+ ships built-in OAuth for HTTP-transport MCP servers, so on
+ * first request it'll hit /mcp → 401 → discover our OAuth provider
+ * via the WWW-Authenticate header → DCR → pop a browser tab to the
+ * LYKN consent screen. Exactly the same handshake Cursor uses,
+ * just triggered from a terminal paste instead of a deep link.
  *
  * Syntax (per `claude mcp add --help` on v2.1+):
  *
  *   claude mcp add [options] <name> <commandOrUrl> [args...]
  *
- * The URL is a POSITIONAL argument right after the server name — earlier
- * docs / older versions accepted `--url <url>` but that flag is no
- * longer recognized and produces "error: unknown option '--url'".
+ * The URL is a POSITIONAL argument right after the server name. We
+ * default to `--scope user` so the connection persists across all
+ * the user's Claude Code projects — they almost certainly want LYKN
+ * everywhere, not scoped to one repo.
  */
-export function buildClaudeCodeCommand({ token, mcpUrl }) {
-  const url = String(mcpUrl || "https://lykn.io/mcp");
-  const t = String(token || "<paste-your-lykn-token-here>");
-  return `claude mcp add --transport http lykn "${url}" --header "Authorization: Bearer ${t}"`;
+export function buildClaudeCodeOauthInstallCommand({ mcpUrl }) {
+  const url = ensureHttpsMcpUrl(mcpUrl);
+  return `claude mcp add --transport http --scope user lykn "${url}"`;
 }
 
 /**

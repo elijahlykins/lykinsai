@@ -12,7 +12,6 @@ import { toast } from "@/components/ui/use-toast";
 import {
   Copy,
   CheckCircle2,
-  Download,
   ExternalLink,
   Loader2,
   ShieldAlert,
@@ -21,10 +20,9 @@ import {
   Circle,
 } from "lucide-react";
 import {
-  buildClaudeDesktopSnippet,
-  buildClaudeCodeCommand,
   buildCursorOauthDeeplink,
   buildClaudeWebOauthDeeplink,
+  buildClaudeCodeOauthInstallCommand,
   buildRawInstallInfo,
   buildLyknProjectInstructions,
   LYKN_PROJECT_INSTRUCTIONS_TARGETS,
@@ -40,14 +38,16 @@ import {
  * can revoke it. Single-use minting + revocability is the whole UX
  * contract: tokens are cheap, plaintext is shown ONCE.
  *
- * Per-client install paths:
- *   • cursor          → one-button deeplink that registers LYKN inside Cursor
- *   • claude-desktop  → copy-pasteable JSON snippet for claude_desktop_config.json
- *   • claude-code     → copy-pasteable `claude mcp add` CLI command
- *   • chatgpt / claude-web → installType "oauth-mcp" — one-button OAuth
- *                            flow handled by OauthMcpSection (no PAT mint)
- *   • chatgpt (legacy) → placeholder (Custom GPT Action) — read-only for now
- *   • other           → just the URL + token, the user wires it up
+ * Per-client install paths (all driven by OauthMcpSection — NO PAT
+ * minting on the modern paths, just OAuth handshakes):
+ *   • cursor          → cursor:// deeplink, in-app install dialog,  OAuth
+ *   • claude-web      → claude.ai `?modal=add-custom-connector` deep link
+ *   • claude-desktop  → same claude.ai deep link (Anthropic auto-syncs
+ *                       custom connectors to the Desktop app)
+ *   • claude-code     → copy `claude mcp add … --transport http` command
+ *                       to clipboard; OAuth handshake fires on first run
+ *   • chatgpt         → guided open-tab + paste-URL flow (no deep link)
+ *   • other           → raw URL + minted PAT — the legacy escape hatch
  */
 export default function UseLyknWithDialog({ open, onOpenChange, target, onMinted }) {
   const [token, setToken] = useState(null);
@@ -166,14 +166,6 @@ export default function UseLyknWithDialog({ open, onOpenChange, target, onMinted
 
   const plaintext = token?.plaintext || "";
 
-  const claudeDesktopSnippet = useMemo(
-    () => buildClaudeDesktopSnippet({ token: plaintext, mcpUrl }),
-    [plaintext, mcpUrl],
-  );
-  const claudeCodeCommand = useMemo(
-    () => buildClaudeCodeCommand({ token: plaintext, mcpUrl }),
-    [plaintext, mcpUrl],
-  );
   const rawInfo = useMemo(
     () => buildRawInstallInfo({ token: plaintext, mcpUrl, restBase }),
     [plaintext, mcpUrl, restBase],
@@ -260,30 +252,6 @@ export default function UseLyknWithDialog({ open, onOpenChange, target, onMinted
             </div>
 
             {/* ── Per-client install path ────────────────────── */}
-            {installType === "config-json" && (
-              <ConfigJsonSection
-                clientName={target.name}
-                snippet={claudeDesktopSnippet}
-                copyKey="claude-desktop-snippet"
-                copied={copied["claude-desktop-snippet"]}
-                onCopy={() => copyTo("claude-desktop-snippet", claudeDesktopSnippet)}
-                helpUrl={target.helpUrl}
-                helpLabel={target.helpLabel || "Where does this go?"}
-              />
-            )}
-
-            {installType === "cli" && (
-              <CliSection
-                clientName={target.name}
-                command={claudeCodeCommand}
-                copyKey="claude-code-command"
-                copied={copied["claude-code-command"]}
-                onCopy={() => copyTo("claude-code-command", claudeCodeCommand)}
-                helpUrl={target.helpUrl}
-                helpLabel={target.helpLabel}
-              />
-            )}
-
             {installType === "openapi" && (
               <OpenApiSection target={target} restBase={restBase} />
             )}
@@ -316,205 +284,12 @@ export default function UseLyknWithDialog({ open, onOpenChange, target, onMinted
 }
 
 // ─── Per-install-type sections ────────────────────────────────────────────
-
-/**
-/**
- * ConfigJsonSection — same UX shape as Cursor + Claude Code: the actual
- * useful action (Download or Copy) is the BIG button at top, with the
- * raw config tucked behind a "Show snippet" disclosure for users who
- * want to verify or hand-edit. The token + URL on a single line easily
- * runs ~200 chars, which made the old horizontal-scroll <pre> awful.
- */
-function ConfigJsonSection({
-  clientName,
-  snippet,
-  copied,
-  onCopy,
-  helpUrl,
-  helpLabel,
-}) {
-  const isClaudeDesktop = clientName === "Claude Desktop";
-
-  const downloadSnippet = useCallback(() => {
-    try {
-      const blob = new Blob([snippet], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "claude_desktop_config.json";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-    } catch {
-      toast({
-        title: "Download failed",
-        description: "Use Copy snippet instead.",
-        variant: "destructive",
-      });
-    }
-  }, [snippet]);
-
-  return (
-    <div className="space-y-3">
-      <div className="space-y-2">
-        <SectionTitle>Install in {clientName}</SectionTitle>
-        <div className="grid grid-cols-2 gap-2">
-          <button
-            type="button"
-            onClick={downloadSnippet}
-            className="inline-flex items-center justify-center gap-2 rounded-xl bg-black text-white dark:bg-white dark:text-black px-4 py-2 text-[12.5px] font-medium hover:opacity-90 transition-opacity"
-          >
-            <Download className="h-3.5 w-3.5" />
-            Download config
-          </button>
-          <button
-            type="button"
-            onClick={onCopy}
-            className="inline-flex items-center justify-center gap-2 rounded-xl border border-black/15 dark:border-white/20 bg-white/70 dark:bg-zinc-900/70 px-4 py-2 text-[12.5px] font-medium text-black/85 dark:text-white/90 hover:bg-white dark:hover:bg-zinc-900 transition-colors"
-          >
-            {copied ? (
-              <>
-                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
-                Copied
-              </>
-            ) : (
-              <>
-                <Copy className="h-3.5 w-3.5" />
-                Copy snippet
-              </>
-            )}
-          </button>
-        </div>
-        {isClaudeDesktop ? (
-          <ol className="list-decimal pl-5 space-y-1 text-[11.5px] text-black/65 dark:text-white/70 leading-relaxed marker:text-black/40 dark:marker:text-white/40">
-            <li>
-              Save / merge the snippet into:{" "}
-              <code className="text-[10.5px] text-black/80 dark:text-white/85 break-all">
-                %APPDATA%\Claude\claude_desktop_config.json
-              </code>{" "}
-              (Windows) or{" "}
-              <code className="text-[10.5px] text-black/80 dark:text-white/85 break-all">
-                ~/Library/Application Support/Claude/claude_desktop_config.json
-              </code>{" "}
-              (macOS).
-            </li>
-            <li>
-              <strong>Quit Claude completely</strong> (system tray icon →
-              Quit), then relaunch it.
-            </li>
-            <li>
-              First launch takes ~10 extra seconds — <code className="text-[10.5px]">npx</code>{" "}
-              fetches <code className="text-[10.5px]">mcp-remote</code>. After
-              that LYKN's 8 tools appear under Settings → MCP.
-            </li>
-          </ol>
-        ) : (
-          <p className="text-[11.5px] text-black/65 dark:text-white/70 leading-relaxed">
-            Save the snippet into your client's MCP config file, then restart
-            it. The 8 LYKN tools become available immediately.
-          </p>
-        )}
-      </div>
-
-      {/* Snippet hidden by default — long tokens make horizontal scroll painful. */}
-      <details className="rounded-xl border border-black/[0.06] dark:border-white/10 bg-black/[0.02] dark:bg-white/[0.04] px-3 py-2">
-        <summary className="cursor-pointer list-none text-[11px] font-medium text-black/65 dark:text-white/70 hover:text-black/90 dark:hover:text-white select-none">
-          Show snippet (for reference)
-        </summary>
-        <div className="mt-2">
-          <pre className="whitespace-pre-wrap break-all rounded-lg border border-black/[0.08] dark:border-white/10 bg-white/70 dark:bg-zinc-900/70 px-3 py-2 text-[11px] font-mono text-black/85 dark:text-white/85 max-h-72 overflow-y-auto">
-{snippet}
-          </pre>
-        </div>
-      </details>
-
-      {helpUrl && (
-        <a
-          href={helpUrl}
-          target="_blank"
-          rel="noreferrer"
-          className="inline-flex items-center gap-1 text-[10.5px] text-black/55 dark:text-white/55 underline underline-offset-2 hover:text-black/85 dark:hover:text-white/85"
-        >
-          {helpLabel} <ExternalLink className="h-3 w-3" />
-        </a>
-      )}
-    </div>
-  );
-}
-
-/**
- * CliSection — same UX shape as ConfigJsonSection: BIG primary action
- * up top, supporting context below.
- *
- * The Claude Code command is long (~150 chars with the URL + token), so
- * we let the <pre> wrap onto multiple lines instead of horizontal-scroll.
- * Horizontal scroll inside a small dialog hides the second half of the
- * command — and there's no scroll affordance on Windows trackpads when
- * the box doesn't have visible scrollbars. Wrapping is just better.
- */
-function CliSection({ clientName, command, copied, onCopy, helpUrl, helpLabel }) {
-  return (
-    <div className="space-y-3">
-      <div className="space-y-2">
-        <SectionTitle>Install in {clientName}</SectionTitle>
-        <button
-          type="button"
-          onClick={onCopy}
-          className="inline-flex items-center justify-center gap-2 rounded-xl bg-black text-white dark:bg-white dark:text-black px-4 py-2 text-[12.5px] font-medium hover:opacity-90 transition-opacity w-full"
-        >
-          {copied ? (
-            <>
-              <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
-              Command copied — paste it in PowerShell
-            </>
-          ) : (
-            <>
-              <Copy className="h-3.5 w-3.5" />
-              Copy install command
-            </>
-          )}
-        </button>
-        <ol className="list-decimal pl-5 space-y-1 text-[11.5px] text-black/65 dark:text-white/70 leading-relaxed marker:text-black/40 dark:marker:text-white/40">
-          <li>
-            Open a fresh PowerShell window (
-            <code className="text-[10.5px]">Win+R</code> →{" "}
-            <code className="text-[10.5px]">powershell</code> → Enter).
-          </li>
-          <li>Paste the command (<code className="text-[10.5px]">Ctrl+V</code>) and hit Enter.</li>
-          <li>
-            You should see <code className="text-[10.5px]">Added MCP server lykn</code>.
-            Then run <code className="text-[10.5px]">claude</code> and the
-            8 LYKN tools are available.
-          </li>
-        </ol>
-      </div>
-
-      {/* Secondary: show the actual command for reference / manual copy. */}
-      <details className="rounded-xl border border-black/[0.06] dark:border-white/10 bg-black/[0.02] dark:bg-white/[0.04] px-3 py-2">
-        <summary className="cursor-pointer list-none text-[11px] font-medium text-black/65 dark:text-white/70 hover:text-black/90 dark:hover:text-white select-none">
-          Show command (for reference)
-        </summary>
-        <div className="mt-2">
-          <pre className="whitespace-pre-wrap break-all rounded-lg border border-black/[0.08] dark:border-white/10 bg-white/70 dark:bg-zinc-900/70 px-3 py-2 text-[11px] font-mono text-black/85 dark:text-white/85 max-h-60 overflow-y-auto">
-{command}
-          </pre>
-        </div>
-      </details>
-
-      {helpUrl && (
-        <a
-          href={helpUrl}
-          target="_blank"
-          rel="noreferrer"
-          className="inline-flex items-center gap-1 text-[10.5px] text-black/55 dark:text-white/55 underline underline-offset-2 hover:text-black/85 dark:hover:text-white/85"
-        >
-          {helpLabel || "Help"} <ExternalLink className="h-3 w-3" />
-        </a>
-      )}
-    </div>
-  );
-}
+//
+// ConfigJsonSection and CliSection used to live here for the PAT-baking
+// claude-desktop / claude-code paths. Both clients now use OauthMcpSection
+// instead (Claude Desktop via the claude.ai prefill deep link, Claude Code
+// via `claude mcp add … --transport http` + built-in OAuth), so this file
+// jumps straight to OpenApiSection / RawSection / OauthMcpSection below.
 
 /**
  * ProjectInstructionsSection — the "always-on" half of the LYKN install.
@@ -782,11 +557,49 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
     //    query string that opens claude.ai with the Add Custom
     //    Connector dialog already populated. New tab (not same-tab)
     //    so users don't lose LYKN, and no clipboard step needed —
-    //    the URL is in the deep link itself.
+    //    the URL is in the deep link itself. Used by both claude-web
+    //    AND claude-desktop (Desktop auto-syncs from claude.ai).
     if (connectMode === "claude-prefill") {
       const deeplink = buildClaudeWebOauthDeeplink({ mcpUrl });
       window.open(deeplink, "_blank", "noopener,noreferrer");
       setStep((s) => (s < 1 ? 1 : s));
+      return;
+    }
+
+    // ── Claude Code (CLI). No browser deep link can pop a terminal,
+    //    so the primary action becomes "copy a one-line install
+    //    command to the clipboard." Command uses --transport http
+    //    so Claude Code's built-in OAuth handshake fires on first
+    //    request — same /mcp 401 → discovery → DCR → consent dance
+    //    Cursor uses, just initiated from a terminal paste. We don't
+    //    open any tab; Claude Code will open the consent tab itself
+    //    once the user hits Enter. The token poll still detects the
+    //    resulting bearer and flips the dialog to Connected.
+    if (connectMode === "claude-code-cli") {
+      const command = buildClaudeCodeOauthInstallCommand({ mcpUrl });
+      let copyOk = false;
+      try {
+        await navigator.clipboard.writeText(command);
+        copyOk = true;
+      } catch {
+        copyOk = false;
+      }
+      setCopyJustWorked(copyOk);
+      if (!copyOk) {
+        toast({
+          title: "Couldn't copy automatically",
+          description:
+            "Use the Show command panel below to copy the install command manually.",
+          variant: "destructive",
+        });
+      } else {
+        toast({
+          title: "Install command copied",
+          description: "Paste it in your terminal and press Enter.",
+        });
+      }
+      setStep((s) => (s < 1 ? 1 : s));
+      setTimeout(() => setCopyJustWorked(false), 4000);
       return;
     }
 
@@ -836,10 +649,17 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
               </>
             ) : connectMode === "claude-prefill" ? (
               <>
-                One button opens {targetName} with the Add Custom Connector
+                One button opens claude.ai with the Add Custom Connector
                 dialog already filled in for LYKN. Hit Add inside Claude,
                 approve the consent screen — we'll auto-detect the connection
                 and flip this to Connected.
+              </>
+            ) : connectMode === "claude-code-cli" ? (
+              <>
+                One button copies a <code className="font-mono text-[11.5px]">claude mcp add</code> command.
+                Paste it into your terminal and press Enter — Claude Code
+                pops a browser tab to the LYKN consent screen, you approve,
+                we auto-detect the connection.
               </>
             ) : (
               <>
@@ -857,7 +677,9 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
             {copyJustWorked ? (
               <>
                 <CheckCircle2 className="h-4 w-4" />
-                URL copied — finish in {targetName}
+                {connectMode === "claude-code-cli"
+                  ? `Command copied — paste in your terminal`
+                  : `URL copied — finish in ${targetName}`}
                 <ArrowRight className="h-4 w-4" />
               </>
             ) : (
@@ -900,8 +722,8 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
           active={step === 0}
           title={
             step >= 1
-              ? `URL copied + ${targetName} opened in a new tab`
-              : `Press Connect — we'll copy the URL and open ${targetName}`
+              ? stepOneDoneTitle({ connectMode, targetName })
+              : stepOnePromptTitle({ connectMode, targetName })
           }
         />
         <StepRow
@@ -952,34 +774,44 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
         </div>
       )}
 
-      {/* ── Manual URL fallback (collapsed) ───────────────────────── */}
+      {/* ── Manual fallback disclosure ───────────────────────────────
+          Shows the raw artifact a user might need if the auto-copy /
+          deep link didn't work. For Claude Code we surface the actual
+          install command so a user with clipboard issues can select +
+          paste it themselves. For everyone else, just the MCP URL. */}
       <details className="rounded-xl border border-black/[0.06] dark:border-white/10 bg-black/[0.02] dark:bg-white/[0.04] px-3 py-2">
         <summary className="cursor-pointer list-none text-[11px] font-medium text-black/65 dark:text-white/70 hover:text-black/90 dark:hover:text-white select-none">
-          Need the URL by itself? (or copy didn't work)
+          {connectMode === "claude-code-cli"
+            ? "Show install command (or copy didn't work)"
+            : "Need the URL by itself? (or copy didn't work)"}
         </summary>
         <div className="mt-2 space-y-1.5">
-          <div className="flex items-center gap-2">
-            <code className="flex-1 min-w-0 truncate rounded-md bg-white dark:bg-zinc-900 px-2 py-1.5 text-[11.5px] font-mono text-black/85 dark:text-white/85 border border-black/[0.06] dark:border-white/[0.08]">
-              {mcpUrl}
-            </code>
-            <CopyButton
-              copied={copyJustWorked}
-              onClick={async () => {
-                try {
-                  await navigator.clipboard.writeText(mcpUrl);
-                  setCopyJustWorked(true);
-                  setTimeout(() => setCopyJustWorked(false), 2000);
-                } catch {
-                  toast({
-                    title: "Copy failed",
-                    description: "Select the URL manually.",
-                    variant: "destructive",
-                  });
-                }
-              }}
-              label="Copy URL"
-            />
-          </div>
+          {connectMode === "claude-code-cli" ? (
+            <ClaudeCodeFallback mcpUrl={mcpUrl} />
+          ) : (
+            <div className="flex items-center gap-2">
+              <code className="flex-1 min-w-0 truncate rounded-md bg-white dark:bg-zinc-900 px-2 py-1.5 text-[11.5px] font-mono text-black/85 dark:text-white/85 border border-black/[0.06] dark:border-white/[0.08]">
+                {mcpUrl}
+              </code>
+              <CopyButton
+                copied={copyJustWorked}
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(mcpUrl);
+                    setCopyJustWorked(true);
+                    setTimeout(() => setCopyJustWorked(false), 2000);
+                  } catch {
+                    toast({
+                      title: "Copy failed",
+                      description: "Select the URL manually.",
+                      variant: "destructive",
+                    });
+                  }
+                }}
+                label="Copy URL"
+              />
+            </div>
+          )}
           {planNote && (
             <p className="text-[10.5px] text-black/55 dark:text-white/55 leading-relaxed">
               {planNote}
@@ -1006,6 +838,77 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
           {helpLabel} <ExternalLink className="h-3 w-3" />
         </a>
       )}
+    </div>
+  );
+}
+
+// ─── Stepper copy helpers ─────────────────────────────────────────────────
+//
+// Step 1's heading needs to read accurately across all four connect
+// modes — the old "URL copied + opened in tab" wording only matches
+// the legacy paste-flow (ChatGPT). Cursor fires a deep link with no
+// copy, Claude.ai/Desktop fire a deep link in a new tab with no copy,
+// Claude Code copies a CLI command with no tab. These two helpers
+// pick the right wording so the stepper doesn't lie to the user.
+
+function stepOnePromptTitle({ connectMode, targetName }) {
+  if (connectMode === "cursor-deeplink") {
+    return `Press Connect — we'll hand a pre-filled install link to ${targetName}`;
+  }
+  if (connectMode === "claude-prefill") {
+    return `Press Connect — we'll open Claude with LYKN's details pre-filled`;
+  }
+  if (connectMode === "claude-code-cli") {
+    return `Press Connect — we'll copy a one-line ${targetName} install command`;
+  }
+  return `Press Connect — we'll copy the URL and open ${targetName}`;
+}
+
+function stepOneDoneTitle({ connectMode, targetName }) {
+  if (connectMode === "cursor-deeplink") {
+    return `${targetName} received the install link`;
+  }
+  if (connectMode === "claude-prefill") {
+    return `Claude opened with LYKN pre-filled`;
+  }
+  if (connectMode === "claude-code-cli") {
+    return `Install command copied — paste it in your terminal`;
+  }
+  return `URL copied + ${targetName} opened in a new tab`;
+}
+
+/**
+ * ClaudeCodeFallback — recovery UI shown inside the manual-fallback
+ * disclosure when connectMode === "claude-code-cli". The auto-copy
+ * path is the happy path; this exists for users on browsers/contexts
+ * where clipboard writes fail silently (older Firefox, some embedded
+ * webviews, etc) or who want to verify the command before pasting.
+ */
+function ClaudeCodeFallback({ mcpUrl }) {
+  const [copied, setCopied] = useState(false);
+  const command = useMemo(
+    () => buildClaudeCodeOauthInstallCommand({ mcpUrl }),
+    [mcpUrl],
+  );
+  const onCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(command);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      toast({
+        title: "Copy failed",
+        description: "Select the command manually.",
+        variant: "destructive",
+      });
+    }
+  }, [command]);
+  return (
+    <div className="space-y-2">
+      <pre className="whitespace-pre-wrap break-all rounded-md bg-white dark:bg-zinc-900 px-2 py-1.5 text-[11.5px] font-mono text-black/85 dark:text-white/85 border border-black/[0.06] dark:border-white/[0.08]">
+{command}
+      </pre>
+      <CopyButton copied={copied} onClick={onCopy} label="Copy command" />
     </div>
   );
 }
