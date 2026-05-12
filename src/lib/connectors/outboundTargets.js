@@ -431,21 +431,58 @@ export const OUTBOUND_TARGETS = [
     direction: "input-only",
   },
   {
-    id: "zapier-ai",
-    clientKind: "zapier-ai",
-    name: "Zapier AI",
+    id: "zapier",
+    clientKind: "zapier",
+    name: "Zapier",
     domain: "zapier.com",
     color: "#FF4A00",
-    installType: "browser-extension",
-    transport: "Zapier app + webhooks",
+    installType: "oauth-mcp",
+    transport: "Streamable HTTP MCP via Zapier MCP Client (OAuth)",
+    // ── Zapier ships TWO MCP integrations and the plan conflated them:
+    //
+    //   1. Zapier MCP SERVER (mcp.zapier.com) — users paste Zapier's
+    //      URL into an MCP client. That bypasses LYKN entirely; not
+    //      a /connections candidate.
+    //
+    //   2. "MCP Client by Zapier" (beta) — Zapier acts as the MCP
+    //      CLIENT and subscribes to remote MCP servers like LYKN via
+    //      OAuth. Once connected, LYKN's tools become triggers /
+    //      actions inside any Zap. THIS is what we wire up: same
+    //      OAuth handshake as Cursor / Claude / Perplexity, just
+    //      with a guided overlay (Zapier doesn't ship a prefill
+    //      deep link). Net effect: any Zap → LYKN's 8 synthesis
+    //      tools → 9000+ apps that can read from your beliefs /
+    //      rules / facts / vault. Meta-integration unlocked.
+    //
+    // Direction is "bidirectional" because Zaps can both read FROM
+    // LYKN (lykn_getContextBlock, lykn_getBeliefs, etc.) and write
+    // INTO LYKN (lykn_proposeFact, lykn_proposeBelief).
     summary:
-      "Workflow automation that connects everything. Input-only: any Zap can pipe events into LYKN, so the automations you build become part of how your AIs reason about you.",
-    helpUrl: "https://zapier.com/developer",
-    helpLabel: "Zapier docs",
-    available: false,
-    comingSoon: true,
-    tier: 3,
-    direction: "input-only",
+      "Workflow automation across 9,000+ apps. Zapier's MCP Client (beta) subscribes to LYKN like Claude or Cursor — once connected, any Zap can call your LYKN tools as triggers or actions, so the automations you build can read from (and write to) your synthesis layer.",
+    helpUrl: "https://help.zapier.com/hc/en-us/articles/38777069364109-Connect-remote-MCP-servers-to-Zapier-using-MCP-Client",
+    helpLabel: "Zapier MCP Client docs",
+    available: true,
+    tier: 2,
+    direction: "bidirectional",
+    // No connectMode → default "open-url" path: auto-copy LYKN's MCP
+    // URL + open Zapier's app-connections page in a new tab. The MCP
+    // Client connection is created from inside the Zap editor (Zapier
+    // doesn't expose a standalone "add MCP" page), so the steps walk
+    // the user through creating a temporary Zap with an MCP Client
+    // step. Once the connection exists, it's reusable across all
+    // future Zaps — they only do this once.
+    openUrl: "https://zapier.com/app/connections",
+    planNote:
+      "MCP Client by Zapier is currently in beta and available on all paid Zapier plans (Pro / Team / Company). Free Zaps may also work depending on Zapier's rollout — try it; if the MCP Client app doesn't appear in your Zap editor, you'll need to upgrade.",
+    installSteps: [
+      "Open Zapier (we opened the App Connections page for you) → click + Add Connection.",
+      "Search for and select MCP Client by Zapier.",
+      "Server URL: paste the URL we copied. Transport: Streamable HTTP. OAuth: Yes. Click Continue.",
+      "Approve the LYKN consent screen when it pops — Zapier finishes the handshake silently.",
+      "Back in Zapier, create or open a Zap and add MCP Client by Zapier as a step → LYKN's tools appear as triggers and actions.",
+    ],
+    successHint:
+      "LYKN is now a callable integration inside every Zap. Try a quick test: create a Zap with a Schedule trigger + MCP Client by Zapier → Run Tool → lykn_getContextBlock. Whenever Zapier runs that Zap, it'll pull your latest synthesis context. The meta-pattern: LYKN as the synthesis layer for any automation you build.",
   },
   {
     id: "v0-lovable",

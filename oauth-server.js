@@ -1347,6 +1347,7 @@ function classifyClientKind(input) {
     if (host === 'openai.com' || host.endsWith('.openai.com')) return 'chatgpt';
     if (host === 'cursor.com' || host.endsWith('.cursor.com')) return 'cursor';
     if (host === 'perplexity.ai' || host.endsWith('.perplexity.ai')) return 'perplexity';
+    if (host === 'zapier.com' || host.endsWith('.zapier.com')) return 'zapier';
   }
 
   // ── client_name fallback ──────────────────────────────────────────
@@ -1357,6 +1358,7 @@ function classifyClientKind(input) {
   if (n.includes('claude')) return 'claude-desktop';
   if (n.includes('cursor')) return 'cursor';
   if (n.includes('perplexity')) return 'perplexity';
+  if (n.includes('zapier')) return 'zapier';
   return 'other';
 }
 

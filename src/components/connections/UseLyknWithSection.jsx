@@ -407,6 +407,7 @@ function clientKindLabel(kind) {
     case "cursor":          return "Cursor";
     case "chatgpt":         return "ChatGPT";
     case "perplexity":      return "Perplexity";
+    case "zapier":          return "Zapier";
     case "gemini":          return "Gemini";
     case "grok":            return "Grok";
     case "windsurf":        return "Windsurf";
