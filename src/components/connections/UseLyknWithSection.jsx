@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import {
+  AlertTriangle,
   ArrowDownToLine,
   ArrowLeftRight,
   ArrowUpRight,
@@ -328,6 +329,19 @@ function OutboundCard({ target, onLaunch }) {
         Transport: {target.transport}
       </div>
 
+      {target.cardWarning && (
+        // Amber ribbon for "this might not work even if you do everything
+        // right" caveats (e.g. Perplexity's staged Cloudflare-Access
+        // rollout). Visible BEFORE the user clicks Connect so they
+        // don't blame LYKN when the third party drops them.
+        <div className="rounded-lg border border-amber-500/25 bg-amber-500/[0.08] dark:bg-amber-500/[0.12] px-2.5 py-1.5 flex items-start gap-1.5">
+          <AlertTriangle className="h-3 w-3 text-amber-700 dark:text-amber-400 flex-shrink-0 mt-[2px]" strokeWidth={2.25} />
+          <p className="text-[10.5px] leading-snug text-amber-900 dark:text-amber-200">
+            {target.cardWarning}
+          </p>
+        </div>
+      )}
+
       <div className="mt-auto flex items-center justify-between gap-2 pt-2 border-t border-black/[0.05] dark:border-white/[0.06]">
         <div className="text-[10px] text-black/40 dark:text-white/40 inline-flex items-center gap-1">
           <Plug className="h-3 w-3" />
@@ -408,7 +422,7 @@ function clientKindLabel(kind) {
     case "chatgpt":         return "ChatGPT";
     case "perplexity":      return "Perplexity";
     case "zapier":          return "Zapier";
-    case "gemini":          return "Gemini";
+    case "gemini":          return "Gemini CLI";
     case "grok":            return "Grok";
     case "windsurf":        return "Windsurf";
     case "replit":          return "Replit";

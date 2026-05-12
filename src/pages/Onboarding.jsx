@@ -17,6 +17,7 @@ import {
   buildCursorOauthDeeplink,
   buildClaudeWebOauthDeeplink,
   buildClaudeCodeOauthInstallCommand,
+  buildGeminiCliInstallCommand,
 } from "@/lib/connectors/outboundTargets";
 
 /**
@@ -51,14 +52,21 @@ import {
  *        user can paste it in their terminal. Same OAuth dance fires
  *        once they run it.
  *
- *     5. Perplexity — guided. Open
+ *     5. Gemini CLI — CLI install. We copy `gemini mcp add --transport
+ *        http lykn "<mcp-url>"`. Same shape as Claude Code; the
+ *        gemini-cli docs confirm built-in OAuth auto-discovery on
+ *        remote http MCP servers. Note: only the Gemini CLI surface
+ *        supports custom MCP today — gemini.google.com / Workspace
+ *        consumer have no Add Custom Connector UI.
+ *
+ *     6. Perplexity — guided. Open
  *        https://www.perplexity.ai/account/connectors and copy the URL.
  *        Paid-only (Pro / Enterprise Pro).
  *
- *     6. Grok — guided. Open https://grok.com/manage-connectors and
+ *     7. Grok — guided. Open https://grok.com/manage-connectors and
  *        copy the URL. Paid (SuperGrok / Premium).
  *
- *     7. Zapier — guided. Open https://zapier.com/app/connections (MCP
+ *     8. Zapier — guided. Open https://zapier.com/app/connections (MCP
  *        Client beta) and copy the URL.
  *
  * Connection detection: poll /api/v1/synthesis/tokens. Any new active
@@ -83,11 +91,15 @@ export default function Onboarding() {
     () => buildClaudeCodeOauthInstallCommand({ mcpUrl }),
     [mcpUrl],
   );
+  const geminiCliCommand = useMemo(
+    () => buildGeminiCliInstallCommand({ mcpUrl }),
+    [mcpUrl],
+  );
 
   // Track which clients have connected this session. Each entry is one
-  // of "cursor" | "claude" | "chatgpt" | "claude-code" | "perplexity" |
-  // "grok" | "zapier"; presence in the set means we've observed an
-  // OAuth bearer attributed to that client.
+  // of "cursor" | "claude" | "chatgpt" | "claude-code" | "gemini" |
+  // "perplexity" | "grok" | "zapier"; presence in the set means we've
+  // observed an OAuth bearer attributed to that client.
   const [connected, setConnected] = useState(() => new Set());
   // Which client did the user most recently CLICK? Used to choose the
   // best client_kind→logical-client mapping when a new bearer appears
@@ -117,13 +129,13 @@ export default function Onboarding() {
   }, [user]);
 
   // Poll for new OAuth-issued bearers while at least one client is
-  // pending. Stops once all 7 are connected or the user navigates
+  // pending. Stops once all 8 are connected or the user navigates
   // away. 3s cadence — tight enough to feel instant, loose enough to
   // not hammer the backend.
   useEffect(() => {
     if (!user) return undefined;
     if (!pending) return undefined;
-    if (connected.size >= 7) return undefined;
+    if (connected.size >= 8) return undefined;
     let cancelled = false;
     let timer;
     const tick = async () => {
@@ -228,6 +240,33 @@ export default function Onboarding() {
       variant: copyOk ? undefined : "destructive",
     });
   }, [claudeCodeCommand]);
+
+  // Gemini CLI is structurally identical to Claude Code (terminal-only,
+  // built-in OAuth on first /mcp request). We deliberately label this
+  // card "Gemini CLI" rather than "Gemini" because gemini.google.com,
+  // the Gemini app, and Workspace consumer have NO Add Custom Connector
+  // UI today — only the CLI surface supports remote MCP. If/when Google
+  // ships a consumer-side prefill or installer flow, this card can
+  // grow a second connectMode and the label can drop the "CLI" suffix.
+  const handleGeminiCli = useCallback(async () => {
+    setPending("gemini");
+    let copyOk = false;
+    try {
+      await navigator.clipboard.writeText(geminiCliCommand);
+      copyOk = true;
+    } catch {
+      copyOk = false;
+    }
+    setCopyJustWorked(copyOk);
+    setTimeout(() => setCopyJustWorked(false), 4000);
+    toast({
+      title: copyOk ? "Install command copied" : "Couldn't copy automatically",
+      description: copyOk
+        ? "Paste it in your terminal. Gemini CLI will pop the OAuth approval next."
+        : "Use the copy button in the card to copy the install command manually.",
+      variant: copyOk ? undefined : "destructive",
+    });
+  }, [geminiCliCommand]);
 
   // Perplexity / Grok / Zapier all share the same shape: open the
   // client's connector-settings page in a new tab and pre-copy the
@@ -336,6 +375,20 @@ export default function Onboarding() {
       });
     }
   }, [claudeCodeCommand]);
+
+  const handleCopyGeminiCommand = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(geminiCliCommand);
+      setCopyJustWorked(true);
+      setTimeout(() => setCopyJustWorked(false), 2000);
+    } catch {
+      toast({
+        title: "Copy failed",
+        description: "Select the command manually.",
+        variant: "destructive",
+      });
+    }
+  }, [geminiCliCommand]);
 
   return (
     <div className="min-h-screen w-full px-6 md:px-10 py-12">
@@ -453,6 +506,32 @@ export default function Onboarding() {
                 </code>{" "}
                 so the connection persists across every project on your
                 machine — you only do this once.
+              </>
+            }
+          />
+          <ConnectCard
+            id="gemini"
+            name="Gemini CLI"
+            domain="gemini.google.com"
+            tagline="CLI install. We copy the `gemini mcp add` command — paste it in your terminal and Gemini CLI pops the OAuth approval."
+            badge="CLI"
+            connected={connected.has("gemini")}
+            pending={pending === "gemini" && !connected.has("gemini")}
+            disabled={!user}
+            onConnect={handleGeminiCli}
+            urlToCopy={geminiCliCommand}
+            urlCopied={copyJustWorked && pending === "gemini"}
+            onCopyUrl={handleCopyGeminiCommand}
+            copyLabel="command"
+            secondaryNote={
+              <>
+                Requires Gemini CLI installed locally (
+                <code className="font-mono text-[10px] px-1 py-[1px] rounded bg-black/[0.06] dark:bg-white/10">
+                  npm i -g @google/gemini-cli
+                </code>
+                ). Only the CLI surface supports custom MCP today —
+                gemini.google.com and Workspace don't expose Add Custom
+                Connector yet.
               </>
             }
           />
@@ -702,6 +781,12 @@ function mapClientKindToSlot(kind) {
       return "claude-code";
     case "chatgpt":
       return "chatgpt";
+    // Gemini's only supported surface today is the CLI; classifier
+    // maps every Gemini DCR registration to the same kind. If/when
+    // Google ships a consumer-side connector flow we'll likely add a
+    // separate "gemini-app" client_kind on the server.
+    case "gemini":
+      return "gemini";
     case "perplexity":
       return "perplexity";
     case "grok":

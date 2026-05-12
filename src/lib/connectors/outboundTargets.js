@@ -207,12 +207,29 @@ export const OUTBOUND_TARGETS = [
     // No connectMode set → falls through to the default "open-url"
     // path in OauthMcpSection.handleConnect (copy URL + open new tab).
     openUrl: "https://www.perplexity.ai/account/connectors",
+    // ── Surfaced ON THE CARD (amber ribbon) and at the TOP of the
+    //    dialog. Use sparingly — this is for "may not work even if
+    //    you do everything right" caveats that the user needs to see
+    //    BEFORE they invest time clicking through.
+    //
+    //    Perplexity is gating custom-connector loading behind a
+    //    Cloudflare Access policy on `_restricted/restricted-feature-
+    //    loader-*.js`. Even paid Pro accounts can hit `auth_status:
+    //    NONE` from CF Access today, in which case the Add modal
+    //    submits without ever calling our /oauth/register and 422s on
+    //    Perplexity's own `/rest/sources/custom`. Their UI then shows
+    //    a generic "Dynamic client registration did not return a
+    //    client_id" error that blames the MCP server even though we
+    //    were never contacted. Front-load the caveat so users don't
+    //    file LYKN bugs for it.
+    cardWarning:
+      "Perplexity is rolling this out gradually — some Pro accounts can't connect yet (Cloudflare Access denies their custom-connectors bundle, surfacing as a generic “DCR didn't return a client_id” error). Max / Enterprise accounts work. Pro accounts: if it fails, it's their rollout, not LYKN.",
     // Front-loaded plan-gating: the LAST thing we want is a Free-plan
     // user clicking Connect, getting a tab to Perplexity, and discovering
     // there's no Add Custom Connector button. Surface this BEFORE the
     // click so they self-select out.
     planNote:
-      "Requires Perplexity Pro or Enterprise (custom remote connectors aren't available on the Free plan). The Connectors page will just show built-in integrations if you're not on Pro.",
+      "Requires Perplexity Pro, Max, or Enterprise (custom remote connectors aren't available on the Free plan). The Connectors page will just show built-in integrations if you're not paid.",
     installSteps: [
       "Open Perplexity → Settings → Connectors (we deep-linked you there).",
       "Click + Custom connector → choose Remote.",
@@ -225,19 +242,53 @@ export const OUTBOUND_TARGETS = [
   {
     id: "gemini",
     clientKind: "gemini",
-    name: "Gemini",
+    name: "Gemini CLI",
     domain: "gemini.google.com",
     color: "#4285F4",
-    installType: "oauth",
-    transport: "OAuth Connector across web + Workspace",
+    installType: "oauth-mcp",
+    transport: "Streamable HTTP MCP via `gemini mcp add` (OAuth)",
+    // ── ONLY the Gemini CLI surface supports remote MCP today.
+    //    gemini.google.com / Workspace / mobile have NO Add Custom
+    //    Connector UI — they ship a fixed set of built-in extensions
+    //    (Search, Maps, YouTube, Flights, Hotels) and there's no
+    //    user-facing way to point them at an arbitrary MCP URL.
+    //    Gemini Enterprise on GCP supports custom MCP data stores
+    //    but it's Workspace-admin-gated and requires an org-policy
+    //    override + Discovery Engine Editor role; not a 1-click flow.
+    //    So this card is specifically for Gemini CLI — same shape as
+    //    Claude Code (terminal install via `gemini mcp add`). When
+    //    Google ships consumer-side Add Custom Connector, we'll
+    //    rename this card to "Gemini" and route to whichever surface
+    //    has the better install path (likely a prefill deep link).
     summary:
-      "Google's Gemini across web, Workspace, and CLI. One OAuth click and Gemini answers reference your synthesis layer wherever you're using it — docs, sheets, chat.",
-    helpUrl: "https://ai.google.dev/gemini-api/docs",
-    helpLabel: "Gemini docs",
-    available: false,
-    comingSoon: true,
+      "Google's CLI coding agent. One click copies a `gemini mcp add` command — paste it in your terminal and Gemini CLI runs the OAuth handshake against LYKN automatically. No API key, no JSON to edit.",
+    helpUrl: "https://google-gemini.github.io/gemini-cli/docs/tools/mcp-server.html",
+    helpLabel: "Gemini CLI MCP docs",
+    available: true,
     tier: 1,
     direction: "bidirectional",
+    // ── Gemini CLI is terminal-only — same install pattern as Claude
+    //    Code (no browser deep link can pop a terminal). The CLI's
+    //    `mcp add --transport http` subcommand registers the server in
+    //    ~/.gemini/settings.json; on first request Gemini hits /mcp,
+    //    gets the 401, reads `WWW-Authenticate: ... resource_metadata`,
+    //    auto-discovers our OAuth provider, registers via DCR, pops a
+    //    browser tab to http://localhost:7777/oauth/callback for
+    //    consent, and stores the resulting bearer in
+    //    ~/.gemini/mcp-oauth-tokens.json. Identical security model to
+    //    Cursor — no PAT in the command, lifecycle in /Connections.
+    connectMode: "gemini-cli",
+    openUrl: "https://google-gemini.github.io/gemini-cli/docs/tools/mcp-server.html",
+    planNote:
+      "Requires Gemini CLI installed locally (npm i -g @google/gemini-cli). Free to install; the underlying Gemini API quota covers what the CLI actually calls. No paid plan or API key needed for the LYKN connection itself — Gemini CLI's built-in OAuth handles the handshake.",
+    installSteps: [
+      "Press Connect Gemini CLI — we copy the install command to your clipboard.",
+      "Paste it into your terminal and press Enter.",
+      "Gemini CLI pops a browser tab to the LYKN consent screen — click Approve.",
+      "Gemini CLI stores the token at ~/.gemini/mcp-oauth-tokens.json. We auto-detect the new bearer here.",
+    ],
+    successHint:
+      "LYKN is now wired into Gemini CLI — confirm with `gemini mcp list`. Run `gemini` and ask it to use the LYKN tools; the synthesis layer is available everywhere `gemini` runs on this machine.",
   },
   {
     id: "grok",
@@ -608,6 +659,34 @@ export function buildClaudeCodeOauthInstallCommand({ mcpUrl }) {
 }
 
 /**
+ * Build the canonical `gemini mcp add` command for Gemini CLI. Same
+ * shape as the Claude Code helper above — no embedded token, the CLI's
+ * built-in OAuth discovery does the handshake on first request:
+ *
+ *   /mcp → 401 with WWW-Authenticate: ... resource_metadata=…
+ *     → .well-known/oauth-authorization-server discovery
+ *     → DCR (Gemini CLI registers itself)
+ *     → http://localhost:7777/oauth/callback for the redirect
+ *     → user approves on /oauth/consent
+ *     → token stored in ~/.gemini/mcp-oauth-tokens.json
+ *
+ * Per `gemini mcp --help` (CLI v0.4+, the version that shipped the
+ * `mcp` subcommand — earlier versions required hand-editing
+ * settings.json). Syntax:
+ *
+ *   gemini mcp add --transport http <name> <url>
+ *
+ * We don't pass `--scope` because Gemini CLI's scope model is opt-in
+ * project vs. global via the absence/presence of a project-level
+ * settings.json — the default writes to ~/.gemini/settings.json which
+ * is what we want (LYKN everywhere `gemini` runs).
+ */
+export function buildGeminiCliInstallCommand({ mcpUrl }) {
+  const url = ensureHttpsMcpUrl(mcpUrl);
+  return `gemini mcp add --transport http lykn "${url}"`;
+}
+
+/**
  * Build a Cursor install deeplink. Per Cursor's docs the spec is:
  *
  *   cursor://anysphere.cursor-deeplink/mcp/install?name=NAME&config=BASE64
@@ -903,6 +982,22 @@ export const LYKN_PROJECT_INSTRUCTIONS_TARGETS = {
     ],
     helpUrl: "https://docs.claude.com/en/docs/claude-code/memory",
     helpLabel: "Claude Code memory docs",
+  },
+  // Gemini CLI mirrors Claude Code's memory model — there's a global
+  // ~/.gemini/GEMINI.md for system-wide instructions and an optional
+  // per-project GEMINI.md at the repo root. Same paste-and-save flow.
+  // (Per https://google-gemini.github.io/gemini-cli/docs/memory.html —
+  // Gemini CLI's memory subsystem loads GEMINI.md files hierarchically
+  // from CWD upward, then from ~/.gemini/GEMINI.md as the fallback.)
+  gemini: {
+    surfaceLabel: "GEMINI.md",
+    steps: [
+      "Create (or open) ~/.gemini/GEMINI.md for global instructions, OR a GEMINI.md in your project root for per-project rules.",
+      "Paste the snippet below. Save.",
+      "Run `gemini` in that directory — Gemini CLI reads GEMINI.md on startup.",
+    ],
+    helpUrl: "https://google-gemini.github.io/gemini-cli/docs/memory.html",
+    helpLabel: "Gemini CLI memory docs",
   },
   cursor: {
     surfaceLabel: ".cursorrules / Rules",

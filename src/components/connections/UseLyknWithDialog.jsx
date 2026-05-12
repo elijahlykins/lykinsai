@@ -10,6 +10,7 @@ import { supabase } from "@/lib/supabase";
 import { API_BASE_URL } from "@/lib/api-config";
 import { toast } from "@/components/ui/use-toast";
 import {
+  AlertTriangle,
   Copy,
   CheckCircle2,
   ExternalLink,
@@ -23,6 +24,7 @@ import {
   buildCursorOauthDeeplink,
   buildClaudeWebOauthDeeplink,
   buildClaudeCodeOauthInstallCommand,
+  buildGeminiCliInstallCommand,
   buildRawInstallInfo,
   buildLyknProjectInstructions,
   LYKN_PROJECT_INSTRUCTIONS_TARGETS,
@@ -469,6 +471,7 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
           "Paste the URL above and approve the LYKN consent screen.",
         ];
   const planNote = target?.planNote || null;
+  const cardWarning = target?.cardWarning || null;
   const successHint = target?.successHint || null;
   const helpLabel = target?.helpLabel || `${targetName} connectors help`;
 
@@ -573,20 +576,21 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
       return;
     }
 
-    // ── Claude Code (CLI). No browser deep link can pop a terminal,
-    //    so the primary action becomes "copy a one-line install
-    //    command to the clipboard." Command uses --transport http
-    //    so Claude Code's built-in OAuth handshake fires on first
+    // ── CLI-style installs (Claude Code, Gemini CLI, future
+    //    terminal-only clients). No browser deep link can pop a
+    //    terminal, so the primary action becomes "copy a one-line
+    //    install command to the clipboard." Command uses --transport
+    //    http so the CLI's built-in OAuth handshake fires on first
     //    request — same /mcp 401 → discovery → DCR → consent dance
     //    Cursor uses, just initiated from a terminal paste. We don't
-    //    open any tab; Claude Code will open the consent tab itself
-    //    once the user hits Enter. The token poll still detects the
-    //    resulting bearer and flips the dialog to Connected.
-    if (connectMode === "claude-code-cli") {
-      const command = buildClaudeCodeOauthInstallCommand({ mcpUrl });
+    //    open any tab; the CLI itself opens the consent tab once the
+    //    user hits Enter. Token poll detects the resulting bearer and
+    //    flips the dialog to Connected.
+    const cliCommand = buildCliInstallCommand(connectMode, { mcpUrl });
+    if (cliCommand) {
       let copyOk = false;
       try {
-        await navigator.clipboard.writeText(command);
+        await navigator.clipboard.writeText(cliCommand);
         copyOk = true;
       } catch {
         copyOk = false;
@@ -644,6 +648,22 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
 
   return (
     <div className="space-y-3">
+      {/* ── Card-level warning (e.g. third party is staging this feature
+              and some accounts can't connect even when configured
+              correctly). Shown above the hero so users see it before
+              investing time in the flow. ─────────────────────────── */}
+      {cardWarning && step < 2 && (
+        <div className="rounded-xl border border-amber-500/30 bg-amber-500/[0.08] dark:bg-amber-500/[0.12] p-3 flex items-start gap-2">
+          <AlertTriangle
+            className="h-4 w-4 text-amber-700 dark:text-amber-400 flex-shrink-0 mt-[1px]"
+            strokeWidth={2.25}
+          />
+          <p className="text-[11.5px] leading-relaxed text-amber-900 dark:text-amber-200">
+            {cardWarning}
+          </p>
+        </div>
+      )}
+
       {/* ── Hero: single primary action ─────────────────────────── */}
       {step < 2 && (
         <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/[0.04] dark:bg-emerald-500/[0.06] p-3 space-y-2.5">
@@ -668,6 +688,13 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
                 pops a browser tab to the LYKN consent screen, you approve,
                 we auto-detect the connection.
               </>
+            ) : connectMode === "gemini-cli" ? (
+              <>
+                One button copies a <code className="font-mono text-[11.5px]">gemini mcp add</code> command.
+                Paste it into your terminal and press Enter — Gemini CLI
+                pops a browser tab to the LYKN consent screen, you approve,
+                we auto-detect the connection.
+              </>
             ) : (
               <>
                 One button copies LYKN's MCP URL and opens {targetName} for you.
@@ -684,7 +711,7 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
             {copyJustWorked ? (
               <>
                 <CheckCircle2 className="h-4 w-4" />
-                {connectMode === "claude-code-cli"
+                {isCliConnectMode(connectMode)
                   ? `Command copied — paste in your terminal`
                   : `URL copied — finish in ${targetName}`}
                 <ArrowRight className="h-4 w-4" />
@@ -788,13 +815,16 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
           paste it themselves. For everyone else, just the MCP URL. */}
       <details className="rounded-xl border border-black/[0.06] dark:border-white/10 bg-black/[0.02] dark:bg-white/[0.04] px-3 py-2">
         <summary className="cursor-pointer list-none text-[11px] font-medium text-black/65 dark:text-white/70 hover:text-black/90 dark:hover:text-white select-none">
-          {connectMode === "claude-code-cli"
+          {isCliConnectMode(connectMode)
             ? "Show install command (or copy didn't work)"
             : "Need the URL by itself? (or copy didn't work)"}
         </summary>
         <div className="mt-2 space-y-1.5">
-          {connectMode === "claude-code-cli" ? (
-            <ClaudeCodeFallback mcpUrl={mcpUrl} />
+          {isCliConnectMode(connectMode) ? (
+            <CliInstallCommandFallback
+              connectMode={connectMode}
+              mcpUrl={mcpUrl}
+            />
           ) : (
             <div className="flex items-center gap-2">
               <code className="flex-1 min-w-0 truncate rounded-md bg-white dark:bg-zinc-900 px-2 py-1.5 text-[11.5px] font-mono text-black/85 dark:text-white/85 border border-black/[0.06] dark:border-white/[0.08]">
@@ -865,7 +895,7 @@ function stepOnePromptTitle({ connectMode, targetName }) {
   if (connectMode === "claude-prefill") {
     return `Press Connect — we'll open Claude with LYKN's details pre-filled`;
   }
-  if (connectMode === "claude-code-cli") {
+  if (isCliConnectMode(connectMode)) {
     return `Press Connect — we'll copy a one-line ${targetName} install command`;
   }
   return `Press Connect — we'll copy the URL and open ${targetName}`;
@@ -878,24 +908,46 @@ function stepOneDoneTitle({ connectMode, targetName }) {
   if (connectMode === "claude-prefill") {
     return `Claude opened with LYKN pre-filled`;
   }
-  if (connectMode === "claude-code-cli") {
+  if (isCliConnectMode(connectMode)) {
     return `Install command copied — paste it in your terminal`;
   }
   return `URL copied + ${targetName} opened in a new tab`;
 }
 
+// Connect-mode predicates / dispatchers. Kept tiny + colocated with the
+// stepper helpers so future CLI clients (Codex CLI, Aider, etc.) only
+// need to (a) add a `connectMode: "<cli>-cli"` to their outboundTarget
+// entry, (b) add a builder + branch here, and (c) the rest of the
+// dialog UX (hero text, button label, fallback disclosure, stepper) all
+// route through these predicates automatically.
+function isCliConnectMode(connectMode) {
+  return connectMode === "claude-code-cli" || connectMode === "gemini-cli";
+}
+
+function buildCliInstallCommand(connectMode, { mcpUrl }) {
+  if (connectMode === "claude-code-cli") {
+    return buildClaudeCodeOauthInstallCommand({ mcpUrl });
+  }
+  if (connectMode === "gemini-cli") {
+    return buildGeminiCliInstallCommand({ mcpUrl });
+  }
+  return null;
+}
+
 /**
- * ClaudeCodeFallback — recovery UI shown inside the manual-fallback
- * disclosure when connectMode === "claude-code-cli". The auto-copy
- * path is the happy path; this exists for users on browsers/contexts
- * where clipboard writes fail silently (older Firefox, some embedded
- * webviews, etc) or who want to verify the command before pasting.
+ * CliInstallCommandFallback — recovery UI shown inside the manual-
+ * fallback disclosure for any connectMode where `isCliConnectMode`
+ * returns true (Claude Code, Gemini CLI, future terminal-only clients).
+ * The auto-copy path is the happy path; this exists for users on
+ * browsers/contexts where clipboard writes fail silently (older
+ * Firefox, some embedded webviews, etc) or who want to verify the
+ * command before pasting.
  */
-function ClaudeCodeFallback({ mcpUrl }) {
+function CliInstallCommandFallback({ connectMode, mcpUrl }) {
   const [copied, setCopied] = useState(false);
   const command = useMemo(
-    () => buildClaudeCodeOauthInstallCommand({ mcpUrl }),
-    [mcpUrl],
+    () => buildCliInstallCommand(connectMode, { mcpUrl }) || "",
+    [connectMode, mcpUrl],
   );
   const onCopy = useCallback(async () => {
     try {

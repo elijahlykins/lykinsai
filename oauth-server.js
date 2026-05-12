@@ -1384,12 +1384,19 @@ function classifyClientKind(input) {
   }
 
   // ── client_name fallback ──────────────────────────────────────────
+  // Gemini CLI uses http://localhost:7777/oauth/callback as its
+  // redirect URI (per google-gemini-cli docs) so the redirect-host
+  // fingerprint above can't identify it — every CLI-based client uses
+  // localhost. Fall through to client_name matching. Gemini CLI's DCR
+  // registration self-reports as "Gemini CLI" / "gemini-cli" so the
+  // substring match is reliable. Same pattern as Claude Code below.
   const n = String(name || '').toLowerCase();
   if (n.includes('chatgpt') || n.includes('openai')) return 'chatgpt';
   if (n.includes('claude') && n.includes('code')) return 'claude-code';
   if (n.includes('claude.ai') || n.includes('claude-web')) return 'claude-web';
   if (n.includes('claude')) return 'claude-desktop';
   if (n.includes('cursor')) return 'cursor';
+  if (n.includes('gemini')) return 'gemini';
   if (n.includes('perplexity')) return 'perplexity';
   if (n.includes('zapier')) return 'zapier';
   if (n.includes('grok') || n.includes('xai')) return 'grok';
