@@ -142,6 +142,7 @@ const CLIENT_LABEL: Record<string, string> = {
   cursor: "Cursor",
   gemini: "Gemini CLI",
   replit: "Replit",
+  lovable: "Lovable",
   "notion-ai": "Notion AI",
   "codex-cli": "Codex CLI",
   windsurf: "Windsurf",

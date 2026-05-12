@@ -535,6 +535,69 @@ export const OUTBOUND_TARGETS = [
       "LYKN is now wired into Replit Agent. To get Agent to actually reach for it, mention it by name in your prompt (e.g. \"check my LYKN context first, then…\") or set a project-level instruction in your Repl's `.replit` agent config. Replit's security scanner will surface any LYKN tools it deems suspicious before they run.",
   },
   {
+    id: "lovable",
+    clientKind: "lovable",
+    name: "Lovable",
+    domain: "lovable.dev",
+    color: "#FF6B6B",
+    installType: "oauth-mcp",
+    transport: "Streamable HTTP MCP via Lovable chat connectors (OAuth)",
+    // ── Lovable (the AI app builder, sibling to Replit + v0 + Bolt)
+    //    shipped MCP chat connectors in 2025 — both prebuilt
+    //    (Notion / Linear / Atlassian / Miro / Sanity / etc.) and
+    //    custom MCP servers (us). Custom MCP is paid-only: Pro plan
+    //    ($25/mo) and above. OAuth is the DEFAULT auth method per
+    //    docs.lovable.dev/integrations/mcp-servers — explicitly:
+    //    "OAuth (default): Lovable uses OAuth by default. After you
+    //    click Add & authorize, you'll be prompted to authorize."
+    //
+    //    Connection lives in Connectors → Chat connectors → New MCP
+    //    server. No deep link to that dialog (Lovable's settings are
+    //    SPA-routed without stable URLs), so we use the same guided
+    //    pattern as Perplexity / Grok / Zapier / Notion: copy LYKN's
+    //    MCP URL + open Lovable in a new tab, then walk the user
+    //    through the two clicks to the New MCP server form.
+    //
+    //    Once connected, LYKN tools become available as context for
+    //    Lovable's agent — it can pull synthesis context into every
+    //    prototype + landing-page + app it generates. High-leverage
+    //    integration: every app the user ships from Lovable can
+    //    incorporate their LYKN context.
+    //
+    //    Plan note also calls out a subtle gotcha: chat connectors are
+    //    per-USER on Pro, but on Business and Enterprise plans
+    //    workspace admins can disable individual MCP servers
+    //    workspace-wide under Connectors → Admin settings. Surface
+    //    that so Business-tier users aren't surprised if their admin
+    //    has blocked external MCP.
+    summary:
+      "Lovable (the AI app builder) supports custom MCP servers as chat connectors on paid plans. One click copies LYKN's MCP URL and opens Lovable; you navigate to Connectors → Chat connectors → New MCP server, paste the URL, authorize. Lovable's agent then pulls your synthesis layer as context for every app it generates.",
+    helpUrl: "https://docs.lovable.dev/integrations/mcp-servers",
+    helpLabel: "Lovable chat connectors docs",
+    available: true,
+    tier: 1,
+    direction: "bidirectional",
+    // No connectMode → defaults to "open-url" (guided: copy + open
+    // new tab). Lovable's New MCP server dialog has no deep-link
+    // prefill spec like Replit / Cursor / Claude.
+    openUrl: "https://lovable.dev/",
+    requiresPaidPlan: {
+      title: "Lovable custom MCP needs a paid plan",
+      message:
+        "Lovable's custom MCP servers (chat connectors) are paid-only — you'll need Lovable Pro ($25/mo) or above. Free accounts can use the prebuilt connectors (Notion, Linear, Atlassian, etc.) but can't add LYKN as a custom server. Continue?",
+    },
+    planNote:
+      "Requires a paid Lovable plan (Pro at $25/mo or above) — custom MCP servers are paid-only; Free accounts can only use prebuilt connectors. On Business / Enterprise plans, workspace admins can also disable individual MCP servers workspace-wide under Connectors → Admin settings, so check with your admin if the New MCP server option isn't visible.",
+    installSteps: [
+      "Press Connect Lovable — we copy the URL and open lovable.dev in a new tab.",
+      "In Lovable: Connectors (sidebar) → Chat connectors → New MCP server.",
+      "Server name = LYKN. Server URL = paste the URL we copied. Authentication = OAuth (default).",
+      "Click Add & authorize → approve the LYKN consent screen when it pops — done.",
+    ],
+    successHint:
+      "LYKN is now a Lovable chat connector. To get the Lovable Agent to actually use it, mention LYKN by name in your prompts (e.g. \"using my LYKN context, build a landing page that…\") or click the + in the prompt box and pick LYKN from Connectors. Every prototype / landing page / app the agent ships from now on can pull your synthesis layer as context. Chat connectors are per-user — your teammates need to connect their own LYKN accounts.",
+  },
+  {
     id: "github-copilot",
     clientKind: "github-copilot",
     name: "GitHub Copilot",
@@ -640,6 +703,19 @@ export const OUTBOUND_TARGETS = [
     // help doc is explicit: custom MCP servers are admin-toggled per
     // workspace under Settings → Notion AI → AI connectors before
     // members can add their own per-agent.
+    //
+    // requiresPaidPlan triggers a confirm dialog before opening
+    // Notion — this is Notion's case specifically because the gate
+    // is exceptionally tough (Business workspace minimum ~$15/seat/mo
+    // PLUS admin enablement), and the docs/secondaryNote alone aren't
+    // hitting hard enough — users were clicking Connect, opening
+    // their personal workspace, and then discovering they can't use
+    // it. Last-chance bail-out at click time.
+    requiresPaidPlan: {
+      title: "Notion AI Custom Agents need Business or Enterprise",
+      message:
+        "Notion AI Custom Agents with custom MCP servers require a Notion Business or Enterprise workspace (not Pro / Plus / Free — those plans don't expose Custom Agents at all). A workspace admin also has to toggle Custom MCP servers on first. Continue?",
+    },
     planNote:
       "Requires a Notion Business or Enterprise workspace AND a workspace admin to first enable custom MCP servers under Settings → Notion AI → AI connectors. Once that's on, any member can add LYKN to their Custom Agents. Personal / Plus / Free plans don't expose Custom Agents at all.",
     installSteps: [

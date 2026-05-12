@@ -1395,6 +1395,11 @@ function classifyClientKind(input) {
     // their callback URL. Cover both root hosts.
     if (host === 'notion.com' || host.endsWith('.notion.com')) return 'notion-ai';
     if (host === 'notion.so' || host.endsWith('.notion.so')) return 'notion-ai';
+    // Lovable's MCP chat connectors complete OAuth via their app
+    // domain (lovable.dev / *.lovable.app for deployed apps; the
+    // chat-connector callback specifically lives on lovable.dev).
+    if (host === 'lovable.dev' || host.endsWith('.lovable.dev')) return 'lovable';
+    if (host === 'lovable.app' || host.endsWith('.lovable.app')) return 'lovable';
     // VS Code Copilot's two redirect URIs per github docs:
     // http://127.0.0.1:33418 (native loopback) and
     // https://vscode.dev/redirect (web bridge). The loopback host
@@ -1445,6 +1450,7 @@ function classifyClientKind(input) {
   // matching "openai" because that's too broad (any OpenAI-tooling
   // client could match including the canonical openai CLI itself).
   if (n.includes('codex')) return 'codex-cli';
+  if (n.includes('lovable')) return 'lovable';
   // GitHub Copilot in VS Code registers itself with a name like
   // "GitHub Copilot Chat" / "VS Code (GitHub Copilot)" depending on
   // the install path. Match either signal. Don't match bare "github"

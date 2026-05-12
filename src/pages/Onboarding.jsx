@@ -14,6 +14,7 @@ import { supabase } from "@/lib/supabase";
 import { API_BASE_URL } from "@/lib/api-config";
 import { toast } from "@/components/ui/use-toast";
 import {
+  OUTBOUND_TARGETS,
   buildCursorOauthDeeplink,
   buildClaudeWebOauthDeeplink,
   buildClaudeCodeOauthInstallCommand,
@@ -25,11 +26,32 @@ import {
   buildCopilotInstallLink,
 } from "@/lib/connectors/outboundTargets";
 
+// Gate paid-only connectors behind a confirm dialog at click time.
+// `requiresPaidPlan` on an outboundTarget entry is the source of
+// truth — if present, we pop a native confirm() before invoking the
+// real handler. Returns true if the user confirmed (or no gate is
+// configured), false if they bailed. Caller short-circuits on false.
+//
+// We use native confirm() instead of a Radix AlertDialog because
+// (a) zero new UI deps, (b) keystroke shortcuts (Enter / Esc) work
+// out of the box, (c) the prompt copy is short enough that the
+// native dialog reads cleanly. If we ever want richer formatting
+// (links to pricing pages, side-by-side plan tiers) we can swap to
+// AlertDialog without changing this contract.
+function confirmPaidPlanGate(targetId) {
+  const target = OUTBOUND_TARGETS.find((t) => t.id === targetId);
+  if (!target?.requiresPaidPlan) return true;
+  const { title, message } = target.requiresPaidPlan;
+  const text = `${title}\n\n${message}`;
+  // eslint-disable-next-line no-alert
+  return window.confirm(text);
+}
+
 /**
  * Post-signup "Connect your AI tools" onboarding screen.
  *
- * Seven cards spanning the full OAuth-MCP catalog we've shipped. Two
- * tiers of friction:
+ * Fifteen cards spanning the full OAuth-MCP catalog we've shipped.
+ * Two tiers of friction, ordered by reach × ease within each tier:
  *
  *   Headliners (top, 1-click or near-1-click, free-plan-friendly):
  *
@@ -50,46 +72,59 @@ import {
  *        chatgpt.com + copy the URL, then surface the 5-step
  *        walkthrough. Plus / Pro / Team / Enterprise + Developer Mode.
  *
- *   More tools (below, mix of 1-click, CLI, and guided OAuth flows):
+ *   More tools (below, ordered: 1-click → guided → CLI → snippet):
  *
- *     4. Replit — 1-click prefill deep link. Replit shipped custom MCP
+ *     4. GitHub Copilot — true 1-click. We open VS Code's MCP install
+ *        link (https://insiders.vscode.dev/redirect/mcp/install?name=
+ *        lykn&config=…) which hands off to VS Code's native vscode:
+ *        mcp/install handler. VS Code presents a target-selection
+ *        dialog (Global / Workspace / Remote), then Copilot does the
+ *        standard OAuth DCR dance on first /mcp request.
+ *
+ *     5. Replit — 1-click prefill deep link. Replit shipped custom MCP
  *        in Dec 2025 with a base64-payload `?mcp=…` install-link spec
  *        that pre-populates Add MCP Server. Hit Test & Save, approve,
  *        done. Paid plan (Replit Core+) required.
  *
- *     5. Notion AI — guided OAuth. Notion's Custom Agents support
+ *     6. Lovable — guided OAuth. AI app builder (sibling to Replit /
+ *        v0 / Bolt). Chat connectors support custom MCP servers with
+ *        OAuth as the default auth method, but only on paid plans
+ *        (Pro $25/mo and up). Gated behind the requiresPaidPlan
+ *        confirm dialog so Free users don't waste a click.
+ *
+ *     7. Notion AI — guided OAuth. Notion's Custom Agents support
  *        custom MCP servers (per notion.com/help/mcp-connections-for-
  *        custom-agents) but the form is buried inside each Agent's
  *        Settings → Tools & Access panel — no URL to deep link to.
- *        Even Notion's `/settings` route doesn't survive a cold load
+ *        Even Notion's /settings route doesn't survive a cold load
  *        (their SPA flashes the settings overlay then routes back to
  *        workspace home). So we open notion.so/ (workspace home) and
- *        rely on the install-step copy to walk users through the
- *        two sidebar clicks: Settings & members → Notion AI → AI
- *        connectors. Same trade-off ChatGPT's card makes.
- *        We open the help page + copy LYKN's URL; user pastes it per
- *        Agent. Business / Enterprise only + workspace admin has to
- *        first toggle Custom MCP on.
+ *        rely on the install-step copy to walk users through the two
+ *        sidebar clicks: Settings & members → Notion AI → AI
+ *        connectors. Business / Enterprise only + workspace admin
+ *        has to first toggle Custom MCP on. Also gated by the
+ *        requiresPaidPlan confirm — most expensive paid-plan floor
+ *        in the catalog so it earns the loudest warning.
  *
- *     6. Claude Code — CLI install. We copy `claude mcp add --transport
- *        http --scope user lykn "<mcp-url>"` to the clipboard so the
- *        user can paste it in their terminal. Same OAuth dance fires
- *        once they run it.
+ *     8. Claude Code — CLI install. We copy `claude mcp add
+ *        --transport http --scope user lykn "<mcp-url>"` so the user
+ *        pastes it in their terminal. Same OAuth dance fires once
+ *        they run it.
  *
- *     7. Gemini CLI — CLI install. We copy `gemini mcp add --transport
- *        http lykn "<mcp-url>"`. Same shape as Claude Code; the
- *        gemini-cli docs confirm built-in OAuth auto-discovery on
- *        remote http MCP servers. Note: only the Gemini CLI surface
- *        supports custom MCP today — gemini.google.com / Workspace
- *        consumer have no Add Custom Connector UI.
+ *     9. Gemini CLI — CLI install. We copy `gemini mcp add
+ *        --transport http lykn "<mcp-url>"`. Same shape as Claude
+ *        Code; gemini-cli docs confirm built-in OAuth auto-discovery
+ *        on remote http MCP servers. Note: only the Gemini CLI
+ *        surface supports custom MCP today — gemini.google.com /
+ *        Workspace consumer have no Add Custom Connector UI.
  *
- *     8. Codex CLI — CLI install. We copy `codex mcp add lykn --url
+ *    10. Codex CLI — CLI install. We copy `codex mcp add lykn --url
  *        "<mcp-url>"`. Native streamable HTTP OAuth (confirmed in the
  *        codex source at codex-rs/cli/src/mcp_cmd.rs); same handshake
  *        Cursor / Claude Code / Gemini CLI use. Config persists in
  *        ~/.codex/config.toml under [mcp_servers.lykn].
  *
- *     9. Windsurf — config-file install. We copy a JSON snippet the
+ *    11. Windsurf — config-file install. We copy a JSON snippet the
  *        user pastes into mcp_config.json via Cmd+Shift+P → Configure
  *        MCP Servers. Snippet wraps our /mcp endpoint in `npx
  *        mcp-remote` (the standard stdio→HTTP bridge with OAuth)
@@ -97,7 +132,7 @@ import {
  *        1-click via windsurf:// is blocked on LYKN's marketplace
  *        submission; this is the next-best path today.
  *
- *    10. JetBrains AI — config-snippet install. We copy a fully-
+ *    12. JetBrains AI — config-snippet install. We copy a fully-
  *        wrapped `{ "mcpServers": { … } }` JSON payload (JetBrains'
  *        New MCP Server dialog expects this shape, NOT the inner
  *        entry alone) wrapping our /mcp endpoint in `npx mcp-remote`
@@ -105,22 +140,15 @@ import {
  *        Assistant → MCP → New, or into ~/.junie/mcp/mcp.json for
  *        Junie users. Same snippet works for both surfaces.
  *
- *    11. GitHub Copilot — true 1-click. We open VS Code's MCP install
- *        link (https://insiders.vscode.dev/redirect/mcp/install?name=
- *        lykn&config=…) which hands off to VS Code's native vscode:
- *        mcp/install handler. VS Code presents a target-selection
- *        dialog (Global / Workspace / Remote), then Copilot does the
- *        standard OAuth DCR dance on first /mcp request.
+ *    13. Perplexity — guided. Open
+ *        https://www.perplexity.ai/account/connectors and copy the
+ *        URL. Paid-only (Pro / Enterprise Pro).
  *
- *    12. Perplexity — guided. Open
- *        https://www.perplexity.ai/account/connectors and copy the URL.
- *        Paid-only (Pro / Enterprise Pro).
- *
- *    13. Grok — guided. Open https://grok.com/manage-connectors and
+ *    14. Grok — guided. Open https://grok.com/manage-connectors and
  *        copy the URL. Paid (SuperGrok / Premium).
  *
- *    14. Zapier — guided. Open https://zapier.com/app/connections (MCP
- *        Client beta) and copy the URL.
+ *    15. Zapier — guided. Open https://zapier.com/app/connections
+ *        (MCP Client beta) and copy the URL.
  *
  * Connection detection: poll /api/v1/synthesis/tokens. Any new active
  * token with `oauth_client_id` populated = a successful OAuth
@@ -171,10 +199,10 @@ export default function Onboarding() {
 
   // Track which clients have connected this session. Each entry is one
   // of "cursor" | "claude" | "chatgpt" | "claude-code" | "gemini" |
-  // "codex-cli" | "replit" | "notion-ai" | "windsurf" | "jetbrains" |
-  // "github-copilot" | "perplexity" | "grok" | "zapier"; presence in
-  // the set means we've observed an OAuth bearer attributed to that
-  // client.
+  // "codex-cli" | "replit" | "lovable" | "notion-ai" | "windsurf" |
+  // "jetbrains" | "github-copilot" | "perplexity" | "grok" | "zapier";
+  // presence in the set means we've observed an OAuth bearer
+  // attributed to that client.
   const [connected, setConnected] = useState(() => new Set());
   // Which client did the user most recently CLICK? Used to choose the
   // best client_kind→logical-client mapping when a new bearer appears
@@ -210,7 +238,7 @@ export default function Onboarding() {
   useEffect(() => {
     if (!user) return undefined;
     if (!pending) return undefined;
-    if (connected.size >= 14) return undefined;
+    if (connected.size >= 15) return undefined;
     let cancelled = false;
     let timer;
     const tick = async () => {
@@ -463,7 +491,41 @@ export default function Onboarding() {
   // the two sidebar clicks: Settings & members → Notion AI → AI
   // connectors. Ends with an OAuth approval that mints the bearer
   // our poller is waiting for.
+  // Lovable — AI app builder. Sibling to Replit / v0 / Bolt. Chat
+  // connectors support custom MCP servers on paid plans with OAuth
+  // as the default auth method (per docs.lovable.dev/integrations/
+  // mcp-servers). No deep link to the New MCP server dialog, so we
+  // use the same guided pattern as Notion / Perplexity / Grok /
+  // Zapier: copy LYKN's MCP URL + open lovable.dev in a new tab,
+  // walk the user through the two clicks to the New MCP server form
+  // via the install-step copy on the card. Gated by the paid-plan
+  // confirm dialog because Free accounts can use prebuilt connectors
+  // but NOT custom MCP — users would otherwise click Connect and
+  // discover the wall inside Lovable.
+  const handleLovable = useCallback(async () => {
+    if (!confirmPaidPlanGate("lovable")) return;
+    setPending("lovable");
+    let copyOk = false;
+    try {
+      await navigator.clipboard.writeText(mcpUrl);
+      copyOk = true;
+    } catch {
+      copyOk = false;
+    }
+    setCopyJustWorked(copyOk);
+    setTimeout(() => setCopyJustWorked(false), 4000);
+    toast({
+      title: copyOk ? "URL copied + Lovable opened" : "Couldn't copy automatically",
+      description: copyOk
+        ? "In Lovable: Connectors → Chat connectors → New MCP server → paste the URL → Add & authorize."
+        : "Use the copy-URL button in the card before pasting in Lovable.",
+      variant: copyOk ? undefined : "destructive",
+    });
+    window.open("https://lovable.dev/", "_blank", "noopener,noreferrer");
+  }, [mcpUrl]);
+
   const handleNotionAi = useCallback(async () => {
+    if (!confirmPaidPlanGate("notion-ai")) return;
     setPending("notion-ai");
     let copyOk = false;
     try {
@@ -778,6 +840,29 @@ export default function Onboarding() {
                 Requires a paid Replit account (Core or above — same tier
                 that unlocks Replit Agent). LYKN tools then show up in
                 every Repl's Agent chat.
+              </>
+            }
+          />
+          <ConnectCard
+            id="lovable"
+            name="Lovable"
+            domain="lovable.dev"
+            tagline="We copy the URL and open Lovable. Connectors → Chat connectors → New MCP server → paste → OAuth → authorize. Every app the agent ships sees your synthesis layer."
+            badge="Guided"
+            connected={connected.has("lovable")}
+            pending={pending === "lovable" && !connected.has("lovable")}
+            disabled={!user}
+            onConnect={handleLovable}
+            urlToCopy={mcpUrl}
+            urlCopied={copyJustWorked && pending === "lovable"}
+            onCopyUrl={handleCopyUrl}
+            secondaryNote={
+              <>
+                Custom MCP servers require a paid Lovable plan (Pro at
+                $25/mo or above). Free accounts can use prebuilt
+                connectors (Notion, Linear, Atlassian) but can't add LYKN
+                as a custom server. We pop a confirm before connecting so
+                you don't waste a click if you're on Free.
               </>
             }
           />
@@ -1202,6 +1287,8 @@ function mapClientKindToSlot(kind) {
       return "notion-ai";
     case "codex-cli":
       return "codex-cli";
+    case "lovable":
+      return "lovable";
     case "windsurf":
       return "windsurf";
     case "jetbrains":

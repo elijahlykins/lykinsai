@@ -554,6 +554,20 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
   const connectMode = target?.connectMode || "open-url";
 
   const handleConnect = useCallback(async () => {
+    // ── Paid-plan gate. If the target ships a `requiresPaidPlan`
+    //    descriptor, pop a native confirm() before doing anything
+    //    else. Last-chance bail-out for users who didn't read the
+    //    planNote / secondaryNote and would otherwise click Connect,
+    //    open the target app, and discover the wall. Same contract
+    //    Onboarding.jsx uses (confirmPaidPlanGate); kept inline here
+    //    rather than DRY'd into a hook because the dialog has its
+    //    own scope and we want one less import.
+    if (target?.requiresPaidPlan) {
+      const { title, message } = target.requiresPaidPlan;
+      // eslint-disable-next-line no-alert
+      if (!window.confirm(`${title}\n\n${message}`)) return;
+    }
+
     // ── Cursor (and any future native MCP client using a private-use
     //    URI scheme): fire the deeplink. The OS hands the URL to the
     //    registered handler, which pops the MCP install dialog. Skipping
@@ -684,7 +698,7 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
     window.open(openUrl, "_blank", "noopener,noreferrer");
     setStep((s) => (s < 1 ? 1 : s));
     setTimeout(() => setCopyJustWorked(false), 4000);
-  }, [connectMode, mcpUrl, openUrl, targetName]);
+  }, [connectMode, mcpUrl, openUrl, targetName, target]);
 
   // Pull a short tagline out of installSteps[1] for the stepper's
   // step-2 row, so users don't have to look down at the detailed list

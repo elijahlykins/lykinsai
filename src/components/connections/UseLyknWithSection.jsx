@@ -428,6 +428,7 @@ function clientKindLabel(kind) {
     case "windsurf":        return "Windsurf";
     case "jetbrains":       return "JetBrains AI";
     case "replit":          return "Replit";
+    case "lovable":         return "Lovable";
     case "github-copilot":  return "GitHub Copilot";
     case "notion-ai":       return "Notion AI";
     case "fathom":          return "Fathom";
