@@ -887,6 +887,79 @@ export const OUTBOUND_TARGETS = [
       "LYKN is now a callable integration inside every Zap. Try a quick test: create a Zap with a Schedule trigger + MCP Client by Zapier → Run Tool → lykn_getContextBlock. Whenever Zapier runs that Zap, it'll pull your latest synthesis context. The meta-pattern: LYKN as the synthesis layer for any automation you build.",
   },
   {
+    id: "elevenlabs",
+    clientKind: "elevenlabs",
+    name: "ElevenLabs",
+    domain: "elevenlabs.io",
+    color: "#000000",
+    installType: "raw",
+    transport: "Streamable HTTP MCP via ElevenAgents (static bearer)",
+    // ── ElevenLabs ElevenAgents (conversational AI voice agents) ships
+    //    custom MCP server support — but only over STATIC BEARER auth,
+    //    not OAuth DCR. Per
+    //    elevenlabs.io/docs/eleven-agents/customization/tools/mcp the
+    //    Add Custom MCP Server dialog has these fields:
+    //
+    //      Name              — free text ("LYKN")
+    //      Description       — free text
+    //      Server URL        — our /mcp
+    //      Secret Token      — Authorization header value (the bearer)
+    //      HTTP Headers      — optional extras
+    //      Approval policy   — Always Ask / Fine-Grained / No Approval
+    //      Transport         — SSE or Streamable HTTP
+    //
+    //    No OAuth flow exists. So we can't reuse the cursor:// /
+    //    claude:// / vscode:// 1-click pattern that depends on the
+    //    client running DCR after a 401. Instead we mint a
+    //    per-ElevenLabs personal access token via POST
+    //    /api/v1/synthesis/tokens (same endpoint UseLyknWithDialog
+    //    uses for static-bearer clients) attributed to
+    //    client_kind="elevenlabs", surface BOTH the URL and the
+    //    bearer for the user to paste into the two ElevenLabs fields,
+    //    and open elevenlabs.io/app/agents/integrations in a new tab.
+    //
+    //    Free tier reach: ElevenAgents free plan ships 15 minutes of
+    //    calls/month — more than enough to wire up + test LYKN as a
+    //    tool. Paid plans expand the minute pool but don't change
+    //    the MCP integration surface. No requiresPaidPlan gate.
+    //
+    //    The "Open MCP integrations" dashboard at
+    //    elevenlabs.io/app/agents/integrations IS a real deep link
+    //    (no SPA-routing weirdness like Notion), so the user lands
+    //    directly on the Add Custom MCP Server entry point. Two
+    //    clicks: Add Custom MCP Server → paste fields → Add
+    //    Integration. Then attach the server to whichever agent(s)
+    //    they want LYKN context inside.
+    //
+    //    HIGH-LEVERAGE because: voice. Every conversation a user
+    //    has with their ElevenAgents voice assistant can now reach
+    //    into their LYKN synthesis layer for context — "tell me
+    //    what I was working on last Tuesday" or "what's my current
+    //    take on X" become first-class voice queries.
+    summary:
+      "ElevenLabs voice agents (ElevenAgents) can call LYKN as a tool. We mint you a LYKN bearer and open ElevenLabs' MCP integrations dashboard — paste the URL into Server URL, the bearer into Secret Token, save. Your voice agent can then reach into your synthesis layer on every call.",
+    helpUrl: "https://elevenlabs.io/docs/eleven-agents/customization/tools/mcp",
+    helpLabel: "ElevenAgents MCP docs",
+    available: true,
+    tier: 3,
+    direction: "bidirectional",
+    // No connectMode → defaults to "open-url". The Onboarding card
+    // mints + copies the bearer; the dialog flow on /connections
+    // reuses the existing installType="raw" rendering in
+    // UseLyknWithDialog.
+    openUrl: "https://elevenlabs.io/app/agents/integrations",
+    planNote:
+      "Free tier ships 15 min/month of voice calls — enough to wire LYKN in and test. No OAuth yet on ElevenLabs' side, so we issue a long-lived bearer attributed to ElevenLabs that you can revoke any time from Settings → Connections. If ElevenLabs ever ships OAuth DCR for MCP servers this card flips to a true 1-click flow.",
+    installSteps: [
+      "Press Connect ElevenLabs — we mint a LYKN bearer attributed to ElevenLabs, copy it to your clipboard, and open elevenlabs.io/app/agents/integrations in a new tab.",
+      "In ElevenLabs: click Add Custom MCP Server.",
+      "Name = LYKN. Server URL = paste the URL from this card's Copy URL button. Secret Token = paste the bearer we already put in your clipboard. Transport = Streamable HTTP. Approval policy = Always Ask (recommended).",
+      "Click Add Integration → ElevenLabs lists LYKN's tools. Attach the server to any agent under Agents → [your agent] → Tools.",
+    ],
+    successHint:
+      "LYKN is now a callable tool inside your ElevenAgents voice agents. Try it: open one of your agents, hit Test, and ask \"using my LYKN context, what was I focused on last week?\" — the agent will call LYKN's tools out loud, with the Always Ask approval popping once before each tool runs. Bearer never expires until you revoke it from Settings → Connections.",
+  },
+  {
     id: "v0-lovable",
     clientKind: "v0-lovable",
     name: "v0 / Lovable",

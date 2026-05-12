@@ -8,6 +8,7 @@ import {
   Loader2,
   Copy,
   Circle,
+  Key,
 } from "lucide-react";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { supabase } from "@/lib/supabase";
@@ -50,8 +51,9 @@ function confirmPaidPlanGate(targetId) {
 /**
  * Post-signup "Connect your AI tools" onboarding screen.
  *
- * Fifteen cards spanning the full OAuth-MCP catalog we've shipped.
- * Two tiers of friction, ordered by reach × ease within each tier:
+ * Sixteen cards spanning the full OAuth-MCP catalog we've shipped
+ * plus one static-bearer voice surface (ElevenLabs). Two tiers of
+ * friction, ordered by reach × ease within each tier:
  *
  *   Headliners (top, 1-click or near-1-click, free-plan-friendly):
  *
@@ -150,10 +152,24 @@ function confirmPaidPlanGate(targetId) {
  *    15. Zapier — guided. Open https://zapier.com/app/connections
  *        (MCP Client beta) and copy the URL.
  *
+ *    16. ElevenLabs — static-bearer (no OAuth on their side yet).
+ *        ElevenAgents supports custom MCP servers but the dialog
+ *        takes a literal "Secret Token" string, not an OAuth dance.
+ *        On click we mint a per-user PAT attributed to
+ *        client_kind="elevenlabs" via POST /api/v1/synthesis/tokens,
+ *        copy the bearer to clipboard (the secret — top priority),
+ *        and open elevenlabs.io/app/agents/integrations. User pastes
+ *        bearer in Secret Token + clicks the card's Copy URL button
+ *        for the Server URL field. Card flips to Connected as soon
+ *        as the mint succeeds (LYKN's side is ready — we have no
+ *        signal for the ElevenLabs-side paste). Free tier (15 min/
+ *        month) is enough to test, no plan gate.
+ *
  * Connection detection: poll /api/v1/synthesis/tokens. Any new active
  * token with `oauth_client_id` populated = a successful OAuth
  * handshake. We snapshot the baseline the moment the page loads so we
- * only react to NEW connections.
+ * only react to NEW connections. ElevenLabs is the lone exception —
+ * mint-success on our side flips the card directly (no poll).
  */
 export default function Onboarding() {
   const navigate = useNavigate();
@@ -200,10 +216,20 @@ export default function Onboarding() {
   // Track which clients have connected this session. Each entry is one
   // of "cursor" | "claude" | "chatgpt" | "claude-code" | "gemini" |
   // "codex-cli" | "replit" | "lovable" | "notion-ai" | "windsurf" |
-  // "jetbrains" | "github-copilot" | "perplexity" | "grok" | "zapier";
-  // presence in the set means we've observed an OAuth bearer
-  // attributed to that client.
+  // "jetbrains" | "github-copilot" | "perplexity" | "grok" | "zapier"
+  // | "elevenlabs"; presence in the set means we've observed an OAuth
+  // bearer attributed to that client — EXCEPT "elevenlabs", which is
+  // static-bearer (no OAuth on their side) and gets added directly
+  // when we mint the PAT successfully.
   const [connected, setConnected] = useState(() => new Set());
+  // Plaintext ElevenLabs bearer we minted this session. Held in
+  // component state purely so the "Copy bearer" button can re-copy
+  // if the initial clipboard write failed (Firefox / Safari sometimes
+  // refuse the implicit clipboard.writeText() from a deep async chain
+  // without an explicit user gesture). Never rendered visibly.
+  const [elevenLabsBearer, setElevenLabsBearer] = useState(null);
+  const [elevenLabsBearerCopied, setElevenLabsBearerCopied] = useState(false);
+  const [mintingElevenLabs, setMintingElevenLabs] = useState(false);
   // Which client did the user most recently CLICK? Used to choose the
   // best client_kind→logical-client mapping when a new bearer appears
   // (the OAuth client_name from DCR is unreliable across hosts).
@@ -232,13 +258,13 @@ export default function Onboarding() {
   }, [user]);
 
   // Poll for new OAuth-issued bearers while at least one client is
-  // pending. Stops once all 11 are connected or the user navigates
-  // away. 3s cadence — tight enough to feel instant, loose enough to
-  // not hammer the backend.
+  // pending. Stops once all 16 cards are connected or the user
+  // navigates away. 3s cadence — tight enough to feel instant, loose
+  // enough to not hammer the backend.
   useEffect(() => {
     if (!user) return undefined;
     if (!pending) return undefined;
-    if (connected.size >= 15) return undefined;
+    if (connected.size >= 16) return undefined;
     let cancelled = false;
     let timer;
     const tick = async () => {
@@ -709,6 +735,98 @@ export default function Onboarding() {
     }
   }, [jetbrainsSnippet]);
 
+  // ElevenLabs — the lone static-bearer card. ElevenAgents has no
+  // OAuth flow yet, so we mint a per-user PAT attributed to
+  // client_kind="elevenlabs" (same /api/v1/synthesis/tokens endpoint
+  // UseLyknWithDialog uses for raw clients), copy the bearer first
+  // (it's the secret — primary clipboard target), open ElevenLabs'
+  // MCP integrations dashboard in a new tab, and mark the card as
+  // Connected immediately on mint success. We have no signal for the
+  // ElevenLabs-side paste so we can't verify completion the way we
+  // do with the OAuth-poll cards — but the bearer is durable and
+  // listed in /connections, so the user can pick this back up any
+  // time. If mint fails we leave the card untouched and toast the
+  // error so the user can retry.
+  const handleElevenLabs = useCallback(async () => {
+    if (mintingElevenLabs) return;
+    setPending("elevenlabs");
+    setMintingElevenLabs(true);
+    let bearer = elevenLabsBearer;
+    try {
+      if (!bearer) {
+        const res = await authedFetch("/api/v1/synthesis/tokens", {
+          method: "POST",
+          body: JSON.stringify({
+            label: "ElevenLabs",
+            clientKind: "elevenlabs",
+            scopes: ["read", "write"],
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data?.ok || !data?.token?.plaintext) {
+          throw new Error(data?.error || `HTTP ${res.status}`);
+        }
+        bearer = data.token.plaintext;
+        setElevenLabsBearer(bearer);
+      }
+      let copyOk = false;
+      try {
+        await navigator.clipboard.writeText(bearer);
+        copyOk = true;
+      } catch {
+        copyOk = false;
+      }
+      setElevenLabsBearerCopied(copyOk);
+      setTimeout(() => setElevenLabsBearerCopied(false), 4000);
+      setConnected((prev) => {
+        const next = new Set(prev);
+        next.add("elevenlabs");
+        return next;
+      });
+      setPending(null);
+      toast({
+        title: copyOk ? "Bearer copied + ElevenLabs opened" : "Bearer minted",
+        description: copyOk
+          ? "Paste the bearer into ElevenLabs' Secret Token field. Then come back, hit Copy URL on this card, and paste it into Server URL."
+          : "We minted your bearer but couldn't auto-copy it. Use the Copy bearer button on this card before pasting in ElevenLabs.",
+        variant: copyOk ? undefined : "destructive",
+      });
+      window.open(
+        "https://elevenlabs.io/app/agents/integrations",
+        "_blank",
+        "noopener,noreferrer",
+      );
+    } catch (err) {
+      setPending(null);
+      toast({
+        title: "Couldn't mint ElevenLabs bearer",
+        description: err?.message || "Try again, or grab a bearer from Settings → Connections.",
+        variant: "destructive",
+      });
+    } finally {
+      setMintingElevenLabs(false);
+    }
+  }, [mintingElevenLabs, elevenLabsBearer]);
+
+  // Re-copy the ElevenLabs bearer (the secondary copy button on the
+  // card). Idempotent — uses the bearer already in state; no second
+  // mint. If the user never minted, this is a no-op (the button is
+  // hidden until elevenLabsBearer is set).
+  const handleCopyElevenLabsBearer = useCallback(async () => {
+    if (!elevenLabsBearer) return;
+    try {
+      await navigator.clipboard.writeText(elevenLabsBearer);
+      setElevenLabsBearerCopied(true);
+      setTimeout(() => setElevenLabsBearerCopied(false), 2000);
+    } catch {
+      toast({
+        title: "Copy failed",
+        description: "Re-open the card and use the keyboard to copy.",
+        variant: "destructive",
+      });
+    }
+  }, [elevenLabsBearer]);
+
   return (
     <div className="min-h-screen w-full px-6 md:px-10 py-12">
       <div className="mx-auto max-w-3xl">
@@ -1083,6 +1201,43 @@ export default function Onboarding() {
               </>
             }
           />
+          <ConnectCard
+            id="elevenlabs"
+            name="ElevenLabs"
+            domain="elevenlabs.io"
+            tagline="Voice agents that talk to your LYKN. We mint a bearer + open ElevenLabs' MCP integrations dashboard — paste bearer in Secret Token, URL in Server URL, attach to any agent."
+            badge="Bearer"
+            connected={connected.has("elevenlabs")}
+            pending={
+              pending === "elevenlabs" && !connected.has("elevenlabs")
+            }
+            disabled={!user}
+            onConnect={handleElevenLabs}
+            urlToCopy={mcpUrl}
+            urlCopied={copyJustWorked && pending === "elevenlabs"}
+            onCopyUrl={handleCopyUrl}
+            secondaryArtifact={
+              elevenLabsBearer
+                ? {
+                    label: "bearer",
+                    copied: elevenLabsBearerCopied,
+                    onCopy: handleCopyElevenLabsBearer,
+                  }
+                : null
+            }
+            secondaryNote={
+              <>
+                Free ElevenAgents plan ships 15 min/month of voice calls
+                — plenty to test. ElevenLabs has no OAuth flow yet for
+                custom MCP servers, so we issue a long-lived LYKN bearer
+                attributed to ElevenLabs. Revoke any time from{" "}
+                <strong className="font-medium">
+                  Settings → Connections
+                </strong>
+                .
+              </>
+            }
+          />
         </div>
 
         {/* ── Footer ────────────────────────────────────────────── */}
@@ -1136,6 +1291,11 @@ function ConnectCard({
   // the clipboard holds a shell command) or "snippet" for editor-paste
   // installs (Windsurf — the clipboard holds a JSON config blob).
   copyLabel = "URL",
+  // Optional second copy artifact (today: ElevenLabs static bearer).
+  // When present, renders an additional copy button alongside the
+  // URL copy button. Shape: { label, copied, onCopy }. The actual
+  // secret stays in the parent — we just expose a click handler.
+  secondaryArtifact = null,
   secondaryNote,
 }) {
   const StatusIcon = connected ? CheckCircle2 : pending ? Loader2 : Circle;
@@ -1190,6 +1350,14 @@ function ConnectCard({
         <StatusIcon className={`mt-1.5 h-4 w-4 flex-shrink-0 ${statusClass}`} />
       </div>
 
+      {/* Connect button: only shown until the card flips to Connected.
+          Copy buttons (URL + optional secondary artifact like the
+          ElevenLabs bearer) remain visible after connect IF this card
+          has a secondary artifact in play — otherwise the user has no
+          way to re-copy if their first paste-attempt failed. For
+          OAuth cards (no secondary artifact) we hide the copy button
+          on connect, since the bearer landed in the destination app
+          automatically and there's nothing left to paste. */}
       {!connected && (
         <div className="mt-3 flex items-center gap-2 flex-wrap">
           <button
@@ -1237,6 +1405,74 @@ function ConnectCard({
                     : copyLabel === "snippet"
                       ? "Copy snippet"
                       : "Copy URL"}
+                </>
+              )}
+            </button>
+          )}
+          {secondaryArtifact && (
+            <button
+              type="button"
+              onClick={secondaryArtifact.onCopy}
+              className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/[0.08] px-3 py-1.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/[0.14] transition-colors"
+            >
+              {secondaryArtifact.copied ? (
+                <>
+                  <CheckCircle2 className="h-3 w-3 text-emerald-500" />
+                  {`${capitalize(secondaryArtifact.label)} copied`}
+                </>
+              ) : (
+                <>
+                  <Key className="h-3 w-3" />
+                  {`Copy ${secondaryArtifact.label}`}
+                </>
+              )}
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Post-connect copy row — only for static-bearer cards
+          (ElevenLabs today). After a mint we mark the card Connected,
+          but the user still needs to actually paste the URL + bearer
+          on the destination app's side, so we keep the copy artifacts
+          accessible. The connect button itself is gone — they're past
+          that step on our side. */}
+      {connected && secondaryArtifact && (urlToCopy || secondaryArtifact) && (
+        <div className="mt-3 flex items-center gap-2 flex-wrap">
+          {urlToCopy && (
+            <button
+              type="button"
+              onClick={onCopyUrl}
+              className="inline-flex items-center gap-1.5 rounded-full border border-black/10 dark:border-white/15 bg-white/70 dark:bg-zinc-900/70 px-3 py-1.5 text-[11px] font-medium text-black/70 dark:text-white/75 hover:bg-white dark:hover:bg-zinc-900 transition-colors"
+            >
+              {urlCopied ? (
+                <>
+                  <CheckCircle2 className="h-3 w-3 text-emerald-500" />
+                  URL copied
+                </>
+              ) : (
+                <>
+                  <Copy className="h-3 w-3" />
+                  Copy URL
+                </>
+              )}
+            </button>
+          )}
+          {secondaryArtifact && (
+            <button
+              type="button"
+              onClick={secondaryArtifact.onCopy}
+              className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/[0.08] px-3 py-1.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/[0.14] transition-colors"
+            >
+              {secondaryArtifact.copied ? (
+                <>
+                  <CheckCircle2 className="h-3 w-3 text-emerald-500" />
+                  {`${capitalize(secondaryArtifact.label)} copied`}
+                </>
+              ) : (
+                <>
+                  <Key className="h-3 w-3" />
+                  {`Copy ${secondaryArtifact.label}`}
                 </>
               )}
             </button>
@@ -1301,9 +1537,16 @@ function mapClientKindToSlot(kind) {
       return "grok";
     case "zapier":
       return "zapier";
+    case "elevenlabs":
+      return "elevenlabs";
     default:
       return null;
   }
+}
+
+function capitalize(s) {
+  if (!s) return "";
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 function buildAbsoluteUrl(path) {

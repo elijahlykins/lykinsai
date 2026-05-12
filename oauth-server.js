@@ -1400,6 +1400,13 @@ function classifyClientKind(input) {
     // chat-connector callback specifically lives on lovable.dev).
     if (host === 'lovable.dev' || host.endsWith('.lovable.dev')) return 'lovable';
     if (host === 'lovable.app' || host.endsWith('.lovable.app')) return 'lovable';
+    // ElevenLabs ElevenAgents doesn't do OAuth DCR today (static
+    // bearer only), so we'll almost never hit this branch in
+    // practice — but future-proof it for when they ship OAuth, and
+    // also catch any third-party gateway that proxies LYKN to an
+    // ElevenLabs agent through a real OAuth flow.
+    if (host === 'elevenlabs.io' || host.endsWith('.elevenlabs.io'))
+      return 'elevenlabs';
     // VS Code Copilot's two redirect URIs per github docs:
     // http://127.0.0.1:33418 (native loopback) and
     // https://vscode.dev/redirect (web bridge). The loopback host
@@ -1451,6 +1458,11 @@ function classifyClientKind(input) {
   // client could match including the canonical openai CLI itself).
   if (n.includes('codex')) return 'codex-cli';
   if (n.includes('lovable')) return 'lovable';
+  // ElevenLabs / "eleven labs" / ElevenAgents — covers both the
+  // hypothetical future OAuth flow and any third-party gateway
+  // that fronts ElevenLabs agents with a real DCR registration.
+  if (n.includes('elevenlabs') || n.includes('eleven labs') || n.includes('elevenagents'))
+    return 'elevenlabs';
   // GitHub Copilot in VS Code registers itself with a name like
   // "GitHub Copilot Chat" / "VS Code (GitHub Copilot)" depending on
   // the install path. Match either signal. Don't match bare "github"

@@ -189,6 +189,7 @@ const CLIENT_LABEL: Record<string, string> = {
   perplexity: "Perplexity",
   grok: "Grok",
   zapier: "Zapier",
+  elevenlabs: "ElevenLabs",
   "lykn-chat": "LYKN",
   "lykn-promotion": "LYKN synthesis",
   manual: "you",

@@ -151,6 +151,7 @@ const CLIENT_LABEL: Record<string, string> = {
   perplexity: "Perplexity",
   grok: "Grok",
   zapier: "Zapier",
+  elevenlabs: "ElevenLabs",
   "lykn-chat": "LYKN",
   chatgpt: "ChatGPT",
   other: "External AI",
