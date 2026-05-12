@@ -25,6 +25,7 @@ import {
   buildClaudeWebOauthDeeplink,
   buildClaudeCodeOauthInstallCommand,
   buildGeminiCliInstallCommand,
+  buildReplitOauthInstallLink,
   buildRawInstallInfo,
   buildLyknProjectInstructions,
   LYKN_PROJECT_INSTRUCTIONS_TARGETS,
@@ -576,6 +577,20 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
       return;
     }
 
+    // ── Replit Integrations prefill. Per docs.replit.com/replitai/mcp/
+    //    install-links Replit accepts a base64-encoded JSON payload via
+    //    ?mcp=… that pre-fills the Add MCP Server form (displayName,
+    //    baseUrl, headers). We pass an empty headers array so Replit
+    //    auto-discovers OAuth DCR on /mcp — same handshake Cursor and
+    //    Claude use. New tab (Replit replaces the page on Test & Save,
+    //    so we don't want to lose LYKN), no clipboard step.
+    if (connectMode === "replit-prefill") {
+      const deeplink = buildReplitOauthInstallLink({ mcpUrl });
+      window.open(deeplink, "_blank", "noopener,noreferrer");
+      setStep((s) => (s < 1 ? 1 : s));
+      return;
+    }
+
     // ── CLI-style installs (Claude Code, Gemini CLI, future
     //    terminal-only clients). No browser deep link can pop a
     //    terminal, so the primary action becomes "copy a one-line
@@ -680,6 +695,13 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
                 dialog already filled in for LYKN. Hit Add inside Claude,
                 approve the consent screen — we'll auto-detect the connection
                 and flip this to Connected.
+              </>
+            ) : connectMode === "replit-prefill" ? (
+              <>
+                One button opens replit.com/integrations with the Add MCP
+                Server form already filled in for LYKN. Hit Test &amp; Save
+                inside Replit, approve the consent screen — we'll auto-detect
+                the connection and flip this to Connected.
               </>
             ) : connectMode === "claude-code-cli" ? (
               <>
@@ -895,6 +917,9 @@ function stepOnePromptTitle({ connectMode, targetName }) {
   if (connectMode === "claude-prefill") {
     return `Press Connect — we'll open Claude with LYKN's details pre-filled`;
   }
+  if (connectMode === "replit-prefill") {
+    return `Press Connect — we'll open Replit with LYKN's details pre-filled`;
+  }
   if (isCliConnectMode(connectMode)) {
     return `Press Connect — we'll copy a one-line ${targetName} install command`;
   }
@@ -907,6 +932,9 @@ function stepOneDoneTitle({ connectMode, targetName }) {
   }
   if (connectMode === "claude-prefill") {
     return `Claude opened with LYKN pre-filled`;
+  }
+  if (connectMode === "replit-prefill") {
+    return `Replit opened with LYKN pre-filled`;
   }
   if (isCliConnectMode(connectMode)) {
     return `Install command copied — paste it in your terminal`;

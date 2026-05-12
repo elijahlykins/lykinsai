@@ -18,6 +18,7 @@ import {
   buildClaudeWebOauthDeeplink,
   buildClaudeCodeOauthInstallCommand,
   buildGeminiCliInstallCommand,
+  buildReplitOauthInstallLink,
 } from "@/lib/connectors/outboundTargets";
 
 /**
@@ -45,28 +46,33 @@ import {
  *        chatgpt.com + copy the URL, then surface the 5-step
  *        walkthrough. Plus / Pro / Team / Enterprise + Developer Mode.
  *
- *   More tools (below, mix of CLI and guided OAuth flows):
+ *   More tools (below, mix of 1-click, CLI, and guided OAuth flows):
  *
- *     4. Claude Code — CLI install. We copy `claude mcp add --transport
+ *     4. Replit — 1-click prefill deep link. Replit shipped custom MCP
+ *        in Dec 2025 with a base64-payload `?mcp=…` install-link spec
+ *        that pre-populates Add MCP Server. Hit Test & Save, approve,
+ *        done. Paid plan (Replit Core+) required.
+ *
+ *     5. Claude Code — CLI install. We copy `claude mcp add --transport
  *        http --scope user lykn "<mcp-url>"` to the clipboard so the
  *        user can paste it in their terminal. Same OAuth dance fires
  *        once they run it.
  *
- *     5. Gemini CLI — CLI install. We copy `gemini mcp add --transport
+ *     6. Gemini CLI — CLI install. We copy `gemini mcp add --transport
  *        http lykn "<mcp-url>"`. Same shape as Claude Code; the
  *        gemini-cli docs confirm built-in OAuth auto-discovery on
  *        remote http MCP servers. Note: only the Gemini CLI surface
  *        supports custom MCP today — gemini.google.com / Workspace
  *        consumer have no Add Custom Connector UI.
  *
- *     6. Perplexity — guided. Open
+ *     7. Perplexity — guided. Open
  *        https://www.perplexity.ai/account/connectors and copy the URL.
  *        Paid-only (Pro / Enterprise Pro).
  *
- *     7. Grok — guided. Open https://grok.com/manage-connectors and
+ *     8. Grok — guided. Open https://grok.com/manage-connectors and
  *        copy the URL. Paid (SuperGrok / Premium).
  *
- *     8. Zapier — guided. Open https://zapier.com/app/connections (MCP
+ *     9. Zapier — guided. Open https://zapier.com/app/connections (MCP
  *        Client beta) and copy the URL.
  *
  * Connection detection: poll /api/v1/synthesis/tokens. Any new active
@@ -95,11 +101,15 @@ export default function Onboarding() {
     () => buildGeminiCliInstallCommand({ mcpUrl }),
     [mcpUrl],
   );
+  const replitDeeplink = useMemo(
+    () => buildReplitOauthInstallLink({ mcpUrl }),
+    [mcpUrl],
+  );
 
   // Track which clients have connected this session. Each entry is one
   // of "cursor" | "claude" | "chatgpt" | "claude-code" | "gemini" |
-  // "perplexity" | "grok" | "zapier"; presence in the set means we've
-  // observed an OAuth bearer attributed to that client.
+  // "replit" | "perplexity" | "grok" | "zapier"; presence in the set
+  // means we've observed an OAuth bearer attributed to that client.
   const [connected, setConnected] = useState(() => new Set());
   // Which client did the user most recently CLICK? Used to choose the
   // best client_kind→logical-client mapping when a new bearer appears
@@ -129,13 +139,13 @@ export default function Onboarding() {
   }, [user]);
 
   // Poll for new OAuth-issued bearers while at least one client is
-  // pending. Stops once all 8 are connected or the user navigates
+  // pending. Stops once all 9 are connected or the user navigates
   // away. 3s cadence — tight enough to feel instant, loose enough to
   // not hammer the backend.
   useEffect(() => {
     if (!user) return undefined;
     if (!pending) return undefined;
-    if (connected.size >= 8) return undefined;
+    if (connected.size >= 9) return undefined;
     let cancelled = false;
     let timer;
     const tick = async () => {
@@ -193,6 +203,18 @@ export default function Onboarding() {
     setPending("claude");
     window.open(claudeDeeplink, "_blank", "noopener,noreferrer");
   }, [claudeDeeplink]);
+
+  // Replit Integrations supports a base64-payload prefill URL — same
+  // shape as Claude's `?modal=add-custom-connector` deep link. Open it
+  // in a new tab; Replit shows Add MCP Server with displayName="LYKN"
+  // and baseUrl=<our /mcp> already filled in. User clicks Test & Save
+  // → Replit auto-discovers OAuth DCR on /mcp → consent screen pops in
+  // the same tab → user approves → bearer is minted → our poll
+  // detects it and flips the card to Connected. True 1-click flow.
+  const handleReplit = useCallback(() => {
+    setPending("replit");
+    window.open(replitDeeplink, "_blank", "noopener,noreferrer");
+  }, [replitDeeplink]);
 
   const handleChatGPT = useCallback(async () => {
     setPending("chatgpt");
@@ -484,6 +506,24 @@ export default function Onboarding() {
         </div>
 
         <div className="mt-4 space-y-3">
+          <ConnectCard
+            id="replit"
+            name="Replit"
+            domain="replit.com"
+            tagline="One-click prefill. Opens Replit's Integrations page with LYKN's MCP server already filled in — hit Test & Save, approve, done."
+            badge="1-click"
+            connected={connected.has("replit")}
+            pending={pending === "replit" && !connected.has("replit")}
+            disabled={!user}
+            onConnect={handleReplit}
+            secondaryNote={
+              <>
+                Requires a paid Replit account (Core or above — same tier
+                that unlocks Replit Agent). LYKN tools then show up in
+                every Repl's Agent chat.
+              </>
+            }
+          />
           <ConnectCard
             id="claude-code"
             name="Claude Code"
@@ -787,6 +827,8 @@ function mapClientKindToSlot(kind) {
     // separate "gemini-app" client_kind on the server.
     case "gemini":
       return "gemini";
+    case "replit":
+      return "replit";
     case "perplexity":
       return "perplexity";
     case "grok":

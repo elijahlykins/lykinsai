@@ -358,15 +358,42 @@ export const OUTBOUND_TARGETS = [
     domain: "replit.com",
     color: "#F26207",
     installType: "oauth-mcp",
-    transport: "Streamable HTTP MCP",
+    transport: "Streamable HTTP MCP via Replit Integrations (OAuth)",
+    // ── Replit shipped custom MCP support in their December 2025
+    //    changelog and exposed a base64-payload install-link spec at
+    //    docs.replit.com/replitai/mcp/install-links. Format is:
+    //
+    //      https://replit.com/integrations?mcp=<base64(JSON)>
+    //
+    //    Where the JSON is { displayName, baseUrl, headers[] }. We pass
+    //    an empty `headers` array because Replit auto-detects OAuth DCR
+    //    on the baseUrl — exactly the same handshake Cursor uses (our
+    //    /mcp returns 401 with WWW-Authenticate: ... resource_metadata,
+    //    Replit follows the discovery URL, registers via DCR, pops the
+    //    /oauth/consent screen in a new tab). True 1-click parity with
+    //    Cursor and Claude — promoted to tier 1 because of this.
     summary:
-      "AI app builder + deploy — natural language to running code. LYKN as an MCP source means Replit's agent inherits your stack preferences and project state.",
-    helpUrl: "https://docs.replit.com/",
-    helpLabel: "Replit docs",
-    available: false,
-    comingSoon: true,
-    tier: 2,
+      "Replit Agent (the AI app builder + deploy platform) shipped custom MCP support in Dec 2025. One click opens Replit's Integrations page with LYKN's MCP server already filled in — hit Test & Save, approve the consent screen, done. Agent then sees your synthesis layer in every Repl.",
+    helpUrl: "https://docs.replit.com/replitai/mcp/overview",
+    helpLabel: "Replit MCP docs",
+    available: true,
+    tier: 1,
     direction: "bidirectional",
+    connectMode: "replit-prefill",
+    openUrl: "https://replit.com/integrations",
+    // Plan gating: Replit hasn't published an explicit MCP-tier matrix
+    // (their custom-MCP docs read as universally available across paid
+    // tiers), but custom integrations historically require Replit Core
+    // or above. We surface this honestly rather than over-promise free.
+    planNote:
+      "Requires a paid Replit account (Core or above) — same tier that unlocks Agent itself. Replit Agent has to be enabled for your account before the Integrations page shows the MCP Servers section.",
+    installSteps: [
+      "Press Connect Replit — we open replit.com/integrations with LYKN's MCP server already filled in.",
+      "Inside Replit: click Test & Save on the prefilled Add MCP Server form.",
+      "Approve the LYKN consent screen when it pops — that's it.",
+    ],
+    successHint:
+      "LYKN is now wired into Replit Agent. To get Agent to actually reach for it, mention it by name in your prompt (e.g. \"check my LYKN context first, then…\") or set a project-level instruction in your Repl's `.replit` agent config. Replit's security scanner will surface any LYKN tools it deems suspicious before they run.",
   },
   {
     id: "github-copilot",
@@ -709,6 +736,40 @@ export function buildCursorOauthDeeplink({ mcpUrl }) {
   return `cursor://anysphere.cursor-deeplink/mcp/install?name=lykn&config=${encoded}`;
 }
 
+/**
+ * Build a Replit Integrations prefill URL. Per
+ * docs.replit.com/replitai/mcp/install-links the spec is:
+ *
+ *   https://replit.com/integrations?mcp=<base64(JSON)>
+ *
+ * Where the JSON payload contains:
+ *   - displayName: shown to the user during the Test & Save step
+ *   - baseUrl:     our /mcp endpoint (Replit auto-discovers OAuth here)
+ *   - headers:     OPTIONAL static headers; we pass an empty array so
+ *                  Replit falls through to OAuth DCR auto-discovery
+ *                  (the same /mcp → 401 → WWW-Authenticate → DCR →
+ *                  /oauth/consent flow Cursor uses).
+ *
+ * Replit's docs explicitly call out base64 encoding (NOT base64url),
+ * but they don't say which variant. We use base64url + padding the
+ * same way Cursor's install-link spec does — it's URL-safe by default
+ * and the standard JSON.parse(atob(base64url-with-padding)) decoder
+ * handles both variants. If Replit ever rejects the payload, swap
+ * `base64UrlEncode` for a strict-base64 helper.
+ *
+ * Spec: https://docs.replit.com/replitai/mcp/install-links
+ */
+export function buildReplitOauthInstallLink({ mcpUrl }) {
+  const url = ensureHttpsMcpUrl(mcpUrl);
+  const payload = {
+    displayName: "LYKN",
+    baseUrl: url,
+    headers: [],
+  };
+  const encoded = base64UrlEncode(JSON.stringify(payload));
+  return `https://replit.com/integrations?mcp=${encoded}`;
+}
+
 // Production LYKN MCP URL — the canonical https endpoint AI clients
 // connect to. Used as the fallback any time we build a deep link for
 // a client that REQUIRES https (Claude rejects non-https connector
@@ -1008,6 +1069,21 @@ export const LYKN_PROJECT_INSTRUCTIONS_TARGETS = {
     ],
     helpUrl: "https://docs.cursor.com/context/rules",
     helpLabel: "Cursor Rules docs",
+  },
+  // Replit Agent reads instructions from a few places: the
+  // [agent.instructions] section in .replit, the per-Repl AGENTS.md
+  // convention, and the chat-level system prompt. Repl-level is the
+  // most reliable (loads on every Agent session); .replit overrides
+  // it for power users who want global rules across all their Repls.
+  replit: {
+    surfaceLabel: "AGENTS.md / .replit",
+    steps: [
+      "Create AGENTS.md in your Repl's root (or open .replit and add an [agent] section).",
+      "Paste the snippet below. Save / commit.",
+      "Restart the Agent panel — Replit reloads the instructions on each new Agent session.",
+    ],
+    helpUrl: "https://docs.replit.com/replitai/agent",
+    helpLabel: "Replit Agent docs",
   },
   other: {
     surfaceLabel: "system prompt / rules surface",

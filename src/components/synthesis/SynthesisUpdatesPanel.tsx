@@ -179,6 +179,7 @@ const CLIENT_LABEL: Record<string, string> = {
   "claude-code": "Claude Code",
   cursor: "Cursor",
   gemini: "Gemini CLI",
+  replit: "Replit",
   perplexity: "Perplexity",
   grok: "Grok",
   zapier: "Zapier",

@@ -1381,6 +1381,12 @@ function classifyClientKind(input) {
     if (host === 'zapier.com' || host.endsWith('.zapier.com')) return 'zapier';
     if (host === 'grok.com' || host.endsWith('.grok.com')) return 'grok';
     if (host === 'x.ai' || host.endsWith('.x.ai')) return 'grok';
+    // Replit Agent's DCR registration uses replit.com (web Integrations
+    // page) for the redirect URI per their MCP docs — replit-com or
+    // *.replit.com both safe. Also catch replit.app for any Replit-
+    // hosted MCP install link that proxies through their CDN.
+    if (host === 'replit.com' || host.endsWith('.replit.com')) return 'replit';
+    if (host === 'replit.app' || host.endsWith('.replit.app')) return 'replit';
   }
 
   // ── client_name fallback ──────────────────────────────────────────
@@ -1400,6 +1406,7 @@ function classifyClientKind(input) {
   if (n.includes('perplexity')) return 'perplexity';
   if (n.includes('zapier')) return 'zapier';
   if (n.includes('grok') || n.includes('xai')) return 'grok';
+  if (n.includes('replit')) return 'replit';
   return 'other';
 }
 
