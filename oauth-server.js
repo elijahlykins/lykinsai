@@ -1207,6 +1207,20 @@ function checkRegisterRateLimit(ip) {
   return true;
 }
 
+// Schemes we explicitly disallow even as native-app redirects — these
+// can punch out of the browser and trigger code execution / nav we don't
+// want a malicious DCR client to reach. Anything else that looks like a
+// claimed custom URL scheme (cursor://, vscode://, com.example.app://)
+// is allowed per RFC 8252 §7.1.
+const FORBIDDEN_REDIRECT_SCHEMES = new Set([
+  'javascript:', 'data:', 'file:', 'blob:', 'about:', 'vbscript:',
+  'ftp:', 'gopher:', 'mailto:', 'ws:', 'wss:',
+]);
+
+// Minimum characters a custom scheme must have to look intentional —
+// blocks single-letter / empty schemes that some parsers misinterpret.
+const MIN_CUSTOM_SCHEME_LEN = 3;
+
 function validateRedirectUris(uris) {
   if (!Array.isArray(uris) || uris.length === 0) {
     return 'redirect_uris is required and must be a non-empty array.';
@@ -1226,15 +1240,48 @@ function validateRedirectUris(uris) {
     } catch {
       return `redirect_uri is not a valid URL: ${u}`;
     }
-    // Accept https everywhere; allow http only for localhost/127.0.0.1
-    // (per OAuth 2.1 BCP — confidential redirect, dev only).
-    const isLocal = ['localhost', '127.0.0.1', '::1'].includes(parsed.hostname);
-    if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && isLocal)) {
-      return `redirect_uri must use https (http allowed only for localhost): ${u}`;
+
+    const proto = parsed.protocol; // includes trailing ':'
+    if (FORBIDDEN_REDIRECT_SCHEMES.has(proto)) {
+      return `redirect_uri scheme is not allowed: ${proto}`;
     }
-    // Spec: redirect_uri MUST NOT include a fragment.
+
+    // Spec: redirect_uri MUST NOT include a fragment (RFC 6749 §3.1.2).
     if (parsed.hash) {
       return `redirect_uri must not contain a fragment: ${u}`;
+    }
+
+    // Three accepted shapes:
+    //   1. https://...                              — web-hosted clients
+    //   2. http://(localhost|127.0.0.1|::1)/...     — dev / loopback
+    //   3. <custom-scheme>://...                    — RFC 8252 §7.1 native apps
+    //      (e.g. cursor://, vscode://, claude-desktop://, com.example.app://)
+    //
+    // Native MCP clients (Cursor's Custom MCP via OAuth, ChatGPT Apps when
+    // installed locally, etc.) ship a private-use URI scheme registered
+    // with the OS; that's how the OAuth callback lands back inside the
+    // app. Refusing those would block every native client.
+    if (proto === 'https:') {
+      // OK
+    } else if (proto === 'http:') {
+      const isLocal = ['localhost', '127.0.0.1', '::1'].includes(parsed.hostname);
+      if (!isLocal) {
+        return `redirect_uri must use https (http allowed only for localhost): ${u}`;
+      }
+    } else {
+      // Custom URL scheme. Require at minimum a scheme of reasonable
+      // length so we don't accept weird single-letter parser quirks.
+      const schemeName = proto.slice(0, -1); // strip trailing ':'
+      if (schemeName.length < MIN_CUSTOM_SCHEME_LEN) {
+        return `redirect_uri uses too short a custom scheme: ${u}`;
+      }
+      if (!/^[a-z][a-z0-9+.\-]*$/i.test(schemeName)) {
+        return `redirect_uri uses an invalid scheme name: ${u}`;
+      }
+      // Custom-scheme URIs CAN omit a host (e.g. `myapp:/callback`); URL
+      // parsing puts the path-only form into parsed.pathname with an
+      // empty hostname. That's fine per RFC 8252 — we don't enforce a
+      // host on private-use schemes.
     }
   }
   return null;

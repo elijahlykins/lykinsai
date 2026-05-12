@@ -294,13 +294,32 @@ async function bumpTokenUsage(supabaseAdmin, tokenId, prevCount, meta) {
  *   requireAuth       — the existing JWT middleware, called when the bearer
  *                       isn't an MCP token
  */
-export function makeRequireAuthOrMcpToken({ supabaseAdmin, requireAuth }) {
+export function makeRequireAuthOrMcpToken({ supabaseAdmin, requireAuth, getPublicBaseUrl }) {
   if (typeof requireAuth !== 'function') {
     throw new Error('makeRequireAuthOrMcpToken: requireAuth is required');
   }
+
+  // Pre-bake the WWW-Authenticate header builder. MCP-OAuth clients
+  // (Cursor's Custom MCP via OAuth, ChatGPT Connectors, Claude.ai
+  // Custom Connectors) read this header on the first 401 to discover
+  // where LYKN's protected-resource metadata lives — without it they
+  // never initiate the OAuth dance. RFC 9728 §5.1 specifies the
+  // `resource_metadata=` parameter; the MCP draft (2025-06-18) reuses
+  // the same shape. We always advertise the resource even when the
+  // caller looked like a malformed PAT, so a misconfigured client can
+  // self-correct into the OAuth flow.
+  const wwwAuthForInvalidToken = () => {
+    if (typeof getPublicBaseUrl !== 'function') {
+      return 'Bearer realm="lykn", error="invalid_token"';
+    }
+    const base = getPublicBaseUrl().replace(/\/$/, '');
+    return `Bearer realm="lykn", error="invalid_token", resource_metadata="${base}/.well-known/oauth-protected-resource/mcp"`;
+  };
+
   return async function requireAuthOrMcpToken(req, res, next) {
     const authHeader = req.headers.authorization || '';
     if (!authHeader.startsWith('Bearer ')) {
+      res.set('WWW-Authenticate', wwwAuthForInvalidToken());
       return res.status(401).json({ error: 'Missing or invalid Authorization header' });
     }
     const bearer = authHeader.slice(7).trim();
@@ -323,6 +342,7 @@ export function makeRequireAuthOrMcpToken({ supabaseAdmin, requireAuth }) {
       // we only know "some endpoint was hit" at this layer.
     });
     if (!resolved) {
+      res.set('WWW-Authenticate', wwwAuthForInvalidToken());
       return res.status(401).json({ error: 'Invalid or revoked MCP token' });
     }
 

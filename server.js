@@ -668,6 +668,14 @@ async function requireAuth(req, res, next) {
 const requireAuthOrMcpToken = makeRequireAuthOrMcpToken({
   supabaseAdmin,
   requireAuth,
+  // So 401s from /mcp emit `WWW-Authenticate: Bearer ... resource_metadata=...`,
+  // which is how Cursor / ChatGPT / Claude.ai discover LYKN's OAuth metadata
+  // on the first failed call (RFC 9728 §5.1 + MCP-OAuth draft). Without this
+  // an MCP-OAuth client just gives up at the 401 instead of starting the flow.
+  getPublicBaseUrl: () =>
+    process.env.PUBLIC_API_BASE_URL ||
+    process.env.RENDER_EXTERNAL_URL ||
+    `http://localhost:${PORT}`,
 });
 
 // Make the service-role Supabase client available to mcp-server.js's

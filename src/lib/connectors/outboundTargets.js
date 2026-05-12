@@ -551,6 +551,29 @@ export function buildCursorDeeplink({ token, mcpUrl }) {
 }
 
 /**
+ * Build a Cursor install deeplink that DOES NOT bake in a PAT — Cursor
+ * will discover OAuth on first connect via the standard MCP-OAuth dance
+ * (`/mcp` 401 → `WWW-Authenticate: ... resource_metadata=…` → DCR →
+ * `/oauth/authorize` consent → `/oauth/token`).
+ *
+ * Use this in onboarding when the user is already signed into LYKN in
+ * the browser — they click the deeplink, Cursor opens, Cursor pops a
+ * browser tab to LYKN's consent screen (which they're already authed
+ * for), they hit Approve, and Cursor finishes the handshake silently.
+ *
+ * The PAT-baking sibling (`buildCursorDeeplink` above) stays the right
+ * call for power users on /Connections who want a long-lived,
+ * non-rotating token they manage by hand.
+ */
+export function buildCursorOauthDeeplink({ mcpUrl }) {
+  const config = {
+    url: String(mcpUrl || "https://lykn.io/mcp"),
+  };
+  const encoded = base64UrlEncode(JSON.stringify(config));
+  return `cursor://anysphere.cursor-deeplink/mcp/install?name=lykn&config=${encoded}`;
+}
+
+/**
  * The exact JSON a user would paste into `.cursor/mcp.json` (per-project)
  * or `~/.cursor/mcp.json` (global). Used by the Cursor install dialog as
  * a fallback when the HTTPS install button doesn't work for whatever

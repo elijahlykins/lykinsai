@@ -32,6 +32,7 @@ import VaultUploadToast from "./components/files/VaultUploadToast";
 import GuestSignInPrompt from "./components/GuestSignInPrompt";
 import ShareReceiver from "./pages/ShareReceiver";
 import Connections from "./pages/Connections";
+import Onboarding from "./pages/Onboarding";
 import AdminUsage from "./pages/AdminUsage";
 import OAuthConsent from "./pages/OAuthConsent";
 import AppsChatGPT from "./pages/AppsChatGPT";
@@ -184,6 +185,14 @@ function AppShell() {
               element={
                 <ProtectedRoute>
                   <Connections />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/onboarding/connect"
+              element={
+                <ProtectedRoute>
+                  <Onboarding />
                 </ProtectedRoute>
               }
             />
