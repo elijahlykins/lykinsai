@@ -73,6 +73,20 @@ const ACCESS_TOKEN_TTL_SEC = 60 * 60;          // 1h — refreshable
 const REFRESH_TOKEN_TTL_SEC = 30 * 24 * 60 * 60; // 30d
 const AUTH_CODE_TTL_SEC = 60;                   // 60s
 
+// Grace window for parallel refresh-token redemptions. RFC 6749 §10.4
+// says any redemption of an already-consumed refresh token implies a
+// stolen credential and the whole family must be revoked. In practice
+// every MCP client that batches tool calls (Cursor, ChatGPT, etc.) can
+// have N concurrent calls each detect the access token is near expiry
+// and rotate at the same time — the first wins cleanly, the rest hit a
+// "consumed" row milliseconds later. Strict §10.4 enforcement nukes the
+// user's whole session in that case. Within this window we treat a
+// re-redemption as a parallel race rather than an attack, AS LONG AS
+// the replacement chain hasn't been independently revoked (which would
+// be the real attack signal). 10s comfortably covers HTTP retry storms
+// without giving a real attacker a meaningful reuse window.
+const REFRESH_GRACE_WINDOW_MS = 10_000;
+
 // Limits — keep DCR cheap to host. Anonymous registration is open by
 // design (consumer onboarding) but obvious abuse needs a ceiling.
 const MAX_REDIRECT_URIS = 16;
@@ -1001,13 +1015,51 @@ async function handleRefreshTokenGrant({ req, res, body, client, supabaseAdmin }
     return res.status(400).json({ error: 'invalid_grant', error_description: 'refresh_token was not issued to this client.' });
   }
 
-  // Replay detection (RFC 6749 §10.4): if this refresh has already been
-  // used (consumed_at set) OR it was replaced, the legitimate holder
-  // would never see it again. Someone else has it → revoke the whole
-  // family and refuse.
+  // Replay detection (RFC 6749 §10.4) with a parallel-race grace window.
+  // See REFRESH_GRACE_WINDOW_MS for the rationale. Strict enforcement
+  // (revoke family) only fires if the redemption is OUTSIDE the grace
+  // window OR if the replacement chain has already been revoked.
+  let parallelRace = false;
   if (refreshRow.consumed_at || refreshRow.replaced_by) {
-    await revokeRefreshFamily(supabaseAdmin, refreshRow.consent_id);
-    return res.status(400).json({ error: 'invalid_grant', error_description: 'refresh_token replay detected — family revoked.' });
+    const consumedMsAgo = refreshRow.consumed_at
+      ? Date.now() - Date.parse(refreshRow.consumed_at)
+      : Infinity;
+    const inGrace =
+      consumedMsAgo <= REFRESH_GRACE_WINDOW_MS && Boolean(refreshRow.replaced_by);
+
+    let chainAlive = false;
+    if (inGrace) {
+      // Walk the replaced_by chain (bounded depth) to find the tip and
+      // confirm its access token is still active. If any descendant has
+      // been revoked, the family is already compromised — fall through
+      // to the strict revoke path.
+      let nextId = refreshRow.replaced_by;
+      let tip = null;
+      for (let depth = 0; depth < 10 && nextId; depth++) {
+        const { data: next } = await supabaseAdmin
+          .from('lykn_oauth_refresh_tokens')
+          .select('id, replaced_by, access_token_id')
+          .eq('id', nextId)
+          .maybeSingle();
+        if (!next) { tip = null; break; }
+        tip = next;
+        nextId = next.replaced_by;
+      }
+      if (tip?.access_token_id) {
+        const { data: tipAccess } = await supabaseAdmin
+          .from('lykn_mcp_tokens')
+          .select('status')
+          .eq('id', tip.access_token_id)
+          .maybeSingle();
+        chainAlive = Boolean(tipAccess && tipAccess.status === 'active');
+      }
+    }
+
+    if (!inGrace || !chainAlive) {
+      await revokeRefreshFamily(supabaseAdmin, refreshRow.consent_id);
+      return res.status(400).json({ error: 'invalid_grant', error_description: 'refresh_token replay detected — family revoked.' });
+    }
+    parallelRace = true;
   }
   if (Date.parse(refreshRow.expires_at) <= Date.now()) {
     return res.status(400).json({ error: 'invalid_grant', error_description: 'refresh_token expired.' });
@@ -1067,18 +1119,27 @@ async function handleRefreshTokenGrant({ req, res, body, client, supabaseAdmin }
 
   // Consume the old refresh and link to the new one. Revoke the old
   // access token so it can't double-up with the new one.
-  await supabaseAdmin
-    .from('lykn_oauth_refresh_tokens')
-    .update({
-      consumed_at: new Date().toISOString(),
-      replaced_by: newRefresh?.id || null,
-    })
-    .eq('id', refreshRow.id);
-  if (refreshRow.access_token_id) {
+  //
+  // Skip both updates on the parallel-race path: the original row was
+  // already consumed (and linked + old access token revoked) by the
+  // first call. Re-doing the work would clobber consumed_at (extending
+  // the grace window unfairly) and overwrite replaced_by (orphaning
+  // the first call's chain). The new pair we just minted is fully
+  // valid on its own; siblings under the same consent are fine.
+  if (!parallelRace) {
     await supabaseAdmin
-      .from('lykn_mcp_tokens')
-      .update({ status: 'revoked', revoked_at: new Date().toISOString() })
-      .eq('id', refreshRow.access_token_id);
+      .from('lykn_oauth_refresh_tokens')
+      .update({
+        consumed_at: new Date().toISOString(),
+        replaced_by: newRefresh?.id || null,
+      })
+      .eq('id', refreshRow.id);
+    if (refreshRow.access_token_id) {
+      await supabaseAdmin
+        .from('lykn_mcp_tokens')
+        .update({ status: 'revoked', revoked_at: new Date().toISOString() })
+        .eq('id', refreshRow.access_token_id);
+    }
   }
 
   return res.json({
