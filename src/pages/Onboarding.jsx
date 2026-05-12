@@ -13,7 +13,10 @@ import { useAuth } from "@/lib/SupabaseAuth";
 import { supabase } from "@/lib/supabase";
 import { API_BASE_URL } from "@/lib/api-config";
 import { toast } from "@/components/ui/use-toast";
-import { buildCursorOauthDeeplink } from "@/lib/connectors/outboundTargets";
+import {
+  buildCursorOauthDeeplink,
+  buildClaudeWebOauthDeeplink,
+} from "@/lib/connectors/outboundTargets";
 
 /**
  * Post-signup "Connect your AI tools" onboarding screen.
@@ -29,10 +32,12 @@ import { buildCursorOauthDeeplink } from "@/lib/connectors/outboundTargets";
  *      a tab to /oauth/consent for the user to Approve. Because the
  *      user is already authed in this browser, that's a single click.
  *
- *   2. Claude.ai — 2-click flow. We open
- *      https://claude.ai/settings/connectors in a new tab with LYKN's
- *      MCP URL copied to the clipboard. User pastes, clicks Add,
- *      approves the consent screen.
+ *   2. Claude.ai — 1-click prefilled-modal deep link. We open
+ *      https://claude.ai/customize/connectors?modal=add-custom-connector
+ *      &connectorName=LYKN&connectorUrl=<mcp> in a new tab. Claude
+ *      surfaces the Add Custom Connector dialog ALREADY populated;
+ *      user clicks Add inside the dialog, then approves the LYKN
+ *      consent screen on the OAuth redirect. Same poll detects it.
  *
  *   3. ChatGPT — guided overlay. No deeplink / URL-prefill exists, so
  *      we open chatgpt.com + copy the URL, then show a 5-step
@@ -51,6 +56,10 @@ export default function Onboarding() {
   const mcpUrl = useMemo(() => buildAbsoluteUrl("/mcp"), []);
   const cursorDeeplink = useMemo(
     () => buildCursorOauthDeeplink({ mcpUrl }),
+    [mcpUrl],
+  );
+  const claudeDeeplink = useMemo(
+    () => buildClaudeWebOauthDeeplink({ mcpUrl }),
     [mcpUrl],
   );
 
@@ -141,26 +150,15 @@ export default function Onboarding() {
     window.location.href = cursorDeeplink;
   }, [cursorDeeplink]);
 
-  const handleClaude = useCallback(async () => {
+  // Claude.ai supports `?modal=add-custom-connector&connectorName=…
+  // &connectorUrl=…` which opens claude.ai with the Add Custom
+  // Connector dialog already populated. No clipboard step required —
+  // the URL is baked into the deep link itself. Same OAuth dance
+  // (Claude → /mcp 401 → discovery → DCR → consent) happens after.
+  const handleClaude = useCallback(() => {
     setPending("claude");
-    let copyOk = false;
-    try {
-      await navigator.clipboard.writeText(mcpUrl);
-      copyOk = true;
-    } catch {
-      copyOk = false;
-    }
-    setCopyJustWorked(copyOk);
-    setTimeout(() => setCopyJustWorked(false), 4000);
-    if (!copyOk) {
-      toast({
-        title: "Couldn't copy automatically",
-        description: "Use the copy-URL button in the card before pasting in Claude.",
-        variant: "destructive",
-      });
-    }
-    window.open("https://claude.ai/settings/connectors", "_blank", "noopener,noreferrer");
-  }, [mcpUrl]);
+    window.open(claudeDeeplink, "_blank", "noopener,noreferrer");
+  }, [claudeDeeplink]);
 
   const handleChatGPT = useCallback(async () => {
     setPending("chatgpt");
@@ -240,8 +238,8 @@ export default function Onboarding() {
             id="claude"
             name="Claude"
             domain="claude.ai"
-            tagline="We open Settings → Connectors and copy LYKN's URL. Paste, Add, Approve."
-            badge="2 clicks"
+            tagline="One click opens Claude with the Add Custom Connector dialog already filled in. Hit Add, Approve."
+            badge="1-click"
             connected={connected.has("claude")}
             pending={pending === "claude" && !connected.has("claude")}
             disabled={!user}

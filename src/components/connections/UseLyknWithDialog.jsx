@@ -24,6 +24,7 @@ import {
   buildClaudeDesktopSnippet,
   buildClaudeCodeCommand,
   buildCursorOauthDeeplink,
+  buildClaudeWebOauthDeeplink,
   buildRawInstallInfo,
   buildLyknProjectInstructions,
   LYKN_PROJECT_INSTRUCTIONS_TARGETS,
@@ -776,8 +777,22 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
       return;
     }
 
+    // ── Claude.ai prefilled-modal deep link. Anthropic ships a
+    //    `?modal=add-custom-connector&connectorName=…&connectorUrl=…`
+    //    query string that opens claude.ai with the Add Custom
+    //    Connector dialog already populated. New tab (not same-tab)
+    //    so users don't lose LYKN, and no clipboard step needed —
+    //    the URL is in the deep link itself.
+    if (connectMode === "claude-prefill") {
+      const deeplink = buildClaudeWebOauthDeeplink({ mcpUrl });
+      window.open(deeplink, "_blank", "noopener,noreferrer");
+      setStep((s) => (s < 1 ? 1 : s));
+      return;
+    }
+
     // ── Default: copy URL + open target's settings page in a new tab.
-    //    Used by Claude.ai and ChatGPT (no deeplink available).
+    //    Used by ChatGPT (no deeplink available) and any other client
+    //    that still needs the manual paste flow.
     //    Copy first (synchronous user-gesture path is most reliable for
     //    clipboard permissions), then open the new tab. If the copy fails
     //    we still open the host — the user can right-click the URL field.
@@ -818,6 +833,13 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
                 One button hands a pre-filled MCP install link to {targetName}.
                 Approve the LYKN consent screen when it pops — we'll auto-detect
                 the connection and flip this to Connected.
+              </>
+            ) : connectMode === "claude-prefill" ? (
+              <>
+                One button opens {targetName} with the Add Custom Connector
+                dialog already filled in for LYKN. Hit Add inside Claude,
+                approve the consent screen — we'll auto-detect the connection
+                and flip this to Connected.
               </>
             ) : (
               <>

@@ -71,25 +71,27 @@ export const OUTBOUND_TARGETS = [
     installType: "oauth-mcp",
     transport: "Streamable HTTP MCP via Connectors (OAuth)",
     summary:
-      "claude.ai in the browser. Click Connect — we open Claude for you, you paste LYKN's MCP URL into Settings → Connectors, approve once, done. Available on Free, Pro, and Max.",
+      "claude.ai in the browser. One click opens Claude with the Add Custom Connector dialog already filled in for LYKN — you just approve. No URL to copy, no settings to dig through. Available on Free, Pro, and Max.",
     helpUrl: "https://claude.com/docs/connectors/custom/remote-mcp",
     helpLabel: "Claude Connectors docs",
     available: true,
     tier: 1,
     direction: "bidirectional",
     // ── Per-target metadata for the generic OauthMcpSection stepper.
-    //    Claude.ai is the easiest connector experience of the bunch
-    //    today — Free/Pro/Max plans all have the Add UI, no Developer
-    //    Mode toggle, native oauth_dcr support means our IdP just
-    //    works. The deep link straight to Settings → Connectors saves
-    //    the user a navigation step.
+    //    Claude.ai supports a `?modal=add-custom-connector` deep link
+    //    that POPULATES the name + URL fields for the user (per
+    //    claude.com/docs/connectors). One press of Connect Claude →
+    //    Claude opens with the modal prefilled → user hits Add →
+    //    approve consent → done. Auto-syncs to Desktop/mobile/Cowork.
+    connectMode: "claude-prefill",
+    // openUrl is unused when connectMode is set, but kept as a sensible
+    // fallback target for tooling that wants to manually navigate.
     openUrl: "https://claude.ai/settings/connectors",
     planNote:
       "Available on Free (one custom connector), Pro, and Max — no special toggle. Team / Enterprise admins enable it from Admin → Connectors first; members then add via Settings.",
     installSteps: [
-      "Open Claude → Settings → Connectors (we deep-linked you there).",
-      "Click Add custom connector.",
-      "Paste the URL above into Remote MCP server URL → Add.",
+      "Press Connect Claude — we open Claude with the Add Custom Connector dialog already filled in.",
+      "Inside Claude: click Add.",
       "Approve the LYKN consent screen when it pops — that's it.",
     ],
     // Surfaced after the connection is detected. Claude Connectors
@@ -562,6 +564,77 @@ export function buildCursorOauthDeeplink({ mcpUrl }) {
   };
   const encoded = base64UrlEncode(JSON.stringify(config));
   return `cursor://anysphere.cursor-deeplink/mcp/install?name=lykn&config=${encoded}`;
+}
+
+// Production LYKN MCP URL — the canonical https endpoint AI clients
+// connect to. Used as the fallback any time we build a deep link for
+// a client that REQUIRES https (Claude rejects non-https connector
+// URLs; Cursor and ChatGPT have similar constraints in prod). Dev
+// machines on http://localhost can override this via the
+// VITE_PUBLIC_MCP_URL env var when they have an https tunnel
+// (ngrok, cloudflared, etc) pointed at their local server.
+const PUBLIC_LYKN_MCP_URL =
+  (typeof import.meta !== "undefined" &&
+    import.meta?.env?.VITE_PUBLIC_MCP_URL) ||
+  "https://lykn.io/mcp";
+
+/**
+ * Force a connector URL to be https. Claude (and most production AI
+ * hosts) reject http for custom MCP servers; Cursor is the exception
+ * because its private-use URI scheme deeplink handler runs locally
+ * on the user's machine. For clients that fetch the URL from their
+ * cloud, http only ever works for testing — so swap to the prod LYKN
+ * endpoint (or a VITE_PUBLIC_MCP_URL override) whenever we'd otherwise
+ * hand them http://localhost.
+ */
+function ensureHttpsMcpUrl(maybeUrl) {
+  const raw = String(maybeUrl || "").trim();
+  if (/^https:\/\//i.test(raw)) return raw;
+  if (typeof console !== "undefined" && raw) {
+    // Intentional warning — not an error. The deep link still works,
+    // it just routes to prod LYKN instead of the dev server. Surfaces
+    // in the browser console so devs aren't confused why their local
+    // OAuth flow didn't fire.
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[lykn] Claude requires https; coerced ${raw} → ${PUBLIC_LYKN_MCP_URL}. ` +
+        `Set VITE_PUBLIC_MCP_URL to a tunnelled https URL to test against local.`,
+    );
+  }
+  return PUBLIC_LYKN_MCP_URL;
+}
+
+/**
+ * Build a Claude.ai install deep link that opens claude.ai with the
+ * "Add custom connector" modal PRE-POPULATED with our name + MCP URL.
+ * User clicks Add, approves the LYKN consent screen, done — 3 clicks
+ * total instead of the 5-step "open settings, find connectors, click
+ * Add custom, paste URL, hit Add" path.
+ *
+ * Per Claude's docs (claude.com/docs/connectors/building/directory-vs-custom):
+ *
+ *   https://claude.ai/customize/connectors?modal=add-custom-connector
+ *     &connectorName=NAME
+ *     &connectorUrl=ENCODED_URL
+ *
+ * connectorUrl is percent-encoded AND MUST be https — Claude refuses
+ * to add http/localhost connector URLs since their cloud reaches out
+ * to them server-side. We coerce via ensureHttpsMcpUrl so dev clicks
+ * still produce a working deep link (pointed at prod LYKN).
+ *
+ * Works on Free, Pro, and Max plans. The resulting custom connector
+ * auto-syncs to Claude Desktop, mobile, Cowork, and Claude Code with
+ * no extra config (Anthropic ties connectors to the user, not the
+ * client install).
+ */
+export function buildClaudeWebOauthDeeplink({ mcpUrl }) {
+  const url = ensureHttpsMcpUrl(mcpUrl);
+  return (
+    "https://claude.ai/customize/connectors" +
+    "?modal=add-custom-connector" +
+    "&connectorName=LYKN" +
+    "&connectorUrl=" + encodeURIComponent(url)
+  );
 }
 
 function base64UrlEncode(str) {
