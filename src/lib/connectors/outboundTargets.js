@@ -611,7 +611,7 @@ export const OUTBOUND_TARGETS = [
     //    DCR-issued bearer is what we poll for, so connection
     //    detection is identical to Perplexity / Grok / Zapier.
     summary:
-      "Notion's Custom Agents — Business and Enterprise workspaces can wire LYKN into any agent. One click copies the MCP URL and opens Notion's Custom Agents docs; you paste once inside the agent's Tools & Access panel, approve, done. Agent answers + writebacks then ground in your synthesis layer.",
+      "Notion's Custom Agents — Business and Enterprise workspaces can wire LYKN into any agent. One click copies the MCP URL and opens your Notion workspace settings; you navigate to Notion AI → AI connectors, paste once inside the agent's Tools & Access panel, approve, done. Agent answers + writebacks then ground in your synthesis layer.",
     helpUrl: "https://www.notion.com/help/mcp-connections-for-custom-agents",
     helpLabel: "Notion Custom Agents MCP help",
     available: true,
@@ -619,7 +619,18 @@ export const OUTBOUND_TARGETS = [
     direction: "bidirectional",
     // No connectMode set → defaults to "open-url" (copy URL + open new
     // tab) in UseLyknWithDialog.handleConnect.
-    openUrl: "https://www.notion.com/help/mcp-connections-for-custom-agents",
+    // ── Land on the user's actual workspace settings overlay (which
+    //    routes them straight to the AI Connectors panel when they
+    //    click Notion AI in the sidebar), NOT the help docs. Notion's
+    //    SPA routes /settings to the settings overlay in whatever
+    //    workspace they last opened — matches the pattern every other
+    //    guided connector uses (Claude → claude.ai/settings/connectors,
+    //    Perplexity → /account/connectors, Grok → /manage-connectors,
+    //    Zapier → /app/connections). The docs link is still available
+    //    via helpUrl on the card for users who want the reference
+    //    material — primary action shouldn't dump them in a help
+    //    article.
+    openUrl: "https://www.notion.so/settings",
     // Plan + admin gating: surface BOTH gates up front so users on
     // Personal / Plus / Free don't click in vain, and so members of
     // Business+ workspaces know to ping their admin first. Notion's

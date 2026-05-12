@@ -61,6 +61,9 @@ import {
  *        custom MCP servers (per notion.com/help/mcp-connections-for-
  *        custom-agents) but the form is buried inside each Agent's
  *        Settings → Tools & Access panel — no URL to deep link to.
+ *        We open notion.so/settings (the workspace settings overlay,
+ *        NOT the docs page) so users land in their actual account
+ *        with the AI Connectors panel one click away.
  *        We open the help page + copy LYKN's URL; user pastes it per
  *        Agent. Business / Enterprise only + workspace admin has to
  *        first toggle Custom MCP on.
@@ -448,10 +451,14 @@ export default function Onboarding() {
   // Notion Custom Agents have NO prefill deep link (the Add MCP server
   // form lives inside an Agent's settings panel which has no URL of
   // its own), so we use the same guided pattern as Perplexity / Grok /
-  // Zapier: copy LYKN's MCP URL to the clipboard, open Notion's
-  // Custom-Agents-MCP help page in a new tab. User follows the 5-step
-  // checklist on the card, ending with an OAuth approval that mints
-  // the bearer our poller is waiting for.
+  // Zapier: copy LYKN's MCP URL to the clipboard, then drop the user
+  // into THEIR Notion workspace settings (notion.so/settings — Notion's
+  // SPA routes that to the settings overlay in their current
+  // workspace, NOT the help docs). User follows the 5-step checklist
+  // on the card: navigate to Notion AI → AI connectors (admin
+  // toggle if needed) → open the target Custom Agent → Tools & Access
+  // → paste URL. Ends with an OAuth approval that mints the bearer
+  // our poller is waiting for.
   const handleNotionAi = useCallback(async () => {
     setPending("notion-ai");
     let copyOk = false;
@@ -471,7 +478,7 @@ export default function Onboarding() {
       });
     }
     window.open(
-      "https://www.notion.com/help/mcp-connections-for-custom-agents",
+      "https://www.notion.so/settings",
       "_blank",
       "noopener,noreferrer",
     );
@@ -774,7 +781,7 @@ export default function Onboarding() {
             id="notion-ai"
             name="Notion AI"
             domain="notion.so"
-            tagline="We open Notion's Custom Agents MCP docs and copy the URL. Paste it into your Agent's Tools & Access panel, approve, done."
+            tagline="We copy the URL and open your Notion settings. Go to Notion AI → AI connectors, then paste into your Custom Agent's Tools & Access panel."
             badge="Guided"
             connected={connected.has("notion-ai")}
             pending={pending === "notion-ai" && !connected.has("notion-ai")}
