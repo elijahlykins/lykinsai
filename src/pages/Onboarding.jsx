@@ -61,9 +61,12 @@ import {
  *        custom MCP servers (per notion.com/help/mcp-connections-for-
  *        custom-agents) but the form is buried inside each Agent's
  *        Settings → Tools & Access panel — no URL to deep link to.
- *        We open notion.so/settings (the workspace settings overlay,
- *        NOT the docs page) so users land in their actual account
- *        with the AI Connectors panel one click away.
+ *        Even Notion's `/settings` route doesn't survive a cold load
+ *        (their SPA flashes the settings overlay then routes back to
+ *        workspace home). So we open notion.so/ (workspace home) and
+ *        rely on the install-step copy to walk users through the
+ *        two sidebar clicks: Settings & members → Notion AI → AI
+ *        connectors. Same trade-off ChatGPT's card makes.
  *        We open the help page + copy LYKN's URL; user pastes it per
  *        Agent. Business / Enterprise only + workspace admin has to
  *        first toggle Custom MCP on.
@@ -451,13 +454,14 @@ export default function Onboarding() {
   // Notion Custom Agents have NO prefill deep link (the Add MCP server
   // form lives inside an Agent's settings panel which has no URL of
   // its own), so we use the same guided pattern as Perplexity / Grok /
-  // Zapier: copy LYKN's MCP URL to the clipboard, then drop the user
-  // into THEIR Notion workspace settings (notion.so/settings — Notion's
-  // SPA routes that to the settings overlay in their current
-  // workspace, NOT the help docs). User follows the 5-step checklist
-  // on the card: navigate to Notion AI → AI connectors (admin
-  // toggle if needed) → open the target Custom Agent → Tools & Access
-  // → paste URL. Ends with an OAuth approval that mints the bearer
+  // Zapier: copy LYKN's MCP URL to the clipboard + open Notion in a
+  // new tab. We previously tried notion.so/settings as the landing,
+  // but empirical testing showed Notion's SPA doesn't survive a cold
+  // load on that route — the settings overlay flashes then routes
+  // back to the workspace home. So we drop the user in workspace home
+  // (guaranteed-good landing) and toast + install-step them through
+  // the two sidebar clicks: Settings & members → Notion AI → AI
+  // connectors. Ends with an OAuth approval that mints the bearer
   // our poller is waiting for.
   const handleNotionAi = useCallback(async () => {
     setPending("notion-ai");
@@ -470,15 +474,15 @@ export default function Onboarding() {
     }
     setCopyJustWorked(copyOk);
     setTimeout(() => setCopyJustWorked(false), 4000);
-    if (!copyOk) {
-      toast({
-        title: "Couldn't copy automatically",
-        description: "Use the copy-URL button in the card before pasting in Notion.",
-        variant: "destructive",
-      });
-    }
+    toast({
+      title: copyOk ? "URL copied + Notion opened" : "Couldn't copy automatically",
+      description: copyOk
+        ? "In Notion's sidebar: Settings & members → Notion AI → AI connectors → open your Custom Agent → paste the URL."
+        : "Use the copy-URL button in the card before pasting in Notion.",
+      variant: copyOk ? undefined : "destructive",
+    });
     window.open(
-      "https://www.notion.so/settings",
+      "https://www.notion.so/",
       "_blank",
       "noopener,noreferrer",
     );
@@ -781,7 +785,7 @@ export default function Onboarding() {
             id="notion-ai"
             name="Notion AI"
             domain="notion.so"
-            tagline="We copy the URL and open your Notion settings. Go to Notion AI → AI connectors, then paste into your Custom Agent's Tools & Access panel."
+            tagline="We copy the URL and open your Notion workspace. In the sidebar: Settings & members → Notion AI → AI connectors, then paste into your Custom Agent's Tools & Access panel."
             badge="Guided"
             connected={connected.has("notion-ai")}
             pending={pending === "notion-ai" && !connected.has("notion-ai")}

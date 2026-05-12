@@ -611,7 +611,7 @@ export const OUTBOUND_TARGETS = [
     //    DCR-issued bearer is what we poll for, so connection
     //    detection is identical to Perplexity / Grok / Zapier.
     summary:
-      "Notion's Custom Agents — Business and Enterprise workspaces can wire LYKN into any agent. One click copies the MCP URL and opens your Notion workspace settings; you navigate to Notion AI → AI connectors, paste once inside the agent's Tools & Access panel, approve, done. Agent answers + writebacks then ground in your synthesis layer.",
+      "Notion's Custom Agents — Business and Enterprise workspaces can wire LYKN into any agent. One click copies the MCP URL and opens your Notion workspace; in the sidebar go to Settings & members → Notion AI → AI connectors, paste into your Custom Agent's Tools & Access panel, approve, done. Agent answers + writebacks then ground in your synthesis layer.",
     helpUrl: "https://www.notion.com/help/mcp-connections-for-custom-agents",
     helpLabel: "Notion Custom Agents MCP help",
     available: true,
@@ -619,18 +619,21 @@ export const OUTBOUND_TARGETS = [
     direction: "bidirectional",
     // No connectMode set → defaults to "open-url" (copy URL + open new
     // tab) in UseLyknWithDialog.handleConnect.
-    // ── Land on the user's actual workspace settings overlay (which
-    //    routes them straight to the AI Connectors panel when they
-    //    click Notion AI in the sidebar), NOT the help docs. Notion's
-    //    SPA routes /settings to the settings overlay in whatever
-    //    workspace they last opened — matches the pattern every other
-    //    guided connector uses (Claude → claude.ai/settings/connectors,
-    //    Perplexity → /account/connectors, Grok → /manage-connectors,
-    //    Zapier → /app/connections). The docs link is still available
-    //    via helpUrl on the card for users who want the reference
-    //    material — primary action shouldn't dump them in a help
-    //    article.
-    openUrl: "https://www.notion.so/settings",
+    // ── Notion doesn't expose a routeable URL to the AI Connectors
+    //    panel — empirical testing confirmed that hitting
+    //    `notion.so/settings` flashes the settings overlay briefly
+    //    then their SPA routes back to the workspace home (the
+    //    /settings handler only runs on internal navigations, not
+    //    cold loads). And there's no documented URL like
+    //    `?p=ai-connectors` or `/settings/notion-ai` that survives a
+    //    direct load. So instead of pretending we can deep-link, we
+    //    drop the user in their actual Notion workspace home — which
+    //    IS a guaranteed-good landing — and the install-step copy
+    //    explicitly walks them through the two sidebar clicks to AI
+    //    Connectors. Honest > pretending. Same trade-off ChatGPT's
+    //    card makes (chatgpt.com/ → manually navigate to Settings →
+    //    Connectors).
+    openUrl: "https://www.notion.so/",
     // Plan + admin gating: surface BOTH gates up front so users on
     // Personal / Plus / Free don't click in vain, and so members of
     // Business+ workspaces know to ping their admin first. Notion's
@@ -640,11 +643,11 @@ export const OUTBOUND_TARGETS = [
     planNote:
       "Requires a Notion Business or Enterprise workspace AND a workspace admin to first enable custom MCP servers under Settings → Notion AI → AI connectors. Once that's on, any member can add LYKN to their Custom Agents. Personal / Plus / Free plans don't expose Custom Agents at all.",
     installSteps: [
-      "(One-time, admin only) In your workspace: Settings → Notion AI → AI connectors → toggle Custom MCP servers on.",
-      "Open the Custom Agent you want LYKN wired into (or create a new one).",
-      "Inside the agent: Settings → Tools & Access → Add connection → Custom MCP server.",
-      "Paste the URL above into Server URL. Set Display name = LYKN. Authentication = OAuth.",
-      "Click Save → approve the LYKN consent screen when it pops — that's it.",
+      "Press Connect Notion AI — we copy the URL and open your Notion workspace in a new tab. (Notion doesn't expose a routeable URL to the AI Connectors panel, so the next two steps walk you the rest of the way.)",
+      "In Notion's sidebar: Settings & members → Notion AI → AI connectors. (One-time: a workspace admin must toggle Custom MCP servers on before members can add their own.)",
+      "Open the Custom Agent you want LYKN wired into → Tools & Access → Add connection → Custom MCP server.",
+      "Paste the URL into Server URL. Display name = LYKN. Authentication = OAuth.",
+      "Click Save → approve the LYKN consent screen when it pops — done.",
     ],
     successHint:
       "Each Custom Agent has its own MCP connections — adding LYKN to one agent does NOT auto-add it to the others. Repeat the Tools & Access step on any other agent you want LYKN in. Workspace admins can also gate which agents members are allowed to connect LYKN to under the AI connectors panel.",
