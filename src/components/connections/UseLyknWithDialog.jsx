@@ -24,6 +24,7 @@ import {
   buildClaudeDesktopSnippet,
   buildClaudeCodeCommand,
   buildCursorDeeplink,
+  buildCursorOauthDeeplink,
   buildCursorMcpJsonSnippet,
   buildRawInstallInfo,
   buildLyknProjectInstructions,
@@ -890,10 +891,26 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
     return () => { cancelled = true; if (timer) clearTimeout(timer); };
   }, [step, onConnected]);
 
+  const connectMode = target?.connectMode || "open-url";
+
   const handleConnect = useCallback(async () => {
-    // Copy first (synchronous user-gesture path is most reliable for
-    // clipboard permissions), then open the new tab. If the copy fails
-    // we still open the host — the user can right-click the URL field.
+    // ── Cursor (and any future native MCP client using a private-use
+    //    URI scheme): fire the deeplink. The OS hands the URL to the
+    //    registered handler, which pops the MCP install dialog. Skipping
+    //    the clipboard step here — the URL is baked INTO the deeplink
+    //    config, the user never needs to paste it.
+    if (connectMode === "cursor-deeplink") {
+      const deeplink = buildCursorOauthDeeplink({ mcpUrl });
+      window.location.href = deeplink;
+      setStep((s) => (s < 1 ? 1 : s));
+      return;
+    }
+
+    // ── Default: copy URL + open target's settings page in a new tab.
+    //    Used by Claude.ai and ChatGPT (no deeplink available).
+    //    Copy first (synchronous user-gesture path is most reliable for
+    //    clipboard permissions), then open the new tab. If the copy fails
+    //    we still open the host — the user can right-click the URL field.
     let copyOk = false;
     try {
       await navigator.clipboard.writeText(mcpUrl);
@@ -912,7 +929,7 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
     window.open(openUrl, "_blank", "noopener,noreferrer");
     setStep((s) => (s < 1 ? 1 : s));
     setTimeout(() => setCopyJustWorked(false), 4000);
-  }, [mcpUrl, openUrl, targetName]);
+  }, [connectMode, mcpUrl, openUrl, targetName]);
 
   // Pull a short tagline out of installSteps[1] for the stepper's
   // step-2 row, so users don't have to look down at the detailed list
@@ -926,9 +943,19 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
       {step < 2 && (
         <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/[0.04] dark:bg-emerald-500/[0.06] p-3 space-y-2.5">
           <div className="text-[12px] leading-relaxed text-black/70 dark:text-white/75">
-            One button copies LYKN's MCP URL and opens {targetName} for you.
-            Follow the {installSteps.length}-step checklist below — we'll detect
-            when it's hooked up and flip this to Connected automatically.
+            {connectMode === "cursor-deeplink" ? (
+              <>
+                One button hands a pre-filled MCP install link to {targetName}.
+                Approve the LYKN consent screen when it pops — we'll auto-detect
+                the connection and flip this to Connected.
+              </>
+            ) : (
+              <>
+                One button copies LYKN's MCP URL and opens {targetName} for you.
+                Follow the {installSteps.length}-step checklist below — we'll detect
+                when it's hooked up and flip this to Connected automatically.
+              </>
+            )}
           </div>
           <button
             type="button"

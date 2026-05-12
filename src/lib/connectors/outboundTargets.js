@@ -107,15 +107,34 @@ export const OUTBOUND_TARGETS = [
     name: "Cursor",
     domain: "cursor.com",
     color: "#000000",
-    installType: "deeplink",
-    transport: "Streamable HTTP MCP",
+    installType: "oauth-mcp",
+    transport: "Streamable HTTP MCP via Cursor MCP-OAuth",
     summary:
-      "Dominant AI-native IDE — agent-first. Click once and the Cursor deeplink registers LYKN as an MCP server with your token pre-filled.",
+      "Dominant AI-native IDE — agent-first. One click installs LYKN inside Cursor and walks you through the OAuth approval. No token to copy, no config to edit.",
     helpUrl: "https://docs.cursor.com/context/model-context-protocol",
     helpLabel: "Cursor MCP docs",
     available: true,
     tier: 1,
     direction: "bidirectional",
+    // ── Cursor uses a CUSTOM URL SCHEME deeplink rather than the
+    //    open-tab+paste flow Claude.ai / ChatGPT use. Same OauthMcpSection
+    //    underneath; connectMode just swaps the Connect button's action
+    //    from window.open(openUrl) to window.location=cursorDeeplink.
+    //    The post-install OAuth dance (Cursor → /mcp 401 → discovery →
+    //    DCR → consent → token) is identical, and the same baseline-diff
+    //    polling flips the dialog to Connected.
+    connectMode: "cursor-deeplink",
+    openUrl: "https://docs.cursor.com/context/model-context-protocol",
+    planNote:
+      "Works on all Cursor plans. Cursor installs LYKN as an MCP server tied to your account; revoke any time from /Connections below.",
+    installSteps: [
+      "Press Connect Cursor — your OS hands the cursor:// deeplink to Cursor.",
+      "In Cursor's install dialog: click Install.",
+      "Cursor opens a browser tab to the LYKN consent screen — click Approve.",
+      "Cursor finishes the handshake silently. We auto-detect it here.",
+    ],
+    successHint:
+      "LYKN is now a remote MCP server in Cursor — open Settings → MCP to confirm. The Composer, chat, and the agent all see your synthesis-layer tools immediately.",
   },
   {
     id: "chatgpt",
