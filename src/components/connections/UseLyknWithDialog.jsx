@@ -27,6 +27,7 @@ import {
   buildGeminiCliInstallCommand,
   buildReplitOauthInstallLink,
   buildWindsurfConfigSnippet,
+  buildJetBrainsConfigSnippet,
   buildCopilotInstallLink,
   buildRawInstallInfo,
   buildLyknProjectInstructions,
@@ -627,7 +628,9 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
       const pasteHint =
         connectMode === "windsurf-config"
           ? "Open Windsurf → Command Palette → Configure MCP Servers → paste inside the mcpServers object → Save."
-          : "Paste it in your terminal and press Enter.";
+          : connectMode === "jetbrains-config"
+            ? "In your JetBrains IDE: Settings → Tools → AI Assistant → MCP → New → paste the JSON → OK → Apply."
+            : "Paste it in your terminal and press Enter.";
       let copyOk = false;
       try {
         await navigator.clipboard.writeText(cliCommand);
@@ -759,6 +762,15 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
                 save, Windsurf hot-reloads and pops the LYKN consent screen.
                 We auto-detect the connection.
               </>
+            ) : connectMode === "jetbrains-config" ? (
+              <>
+                One button copies a JSON snippet. In any JetBrains IDE, open
+                Settings → Tools → AI Assistant → Model Context Protocol →
+                New, paste the snippet into the JSON field, click OK then
+                Apply. AI Assistant pops the LYKN consent screen — we
+                auto-detect the connection. Junie users can paste the same
+                snippet into <code className="font-mono text-[11.5px]">~/.junie/mcp/mcp.json</code>.
+              </>
             ) : (
               <>
                 One button copies LYKN's MCP URL and opens {targetName} for you.
@@ -777,9 +789,11 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
                 <CheckCircle2 className="h-4 w-4" />
                 {connectMode === "windsurf-config"
                   ? `Snippet copied — paste into Windsurf's MCP config`
-                  : isCliConnectMode(connectMode)
-                    ? `Command copied — paste in your terminal`
-                    : `URL copied — finish in ${targetName}`}
+                  : connectMode === "jetbrains-config"
+                    ? `Snippet copied — paste into JetBrains' MCP dialog`
+                    : isCliConnectMode(connectMode)
+                      ? `Command copied — paste in your terminal`
+                      : `URL copied — finish in ${targetName}`}
                 <ArrowRight className="h-4 w-4" />
               </>
             ) : (
@@ -970,6 +984,9 @@ function stepOnePromptTitle({ connectMode, targetName }) {
   if (connectMode === "windsurf-config") {
     return `Press Connect — we'll copy a JSON snippet for Windsurf's MCP config`;
   }
+  if (connectMode === "jetbrains-config") {
+    return `Press Connect — we'll copy a JSON snippet for JetBrains' MCP dialog`;
+  }
   if (isCliConnectMode(connectMode)) {
     return `Press Connect — we'll copy a one-line ${targetName} install command`;
   }
@@ -991,6 +1008,9 @@ function stepOneDoneTitle({ connectMode, targetName }) {
   }
   if (connectMode === "windsurf-config") {
     return `Config snippet copied — paste into Windsurf's MCP config`;
+  }
+  if (connectMode === "jetbrains-config") {
+    return `Config snippet copied — paste into JetBrains' MCP dialog`;
   }
   if (isCliConnectMode(connectMode)) {
     return `Install command copied — paste it in your terminal`;
@@ -1016,7 +1036,8 @@ function isCliConnectMode(connectMode) {
   return (
     connectMode === "claude-code-cli" ||
     connectMode === "gemini-cli" ||
-    connectMode === "windsurf-config"
+    connectMode === "windsurf-config" ||
+    connectMode === "jetbrains-config"
   );
 }
 
@@ -1030,15 +1051,20 @@ function buildCliInstallCommand(connectMode, { mcpUrl }) {
   if (connectMode === "windsurf-config") {
     return buildWindsurfConfigSnippet({ mcpUrl });
   }
+  if (connectMode === "jetbrains-config") {
+    return buildJetBrainsConfigSnippet({ mcpUrl });
+  }
   return null;
 }
 
 // "Install command" vs. "Config snippet" — keep wording honest. The
-// Windsurf snippet isn't a command you run; it's JSON you paste into
-// a file. This label drives every user-facing string in the dialog
-// that references the clipboard contents.
+// Windsurf/JetBrains snippets aren't commands you run; they're JSON
+// you paste into a file/dialog. This label drives every user-facing
+// string in the dialog that references the clipboard contents.
 function getCopyArtifactLabel(connectMode) {
-  if (connectMode === "windsurf-config") return "config snippet";
+  if (connectMode === "windsurf-config" || connectMode === "jetbrains-config") {
+    return "config snippet";
+  }
   return "install command";
 }
 
@@ -1057,7 +1083,8 @@ function CliInstallCommandFallback({ connectMode, mcpUrl }) {
     () => buildCliInstallCommand(connectMode, { mcpUrl }) || "",
     [connectMode, mcpUrl],
   );
-  const isSnippet = connectMode === "windsurf-config";
+  const isSnippet =
+    connectMode === "windsurf-config" || connectMode === "jetbrains-config";
   const copyLabel = isSnippet ? "Copy snippet" : "Copy command";
   const failTitle = isSnippet ? "Select the snippet manually." : "Select the command manually.";
   const onCopy = useCallback(async () => {

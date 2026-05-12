@@ -182,6 +182,7 @@ const CLIENT_LABEL: Record<string, string> = {
   replit: "Replit",
   "notion-ai": "Notion AI",
   windsurf: "Windsurf",
+  jetbrains: "JetBrains AI",
   "github-copilot": "GitHub Copilot",
   perplexity: "Perplexity",
   grok: "Grok",

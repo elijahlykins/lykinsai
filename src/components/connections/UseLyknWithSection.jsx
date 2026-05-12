@@ -425,6 +425,7 @@ function clientKindLabel(kind) {
     case "gemini":          return "Gemini CLI";
     case "grok":            return "Grok";
     case "windsurf":        return "Windsurf";
+    case "jetbrains":       return "JetBrains AI";
     case "replit":          return "Replit";
     case "github-copilot":  return "GitHub Copilot";
     case "notion-ai":       return "Notion AI";

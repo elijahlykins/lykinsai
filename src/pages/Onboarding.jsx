@@ -20,6 +20,7 @@ import {
   buildGeminiCliInstallCommand,
   buildReplitOauthInstallLink,
   buildWindsurfConfigSnippet,
+  buildJetBrainsConfigSnippet,
   buildCopilotInstallLink,
 } from "@/lib/connectors/outboundTargets";
 
@@ -83,21 +84,29 @@ import {
  *        1-click via windsurf:// is blocked on LYKN's marketplace
  *        submission; this is the next-best path today.
  *
- *     9. GitHub Copilot — true 1-click. We open VS Code's MCP install
+ *     9. JetBrains AI — config-snippet install. We copy a fully-
+ *        wrapped `{ "mcpServers": { … } }` JSON payload (JetBrains'
+ *        New MCP Server dialog expects this shape, NOT the inner
+ *        entry alone) wrapping our /mcp endpoint in `npx mcp-remote`
+ *        for OAuth bridging. Pasted into Settings → Tools → AI
+ *        Assistant → MCP → New, or into ~/.junie/mcp/mcp.json for
+ *        Junie users. Same snippet works for both surfaces.
+ *
+ *    10. GitHub Copilot — true 1-click. We open VS Code's MCP install
  *        link (https://insiders.vscode.dev/redirect/mcp/install?name=
  *        lykn&config=…) which hands off to VS Code's native vscode:
  *        mcp/install handler. VS Code presents a target-selection
  *        dialog (Global / Workspace / Remote), then Copilot does the
  *        standard OAuth DCR dance on first /mcp request.
  *
- *    10. Perplexity — guided. Open
+ *    11. Perplexity — guided. Open
  *        https://www.perplexity.ai/account/connectors and copy the URL.
  *        Paid-only (Pro / Enterprise Pro).
  *
- *    11. Grok — guided. Open https://grok.com/manage-connectors and
+ *    12. Grok — guided. Open https://grok.com/manage-connectors and
  *        copy the URL. Paid (SuperGrok / Premium).
  *
- *    12. Zapier — guided. Open https://zapier.com/app/connections (MCP
+ *    13. Zapier — guided. Open https://zapier.com/app/connections (MCP
  *        Client beta) and copy the URL.
  *
  * Connection detection: poll /api/v1/synthesis/tokens. Any new active
@@ -134,6 +143,10 @@ export default function Onboarding() {
     () => buildWindsurfConfigSnippet({ mcpUrl }),
     [mcpUrl],
   );
+  const jetbrainsSnippet = useMemo(
+    () => buildJetBrainsConfigSnippet({ mcpUrl }),
+    [mcpUrl],
+  );
   const copilotDeeplink = useMemo(
     () => buildCopilotInstallLink({ mcpUrl }),
     [mcpUrl],
@@ -141,9 +154,10 @@ export default function Onboarding() {
 
   // Track which clients have connected this session. Each entry is one
   // of "cursor" | "claude" | "chatgpt" | "claude-code" | "gemini" |
-  // "replit" | "notion-ai" | "windsurf" | "github-copilot" |
-  // "perplexity" | "grok" | "zapier"; presence in the set means we've
-  // observed an OAuth bearer attributed to that client.
+  // "replit" | "notion-ai" | "windsurf" | "jetbrains" |
+  // "github-copilot" | "perplexity" | "grok" | "zapier"; presence in
+  // the set means we've observed an OAuth bearer attributed to that
+  // client.
   const [connected, setConnected] = useState(() => new Set());
   // Which client did the user most recently CLICK? Used to choose the
   // best client_kind→logical-client mapping when a new bearer appears
@@ -179,7 +193,7 @@ export default function Onboarding() {
   useEffect(() => {
     if (!user) return undefined;
     if (!pending) return undefined;
-    if (connected.size >= 12) return undefined;
+    if (connected.size >= 13) return undefined;
     let cancelled = false;
     let timer;
     const tick = async () => {
@@ -361,6 +375,33 @@ export default function Onboarding() {
     });
   }, [windsurfSnippet]);
 
+  // JetBrains AI Assistant + Junie. Structurally identical to Windsurf
+  // (copy JSON snippet, no tab opens) but different paste destination:
+  // Settings → Tools → AI Assistant → MCP → New, or
+  // ~/.junie/mcp/mcp.json for Junie power users. The snippet wraps
+  // our /mcp endpoint in `npx mcp-remote` because JetBrains' native
+  // HTTP transport doesn't do OAuth DCR auto-discovery yet — once
+  // they ship that, the wrapper goes away and this becomes simpler.
+  const handleJetBrains = useCallback(async () => {
+    setPending("jetbrains");
+    let copyOk = false;
+    try {
+      await navigator.clipboard.writeText(jetbrainsSnippet);
+      copyOk = true;
+    } catch {
+      copyOk = false;
+    }
+    setCopyJustWorked(copyOk);
+    setTimeout(() => setCopyJustWorked(false), 4000);
+    toast({
+      title: copyOk ? "Config snippet copied" : "Couldn't copy automatically",
+      description: copyOk
+        ? "In your JetBrains IDE: Settings → Tools → AI Assistant → MCP → New → paste the JSON → Apply."
+        : "Use the copy button in the card to copy the snippet manually.",
+      variant: copyOk ? undefined : "destructive",
+    });
+  }, [jetbrainsSnippet]);
+
   // Perplexity / Grok / Zapier all share the same shape: open the
   // client's connector-settings page in a new tab and pre-copy the
   // LYKN /mcp URL to the clipboard so the user just hits paste +
@@ -528,6 +569,20 @@ export default function Onboarding() {
       });
     }
   }, [windsurfSnippet]);
+
+  const handleCopyJetBrainsSnippet = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(jetbrainsSnippet);
+      setCopyJustWorked(true);
+      setTimeout(() => setCopyJustWorked(false), 2000);
+    } catch {
+      toast({
+        title: "Copy failed",
+        description: "Select the snippet manually.",
+        variant: "destructive",
+      });
+    }
+  }, [jetbrainsSnippet]);
 
   return (
     <div className="min-h-screen w-full px-6 md:px-10 py-12">
@@ -760,6 +815,34 @@ export default function Onboarding() {
                 </code>{" "}
                 to bridge the auth. Once LYKN ships in the Windsurf MCP
                 marketplace this becomes a true 1-click install.
+              </>
+            }
+          />
+          <ConnectCard
+            id="jetbrains"
+            name="JetBrains AI"
+            domain="jetbrains.com"
+            tagline="Config-snippet install for AI Assistant + Junie across IntelliJ, WebStorm, PyCharm, GoLand, RustRover (all of them). Paste into Settings → Tools → AI Assistant → MCP."
+            badge="Snippet"
+            connected={connected.has("jetbrains")}
+            pending={pending === "jetbrains" && !connected.has("jetbrains")}
+            disabled={!user}
+            onConnect={handleJetBrains}
+            urlToCopy={jetbrainsSnippet}
+            urlCopied={copyJustWorked && pending === "jetbrains"}
+            onCopyUrl={handleCopyJetBrainsSnippet}
+            copyLabel="snippet"
+            secondaryNote={
+              <>
+                JetBrains 2025.2+ with AI Assistant or Junie enabled (any
+                paid AI Pro / AI Ultimate plan). Also needs Node.js
+                installed — JetBrains' native HTTP MCP transport doesn't
+                do OAuth DCR auto-discovery yet, so the snippet bridges
+                via{" "}
+                <code className="font-mono text-[10px] px-1 py-[1px] rounded bg-black/[0.06] dark:bg-white/10">
+                  npx mcp-remote
+                </code>
+                .
               </>
             }
           />
@@ -1030,6 +1113,8 @@ function mapClientKindToSlot(kind) {
       return "notion-ai";
     case "windsurf":
       return "windsurf";
+    case "jetbrains":
+      return "jetbrains";
     case "github-copilot":
       return "github-copilot";
     case "perplexity":

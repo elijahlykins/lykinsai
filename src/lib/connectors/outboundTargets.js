@@ -388,6 +388,63 @@ export const OUTBOUND_TARGETS = [
       "LYKN is now wired into Cascade. To get Cascade to actually reach for it, mention LYKN by name in your prompt or add a Cascade rule in Settings → Cascade → Rules telling it to consult your context first. We're also working on getting LYKN approved in Windsurf's MCP marketplace — when that lands, this will become a true 1-click `windsurf://` deeplink and the JSON-paste step goes away.",
   },
   {
+    id: "jetbrains",
+    clientKind: "jetbrains",
+    name: "JetBrains AI",
+    domain: "jetbrains.com",
+    color: "#FE2857",
+    installType: "oauth-mcp",
+    transport: "Streamable HTTP MCP via mcp-remote proxy (OAuth)",
+    // ── JetBrains has two MCP-consuming surfaces in 2025.2+:
+    //
+    //    1. AI Assistant (bundled in IntelliJ / WebStorm / PyCharm /
+    //       GoLand / RubyMine / RustRover / etc.) — Settings → Tools
+    //       → AI Assistant → Model Context Protocol → New
+    //    2. Junie (separate agentic plugin) — `/mcp` slash command or
+    //       editing `~/.junie/mcp/mcp.json`
+    //
+    //    Both accept the SAME JSON shape (`{ "mcpServers": { … } }`).
+    //    AI Assistant 2025.2 advertises native "Streamable HTTP"
+    //    transport, BUT JetBrains' own remote-server examples
+    //    (including the canonical Junie docs at
+    //    junie.jetbrains.com/docs/junie-cli-mcp-configuration.html)
+    //    all use the `mcp-remote` stdio proxy to bridge OAuth — which
+    //    strongly implies their native HTTP transport doesn't do
+    //    DCR auto-discovery on 401 yet. Until that ships, we use the
+    //    Windsurf-pattern: `npx -y mcp-remote <url>` as a stdio
+    //    subprocess that handles the /mcp → 401 → discovery → DCR →
+    //    consent dance and pipes the resulting MCP traffic over
+    //    stdio back to JetBrains.
+    //
+    //    Pinning client_name="JetBrains AI" via
+    //    --static-oauth-client-metadata ensures classifyClientKind
+    //    can attribute the bearer correctly (same trick as Windsurf).
+    //
+    //    The card targets BOTH surfaces in copy; install steps focus
+    //    on AI Assistant (the bundled surface that every JetBrains
+    //    IDE user has by default) with a Junie note for power users.
+    summary:
+      "JetBrains AI Assistant + Junie (IntelliJ, WebStorm, PyCharm, GoLand, RustRover, RubyMine, all of them). One click copies the JSON snippet — paste it into Settings → Tools → AI Assistant → MCP. JetBrains' AI tools then see your synthesis layer on every coding session.",
+    helpUrl: "https://www.jetbrains.com/help/ai-assistant/mcp.html",
+    helpLabel: "JetBrains AI Assistant MCP docs",
+    available: true,
+    tier: 1,
+    direction: "bidirectional",
+    connectMode: "jetbrains-config",
+    openUrl: "https://www.jetbrains.com/help/ai-assistant/mcp.html",
+    planNote:
+      "JetBrains IDE 2025.2 or later with AI Assistant enabled (any paid AI Pro / AI Ultimate plan — MCP support spans the tiers). Also requires Node.js installed locally because JetBrains' native HTTP MCP transport doesn't do OAuth DCR auto-discovery yet — we bridge via `npx mcp-remote`. Junie users can paste the same snippet into `~/.junie/mcp/mcp.json`.",
+    installSteps: [
+      "Press Connect JetBrains AI — we copy the JSON snippet to your clipboard.",
+      "In any JetBrains IDE: Settings (Cmd+,) → Tools → AI Assistant → Model Context Protocol → New.",
+      "Pick \"As JSON\" (or paste in the JSON field), drop the snippet in, click OK then Apply.",
+      "AI Assistant spawns mcp-remote — a browser tab pops to the LYKN consent screen. Click Approve.",
+      "Open AI Assistant chat — LYKN tools appear automatically. We auto-detect the new bearer here.",
+    ],
+    successHint:
+      "LYKN is wired into JetBrains AI Assistant across every JetBrains IDE you have signed in. Junie users: drop the same snippet into `~/.junie/mcp/mcp.json` (or per-project `.junie/mcp/mcp.json`) — same OAuth flow, same handshake. When JetBrains ships native DCR auto-discovery on their HTTP transport, the mcp-remote wrapper becomes optional and this will become an even cleaner snippet.",
+  },
+  {
     id: "replit",
     clientKind: "replit",
     name: "Replit",
@@ -876,6 +933,51 @@ export function buildWindsurfConfigSnippet({ mcpUrl }) {
 }
 
 /**
+ * Build the JSON snippet a user pastes into JetBrains AI Assistant's
+ * New MCP Server dialog (Settings → Tools → AI Assistant → MCP). Same
+ * mcp-remote stdio bridge pattern as Windsurf, with two differences:
+ *
+ *   1. Wrapping shape: JetBrains' dialog expects a fully-wrapped
+ *      `{ "mcpServers": { … } }` payload (their docs explicitly show
+ *      this shape under "JSON configuration"), whereas Windsurf's
+ *      `mcp_config.json` flow expects the inner entry only because
+ *      users paste INSIDE an existing `mcpServers` object. The Junie
+ *      `~/.junie/mcp/mcp.json` file follows the same wrapped shape,
+ *      so this snippet works for both surfaces.
+ *
+ *   2. client_name pinning: "JetBrains AI" instead of "Windsurf".
+ *      Without this our classifier would see ambiguous mcp-remote
+ *      DCR traffic and couldn't distinguish JetBrains from Windsurf
+ *      in /connections.
+ *
+ * Once JetBrains ships native OAuth DCR on their AI Assistant HTTP
+ * transport this wrapper becomes optional — but we'd still emit the
+ * mcp-remote variant for Junie users on older JetBrains versions.
+ *
+ * Spec:
+ *   www.jetbrains.com/help/ai-assistant/mcp.html#json-configuration-examples
+ *   junie.jetbrains.com/docs/junie-cli-mcp-configuration.html
+ */
+export function buildJetBrainsConfigSnippet({ mcpUrl }) {
+  const url = ensureHttpsMcpUrl(mcpUrl);
+  const wrapped = {
+    mcpServers: {
+      lykn: {
+        command: "npx",
+        args: [
+          "-y",
+          "mcp-remote",
+          url,
+          "--static-oauth-client-metadata",
+          JSON.stringify({ client_name: "JetBrains AI" }),
+        ],
+      },
+    },
+  };
+  return JSON.stringify(wrapped, null, 2);
+}
+
+/**
  * Build a Cursor install deeplink. Per Cursor's docs the spec is:
  *
  *   cursor://anysphere.cursor-deeplink/mcp/install?name=NAME&config=BASE64
@@ -1294,6 +1396,22 @@ export const LYKN_PROJECT_INSTRUCTIONS_TARGETS = {
     ],
     helpUrl: "https://docs.windsurf.com/windsurf/cascade/memories",
     helpLabel: "Cascade Memories docs",
+  },
+  // JetBrains AI Assistant reads custom prompts from Settings →
+  // Tools → AI Assistant → Core Features → Custom Prompts (global)
+  // or per-project. Junie additionally honors per-project
+  // `.junie/guidelines.md` files which sit alongside the workspace's
+  // `.junie/mcp/mcp.json` — that's the most portable surface (travels
+  // with the repo) so we recommend it as the primary drop point.
+  jetbrains: {
+    surfaceLabel: ".junie/guidelines.md",
+    steps: [
+      "In your project root, create `.junie/guidelines.md` (or open Settings → Tools → AI Assistant → Core Features → Custom Prompts for IDE-wide).",
+      "Paste the snippet below. Save / commit.",
+      "AI Assistant + Junie read the file on every chat session — LYKN tools become discoverable immediately.",
+    ],
+    helpUrl: "https://www.jetbrains.com/help/ai-assistant/manage-prompt-library.html",
+    helpLabel: "AI Assistant custom prompts docs",
   },
   // GitHub Copilot in VS Code reads instructions from a few places:
   // .github/copilot-instructions.md (repo-scoped), .vscode/instructions

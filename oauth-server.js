@@ -1429,6 +1429,14 @@ function classifyClientKind(input) {
   // catches the bearer regardless of whether mcp-remote runs from
   // Windsurf, a future native bridge, or a user-edited config.
   if (n.includes('windsurf') || n.includes('codeium')) return 'windsurf';
+  // JetBrains AI Assistant + Junie both go through the mcp-remote
+  // stdio bridge (JetBrains' native HTTP transport doesn't do OAuth
+  // DCR yet). We pin client_name="JetBrains AI" in the install
+  // snippet — also catch "junie" as a fallback since power users may
+  // edit their `~/.junie/mcp/mcp.json` directly and rename the entry.
+  // Don't match bare "intellij"/"pycharm"/etc. — too risky for
+  // false positives from unrelated tools that mention those IDEs.
+  if (n.includes('jetbrains') || n.includes('junie')) return 'jetbrains';
   // GitHub Copilot in VS Code registers itself with a name like
   // "GitHub Copilot Chat" / "VS Code (GitHub Copilot)" depending on
   // the install path. Match either signal. Don't match bare "github"
