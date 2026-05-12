@@ -26,6 +26,7 @@ import {
   buildClaudeCodeOauthInstallCommand,
   buildGeminiCliInstallCommand,
   buildReplitOauthInstallLink,
+  buildWindsurfConfigSnippet,
   buildRawInstallInfo,
   buildLyknProjectInstructions,
   LYKN_PROJECT_INSTRUCTIONS_TARGETS,
@@ -591,18 +592,26 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
       return;
     }
 
-    // ── CLI-style installs (Claude Code, Gemini CLI, future
-    //    terminal-only clients). No browser deep link can pop a
-    //    terminal, so the primary action becomes "copy a one-line
-    //    install command to the clipboard." Command uses --transport
-    //    http so the CLI's built-in OAuth handshake fires on first
-    //    request — same /mcp 401 → discovery → DCR → consent dance
-    //    Cursor uses, just initiated from a terminal paste. We don't
-    //    open any tab; the CLI itself opens the consent tab once the
-    //    user hits Enter. Token poll detects the resulting bearer and
-    //    flips the dialog to Connected.
+    // ── Paste-style installs (Claude Code + Gemini CLI = terminal
+    //    command; Windsurf = JSON snippet pasted into mcp_config.json).
+    //    No browser deep link can pop a terminal or an editor, so the
+    //    primary action becomes "copy text to the clipboard, tell the
+    //    user where to paste it." For CLI commands the user pastes in
+    //    their shell; for Windsurf they paste into the Windsurf config
+    //    file via the Command Palette. Either way the underlying MCP
+    //    client (or mcp-remote, for Windsurf) does the /mcp → 401 →
+    //    discovery → DCR → consent dance once the paste lands and
+    //    Windsurf hot-reloads / the user hits Enter. We don't open any
+    //    tab from here; the client itself opens the consent tab.
+    //    Token poll detects the resulting bearer and flips the dialog
+    //    to Connected.
     const cliCommand = buildCliInstallCommand(connectMode, { mcpUrl });
     if (cliCommand) {
+      const artifactLabel = getCopyArtifactLabel(connectMode);
+      const pasteHint =
+        connectMode === "windsurf-config"
+          ? "Open Windsurf → Command Palette → Configure MCP Servers → paste inside the mcpServers object → Save."
+          : "Paste it in your terminal and press Enter.";
       let copyOk = false;
       try {
         await navigator.clipboard.writeText(cliCommand);
@@ -614,14 +623,16 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
       if (!copyOk) {
         toast({
           title: "Couldn't copy automatically",
-          description:
-            "Use the Show command panel below to copy the install command manually.",
+          description: `Use the Show ${artifactLabel} panel below to copy it manually.`,
           variant: "destructive",
         });
       } else {
         toast({
-          title: "Install command copied",
-          description: "Paste it in your terminal and press Enter.",
+          title:
+            artifactLabel === "config snippet"
+              ? "Config snippet copied"
+              : "Install command copied",
+          description: pasteHint,
         });
       }
       setStep((s) => (s < 1 ? 1 : s));
@@ -717,6 +728,14 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
                 pops a browser tab to the LYKN consent screen, you approve,
                 we auto-detect the connection.
               </>
+            ) : connectMode === "windsurf-config" ? (
+              <>
+                One button copies a JSON snippet. In Windsurf, open the
+                Command Palette and run <code className="font-mono text-[11.5px]">Windsurf: Configure MCP Servers</code> —
+                paste inside the <code className="font-mono text-[11.5px]">mcpServers</code> object,
+                save, Windsurf hot-reloads and pops the LYKN consent screen.
+                We auto-detect the connection.
+              </>
             ) : (
               <>
                 One button copies LYKN's MCP URL and opens {targetName} for you.
@@ -733,9 +752,11 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
             {copyJustWorked ? (
               <>
                 <CheckCircle2 className="h-4 w-4" />
-                {isCliConnectMode(connectMode)
-                  ? `Command copied — paste in your terminal`
-                  : `URL copied — finish in ${targetName}`}
+                {connectMode === "windsurf-config"
+                  ? `Snippet copied — paste into Windsurf's MCP config`
+                  : isCliConnectMode(connectMode)
+                    ? `Command copied — paste in your terminal`
+                    : `URL copied — finish in ${targetName}`}
                 <ArrowRight className="h-4 w-4" />
               </>
             ) : (
@@ -838,7 +859,7 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
       <details className="rounded-xl border border-black/[0.06] dark:border-white/10 bg-black/[0.02] dark:bg-white/[0.04] px-3 py-2">
         <summary className="cursor-pointer list-none text-[11px] font-medium text-black/65 dark:text-white/70 hover:text-black/90 dark:hover:text-white select-none">
           {isCliConnectMode(connectMode)
-            ? "Show install command (or copy didn't work)"
+            ? `Show ${getCopyArtifactLabel(connectMode)} (or copy didn't work)`
             : "Need the URL by itself? (or copy didn't work)"}
         </summary>
         <div className="mt-2 space-y-1.5">
@@ -920,6 +941,9 @@ function stepOnePromptTitle({ connectMode, targetName }) {
   if (connectMode === "replit-prefill") {
     return `Press Connect — we'll open Replit with LYKN's details pre-filled`;
   }
+  if (connectMode === "windsurf-config") {
+    return `Press Connect — we'll copy a JSON snippet for Windsurf's MCP config`;
+  }
   if (isCliConnectMode(connectMode)) {
     return `Press Connect — we'll copy a one-line ${targetName} install command`;
   }
@@ -936,20 +960,35 @@ function stepOneDoneTitle({ connectMode, targetName }) {
   if (connectMode === "replit-prefill") {
     return `Replit opened with LYKN pre-filled`;
   }
+  if (connectMode === "windsurf-config") {
+    return `Config snippet copied — paste into Windsurf's MCP config`;
+  }
   if (isCliConnectMode(connectMode)) {
     return `Install command copied — paste it in your terminal`;
   }
   return `URL copied + ${targetName} opened in a new tab`;
 }
 
-// Connect-mode predicates / dispatchers. Kept tiny + colocated with the
-// stepper helpers so future CLI clients (Codex CLI, Aider, etc.) only
-// need to (a) add a `connectMode: "<cli>-cli"` to their outboundTarget
+// Connect-mode predicates / dispatchers. Kept tiny + colocated with
+// the stepper helpers so future paste-style clients (Codex CLI, Aider,
+// new IDEs needing mcp-remote bridges, etc.) only need to (a) add a
+// `connectMode: "<client>-{cli,config}"` to their outboundTarget
 // entry, (b) add a builder + branch here, and (c) the rest of the
-// dialog UX (hero text, button label, fallback disclosure, stepper) all
-// route through these predicates automatically.
+// dialog UX (hero text, button label, fallback disclosure, stepper)
+// routes through these predicates automatically.
+//
+// We treat CLI commands (Claude Code, Gemini CLI) and config-file
+// snippets (Windsurf — pasted into mcp_config.json) as the same
+// shape: "copy text → user pastes somewhere → MCP client takes over."
+// The differentiation is only in the human-readable copy ("install
+// command" vs. "config snippet") which is handled by getCopyArtifact-
+// Label below.
 function isCliConnectMode(connectMode) {
-  return connectMode === "claude-code-cli" || connectMode === "gemini-cli";
+  return (
+    connectMode === "claude-code-cli" ||
+    connectMode === "gemini-cli" ||
+    connectMode === "windsurf-config"
+  );
 }
 
 function buildCliInstallCommand(connectMode, { mcpUrl }) {
@@ -959,7 +998,19 @@ function buildCliInstallCommand(connectMode, { mcpUrl }) {
   if (connectMode === "gemini-cli") {
     return buildGeminiCliInstallCommand({ mcpUrl });
   }
+  if (connectMode === "windsurf-config") {
+    return buildWindsurfConfigSnippet({ mcpUrl });
+  }
   return null;
+}
+
+// "Install command" vs. "Config snippet" — keep wording honest. The
+// Windsurf snippet isn't a command you run; it's JSON you paste into
+// a file. This label drives every user-facing string in the dialog
+// that references the clipboard contents.
+function getCopyArtifactLabel(connectMode) {
+  if (connectMode === "windsurf-config") return "config snippet";
+  return "install command";
 }
 
 /**
@@ -977,6 +1028,9 @@ function CliInstallCommandFallback({ connectMode, mcpUrl }) {
     () => buildCliInstallCommand(connectMode, { mcpUrl }) || "",
     [connectMode, mcpUrl],
   );
+  const isSnippet = connectMode === "windsurf-config";
+  const copyLabel = isSnippet ? "Copy snippet" : "Copy command";
+  const failTitle = isSnippet ? "Select the snippet manually." : "Select the command manually.";
   const onCopy = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(command);
@@ -985,17 +1039,17 @@ function CliInstallCommandFallback({ connectMode, mcpUrl }) {
     } catch {
       toast({
         title: "Copy failed",
-        description: "Select the command manually.",
+        description: failTitle,
         variant: "destructive",
       });
     }
-  }, [command]);
+  }, [command, failTitle]);
   return (
     <div className="space-y-2">
       <pre className="whitespace-pre-wrap break-all rounded-md bg-white dark:bg-zinc-900 px-2 py-1.5 text-[11.5px] font-mono text-black/85 dark:text-white/85 border border-black/[0.06] dark:border-white/[0.08]">
 {command}
       </pre>
-      <CopyButton copied={copied} onClick={onCopy} label="Copy command" />
+      <CopyButton copied={copied} onClick={onCopy} label={copyLabel} />
     </div>
   );
 }

@@ -1416,6 +1416,12 @@ function classifyClientKind(input) {
   if (n.includes('grok') || n.includes('xai')) return 'grok';
   if (n.includes('replit')) return 'replit';
   if (n.includes('notion')) return 'notion-ai';
+  // Windsurf goes through the mcp-remote stdio bridge (Windsurf can't
+  // do native OAuth on HTTP MCP yet) — we pin client_name="Windsurf"
+  // in the install snippet via --static-oauth-client-metadata so this
+  // catches the bearer regardless of whether mcp-remote runs from
+  // Windsurf, a future native bridge, or a user-edited config.
+  if (n.includes('windsurf') || n.includes('codeium')) return 'windsurf';
   return 'other';
 }
 

@@ -19,6 +19,7 @@ import {
   buildClaudeCodeOauthInstallCommand,
   buildGeminiCliInstallCommand,
   buildReplitOauthInstallLink,
+  buildWindsurfConfigSnippet,
 } from "@/lib/connectors/outboundTargets";
 
 /**
@@ -73,14 +74,22 @@ import {
  *        supports custom MCP today — gemini.google.com / Workspace
  *        consumer have no Add Custom Connector UI.
  *
- *     8. Perplexity — guided. Open
+ *     8. Windsurf — config-file install. We copy a JSON snippet the
+ *        user pastes into mcp_config.json via Cmd+Shift+P → Configure
+ *        MCP Servers. Snippet wraps our /mcp endpoint in `npx
+ *        mcp-remote` (the standard stdio→HTTP bridge with OAuth)
+ *        because Windsurf can't natively do DCR on HTTP MCP yet. True
+ *        1-click via windsurf:// is blocked on LYKN's marketplace
+ *        submission; this is the next-best path today.
+ *
+ *     9. Perplexity — guided. Open
  *        https://www.perplexity.ai/account/connectors and copy the URL.
  *        Paid-only (Pro / Enterprise Pro).
  *
- *     9. Grok — guided. Open https://grok.com/manage-connectors and
+ *    10. Grok — guided. Open https://grok.com/manage-connectors and
  *        copy the URL. Paid (SuperGrok / Premium).
  *
- *    10. Zapier — guided. Open https://zapier.com/app/connections (MCP
+ *    11. Zapier — guided. Open https://zapier.com/app/connections (MCP
  *        Client beta) and copy the URL.
  *
  * Connection detection: poll /api/v1/synthesis/tokens. Any new active
@@ -113,12 +122,16 @@ export default function Onboarding() {
     () => buildReplitOauthInstallLink({ mcpUrl }),
     [mcpUrl],
   );
+  const windsurfSnippet = useMemo(
+    () => buildWindsurfConfigSnippet({ mcpUrl }),
+    [mcpUrl],
+  );
 
   // Track which clients have connected this session. Each entry is one
   // of "cursor" | "claude" | "chatgpt" | "claude-code" | "gemini" |
-  // "replit" | "notion-ai" | "perplexity" | "grok" | "zapier";
-  // presence in the set means we've observed an OAuth bearer attributed
-  // to that client.
+  // "replit" | "notion-ai" | "windsurf" | "perplexity" | "grok" |
+  // "zapier"; presence in the set means we've observed an OAuth bearer
+  // attributed to that client.
   const [connected, setConnected] = useState(() => new Set());
   // Which client did the user most recently CLICK? Used to choose the
   // best client_kind→logical-client mapping when a new bearer appears
@@ -148,13 +161,13 @@ export default function Onboarding() {
   }, [user]);
 
   // Poll for new OAuth-issued bearers while at least one client is
-  // pending. Stops once all 10 are connected or the user navigates
+  // pending. Stops once all 11 are connected or the user navigates
   // away. 3s cadence — tight enough to feel instant, loose enough to
   // not hammer the backend.
   useEffect(() => {
     if (!user) return undefined;
     if (!pending) return undefined;
-    if (connected.size >= 10) return undefined;
+    if (connected.size >= 11) return undefined;
     let cancelled = false;
     let timer;
     const tick = async () => {
@@ -298,6 +311,32 @@ export default function Onboarding() {
       variant: copyOk ? undefined : "destructive",
     });
   }, [geminiCliCommand]);
+
+  // Windsurf is a config-file paste (NOT a terminal command), but
+  // structurally identical to the CLI handlers: copy text + toast,
+  // no tab opens. The text is a JSON snippet the user drops into
+  // Windsurf's mcp_config.json via Cmd+Shift+P → "Windsurf: Configure
+  // MCP Servers". On save Windsurf hot-reloads, spawns mcp-remote,
+  // OAuth dance fires automatically.
+  const handleWindsurf = useCallback(async () => {
+    setPending("windsurf");
+    let copyOk = false;
+    try {
+      await navigator.clipboard.writeText(windsurfSnippet);
+      copyOk = true;
+    } catch {
+      copyOk = false;
+    }
+    setCopyJustWorked(copyOk);
+    setTimeout(() => setCopyJustWorked(false), 4000);
+    toast({
+      title: copyOk ? "Config snippet copied" : "Couldn't copy automatically",
+      description: copyOk
+        ? "In Windsurf: Cmd+Shift+P → Configure MCP Servers → paste inside mcpServers → Save."
+        : "Use the copy button in the card to copy the snippet manually.",
+      variant: copyOk ? undefined : "destructive",
+    });
+  }, [windsurfSnippet]);
 
   // Perplexity / Grok / Zapier all share the same shape: open the
   // client's connector-settings page in a new tab and pre-copy the
@@ -452,6 +491,20 @@ export default function Onboarding() {
       });
     }
   }, [geminiCliCommand]);
+
+  const handleCopyWindsurfSnippet = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(windsurfSnippet);
+      setCopyJustWorked(true);
+      setTimeout(() => setCopyJustWorked(false), 2000);
+    } catch {
+      toast({
+        title: "Copy failed",
+        description: "Select the snippet manually.",
+        variant: "destructive",
+      });
+    }
+  }, [windsurfSnippet]);
 
   return (
     <div className="min-h-screen w-full px-6 md:px-10 py-12">
@@ -639,6 +692,33 @@ export default function Onboarding() {
             }
           />
           <ConnectCard
+            id="windsurf"
+            name="Windsurf"
+            domain="windsurf.com"
+            tagline="Config-file install. We copy a JSON snippet — paste it into Windsurf's MCP config (Cmd+Shift+P → Configure MCP Servers), save, approve."
+            badge="Snippet"
+            connected={connected.has("windsurf")}
+            pending={pending === "windsurf" && !connected.has("windsurf")}
+            disabled={!user}
+            onConnect={handleWindsurf}
+            urlToCopy={windsurfSnippet}
+            urlCopied={copyJustWorked && pending === "windsurf"}
+            onCopyUrl={handleCopyWindsurfSnippet}
+            copyLabel="snippet"
+            secondaryNote={
+              <>
+                Requires Windsurf and Node.js installed locally. Windsurf
+                doesn't natively do OAuth on HTTP MCP servers yet, so the
+                snippet uses{" "}
+                <code className="font-mono text-[10px] px-1 py-[1px] rounded bg-black/[0.06] dark:bg-white/10">
+                  npx mcp-remote
+                </code>{" "}
+                to bridge the auth. Once LYKN ships in the Windsurf MCP
+                marketplace this becomes a true 1-click install.
+              </>
+            }
+          />
+          <ConnectCard
             id="perplexity"
             name="Perplexity"
             domain="perplexity.ai"
@@ -749,9 +829,10 @@ function ConnectCard({
   urlToCopy,
   urlCopied,
   onCopyUrl,
-  // Defaults to "URL" for the canonical case (paste-into-modal). Claude
-  // Code overrides to "command" since what's on the clipboard is the
-  // `claude mcp add ...` CLI line, not a URL.
+  // Defaults to "URL" for the canonical case (paste-into-modal).
+  // Override to "command" for CLI installs (Claude Code, Gemini CLI —
+  // the clipboard holds a shell command) or "snippet" for editor-paste
+  // installs (Windsurf — the clipboard holds a JSON config blob).
   copyLabel = "URL",
   secondaryNote,
 }) {
@@ -840,12 +921,20 @@ function ConnectCard({
               {urlCopied ? (
                 <>
                   <CheckCircle2 className="h-3 w-3 text-emerald-500" />
-                  {copyLabel === "command" ? "Command copied" : "URL copied"}
+                  {copyLabel === "command"
+                    ? "Command copied"
+                    : copyLabel === "snippet"
+                      ? "Snippet copied"
+                      : "URL copied"}
                 </>
               ) : (
                 <>
                   <Copy className="h-3 w-3" />
-                  {copyLabel === "command" ? "Copy command" : "Copy URL"}
+                  {copyLabel === "command"
+                    ? "Copy command"
+                    : copyLabel === "snippet"
+                      ? "Copy snippet"
+                      : "Copy URL"}
                 </>
               )}
             </button>
@@ -894,6 +983,8 @@ function mapClientKindToSlot(kind) {
       return "replit";
     case "notion-ai":
       return "notion-ai";
+    case "windsurf":
+      return "windsurf";
     case "perplexity":
       return "perplexity";
     case "grok":

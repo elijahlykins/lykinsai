@@ -341,15 +341,51 @@ export const OUTBOUND_TARGETS = [
     domain: "windsurf.com",
     color: "#09B6A2",
     installType: "oauth-mcp",
-    transport: "Streamable HTTP MCP",
+    transport: "Streamable HTTP MCP via mcp-remote proxy (OAuth)",
+    // ── Windsurf has two install paths today:
+    //
+    //    1. windsurf:// install-link deeplink — TRUE 1-click but ONLY
+    //       for servers registered in Windsurf's MCP marketplace
+    //       (`windsurf://windsurf-mcp-registry?serverName=<name>`
+    //       resolves serverName against the marketplace, not a URL).
+    //       Marketplace requires submission + approval; tracked
+    //       separately, not blocking this card.
+    //
+    //    2. mcp_config.json paste — works today for ANY custom remote
+    //       MCP server. Windsurf's HTTP transport supports static
+    //       headers but NOT OAuth DCR natively, so we use the
+    //       standard `mcp-remote` stdio proxy
+    //       (npmjs.com/package/mcp-remote) to wrap our /mcp endpoint
+    //       with OAuth handling: Windsurf spawns
+    //       `npx -y mcp-remote https://lykn.io/mcp` as a subprocess,
+    //       mcp-remote does the /mcp → 401 → discovery → DCR → consent
+    //       dance and proxies the resulting MCP traffic. Lifecycle
+    //       still lives in /connections — bearer rotation works the
+    //       same as Cursor's because it's the same OAuth handshake.
+    //
+    //    We ship the config-snippet flow today. When LYKN is approved
+    //    in the marketplace we can flip connectMode to a true
+    //    `windsurf-deeplink` and skip the JSON-paste step entirely.
     summary:
-      "AI-native IDE, strong Cursor competitor. Drop LYKN into Cascade's mcp_config.json and Windsurf's coding agent can query your vault, project state, and rules.",
+      "AI-native IDE (strong Cursor competitor). One click copies the JSON snippet you paste into Windsurf's MCP config — Windsurf spawns mcp-remote which handles the OAuth handshake against LYKN automatically. Cascade then sees your synthesis layer on every coding session.",
     helpUrl: "https://docs.windsurf.com/windsurf/cascade/mcp",
     helpLabel: "Windsurf MCP docs",
-    available: false,
-    comingSoon: true,
-    tier: 2,
+    available: true,
+    tier: 1,
     direction: "bidirectional",
+    connectMode: "windsurf-config",
+    openUrl: "https://docs.windsurf.com/windsurf/cascade/mcp",
+    planNote:
+      "Requires Windsurf and Node.js installed locally (Node is needed because Windsurf doesn't natively do OAuth DCR on HTTP MCP servers — we use `npx mcp-remote` to bridge that). No paid plan required; Windsurf's MCP support ships on Free.",
+    installSteps: [
+      "Press Connect Windsurf — we copy the JSON snippet to your clipboard.",
+      "In Windsurf: Command Palette (Shift+Cmd+P / Ctrl+Shift+P) → \"Windsurf: Configure MCP Servers\".",
+      "Paste the snippet inside the `mcpServers` object (or wrap it in `{ \"mcpServers\": { … } }` if the file is empty). Save.",
+      "Windsurf hot-reloads the file and spawns mcp-remote — a browser tab pops to the LYKN consent screen. Click Approve.",
+      "Subsequent Cascade chats use LYKN automatically. We auto-detect the new bearer here.",
+    ],
+    successHint:
+      "LYKN is now wired into Cascade. To get Cascade to actually reach for it, mention LYKN by name in your prompt or add a Cascade rule in Settings → Cascade → Rules telling it to consult your context first. We're also working on getting LYKN approved in Windsurf's MCP marketplace — when that lands, this will become a true 1-click `windsurf://` deeplink and the JSON-paste step goes away.",
   },
   {
     id: "replit",
@@ -746,6 +782,62 @@ export function buildGeminiCliInstallCommand({ mcpUrl }) {
 }
 
 /**
+ * Build the JSON snippet a user pastes into Windsurf's mcp_config.json
+ * to wire LYKN into Cascade. Windsurf doesn't natively support OAuth
+ * DCR on HTTP MCP servers — its native `serverUrl` shape only supports
+ * static headers — so we use the standard `mcp-remote`
+ * (npmjs.com/package/mcp-remote) stdio proxy to bridge the gap:
+ *
+ *   Windsurf spawns `npx -y mcp-remote <url>` as a subprocess
+ *     → mcp-remote opens /mcp on our server
+ *     → gets 401 with WWW-Authenticate: ... resource_metadata=…
+ *     → auto-discovers our OAuth provider via /.well-known
+ *     → DCR (mcp-remote registers itself)
+ *     → pops a browser tab for /oauth/consent
+ *     → user approves
+ *     → mcp-remote caches the bearer in ~/.mcp-auth
+ *     → proxies all subsequent MCP traffic over stdio to Windsurf
+ *
+ * The snippet is intentionally JUST the inner server entry (the
+ * `"lykn": { … }` object), NOT wrapped in the outer
+ * `{ "mcpServers": { … } }` shell. That's because most Windsurf users
+ * already have OTHER MCP servers configured — pasting a full wrapped
+ * object would clobber them. The dialog UX instructs the user to add
+ * the snippet inside their existing `mcpServers` object, or wrap it
+ * in `{ "mcpServers": { … } }` if the file is empty.
+ *
+ * `npx -y` flag auto-confirms the install prompt; `mcp-remote` is
+ * unscoped and tiny (~30kb), no real install delay.
+ */
+export function buildWindsurfConfigSnippet({ mcpUrl }) {
+  const url = ensureHttpsMcpUrl(mcpUrl);
+  // `--static-oauth-client-metadata` overrides what mcp-remote sends
+  // during DCR. We pin `client_name: "Windsurf"` so our classifier
+  // (oauth-server.js → classifyClientKind) can attribute the resulting
+  // bearer to Windsurf specifically — without the override, mcp-remote
+  // self-reports generically and ANY mcp-remote-wrapped client (which
+  // could be Windsurf, an older Claude Desktop, a hand-rolled stdio
+  // client…) would be indistinguishable in /connections. Passing JSON
+  // as a CLI argument means the value has to be a single-quoted string
+  // at the shell level — JSON.stringify gives us a valid double-quoted
+  // payload which Windsurf's mcp_config.json then re-quotes via the
+  // standard JSON-array `args` syntax.
+  const inner = {
+    lykn: {
+      command: "npx",
+      args: [
+        "-y",
+        "mcp-remote",
+        url,
+        "--static-oauth-client-metadata",
+        JSON.stringify({ client_name: "Windsurf" }),
+      ],
+    },
+  };
+  return JSON.stringify(inner, null, 2);
+}
+
+/**
  * Build a Cursor install deeplink. Per Cursor's docs the spec is:
  *
  *   cursor://anysphere.cursor-deeplink/mcp/install?name=NAME&config=BASE64
@@ -1116,6 +1208,20 @@ export const LYKN_PROJECT_INSTRUCTIONS_TARGETS = {
     ],
     helpUrl: "https://docs.replit.com/replitai/agent",
     helpLabel: "Replit Agent docs",
+  },
+  // Windsurf's Cascade reads rules from Settings → Cascade → Rules
+  // (global, applies to every workspace) plus an optional per-project
+  // .windsurfrules file. Global rules are the most reliable place to
+  // put a "always consult LYKN first" contract.
+  windsurf: {
+    surfaceLabel: "Cascade Rules",
+    steps: [
+      "In Windsurf, open Settings → Cascade → Rules (or create .windsurfrules in your project root for per-project).",
+      "Paste the snippet below. Save.",
+      "Cascade applies rules automatically on the next message; LYKN tools are reachable immediately.",
+    ],
+    helpUrl: "https://docs.windsurf.com/windsurf/cascade/memories",
+    helpLabel: "Cascade Memories docs",
   },
   // Notion Custom Agents have per-agent instructions in their settings
   // panel — that's the canonical place to drop a system-prompt-style
