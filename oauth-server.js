@@ -1437,6 +1437,14 @@ function classifyClientKind(input) {
   // Don't match bare "intellij"/"pycharm"/etc. — too risky for
   // false positives from unrelated tools that mention those IDEs.
   if (n.includes('jetbrains') || n.includes('junie')) return 'jetbrains';
+  // OpenAI Codex CLI registers itself with a name like "Codex CLI" /
+  // "codex" during DCR. Match on "codex" — collisions with other
+  // "codex"-prefixed tools (Codex by Hugging Face for image gen,
+  // any historic CodeX names) are vanishingly unlikely in MCP space
+  // and an explicit substring match is honest enough for now. NOT
+  // matching "openai" because that's too broad (any OpenAI-tooling
+  // client could match including the canonical openai CLI itself).
+  if (n.includes('codex')) return 'codex-cli';
   // GitHub Copilot in VS Code registers itself with a name like
   // "GitHub Copilot Chat" / "VS Code (GitHub Copilot)" depending on
   // the install path. Match either signal. Don't match bare "github"

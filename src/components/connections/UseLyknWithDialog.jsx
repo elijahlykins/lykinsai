@@ -25,6 +25,7 @@ import {
   buildClaudeWebOauthDeeplink,
   buildClaudeCodeOauthInstallCommand,
   buildGeminiCliInstallCommand,
+  buildCodexCliInstallCommand,
   buildReplitOauthInstallLink,
   buildWindsurfConfigSnippet,
   buildJetBrainsConfigSnippet,
@@ -754,6 +755,13 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
                 pops a browser tab to the LYKN consent screen, you approve,
                 we auto-detect the connection.
               </>
+            ) : connectMode === "codex-cli" ? (
+              <>
+                One button copies a <code className="font-mono text-[11.5px]">codex mcp add</code> command.
+                Paste it into your terminal and press Enter — Codex pops a
+                browser tab to the LYKN consent screen, you approve, we
+                auto-detect the connection.
+              </>
             ) : connectMode === "windsurf-config" ? (
               <>
                 One button copies a JSON snippet. In Windsurf, open the
@@ -1036,6 +1044,7 @@ function isCliConnectMode(connectMode) {
   return (
     connectMode === "claude-code-cli" ||
     connectMode === "gemini-cli" ||
+    connectMode === "codex-cli" ||
     connectMode === "windsurf-config" ||
     connectMode === "jetbrains-config"
   );
@@ -1047,6 +1056,9 @@ function buildCliInstallCommand(connectMode, { mcpUrl }) {
   }
   if (connectMode === "gemini-cli") {
     return buildGeminiCliInstallCommand({ mcpUrl });
+  }
+  if (connectMode === "codex-cli") {
+    return buildCodexCliInstallCommand({ mcpUrl });
   }
   if (connectMode === "windsurf-config") {
     return buildWindsurfConfigSnippet({ mcpUrl });

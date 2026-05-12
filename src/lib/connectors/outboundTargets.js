@@ -291,6 +291,52 @@ export const OUTBOUND_TARGETS = [
       "LYKN is now wired into Gemini CLI — confirm with `gemini mcp list`. Run `gemini` and ask it to use the LYKN tools; the synthesis layer is available everywhere `gemini` runs on this machine.",
   },
   {
+    id: "codex-cli",
+    clientKind: "codex-cli",
+    name: "Codex CLI",
+    domain: "openai.com",
+    color: "#10A37F",
+    installType: "oauth-mcp",
+    transport: "Streamable HTTP MCP via `codex mcp add` (OAuth)",
+    // ── OpenAI's paid coding CLI (the third member of the trinity:
+    //    Claude Code, Gemini CLI, Codex CLI). Native OAuth on
+    //    streamable HTTP MCP servers is confirmed by the source at
+    //    github.com/openai/codex/blob/main/codex-rs/cli/src/mcp_cmd.rs
+    //    where `--url` triggers the streamable_http transport branch
+    //    and OAuth login is explicitly supported for that transport
+    //    (line 349: "OAuth login is only supported for streamable
+    //    HTTP servers"). Same 401 → discovery → DCR → consent dance
+    //    Cursor / Claude Code / Gemini CLI use — fired off our /mcp
+    //    endpoint on first request after `codex mcp add` lands.
+    //
+    //    Symmetric peer to Claude Code / Gemini CLI in our catalog,
+    //    same UX shape: one button copies a `codex mcp add` command,
+    //    user pastes in terminal, Codex pops the OAuth tab.
+    //
+    //    Config persists in ~/.codex/config.toml under
+    //    [mcp_servers.lykn] so the connection is durable across all
+    //    Codex sessions on the machine.
+    summary:
+      "OpenAI's paid coding CLI (sibling to Claude Code / Gemini CLI). One click copies a `codex mcp add` command — paste it in your terminal and Codex pops the OAuth approval. Native streamable HTTP OAuth, no proxy needed.",
+    helpUrl: "https://developers.openai.com/codex/mcp",
+    helpLabel: "Codex MCP docs",
+    available: true,
+    tier: 1,
+    direction: "bidirectional",
+    connectMode: "codex-cli",
+    openUrl: "https://developers.openai.com/codex/mcp",
+    planNote:
+      "Requires Codex CLI installed locally (`npm i -g @openai/codex` or download from openai.com/codex). Subscription-gated: ships with paid ChatGPT plans (Plus / Pro / Business / Enterprise) — Codex CLI uses your ChatGPT account, no separate billing.",
+    installSteps: [
+      "Press Connect Codex CLI — we copy the install command to your clipboard.",
+      "Paste it into your terminal and press Enter.",
+      "Codex pops a browser tab to the LYKN consent screen — click Approve.",
+      "Codex persists the config under [mcp_servers.lykn] in ~/.codex/config.toml. We auto-detect the new bearer here.",
+    ],
+    successHint:
+      "LYKN is wired into Codex CLI everywhere on this machine — confirm with `codex mcp list`. Run `codex` from any project and ask it to use the LYKN tools. The OAuth bearer rotates via `/connections` like every other client.",
+  },
+  {
     id: "grok",
     clientKind: "grok",
     name: "Grok",
@@ -778,7 +824,7 @@ export const OUTBOUND_TARGETS = [
     installType: "raw",
     transport: "Streamable HTTP MCP",
     summary:
-      "Any other MCP-aware client (Zed, Codex CLI, Cline, Continue, Goose, Warp, Jan, etc.) — point it at /mcp with your bearer token. You're on your own for client-side config.",
+      "Any other MCP-aware client (Zed, Cline, Continue, Goose, Warp, Jan, etc.) — point it at /mcp with your bearer token. You're on your own for client-side config.",
     helpUrl: "https://modelcontextprotocol.io/docs",
     helpLabel: "MCP spec",
     available: true,
@@ -874,6 +920,29 @@ export function buildClaudeCodeOauthInstallCommand({ mcpUrl }) {
 export function buildGeminiCliInstallCommand({ mcpUrl }) {
   const url = ensureHttpsMcpUrl(mcpUrl);
   return `gemini mcp add --transport http lykn "${url}"`;
+}
+
+/**
+ * Build the `codex mcp add` install command for OpenAI's Codex CLI.
+ * Per the source at
+ *   github.com/openai/codex/blob/main/codex-rs/cli/src/mcp_cmd.rs
+ * passing `--url` puts the server into the streamable_http transport
+ * branch, which natively supports OAuth login (line 349 explicitly
+ * guards OAuth login to that transport). On first connection to /mcp,
+ * Codex hits 401 → discovers our auth metadata via WWW-Authenticate
+ * → DCR → opens a browser tab on a loopback port for consent → caches
+ * the bearer in ~/.codex/config.toml under [mcp_servers.lykn].
+ *
+ * Symmetric to buildClaudeCodeOauthInstallCommand /
+ * buildGeminiCliInstallCommand — same shape, same UX, same lifecycle.
+ *
+ * Spec:
+ *   developers.openai.com/codex/mcp
+ *   github.com/openai/codex/blob/main/docs/config.md
+ */
+export function buildCodexCliInstallCommand({ mcpUrl }) {
+  const url = ensureHttpsMcpUrl(mcpUrl);
+  return `codex mcp add lykn --url "${url}"`;
 }
 
 /**
@@ -1382,6 +1451,22 @@ export const LYKN_PROJECT_INSTRUCTIONS_TARGETS = {
     ],
     helpUrl: "https://docs.replit.com/replitai/agent",
     helpLabel: "Replit Agent docs",
+  },
+  // OpenAI Codex CLI reads custom instructions from `AGENTS.md` at
+  // the repo root (per their docs at developers.openai.com/codex —
+  // they adopted the open AGENTS.md convention shared with Cursor +
+  // OpenHands + others). Most portable surface for repo-scoped
+  // instructions; user-wide instructions live in
+  // ~/.codex/instructions.md.
+  "codex-cli": {
+    surfaceLabel: "AGENTS.md",
+    steps: [
+      "Create AGENTS.md in your repo root (or open ~/.codex/instructions.md for user-wide).",
+      "Paste the snippet below. Save / commit.",
+      "Codex reads the file on every new session in that directory — LYKN tools become discoverable immediately.",
+    ],
+    helpUrl: "https://developers.openai.com/codex/agents-md",
+    helpLabel: "Codex AGENTS.md docs",
   },
   // Windsurf's Cascade reads rules from Settings → Cascade → Rules
   // (global, applies to every workspace) plus an optional per-project

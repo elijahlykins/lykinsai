@@ -423,6 +423,7 @@ function clientKindLabel(kind) {
     case "perplexity":      return "Perplexity";
     case "zapier":          return "Zapier";
     case "gemini":          return "Gemini CLI";
+    case "codex-cli":       return "Codex CLI";
     case "grok":            return "Grok";
     case "windsurf":        return "Windsurf";
     case "jetbrains":       return "JetBrains AI";

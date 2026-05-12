@@ -143,6 +143,7 @@ const CLIENT_LABEL: Record<string, string> = {
   gemini: "Gemini CLI",
   replit: "Replit",
   "notion-ai": "Notion AI",
+  "codex-cli": "Codex CLI",
   windsurf: "Windsurf",
   jetbrains: "JetBrains AI",
   "github-copilot": "GitHub Copilot",

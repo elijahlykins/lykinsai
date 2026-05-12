@@ -18,6 +18,7 @@ import {
   buildClaudeWebOauthDeeplink,
   buildClaudeCodeOauthInstallCommand,
   buildGeminiCliInstallCommand,
+  buildCodexCliInstallCommand,
   buildReplitOauthInstallLink,
   buildWindsurfConfigSnippet,
   buildJetBrainsConfigSnippet,
@@ -76,7 +77,13 @@ import {
  *        supports custom MCP today — gemini.google.com / Workspace
  *        consumer have no Add Custom Connector UI.
  *
- *     8. Windsurf — config-file install. We copy a JSON snippet the
+ *     8. Codex CLI — CLI install. We copy `codex mcp add lykn --url
+ *        "<mcp-url>"`. Native streamable HTTP OAuth (confirmed in the
+ *        codex source at codex-rs/cli/src/mcp_cmd.rs); same handshake
+ *        Cursor / Claude Code / Gemini CLI use. Config persists in
+ *        ~/.codex/config.toml under [mcp_servers.lykn].
+ *
+ *     9. Windsurf — config-file install. We copy a JSON snippet the
  *        user pastes into mcp_config.json via Cmd+Shift+P → Configure
  *        MCP Servers. Snippet wraps our /mcp endpoint in `npx
  *        mcp-remote` (the standard stdio→HTTP bridge with OAuth)
@@ -84,7 +91,7 @@ import {
  *        1-click via windsurf:// is blocked on LYKN's marketplace
  *        submission; this is the next-best path today.
  *
- *     9. JetBrains AI — config-snippet install. We copy a fully-
+ *    10. JetBrains AI — config-snippet install. We copy a fully-
  *        wrapped `{ "mcpServers": { … } }` JSON payload (JetBrains'
  *        New MCP Server dialog expects this shape, NOT the inner
  *        entry alone) wrapping our /mcp endpoint in `npx mcp-remote`
@@ -92,21 +99,21 @@ import {
  *        Assistant → MCP → New, or into ~/.junie/mcp/mcp.json for
  *        Junie users. Same snippet works for both surfaces.
  *
- *    10. GitHub Copilot — true 1-click. We open VS Code's MCP install
+ *    11. GitHub Copilot — true 1-click. We open VS Code's MCP install
  *        link (https://insiders.vscode.dev/redirect/mcp/install?name=
  *        lykn&config=…) which hands off to VS Code's native vscode:
  *        mcp/install handler. VS Code presents a target-selection
  *        dialog (Global / Workspace / Remote), then Copilot does the
  *        standard OAuth DCR dance on first /mcp request.
  *
- *    11. Perplexity — guided. Open
+ *    12. Perplexity — guided. Open
  *        https://www.perplexity.ai/account/connectors and copy the URL.
  *        Paid-only (Pro / Enterprise Pro).
  *
- *    12. Grok — guided. Open https://grok.com/manage-connectors and
+ *    13. Grok — guided. Open https://grok.com/manage-connectors and
  *        copy the URL. Paid (SuperGrok / Premium).
  *
- *    13. Zapier — guided. Open https://zapier.com/app/connections (MCP
+ *    14. Zapier — guided. Open https://zapier.com/app/connections (MCP
  *        Client beta) and copy the URL.
  *
  * Connection detection: poll /api/v1/synthesis/tokens. Any new active
@@ -135,6 +142,10 @@ export default function Onboarding() {
     () => buildGeminiCliInstallCommand({ mcpUrl }),
     [mcpUrl],
   );
+  const codexCliCommand = useMemo(
+    () => buildCodexCliInstallCommand({ mcpUrl }),
+    [mcpUrl],
+  );
   const replitDeeplink = useMemo(
     () => buildReplitOauthInstallLink({ mcpUrl }),
     [mcpUrl],
@@ -154,7 +165,7 @@ export default function Onboarding() {
 
   // Track which clients have connected this session. Each entry is one
   // of "cursor" | "claude" | "chatgpt" | "claude-code" | "gemini" |
-  // "replit" | "notion-ai" | "windsurf" | "jetbrains" |
+  // "codex-cli" | "replit" | "notion-ai" | "windsurf" | "jetbrains" |
   // "github-copilot" | "perplexity" | "grok" | "zapier"; presence in
   // the set means we've observed an OAuth bearer attributed to that
   // client.
@@ -193,7 +204,7 @@ export default function Onboarding() {
   useEffect(() => {
     if (!user) return undefined;
     if (!pending) return undefined;
-    if (connected.size >= 13) return undefined;
+    if (connected.size >= 14) return undefined;
     let cancelled = false;
     let timer;
     const tick = async () => {
@@ -337,6 +348,33 @@ export default function Onboarding() {
       variant: copyOk ? undefined : "destructive",
     });
   }, [geminiCliCommand]);
+
+  // Codex CLI — OpenAI's paid coding CLI (symmetric with Claude Code
+  // and Gemini CLI). Native OAuth on streamable HTTP MCP servers per
+  // github.com/openai/codex source — so `codex mcp add lykn --url ...`
+  // triggers the standard 401 → DCR → consent dance on first /mcp
+  // request. Identical UX to handleClaudeCode / handleGeminiCli:
+  // copy command, toast with paste instruction, Codex opens the
+  // OAuth tab when the user runs the command.
+  const handleCodexCli = useCallback(async () => {
+    setPending("codex-cli");
+    let copyOk = false;
+    try {
+      await navigator.clipboard.writeText(codexCliCommand);
+      copyOk = true;
+    } catch {
+      copyOk = false;
+    }
+    setCopyJustWorked(copyOk);
+    setTimeout(() => setCopyJustWorked(false), 4000);
+    toast({
+      title: copyOk ? "Install command copied" : "Couldn't copy automatically",
+      description: copyOk
+        ? "Paste it in your terminal. Codex CLI will pop the OAuth approval next."
+        : "Use the copy button in the card to copy the install command manually.",
+      variant: copyOk ? undefined : "destructive",
+    });
+  }, [codexCliCommand]);
 
   // Windsurf is a config-file paste (NOT a terminal command), but
   // structurally identical to the CLI handlers: copy text + toast,
@@ -555,6 +593,20 @@ export default function Onboarding() {
       });
     }
   }, [geminiCliCommand]);
+
+  const handleCopyCodexCommand = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(codexCliCommand);
+      setCopyJustWorked(true);
+      setTimeout(() => setCopyJustWorked(false), 2000);
+    } catch {
+      toast({
+        title: "Copy failed",
+        description: "Select the command manually.",
+        variant: "destructive",
+      });
+    }
+  }, [codexCliCommand]);
 
   const handleCopyWindsurfSnippet = useCallback(async () => {
     try {
@@ -788,6 +840,32 @@ export default function Onboarding() {
                 ). Only the CLI surface supports custom MCP today —
                 gemini.google.com and Workspace don't expose Add Custom
                 Connector yet.
+              </>
+            }
+          />
+          <ConnectCard
+            id="codex-cli"
+            name="Codex CLI"
+            domain="openai.com"
+            tagline="CLI install. We copy the `codex mcp add` command — paste it in your terminal and Codex pops the OAuth approval. Native streamable HTTP OAuth, no proxy."
+            badge="CLI"
+            connected={connected.has("codex-cli")}
+            pending={pending === "codex-cli" && !connected.has("codex-cli")}
+            disabled={!user}
+            onConnect={handleCodexCli}
+            urlToCopy={codexCliCommand}
+            urlCopied={copyJustWorked && pending === "codex-cli"}
+            onCopyUrl={handleCopyCodexCommand}
+            copyLabel="command"
+            secondaryNote={
+              <>
+                Requires Codex CLI installed locally (
+                <code className="font-mono text-[10px] px-1 py-[1px] rounded bg-black/[0.06] dark:bg-white/10">
+                  npm i -g @openai/codex
+                </code>
+                ). Codex CLI ships with paid ChatGPT plans (Plus / Pro /
+                Business / Enterprise) — uses your ChatGPT account, no
+                separate billing.
               </>
             }
           />
@@ -1111,6 +1189,8 @@ function mapClientKindToSlot(kind) {
       return "replit";
     case "notion-ai":
       return "notion-ai";
+    case "codex-cli":
+      return "codex-cli";
     case "windsurf":
       return "windsurf";
     case "jetbrains":
