@@ -104,9 +104,12 @@ export function looksLikeMcpToken(raw) {
  * — caller (the route handler) is responsible for surfacing it to the UI
  * and never persisting it elsewhere.
  *
- * `scopes` defaults to ['read']. Pass ['read', 'write'] for paid plans.
- * The route handler does the plan check; this function trusts whatever
- * is passed in.
+ * `scopes` defaults to ['read', 'write']. Pushing context back into LYKN
+ * is the core capability of the synthesis layer; we never want a caller
+ * that forgot to pass `scopes` to silently get a token that can't write.
+ * Callers that genuinely need a read-only token (e.g. for a third-party
+ * they want to give look-only access to) should pass `scopes: ['read']`
+ * explicitly.
  */
 export async function createMcpToken(supabaseAdmin, userId, opts = {}) {
   if (!supabaseAdmin) return { ok: false, reason: 'no_db' };
@@ -117,7 +120,7 @@ export async function createMcpToken(supabaseAdmin, userId, opts = {}) {
   const clientKind = MCP_CLIENT_KINDS.has(clientKindRaw) ? clientKindRaw : 'other';
   const label = (labelRaw || labelForClientKind(clientKind)).slice(0, LABEL_MAX);
 
-  const scopesRaw = Array.isArray(opts.scopes) ? opts.scopes : ['read'];
+  const scopesRaw = Array.isArray(opts.scopes) ? opts.scopes : ['read', 'write'];
   const scopes = Array.from(
     new Set(
       scopesRaw
@@ -125,7 +128,7 @@ export async function createMcpToken(supabaseAdmin, userId, opts = {}) {
         .filter((s) => MCP_SCOPES.has(s)),
     ),
   );
-  if (!scopes.length) scopes.push('read');
+  if (!scopes.length) scopes.push('read', 'write');
 
   const { plaintext, prefix } = generateMcpToken();
   const tokenHash = hashMcpToken(plaintext);

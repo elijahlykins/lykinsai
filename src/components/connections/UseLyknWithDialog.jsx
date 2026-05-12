@@ -65,7 +65,6 @@ import {
 export default function UseLyknWithDialog({ open, onOpenChange, target, onMinted }) {
   const [token, setToken] = useState(null);
   const [planId, setPlanId] = useState(null);
-  const [downgraded, setDowngraded] = useState(false);
   const [error, setError] = useState(null);
   const [minting, setMinting] = useState(false);
   const [copied, setCopied] = useState({}); // keyed by section
@@ -96,7 +95,6 @@ export default function UseLyknWithDialog({ open, onOpenChange, target, onMinted
   const reset = useCallback(() => {
     setToken(null);
     setPlanId(null);
-    setDowngraded(false);
     setError(null);
     setCopied({});
   }, []);
@@ -143,7 +141,6 @@ export default function UseLyknWithDialog({ open, onOpenChange, target, onMinted
         }
         setToken(data.token);
         setPlanId(data.planId || null);
-        setDowngraded(Boolean(data.writeDowngradedToFree));
         const cb = onMintedRef.current;
         if (typeof cb === "function") {
           try { cb(data.token); } catch { /* swallow */ }
@@ -258,9 +255,7 @@ export default function UseLyknWithDialog({ open, onOpenChange, target, onMinted
                 />
               </div>
               <div className="text-[10.5px] text-black/55 dark:text-white/55 leading-relaxed">
-                {downgraded
-                  ? "You're on the free plan, so this token is read-only. Upgrade to mint a write-capable token (proposeBelief / proposeFact)."
-                  : "This is a write-capable token. Revoke it any time from the Connected Clients list below."}
+                Read + write. Lets the connected client both pull your context and push new beliefs / facts / project state back into LYKN. Revoke it any time from the Connected Clients list below.
               </div>
             </div>
 

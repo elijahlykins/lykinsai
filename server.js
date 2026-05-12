@@ -4674,8 +4674,10 @@ app.post('/api/applied/:id/feedback', requireAuth, async (req, res) => {
 // signed-in user can mint a token for themselves.
 //
 // Token-managed write actions (recordRuleApplication, proposeBelief,
-// proposeFact) check the token's `scopes`. Free-plan tokens get ['read']
-// only. Paid plans can mint ['read', 'write'] tokens.
+// proposeFact) check the token's `scopes`. By default every freshly-minted
+// token gets ['read', 'write'] regardless of plan — pushing context to LYKN
+// is a core capability we never want to gate. Callers can still mint an
+// explicitly read-only token by passing `scopes: ['read']`.
 //
 // Logging: every call writes one ai_usage_logs row with action_type =
 // 'mcp_tool' (MCP transport) or 'rest_synthesis' (REST mirror) so the
@@ -4684,8 +4686,10 @@ app.post('/api/applied/:id/feedback', requireAuth, async (req, res) => {
 // --- Token issuance / list / revoke (JWT only — not self-issuable) ---------
 
 // POST /api/v1/synthesis/tokens — mint a fresh per-client token. Returns
-// the plaintext exactly once. Plan-aware: free plans get read-only, paid
-// plans get read+write.
+// the plaintext exactly once. Plan-agnostic: every plan (including free)
+// gets read+write by default. Pushing context to LYKN is core capability,
+// not a paywall lever. Callers can still opt in to a read-only token by
+// explicitly passing `scopes: ['read']`.
 app.post('/api/v1/synthesis/tokens', requireAuth, async (req, res) => {
   try {
     const userId = req.user?.id;
@@ -4696,16 +4700,15 @@ app.post('/api/v1/synthesis/tokens', requireAuth, async (req, res) => {
     const clientKindRaw = typeof req.body?.clientKind === 'string' ? req.body.clientKind : 'other';
     const clientKind = MCP_CLIENT_KINDS.has(clientKindRaw) ? clientKindRaw : 'other';
 
-    // Plan gating: free plans can read but not write. We always allow the
-    // user to ASK for write scope; if they're on free we silently downgrade
-    // to ['read'] and surface the downgrade in the response so the UI can
-    // show "you're on free, upgrade to write back".
+    // Honor whatever the caller asks for (filtered to known scopes inside
+    // createMcpToken). Default to read+write so the common case "I just
+    // installed LYKN in Cursor" works without any plan check.
+    const requestedRaw = Array.isArray(req.body?.scopes) ? req.body.scopes : null;
+    const scopes = requestedRaw && requestedRaw.length
+      ? requestedRaw.map((s) => String(s).toLowerCase())
+      : ['read', 'write'];
+
     const plan = await resolveUserPlan(userId, req.user?.email);
-    const isPaid = plan.modelTier !== 'basic';
-    const requested = Array.isArray(req.body?.scopes) ? req.body.scopes : ['read'];
-    const wantsWrite = requested.map((s) => String(s).toLowerCase()).includes('write');
-    const scopes = wantsWrite && isPaid ? ['read', 'write'] : ['read'];
-    const downgraded = wantsWrite && !isPaid;
 
     const out = await createMcpToken(supabaseAdmin, userId, {
       label: labelRaw,
@@ -4720,7 +4723,7 @@ app.post('/api/v1/synthesis/tokens', requireAuth, async (req, res) => {
       mcpUrl: '/mcp',
       restBase: '/api/v1/synthesis',
       planId: plan.planId,
-      writeDowngradedToFree: downgraded,
+      writeDowngradedToFree: false, // legacy field — always false now; kept for back-compat with older clients.
     });
   } catch (e) {
     console.error('❌ POST /api/v1/synthesis/tokens:', e?.message || e);
@@ -4860,8 +4863,9 @@ app.get('/api/v1/synthesis/vault/search', requireAuthOrMcpToken, mcpMinuteLimite
 app.get('/api/v1/synthesis/context-block', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_getContextBlock', req, res));
 app.get('/api/v1/synthesis/projects/state', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_getProjectState', req, res));
 
-// Write endpoints — same auth, but tools internally enforce 'write' scope
-// for MCP-token requests (free-plan tokens are read-only).
+// Write endpoints — same auth. Tools internally enforce 'write' scope for
+// MCP-token requests, but mints default to read+write on every plan, so
+// 'write' is present unless the caller explicitly minted a read-only token.
 app.post('/api/v1/synthesis/attributions', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_recordRuleApplication', req, res));
 app.post('/api/v1/synthesis/beliefs/proposals', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_proposeBelief', req, res));
 app.post('/api/v1/synthesis/facts/proposals', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_proposeFact', req, res));

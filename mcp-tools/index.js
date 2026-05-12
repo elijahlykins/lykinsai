@@ -103,13 +103,16 @@ export function errorContent(message) {
 /**
  * Tools that mutate state guard themselves with this. JWT (web app)
  * requests always have full access; MCP-token requests need the
- * 'write' scope on the token (set at issuance based on plan).
+ * 'write' scope on the token. Mints default to read+write on every
+ * plan, so this only fires if the caller explicitly minted a
+ * read-only token (e.g. for a third-party they want to give look-only
+ * access to).
  */
 export function requireWrite(ctx) {
   if (!ctx?.mcpAuth) return null; // JWT path — pass
   const scopes = Array.isArray(ctx.mcpAuth.scopes) ? ctx.mcpAuth.scopes : [];
   if (scopes.includes('write')) return null;
   return errorContent(
-    'This tool requires a write-capable token. Free-plan tokens are read-only — upgrade your LYKN plan or re-issue the token from the Connections page on a paid plan.',
+    'This tool requires a write-capable token, but the bearer presented is read-only. Re-mint the token from /connections without restricting scopes (the default mint is read+write).',
   );
 }

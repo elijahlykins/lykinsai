@@ -241,8 +241,18 @@ export function mountOauthServer(app, deps) {
       }
 
       // ── scope — intersect requested with supported ───────────────────
-      const requestedScopeStr = typeof body.scope === 'string' ? body.scope : 'lykn:read offline_access';
-      const scope = filterScopes(requestedScopeStr).join(' ') || 'lykn:read';
+      // DCR default: register with the FULL set (read + write + offline).
+      // Most MCP clients (Cursor, Claude.ai, ChatGPT, Windsurf, JetBrains)
+      // don't know LYKN's custom scope names and post DCR without a
+      // `scope` field. If we default that to read-only, write-tools like
+      // pushProjectState / proposeBelief / proposeFact silently break
+      // for every OAuth-installed client — the worst possible UX.
+      // Pushing context BACK to LYKN is core to the synthesis layer; it
+      // should be on by default. Clients that genuinely want a read-only
+      // registration can still pass `scope: "lykn:read"` explicitly.
+      const requestedScopeStr =
+        typeof body.scope === 'string' ? body.scope : 'lykn:read lykn:write offline_access';
+      const scope = filterScopes(requestedScopeStr).join(' ') || 'lykn:read lykn:write';
 
       // ── auth method — default 'none' (public client + PKCE) ──────────
       const authMethodRaw = String(body.token_endpoint_auth_method || 'none').toLowerCase();
@@ -365,7 +375,12 @@ export function mountOauthServer(app, deps) {
       const clientId = String(params.client_id || '');
       const redirectUri = String(params.redirect_uri || '');
       const responseType = String(params.response_type || '');
-      const scope = String(params.scope || 'lykn:read');
+      // Default to the full set if the client doesn't pass `scope`.
+      // It's intersected with client.scope on line below, so this never
+      // grants more than the client registered for — it just means a
+      // client that registered for write actually gets it when the user
+      // arrives without `scope` in the query string.
+      const scope = String(params.scope || 'lykn:read lykn:write offline_access');
       const state = typeof params.state === 'string' ? params.state : '';
       const codeChallenge = String(params.code_challenge || '');
       const codeChallengeMethod = String(params.code_challenge_method || '').toUpperCase();
@@ -485,7 +500,7 @@ export function mountOauthServer(app, deps) {
       const body = req.body && typeof req.body === 'object' ? req.body : {};
       const clientId = String(body.client_id || '');
       const redirectUri = String(body.redirect_uri || '');
-      const scopeStr = String(body.scope || 'lykn:read');
+      const scopeStr = String(body.scope || 'lykn:read lykn:write offline_access');
       const state = typeof body.state === 'string' ? body.state : '';
       const codeChallenge = String(body.code_challenge || '');
       const codeChallengeMethod = String(body.code_challenge_method || '').toUpperCase();
