@@ -243,18 +243,43 @@ export const OUTBOUND_TARGETS = [
     id: "grok",
     clientKind: "grok",
     name: "Grok",
-    domain: "x.ai",
+    domain: "grok.com",
     color: "#000000",
-    installType: "oauth",
-    transport: "OAuth Connector + Grok Studio",
+    installType: "oauth-mcp",
+    transport: "Streamable HTTP MCP via Grok Connectors (OAuth)",
+    // ── Grok shipped user-facing custom MCP connectors via
+    //    grok.com/manage-connectors. The flow is "+ Add connector"
+    //    → custom URL → OAuth approval, fully analogous to Cursor /
+    //    Claude / Perplexity on the OAuth side. Streamable HTTP and
+    //    SSE transports both supported (we ship Streamable HTTP).
+    //    No prefill deep link exists (xAI hasn't shipped one), so
+    //    this falls back to the guided open-tab + paste-URL pattern
+    //    we use for Perplexity / ChatGPT. Connection auto-detection
+    //    works because Grok's DCR pops a bearer that our token poll
+    //    picks up like any other.
     summary:
-      "xAI's Grok — deep reasoning, live web, and Grok Studio. Wire LYKN into Studio threads so research and saved artifacts both flow back into your vault.",
-    helpUrl: "https://docs.x.ai/",
-    helpLabel: "xAI docs",
-    available: false,
-    comingSoon: true,
+      "xAI's Grok — deep reasoning + live web search across web, iOS, and Android. SuperGrok and SuperGrok Heavy support custom remote MCP connectors with OAuth. Click Connect — we copy LYKN's URL and open Grok's connector manager, you paste once, approve, done.",
+    helpUrl: "https://docs.x.ai/developers/tools/remote-mcp",
+    helpLabel: "Grok Remote MCP docs",
+    available: true,
     tier: 1,
     direction: "bidirectional",
+    // No connectMode → default open-url path: auto-copy LYKN's MCP
+    // URL + open grok.com/manage-connectors in a new tab. Same code
+    // path as Perplexity and ChatGPT.
+    openUrl: "https://grok.com/manage-connectors",
+    // Front-loaded plan gate so Free users self-select out before
+    // discovering the connectors page is paywalled.
+    planNote:
+      "Requires a Grok subscription — SuperGrok or SuperGrok Heavy. The Free Grok tier doesn't expose the connectors page. iOS and Android Grok apps inherit the same connector list once you connect on web.",
+    installSteps: [
+      "Open Grok → Manage Connectors (we deep-linked you there).",
+      "Click + Add connector → choose Custom (or Add custom MCP server).",
+      "Paste the URL above into the Server URL field. Transport: Streamable HTTP. Authorization: OAuth.",
+      "Click Connect — approve the LYKN consent screen when it pops. That's it.",
+    ],
+    successHint:
+      "Connector lists are shared across grok.com, iOS, and Android — no extra setup on mobile. Like Perplexity, Grok doesn't proactively call MCP tools without being told to: add a Grok custom instruction like \"Before answering personal questions, consult my LYKN context with lykn_getContextBlock\" so it actually reaches for the synthesis layer.",
   },
 
   // ─── Tier 2 — next wave ──────────────────────────────────────────

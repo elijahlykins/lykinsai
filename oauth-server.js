@@ -1348,6 +1348,8 @@ function classifyClientKind(input) {
     if (host === 'cursor.com' || host.endsWith('.cursor.com')) return 'cursor';
     if (host === 'perplexity.ai' || host.endsWith('.perplexity.ai')) return 'perplexity';
     if (host === 'zapier.com' || host.endsWith('.zapier.com')) return 'zapier';
+    if (host === 'grok.com' || host.endsWith('.grok.com')) return 'grok';
+    if (host === 'x.ai' || host.endsWith('.x.ai')) return 'grok';
   }
 
   // ── client_name fallback ──────────────────────────────────────────
@@ -1359,6 +1361,7 @@ function classifyClientKind(input) {
   if (n.includes('cursor')) return 'cursor';
   if (n.includes('perplexity')) return 'perplexity';
   if (n.includes('zapier')) return 'zapier';
+  if (n.includes('grok') || n.includes('xai')) return 'grok';
   return 'other';
 }
 
