@@ -1395,6 +1395,13 @@ function classifyClientKind(input) {
     // their callback URL. Cover both root hosts.
     if (host === 'notion.com' || host.endsWith('.notion.com')) return 'notion-ai';
     if (host === 'notion.so' || host.endsWith('.notion.so')) return 'notion-ai';
+    // VS Code Copilot's two redirect URIs per github docs:
+    // http://127.0.0.1:33418 (native loopback) and
+    // https://vscode.dev/redirect (web bridge). The loopback host
+    // collides with every other CLI client (Gemini CLI, mcp-remote)
+    // so we ONLY trust vscode.dev here — the loopback path falls
+    // through to client_name matching below.
+    if (host === 'vscode.dev' || host.endsWith('.vscode.dev')) return 'github-copilot';
   }
 
   // ── client_name fallback ──────────────────────────────────────────
@@ -1422,6 +1429,13 @@ function classifyClientKind(input) {
   // catches the bearer regardless of whether mcp-remote runs from
   // Windsurf, a future native bridge, or a user-edited config.
   if (n.includes('windsurf') || n.includes('codeium')) return 'windsurf';
+  // GitHub Copilot in VS Code registers itself with a name like
+  // "GitHub Copilot Chat" / "VS Code (GitHub Copilot)" depending on
+  // the install path. Match either signal. Don't match bare "github"
+  // — that's too loose and would shadow other legitimate GitHub-named
+  // clients (Octokit, the github-mcp-server, etc.).
+  if (n.includes('copilot') || n.includes('vscode') || n.includes('vs code'))
+    return 'github-copilot';
   return 'other';
 }
 

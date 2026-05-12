@@ -20,6 +20,7 @@ import {
   buildGeminiCliInstallCommand,
   buildReplitOauthInstallLink,
   buildWindsurfConfigSnippet,
+  buildCopilotInstallLink,
 } from "@/lib/connectors/outboundTargets";
 
 /**
@@ -82,14 +83,21 @@ import {
  *        1-click via windsurf:// is blocked on LYKN's marketplace
  *        submission; this is the next-best path today.
  *
- *     9. Perplexity — guided. Open
+ *     9. GitHub Copilot — true 1-click. We open VS Code's MCP install
+ *        link (https://insiders.vscode.dev/redirect/mcp/install?name=
+ *        lykn&config=…) which hands off to VS Code's native vscode:
+ *        mcp/install handler. VS Code presents a target-selection
+ *        dialog (Global / Workspace / Remote), then Copilot does the
+ *        standard OAuth DCR dance on first /mcp request.
+ *
+ *    10. Perplexity — guided. Open
  *        https://www.perplexity.ai/account/connectors and copy the URL.
  *        Paid-only (Pro / Enterprise Pro).
  *
- *    10. Grok — guided. Open https://grok.com/manage-connectors and
+ *    11. Grok — guided. Open https://grok.com/manage-connectors and
  *        copy the URL. Paid (SuperGrok / Premium).
  *
- *    11. Zapier — guided. Open https://zapier.com/app/connections (MCP
+ *    12. Zapier — guided. Open https://zapier.com/app/connections (MCP
  *        Client beta) and copy the URL.
  *
  * Connection detection: poll /api/v1/synthesis/tokens. Any new active
@@ -126,12 +134,16 @@ export default function Onboarding() {
     () => buildWindsurfConfigSnippet({ mcpUrl }),
     [mcpUrl],
   );
+  const copilotDeeplink = useMemo(
+    () => buildCopilotInstallLink({ mcpUrl }),
+    [mcpUrl],
+  );
 
   // Track which clients have connected this session. Each entry is one
   // of "cursor" | "claude" | "chatgpt" | "claude-code" | "gemini" |
-  // "replit" | "notion-ai" | "windsurf" | "perplexity" | "grok" |
-  // "zapier"; presence in the set means we've observed an OAuth bearer
-  // attributed to that client.
+  // "replit" | "notion-ai" | "windsurf" | "github-copilot" |
+  // "perplexity" | "grok" | "zapier"; presence in the set means we've
+  // observed an OAuth bearer attributed to that client.
   const [connected, setConnected] = useState(() => new Set());
   // Which client did the user most recently CLICK? Used to choose the
   // best client_kind→logical-client mapping when a new bearer appears
@@ -167,7 +179,7 @@ export default function Onboarding() {
   useEffect(() => {
     if (!user) return undefined;
     if (!pending) return undefined;
-    if (connected.size >= 11) return undefined;
+    if (connected.size >= 12) return undefined;
     let cancelled = false;
     let timer;
     const tick = async () => {
@@ -318,6 +330,17 @@ export default function Onboarding() {
   // Windsurf's mcp_config.json via Cmd+Shift+P → "Windsurf: Configure
   // MCP Servers". On save Windsurf hot-reloads, spawns mcp-remote,
   // OAuth dance fires automatically.
+  // GitHub Copilot is true 1-click via VS Code's MCP install link
+  // (https://insiders.vscode.dev/redirect/mcp/install?…). Open in
+  // new tab so the browser's "Open in VS Code?" prompt has room and
+  // we don't lose the Onboarding context. No clipboard step needed —
+  // the entire config payload is URL-encoded into the deeplink. Same
+  // open-link shape as handleCursor / handleClaude / handleReplit.
+  const handleCopilot = useCallback(() => {
+    setPending("github-copilot");
+    window.open(copilotDeeplink, "_blank", "noopener,noreferrer");
+  }, [copilotDeeplink]);
+
   const handleWindsurf = useCallback(async () => {
     setPending("windsurf");
     let copyOk = false;
@@ -600,6 +623,28 @@ export default function Onboarding() {
         </div>
 
         <div className="mt-4 space-y-3">
+          <ConnectCard
+            id="github-copilot"
+            name="GitHub Copilot"
+            domain="github.com"
+            tagline="One-click VS Code install. Hands a pre-filled MCP install link to VS Code — pick where to install, approve, Copilot Chat sees LYKN immediately."
+            badge="1-click"
+            connected={connected.has("github-copilot")}
+            pending={
+              pending === "github-copilot" && !connected.has("github-copilot")
+            }
+            disabled={!user}
+            onConnect={handleCopilot}
+            secondaryNote={
+              <>
+                VS Code 1.99+ on any paid Copilot plan (Free / Pro / Pro+ /
+                Business / Enterprise). Business / Enterprise admins also
+                need to enable the &ldquo;MCP servers in Copilot&rdquo; policy.
+                JetBrains / Visual Studio / Xcode Copilot MCP support is
+                rolling out — this card targets VS Code today.
+              </>
+            }
+          />
           <ConnectCard
             id="replit"
             name="Replit"
@@ -985,6 +1030,8 @@ function mapClientKindToSlot(kind) {
       return "notion-ai";
     case "windsurf":
       return "windsurf";
+    case "github-copilot":
+      return "github-copilot";
     case "perplexity":
       return "perplexity";
     case "grok":

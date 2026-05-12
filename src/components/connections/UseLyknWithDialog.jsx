@@ -27,6 +27,7 @@ import {
   buildGeminiCliInstallCommand,
   buildReplitOauthInstallLink,
   buildWindsurfConfigSnippet,
+  buildCopilotInstallLink,
   buildRawInstallInfo,
   buildLyknProjectInstructions,
   LYKN_PROJECT_INSTRUCTIONS_TARGETS,
@@ -592,6 +593,21 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
       return;
     }
 
+    // ── VS Code Copilot install link. Per github.com/microsoft/vscode-
+    //    docs the spec is
+    //      https://insiders.vscode.dev/redirect/mcp/install
+    //        ?name=…&config=<url-encoded JSON>
+    //    The web URL hands off to VS Code's native `vscode:mcp/install`
+    //    URI handler if installed. New tab so the browser's
+    //    "open in VS Code?" prompt has room. No clipboard step — the
+    //    config payload is baked into the URL.
+    if (connectMode === "copilot-install") {
+      const deeplink = buildCopilotInstallLink({ mcpUrl });
+      window.open(deeplink, "_blank", "noopener,noreferrer");
+      setStep((s) => (s < 1 ? 1 : s));
+      return;
+    }
+
     // ── Paste-style installs (Claude Code + Gemini CLI = terminal
     //    command; Windsurf = JSON snippet pasted into mcp_config.json).
     //    No browser deep link can pop a terminal or an editor, so the
@@ -713,6 +729,13 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
                 Server form already filled in for LYKN. Hit Test &amp; Save
                 inside Replit, approve the consent screen — we'll auto-detect
                 the connection and flip this to Connected.
+              </>
+            ) : connectMode === "copilot-install" ? (
+              <>
+                One button hands a VS Code install link to your browser.
+                Your browser hands off to VS Code — pick where to install
+                (Global recommended), approve the LYKN consent screen.
+                We'll auto-detect the connection and flip this to Connected.
               </>
             ) : connectMode === "claude-code-cli" ? (
               <>
@@ -941,6 +964,9 @@ function stepOnePromptTitle({ connectMode, targetName }) {
   if (connectMode === "replit-prefill") {
     return `Press Connect — we'll open Replit with LYKN's details pre-filled`;
   }
+  if (connectMode === "copilot-install") {
+    return `Press Connect — we'll hand VS Code a pre-filled MCP install link`;
+  }
   if (connectMode === "windsurf-config") {
     return `Press Connect — we'll copy a JSON snippet for Windsurf's MCP config`;
   }
@@ -959,6 +985,9 @@ function stepOneDoneTitle({ connectMode, targetName }) {
   }
   if (connectMode === "replit-prefill") {
     return `Replit opened with LYKN pre-filled`;
+  }
+  if (connectMode === "copilot-install") {
+    return `Install link sent to VS Code`;
   }
   if (connectMode === "windsurf-config") {
     return `Config snippet copied — paste into Windsurf's MCP config`;

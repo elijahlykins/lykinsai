@@ -438,15 +438,53 @@ export const OUTBOUND_TARGETS = [
     domain: "github.com",
     color: "#171515",
     installType: "oauth-mcp",
-    transport: "Streamable HTTP MCP",
+    transport: "Streamable HTTP MCP via VS Code MCP install link (OAuth)",
+    // ── GitHub Copilot's MCP support runs through the underlying IDE
+    //    (VS Code today; JetBrains / Visual Studio / Xcode rolling
+    //    out). The VS Code team shipped a true 1-click install link
+    //    spec at
+    //
+    //      https://insiders.vscode.dev/redirect/mcp/install
+    //        ?name=<name>&config=<url-encoded JSON>
+    //
+    //    Where the JSON is `{ "type": "http", "url": "<our /mcp>" }`.
+    //    The web URL auto-redirects to the native `vscode:mcp/install`
+    //    handler if VS Code is installed; otherwise prompts the user.
+    //    Per microsoft/vscode-docs the URL handler now presents a
+    //    target-selection dialog (Global vs. Workspace vs. Remote)
+    //    before installing — clean UX, no surprise behavior. VS Code
+    //    1.99+ required.
+    //
+    //    NO auth in the config payload — Copilot does the standard
+    //    OAuth DCR dance on first /mcp request (our 401 →
+    //    WWW-Authenticate → discovery → DCR → consent). The github
+    //    docs confirm Copilot's redirect URIs are
+    //    http://127.0.0.1:33418 and https://vscode.dev/redirect,
+    //    which we accept by default.
+    //
+    //    For Copilot Business / Enterprise the workspace admin must
+    //    enable "MCP servers in Copilot" policy first — surfaced in
+    //    planNote so admins know to flip it.
     summary:
-      "GitHub Copilot + Microsoft 365 Copilot. Add LYKN as an MCP server in your Copilot config so inline suggestions and chat both see your synthesis layer.",
-    helpUrl: "https://docs.github.com/copilot",
-    helpLabel: "Copilot docs",
-    available: false,
-    comingSoon: true,
-    tier: 2,
+      "GitHub Copilot in VS Code. One click opens VS Code's MCP install dialog with LYKN pre-filled — pick a target (Global / Workspace), approve the LYKN consent screen, done. Copilot Chat + Edits then see your synthesis layer on every coding session.",
+    helpUrl: "https://docs.github.com/en/copilot/customizing-copilot/extending-copilot-chat-with-mcp",
+    helpLabel: "Copilot MCP docs",
+    available: true,
+    tier: 1,
     direction: "bidirectional",
+    connectMode: "copilot-install",
+    openUrl: "https://docs.github.com/en/copilot/customizing-copilot/extending-copilot-chat-with-mcp",
+    planNote:
+      "Requires VS Code 1.99+ with the GitHub Copilot extension on any paid Copilot plan (Free / Pro / Pro+ / Business / Enterprise — MCP support spans them all). Business + Enterprise additionally need the workspace admin to toggle the \"MCP servers in Copilot\" policy on. JetBrains, Visual Studio, and Xcode Copilot MCP support is rolling out; for now this card specifically targets VS Code.",
+    installSteps: [
+      "Press Connect GitHub Copilot — we open VS Code's install link in a new tab.",
+      "Your browser hands off to VS Code (or prompts you to install if you don't have it).",
+      "Inside VS Code: pick where to install (Global recommended) → confirm.",
+      "Copilot pops a browser tab to the LYKN consent screen — click Approve.",
+      "Open Copilot Chat or Edits — LYKN tools show up automatically. We auto-detect the new bearer here.",
+    ],
+    successHint:
+      "LYKN is now wired into Copilot Chat and Copilot Edits in VS Code. Adjust which tools are exposed under VS Code's MCP Servers panel (Cmd+Shift+P → \"MCP: List Servers\"). When Microsoft ships Copilot MCP for JetBrains / Visual Studio / Xcode, the same OAuth handshake will work from those IDEs too — no extra setup on LYKN's side.",
   },
   {
     id: "notion-ai",
@@ -894,6 +932,40 @@ export function buildReplitOauthInstallLink({ mcpUrl }) {
   return `https://replit.com/integrations?mcp=${encoded}`;
 }
 
+/**
+ * Build a VS Code MCP install link for GitHub Copilot. Per the
+ * github/github-mcp-server README + microsoft/vscode-docs the spec is:
+ *
+ *   https://insiders.vscode.dev/redirect/mcp/install
+ *     ?name=<name>
+ *     &config=<url-encoded JSON server config>
+ *
+ * Where the config payload is `{ "type": "http", "url": "<our /mcp>" }`.
+ * The web URL hands off to VS Code's native `vscode:mcp/install` URI
+ * handler if installed; otherwise the browser prompts the user to
+ * install VS Code. Same domain works for stable + insiders — pass
+ * `&quality=insiders` for Insiders specifically; omit for stable.
+ *
+ * NO auth is baked into the payload. Copilot does the standard
+ * MCP-OAuth dance on first /mcp request — its registered redirect
+ * URIs are http://127.0.0.1:33418 (native loopback) and
+ * https://vscode.dev/redirect (web bridge), both of which our DCR
+ * accepts by default.
+ *
+ * Spec:
+ *   github.com/github/github-mcp-server/blob/main/docs/remote-server.md
+ *   github.com/microsoft/vscode-docs/blob/main/api/extension-guides/ai/mcp.md
+ */
+export function buildCopilotInstallLink({ mcpUrl }) {
+  const url = ensureHttpsMcpUrl(mcpUrl);
+  const config = {
+    type: "http",
+    url,
+  };
+  const encodedConfig = encodeURIComponent(JSON.stringify(config));
+  return `https://insiders.vscode.dev/redirect/mcp/install?name=lykn&config=${encodedConfig}`;
+}
+
 // Production LYKN MCP URL — the canonical https endpoint AI clients
 // connect to. Used as the fallback any time we build a deep link for
 // a client that REQUIRES https (Claude rejects non-https connector
@@ -1222,6 +1294,22 @@ export const LYKN_PROJECT_INSTRUCTIONS_TARGETS = {
     ],
     helpUrl: "https://docs.windsurf.com/windsurf/cascade/memories",
     helpLabel: "Cascade Memories docs",
+  },
+  // GitHub Copilot in VS Code reads instructions from a few places:
+  // .github/copilot-instructions.md (repo-scoped), .vscode/instructions
+  // (user-scoped), and the Copilot Chat custom-instructions panel.
+  // The .github/copilot-instructions.md file is the most portable —
+  // it travels with the repo and applies to all Copilot users on the
+  // project. Drop the LYKN contract there for per-repo enforcement.
+  "github-copilot": {
+    surfaceLabel: ".github/copilot-instructions.md",
+    steps: [
+      "Create .github/copilot-instructions.md in your repo root (or open VS Code → Settings → Copilot → Custom Instructions for user-wide).",
+      "Paste the snippet below. Save / commit.",
+      "Copilot Chat reads the file on every new session — LYKN tools become discoverable immediately.",
+    ],
+    helpUrl: "https://docs.github.com/en/copilot/customizing-copilot/adding-custom-instructions-for-github-copilot",
+    helpLabel: "Copilot custom instructions docs",
   },
   // Notion Custom Agents have per-agent instructions in their settings
   // panel — that's the canonical place to drop a system-prompt-style
