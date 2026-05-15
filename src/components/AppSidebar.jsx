@@ -71,9 +71,11 @@ export default function AppSidebar({
   const effectiveHighlightVault = walkActive && walkStep === "vault";
   const effectiveHighlightGrid = walkActive && walkStep === "grid";
   // Centralized navigation lock: during a walkthrough step only the
-  // highlighted destination (synthesis layer, vault, or grid) is
-  // clickable. Explicit `restrictToSynthesis` from the prototype page
-  // still wins.
+  // highlighted destination (Synthesis Layer, Connections, or Chat) is
+  // clickable. The "vault" / "grid" step names are storage-only labels
+  // that survive from before the rename — Connections lives at /vault,
+  // Chat at /app. Explicit `restrictToSynthesis` from the prototype
+  // page still wins.
   const lockedDestination = restrictToSynthesis
     ? "/synthesis-layer"
     : effectiveHighlightVault

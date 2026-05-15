@@ -150,7 +150,20 @@ function PlanCard({
         {plan.tagline}
       </p>
 
-      <PriceDisplay plan={plan} period={period} />
+      {plan.comingSoon ? (
+        <div className="mt-3 mb-4">
+          <div className="flex items-baseline gap-1">
+            <span className="text-2xl font-bold tracking-tight text-black/40 dark:text-white/45">
+              —
+            </span>
+          </div>
+          <p className="text-xs text-black/35 dark:text-white/45 font-medium mt-1">
+            Pricing to be announced
+          </p>
+        </div>
+      ) : (
+        <PriceDisplay plan={plan} period={period} />
+      )}
 
       <FeatureList features={plan.features} />
 
@@ -189,7 +202,7 @@ function PlanCard({
       </button>
       {isWaitlistCard && hasJoinedWaitlist && (
         <p className="mt-2 text-[10px] text-black/40 dark:text-white/45 text-center">
-          We'll email you when Studio Max goes live.
+          We'll email you when {plan.name} goes live.
         </p>
       )}
     </motion.div>
@@ -257,7 +270,7 @@ async function postBilling(path, body) {
 
 export default function BillingNew() {
   const { user } = useAuth();
-  const [period, setPeriod] = useState(BILLING_PERIODS.MONTHLY);
+  const [period, setPeriod] = useState(BILLING_PERIODS.ANNUAL);
   const [openFaq, setOpenFaq] = useState(null);
   const [currentPlan, setCurrentPlan] = useState("free");
   const [checkoutBusy, setCheckoutBusy] = useState(null);

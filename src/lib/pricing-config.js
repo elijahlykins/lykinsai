@@ -5,60 +5,72 @@ export const BILLING_PERIODS = {
 
 // Plan IDs are used as primary keys throughout the app (DB `user_billing.plan`,
 // Stripe price map in server.js, PLAN_LIMITS below). Don't rename without a
-// migration.
+// migration — the LYKN-finalized May 2026 plan names (Pro / Max / Teams) are
+// the user-facing labels, but the underlying ids are kept stable:
+//   studio      → Pro
+//   studio_pro  → Max
+//   studio_max  → Teams
 export const PLANS = [
   {
     id: "studio",
-    name: "Studio",
-    tagline: "Pro tools and the top LLMs for serious solo work",
+    name: "Pro",
+    tagline: "Unlimited neurons, every connection, and the full LYKN model lineup.",
     monthlyPrice: 25,
-    annualPrice: 240, // 25 * 12 * 0.8 (20% off)
-    cta: "Upgrade to Studio",
-    ctaVariant: "default",
-    highlighted: false,
-    comingSoon: false,
-    features: [
-      { text: "Unlimited Grids", included: true },
-      { text: "Unlimited blocks per Grid", included: true },
-      { text: "1,000 Vault items", included: true },
-      {
-        text: "All LYKN models (Lite, Fast Reasoning, Deep Thinking)",
-        included: true,
-      },
-      { text: "Mind map", included: true },
-      { text: "Custom AI settings", included: true },
-    ],
-  },
-  {
-    id: "studio_pro",
-    name: "Studio Pro",
-    tagline: "Everything in Studio, plus an unlimited Vault",
-    monthlyPrice: 65,
-    annualPrice: 624, // 65 * 12 * 0.8
-    cta: "Upgrade to Studio Pro",
+    // $17/mo billed annually = $204/yr (LYKN-finalized).
+    annualPrice: 204,
+    cta: "Upgrade to Pro",
     ctaVariant: "primary",
     highlighted: true,
     badge: "Popular",
     comingSoon: false,
     features: [
-      { text: "Everything in Studio", included: true },
-      { text: "Unlimited Vault items", included: true, accent: true },
+      { text: "Unlimited neurons", included: true, accent: true },
+      { text: "10,000 Vault cards", included: true },
+      { text: "All LYKN models", included: true },
+      { text: "All connections unlocked", included: true },
+      {
+        text: "Student discount: $10/mo",
+        included: true,
+        note: "Verified students only.",
+      },
+    ],
+  },
+  {
+    id: "studio_pro",
+    name: "Max",
+    tagline: "Top LLMs on the market and an unlimited Vault.",
+    monthlyPrice: 65,
+    // $50/mo billed annually = $600/yr (LYKN-finalized).
+    annualPrice: 600,
+    cta: "Upgrade to Max",
+    ctaVariant: "default",
+    highlighted: false,
+    comingSoon: false,
+    features: [
+      { text: "Everything in Pro", included: true },
+      {
+        text: "Top LLMs on the market (GPT, Claude, Gemini Ultra)",
+        included: true,
+        accent: true,
+      },
+      { text: "Unlimited Vault storage", included: true, accent: true },
+      { text: "API access", included: true, accent: true },
     ],
   },
   {
     id: "studio_max",
-    name: "Studio Max",
-    tagline: "For teams — shared workspace with up to 5 seats",
-    monthlyPrice: 250,
-    annualPrice: 2400, // 250 * 12 * 0.8
+    name: "Teams",
+    tagline: "A shared synthesis layer for teams. Coming soon.",
+    monthlyPrice: 0,
+    annualPrice: 0,
     cta: "Join Waitlist",
     ctaVariant: "default",
     highlighted: false,
     comingSoon: true,
     features: [
-      { text: "Everything in Studio Pro", included: true, accent: true },
-      { text: "Up to 5 seats", included: true, accent: true },
       { text: "Shared team workspace", included: true, accent: true },
+      { text: "Team-wide neurons & memory", included: true, accent: true },
+      { text: "Admin controls & billing", included: true },
       { text: "Priority support", included: true },
     ],
   },
@@ -68,17 +80,27 @@ export const FAQ_ITEMS = [
   {
     question: "What do I get on the Free plan?",
     answer:
-      "Every account starts on Free. You get unlimited Grids (up to 50 blocks per Grid), 50 Vault items, a Synthesis Layer preview that grows alongside your work up to 50 nodes, and access to LYKN Lite — the fast everyday model. It's a great way to feel the product out before upgrading.",
+      "Every account starts on Free. You get a limited number of neurons and Vault cards, the LYKN base model for chat, and one input connection plus Claude. It's enough to feel how LYKN's synthesis layer follows you across tools before you upgrade.",
   },
   {
-    question: "Which AI models are included in each plan?",
+    question: "What's the difference between Pro and Max?",
     answer:
-      "Free runs on LYKN Lite — fast and lightweight, perfect for everyday questions. Studio, Studio Pro, and Studio Max unlock LYKN Fast Reasoning for everyday work and LYKN Deep Thinking for heavier multi-step problems, plus model switching and custom AI settings.",
+      "Pro ($25/mo, or $17/mo billed annually) unlocks unlimited neurons, 10,000 Vault cards, the full LYKN model lineup, and every connection. Max ($65/mo, or $50/mo billed annually) adds the top LLMs on the market — GPT, Claude, Gemini Ultra — an unlimited Vault, and API access.",
   },
   {
-    question: "What's the difference between Studio and Studio Pro?",
+    question: "Is there a free trial?",
     answer:
-      "Studio gives you all LYKN models (Lite, Fast Reasoning, Deep Thinking), unlimited Grids with unlimited blocks, the unlimited Mind Map (Free previews up to 50 nodes), and a 1,000-item Vault. Studio Pro adds unlimited Vault items.",
+      "No free trials — the Free plan is the trial. Upgrade to Pro or Max whenever you're ready, and you can cancel anytime.",
+  },
+  {
+    question: "How much do I save by paying yearly?",
+    answer:
+      "Roughly a third off. Pro is $25/mo monthly or $17/mo when billed annually ($204/yr). Max is $65/mo monthly or $50/mo when billed annually ($600/yr).",
+  },
+  {
+    question: "Is there a student discount?",
+    answer:
+      "Yes — verified students get Pro for $10/month. The discount applies to the Pro tier only.",
   },
   {
     question: "Can I switch plans anytime?",
@@ -86,9 +108,9 @@ export const FAQ_ITEMS = [
       "Yes — you can upgrade, downgrade, or cancel at any time from the billing portal. Upgrades take effect immediately and you're charged a prorated amount. Downgrades take effect at the end of your current billing cycle.",
   },
   {
-    question: "When is Studio Max available?",
+    question: "When is Teams available?",
     answer:
-      "Studio Max is our teams plan with up to 5 seats and a shared workspace. It's coming soon — join the waitlist from the plan card and we'll reach out when it goes live.",
+      "Teams is our shared-workspace plan — one synthesis layer your whole team can lean on. It's coming soon. Join the waitlist from the plan card and we'll reach out when it goes live.",
   },
 ];
 
@@ -116,7 +138,7 @@ export const PLAN_LIMITS = {
   },
   studio: {
     requests: Infinity,
-    vaultCards: 1000,
+    vaultCards: 10000,
     blocksPerGrid: Infinity,
     grids: Infinity,
     projects: Infinity,
@@ -174,6 +196,20 @@ export const UPLOAD_RATE_LIMITS = {
   studio_pro: { perMinute: 300, perHour: 3600 },
   studio_max: { perMinute: 600, perHour: 7200 },
 };
+
+// Centralised id → display label mapping. Use this everywhere user-visible
+// copy mentions a plan, so the LYKN-finalized naming (Pro / Max / Teams)
+// stays consistent. The underlying ids in the DB / Stripe map are unchanged.
+export const PLAN_LABELS = {
+  free: "Free",
+  studio: "Pro",
+  studio_pro: "Max",
+  studio_max: "Teams",
+};
+
+export function planLabel(planId) {
+  return PLAN_LABELS[String(planId || "free")] || "Free";
+}
 
 export function getDisplayPrice(plan, period) {
   if (plan.monthlyPrice === 0) return 0;

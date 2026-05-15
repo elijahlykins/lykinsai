@@ -119,29 +119,46 @@ export interface CompressProgress {
 }
 
 /**
+ * Throws an `AbortError` if the signal has fired. Used between compression
+ * stages so an abort during a long ffmpeg / WebCodecs run surfaces promptly
+ * after the current step instead of completing wasted work.
+ */
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new DOMException("Aborted", "AbortError");
+  }
+}
+
+/**
  * Returns a possibly-compressed version of the input file. Images above
  * 3 MB are downscaled; everything else is returned unchanged.
  */
 export async function maybeCompressImage(
   file: File,
   onProgress?: (p: CompressProgress) => void,
+  signal?: AbortSignal,
 ): Promise<CompressResult> {
   const originalSize = file.size || 0;
   if (!isImageFile(file) || originalSize < IMAGE_COMPRESS_THRESHOLD_BYTES) {
     return { file, compressed: false, originalSize, finalSize: originalSize };
   }
 
+  throwIfAborted(signal);
   try {
     const mod = await import("browser-image-compression");
     const imageCompression = (mod as any).default ?? mod;
     onProgress?.({ percent: 0, stage: "compressing-image" });
 
+    // `browser-image-compression` accepts an optional AbortSignal; pass it
+    // through so a fast cancel doesn't keep the worker spinning on a
+    // megapixel image the user no longer cares about.
     const compressedBlob: Blob = await imageCompression(file, {
       maxSizeMB: 2,
       maxWidthOrHeight: 2048,
       useWebWorker: true,
       initialQuality: 0.85,
       fileType: file.type?.includes("png") ? "image/png" : "image/jpeg",
+      signal,
       onProgress: (percent: number) => {
         onProgress?.({
           percent: Math.max(0, Math.min(99, Math.round(percent))),
@@ -149,6 +166,7 @@ export async function maybeCompressImage(
         });
       },
     });
+    throwIfAborted(signal);
 
     // If compression actually made it larger (rare, but it happens on
     // already-optimized JPEGs), keep the original.
@@ -164,7 +182,11 @@ export async function maybeCompressImage(
     });
     onProgress?.({ percent: 100, stage: "compressing-image" });
     return { file: newFile, compressed: true, originalSize, finalSize: newFile.size };
-  } catch (err) {
+  } catch (err: any) {
+    // Cancellation must propagate so the pipeline's catch can route it
+    // through the "Cancelled." path, not the generic "compression failed
+    // → upload original" fallback.
+    if (err?.name === "AbortError") throw err;
     if (import.meta.env.DEV) console.warn("[compressMedia] image compression failed:", err);
     return { file, compressed: false, originalSize, finalSize: originalSize };
   }
@@ -401,11 +423,13 @@ export function preloadVideoCompressor(): void {
 export async function maybeCompressVideo(
   file: File,
   onProgress?: (p: CompressProgress) => void,
+  signal?: AbortSignal,
 ): Promise<CompressResult> {
   const originalSize = file.size || 0;
   if (!isVideoFile(file)) {
     return { file, compressed: false, originalSize, finalSize: originalSize };
   }
+  throwIfAborted(signal);
   // Two reasons we transcode:
   //   1. Size — file is big enough that re-encoding as 720p H.264 is worth it.
   //   2. Compatibility — container is one we can't trust the browser to
@@ -426,6 +450,7 @@ export async function maybeCompressVideo(
   // through to the ffmpeg path below.
   try {
     if (await isWebCodecsH264Supported()) {
+      throwIfAborted(signal);
       onProgress?.({ percent: 0, stage: "compressing-video" });
       if (import.meta.env.DEV) {
         console.info(`[compressMedia] WebCodecs path start: ${file.name} (${originalSize} B)`);
@@ -433,6 +458,10 @@ export async function maybeCompressVideo(
       const result = await webCodecsCompressVideo(file, (pct) => {
         onProgress?.({ percent: pct, stage: "compressing-video" });
       });
+      // After a long encode, recheck — user may have dismissed the toast
+      // while the hardware encoder was busy and we'd otherwise still
+      // hand the file off to the upload phase.
+      throwIfAborted(signal);
       // If the HW pipeline didn't meaningfully shrink the file we'd
       // normally prefer the original — EXCEPT when we were transcoding
       // for compatibility (e.g. HEVC .mov → H.264). In that case the
@@ -461,12 +490,17 @@ export async function maybeCompressVideo(
         /* store not ready yet; harmless */
       }
     }
-  } catch (err) {
+  } catch (err: any) {
+    // Cancellation surfaces as AbortError — propagate immediately so the
+    // pipeline doesn't kick off the (much slower) ffmpeg fallback.
+    if (err?.name === "AbortError") throw err;
     if (import.meta.env.DEV) {
       console.warn("[compressMedia] WebCodecs path failed – falling back to ffmpeg:", err);
     }
     // Intentional fall-through to the ffmpeg path below.
   }
+
+  throwIfAborted(signal);
 
   if (ffmpegDisabledThisSession) {
     if (import.meta.env.DEV) {
@@ -489,6 +523,10 @@ export async function maybeCompressVideo(
     // this lock, dropping 6 videos at once would have 6 worker slots calling
     // into the same wasm instance concurrently and hanging forever.
     const blob = await withFfmpegLock(async () => {
+      // The mutex can hold us for a long time when the queue is busy.
+      // Recheck right after we acquire the lock so a cancel during the
+      // wait doesn't immediately spin up the wasm core.
+      throwIfAborted(signal);
       const ffmpeg = await getFfmpegInstance();
       if (import.meta.env.DEV) {
         // eslint-disable-next-line no-console
@@ -501,6 +539,7 @@ export async function maybeCompressVideo(
       const outputName = "output.mp4";
 
       await ffmpeg.writeFile(inputName, await fetchFile(file));
+      throwIfAborted(signal);
       if (import.meta.env.DEV) {
         // eslint-disable-next-line no-console
         console.info("[compressMedia] input written, starting transcode…");
@@ -583,7 +622,12 @@ export async function maybeCompressVideo(
     });
     onProgress?.({ percent: 100, stage: "compressing-video" });
     return { file: newFile, compressed: true, originalSize, finalSize: newFile.size };
-  } catch (err) {
+  } catch (err: any) {
+    // Cancellation must propagate up so the user's "Cancelled." message
+    // sticks. Otherwise the catch below would swallow the AbortError and
+    // happily upload the original (very large) bytes the user just told
+    // us to drop.
+    if (err?.name === "AbortError") throw err;
     if (import.meta.env.DEV) {
       console.warn(
         "[compressMedia] video compression failed — falling back to original upload:",
@@ -602,13 +646,18 @@ export async function maybeCompressVideo(
 
 /**
  * Convenience: pick the right compressor for a file.
+ *
+ * The optional `signal` is plumbed through both video and image paths
+ * so an upload cancelled during a long encode tears down promptly
+ * instead of running to completion before the upload phase even starts.
  */
 export async function maybeCompressMedia(
   file: File,
   onProgress?: (p: CompressProgress) => void,
+  signal?: AbortSignal,
 ): Promise<CompressResult> {
-  if (isVideoFile(file)) return maybeCompressVideo(file, onProgress);
-  if (isImageFile(file)) return maybeCompressImage(file, onProgress);
+  if (isVideoFile(file)) return maybeCompressVideo(file, onProgress, signal);
+  if (isImageFile(file)) return maybeCompressImage(file, onProgress, signal);
   return {
     file,
     compressed: false,

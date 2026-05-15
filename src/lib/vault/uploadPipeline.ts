@@ -16,6 +16,7 @@ import { UPLOAD_RATE_LIMITS } from "@/lib/pricing-config";
 import { notifyUploadRateLimitIfApplicable } from "@/lib/vault/uploadRateLimitError";
 import { notifyVaultCapIfApplicable } from "@/lib/vault/vaultCapError";
 import { findAttachmentsMarker, withAttachmentsMarker } from "@/lib/vault/attachmentsMarker";
+import { toast } from "@/components/ui/use-toast";
 import {
   registerVaultUploadCancellation,
   setVaultUploadStoragePath,
@@ -193,6 +194,30 @@ const VIDEO_EXTENSIONS = new Set([
 ]);
 
 const UPLOAD_PARALLELISM = 4;
+
+// ---------------------------------------------------------------------------
+// In-flight dedup
+//
+// `saveFileToVault.ts` already has its own session-level + DB dedup, but the
+// vault upload pipeline path was bypassing it: every drop minted a fresh
+// UUID storagePath, so the same file dragged into the vault twice in quick
+// succession produced two storage objects, two `notes` rows, and two
+// duplicate cards on the grid.
+//
+// We dedup on `(userId, filename, size, lastModified)` — robust against
+// accidental double-drops (drop, then panic-drop again because the toast
+// didn't appear instantly) without false-positiving distinct files that
+// happen to share a name. The key is held only while the upload is
+// actively in flight, then released in the `finally` of `processOne` —
+// so legitimately re-saving a file later still works.
+// ---------------------------------------------------------------------------
+const inFlightDedup = new Set<string>();
+
+function inFlightDedupKey(userId: string, file: File, filename: string): string {
+  const size = file.size || 0;
+  const lastModified = (file as File).lastModified || 0;
+  return `${userId}::${filename}::${size}::${lastModified}`;
+}
 
 function getFileType(mimeType: string, filename: string): string {
   const ext = filename.split(".").pop()?.toLowerCase() || "";
@@ -453,9 +478,22 @@ async function processOne(args: {
     mimeLower.startsWith("image/heic") ||
     mimeLower.startsWith("image/heif");
   if (isHeif) {
+    if (abortCtrl.signal.aborted) {
+      // The user dismissed the toast before we got off the starting line.
+      // Skip the work entirely — no storage object exists yet so there's
+      // nothing to clean up.
+      unregisterVaultUploadCancellation(args.itemId);
+      return null;
+    }
     try {
       const { fileToDisplayableFile } = await import("@/lib/heifToJpeg");
       const displayable = await fileToDisplayableFile(file);
+      // Recheck after the (potentially seconds-long) HEIF decode — same
+      // reasoning as below.
+      if (abortCtrl.signal.aborted) {
+        unregisterVaultUploadCancellation(args.itemId);
+        return null;
+      }
       if (displayable !== file) {
         file = displayable;
         filename = displayable.name;
@@ -518,10 +556,17 @@ async function processOne(args: {
       // bar visibly snapped backward at the compression→upload
       // handoff (compression hit 100, then upload reset to 1) which
       // looked like a stalled / restarting upload to users.
-      const compressResult = await maybeCompressMedia(file, ({ percent }) => {
-        const scaled = Math.min(50, Math.max(0, Math.round(percent * 0.5)));
-        store.update(args.itemId, { progress: scaled });
-      });
+      const compressResult = await maybeCompressMedia(
+        file,
+        ({ percent }) => {
+          const scaled = Math.min(50, Math.max(0, Math.round(percent * 0.5)));
+          store.update(args.itemId, { progress: scaled });
+        },
+        // Cancellation during a long ffmpeg / WebCodecs encode used to
+        // run to completion before the upload phase even started; now
+        // we tear down promptly when the user dismisses.
+        abortCtrl.signal,
+      );
       if (compressResult.compressed) {
         file = compressResult.file;
         filename = compressResult.file.name;
@@ -583,6 +628,16 @@ async function processOne(args: {
 
     const fileUrl = uploadResult.signedUrl || uploadResult.publicUrl || null;
     store.update(args.itemId, { progress: 97 });
+
+    // Race window: the bytes are now in storage but the row doesn't
+    // exist yet. If the user cancelled during the upload tail (or while
+    // we were minting URLs), insert a row only to immediately have the
+    // user see a "ghost" note. Recheck the signal here and clean up the
+    // freshly-uploaded object instead.
+    if (abortCtrl.signal.aborted) {
+      void supabase.storage.from("user-files").remove([storagePath]).catch(() => {});
+      throw new DOMException("Aborted", "AbortError");
+    }
 
     let createdNote: any = null;
     try {
@@ -687,10 +742,13 @@ async function processOne(args: {
     // PG check_violations to supabase-js. Detect them first so the shared
     // helpers can dispatch the events `useUsageGate` listens to (which
     // open the upgrade modal), instead of showing a generic toast.
+    let didNotifyExternally = false;
     if (notifyVaultCapIfApplicable(error)) {
       friendly = "Vault is full — upgrade your plan to keep uploading.";
+      didNotifyExternally = true;
     } else if (notifyUploadRateLimitIfApplicable(error)) {
       friendly = "Upload paused — you're uploading too fast. Try again in a moment.";
+      didNotifyExternally = true;
     } else if (lower.includes("exceeded the maximum allowed size") || lower.includes("payload too large") || lower.includes("413")) {
       friendly = "File too large for this vault. Increase the bucket file size limit in Supabase Storage.";
     } else if (lower.includes("mime") && lower.includes("not allowed")) {
@@ -701,6 +759,28 @@ async function processOne(args: {
       friendly = `Upload failed: ${String(rawMsg).slice(0, 160)}`;
     }
     store.update(args.itemId, { status: "error", error: friendly });
+
+    // The persistent upload-progress toast is no longer rendered (uploads
+    // are silent by design — see comment in `App.jsx`). That means a
+    // generic failure would otherwise just make the optimistic ghost
+    // card vanish from the grid with no explanation. Surface the
+    // friendly error via the global toast system so the user always
+    // knows when a drop didn't make it. We skip this if the error
+    // already triggered an external notification (cap/rate-limit) so
+    // we don't double-toast on top of the upgrade modal.
+    if (!didNotifyExternally) {
+      try {
+        toast({
+          title: "Upload failed",
+          description: `${args.filename ? `${args.filename}: ` : ""}${friendly}`,
+          variant: "destructive",
+        });
+      } catch {
+        // Toast subsystem unavailable (e.g. very early during boot).
+        // The store still has the error state, so a future surface
+        // (Activity panel, etc.) can pick it up.
+      }
+    }
     return null;
   } finally {
     // Always release the per-item entry so we don't leak controllers if
@@ -724,9 +804,26 @@ export async function startVaultUploads(input: StartFileUploadsInput): Promise<v
     file: File;
     folderPath: string | null;
     filename: string;
+    dedupKey: string;
   }> = [];
 
   for (const entry of input.files) {
+    // Skip files already mid-flight in this session. Without this the
+    // user could drop the same image twice (because the toast was slow
+    // to render, or they second-guessed) and end up with two identical
+    // notes after the second upload finished.
+    const dedupKey = inFlightDedupKey(input.userId, entry.file, entry.filename);
+    if (inFlightDedup.has(dedupKey)) {
+      if (import.meta.env.DEV) {
+        // eslint-disable-next-line no-console
+        console.info(
+          `[uploadPipeline] skipping duplicate in-flight upload: ${entry.filename}`,
+        );
+      }
+      continue;
+    }
+    inFlightDedup.add(dedupKey);
+
     const itemId = crypto.randomUUID();
     const mimeType = entry.file.type || "";
     const fileType = getFileType(mimeType, entry.filename);
@@ -760,6 +857,7 @@ export async function startVaultUploads(input: StartFileUploadsInput): Promise<v
       file: entry.file,
       folderPath: entry.folderPath,
       filename: entry.filename,
+      dedupKey,
     });
   }
 
@@ -770,16 +868,24 @@ export async function startVaultUploads(input: StartFileUploadsInput): Promise<v
       const currentIndex = cursor;
       cursor += 1;
       const job = enqueued[currentIndex];
-      const created = await processOne({
-        userId: input.userId,
-        itemId: job.itemId,
-        file: job.file,
-        folderPath: job.folderPath,
-        filename: job.filename,
-        planId: input.planId ?? null,
-        onFileComplete: input.onFileComplete,
-      });
-      if (created?.id) createdNotes.push(created);
+      try {
+        const created = await processOne({
+          userId: input.userId,
+          itemId: job.itemId,
+          file: job.file,
+          folderPath: job.folderPath,
+          filename: job.filename,
+          planId: input.planId ?? null,
+          onFileComplete: input.onFileComplete,
+        });
+        if (created?.id) createdNotes.push(created);
+      } finally {
+        // Release the dedup slot whether the upload succeeded, errored,
+        // or was cancelled — otherwise a failed upload would lock the
+        // user out of re-trying that exact file for the rest of the tab
+        // session.
+        inFlightDedup.delete(job.dedupKey);
+      }
     }
   };
   const workerCount = Math.min(UPLOAD_PARALLELISM, enqueued.length);

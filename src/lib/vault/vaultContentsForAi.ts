@@ -1,6 +1,6 @@
 /**
  * Builds the same vault item lines as the in-app Vault chat (VaultNew handleChatSend),
- * so grid / focused chat can send equivalent [WORKSPACE_CONTEXT] vault detail.
+ * so other chat surfaces can send equivalent [WORKSPACE_CONTEXT] vault detail.
  */
 import { supabase } from "@/lib/supabase";
 import { detectSocialPlatform, isSocialEmbedType } from "@/canvas/utils/socialEmbed";
@@ -347,18 +347,13 @@ function buildVaultCardsForAiChat(notes: VaultAiNoteRow[]): VaultAiCard[] {
 function formatVaultCardLineForAi(card: VaultAiCard): string {
   const date = card.dateLabel || "unknown date";
   const tagStr = card.tags?.length ? ` [tags: ${card.tags.join(", ")}]` : "";
-  // Use the same notation the server system prompt documents — "(id=<noteId>)" — so
-  // the AI can reliably construct [PULL_MEDIA:<noteId>|<index>] tokens. Also emit the
-  // exact pull marker the AI should copy verbatim to the end of its response when the
-  // user asks to bring this item onto the board.
+  // Items are referenced in chat by `(id=<noteId>)` so the AI can mention them.
+  // The grid / "pull onto board" surface no longer exists, so we don't emit
+  // any `pull=[PULL_MEDIA:...]` tokens — the AI must reference items in plain
+  // chat (and use [TAG_NOTES:...] for tagging), nothing else.
   const noteId = card.noteId || "";
   const idStr = noteId ? ` (id=${noteId})` : "";
-  const pullToken = noteId
-    ? card.kind === "attachment"
-      ? `[PULL_MEDIA:${noteId}|${Number.isInteger(card.attachmentIndex) ? card.attachmentIndex : 0}]`
-      : `[PULL_MEDIA:${noteId}]`
-    : "";
-  const pullStr = pullToken ? ` pull=${pullToken}` : "";
+  const pullStr = "";
 
   if (card.kind === "attachment") {
     const att = card.attachment || {};
@@ -456,10 +451,12 @@ export function buildVaultDetailForGridAi(
   const block = lines.length
     ? [
         `DETAILED VAULT — same listing as Vault chat (${totalCardCount} cards from recent notes; showing up to ${maxLines}). Existing tags in use: ${existingTagsStr}.`,
-        // Explicit, unambiguous instructions so the AI can pull items onto the current grid
-        // when the user asks. Each item line below includes its exact "pull=[PULL_MEDIA:...]"
-        // token; the model should copy those tokens verbatim to the END of its reply.
-        `To add any item below onto the current board, copy its exact "pull=" token (the full "[PULL_MEDIA:...]" marker) to the END of your response (hidden from the user). Do NOT alter the token. Use one pull marker per item. Example: [PULL_MEDIA:abc123|0] [PULL_MEDIA:def456]`,
+        // Reference items in chat by title or `(id=<noteId>)`. Do NOT emit any
+        // [PULL_MEDIA:...] / [CREATE_BLOCK:...] / pull tokens — the grid surface
+        // does not exist in the current product, so there's nothing to pull
+        // items onto. For tagging, use the [TAG_NOTES:noteId|tag1,tag2] marker
+        // at the END of your reply.
+        `When the user asks about saved items, reference them in plain chat by title or "(id=<noteId>)". You CANNOT pull, drop, embed, or place items onto a canvas / grid / board — those surfaces do not exist. To add tags, emit [TAG_NOTES:<noteId>|tag1,tag2] at the END of your reply.`,
         tagDir,
         lines.join("\n"),
       ]

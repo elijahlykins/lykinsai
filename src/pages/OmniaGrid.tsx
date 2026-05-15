@@ -835,12 +835,15 @@ export default function OmniaGridPage() {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  // Landing-prototype handoff (final beat): on first load of the canonical
-  // Grid surface (`/app`) for a guest who came through the walkthrough,
-  // open the chat rail and have LYKN type out a short orientation message
-  // explaining what the Grid is. Only fires once per session — the
-  // session flag is cleared by LandingPrototype whenever a brand-new
-  // walkthrough kicks off, so a fresh first neuron re-arms it.
+  // Landing-prototype handoff (final beat): on first load of the chat
+  // surface (`/app`) for a guest who came through the walkthrough,
+  // open the chat rail and have LYKN type out a short orientation
+  // message about what this surface is. With the canvas unplugged
+  // (GRID_DISABLED), `/app` is just the chat — every conversation
+  // routes through the synthesis layer + connections we set up in
+  // the prior beats. Only fires once per session; LandingPrototype
+  // clears the flag whenever a brand-new walkthrough kicks off so a
+  // fresh first neuron re-arms it.
   useEffect(() => {
     if (user?.id) return;
     if (routeBoardId) return; // only on /app, not on a specific /grid/<id>
@@ -859,15 +862,13 @@ export default function OmniaGridPage() {
     }
 
     const introText = [
-      "This is **the Grid** — your **spatial thinking environment**.",
+      "And this is **chat** — where you actually talk to your synthetic intelligence.",
       "",
-      "**Type anywhere** on the canvas to start a quick note exactly where your cursor lands. No menus, no modals — just click an empty spot and write. Then drag, resize, and arrange your thoughts however your brain wants them.",
+      "Every reply you get here is grounded in **you**: the neurons in your **Synthesis Layer**, the files and notes in your **Vault**, and the AI tools you wire up under **Connections**. Ask anything — LYKN answers as something custom-built for you, not a stranger trained on everyone.",
       "",
-      "Hit **`/`** anywhere on the grid (or inside any block) to open the command menu. From there you can drop in **notes, links, images, files, spreadsheets, todo lists, code blocks, design boards, YouTube embeds**, anything — without lifting your hands off the keyboard.",
+      "Each chat is saved to your sidebar so you can pick a thread back up later, and every turn quietly feeds new neurons into your synthesis layer — so the longer you use it, the more it becomes yours.",
       "",
-      "Each grid is its own canvas for a thought, project, or moment. Whatever you put here becomes part of your Vault and feeds back into the Synthesis Layer, so your AI keeps learning who you are with every block you add.",
-      "",
-      "Try it: click anywhere and start typing, hit `/` to summon a block, or ask me something right here in the chat.",
+      "Try it: ask me something right here, and watch your synthetic intelligence answer.",
     ].join("\n");
 
     const promptId = `proto-grid-intro-${Date.now()}`;
@@ -881,7 +882,7 @@ export default function OmniaGridPage() {
         {
           id: promptId,
           role: "user",
-          content: "What is the Grid?",
+          content: "What's chat for?",
           aiResponse: "",
           kind: "prompt",
         },

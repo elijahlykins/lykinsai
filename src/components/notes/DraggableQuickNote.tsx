@@ -1,6 +1,6 @@
 import React, { useRef } from "react";
 import { motion } from "framer-motion";
-import { ChevronDown, StickyNote, Loader2, Save } from "lucide-react";
+import { ChevronDown, StickyNote, Loader2, Save, Trash2 } from "lucide-react";
 
 type DraggableQuickNoteProps = {
   title?: string;
@@ -10,6 +10,7 @@ type DraggableQuickNoteProps = {
   isSaving: boolean;
   onSave: () => void | Promise<void>;
   onClose: () => void;
+  onDiscard?: () => void;
 };
 
 export default function DraggableQuickNote({
@@ -18,6 +19,7 @@ export default function DraggableQuickNote({
   isSaving,
   onSave,
   onClose,
+  onDiscard,
 }: DraggableQuickNoteProps) {
   const constraintsRef = useRef<HTMLDivElement | null>(null);
 
@@ -96,21 +98,36 @@ export default function DraggableQuickNote({
             </kbd>
             <span className="ml-1.5">to save</span>
           </span>
-          <button
-            type="button"
-            onClick={() => { void onSave(); }}
-            onPointerDown={(e) => e.stopPropagation()}
-            disabled={isSaving || !content.trim()}
-            title="Save note"
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium bg-black/85 dark:bg-white/90 text-white dark:text-black hover:bg-black dark:hover:bg-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            {isSaving ? (
-              <Loader2 className="w-3 h-3 animate-spin" />
-            ) : (
-              <Save className="w-3 h-3" />
+          <div className="flex items-center gap-1">
+            {onDiscard && (
+              <button
+                type="button"
+                onClick={() => onDiscard()}
+                onPointerDown={(e) => e.stopPropagation()}
+                disabled={isSaving || !content.trim()}
+                title="Discard draft"
+                aria-label="Discard quick note draft"
+                className="flex items-center justify-center w-7 h-7 rounded-md text-black/40 dark:text-white/40 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
             )}
-            <span>{isSaving ? "Saving" : "Save"}</span>
-          </button>
+            <button
+              type="button"
+              onClick={() => { void onSave(); }}
+              onPointerDown={(e) => e.stopPropagation()}
+              disabled={isSaving || !content.trim()}
+              title="Save note"
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium bg-black/85 dark:bg-white/90 text-white dark:text-black hover:bg-black dark:hover:bg-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {isSaving ? (
+                <Loader2 className="w-3 h-3 animate-spin" />
+              ) : (
+                <Save className="w-3 h-3" />
+              )}
+              <span>{isSaving ? "Saving" : "Save"}</span>
+            </button>
+          </div>
         </div>
       </motion.div>
     </div>

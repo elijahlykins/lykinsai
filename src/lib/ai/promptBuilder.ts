@@ -113,16 +113,16 @@ export function buildPrompt(input: BuildPromptInput): string {
     input.projectId ? `[PROJECT_ID]\n${String(input.projectId)}` : "",
     convo ? `[CONVERSATION]\n${convo}` : "",
     ws
-      ? `[WORKSPACE_CONTEXT]\nBelow are the user's OTHER boards and their entire Vault contents. This is real data.\n${ws}`
+      ? `[WORKSPACE_CONTEXT]\nBelow are the user's entire Vault contents. This is real data.\n${ws}`
       : "",
     media
-      ? `[VAULT]\nThe user asked for saved content. Below are items from their Vault. Use [PULL_MEDIA:noteId|attachmentIndex] at the END of your response to pull items onto the board.\nEach item shows: "title" (id=<noteId>) — files: <type>[<index>]\nExample: [PULL_MEDIA:abc123|0]\n\n${media}`
+      ? `[VAULT]\nThe user asked for saved content. Below are items from their Vault. Reference them in chat by title; do NOT emit pull/embed markers — there is no canvas to place items on.\nEach item shows: "title" (id=<noteId>) — files: <type>[<index>]\n\n${media}`
       : "",
     input.fullContext && input.fullContext !== user
       ? `[REQUEST_CONTEXT]\n${String(input.fullContext).slice(0, 16000)}`
       : "",
     ps ? `[PROJECT_KNOWLEDGE]\n${ps}` : "",
-    ctx ? `[GRID_CONTEXT]\n${ctx}` : "",
+    ctx ? `[CONTEXT]\n${ctx}` : "",
     `[LATEST_USER_MESSAGE]\n${user || "(empty)"}`,
   ]
     .filter(Boolean)

@@ -127,17 +127,126 @@ export async function uploadFileToStorage(
       signal,
     });
   } else {
+    await uploadSingleShot({
+      file,
+      storagePath,
+      bucket,
+      contentType: resolvedContentType,
+      cacheControl,
+      upsert,
+      onProgress,
+      signal,
+    });
+  }
+
+  return finalizeUrls({ storagePath, bucket });
+}
+
+// ---------------------------------------------------------------------------
+// Single-shot upload with bounded retry
+// ---------------------------------------------------------------------------
+//
+// Sub-6 MiB files used to be a single, retry-less `supabase.storage.upload`
+// call. The TUS path retries automatically (`retryDelays` in `uploadViaTus`),
+// so large files were paradoxically MORE reliable than small ones — a
+// transient 5xx or network blip would fail an entire small-file upload while
+// a 100 MB video would just resume.
+//
+// We retry up to 3 times with jittered exponential backoff. We intentionally
+// only retry network / 5xx / rate-limit errors; permanent failures (RLS,
+// missing bucket, MIME mismatch, payload too large, AbortError) bail
+// immediately so the user sees the right toast right away.
+const SMALL_UPLOAD_MAX_ATTEMPTS = 3;
+
+function isRetriableUploadError(err: any): boolean {
+  if (!err) return false;
+  const status = err.statusCode ?? err.status ?? err.originalError?.statusCode;
+  if (typeof status === "number") {
+    if (status === 408 || status === 429) return true;
+    if (status >= 500 && status < 600) return true;
+    return false;
+  }
+  const msg = String(err.message || err.error || "").toLowerCase();
+  // No status code usually means the request never reached Supabase: DNS,
+  // CORS preflight, offline, TLS handshake failure. Worth a retry.
+  return (
+    msg.includes("network") ||
+    msg.includes("fetch failed") ||
+    msg.includes("failed to fetch") ||
+    msg.includes("timeout") ||
+    msg.includes("econnreset") ||
+    msg.includes("socket hang up")
+  );
+}
+
+async function uploadSingleShot(args: {
+  file: File | Blob;
+  storagePath: string;
+  bucket: string;
+  contentType: string;
+  cacheControl: string;
+  upsert: boolean;
+  onProgress?: (percent: number) => void;
+  signal?: AbortSignal;
+}): Promise<void> {
+  const { file, storagePath, bucket, contentType, cacheControl, upsert, onProgress, signal } =
+    args;
+
+  let lastError: any = null;
+  for (let attempt = 1; attempt <= SMALL_UPLOAD_MAX_ATTEMPTS; attempt += 1) {
+    if (signal?.aborted) {
+      throw new DOMException("Aborted", "AbortError");
+    }
     onProgress?.(5);
     const { error } = await supabase.storage.from(bucket).upload(storagePath, file, {
       cacheControl,
       upsert,
-      contentType: resolvedContentType,
+      contentType,
     });
-    if (error) throw error;
-    onProgress?.(100);
+    if (!error) {
+      onProgress?.(100);
+      return;
+    }
+    lastError = error;
+    if (!isRetriableUploadError(error) || attempt === SMALL_UPLOAD_MAX_ATTEMPTS) {
+      throw error;
+    }
+    // Jittered exponential backoff: 500ms, 1.5s, 3.5s (caps at attempt 3).
+    const baseDelay = 500 * Math.pow(2, attempt - 1);
+    const jitter = Math.floor(Math.random() * 250);
+    const delay = baseDelay + jitter;
+    if (import.meta.env.DEV) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[uploadFileToStorage] single-shot retry ${attempt}/${SMALL_UPLOAD_MAX_ATTEMPTS} in ${delay}ms`,
+        error,
+      );
+    }
+    try {
+      await sleepWithAbort(delay, signal);
+    } catch (abortErr) {
+      throw abortErr;
+    }
   }
+  throw lastError;
+}
 
-  return finalizeUrls({ storagePath, bucket });
+function sleepWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException("Aborted", "AbortError"));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 async function finalizeUrls({
@@ -149,21 +258,48 @@ async function finalizeUrls({
 }): Promise<UploadFileResult> {
   let signedUrl: string | null = null;
   let publicUrl: string | null = null;
+  let lastSignedError: unknown = null;
 
-  try {
-    const { data, error } = await supabase.storage
-      .from(bucket)
-      .createSignedUrl(storagePath, 60 * 60 * 24 * 7);
-    if (!error && data?.signedUrl) signedUrl = data.signedUrl;
-  } catch {
-    // fall through to public URL
+  // Two attempts so a single transient signing blip doesn't poison the
+  // whole upload. The bytes are already in storage at this point.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const { data, error } = await supabase.storage
+        .from(bucket)
+        .createSignedUrl(storagePath, 60 * 60 * 24 * 7);
+      if (!error && data?.signedUrl) {
+        signedUrl = data.signedUrl;
+        break;
+      }
+      lastSignedError = error;
+    } catch (err) {
+      lastSignedError = err;
+    }
+    if (attempt === 0) await new Promise((r) => setTimeout(r, 400));
   }
 
   try {
     const { data } = supabase.storage.from(bucket).getPublicUrl(storagePath);
     publicUrl = data?.publicUrl || null;
   } catch {
-    // ignore
+    /* no public URL — relying on signed URL */
+  }
+
+  // Hard-fail when we can produce neither URL. Without this the pipeline
+  // would happily insert a vault note with `fileUrl: null`, which renders
+  // as `[View File]()` and an unopenable attachment chip — silent data
+  // loss from the user's POV. Throwing here lets `processOne` clean up
+  // the freshly-uploaded storage object and surface a real error.
+  if (!signedUrl && !publicUrl) {
+    const detail =
+      lastSignedError && typeof lastSignedError === "object" && "message" in lastSignedError
+        ? String((lastSignedError as { message: unknown }).message || "")
+        : "";
+    throw new Error(
+      detail
+        ? `upload_finalize_failed: could not mint URL for stored file (${detail})`
+        : "upload_finalize_failed: could not mint URL for stored file",
+    );
   }
 
   return { storagePath, bucket, signedUrl, publicUrl };

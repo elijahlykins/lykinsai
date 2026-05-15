@@ -26,7 +26,6 @@ import VaultConnectionsShell from "./pages/VaultConnectionsShell";
 import VaultChatNew from "./pages/new/VaultChatNew";
 import TagManagementNew from "./pages/new/TagManagementNew";
 import BillingNew from "./pages/new/BillingNew";
-import VaultUploadToast from "./components/files/VaultUploadToast";
 import GuestSignInPrompt from "./components/GuestSignInPrompt";
 import ShareReceiver from "./pages/ShareReceiver";
 import Onboarding from "./pages/Onboarding";
@@ -134,7 +133,13 @@ function AppShell() {
       {!isEmbeddedVault && !isStandalone && isMobile && <MobileTabBar />}
       {!isEmbeddedVault && !isStandalone && isMobile && <MobileExperienceNotice />}
       {!isEmbeddedVault && !isStandalone && user && <IntakeModal />}
-      {!isEmbeddedVault && !isSharedGridView && user && <VaultUploadToast />}
+      {/* The upload-progress toast was intentionally removed in favor of
+          the silent ghost-card pipeline — dropped/uploaded files appear
+          immediately in the vault grid via optimistic ghost cards
+          (`ghostCards` in `VaultNew.jsx`), and any failures are surfaced
+          via the global `toast()` notification raised from
+          `uploadPipeline.ts`. So there's no longer a persistent
+          upload-progress UI to render. */}
       {!isEmbeddedVault && !isStandalone && !user && <GuestSignInPrompt />}
       <div className={isStandalone ? "" : (isGuest ? "app-content guest-mode" : "app-content")}>
         <RouteErrorBoundary>

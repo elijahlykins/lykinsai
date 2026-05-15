@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/SupabaseAuth";
-import { PLAN_LIMITS, UPLOAD_RATE_LIMITS } from "@/lib/pricing-config";
+import { PLAN_LIMITS, UPLOAD_RATE_LIMITS, planLabel } from "@/lib/pricing-config";
 import { API_BASE_URL } from "@/lib/api-config";
 import { useUserPlan } from "@/lib/useUserPlan";
 import { VAULT_CAP_EVENT } from "@/lib/vault/vaultCapError";
@@ -77,18 +77,11 @@ export function useUsageGate() {
     const handler = (e) => {
       const detail = e?.detail || {};
       const limit = detail.limit || limitsRef.current.blocksPerGrid;
-      const planName = (() => {
-        const p = planRef.current;
-        if (p === "free") return "Free";
-        if (p === "studio") return "Studio";
-        if (p === "studio_pro") return "Studio Pro";
-        if (p === "studio_max") return "Studio Max";
-        return p;
-      })();
+      const planName = planLabel(planRef.current);
       setUpgradeModal({
         type: "blocks",
         title: "Grid is full",
-        description: `Your ${planName} plan caps each Grid at ${limit} blocks. Upgrade to Studio for unlimited blocks per Grid.`,
+        description: `Your ${planName} plan caps each Grid at ${limit} blocks. Upgrade to Pro for unlimited blocks per Grid.`,
       });
     };
     window.addEventListener(BLOCK_LIMIT_EVENT, handler);
@@ -101,17 +94,8 @@ export function useUsageGate() {
   // modal so the user isn't stuck with a silent failure.
   useEffect(() => {
     const handler = () => {
-      const plan = planRef.current;
       const limit = limitsRef.current.vaultCards;
-      const planName = plan === "free"
-        ? "Free"
-        : plan === "studio_pro"
-          ? "Studio Pro"
-          : plan === "studio_max"
-            ? "Studio Max"
-            : plan === "studio"
-              ? "Studio"
-              : plan;
+      const planName = planLabel(planRef.current);
       setUpgradeModal({
         type: "vault",
         title: "Vault limit reached",
@@ -134,15 +118,7 @@ export function useUsageGate() {
       const plan = planRef.current;
       const windowKind = e?.detail?.window || null;
       const caps = UPLOAD_RATE_LIMITS[plan] || UPLOAD_RATE_LIMITS.free;
-      const planName = plan === "free"
-        ? "Free"
-        : plan === "studio_pro"
-          ? "Studio Pro"
-          : plan === "studio_max"
-            ? "Studio Max"
-            : plan === "studio"
-              ? "Studio"
-              : plan;
+      const planName = planLabel(plan);
       const detail =
         windowKind === "minute"
           ? `Your ${planName} plan allows ${caps.perMinute} uploads per minute.`
@@ -179,16 +155,7 @@ export function useUsageGate() {
     setVaultCount(current);
 
     if (current >= limit) {
-      const plan = planRef.current;
-      const planName = plan === "free"
-        ? "Free"
-        : plan === "studio_pro"
-          ? "Studio Pro"
-          : plan === "studio_max"
-            ? "Studio Max"
-            : plan === "studio"
-              ? "Studio"
-              : plan;
+      const planName = planLabel(planRef.current);
       setUpgradeModal({
         type: "vault",
         title: "Vault limit reached",

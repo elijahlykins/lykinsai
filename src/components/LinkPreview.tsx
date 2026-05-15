@@ -1,5 +1,6 @@
-import React, { memo, useMemo, useState } from "react";
+import React, { memo, useEffect, useMemo, useState } from "react";
 import { ExternalLink, Globe } from "lucide-react";
+import { extractYouTubeVideoId } from "@/canvas/utils/youtube";
 
 export interface LinkPreviewProps {
   url: string;
@@ -22,44 +23,50 @@ export interface LinkPreviewProps {
   draggable?: boolean;
 }
 
-/**
- * A deliberately curated palette of two-stop gradients. Picked to be vibrant
- * but not clown-y — they read well under the translucent "glass" UI on both
- * light and dark backgrounds.
- */
-const GRADIENTS: Array<[string, string]> = [
-  ["#6366f1", "#a855f7"],
-  ["#0ea5e9", "#22d3ee"],
-  ["#f472b6", "#f97316"],
-  ["#10b981", "#0ea5e9"],
-  ["#8b5cf6", "#ec4899"],
-  ["#f59e0b", "#ef4444"],
-  ["#06b6d4", "#3b82f6"],
-  ["#84cc16", "#14b8a6"],
-  ["#d946ef", "#7c3aed"],
-  ["#0891b2", "#4f46e5"],
-  ["#be185d", "#7c3aed"],
-  ["#059669", "#65a30d"],
-  ["#f43f5e", "#8b5cf6"],
-  ["#2dd4bf", "#6366f1"],
-];
-
-/** Fast, stable FNV-1a hash. Same hostname always produces the same gradient. */
-function hashString(s: string): number {
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return h >>> 0;
-}
+// Minimum pixel size we'll accept before treating an image as a 1×1
+// placeholder / blocked tracker pixel and falling through to the next
+// candidate. Apple touch icons are typically 60–180px, Clearbit logos
+// 128px, Google's `sz=256` favicons 256px, so 24px is a comfortable
+// floor that excludes obvious junk without rejecting real (small) icons.
+const MIN_USABLE_IMAGE_PX = 24;
 
 function safeHostname(raw: string): string {
   try {
     return new URL(raw).hostname.replace(/^www\./, "");
   } catch {
-    return "";
+    // Bare-hostname inputs (e.g. legacy records storing "youtube.com")
+    // throw on `new URL` because they lack a scheme. Re-attempt with
+    // an https:// prefix so the logo cascade still has a host to query.
+    try {
+      return new URL(`https://${String(raw || "").trim()}`).hostname.replace(/^www\./, "");
+    } catch {
+      return "";
+    }
   }
+}
+
+/**
+ * Normalize a URL for use as an `<a href>`. Any link card persisted
+ * before the URL-normalization fix in the save-link flow can hold a
+ * bare hostname like `"youtube.com"`, which the browser would resolve
+ * relative to the current page (so a click would navigate to
+ * `https://app.lykn.ai/youtube.com` instead of YouTube). Re-normalize
+ * here as a safety net — it's a no-op for already-fully-qualified URLs.
+ */
+function normalizeHref(raw: string): string {
+  const trimmed = String(raw || "").trim();
+  if (!trimmed) return trimmed;
+  if (/^[a-z][a-z0-9+\-.]*:/i.test(trimmed)) return trimmed;
+  // Only upgrade to https:// when it actually looks like a host —
+  // never blindly prepend a scheme to arbitrary text.
+  if (
+    trimmed.includes(".") ||
+    /^localhost(:\d+)?(\/|$|\?|#)/i.test(trimmed) ||
+    /^\d{1,3}(\.\d{1,3}){3}(:\d+)?/.test(trimmed)
+  ) {
+    return `https://${trimmed}`;
+  }
+  return trimmed;
 }
 
 function monogramFor(host: string, fallback: string): string {
@@ -71,17 +78,34 @@ function monogramFor(host: string, fallback: string): string {
   return (base[0] || "?").toUpperCase();
 }
 
-function gradientFor(seed: string): { from: string; to: string; css: string } {
-  const idx = hashString(seed || "x") % GRADIENTS.length;
-  const [from, to] = GRADIENTS[idx];
-  // Slight angle variance per seed so adjacent tiles don't all mirror.
-  const angle = 115 + (hashString(seed + "angle") % 50); // 115° – 165°
-  return { from, to, css: `linear-gradient(${angle}deg, ${from}, ${to})` };
+/**
+ * Neutral white backdrop used by both the monogram fallback and the
+ * centered-logo fallback. Replaces the previous per-domain gradient
+ * because the rainbow of card colors made the grid feel busy and
+ * inconsistent — the user-facing requirement here is "just make the
+ * background color white". The dark-mode variant uses a faint
+ * translucent white so it picks up whatever surface sits behind it
+ * without slamming a pure-white tile into a dark UI.
+ */
+function NeutralBackdrop({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      className="relative w-full h-full overflow-hidden flex items-center justify-center bg-white dark:bg-white/[0.04]"
+      aria-hidden="true"
+    >
+      {children}
+    </div>
+  );
 }
 
 /**
- * The fallback hero used when there's no real OG image.
- * A seeded gradient with a large domain monogram, plus an optional favicon chip.
+ * The "last resort" fallback when there's no usable image OR logo.
+ * A clean white tile with the domain monogram and an optional favicon
+ * chip in the corner.
  */
 function MonogramHero({
   host,
@@ -92,46 +116,26 @@ function MonogramHero({
   favicon?: string;
   compact?: boolean;
 }) {
-  const grad = useMemo(() => gradientFor(host), [host]);
   const letter = useMemo(() => monogramFor(host, ""), [host]);
   const [faviconOk, setFaviconOk] = useState(Boolean(favicon));
-  // Google's S2 favicon service is a reliable fallback even when a site doesn't
-  // expose an icon in its HTML. 128px renders crisp on retina.
   const googleFavicon = host
     ? `https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=128`
     : "";
   const effectiveFavicon = favicon || googleFavicon;
 
   return (
-    <div
-      className="relative w-full h-full overflow-hidden flex items-center justify-center"
-      style={{ background: grad.css }}
-      aria-hidden="true"
-    >
-      {/* Soft radial sheen for depth */}
+    <NeutralBackdrop>
       <div
-        className="absolute inset-0 pointer-events-none"
-        style={{
-          background:
-            "radial-gradient(120% 80% at 20% 15%, rgba(255,255,255,0.28), transparent 55%), radial-gradient(100% 70% at 85% 90%, rgba(0,0,0,0.22), transparent 60%)",
-        }}
-      />
-      {/* Subtle grid texture, very faint */}
-      <div
-        className="absolute inset-0 opacity-[0.08] pointer-events-none"
-        style={{
-          backgroundImage:
-            "linear-gradient(rgba(255,255,255,0.6) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.6) 1px, transparent 1px)",
-          backgroundSize: "24px 24px",
-        }}
-      />
-      <div
-        className="relative font-semibold text-white select-none"
+        // The letter is now muted instead of white-on-gradient — the
+        // tile reads as "no preview available" placeholder rather than
+        // a hero element. text-black/25 (and white/25 in dark mode)
+        // sits comfortably on the new neutral backdrop without
+        // demanding attention.
+        className="relative font-semibold text-black/25 dark:text-white/25 select-none"
         style={{
           fontSize: compact ? "clamp(2.25rem, 28%, 4rem)" : "clamp(3rem, 38%, 7rem)",
           lineHeight: 1,
           letterSpacing: "-0.04em",
-          textShadow: "0 2px 20px rgba(0,0,0,0.18)",
           fontFamily:
             '"Playfair Display", Georgia, "Iowan Old Style", "Times New Roman", serif',
         }}
@@ -139,9 +143,7 @@ function MonogramHero({
         {letter}
       </div>
       {effectiveFavicon && faviconOk && (
-        <div
-          className="absolute bottom-2.5 right-2.5 w-8 h-8 rounded-lg bg-white/90 backdrop-blur-sm flex items-center justify-center shadow-md ring-1 ring-black/5"
-        >
+        <div className="absolute bottom-2.5 right-2.5 w-8 h-8 rounded-lg bg-white/90 dark:bg-white/15 backdrop-blur-sm flex items-center justify-center shadow-sm ring-1 ring-black/5 dark:ring-white/10">
           <img
             src={effectiveFavicon}
             alt=""
@@ -151,7 +153,40 @@ function MonogramHero({
           />
         </div>
       )}
-    </div>
+    </NeutralBackdrop>
+  );
+}
+
+/**
+ * Mid-tier fallback used when we couldn't find a proper hero image but
+ * we DID find a high-resolution logo (apple-touch-icon, Clearbit, etc.).
+ * The previous version wrapped the logo in a white plate to protect it
+ * from a colored gradient — now that the backdrop itself is white, the
+ * plate is redundant, so the logo just sits centered on the clean tile.
+ */
+function LogoHero({
+  src,
+  onError,
+}: {
+  src: string;
+  onError: () => void;
+}) {
+  return (
+    <NeutralBackdrop>
+      <img
+        src={src}
+        alt=""
+        className="w-[55%] aspect-square max-w-[160px] object-contain"
+        draggable={false}
+        loading="lazy"
+        onLoad={(e) => {
+          const w = e.currentTarget.naturalWidth;
+          const h = e.currentTarget.naturalHeight;
+          if (w < MIN_USABLE_IMAGE_PX || h < MIN_USABLE_IMAGE_PX) onError();
+        }}
+        onError={onError}
+      />
+    </NeutralBackdrop>
   );
 }
 
@@ -230,15 +265,15 @@ export const LinkPreview = memo(function LinkPreview({
       className={`block w-full h-full rounded-2xl overflow-hidden border border-white/40 dark:border-white/15 bg-white/30 dark:bg-white/5 backdrop-blur-md hover:bg-white/40 dark:hover:bg-white/10 transition-colors group/bm flex flex-col ${className}`}
       draggable={draggable}
     >
-      {hasImage ? (
-        <div className={heroClass}>
-          <HeroImage src={image as string} host={host} favicon={favicon} />
-        </div>
-      ) : (
-        <div className={heroClass}>
-          <MonogramHero host={host} favicon={favicon} compact={variant === "canvas"} />
-        </div>
-      )}
+      <div className={heroClass}>
+        <SmartCover
+          url={url}
+          host={host}
+          initialSrc={hasImage ? (image as string) : ""}
+          favicon={favicon}
+          compact={variant === "canvas"}
+        />
+      </div>
       <div className="p-3.5 space-y-1.5 shrink-0">
         <div className="flex items-center gap-1.5 text-black/50 dark:text-white/50">
           <FaviconOrGlobe favicon={favicon} host={host} />
@@ -258,29 +293,129 @@ export const LinkPreview = memo(function LinkPreview({
   );
 });
 
-function HeroImage({
-  src,
+/**
+ * "Dig harder" cover. Walks an ordered cascade of image candidates,
+ * advancing on `onError` (and on suspiciously tiny `naturalWidth` /
+ * `naturalHeight` for the hero phase, which catches 1×1 tracker pixels
+ * and "image not available" placeholders). Falls through:
+ *
+ *   1. Hero phase  – full-bleed, `object-cover`. Tries:
+ *        a. Provided OG image (best quality, hand-picked by site)
+ *        b. YouTube `maxresdefault` (1280×720 — only for youtube URLs)
+ *        c. YouTube `hqdefault`     (480×360 — exists for almost every
+ *           video including ones without maxres)
+ *
+ *   2. Logo phase – centered logo plate on the brand gradient. Tries:
+ *        a. `/apple-touch-icon.png` (180×180 spec, exists on most sites)
+ *        b. `/apple-touch-icon-precomposed.png` (legacy iOS variant)
+ *        c. Clearbit's logo CDN (`logo.clearbit.com`, 128px square)
+ *        d. Google's S2 favicon service at sz=256
+ *
+ *   3. Monogram – the original gradient + letter, but now genuinely a
+ *      last resort instead of the first fallback.
+ *
+ * Every candidate is a plain `<img>` load — no fetch, no CORS dance —
+ * so the cost of a missed candidate is one HEAD-equivalent request and
+ * one re-render. Candidates 2a-2d in particular cover the long tail of
+ * sites that don't bother with og:image but DO ship a proper touch
+ * icon (almost every modern marketing site).
+ */
+function SmartCover({
+  url,
   host,
+  initialSrc,
   favicon,
+  compact,
 }: {
-  src: string;
+  url: string;
   host: string;
+  initialSrc: string;
   favicon?: string;
+  compact?: boolean;
 }) {
-  const [errored, setErrored] = useState(false);
-  if (errored) {
-    return <MonogramHero host={host} favicon={favicon} />;
+  const heroCandidates = useMemo(() => {
+    const list: string[] = [];
+    if (initialSrc) list.push(initialSrc);
+    const ytId = extractYouTubeVideoId(url);
+    if (ytId) {
+      list.push(`https://i.ytimg.com/vi/${ytId}/maxresdefault.jpg`);
+      list.push(`https://i.ytimg.com/vi/${ytId}/hqdefault.jpg`);
+    }
+    return list;
+  }, [initialSrc, url]);
+
+  const logoCandidates = useMemo(() => {
+    if (!host) return [] as string[];
+    return [
+      `https://${host}/apple-touch-icon.png`,
+      `https://${host}/apple-touch-icon-precomposed.png`,
+      `https://logo.clearbit.com/${host}`,
+      `https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=256`,
+    ];
+  }, [host]);
+
+  type Phase = "hero" | "logo" | "monogram";
+  const [phase, setPhase] = useState<Phase>(heroCandidates.length > 0 ? "hero" : "logo");
+  const [heroIdx, setHeroIdx] = useState(0);
+  const [logoIdx, setLogoIdx] = useState(0);
+
+  // Reset the cascade when inputs change (e.g. card re-used for a
+  // different URL after a search result).
+  useEffect(() => {
+    setHeroIdx(0);
+    setLogoIdx(0);
+    setPhase(heroCandidates.length > 0 ? "hero" : logoCandidates.length > 0 ? "logo" : "monogram");
+  }, [heroCandidates, logoCandidates]);
+
+  const advanceHero = () => {
+    if (heroIdx + 1 < heroCandidates.length) {
+      setHeroIdx(heroIdx + 1);
+    } else if (logoCandidates.length > 0) {
+      setPhase("logo");
+    } else {
+      setPhase("monogram");
+    }
+  };
+
+  const advanceLogo = () => {
+    if (logoIdx + 1 < logoCandidates.length) {
+      setLogoIdx(logoIdx + 1);
+    } else {
+      setPhase("monogram");
+    }
+  };
+
+  if (phase === "hero" && heroCandidates[heroIdx]) {
+    const src = heroCandidates[heroIdx];
+    return (
+      <img
+        // `key` ensures React remounts the <img> on src change, which
+        // matters because some browsers fire `onError` for the previous
+        // src on the same element when the new src is set rapidly.
+        key={`hero-${heroIdx}-${src}`}
+        src={src}
+        alt=""
+        className="w-full h-full object-cover group-hover/bm:scale-[1.03] transition-transform duration-300"
+        loading="lazy"
+        draggable={false}
+        onLoad={(e) => {
+          const w = e.currentTarget.naturalWidth;
+          const h = e.currentTarget.naturalHeight;
+          if (w < MIN_USABLE_IMAGE_PX || h < MIN_USABLE_IMAGE_PX) advanceHero();
+        }}
+        onError={advanceHero}
+      />
+    );
   }
-  return (
-    <img
-      src={src}
-      alt=""
-      className="w-full h-full object-cover group-hover/bm:scale-[1.03] transition-transform duration-300"
-      loading="lazy"
-      draggable={false}
-      onError={() => setErrored(true)}
-    />
-  );
+
+  if (phase === "logo" && logoCandidates[logoIdx]) {
+    const src = logoCandidates[logoIdx];
+    return (
+      <LogoHero key={`logo-${logoIdx}-${src}`} src={src} onError={advanceLogo} />
+    );
+  }
+
+  return <MonogramHero host={host} favicon={favicon} compact={compact} />;
 }
 
 function FaviconOrGlobe({ favicon, host }: { favicon?: string; host: string }) {
@@ -330,14 +465,17 @@ function Shell({
       </button>
     );
   }
+  // Re-normalize the href so legacy bare-hostname records ("youtube.com")
+  // don't navigate to a relative path on the current origin.
+  const safeHref = normalizeHref(url);
   return (
     <a
-      href={url}
+      href={safeHref}
       target="_blank"
       rel="noreferrer"
       className={className}
       draggable={draggable}
-      title={url}
+      title={safeHref}
     >
       {children}
     </a>

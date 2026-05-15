@@ -14,7 +14,6 @@ import {
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Progress } from "@/components/ui/progress";
 import { useVaultUploadStore } from "@/store/vaultUploadStore";
 import { formatBytes } from "@/lib/vault/compressMedia";
 
@@ -195,8 +194,6 @@ export default function VaultUploadToast() {
               )}
             </div>
           </div>
-
-          <Progress value={upload.progress} className="h-2" />
 
           {upload.error && (
             <p className="text-xs text-red-500 mt-1">{upload.error}</p>

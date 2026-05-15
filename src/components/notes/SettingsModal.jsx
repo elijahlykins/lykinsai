@@ -13,6 +13,7 @@ import { useNavigate } from 'react-router-dom';
 import { useUserPlan } from '@/lib/useUserPlan';
 import { isModelAllowedForPlan, canonicalizeModelId, defaultModelForTier } from '@/lib/modelTiers';
 import { planMeets } from '@/components/PlanGate';
+import { planLabel } from '@/lib/pricing-config';
 import { API_BASE_URL } from '@/lib/api-config';
 
 export default function SettingsModal({ isOpen, onClose }) {
@@ -40,8 +41,8 @@ export default function SettingsModal({ isOpen, onClose }) {
       setPortalBusy(false);
     }
   }, [portalBusy]);
-  // Custom AI instructions are a Studio-tier feature. Free / guest users see
-  // the textarea disabled with an upgrade CTA instead.
+  // Custom AI instructions are a Pro-tier (id: studio) feature. Free / guest
+  // users see the textarea disabled with an upgrade CTA instead.
   const canUseCustomPrompt = planMeets(planId, "studio");
   const [settings, setSettings] = useState({
     theme: 'dark',
@@ -288,15 +289,7 @@ export default function SettingsModal({ isOpen, onClose }) {
                     Subscription
                   </p>
                   <p className="text-sm text-gray-600 dark:text-gray-400 truncate">
-                    {planId === "free"
-                      ? "You're on Free"
-                      : planId === "studio"
-                        ? "You're on Studio"
-                        : planId === "studio_pro"
-                          ? "You're on Studio Pro"
-                          : planId === "studio_max"
-                            ? "You're on Studio Max"
-                            : `Plan: ${planId}`}
+                    {`You're on ${planLabel(planId)}`}
                   </p>
                 </div>
               </div>
@@ -331,7 +324,7 @@ export default function SettingsModal({ isOpen, onClose }) {
             </div>
           )}
 
-          {/* Custom User Prompt (Studio+) */}
+          {/* Custom User Prompt (Pro+) */}
           <div className="p-4 bg-gray-50 dark:bg-[#1f1d1d]/80 rounded-xl border border-gray-200 dark:border-gray-700 relative">
             <div className="flex items-center gap-3 mb-3">
               <div className="w-10 h-10 rounded-full bg-gray-200 dark:bg-gray-700 flex items-center justify-center">
@@ -340,12 +333,12 @@ export default function SettingsModal({ isOpen, onClose }) {
               <div className="flex-1">
                 <p className="font-semibold text-black dark:text-white flex items-center gap-1.5">
                   Personal AI Instructions
-                  {!canUseCustomPrompt && <Lock className="w-3.5 h-3.5 text-amber-500 dark:text-amber-400" aria-label="Studio-only feature" />}
+                  {!canUseCustomPrompt && <Lock className="w-3.5 h-3.5 text-amber-500 dark:text-amber-400" aria-label="Pro-only feature" />}
                 </p>
                 <p className="text-sm text-gray-600 dark:text-gray-400">
                   {canUseCustomPrompt
                     ? "Tell the AI about yourself and how you want it to respond"
-                    : "Customize how the AI responds to you — available on Studio and above."}
+                    : "Customize how the AI responds to you — available on Pro and above."}
                 </p>
               </div>
             </div>
@@ -355,7 +348,7 @@ export default function SettingsModal({ isOpen, onClose }) {
               readOnly={!canUseCustomPrompt}
               placeholder={canUseCustomPrompt
                 ? "e.g. I'm a software developer. Always respond in concise bullet points. I prefer technical explanations over simplified ones."
-                : "Upgrade to Studio to personalize every AI response."}
+                : "Upgrade to Pro to personalize every AI response."}
               className={`w-full h-28 px-3 py-2 text-sm bg-white dark:bg-[#171515] border border-gray-200 dark:border-gray-700 text-black dark:text-white rounded-lg resize-none focus:outline-none focus:ring-1 focus:ring-black/20 dark:focus:ring-white/20 ${!canUseCustomPrompt ? 'opacity-60 cursor-not-allowed' : ''}`}
             />
             {canUseCustomPrompt ? (
@@ -369,7 +362,7 @@ export default function SettingsModal({ isOpen, onClose }) {
                 className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold text-blue-600 dark:text-blue-400 hover:underline"
               >
                 <Sparkles className="w-3 h-3" />
-                Upgrade to Studio
+                Upgrade to Pro
               </button>
             )}
           </div>

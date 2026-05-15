@@ -5,6 +5,7 @@ import { supabase } from "@/lib/supabase";
 import { API_BASE_URL } from "@/lib/api-config";
 import { CONNECTORS } from "@/lib/connectors/catalog";
 import { OUTBOUND_TARGETS, aliasClientKindForCatalog } from "@/lib/connectors/outboundTargets";
+import lyknIconUrl from "@/assets/FINAL/LYKN-ICON-A-Squircle/PNGs/LYKN-Icon-A-Squircle-BLUE-master.png";
 
 // Floating macOS-style dock at the bottom-center of the Vault page.
 //
@@ -29,13 +30,11 @@ export default function VaultAppDock({ user }) {
   const { pathname } = useLocation();
   const [connections, setConnections] = useState([]);
   const [tokens, setTokens] = useState([]);
-  const [loaded, setLoaded] = useState(false);
 
   const refresh = useCallback(async () => {
     if (!user) {
       setConnections([]);
       setTokens([]);
-      setLoaded(true);
       return;
     }
     try {
@@ -52,9 +51,9 @@ export default function VaultAppDock({ user }) {
         setTokens(Array.isArray(data?.tokens) ? data.tokens : []);
       }
     } catch {
-      // Silent — empty dock is acceptable degradation.
-    } finally {
-      setLoaded(true);
+      // Silent — the dock keeps the LYKN anchor + whatever previous
+      // connection state we already had. A transient fetch failure
+      // shouldn't blank the launcher.
     }
   }, [user]);
 
@@ -137,7 +136,10 @@ export default function VaultAppDock({ user }) {
     return [...aiTiles, ...inputTiles];
   }, [tokens, connections]);
 
-  if (!loaded) return null;
+  // Skip waiting on the fetch before painting — the LYKN tile is the
+  // permanent anchor of the dock and is available to click while the
+  // connections + tokens lists are still loading. Showing the dock
+  // immediately also avoids a layout flash where it pops in late.
 
   const handleLaunch = (tile) => {
     // reauth tiles route to /connections to reconnect rather than
@@ -157,40 +159,84 @@ export default function VaultAppDock({ user }) {
   return (
     <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[65] pointer-events-none">
       <div className="pointer-events-auto">
-        {tiles.length === 0 ? (
+        <div className="flex items-end gap-1.5 px-2 py-2 rounded-2xl glass-control shadow-lg">
+          {/* LYKN home — always at the leading edge, always available.
+              Routes to the chat surface (/app) which is the canonical
+              "open LYKN" destination. Rendered with the same white-card
+              shell as the connected-app DockIcons so it reads as "the
+              first app in the row" rather than a special anchor. */}
+          <LyknDockTile onClick={() => navigate("/app")} />
+
+          {tiles.map((tile) => (
+            <DockIcon
+              key={tile.key}
+              domain={tile.domain}
+              name={tile.name}
+              meta={tile.meta}
+              needsAttention={tile.needsAttention}
+              onClick={() => handleLaunch(tile)}
+            />
+          ))}
           <button
             type="button"
             onClick={() => navigate("/connections")}
-            className="flex items-center gap-2 px-4 py-2 rounded-full glass-control hover:bg-black/[0.04] dark:hover:bg-white/[0.04] text-[12px] font-medium text-black/70 dark:text-white/75 shadow-sm transition-colors"
+            title={tiles.length > 0 ? "Connect another app" : "Connect an app"}
+            className="ml-1 h-12 w-12 rounded-xl flex items-center justify-center text-black/45 dark:text-white/45 hover:text-black/80 dark:hover:text-white/80 hover:bg-black/[0.05] dark:hover:bg-white/[0.05] transition-colors"
           >
-            <Plug className="w-3.5 h-3.5" />
-            Connect an app
+            <Plug className="w-4 h-4" />
+            <span className="sr-only">
+              {tiles.length > 0 ? "Connect another app" : "Connect an app"}
+            </span>
           </button>
-        ) : (
-          <div className="flex items-end gap-1.5 px-2 py-2 rounded-2xl glass-control shadow-lg">
-            {tiles.map((tile) => (
-              <DockIcon
-                key={tile.key}
-                domain={tile.domain}
-                name={tile.name}
-                meta={tile.meta}
-                needsAttention={tile.needsAttention}
-                onClick={() => handleLaunch(tile)}
-              />
-            ))}
-            <button
-              type="button"
-              onClick={() => navigate("/connections")}
-              title="Connect another app"
-              className="ml-1 h-12 w-12 rounded-xl flex items-center justify-center text-black/45 dark:text-white/45 hover:text-black/80 dark:hover:text-white/80 hover:bg-black/[0.05] dark:hover:bg-white/[0.05] transition-colors"
-            >
-              <Plug className="w-4 h-4" />
-              <span className="sr-only">Connect another app</span>
-            </button>
-          </div>
-        )}
+        </div>
       </div>
     </div>
+  );
+}
+
+// ─── LyknDockTile ──────────────────────────────────────────────────────────
+// The permanent LYKN anchor at the leading edge of the dock. Mirrors the
+// DockIcon container exactly (white rounded-square card, ring, shadow,
+// hover lift, tooltip) so the LYKN tile reads as "the first icon in the
+// row" rather than a special-case anchor. The BLUE squircle PNG is
+// rendered at the same 32px favicon size DockFavicon uses for connected
+// apps, keeping the visual rhythm consistent across the whole dock.
+function LyknDockTile({ onClick }) {
+  const [hovered, setHovered] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onFocus={() => setHovered(true)}
+      onBlur={() => setHovered(false)}
+      title="Open LYKN"
+      className="relative h-12 w-12 rounded-xl flex items-center justify-center bg-white dark:bg-white/95 ring-1 ring-black/[0.06] shadow-sm overflow-hidden transition-transform hover:scale-110 hover:-translate-y-1 touch-manipulation"
+    >
+      {/* The squircle PNG already bakes its own padding around the
+          LYKN mark, so rendering at 32px (the DockFavicon canvas size)
+          made the visible mark read smaller than Claude/Cursor
+          favicons next to it — those ship as full-bleed glyphs with
+          no internal padding. Bumping the LYKN render box to 44px
+          inside the 48px tile cancels out the squircle's padding so
+          the optical weight of the glyph matches the rest of the row. */}
+      <img
+        src={lyknIconUrl}
+        alt="LYKN"
+        width={44}
+        height={44}
+        className="block object-contain"
+        style={{ width: 48, height: 48 }}
+        draggable={false}
+      />
+      {hovered && (
+        <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 whitespace-nowrap px-2.5 py-1 rounded-md bg-black/85 dark:bg-white/95 text-white dark:text-black text-[10.5px] font-medium shadow-md pointer-events-none">
+          <div>LYKN</div>
+          <div className="text-[9.5px] opacity-70">Open chat</div>
+        </div>
+      )}
+    </button>
   );
 }
 

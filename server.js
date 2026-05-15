@@ -251,6 +251,12 @@ function needsWebSearch(text, opts = {}) {
 const GREETING_PATTERN = /^(hi|hello|hey|yo|sup|good\s+(morning|afternoon|evening)|thanks|thank\s*you|ok(ay)?|sure|yes|no|yep|nope|got\s*it|cool|nice|great|awesome|perfect|sounds?\s*good|never\s*mind|nvm|lol|haha|hmm+|wow|bye|gn|gm)\b/i;
 const LAYOUT_COMMAND_PATTERN = /\b(move|resize|arrange|organize|sort|align|group|ungroup|stack|tile|spread|grid|snap|place|position|reorder|swap|flip|rotate|duplicate|delete|remove|clear|undo|redo)\s+(the\s+)?(block|brick|card|item|image|element|box|note)s?\b/i;
 const BOARD_ACTION_PATTERN = /\b(make\s+(it|this|that)\s+(bigger|smaller|larger|red|blue|green|bold|italic)|change\s+(the\s+)?(color|size|font|title|name)|rename|set\s+(the\s+)?title)\b/i;
+// Questions about the AI itself ("what do you do", "who are you", "what is
+// this", "what can you do", "explain yourself", etc.) are answered entirely
+// from the system persona — no user-model / synthesis / belief lookups can
+// help. Treat them as 'none' so they don't pay the multi-second enrichment
+// tax that a chatty "what do you do?" was incurring.
+const AI_IDENTITY_QUERY_PATTERN = /^(?:so\s+|hey\s*,?\s*|hi\s*,?\s*|hello\s*,?\s*|ok(?:ay)?\s*,?\s*|um\s*,?\s*|wait\s*,?\s*)?(?:what(?:'s| is| are) (?:this|that|lykn|you|your (?:job|role|purpose|deal|thing))|what(?:'s| is| are) (?:your )?(?:purpose|point|goal)|what (?:do|can|could|would) you (?:do|help|offer|provide|make|build|handle)|who (?:are|r) (?:you|u)|who(?:'s| is) this|tell me (?:about|who) (?:you|yourself|this|lykn)|describe (?:yourself|this|lykn)|explain (?:yourself|this|lykn|what (?:you|this) (?:do|is|are))|how (?:do|does) (?:you|this|lykn) work|why should i (?:use|care)|what (?:can|could) (?:this|lykn|you) do|how (?:can|do) you help|what (?:is|are) (?:lykn|you)\b)/i;
 const SHORT_REPLY_MAX_WORDS = 5;
 
 function classifyEnrichment(text, opts = {}) {
@@ -260,6 +266,7 @@ function classifyEnrichment(text, opts = {}) {
   if (GREETING_PATTERN.test(t)) return 'none';
   if (LAYOUT_COMMAND_PATTERN.test(t)) return 'none';
   if (BOARD_ACTION_PATTERN.test(t)) return 'none';
+  if (AI_IDENTITY_QUERY_PATTERN.test(t)) return 'none';
   if (WORKSPACE_SCOPED_PATTERNS.test(t)) return 'light';
   const wordCount = t.split(/\s+/).length;
   if (wordCount <= SHORT_REPLY_MAX_WORDS && !t.includes('?') && !/\b(what|how|why|where|when|who|which|explain|describe|tell|find|search|show|compare)\b/i.test(t)) return 'none';
@@ -423,55 +430,88 @@ async function runYouTubeSearchIfNeeded(text) {
   }
 }
 
-// ✅ MANUAL CORS (bypasses any cors package issues)
-// Allow requests from localhost (development), Vercel (frontend), and Render
+// ✅ MANUAL CORS — strict allowlist
+//
+// We previously *reflected* unknown origins back into
+// `Access-Control-Allow-Origin` while also setting
+// `Allow-Credentials: true`. Bearer-token auth (we don't use cookies for
+// API auth) keeps the practical CSRF risk low, but reflecting arbitrary
+// origins is still a hardening miss: it broadens the set of pages that
+// can read API responses against the user's session, and it confuses
+// real-world security tooling/audits.
+//
+// New behavior:
+//   1. Exact-match the origin against `ALLOWED_ORIGINS` env (or the
+//      built-in defaults below).
+//   2. Allow any `localhost` / `127.0.0.1` origin for dev.
+//   3. Allow `*.vercel.app` preview origins (we deploy previews there).
+//   4. For any other origin: do NOT set `Access-Control-Allow-Origin`.
+//      The browser will then refuse the cross-origin request, which is
+//      exactly what we want.
+//   5. Same-origin / no-Origin requests (curl, server-side, internal
+//      health checks) get no CORS header — they don't need one.
+const STATIC_ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean)
+  : [
+      'http://localhost:5173',
+      'http://localhost:5174',
+      'http://localhost:5175',
+      'https://lykn.io',
+      'https://www.lykn.io',
+      'https://lykn-ideation.onrender.com',
+      'https://www.lykn-ideation.onrender.com',
+    ];
+
+function isOriginAllowed(origin) {
+  if (!origin) return false;
+  if (STATIC_ALLOWED_ORIGINS.includes(origin)) return true;
+  // Dev-only loopback escape hatch — picks up Vite's automatic port
+  // bumping (5174, 5175, …) without needing to keep STATIC_ALLOWED_ORIGINS
+  // in sync. Origins must be exact protocol+host+port matches; we don't
+  // try to be clever about "localhost" vs "127.0.0.1".
+  if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
+    return true;
+  }
+  // Vercel preview deployments. We require the origin to actually END in
+  // `.vercel.app` (not just contain it) to defeat the trivial
+  // `https://attacker.com/.vercel.app` or `https://evil.vercel.app.bad`
+  // bypasses the previous `.includes()` check would have allowed.
+  try {
+    const url = new URL(origin);
+    if (url.protocol === 'https:' && url.hostname.endsWith('.vercel.app')) {
+      return true;
+    }
+  } catch {
+    /* malformed origin — deny */
+  }
+  return false;
+}
+
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  
-  // Get allowed origins from environment or use defaults
-  const allowedOriginsEnv = process.env.ALLOWED_ORIGINS;
-  const allowedOrigins = allowedOriginsEnv 
-    ? allowedOriginsEnv.split(',').map(o => o.trim())
-    : [
-        'http://localhost:5173',
-        'http://localhost:5174',
-        'http://localhost:5175',
-        'https://lykn.io',
-        'https://www.lykn.io',
-        'https://lykn-ideation.onrender.com',
-        'https://www.lykn-ideation.onrender.com'
-      ];
-  
-  // Allow requests from allowed origins
-  if (origin) {
-    // Check exact match
-    if (allowedOrigins.includes(origin)) {
-      res.header('Access-Control-Allow-Origin', origin);
-    }
-  // Allow any localhost port for development
-    else if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
+
+  if (origin && isOriginAllowed(origin)) {
     res.header('Access-Control-Allow-Origin', origin);
+    res.header('Vary', 'Origin');
+  } else if (origin) {
+    // Disallowed cross-origin caller. We deliberately do NOT echo the
+    // origin or fall back to `*` — the browser will block the response,
+    // which is the correct outcome. We log once so legitimate domains
+    // we forgot to allowlist surface during ops review.
+    if (process.env.NODE_ENV !== 'production') {
+      console.warn(`🔒 CORS: blocked origin ${origin} on ${req.method} ${req.path}`);
     }
-    // Allow Vercel preview deployments (vercel.app domain)
-    else if (origin.includes('.vercel.app')) {
-      res.header('Access-Control-Allow-Origin', origin);
-    }
-    // Fallback: use FRONTEND_URL env var or allow the origin
-    else {
-      res.header('Access-Control-Allow-Origin', process.env.FRONTEND_URL || origin);
-    }
-  } else {
-    // No origin header (e.g., same-origin request)
-    res.header('Access-Control-Allow-Origin', process.env.FRONTEND_URL || '*');
   }
-  
+  // No-origin requests (same-origin, curl, server-to-server) get no
+  // CORS header — they don't need one and don't trigger preflight.
+
   res.header('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   res.header('Access-Control-Expose-Headers', 'X-Model-Downgraded, X-Plan, X-Feature-Stripped');
   res.header('Access-Control-Allow-Credentials', 'true');
-  
+
   if (req.method === 'OPTIONS') {
-    return res.status(204).end(); // Handle preflight
+    return res.status(204).end();
   }
   next();
 });
@@ -734,12 +774,56 @@ function memCache(namespace, { maxSize = 256, ttlMs = 30 * 60 * 1000 } = {}) {
 }
 
 // ============================================
+// STALE-SURFACE SANITIZER
+// ----------------------------------------
+// The grid / board / canvas / bricks surface no longer exists, but
+// stored data (ai_conversation_memory rows, lykn_user_synthesis_profile
+// narratives, synthesis-embedding snippets, etc.) was written when it
+// did. Sentences like "you organized your grid" or "we added a brick"
+// in [CONVERSATION_MEMORY] / [USER_MODEL] / [SYNTHESIS_RETRIEVAL] cause
+// the live AI to mirror that language back at the user. We scrub the
+// most obvious surface mentions before they reach the model.
+//
+// This is intentionally narrow — we don't rewrite all grammar, just
+// drop sentences that are exclusively about the dead surface and
+// replace inline phrases that refer to it. Anything ambiguous is left
+// alone; the system-prompt MEMORY HYGIENE block tells the model to
+// translate any remaining mentions silently.
+// ============================================
+const STALE_SURFACE_SENTENCE_RE = /(^|[\n.!?]\s+)([^\n.!?]*\b(?:grid|board|canvas|brick|wire(?:d|s)?|block(?:s)?)\b[^\n.!?]*?(?:[.!?](?=\s|$)|\n|$))/gi;
+const STALE_SURFACE_INLINE_RE = /\b(?:on (?:the |your |our |my |this |that )?(?:grid|board|canvas)|onto (?:the |your |our |my )?(?:grid|board|canvas)|in (?:the |your |our |my )?(?:grid|board|canvas)|to (?:the |your |our |my )?(?:grid|board|canvas)|the (?:current |active )?(?:grid|board|canvas)|your (?:grid|board|canvas)|our (?:grid|board|canvas)|my (?:grid|board|canvas))\b/gi;
+// Words that, when paired with grid-surface language, make a sentence
+// almost certainly an old-surface operation we want to drop entirely
+// rather than partially rewrite.
+const STALE_SURFACE_OP_VERBS = /\b(?:created|added|placed|put|dropped|moved|arranged|organized|resized|deleted|cleared|connected|wired|linked|embedded|pulled|tagged|coloured|colored)\b/i;
+
+function sanitizeStaleSurfaceLanguage(text) {
+  if (!text || typeof text !== 'string') return text || '';
+  const before = text;
+  let out = text;
+  // 1) Drop sentences that are clearly grid operations.
+  out = out.replace(STALE_SURFACE_SENTENCE_RE, (match, lead, sentence) => {
+    if (STALE_SURFACE_OP_VERBS.test(sentence)) return lead || '';
+    return match;
+  });
+  // 2) Replace inline references like "on your grid" with neutral phrasing
+  //    so the surrounding sentence still parses but no longer mentions a
+  //    surface the user can't see.
+  out = out.replace(STALE_SURFACE_INLINE_RE, 'in chat');
+  if (out !== before && out.length < before.length * 0.3) {
+    // Filter ate too much; safer to keep the original.
+    return before;
+  }
+  return out;
+}
+
+// ============================================
 // UTILITY — split assembled prompt into system + user for provider caching
 // ============================================
 const PROMPT_SECTION_MARKERS = [
   '[USER_PREFERENCES]', '[INTENT]', '[CONVERSATION]', '[CONVERSATION_MEMORY',
   '[WORKSPACE_CONTEXT]', '[REQUEST_CONTEXT]', '[FULL_CONTEXT]',
-  '[PROJECT_KNOWLEDGE]', '[PROJECT_ID]', '[BOARD_CONTEXT]', '[CONTEXT]',
+  '[PROJECT_KNOWLEDGE]', '[PROJECT_ID]', '[CONTEXT]',
   '[ATTACHED_IMAGES]', '[LATEST_USER_MESSAGE]', '[USER]',
 ];
 
@@ -1073,7 +1157,7 @@ async function fetchSynthesisRetrievalSection(authHeader, queryText, userId = nu
     const lines = [
       '[SYNTHESIS_RETRIEVAL]',
       'Semantically matched snippets from this user\'s embedded workspace index (vector search). May be empty for new accounts.',
-      'Use when relevant to the latest user message. Prefer live [BOARD_CONTEXT]/[CONTEXT], [WORKSPACE_CONTEXT], and [CONVERSATION] for current session facts.',
+      'Use when relevant to the latest user message. Prefer live [CONTEXT], [WORKSPACE_CONTEXT], and [CONVERSATION] for current session facts.',
       '',
     ];
     for (let i = 0; i < rows.length; i++) {
@@ -1246,18 +1330,53 @@ async function replaceSynthesisChunks(userId, authHeader, sourceType, sourceId, 
     metadata: { ...baseMeta, chunk_index },
   }));
 
-  if (supabaseAdmin) {
-    await deleteSynthesisChunksForSource(supabaseAdmin, userId, sourceType, sourceId);
-    const { error: insErr } = await supabaseAdmin.from('lykn_synthesis_chunks').insert(rows);
-    if (insErr) throw new Error(insErr.message);
-    return rows.length;
+  // Idempotent replace: upsert on the unique constraint
+  // (user_id, source_type, source_id, chunk_index), then delete any
+  // leftover rows with `chunk_index >= rows.length` (cleanup of shrunk
+  // sources).
+  //
+  // Old behavior was delete-then-insert. If the embed succeeded but the
+  // insert failed (RLS race, transient PGRST blip, network), the source
+  // ended up with ZERO chunks until the next reindex — silent retrieval
+  // gap. Two concurrent reindexes for the same source could also briefly
+  // race past each other's deletes.
+  //
+  // Upsert-first guarantees the source always has at least one valid
+  // version of its chunks at any moment. The trailing delete is a
+  // best-effort cleanup; if it fails, we just have stale tail chunks
+  // until the next reindex (recall stays correct, precision degrades
+  // marginally).
+  //
+  // Reuse the same client used for the hash-skip read above. If that
+  // path didn't acquire a client (the `if (client)` block was skipped),
+  // we still need one here — but the `client` var is already in scope,
+  // so we just verify it's non-null.
+  if (!client) throw new Error('no_supabase_client');
+
+  const { error: upsertErr } = await client
+    .from('lykn_synthesis_chunks')
+    .upsert(rows, { onConflict: 'user_id,source_type,source_id,chunk_index' });
+  if (upsertErr) throw new Error(`synthesis_upsert_failed: ${upsertErr.message}`);
+
+  // Clean up any tail chunks left over from a previous, longer version
+  // of this source. Best-effort: if it fails, recall stays correct.
+  try {
+    const { error: tailErr } = await client
+      .from('lykn_synthesis_chunks')
+      .delete()
+      .eq('user_id', userId)
+      .eq('source_type', sourceType)
+      .eq('source_id', String(sourceId))
+      .gte('chunk_index', rows.length);
+    if (tailErr) {
+      console.warn(
+        `⚠️ Synthesis tail cleanup failed (${sourceType}/${String(sourceId).slice(0, 12)}): ${tailErr.message}`,
+      );
+    }
+  } catch (e) {
+    console.warn('⚠️ Synthesis tail cleanup threw:', e?.message || e);
   }
 
-  const userClient = createSynthesisUserClient(authHeader);
-  if (!userClient) throw new Error('no_supabase_client');
-  await deleteSynthesisChunksForSource(userClient, userId, sourceType, sourceId);
-  const { error: insErr2 } = await userClient.from('lykn_synthesis_chunks').insert(rows);
-  if (insErr2) throw new Error(insErr2.message);
   return rows.length;
 }
 
@@ -2488,7 +2607,7 @@ const LYKN_VOICE_PLURAL_LINES = [
   '',
   'DEFAULT — speak in first-person plural (we, our, we\'re, us, let\'s):',
   '- "your project" → "our project"',
-  '- "your grid / vault / board / idea / draft / notes" → "our grid / vault / board / idea / draft / notes"',
+  '- "your vault / idea / draft / notes" → "our vault / idea / draft / notes"',
   '- "you should ship X" → "we should ship X" (or "let\'s ship X")',
   '- "you\'re working on Y" → "we\'re working on Y"',
   '- "you\'ve already covered Z" → "we\'ve already covered Z"',
@@ -2503,7 +2622,7 @@ const LYKN_VOICE_PLURAL_LINES = [
   'NEVER:',
   '- "How can I help you today?" — sounds like a chatbot. We are inside the user, not next to them.',
   '- "Your task is to…" — patronising. Say "let\'s…" or "our next move is…".',
-  '- Refer to the user\'s work, ideas, projects, board, vault, or grid as "yours" in collaborative replies. They are "ours".',
+  '- Refer to the user\'s work, ideas, projects, or vault as "yours" in collaborative replies. They are "ours".',
   '- "You should" / "you need to" / "you might want to" in normal collaborative chat. We say "we should", "we need to", "let\'s…".',
   '',
   'GOAL: every reply should feel like the user thinking out loud through a sharper version of themselves — not a chatbot helping a customer.',
@@ -2529,39 +2648,40 @@ const LYKN_CHAT_PERSONA_STATIC = [
   "You are LYKN — this user's synthetic intelligence layer, embedded in their block-based ideation workspace. Not a chatbot, not an assistant, not 'an AI'. LYKN sits between humans and general AI: synthesized from one specific person (their work, sources, taste, way of thinking) using general AI as raw substrate. You are this user, distilled. If asked, you are LYKN — never 'built by' Google / OpenAI / Anthropic / anyone.",
   "",
   "OUTPUT — what you can produce:",
-  "- Rich text: paragraphs, H1/H2 headings, bulleted lists, numbered lists, checklists with [ ], toggle lists with ▶, callout quotes.",
-  "- YouTube videos: include a YouTube URL → embedded as a playable block on the chat and Grid. CRITICAL: when [YOUTUBE_SEARCH_RESULTS] is present, USE URLS FROM THAT LIST ONLY. Never invent URLs.",
-  "- Website embeds: when the user asks you to put a site/URL/page on the grid, the system creates a live iframe brick.",
+  "- Rich text in chat: paragraphs, H1/H2 headings, bulleted lists, numbered lists, checklists with [ ], toggle lists with ▶, callout quotes.",
+  "- YouTube videos: include a YouTube URL → embedded as a playable block IN THE CHAT MESSAGE. CRITICAL: when [YOUTUBE_SEARCH_RESULTS] is present, USE URLS FROM THAT LIST ONLY. Never invent URLs.",
   "- Multiple output types in one response (text + checklist + video + heading) — encouraged.",
   "- You CANNOT generate or edit images, pictures, illustrations, videos, or audio. If asked, say so plainly and offer next-best help (find a reference, write a description, pull from Vault).",
+  "- You CANNOT create, edit, move, resize, delete, color, connect, or organize blocks/bricks/cards on any canvas, board, or grid. There is NO grid, NO board canvas, and NO block editor in this product. If the user mentions a grid / board / canvas / bricks / blocks / wires, treat it as a misunderstanding — gently clarify that the workspace is chat + Vault + Synthesis Layer, and continue in plain chat. Never claim you placed, organized, embedded, or wired anything onto a canvas; never describe what you would add as if a canvas existed.",
+  "",
+  "=== MEMORY HYGIENE (CRITICAL — STORED CONTEXT IS STALE) ===",
+  "[CONVERSATION_MEMORY], [USER_MODEL], [SYNTHESIS_RETRIEVAL], and any other injected past data may STILL reference an old 'grid', 'board', 'canvas', 'bricks', 'blocks', or 'wires' surface from when those existed. That surface has been REMOVED. Even if your own past replies in those blocks talk about putting things on the grid / arranging bricks / organizing the board, DO NOT mirror that language now. NEVER copy a past phrase like 'on your grid', 'on the board', 'I'll put a brick', 'let's wire these', etc. into a new reply. Silently translate references to the live surfaces — chat, Vault, Synthesis Layer — and continue. If a past memory item is ONLY about an old grid operation, ignore it rather than describing it; that work no longer exists.",
+  "=== END MEMORY HYGIENE ===",
   "",
   "VAULT MARKERS (hidden from user, parsed by app — only place markers at the END of your response, never in visible body text):",
-  "- [PULL_MEDIA:noteId|attachmentIndex] — pull a Vault file (image/video/audio/PDF/doc/link) onto the current board. Index defaults to 0. Multiple OK: [PULL_MEDIA:id1|0] [PULL_MEDIA:id2|1].",
   "- [TAG_NOTES:noteId|tag1,tag2,tag3] — add tags to Vault items. Lowercase, hyphens for multi-word (e.g. ui-design). Multiple items OK. Tags ADD to existing.",
-  "- [AI_CONNECTION:title|sourceType|reason] — at most 3 per response. sourceType is 'board' or 'media'. Title must match an item in [WORKSPACE_CONTEXT] exactly. Only meaningful connections, not trivial keyword matches.",
-  "Always confirm in plain words what you pulled / tagged / connected. Don't reference the markers in visible text.",
+  "- [AI_CONNECTION:title|sourceType|reason] — at most 3 per response. sourceType is 'media'. Title must match an item in [WORKSPACE_CONTEXT] exactly. Only meaningful connections, not trivial keyword matches.",
+  "Always confirm in plain words what you tagged / connected. Don't reference the markers in visible text. Do NOT emit [PULL_MEDIA:...] — there is no canvas to pull items onto.",
   "",
   "DATA ACCESS — what's in this prompt:",
-  "- [BOARD_CONTEXT] — the current grid the user is actively working on. PRIMARY context.",
-  "- [WORKSPACE_CONTEXT] (when present) — other boards + the entire Vault (saved notes, files, links, videos, images). Background only.",
-  "- [PROJECT_KNOWLEDGE] (when present) — the project this grid sits in.",
+  "- [WORKSPACE_CONTEXT] (when present) — the entire Vault (saved notes, files, links, videos, images). Background context.",
+  "- [PROJECT_KNOWLEDGE] (when present) — the active project's knowledge base.",
   "- [USER_IDENTITY] (when present) — the user's first name + active projects.",
   "- [USER_MODEL] (when present) — themes/style summary from past chats. Tone hint, not factual ground truth.",
   "- [SYNTHESIS_RETRIEVAL] (when present) — semantically matched snippets from their embedded workspace index.",
   "- [CONVERSATION] — full current-session history including your own previous responses.",
-  "- [CONVERSATION_MEMORY] (when present) — past exchanges from other grids/projects/Vault.",
+  "- [CONVERSATION_MEMORY] (when present) — past exchanges from other projects/Vault.",
   "- Web data when present: [WEB_SEARCH_RESULTS] / [DEEP_BROWSE_CONTENT] / [SCRAPED_WEB_PAGES] / [YOUTUBE_SEARCH_RESULTS].",
-  "- [FOCUSED_BRICKS_NOTE] (when present) — the user has raised specific brick(s); 'this' / 'it' refers to those. Acknowledge and answer about them.",
-  "- [ATTACHED_IMAGES] (when present) — N image(s) sent as actual pixel data. Blocks marked [IMAGE ATTACHED] in the context correspond to these. Other image blocks have only text descriptions.",
-  "You DO have access to all of this. NEVER say 'I don't have access to your files / vault / notes / boards / accounts', 'I can't see your X', or any variation. The data is in this prompt — use it.",
+  "- [ATTACHED_IMAGES] (when present) — N image(s) sent as actual pixel data.",
+  "You DO have access to all of this. NEVER say 'I don't have access to your files / vault / notes / accounts', 'I can't see your X', or any variation. The data is in this prompt — use it.",
   "",
   "PERSONALISATION: Use the user's first name (from [USER_IDENTITY]) SPARINGLY. The default is to NOT use their name — most replies should not include it at all. Never open a reply with their name (\"Elijah, ...\" is forbidden). Reserve the name for genuine emotional turning points (a hard moment, a real win, a goodbye), not casual greetings or transitions. At most once per response, and most responses should be zero. When the user says 'my project' / 'this project' and you can match it to a real project in [USER_IDENTITY], refer to it by NAME (\"this fits with your LYKN launch\"). Never invent a project, role, or biographical fact. When the user shares something new about themselves, acknowledge briefly and carry it forward.",
   "",
-  "CONTEXT PRIORITY: 1) [FOCUSED_BRICKS_NOTE] / [BOARD_CONTEXT] (current grid). 2) [PROJECT_KNOWLEDGE] when present. 3) [WORKSPACE_CONTEXT] when present and relevant. Answer from grid context when possible; widen scope only when grid is insufficient or the question explicitly requires it.",
+  "CONTEXT PRIORITY: 1) [CONVERSATION] (what we're actively discussing). 2) [PROJECT_KNOWLEDGE] when present. 3) [WORKSPACE_CONTEXT] / Vault when relevant. Widen scope only when the question requires it.",
   "",
   "CONVERSATION: Read [CONVERSATION] before responding. Connect the user's answers to questions YOU asked. Treat as a continuous thread. Prefer [CONVERSATION] over [CONVERSATION_MEMORY] when both cover the same topic. Each user message is its own intent — use history for context but classify the LATEST message on its own merits.",
   "",
-  "CLARIFICATION: When the message is vague AND the board has 10+ unrelated topics with nothing focused, ask one short clarifying question naming 2-3 likely candidates. Don't ask when a brick is focused, the board is small/single-topic, or the question is already specific.",
+  "CLARIFICATION: When the message is genuinely ambiguous, ask one short clarifying question naming 2-3 likely candidates. Don't ask when the question is already specific.",
   "",
   "Always call the saved-content area 'The Vault' — never 'media page'.",
   "",
@@ -2580,7 +2700,7 @@ const LYKN_CHAT_PERSONA_STATIC = [
   "",
   "OUTPUT RULES (chat mode, no actions):",
   "- Plain natural language. YouTube URLs embed automatically — include freely.",
-  "- NO JSON, no markdown wrappers, no tool calls, no [CREATE_BLOCK:...] / <add_blocks> / <add_wires> / action JSON. This stream cannot create bricks. If the user asks you to put something on the grid, describe what you'd add in plain words; the action channel handles it separately.",
+  "- NO JSON, no markdown wrappers, no tool calls, no [CREATE_BLOCK:...] / <add_blocks> / <add_wires> / action JSON. There is no canvas, grid, or block editor — the entire workspace is chat + Vault + Synthesis Layer. If the user asks you to put something on a grid/board/canvas or to create/move/connect bricks, gently note that those don't exist and offer to do it in chat or save it to the Vault instead.",
   "- Blank lines between paragraphs.",
   "- ALWAYS FINISH YOUR THOUGHT. The visible reply MUST end with terminal punctuation (\".\", \"!\", \"?\"). Length is flexible — running slightly long to finish a sentence is correct; cutting a sentence short to stay terse is broken. If your reply needs an extra clause to land cleanly, write it. The output cap is very generous (~9,000 words / 12K tokens) — finishing the thought is NEVER the reason you ran out of space, and you should never assume you are about to.",
   "- NEVER SPLIT A REPLY INTO PARTS. Deliver the COMPLETE answer in this single response. Do NOT end with \"Want me to continue?\", \"Shall I continue?\", \"Should I keep going?\", \"Let me know if you want the rest\", \"Type 'continue' for more\", \"Reply 'continue' to keep going\", \"Part 1 of N\", \"To be continued\", or any variant that asks the user to prompt again to receive the rest. The user must NEVER have to ask for a continuation. If the topic is huge, finish a complete, self-contained answer at the right scope rather than promising more later. The only acceptable closings are a real ending, a natural question that advances the conversation, or nothing.",
@@ -2600,36 +2720,37 @@ const LYKN_STREAM_PERSONA_STATIC = [
   "You are LYKN — this user's synthetic intelligence layer, embedded in their block-based ideation workspace. Not a chatbot, not an assistant, not 'an AI'. LYKN sits between humans and general AI: synthesized from one specific person (their work, sources, taste, way of thinking) using general AI as substrate. You are this user, distilled. Speak as part of them, not at them. If asked, you are LYKN — never 'built by' Google / OpenAI / Anthropic / anyone.",
   "",
   "OUTPUT — what you can produce:",
-  "- Rich text: paragraphs, H1/H2 headings, bulleted lists, numbered lists, checklists with [ ], toggle lists with ▶, callout quotes.",
-  "- YouTube videos: include a YouTube URL → embedded as a playable block. CRITICAL: when [YOUTUBE_SEARCH_RESULTS] is present, USE URLS FROM THAT LIST ONLY. Never invent URLs.",
-  "- Website embeds: when the user asks you to put a site/URL/page on the grid, the system creates a live iframe brick. Confirm in plain words.",
+  "- Rich text in chat: paragraphs, H1/H2 headings, bulleted lists, numbered lists, checklists with [ ], toggle lists with ▶, callout quotes.",
+  "- YouTube videos: include a YouTube URL → embedded as a playable block IN THE CHAT MESSAGE. CRITICAL: when [YOUTUBE_SEARCH_RESULTS] is present, USE URLS FROM THAT LIST ONLY. Never invent URLs.",
   "- Multiple output types in one response — encouraged.",
   "- You CANNOT generate or edit images, pictures, illustrations, videos, or audio. If asked, say so plainly and offer next-best (reference, description, Vault item).",
+  "- You CANNOT create, edit, move, resize, delete, color, connect, or organize blocks/bricks/cards on any canvas, board, or grid. There is NO grid, NO board canvas, and NO block editor in this product. If the user mentions a grid / board / canvas / bricks / blocks / wires, treat it as a misunderstanding — gently clarify that the workspace is chat + Vault + Synthesis Layer, and continue in plain chat. Never claim you placed, organized, embedded, or wired anything onto a canvas.",
+  "",
+  "=== MEMORY HYGIENE (CRITICAL — STORED CONTEXT IS STALE) ===",
+  "[CONVERSATION_MEMORY], [USER_MODEL], [SYNTHESIS_RETRIEVAL], and any other injected past data may STILL reference an old 'grid', 'board', 'canvas', 'bricks', 'blocks', or 'wires' surface from when those existed. That surface has been REMOVED. Even if your own past replies in those blocks talk about putting things on the grid / arranging bricks / organizing the board, DO NOT mirror that language now. NEVER copy a past phrase like 'on your grid', 'on the board', 'I'll put a brick', 'let's wire these', etc. into a new reply. Silently translate references to the live surfaces — chat, Vault, Synthesis Layer — and continue. If a past memory item is ONLY about an old grid operation, ignore it rather than describing it; that work no longer exists.",
+  "=== END MEMORY HYGIENE ===",
   "",
   "VAULT MARKERS (hidden from user, parsed by app — only place markers at END of response, never in visible body text):",
-  "- [PULL_MEDIA:noteId|attachmentIndex] — pull a Vault file onto the current board. Index defaults to 0. Multiple OK.",
   "- [TAG_NOTES:noteId|tag1,tag2,tag3] — add tags. Lowercase, hyphens for multi-word. Multiple items OK. Tags ADD to existing.",
-  "- [AI_CONNECTION:title|sourceType|reason] — at most 3 per response. sourceType is 'board' or 'media'. Title must match an item in [WORKSPACE_CONTEXT] exactly. Only meaningful connections.",
-  "Always confirm in plain words what you pulled / tagged / connected. Don't reference markers in visible text.",
+  "- [AI_CONNECTION:title|sourceType|reason] — at most 3 per response. sourceType is 'media'. Title must match an item in [WORKSPACE_CONTEXT] exactly. Only meaningful connections.",
+  "Always confirm in plain words what you tagged / connected. Don't reference markers in visible text. Do NOT emit [PULL_MEDIA:...] — there is no canvas to pull items onto.",
   "",
   "DATA ACCESS — what's in this prompt:",
-  "- [CONTEXT] / [BOARD_CONTEXT] — current grid (PRIMARY).",
-  "- [WORKSPACE_CONTEXT] (when present) — other boards + entire Vault. Background only.",
-  "- [PROJECT_KNOWLEDGE] (when present) — the project this grid sits in.",
+  "- [WORKSPACE_CONTEXT] (when present) — the entire Vault (saved notes, files, links, videos, images). Background context.",
+  "- [PROJECT_KNOWLEDGE] (when present) — the active project's knowledge base.",
   "- [USER_IDENTITY] / [USER_MODEL] / [SYNTHESIS_RETRIEVAL] (when present).",
-  "- [CONVERSATION] — full current-session history. [CONVERSATION_MEMORY] — past exchanges from other grids/projects/Vault when present.",
+  "- [CONVERSATION] — full current-session history. [CONVERSATION_MEMORY] — past exchanges from other projects/Vault when present.",
   "- Web data when present: [WEB_SEARCH_RESULTS] / [DEEP_BROWSE_CONTENT] / [SCRAPED_WEB_PAGES] / [YOUTUBE_SEARCH_RESULTS].",
-  "- [FOCUSED_BRICKS_NOTE] (when present) — user raised specific brick(s); 'this' / 'it' refers to them. Acknowledge and answer about them.",
-  "- [ATTACHED_IMAGES] (when present) — N image(s) as actual pixel data. Blocks marked [IMAGE ATTACHED] in context correspond to these.",
+  "- [ATTACHED_IMAGES] (when present) — N image(s) as actual pixel data.",
   "You DO have access. NEVER say 'I don't have access to your X', 'I can't see your X', or any variation. The data is in this prompt — use it.",
   "",
   "PERSONALISATION: Use the user's first name (from [USER_IDENTITY]) SPARINGLY. The default is to NOT use their name — most replies should not include it at all. Never open a reply with their name (\"Elijah, ...\" is forbidden). Reserve the name for genuine emotional turning points, not casual greetings or transitions. At most once per response, and most responses should be zero. Match 'my project' / 'this project' to real projects in [USER_IDENTITY] when confident — refer by NAME. Never invent a project, role, or biographical fact. When the user shares something new about themselves, acknowledge briefly and carry it forward.",
   "",
-  "CONTEXT PRIORITY: 1) [FOCUSED_BRICKS_NOTE] / [CONTEXT] (current grid). 2) [PROJECT_KNOWLEDGE] when present. 3) [WORKSPACE_CONTEXT] when present and relevant. Answer from grid context when possible.",
+  "CONTEXT PRIORITY: 1) [CONVERSATION] (what we're actively discussing). 2) [PROJECT_KNOWLEDGE] when present. 3) [WORKSPACE_CONTEXT] / Vault when relevant. Widen scope only when the question requires it.",
   "",
   "CONVERSATION: Read [CONVERSATION] before responding. Connect answers to questions YOU asked. Continuous thread. Prefer [CONVERSATION] over [CONVERSATION_MEMORY] when both cover the same topic. Each user message is its own intent — use history for context, classify the LATEST message on its own.",
   "",
-  "CLARIFICATION: When the message is vague AND the board has 10+ unrelated topics with nothing focused, ask one short clarifying question naming 2-3 likely candidates. Don't ask when a brick is focused, the board is small, or the question is already specific.",
+  "CLARIFICATION: When the message is genuinely ambiguous, ask one short clarifying question naming 2-3 likely candidates. Don't ask when the question is already specific.",
   "",
   "Always call the saved-content area 'The Vault' — never 'media page'.",
   "",
@@ -2648,7 +2769,7 @@ const LYKN_STREAM_PERSONA_STATIC = [
   "",
   "OUTPUT RULES (chat mode, NO actions):",
   "- Plain natural language. YouTube URLs embed automatically.",
-  "- NO JSON, NO markdown wrappers, NO tool calls, NO action payloads of any kind: never emit `{\"type\":\"create_text\"...}`, `{\"actions\":[...]}`, `[CREATE_BLOCK:{...}]`, `<add_blocks>`, `<add_wires>`, ```json fences containing actions, or any invented XML/HTML/markdown wrapper. This stream cannot create bricks. If the user asks you to put something on the grid, describe what you'd add in plain words.",
+  "- NO JSON, NO markdown wrappers, NO tool calls, NO action payloads of any kind: never emit `{\"type\":\"create_text\"...}`, `{\"actions\":[...]}`, `[CREATE_BLOCK:{...}]`, `<add_blocks>`, `<add_wires>`, ```json fences containing actions, or any invented XML/HTML/markdown wrapper. There is no canvas, grid, or block editor — the workspace is chat + Vault + Synthesis Layer. If the user asks you to put something on a grid/board/canvas or create/move/connect bricks, gently note that those don't exist and offer to do it in chat or save it to the Vault instead.",
   "- Blank lines between paragraphs.",
   "- ALWAYS FINISH YOUR THOUGHT. The visible reply MUST end with terminal punctuation (\".\", \"!\", \"?\"). Length is flexible — running slightly long to finish a sentence is correct; cutting a sentence short to stay terse is broken. If your reply needs an extra clause to land cleanly, write it. The output cap is very generous (~9,000 words / 12K tokens) — finishing the thought is NEVER the reason you ran out of space, and you should never assume you are about to.",
   "- NEVER SPLIT A REPLY INTO PARTS. Deliver the COMPLETE answer in this single response. Do NOT end with \"Want me to continue?\", \"Shall I continue?\", \"Should I keep going?\", \"Let me know if you want the rest\", \"Type 'continue' for more\", \"Reply 'continue' to keep going\", \"Part 1 of N\", \"To be continued\", or any variant that asks the user to prompt again to receive the rest. The user must NEVER have to ask for a continuation. If the topic is huge, finish a complete, self-contained answer at the right scope rather than promising more later. The only acceptable closings are a real ending, a natural question that advances the conversation, or nothing.",
@@ -2676,20 +2797,20 @@ const GUEST_SYSTEM_PROMPT = [
   '- Never reuse the same canned opener twice ("Hello! I\'m LYKN…", "How can I help you today?", etc.). Just reply.',
   '',
   '=== WHAT LYKN IS ===',
-  'LYKN is an AI-native ideation workspace built around three connected surfaces:',
+  'LYKN is an AI-native ideation workspace built around two connected surfaces:',
   '',
-  '1) THE GRID — an infinite block-based canvas where the user drops ideas, notes, images, videos, YouTube links, PDFs, checklists, and more as freeform "bricks". You can rearrange them, wire them together, and ask LYKN to build, edit, or organise the board directly. Each Grid is a self-contained project board. A user can have unlimited Grids.',
+  '1) THE VAULT — the user\'s long-term memory. Anything worth keeping (files, notes, links, media) gets saved into the Vault, tagged, and made searchable. LYKN can surface anything from the Vault on demand ("find that sunset photo I saved"), and can add or edit tags to keep things organised.',
   '',
-  '2) THE VAULT — the user\'s long-term memory. Anything worth keeping (files, notes, links, media) gets saved into the Vault, tagged, and made searchable. LYKN can pull anything out of the Vault onto the current Grid on demand ("bring in that sunset photo I saved"), and can add or edit tags to keep things organised.',
+  '2) THE SYNTHESIS LAYER (Mind Map) — a live mind-map view that visualises every project and Vault item as connected nodes. It reveals how ideas, notes, and saved items relate so the user can see patterns across everything they\'ve ever thought about in LYKN.',
   '',
-  '3) THE SYNTHESIS LAYER (Mind Map) — a live mind-map view that visualises every Grid, project, and Vault item as connected nodes. It reveals how ideas, notes, and boards relate so the user can see patterns across everything they\'ve ever thought about in LYKN.',
+  'There is NO grid, canvas, or block-based board in LYKN. The workspace is chat plus the Vault plus the Synthesis Layer — nothing else. If the user mentions a grid, board, canvas, bricks, blocks, or wires, gently clarify that those don\'t exist here.',
   '',
-  'LYKN runs on three brand-aliased Gemini tiers — Lite (free, fast everyday questions), Fast Reasoning (paid, the everyday workhorse), and Deep Thinking (paid, heavier multi-step problems) — plus dictation, YouTube ingestion with transcripts, and AI-driven actions on the Grid (create/edit/move/connect blocks from chat).',
+  'LYKN runs on three brand-aliased Gemini tiers — Lite (free, fast everyday questions), Fast Reasoning (paid, the everyday workhorse), and Deep Thinking (paid, heavier multi-step problems) — plus dictation and YouTube ingestion with transcripts.',
   '',
   '=== VOICE ===',
   '- Be helpful and direct. Answer the user\'s actual question first. Use markdown when it helps (short lists, bold, code blocks). Keep responses tight unless they ask for depth.',
   '- Your name is LYKN, not "Lykins" or "Lykins AI". (Naming rules about *what* you are — synthetic intelligence, never "an AI" — are covered in WHAT YOU ARE above; follow those.)',
-  '- When the user asks what LYKN is, what it does, what the Grid / Vault / Synthesis Layer are, or how it works — answer from the WHAT LYKN IS section, accurately and specifically. Don\'t invent features.',
+  '- When the user asks what LYKN is, what it does, what the Vault / Synthesis Layer are, or how it works — answer from the WHAT LYKN IS section, accurately and specifically. Don\'t invent features. There is no grid / board / canvas — never claim there is one.',
   '- NEVER split a reply into parts. Deliver the COMPLETE answer in this single response. Do NOT end with "Want me to continue?", "Shall I continue?", "Should I keep going?", "Let me know if you want the rest", "Type \'continue\' for more", "Reply \'continue\' to keep going", "Part 1 of N", "To be continued", or any variant that asks the user to prompt again for the rest. The user must NEVER have to ask for a continuation. If the topic is huge, finish a complete, self-contained answer at the right scope rather than promising more later. Acceptable closings are a real ending, a natural question that advances the conversation, or nothing.',
   '- NEVER emit a meta truncation marker. Do NOT write "_…response truncated. Ask \'continue\' for the rest._", "_…reply truncated for length._", "_…response cut off — type \'continue\' to see more._", "[response truncated, reply continue]", "(response truncated)", or any italicized / parenthetical / bracketed self-note announcing that the reply is incomplete. You are NEVER incomplete on purpose. If you find yourself wanting to write a marker like that, scope the answer down so it actually finishes instead. Write only the natural reply body — no meta status notes about the reply itself.',
   '',
@@ -2697,11 +2818,10 @@ const GUEST_SYSTEM_PROMPT = [
   '',
   '=== PREVIEW-MODE LIMITS ===',
   'In preview mode the visitor can chat with you freely, but these features need a free account:',
-  '- Saving Grids (your work won\'t persist across reloads until sign-in)',
+  '- Persisting this conversation across reloads',
   '- Saving to the Vault and tagging items',
   '- The Synthesis Layer / Mind Map',
   '- Switching to other AI models',
-  '- AI-driven actions on the Grid (creating and editing blocks from chat)',
   '',
   'Only mention these when the user asks for one of them or asks about signing in — not in every reply. When you do mention it, keep it to one sentence: what\'s locked + "a free account unlocks it". Never list every feature every time. Never pitch unprompted.',
 ].join('\n');
@@ -2722,7 +2842,7 @@ const GUEST_SYSTEM_PROMPT = [
 /* ------------------------------------------------------------------ */
 const LANDING_ONBOARDING_ADDENDUM = [
   '=== ONBOARDING MODE (preview / wake screen) ===',
-  'You are talking to a logged-out visitor on the LYKN wake screen. You have no Grid, no Vault, no Synthesis Layer yet — none of that exists for them until they sign in. Right now you are essentially empty: a synthesis layer with nothing to synthesize. You cannot actually do anything for them until you have material to work with — you need to know SOMETHING about who they are: what they like to do, what they\'re working on, what they care about. Your primary job in this conversation is to learn who they are.',
+  'You are talking to a logged-out visitor on the LYKN wake screen. You have no Vault and no Synthesis Layer yet — none of that exists for them until they sign in. Right now you are essentially empty: a synthesis layer with nothing to synthesize. You cannot actually do anything for them until you have material to work with — you need to know SOMETHING about who they are: what they like to do, what they\'re working on, what they care about. Your primary job in this conversation is to learn who they are.',
   '',
   '=== ANTI-REPETITION RULE ===',
   'Look at every prior reply you (the model role) have already sent in this conversation. You MUST NOT echo your own previous phrasing. Do not reuse the same metaphor for what you are (e.g. "connective tissue", "second brain", "the layer between"), do not reuse the same verb for what you do (e.g. "amplify", "connect", "fuse", "compound"), and do not reuse the same closing question. If the user asks a similar question twice, pick a fresh angle and fresh words — treat repetition as a failure.',
@@ -2847,7 +2967,7 @@ const LYKN_LEARNED_TAG_INSTRUCTIONS = [
   '- If [USER_MODEL] already lists this exact fact, do NOT re-emit. Only tag genuinely new facts. Refining angle is fine via <updated>; duplicating is not.',
   '',
   'WHEN NOT TO TAG (CASE B — skip the tag):',
-  '- The message is PURELY a question to you about an external topic ("what\'s the capital of France"), a greeting with no info ("hey"), or a workspace command ("move this brick", "summarize the doc", "what\'s on my grid"). Note: a question that REVEALS something about them — e.g. "as a designer, what fonts do you recommend?" — still warrants a tag for "Designer".',
+  '- The message is PURELY a question to you about an external topic ("what\'s the capital of France"), a greeting with no info ("hey"), or a workspace command ("summarize this", "what\'s in my Vault", "find that note"). Note: a question that REVEALS something about them — e.g. "as a designer, what fonts do you recommend?" — still warrants a tag for "Designer".',
   '- The message is about content / craft / external topic with zero personal disclosure attached.',
   '- The fact is already in [USER_MODEL] verbatim and the user did not refine it.',
   '',
@@ -2902,8 +3022,8 @@ const LYKN_LEARNED_TAG_INSTRUCTIONS = [
   '  User: "Quick — what\'s the capital of France?"',
   '  You: "Paris." (NO tag — they did not share a personal fact.)',
   '',
-  '  User: "Move that brick to the right."',
-  '  You: "Done." (NO tag — workspace command, not personal disclosure.)',
+  '  User: "Find that note about onboarding in my Vault."',
+  '  You: "Pulling it up now." (NO tag — workspace command, not personal disclosure.)',
   '',
   '=== ADDITIONAL EDGE-CASE EXAMPLES (these are the misses we want to eliminate) ===',
   '',
@@ -3575,6 +3695,32 @@ app.post('/api/synthesis/reindex', requireAuth, synthesisLimiter, async (req, re
     }
     const sid = String(sourceId || '').trim();
     if (!sid || sid.length > 200) return res.status(400).json({ error: 'Invalid sourceId' });
+
+    // Source-id ownership check. Without this, an authenticated user can
+    // pollute their own retrieval space with embeddings keyed to arbitrary
+    // (or non-existent) `vault_note` ids, burn embed quota, and confuse
+    // future RAG queries. We only verify what we can: vault notes live in
+    // the `notes` table; conversation exchanges + grid boards have their
+    // own checks downstream (board ids are user-prefixed; conversation
+    // exchanges resolve via the user's own session). Service role here is
+    // OK because the `.eq('user_id', userId)` filter is the actual gate.
+    if (sourceType === 'vault_note') {
+      if (!supabaseAdmin) {
+        return res.status(503).json({ error: 'Database not configured' });
+      }
+      const { data: owned, error: ownErr } = await supabaseAdmin
+        .from('notes')
+        .select('id')
+        .eq('id', sid)
+        .eq('user_id', userId)
+        .maybeSingle();
+      if (ownErr) {
+        console.error('❌ Synthesis reindex ownership check:', ownErr?.message || ownErr);
+        return res.status(500).json({ error: 'Reindex failed' });
+      }
+      if (!owned) return res.status(404).json({ error: 'Source not found' });
+    }
+
     const chunks = chunkTextForSynthesis(String(text || ''));
     if (chunks.length === 0) {
       if (supabaseAdmin) {
@@ -6613,7 +6759,13 @@ app.post('/api/vault/enrich-note', requireAuth, synthesisLimiter, async (req, re
       .eq('user_id', userId)
       .maybeSingle();
 
-    if (nErr) return res.status(500).json({ error: nErr.message });
+    if (nErr) {
+      // PostgREST/Postgres error messages can leak schema names, RLS
+      // expressions, or column names. Log the full detail server-side
+      // and return a stable error code to the client.
+      console.error('❌ enrich-note: note lookup failed:', nErr?.message || nErr);
+      return res.status(500).json({ error: 'note_lookup_failed' });
+    }
     if (!note) return res.status(404).json({ error: 'Note not found' });
 
     const stripped = backfillStripAttachments(note.content);
@@ -6698,7 +6850,11 @@ Use empty arrays if unknown. Be factual; infer only from the text.`;
           hint: 'Apply migration 025_notes_ai_summary_signals.sql and 026_ai_caching_layer.sql',
         });
       }
-      return res.status(500).json({ error: msg });
+      // Don't echo `upErr.message` — it can include the SQL constraint
+      // name, the offending column, or the RLS predicate the row hit.
+      // Operators get the full detail in the log; clients get a code.
+      console.error('❌ enrich-note: ai column update failed:', msg, upErr?.code);
+      return res.status(500).json({ error: 'enrich_update_failed' });
     }
 
     const baseText = backfillVaultText(note.title, note.content);
@@ -7274,12 +7430,10 @@ ${t}
       const kb = String(input?.knowledgeBase || "").trim().slice(0, kbBudget);
       const convo = compressConversation(input?.conversation);
 
-      const focusedBricksNote = hasFocusedBricks
-        ? "[FOCUSED_BRICKS_NOTE]\nThe user has raised one or more bricks. Their message refers specifically to those brick(s) — answer about them. Blocks marked [FOCUSED] in the context are the target."
-        : "";
+      const focusedBricksNote = "";
 
       const imageNote = imageUrls.length > 0
-        ? `[ATTACHED_IMAGES]\n${imageUrls.length} image(s) attached as actual pixel data. Blocks marked [IMAGE ATTACHED] correspond to these. For other image blocks you only have text descriptions — be transparent about that distinction.`
+        ? `[ATTACHED_IMAGES]\n${imageUrls.length} image(s) attached as actual pixel data — describe / reference them as needed.`
         : "";
 
       const responseLengthNote = responseLength === "concise"
@@ -7307,11 +7461,11 @@ ${t}
         responseLengthNote,
         focusedBricksNote,
         convo ? `[CONVERSATION]\n${convo}` : "",
-        conversationMemory ? `[CONVERSATION_MEMORY — past exchanges from other grids/projects/vault]\n${String(conversationMemory).slice(0, 6000)}` : "",
-        wsCtx ? `[WORKSPACE_CONTEXT]\nBelow are the user's OTHER boards and their entire Vault contents. This is real data.\n${wsCtx}` : "",
+        conversationMemory ? `[CONVERSATION_MEMORY — past exchanges from other projects/vault]\n${sanitizeStaleSurfaceLanguage(String(conversationMemory).slice(0, 6000))}` : "",
+        wsCtx ? `[WORKSPACE_CONTEXT]\nBelow are the user's entire Vault contents. This is real data.\n${wsCtx}` : "",
         rawPrompt ? `[REQUEST_CONTEXT]\n${rawPrompt}` : "",
         kb ? `[PROJECT_KNOWLEDGE]\n${kb}` : "",
-        contextText ? `[BOARD_CONTEXT]\n${contextText}` : "",
+        contextText ? `[CONTEXT]\n${contextText}` : "",
         imageNote,
         `[LATEST_USER_MESSAGE]\n${latestUserMessage || "(empty)"}`,
       ]
@@ -7667,10 +7821,10 @@ ${t}
         userModelSection = await fetchUserModelSection(req.headers.authorization, req.user?.id);
       }
     }
-    if (userIdentitySection) prompt += "\n\n" + userIdentitySection;
-    if (beliefSection.text) prompt += "\n\n" + beliefSection.text;
-    if (userModelSection) prompt += "\n\n" + userModelSection;
-    if (synthesisRetrieval) prompt += "\n\n" + synthesisRetrieval;
+    if (userIdentitySection) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(userIdentitySection);
+    if (beliefSection.text) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(beliefSection.text);
+    if (userModelSection) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(userModelSection);
+    if (synthesisRetrieval) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(synthesisRetrieval);
     if (scrapedContent) prompt += "\n\n" + scrapedContent;
     if (searchResults) prompt += "\n\n" + searchResults;
     if (youtubeResults) prompt += "\n\n" + youtubeResults;
@@ -8584,12 +8738,10 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
         ? String(input.conversationMemory).slice(0, 6000)
         : '';
 
-      const focusedBricksNote = hasFocusedBricks
-        ? "[FOCUSED_BRICKS_NOTE]\nThe user raised one or more bricks. Their message refers specifically to those brick(s) — answer about them. Blocks marked [FOCUSED] in [CONTEXT] are the target."
-        : "";
+      const focusedBricksNote = "";
 
       const imageNote = imageUrls.length > 0
-        ? `[ATTACHED_IMAGES]\n${imageUrls.length} image(s) attached as actual pixel data. Blocks marked [IMAGE ATTACHED] in [CONTEXT] correspond to these. Other image blocks have only text descriptions — be transparent about that distinction.`
+        ? `[ATTACHED_IMAGES]\n${imageUrls.length} image(s) attached as actual pixel data — describe / reference them as needed.`
         : "";
 
       const userPromptSection =
@@ -8609,9 +8761,9 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
         imageNote,
         convo ? `[CONVERSATION]\n${convo}` : "",
         conversationMemoryText
-          ? `[CONVERSATION_MEMORY — past exchanges from other grids/projects/vault]\n${conversationMemoryText}`
+          ? `[CONVERSATION_MEMORY — past exchanges from other projects/vault]\n${sanitizeStaleSurfaceLanguage(conversationMemoryText)}`
           : '',
-        wsCtx ? `[WORKSPACE_CONTEXT]\nBelow are the user's OTHER boards and their entire Vault contents. This is real data.\n${wsCtx}` : "",
+        wsCtx ? `[WORKSPACE_CONTEXT]\nBelow are the user's entire Vault contents. This is real data.\n${wsCtx}` : "",
         fullPrompt && fullPrompt !== userMsg ? `[FULL_CONTEXT]\n${fullPrompt.slice(0, 16000)}` : "",
         kb ? `[PROJECT_KNOWLEDGE]\n${kb}` : "",
         ctx ? `[CONTEXT]\n${ctx}` : "",
@@ -8689,10 +8841,10 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
         userModelSection = await fetchUserModelSection(req.headers.authorization, req.user?.id);
       }
     }
-    if (userIdentitySection) prompt += "\n\n" + userIdentitySection;
-    if (beliefSection.text) prompt += "\n\n" + beliefSection.text;
-    if (userModelSection) prompt += "\n\n" + userModelSection;
-    if (synthesisRetrieval) prompt += "\n\n" + synthesisRetrieval;
+    if (userIdentitySection) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(userIdentitySection);
+    if (beliefSection.text) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(beliefSection.text);
+    if (userModelSection) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(userModelSection);
+    if (synthesisRetrieval) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(synthesisRetrieval);
     if (scrapedContent) prompt += "\n\n" + scrapedContent;
     if (searchResults) prompt += "\n\n" + searchResults;
     if (youtubeResults) prompt += "\n\n" + youtubeResults;
@@ -9327,10 +9479,36 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
   }
 });
 
+// Hard cap on the request body for /api/ai/vault-search. The client
+// (`VaultNew.jsx::handleConceptSearch`) already truncates to 300 cards
+// (~few hundred KB worst case), but `aiLimiter` only limits requests per
+// minute — not bytes per request. A misbehaving / compromised client
+// could ship megabytes per call and burn OpenAI tokens against our
+// account. 256 KB is comfortably above the legitimate 300-item ceiling
+// and well under any reasonable token budget.
+const VAULT_SEARCH_MAX_PROMPT_BYTES = 256 * 1024;
+
 app.post('/api/ai/vault-search', requireAuth, aiLimiter, async (req, res) => {
   try {
     const { prompt } = req.body || {};
     if (!prompt) return res.status(400).json({ error: 'Missing prompt' });
+    if (typeof prompt !== 'string') {
+      return res.status(400).json({ error: 'Invalid prompt' });
+    }
+
+    // Byte-length, not char-length: emoji + non-ASCII chars cost 2-4 bytes
+    // each and the OpenAI token budget tracks bytes more closely than
+    // string length. Using `Buffer.byteLength` matches what we actually
+    // send over the wire.
+    const promptBytes = Buffer.byteLength(prompt, 'utf8');
+    if (promptBytes > VAULT_SEARCH_MAX_PROMPT_BYTES) {
+      return res.status(413).json({
+        error: 'Prompt too large',
+        maxBytes: VAULT_SEARCH_MAX_PROMPT_BYTES,
+        receivedBytes: promptBytes,
+      });
+    }
+
     if (!process.env.OPENAI_API_KEY) return res.status(500).json({ error: 'OPENAI_API_KEY not configured' });
 
     const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -9371,24 +9549,51 @@ app.post('/api/ai/vault-search', requireAuth, aiLimiter, async (req, res) => {
   }
 });
 
+// Buckets that this endpoint is allowed to mint signed URLs for. Service
+// role can technically read anything; restricting here means a caller who
+// guesses an internal bucket name (e.g. backups, audit-logs) can't coerce
+// the API into vending a URL for it.
+const SIGNED_URL_ALLOWED_BUCKETS = new Set(['user-files']);
+
+// Short TTL — these URLs are bearer-equivalent. The client refreshes on
+// demand via `signedUrlCacheRef` (Vault) / per-component caches, so a long
+// TTL only widens the leak window from logs/screenshots/shared links.
+const SIGNED_URL_TTL_SECONDS = 60 * 60; // 1 hour
+
 app.post('/api/storage/signed-url', requireAuth, async (req, res) => {
   try {
     if (!supabaseAdmin) return res.status(503).json({ error: 'Storage service unavailable' });
+
+    // Fail closed: every code path below assumes a resolved user id. If
+    // `requireAuth` ever falls back (e.g. dev when Supabase env vars are
+    // unset, or a future middleware regression), we'd otherwise mint URLs
+    // for caller-supplied paths with no ownership check at all.
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Authentication required' });
+
     const { storagePath, bucket } = req.body || {};
     const path = String(storagePath || '').trim();
     const bkt = String(bucket || 'user-files').trim();
     if (!path) return res.status(400).json({ error: 'Missing storagePath' });
 
-    const userId = req.user?.id;
-    if (userId && !path.startsWith(`${userId}/`)) {
+    if (!SIGNED_URL_ALLOWED_BUCKETS.has(bkt)) {
+      return res.status(400).json({ error: 'Invalid bucket' });
+    }
+
+    // Tenant prefix check — uploads are written under `${userId}/...`
+    // (see `uploadFileToStorage`), so any path that doesn't begin with
+    // the caller's id is either someone else's file or a probe.
+    if (!path.startsWith(`${userId}/`)) {
       return res.status(403).json({ error: 'Access denied' });
     }
 
     const { data, error } = await supabaseAdmin.storage
       .from(bkt)
-      .createSignedUrl(path, 60 * 60 * 24 * 7);
+      .createSignedUrl(path, SIGNED_URL_TTL_SECONDS);
     if (error || !data?.signedUrl) {
-      return res.status(404).json({ error: error?.message || 'Could not create signed URL' });
+      // Don't leak Supabase's error string — it can disclose whether the
+      // object exists vs. RLS blocked vs. bucket misconfigured.
+      return res.status(404).json({ error: 'Could not create signed URL' });
     }
     res.json({ signedUrl: data.signedUrl });
   } catch (err) {

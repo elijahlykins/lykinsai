@@ -2072,13 +2072,34 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
     mediaContext = wsContext?.media || "";
   }
 
+  // Detailed vault dossier injection used to fire on EVERY authenticated
+  // chat turn whenever the user had any vault notes — every Omnia chat
+  // shipped a per-item dump (titles, excerpts, URLs, extracted text,
+  // tag directory) regardless of whether the question was about the
+  // vault. That's a token-cost multiplier, a latency tax, and an
+  // unnecessary data egress surface on unrelated turns.
+  //
+  // We now gate the detailed block behind a vault-mention intent that's
+  // broader than `wantsMediaPull` (we want to catch "what's in my
+  // vault?" even though no embed verb is present) but still narrower
+  // than "any authenticated turn." For all other turns we fall back to
+  // the compact `wsContext.full` summary, which already has
+  // lightweight per-source rollups.
+  const wantsVaultDetail =
+    wantsMediaPull ||
+    /\b(vault|saved\s*(item|items|note|notes|file|files|link|links|content|stuff|things)|my\s*(notes?|saved)|knowledge\s*base|memory|memories|library)\b/i.test(
+      text,
+    );
+
   const [memoryText, vaultNotesForAi] = await Promise.all([
     identity.userId ? getMemoryForPrompt(identity.userId, identity.routeBoardId || identity.boardId || null) : Promise.resolve(""),
-    identity.userId ? fetchNotesForVaultAi(identity.userId) : Promise.resolve([] as VaultAiNoteRow[]),
+    identity.userId && wantsVaultDetail
+      ? fetchNotesForVaultAi(identity.userId)
+      : Promise.resolve([] as VaultAiNoteRow[]),
   ]);
   let workspaceContextStr = (wsContext?.full || "").slice(0, CONTEXT_BUDGETS.workspaceContext);
   try {
-    if (vaultNotesForAi.length > 0) {
+    if (wantsVaultDetail && vaultNotesForAi.length > 0) {
       const { block: vaultBlock } = buildVaultDetailForGridAi(vaultNotesForAi);
       const boardsOnly = wsContext?.boards || "";
       if (vaultBlock) {
@@ -2142,13 +2163,23 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
     && (URL_OR_DOMAIN_RE.test(cappedText) || WEBSITE_NOUNS_RE.test(cappedText));
   const wantsOrganize = /\b(organize|sort|tidy|clean\s*up|auto[- ]?(?:layout|arrange|organize)|layout|lay\s*out|arrange|grid\s*(?:layout|organize)|group\s*(?:by|together|all)|categorize|cluster|rearrange\s*(?:everything|all|the\s*grid|my\s*(?:bricks|blocks|board)))\b/i.test(cappedText);
   const wantsNotesAction = /\b(notes?\s*(page|panel|section|pad|area)?)\b/i.test(cappedText) && /\b(edit|update|change|modify|write|rewrite|add|append|clear|set|fill|put|type|draft|compose|replace|delete|remove)\b/i.test(cappedText);
-  const wantsActionPath = wantsBlockManipulation || wantsBlockEdit || wantsBlockCreate || wantsGridCreate || wantsOrganize || wantsNotesAction || wantsEmbedWebsite;
+  // The block / brick / grid action path is intentionally DISABLED. The grid
+  // surface is not part of the current product, so we never want the AI to
+  // see the block-creation system prompt or attempt to emit action JSON. All
+  // chat turns flow through the streaming chat path below.
+  const wantsActionPath = false;
+  void wantsBlockManipulation; void wantsBlockEdit; void wantsBlockCreate;
+  void wantsGridCreate; void wantsOrganize; void wantsNotesAction; void wantsEmbedWebsite;
   const wantsDelete = /\b(delete|remove|trash|clear|get rid of)\b/i.test(cappedText);
   const focusedBrickActionIntent = hasFocusedTextBricks && /\b(edit|update|change|modify|rewrite|rename|set|fix|correct|colou?r|paint|highlight|style|theme|delete|remove|move|resize|make\s+(this|it)\s+\w|write|fill|replace|append|add\s+(to|into)|clear|format)\b/i.test(cappedText);
 
   let responseBlockId: string | null = null;
 
-  if (focusedBrickActionIntent || wantsActionPath) {
+  // Action path is permanently disabled — the grid surface does not exist
+  // in this product, so we never call handleActionPath. Reference the
+  // computed variables so the linter doesn't flag them as unused.
+  void focusedBrickActionIntent;
+  if (false && (focusedBrickActionIntent || wantsActionPath)) {
     const statusMsg = wantsNotesAction ? "Writing notes..."
       : wantsDelete ? "Removing blocks..."
       : wantsOrganize ? "Organizing grid..."

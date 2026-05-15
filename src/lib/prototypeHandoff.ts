@@ -89,13 +89,20 @@ export const hasPrototypeNeurons = (): boolean => {
 //   "synthesis" — first neuron created on the landing page; the sidebar
 //                 surfaces with the Synthesis Layer button glowing.
 //   "vault"     — user has just seen the neuron form in the synthesis
-//                 layer; the sidebar reopens with the Vault button
-//                 glowing as the next thing to explore.
-//   "grid"      — user has read the vault intro; the sidebar reopens
-//                 with the Grid button glowing as the third + final
-//                 surface in the guided tour.
+//                 layer; the sidebar reopens with the Connections
+//                 button glowing (route is /vault, sidebar label is
+//                 "Connections" — the page now combines Connections +
+//                 Vault as the two halves of long-term memory).
+//   "grid"      — user has read the Connections intro; the sidebar
+//                 reopens with the Chat button glowing as the third +
+//                 final surface in the guided tour. The /app route
+//                 ships with the canvas unplugged (GRID_DISABLED), so
+//                 this step is purely a chat surface — the storage
+//                 key stays spelled "grid" only to keep the linear
+//                 step machinery (writePrototypeStep, sidebar glows,
+//                 model defaults) untouched.
 //   "done"      — walkthrough nudges are dismissed (e.g. user has
-//                 visited the grid, or signed in).
+//                 read the chat intro, or signed in).
 export type PrototypeStep = "synthesis" | "vault" | "grid" | "done";
 
 export const PROTOTYPE_STEP_LS_KEY = "lykn_prototype_step";
@@ -107,10 +114,11 @@ export const PROTOTYPE_STEP_LS_KEY = "lykn_prototype_step";
 // first neuron always re-arms the intro for the next vault visit.
 export const PROTO_VAULT_INTRO_SS_KEY = "lykn_prototype_vault_intro_played";
 
-// Same idea as PROTO_VAULT_INTRO_SS_KEY but for the Grid page — set the
-// first time LYKN types out the "what is the grid" intro for a guest in
-// the prototype walkthrough, so a refresh of `/app` doesn't keep
-// replaying it. Cleared by LandingPrototype whenever the walkthrough
+// Same idea as PROTO_VAULT_INTRO_SS_KEY but for the chat surface (`/app`)
+// — set the first time LYKN types out the "what's chat for" intro for a
+// guest in the prototype walkthrough, so a refresh of `/app` doesn't
+// keep replaying it. Storage key stays spelled "grid" so old sessions
+// migrate cleanly. Cleared by LandingPrototype whenever the walkthrough
 // resets so a brand-new first neuron re-arms the next visit.
 export const PROTO_GRID_INTRO_SS_KEY = "lykn_prototype_grid_intro_played";
 
@@ -168,10 +176,10 @@ const SETTINGS_CHANGED_EVENT = "lykinsai_settings_changed";
 // `src/lib/modelCatalog.js` — anything written here must be a value the
 // picker can render or the trigger will fall back to its placeholder.
 //
-// Vault + Grid stay on LYKN Fast Reasoning so the guided walkthrough
-// shows off real reasoning depth. Once the tour finishes we drop the
-// user onto LYKN Lite (free-tier default) so every casual question
-// after the tour stays cheap.
+// Connections + chat stay on LYKN Fast Reasoning so the guided
+// walkthrough shows off real reasoning depth. Once the tour finishes
+// we drop the user onto LYKN Lite (free-tier default) so every casual
+// question after the tour stays cheap.
 const STEP_DEFAULT_MODEL: Partial<Record<PrototypeStep, string>> = {
   vault: "lykn-fast",
   grid: "lykn-fast",

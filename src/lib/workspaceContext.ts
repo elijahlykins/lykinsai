@@ -121,67 +121,27 @@ export async function fetchWorkspaceSummaries(
 
   if (import.meta.env.DEV) console.log("[LYKN-WS] Fetching workspace summaries");
 
-  let boardsResult: any = { data: [], error: null };
+  // NOTE: the grid / `omnia_boards` surface is intentionally not loaded here.
+  // The grid is not part of the current product, so we never want "OTHER
+  // BOARDS" appearing in the AI's workspace context — it would make the AI
+  // describe / reference a surface that doesn't exist for the user.
   let notesResult: any = { data: [], error: null };
 
   try {
-    [boardsResult, notesResult] = await Promise.all([
-      supabase
-        .from("omnia_boards")
-        .select("id, title, updated_at")
-        .eq("user_id", userId)
-        .order("updated_at", { ascending: false })
-        .limit(20),
-      supabase
-        .from("notes")
-        .select("id, title, content, updated_at, ai_summary, tags")
-        .eq("user_id", userId)
-        .order("updated_at", { ascending: false })
-        .limit(25),
-    ]);
+    notesResult = await supabase
+      .from("notes")
+      .select("id, title, content, updated_at, ai_summary, tags")
+      .eq("user_id", userId)
+      .order("updated_at", { ascending: false })
+      .limit(25);
   } catch (err) {
-    if (import.meta.env.DEV) console.error("[LYKN-WS] Failed to fetch boards/notes:", err);
+    if (import.meta.env.DEV) console.error("[LYKN-WS] Failed to fetch notes:", err);
     return { boards: "", media: "", full: "" };
   }
 
-  if (boardsResult.error && import.meta.env.DEV) console.warn("[LYKN-WS] Boards query error:", boardsResult.error);
   if (notesResult.error && import.meta.env.DEV) console.warn("[LYKN-WS] Notes query error:", notesResult.error);
 
-  const boards = (boardsResult.data || []).filter(
-    (b: any) => b.id !== excludeBoardId,
-  ).slice(0, 10);
-
-  if (import.meta.env.DEV) console.log("[LYKN-WS] Found", boards.length, "boards,", (notesResult.data || []).length, "notes");
-
-  const boardIds = boards.map((b: any) => b.id);
-  let latestSnapshots: Record<string, any> = {};
-  if (boardIds.length > 0) {
-    try {
-      // Single batch query — each board has at most 1 row after migration 016.
-      const { data: stateRows, error } = await supabase
-        .from("omnia_board_states")
-        .select("board_id, state")
-        .in("board_id", boardIds.slice(0, 10));
-      if (error && import.meta.env.DEV) console.warn("[LYKN-WS] Board state batch query error:", error);
-      for (const row of stateRows || []) {
-        if (row.board_id && row.state) {
-          latestSnapshots[row.board_id] = row.state;
-        }
-      }
-      if (import.meta.env.DEV) console.log("[LYKN-WS] Loaded snapshots for", Object.keys(latestSnapshots).length, "boards");
-    } catch (err) {
-      if (import.meta.env.DEV) console.warn("[LYKN-WS] Board states fetch failed:", err);
-    }
-  }
-
-  const boardLines = boards.map((b: any) => {
-    const title = truncate(String(b.title || "Untitled"), 60);
-    const snapshot = latestSnapshots[b.id];
-    const summary = snapshot ? summarizeSnapshot(snapshot) : "";
-    return summary
-      ? `- "${title}" (id=${b.id}): ${truncate(summary, 150)}`
-      : `- "${title}" (id=${b.id})`;
-  });
+  if (import.meta.env.DEV) console.log("[LYKN-WS] Found", (notesResult.data || []).length, "notes");
 
   const notes = (notesResult.data || []).slice(0, 25);
 
@@ -223,10 +183,6 @@ export async function fetchWorkspaceSummaries(
     return parts.join(" — ");
   });
 
-  const boardsText = boardLines.length > 0
-    ? `OTHER BOARDS (${boardLines.length}):\n${boardLines.join("\n")}`
-    : "";
-
   const mediaHeader = noteLines.length > 0
     ? `VAULT ITEMS (${noteLines.length}):`
     : "";
@@ -235,12 +191,11 @@ export async function fetchWorkspaceSummaries(
     ? [mediaHeader, tagLine, noteLines.join("\n")].filter(Boolean).join("\n")
     : "";
 
-  // Vault / media first so client `.slice(0, 2000)` does not drop it when OTHER BOARDS is large.
-  const full = [mediaText, boardsText].filter(Boolean).join("\n\n");
+  const full = mediaText;
 
   if (import.meta.env.DEV) console.log("[LYKN-WS] Workspace context size:", full.length, "chars");
 
-  const result = { boards: boardsText, media: mediaText, full };
+  const result = { boards: "", media: mediaText, full };
   wsCache.set(cacheKey, { ts: Date.now(), data: result });
   return result;
 }

@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Lock, Sparkles, X } from "lucide-react";
 import { useUserPlan } from "@/lib/useUserPlan";
 import { useAuth } from "@/lib/SupabaseAuth";
-import { PLAN_LIMITS } from "@/lib/pricing-config";
+import { PLAN_LIMITS, planLabel } from "@/lib/pricing-config";
 
 // Plans ordered cheapest → priciest. `minPlan` means "allow this plan and any
 // plan above it".
@@ -12,16 +12,6 @@ const PLAN_ORDER = ["free", "studio", "studio_pro", "studio_max"];
 function planRank(planId) {
   const idx = PLAN_ORDER.indexOf(String(planId || "free"));
   return idx === -1 ? 0 : idx;
-}
-
-function planLabel(planId) {
-  switch (planId) {
-    case "studio": return "Studio";
-    case "studio_pro": return "Studio Pro";
-    case "studio_max": return "Studio Max";
-    case "free":
-    default: return "Free";
-  }
 }
 
 /**
@@ -34,7 +24,8 @@ function planLabel(planId) {
  *
  * Props:
  *   - minPlan: "free" | "studio" | "studio_pro" | "studio_max" — the lowest
- *     plan that can access the children.
+ *     plan that can access the children. (User-facing labels: Free / Pro /
+ *     Max / Teams.)
  *   - feature: human-readable feature name shown in the paywall.
  *   - description: optional extra copy under the title.
  *   - fallback: if provided, rendered instead of the default paywall.

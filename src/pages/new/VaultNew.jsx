@@ -53,6 +53,8 @@ import {
 } from "@/lib/vault/attachmentsMarker";
 import UpgradeModal from "@/components/UpgradeModal";
 import SignInActionBlocker from "@/components/SignInActionBlocker";
+import { toast } from "@/components/ui/use-toast";
+import { ToastAction } from "@/components/ui/toast";
 import {
   buildPrototypePreviewCards,
   buildSeedNoteRows,
@@ -159,6 +161,42 @@ function parseTagActions(text) {
   }
 }
 
+// Normalize a user-typed URL into a fully-qualified absolute URL.
+// Accepts inputs like "youtube.com", "www.example.com/path", or
+// "https://example.com" and always returns an `https://`-prefixed URL
+// when the scheme is missing — without this the browser treats bare
+// hostnames as relative paths (so `<a href="youtube.com">` would
+// navigate to `/youtube.com` on the current origin instead of YouTube).
+//
+// Returns `null` for empty input or strings that can't possibly be
+// URLs (e.g. a single word with no dot like "asdf"), so callers can
+// short-circuit and surface a clear error instead of firing a doomed
+// unfurl request.
+function normalizeUrl(input) {
+  const trimmed = String(input || "").trim();
+  if (!trimmed) return null;
+  // Already has a scheme (http:, https:, mailto:, ftp:, etc.). Run
+  // through the URL constructor so we get a canonical form and reject
+  // truly malformed strings like "https:///".
+  if (/^[a-z][a-z0-9+\-.]*:/i.test(trimmed)) {
+    try { return new URL(trimmed).toString(); } catch { return null; }
+  }
+  // Heuristic: a bare hostname / path needs at least one dot
+  // ("youtube.com") or to start with localhost/an IP. This blocks the
+  // pathological case where a user typing "asdf" + Enter would get
+  // upgraded to "https://asdf" and trigger a wasted unfurl request.
+  const looksLikeHost =
+    trimmed.includes(".") ||
+    /^localhost(:\d+)?(\/|$|\?|#)/i.test(trimmed) ||
+    /^\d{1,3}(\.\d{1,3}){3}(:\d+)?/.test(trimmed);
+  if (!looksLikeHost) return null;
+  try {
+    return new URL(`https://${trimmed}`).toString();
+  } catch {
+    return null;
+  }
+}
+
 function parseStorageTarget(attachment = {}) {
   const explicitPath = String(attachment.storagePath || "").trim();
   const explicitBucket = String(attachment.storageBucket || "user-files").trim() || "user-files";
@@ -190,6 +228,66 @@ function parseStorageTarget(attachment = {}) {
     // Non-URL strings are handled by the raw attachment URL fallback.
   }
   return null;
+}
+
+// Signed-URL freshness ----------------------------------------------------
+// Supabase signed URLs embed a JWT in the `?token=` query param whose `exp`
+// claim is the absolute UNIX expiry. The previous implementation cached
+// these URLs forever (effectively for 7 days, which was the requested TTL),
+// so a long-open tab eventually served URLs that 403'd on every request.
+// The retry budget would then exhaust and the user was stuck on a "Try
+// again" button that re-used the same expired URL.
+//
+// We now (a) request short-lived URLs (1h), (b) decode the JWT to learn
+// the real expiry, and (c) refetch any cached URL within 5 minutes of
+// expiry so a refetch happens proactively rather than waiting for the
+// browser to surface a 403.
+const SIGNED_URL_TTL_SECONDS = 60 * 60; // 1 hour
+const SIGNED_URL_REFRESH_BUFFER_MS = 5 * 60 * 1000; // refresh 5 min early
+
+function parseSignedUrlExpiry(url) {
+  try {
+    const u = new URL(url);
+    const token = u.searchParams.get("token");
+    if (!token) return null;
+    const parts = token.split(".");
+    if (parts.length < 2) return null;
+    let payload = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const pad = payload.length % 4;
+    if (pad) payload += "=".repeat(4 - pad);
+    const json = JSON.parse(atob(payload));
+    if (typeof json.exp === "number") return json.exp * 1000;
+  } catch {
+    // Malformed token / non-JWT URL — caller falls back to a default TTL.
+  }
+  return null;
+}
+
+// Read a cached signed URL, returning null if the entry is missing OR
+// within `SIGNED_URL_REFRESH_BUFFER_MS` of expiry. Stale entries are
+// evicted as a side effect so subsequent reads don't re-trigger the
+// expensive expiry check on every render.
+function readCachedSignedUrl(cache, cacheKey) {
+  const entry = cache.get(cacheKey);
+  if (!entry) return null;
+  // Back-compat: older code paths stored a bare string. Treat as
+  // unknown-expiry and refetch on next miss; for now return it so we
+  // don't break in-flight renders during the upgrade.
+  if (typeof entry === "string") return entry;
+  if (entry.expiresAt && entry.expiresAt - Date.now() <= SIGNED_URL_REFRESH_BUFFER_MS) {
+    cache.delete(cacheKey);
+    return null;
+  }
+  return entry.url;
+}
+
+function writeCachedSignedUrl(cache, cacheKey, url) {
+  if (!url) return;
+  const exp = parseSignedUrlExpiry(url);
+  // If the JWT has no usable exp claim, assume the URL lives for the
+  // configured TTL minus the refresh buffer so we still rotate it.
+  const expiresAt = exp || Date.now() + SIGNED_URL_TTL_SECONDS * 1000;
+  cache.set(cacheKey, { url, expiresAt });
 }
 
 function buildTextExcerpt(htmlOrText = "") {
@@ -549,10 +647,10 @@ export default function VaultNew() {
     };
   }, []);
 
-  // Landing-prototype handoff: on first load of the vault, open the chat
-  // rail and have LYKN type out a short orientation message — what the
-  // vault is, how it feeds the synthesis layer, and that any file type
-  // can be dragged in. Only fires once per session for guests who came
+  // Landing-prototype handoff: on first load of the Connections page,
+  // open the chat rail and have LYKN type out a short orientation
+  // message — how Connections and the Vault work together to feed the
+  // Synthesis Layer. Only fires once per session for guests who came
   // from the prototype; LandingPrototype clears the flag whenever a
   // brand-new walkthrough kicks off, so a fresh first neuron re-arms it.
   useEffect(() => {
@@ -573,9 +671,10 @@ export default function VaultNew() {
     }
 
     const fullText =
-      "Welcome to your Vault — this is the long-term memory side of your synthetic intelligence layer.\n\n" +
-      "Anything you put in here (PDFs, images, videos, audio, screenshots, web links, quick notes — really any file type) gets read by LYKN and broken down into what it actually means about you. Those meanings show up as new neurons in your Synthesis Layer, connected to the ones already there.\n\n" +
-      "Try it: drag a file from your desktop anywhere on this page, or paste a link into the search bar. You'll watch the Vault and the Synthesis Layer fill in together.";
+      "This is your Connections + Vault — two halves of the same long-term memory.\n\n" +
+      "Connections wire your synthetic intelligence into the AI tools you already use — Cursor, Claude, ChatGPT, Notion, and the rest. Once a tool is connected, it can read from your Synthesis Layer and pull from your Vault, so every assistant you talk to is grounded in you.\n\n" +
+      "The Vault is where the raw material lives. Drag any file in (PDFs, images, video, audio, screenshots, web links, quick notes — really any file type) and LYKN reads it, breaks it down into what it actually means about you, and turns those meanings into new neurons connected to the ones already there.\n\n" +
+      "Try it: drag a file anywhere on this page, paste a link, or scroll down to wire up your first connection.";
     const introId = "lykn-vault-intro";
 
     // Slight stagger so the rail slide-in animation lands first; typing
@@ -618,11 +717,14 @@ export default function VaultNew() {
         } else {
           typingTimerRef.current = null;
           // Walkthrough nudge: a beat after the intro finishes typing,
-          // advance to the Grid step. The auto-mounted AppSidebar
+          // advance to the chat step. The auto-mounted AppSidebar
           // listens for the step change and reopens itself with the
-          // Grid button glowing as the next thing to explore. Guarded
-          // so a re-mount mid-step (e.g. HMR) doesn't bump past
-          // already-advanced state.
+          // Chat button glowing as the next thing to explore. (Step
+          // is still spelled "grid" in storage to keep the linear
+          // walkthrough machinery untouched — the sidebar just shows
+          // it as the Chat nav now that GRID_DISABLED is on.)
+          // Guarded so a re-mount mid-step (e.g. HMR) doesn't bump
+          // past already-advanced state.
           window.setTimeout(() => {
             if (!isMountedRef.current) return;
             const cur = readPrototypeStep();
@@ -657,6 +759,12 @@ export default function VaultNew() {
   const vaultTrashHoldStartAtRef = useRef(null);
   const vaultTrashHoldTimeoutRef = useRef(null);
   const vaultTrashRef = useRef(null);
+  // Cards the user just drag-dropped on the trash but whose actual
+  // server delete is still pending behind an undo grace window. Hidden
+  // from the grid optimistically; restored if the user clicks Undo;
+  // committed (real delete) when the timer fires.
+  const [pendingDeleteCardIds, setPendingDeleteCardIds] = useState(() => new Set());
+  const pendingDeleteTimersRef = useRef(new Map());
   const draggedCardMetricsRef = useRef(null);
   const [resolvedAttachmentUrls, setResolvedAttachmentUrls] = useState({});
   const [failedImageIds, setFailedImageIds] = useState(new Set());
@@ -666,6 +774,12 @@ export default function VaultNew() {
   const [openCardMenuPlacement, setOpenCardMenuPlacement] = useState("down");
   const [openCardMenuRect, setOpenCardMenuRect] = useState(null);
   const [openAttachmentNotesCardId, setOpenAttachmentNotesCardId] = useState(null);
+  // Viewport-space anchor rect for the comment composer popover. We
+  // render the composer via React portal (see bottom of the component)
+  // so it can escape the card's `overflow-hidden` clip — historically
+  // the composer was an `absolute` element inside the card and got cut
+  // off in grid mode, making it impossible to type into.
+  const [openAttachmentNotesRect, setOpenAttachmentNotesRect] = useState(null);
   const [attachmentNoteDraft, setAttachmentNoteDraft] = useState("");
   const [isCardActionBusy, setIsCardActionBusy] = useState(false);
   const [quickNoteContent, setQuickNoteContent] = useState("");
@@ -712,6 +826,7 @@ export default function VaultNew() {
   const [newTagInput, setNewTagInput] = useState("");
   const tagPickerRef = useRef(null);
   const conceptSearchAbortRef = useRef(null);
+  const unfurlAbortRef = useRef(null);
   const lastHoverTargetRef = useRef(null);
   const loadMoreRef = useRef(null);
   const cardMenuRef = useRef(null);
@@ -880,7 +995,20 @@ export default function VaultNew() {
   }), [assistantTaskChecks, updateTaskCheck]);
 
   const saveChunkAsQuickNote = useCallback((text) => {
-    setQuickNoteContent(text);
+    const incoming = String(text || "").trim();
+    if (!incoming) return;
+    // Don't silently clobber a draft the user is in the middle of
+    // typing. If there's already content in the quick note panel,
+    // append the new chunk with a separator so both survive. The
+    // user can edit/delete from there.
+    setQuickNoteContent((current) => {
+      const existing = String(current || "").trim();
+      if (!existing) return incoming;
+      // Same chunk re-clicked — no-op. Common when the user double-taps
+      // the "save chunk" affordance.
+      if (existing === incoming || existing.endsWith(incoming)) return current;
+      return `${existing}\n\n---\n\n${incoming}`;
+    });
     setShowQuickNote(true);
   }, []);
 
@@ -934,7 +1062,16 @@ export default function VaultNew() {
       incrementVaultCount();
     } catch (err) {
       if (!notifyVaultCapIfApplicable(err)) {
-        setNotesError("Couldn't save the dropped note. Please try again.");
+        // Action errors (one save failing) used to overwrite the
+        // load-error banner, leaving a persistent red strip across the
+        // top of the vault even though the rest of the surface was
+        // healthy. Surface as a transient toast instead — `notesError`
+        // is reserved for "couldn't load your vault at all" failures.
+        toast({
+          title: "Couldn't save dropped note",
+          description: "Please try again.",
+          variant: "destructive",
+        });
       }
     }
   }, [user?.id, checkVaultLimit, incrementVaultCount]);
@@ -1243,7 +1380,14 @@ export default function VaultNew() {
     try {
       await notesQuery.fetchNextPage();
     } catch {
-      setNotesError((prev) => prev || "Some memories could not be loaded.");
+      // Pagination failure — vault is still usable, the next page just
+      // didn't arrive. Toast keeps the user informed without locking
+      // the load-more banner permanently red.
+      toast({
+        title: "Couldn't load more memories",
+        description: "Scroll back later or refresh to try again.",
+        variant: "destructive",
+      });
     }
   }, [notesQuery, hasMoreNotes, isLoadingMoreNotes, isLoadingNotes, user?.id]);
 
@@ -1274,6 +1418,7 @@ export default function VaultNew() {
       }
       if (noteComposerRef.current && !noteComposerRef.current.contains(event.target)) {
         setOpenAttachmentNotesCardId(null);
+        setOpenAttachmentNotesRect(null);
         setAttachmentNoteDraft("");
       }
       if (tagPickerRef.current && !tagPickerRef.current.contains(event.target)) {
@@ -1550,11 +1695,49 @@ export default function VaultNew() {
     if (!user?.id) { setAllTagsRaw([]); return; }
     let cancelled = false;
     (async () => {
+      // Prefer the server-side aggregation (migration 053). It returns
+      // pre-sorted (tag, count) rows from a single SQL pass, scoped by
+      // `auth.uid()`. For large accounts this avoids pulling every
+      // tag cell into the browser and aggregating on the main thread.
+      try {
+        const { data: rpcData, error: rpcError } = await supabase
+          .rpc("vault_tag_counts");
+        if (cancelled) return;
+        if (!rpcError && Array.isArray(rpcData)) {
+          setAllTagsRaw(
+            rpcData
+              .map((row) => ({
+                name: String(row.tag || "").trim(),
+                count: Number(row.count) || 0,
+              }))
+              .filter((entry) => entry.name),
+          );
+          return;
+        }
+        // Fall through to legacy path if the RPC isn't deployed yet
+        // (PGRST202 = function not found). Other RPC errors also degrade
+        // gracefully so a transient blip doesn't blank the directory.
+        if (rpcError && import.meta.env.DEV) {
+          // eslint-disable-next-line no-console
+          console.info("[Vault] vault_tag_counts RPC unavailable, using fallback:", rpcError?.message || rpcError);
+        }
+      } catch (e) {
+        if (cancelled) return;
+        if (import.meta.env.DEV) {
+          // eslint-disable-next-line no-console
+          console.warn("[Vault] vault_tag_counts RPC threw, using fallback:", e);
+        }
+      }
+
+      // Legacy in-browser aggregation. Kept as a safety net for envs
+      // missing migration 053. Capped at 5000 rows so a runaway account
+      // can't OOM the tab while the RPC migration is pending.
       const { data, error } = await supabase
         .from("notes")
         .select("tags")
         .eq("user_id", user.id)
-        .not("tags", "is", null);
+        .not("tags", "is", null)
+        .limit(5000);
       if (cancelled) return;
       if (error || !data) { setAllTagsRaw([]); return; }
       const tagMap = {};
@@ -1649,8 +1832,117 @@ export default function VaultNew() {
     [notes, updateNoteTags]
   );
 
+  // Apply / dismiss handlers for AI-staged tag actions. The AI can
+  // suggest tag changes as part of its reply (TAG_ACTIONS block parsed
+  // in the chat handler), but we don't auto-apply — the user must
+  // click "Apply" on the staged diff. See the chat handler comment for
+  // the prompt-injection rationale.
+  const applyPendingTagActions = useCallback(
+    async (msgIdx) => {
+      const msg = chatMessages[msgIdx];
+      const pending = msg?.pendingTagActions;
+      if (!pending || !Array.isArray(pending.actions) || pending.actions.length === 0) return;
+      // Mark as applying so the UI can disable buttons + show a spinner.
+      setChatMessages((prev) => {
+        const next = prev.slice();
+        if (next[msgIdx]?.pendingTagActions) {
+          next[msgIdx] = {
+            ...next[msgIdx],
+            pendingTagActions: { ...next[msgIdx].pendingTagActions, applying: true },
+          };
+        }
+        return next;
+      });
+      let applied = 0;
+      const noteIdSet = new Set(notes.map((n) => String(n.id)));
+      for (const action of pending.actions) {
+        if (!noteIdSet.has(String(action.noteId))) continue;
+        const ok = await updateNoteTags(String(action.noteId), action.tags);
+        if (ok) applied += 1;
+      }
+      const newTagNames = [...new Set(pending.actions.flatMap((a) => a.tags))];
+      setChatMessages((prev) => {
+        const next = prev.slice();
+        if (next[msgIdx]) {
+          const { pendingTagActions: _drop, ...rest } = next[msgIdx];
+          next[msgIdx] = { ...rest, tagActions: { applied, tags: newTagNames } };
+        }
+        return next;
+      });
+    },
+    [chatMessages, notes, updateNoteTags],
+  );
+
+  const dismissPendingTagActions = useCallback((msgIdx) => {
+    setChatMessages((prev) => {
+      const next = prev.slice();
+      if (next[msgIdx]?.pendingTagActions) {
+        const { pendingTagActions: _drop, ...rest } = next[msgIdx];
+        next[msgIdx] = { ...rest, tagActionsDismissed: true };
+      }
+      return next;
+    });
+  }, []);
+
   const visibleCardIdsRef = useRef(new Set());
   const urlResolveObserverRef = useRef(null);
+
+  // For image-type attachments, pre-load the image with `new Image()`
+  // (HEAD-style) before triggering the React state update that mounts
+  // the real <img>. This:
+  //   1. captures naturalWidth/Height into `learnedImageDimsRef`, so
+  //      the wrapper can reserve correct aspect-ratio from first paint
+  //      (eliminates the "card grows from skeleton size to real size"
+  //      jump that caused the visible scroll glitch);
+  //   2. seeds the browser HTTP cache, so the real <img> paints
+  //      instantly when it mounts.
+  //
+  // We give it a budget — if dims don't come back within 600ms we
+  // setState anyway. Better to risk a small first-load shift on a slow
+  // image than to leave the user staring at a skeleton.
+  const resolveImageDimsAndCommit = useCallback((cardId, signedUrl) => {
+    const PROBE_BUDGET_MS = 600;
+    const learned = learnedImageDimsRef.current.get(signedUrl);
+    if (learned) {
+      // Already know dims (preload covered it, or we've seen this URL).
+      // Commit immediately — the wrapper will reserve correctly.
+      setResolvedAttachmentUrls((prev) => {
+        if (prev[cardId]) return prev;
+        return { ...prev, [cardId]: signedUrl };
+      });
+      return;
+    }
+    let committed = false;
+    const commit = () => {
+      if (committed) return;
+      committed = true;
+      setResolvedAttachmentUrls((prev) => {
+        if (prev[cardId]) return prev;
+        return { ...prev, [cardId]: signedUrl };
+      });
+    };
+    const probe = new window.Image();
+    probe.crossOrigin = "anonymous";
+    const budgetTimer = setTimeout(commit, PROBE_BUDGET_MS);
+    probe.onload = () => {
+      clearTimeout(budgetTimer);
+      const nw = probe.naturalWidth;
+      const nh = probe.naturalHeight;
+      if (nw > 0 && nh > 0 && !learnedImageDimsRef.current.has(signedUrl)) {
+        learnedImageDimsRef.current.set(signedUrl, { w: nw, h: nh });
+      }
+      commit();
+    };
+    probe.onerror = () => {
+      // Network/CORS fail on the probe — let the real <img> retry path
+      // handle it. Commit the URL so the user at least sees the
+      // skeleton replaced with the real <img> (which will trigger its
+      // own retry-with-fresh-signed-URL flow on error).
+      clearTimeout(budgetTimer);
+      commit();
+    };
+    probe.src = signedUrl;
+  }, []);
 
   const resolveSignedUrlForCard = useCallback(async (card) => {
     if (!card || card.kind !== "attachment") return;
@@ -1664,21 +1956,33 @@ export default function VaultNew() {
       return;
     }
     const cacheKey = `${target.bucket}:${target.path}`;
-    if (signedUrlCacheRef.current.has(cacheKey)) {
-      setResolvedAttachmentUrls((prev) => {
-        if (prev[card.id]) return prev;
-        return { ...prev, [card.id]: signedUrlCacheRef.current.get(cacheKey) };
-      });
+    const isImage = resolveAttachmentType(card.attachment || {}) === "image";
+    const commitUrl = (signedUrl) => {
+      if (isImage) {
+        // Image path: probe dims first so the slot reserves correctly,
+        // then setState. See `resolveImageDimsAndCommit` for the full
+        // budget/fallback story.
+        resolveImageDimsAndCommit(card.id, signedUrl);
+      } else {
+        setResolvedAttachmentUrls((prev) => {
+          if (prev[card.id]) return prev;
+          return { ...prev, [card.id]: signedUrl };
+        });
+      }
+    };
+    const cachedFresh = readCachedSignedUrl(signedUrlCacheRef.current, cacheKey);
+    if (cachedFresh) {
+      commitUrl(cachedFresh);
       return;
     }
     let objectNotFound = false;
     try {
       const { data, error } = await supabase.storage
         .from(target.bucket)
-        .createSignedUrl(target.path, 60 * 60 * 24 * 7);
+        .createSignedUrl(target.path, SIGNED_URL_TTL_SECONDS);
       if (data?.signedUrl) {
-        signedUrlCacheRef.current.set(cacheKey, data.signedUrl);
-        setResolvedAttachmentUrls((prev) => ({ ...prev, [card.id]: data.signedUrl }));
+        writeCachedSignedUrl(signedUrlCacheRef.current, cacheKey, data.signedUrl);
+        commitUrl(data.signedUrl);
         return;
       }
       if (error) {
@@ -1702,8 +2006,8 @@ export default function VaultNew() {
           if (resp.ok) {
             const { signedUrl } = await resp.json();
             if (signedUrl) {
-              signedUrlCacheRef.current.set(cacheKey, signedUrl);
-              setResolvedAttachmentUrls((prev) => ({ ...prev, [card.id]: signedUrl }));
+              writeCachedSignedUrl(signedUrlCacheRef.current, cacheKey, signedUrl);
+              commitUrl(signedUrl);
               return;
             }
           }
@@ -1715,7 +2019,7 @@ export default function VaultNew() {
     imageRetryCountsRef.current.set(card.id, 99);
     setFailedImageIds((prev) => new Set(prev).add(card.id));
     visibleCardIdsRef.current.delete(card.id);
-  }, []);
+  }, [resolveImageDimsAndCommit]);
 
   const cardElementsRef = useRef(new Map());
 
@@ -1768,7 +2072,16 @@ export default function VaultNew() {
         }
         if (queued) drainUrlResolveQueue();
       },
-      { rootMargin: "200px" }
+      // 1200px lead time: this needs to cover (signed-URL fetch time)
+      // + (image probe download time) + (decode) so that by the time
+      // the card actually enters the viewport, we already have its
+      // dimensions in `learnedImageDimsRef` and the image bytes in
+      // the HTTP cache. ~3-4 rows ahead at typical row heights.
+      // Trade-off: too aggressive wastes bandwidth on cards the user
+      // never reaches; too conservative leaves visible layout shifts
+      // on first scroll. 1200px is the sweet spot for typical scroll
+      // velocity on a feed-style grid.
+      { rootMargin: "1200px" }
     );
 
     for (const [, el] of cardElementsRef.current) {
@@ -1780,6 +2093,35 @@ export default function VaultNew() {
       urlResolveObserverRef.current = null;
     };
   }, [vaultCards, user?.id, resolveSignedUrlForCard, drainUrlResolveQueue]);
+
+  // Caches the natural width/height of every image we've loaded at
+  // least once, keyed by URL. Used by the image render path to set the
+  // `<img>`'s `width` + `height` HTML attributes on subsequent renders
+  // so the browser can reserve the correct aspect-ratio slot BEFORE
+  // the image loads. Without this, scrolling new cards into view caused
+  // the card to grow/shrink from the placeholder height to the real
+  // image height, which cascaded into "cards shifting up and down"
+  // jitter for the rest of the visible row.
+  //
+  // We use a ref (not state) on purpose — we only want this data to
+  // influence the next render of the same component instance, not
+  // trigger a global re-render every time an image loads.
+  const learnedImageDimsRef = useRef(new Map());
+
+  // Tracks image URLs we've already pre-DECODED (not just downloaded).
+  // The render path uses this to skip the per-image opacity fade-in for
+  // first-viewport images so they reveal atomically instead of popping
+  // in one at a time. See `renderAttachmentCard` below for the
+  // consumer side.
+  //
+  // `image.decode()` (vs plain `new Image().onload`) is the key: onload
+  // fires when bytes arrive, but the GPU bitmap isn't ready yet. The
+  // first paint then triggers a synchronous decode, and because each
+  // image's decode finishes on a different frame, every card's
+  // `transition-opacity` starts at a slightly different moment — which
+  // is exactly the "popcorn" / "glitching" effect users see on first
+  // load.
+  const preDecodedUrlsRef = useRef(new Set());
 
   const eagerResolveRunRef = useRef(false);
   useEffect(() => {
@@ -1810,9 +2152,11 @@ export default function VaultNew() {
       });
       const urlsToPreload = imageCards
         .slice(0, 24)
-        .map((c) => signedUrlCacheRef.current.get(
-          `${parseStorageTarget(c.attachment || {})?.bucket || "user-files"}:${parseStorageTarget(c.attachment || {})?.path || ""}`
-        ) || c.attachment?.url)
+        .map((c) => {
+          const t = parseStorageTarget(c.attachment || {});
+          const key = `${t?.bucket || "user-files"}:${t?.path || ""}`;
+          return readCachedSignedUrl(signedUrlCacheRef.current, key) || c.attachment?.url;
+        })
         .filter((u) => u && !String(u).startsWith("data:"));
       if (urlsToPreload.length === 0) {
         clearTimeout(safetyTimer);
@@ -1835,7 +2179,53 @@ export default function VaultNew() {
       }, 4000);
       for (const url of urlsToPreload) {
         const img = new window.Image();
-        img.onload = () => { if (!cancelled) preloadDone(); };
+        // Some browsers won't pre-decode cross-origin images without
+        // the CORS hint. Signed Supabase URLs serve the right headers,
+        // so this is safe to set unconditionally; if it fails, the
+        // catch path falls back to a plain onload signal so we still
+        // unblock vaultReady.
+        img.crossOrigin = "anonymous";
+        // Capture natural dims as early as possible. We do this here,
+        // BEFORE the real <img> in the grid mounts, so the wrapper can
+        // reserve the correct aspect-ratio slot from the very first
+        // paint — eliminating the "card grows from skeleton size to
+        // real image size" jump that caused the visible scroll glitch
+        // for old images without stored metadata.
+        const captureDims = () => {
+          if (cancelled) return;
+          const nw = img.naturalWidth;
+          const nh = img.naturalHeight;
+          if (nw > 0 && nh > 0 && !learnedImageDimsRef.current.has(url)) {
+            learnedImageDimsRef.current.set(url, { w: nw, h: nh });
+          }
+        };
+        const markDecoded = () => {
+          if (cancelled) return;
+          captureDims();
+          preDecodedUrlsRef.current.add(url);
+          preloadDone();
+        };
+        const fallbackOnLoad = () => {
+          if (cancelled) return;
+          // We still consider the URL "ready enough" — the browser has
+          // it in HTTP cache so the real <img> will paint quickly.
+          // We just don't add it to the no-fade set, so the existing
+          // fade-in still runs as a graceful safety net. Dims still
+          // get captured so the wrapper can reserve correct space.
+          captureDims();
+          preloadDone();
+        };
+        img.onload = () => {
+          if (cancelled) return;
+          if (typeof img.decode === "function") {
+            img.decode().then(markDecoded).catch(fallbackOnLoad);
+          } else {
+            // Old browser without HTMLImageElement.decode — treat as
+            // pre-decoded (good enough; the visible-fade fallback
+            // still works if it isn't).
+            markDecoded();
+          }
+        };
         img.onerror = () => { if (!cancelled) preloadDone(); };
         img.src = url;
       }
@@ -1848,9 +2238,76 @@ export default function VaultNew() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [vaultCards, user?.id, isLoadingNotes, drainUrlResolveQueue]);
 
+  // Tab-refocus recovery -------------------------------------------------
+  // If the user leaves a vault tab open for hours/days and comes back,
+  // every cached signed URL is likely either expired or about to expire.
+  // The on-demand `readCachedSignedUrl` expiry check covers most reads,
+  // but cards already mounted with their (now-stale) URL won't refetch
+  // on their own — they only retry on a 4xx, and even then they burn
+  // through their bounded retry budget. This effect makes refocus
+  // recovery deterministic: if the tab was hidden for >2 minutes we
+  // wipe the URL cache + retry counts and force currently-visible
+  // attachment cards back through `resolveSignedUrlForCard` so they
+  // pick up fresh URLs immediately.
+  useEffect(() => {
+    if (!user?.id) return;
+    let hiddenAt = null;
+    const STALE_AFTER_MS = 2 * 60 * 1000;
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") {
+        hiddenAt = Date.now();
+        return;
+      }
+      if (document.visibilityState !== "visible" || hiddenAt === null) return;
+      const wasHiddenFor = Date.now() - hiddenAt;
+      hiddenAt = null;
+      if (wasHiddenFor < STALE_AFTER_MS) return;
+      // Drop every cached signed URL — most are stale and the cost of
+      // re-signing the still-fresh ones is negligible compared to the
+      // UX cost of showing broken/expired images.
+      signedUrlCacheRef.current.clear();
+      // Forgive the retry budget so users get a clean slate after
+      // returning to the tab.
+      imageRetryCountsRef.current.clear();
+      const failedIdsToRequeue = Array.from(failedImageIds);
+      if (failedIdsToRequeue.length > 0) {
+        setFailedImageIds(new Set());
+      }
+      // Re-queue every currently-visible attachment card so the new
+      // signed URLs land before the user notices anything is wrong.
+      const cardsByIdLocal = new Map(vaultCards.map((c) => [c.id, c]));
+      const visibleIds = new Set([...visibleCardIdsRef.current, ...failedIdsToRequeue]);
+      let queued = false;
+      for (const id of visibleIds) {
+        const card = cardsByIdLocal.get(id);
+        if (!card || card.kind !== "attachment") continue;
+        // Drop any stale resolved URL so the next render either shows
+        // the spinner (briefly) or, more often, the image just swaps
+        // to the fresh URL the moment `setResolvedAttachmentUrls`
+        // fires — no broken-image flash in between.
+        setResolvedAttachmentUrls((prev) => {
+          if (!(card.id in prev)) return prev;
+          const next = { ...prev };
+          delete next[card.id];
+          return next;
+        });
+        visibleCardIdsRef.current.delete(card.id);
+        visibleCardIdsRef.current.add(card.id);
+        urlResolveQueueRef.current.push(card);
+        queued = true;
+      }
+      if (queued) drainUrlResolveQueue();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id, vaultCards, drainUrlResolveQueue, failedImageIds]);
+
   const visibleCards = useMemo(() => {
-    return vaultCards.filter((card) => card.kind !== "chat-preview");
-  }, [vaultCards]);
+    return vaultCards.filter(
+      (card) => card.kind !== "chat-preview" && !pendingDeleteCardIds.has(card.id),
+    );
+  }, [vaultCards, pendingDeleteCardIds]);
 
   const initialCardIdsRef = useRef(null);
   if (vaultReady && initialCardIdsRef.current === null) {
@@ -2047,6 +2504,54 @@ export default function VaultNew() {
     const remaining = filteredVisibleCards.filter((card) => !currentOrder.includes(card.id));
     return [...ordered, ...remaining];
   }, [filteredVisibleCards, orderByPage]);
+
+  // ── Off-screen card culling (browser-native virtualization) ──
+  //
+  // Above ~80 cards on screen, paint/layout cost gets noticeable: every
+  // card mounts framer-motion, runs the URL resolver IO, renders an
+  // image/video, etc. Rather than swap the whole grid out for a
+  // react-window/react-virtual rewrite — which would break drag-and-drop,
+  // masonry/columns layout, and the existing ordering refs — we lean on
+  // CSS `content-visibility: auto`. The browser then:
+  //   * still places the element in layout (so masonry / grid math is
+  //     correct, drag targets stay clickable, IntersectionObservers fire),
+  //   * but skips painting + descendant rendering until the element
+  //     enters the viewport.
+  //
+  // `contain-intrinsic-size` gives the browser a stable size estimate
+  // before paint, so scrollbar height and scroll position stay sane.
+  // The estimates differ per view mode:
+  //   * grid: aspect-square cards at our typical column width (~200px),
+  //     plus a small action footer → ~280–300px tall slot.
+  //   * collage / masonry / tags: variable height, lean a little taller
+  //     to avoid scroll jumps when off-screen cards repaint shorter than
+  //     estimated. Browser corrects on first real layout.
+  //
+  // We deliberately gate on a count threshold so small vaults pay zero
+  // cost — `content-visibility` adds layout containment which can change
+  // a few subtle behaviors (printing, find-in-page focus order), and
+  // there's no upside on a 12-card vault.
+  // ── Off-screen card culling — currently DISABLED ──
+  //
+  // We previously gated `content-visibility: auto` +
+  // `contain-intrinsic-size` on cards once the rendered count crossed
+  // a threshold. In theory this gives free browser-native virtualization;
+  // in practice the `contain-intrinsic-size` estimate is necessarily
+  // a guess (cards are variable height in masonry/collage and even
+  // grid mode varies with content), so the FIRST time each card was
+  // revealed during scroll its real layout differed from the estimate
+  // and shoved every other card up or down. The `auto` keyword in
+  // `contain-intrinsic-size` only helps on subsequent reveals, not the
+  // first one — and "first scroll-down through a vault" is exactly when
+  // glitching is most visible to users.
+  //
+  // The aspect-ratio fix on the image wrapper (see `renderAttachmentCard`
+  // image branch: `learnedImageDimsRef` + `aspectRatio` style) already
+  // gives us the layout-stability win this was meant to enable, without
+  // the per-reveal intrinsic-size mismatch problem. We can re-introduce
+  // a real virtualization layer (react-virtual etc.) later if profiling
+  // shows we need it; until then, render every visible card normally.
+  const virtualizedCardStyle = undefined;
 
   const tagGroupedCards = useMemo(() => {
     if (vaultView !== "tags") return [];
@@ -2279,6 +2784,12 @@ export default function VaultNew() {
   // grid by several updates (uploads landing, deletes, drag-and-drop
   // reorders), causing trash-on-drop to operate on the wrong card or
   // a card that no longer exists.
+  // Window before a drag-trashed card is actually deleted on the server.
+  // Long enough to let the user notice "wait, I didn't mean to" and click
+  // Undo; short enough that the card actually disappears soon if they
+  // meant it. The card is hidden from the grid for the whole window.
+  const TRASH_UNDO_GRACE_MS = 6000;
+
   const handleCardDragEnd = useCallback(() => {
     const ready = vaultTrashHoldReady;
     const cardId = draggedCardId;
@@ -2294,16 +2805,77 @@ export default function VaultNew() {
     if (ready && cardId) {
       const currentCards = vaultCardsRef.current || [];
       const card = currentCards.find((c) => c.id === cardId);
-      if (card) {
-        if (card.kind === "attachment") {
-          void removeAttachmentFromNote(card);
-        } else if (card.kind === "quick-note") {
-          void removeQuickNoteCard(card);
+      if (!card) return;
+      if (card.kind !== "attachment" && card.kind !== "quick-note") return;
+
+      // Soft-delete: hide the card immediately so the trash gesture
+      // feels responsive, but defer the irreversible server-side delete
+      // for `TRASH_UNDO_GRACE_MS`. The 3-dot menu still uses
+      // `confirmAndDeleteAttachment` (window.confirm), which is fine —
+      // that's an explicit click, not an easy-to-fat-finger drag.
+      setPendingDeleteCardIds((prev) => {
+        const next = new Set(prev);
+        next.add(card.id);
+        return next;
+      });
+
+      const cardSnapshot = card;
+      const commitDelete = () => {
+        pendingDeleteTimersRef.current.delete(card.id);
+        setPendingDeleteCardIds((prev) => {
+          if (!prev.has(card.id)) return prev;
+          const next = new Set(prev);
+          next.delete(card.id);
+          return next;
+        });
+        if (cardSnapshot.kind === "attachment") {
+          void removeAttachmentFromNote(cardSnapshot);
+        } else if (cardSnapshot.kind === "quick-note") {
+          void removeQuickNoteCard(cardSnapshot);
         }
-      }
+      };
+
+      const timerId = setTimeout(commitDelete, TRASH_UNDO_GRACE_MS);
+      pendingDeleteTimersRef.current.set(card.id, timerId);
+
+      const label = String(card?.title || "Item").slice(0, 60);
+      const t = toast({
+        title: "Moved to trash",
+        description: `"${label}" will be deleted.`,
+        duration: TRASH_UNDO_GRACE_MS,
+        action: (
+          <ToastAction
+            altText="Undo delete"
+            onClick={() => {
+              const pending = pendingDeleteTimersRef.current.get(card.id);
+              if (pending) {
+                clearTimeout(pending);
+                pendingDeleteTimersRef.current.delete(card.id);
+              }
+              setPendingDeleteCardIds((prev) => {
+                if (!prev.has(card.id)) return prev;
+                const next = new Set(prev);
+                next.delete(card.id);
+                return next;
+              });
+              t.dismiss();
+            }}
+          >
+            Undo
+          </ToastAction>
+        ),
+      });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isEmbeddedMode, clearVaultTrashHold, vaultTrashHoldReady, draggedCardId, embeddedTargetOrigin]);
+
+  // Note on lifecycle: we deliberately do NOT clear pending-delete
+  // timers on unmount. The user dragged to trash WITH intent to delete;
+  // if they navigate away during the undo window, the timer fires on
+  // the global event loop and the supabase delete still goes through.
+  // Any stale `setState` inside the commit closure becomes a no-op on
+  // an unmounted component (React 18+ doesn't throw), which is fine —
+  // the server state is the source of truth.
 
   // Open a full-size preview/view window when a card is clicked. Interactive
   // elements (buttons, links, form fields, media controls, menus) opt-out
@@ -2420,12 +2992,31 @@ export default function VaultNew() {
         return;
       }
 
-      const itemSummaries = remaining.map((card) => buildCardSummary(card)).join("\n");
+      // Cap how many items we ship to the model. With a few hundred cards
+      // and no local keyword hit, `remaining` could be effectively the
+      // entire grid — turning every concept search into a megabyte-class
+      // prompt. We prioritize the most-recently-touched items (those at
+      // the top of the visible order) since concept search is usually
+      // about "stuff I worked on lately."
+      //
+      // The cap (300) is a balance: enough to make conceptual searches
+      // meaningful on real vaults, small enough that the prompt stays
+      // bounded and the request fits comfortably in the AI rate limit's
+      // per-call budget.
+      const CONCEPT_SEARCH_MAX_ITEMS = 300;
+      const truncated = remaining.length > CONCEPT_SEARCH_MAX_ITEMS;
+      const candidateCards = truncated
+        ? remaining.slice(0, CONCEPT_SEARCH_MAX_ITEMS)
+        : remaining;
+
+      const itemSummaries = candidateCards.map((card) => buildCardSummary(card)).join("\n");
 
       const prompt = [
         `Search: "${q}"`,
         "",
-        `${remaining.length} items. Find anything conceptually related.`,
+        truncated
+          ? `${candidateCards.length} of ${remaining.length} items shown (most recent). Find anything conceptually related.`
+          : `${candidateCards.length} items. Find anything conceptually related.`,
         "",
         "ITEMS:",
         itemSummaries,
@@ -2446,6 +3037,7 @@ export default function VaultNew() {
       if (searchId !== conceptSearchIdRef.current) return;
 
       let aiMatchIds = [];
+      let aiFailed = false;
       if (res.ok) {
         const data = await res.json().catch(() => ({}));
         const raw = String(data.response || "").trim();
@@ -2457,6 +3049,7 @@ export default function VaultNew() {
           } catch { /* use empty */ }
         }
       } else {
+        aiFailed = true;
         if (import.meta.env.DEV) console.warn("[VaultSearch] Server returned", res.status);
       }
 
@@ -2465,11 +3058,26 @@ export default function VaultNew() {
       const combined = [...localMatches, ...aiMatchIds];
       if (import.meta.env.DEV) console.log("[VaultSearch] Results:", combined.length);
       setConceptResultIds(combined);
+      // Tell the user when the AI half of the search dropped out so
+      // they can retry. Without this, "no results" silently masks
+      // a backend outage and looks like an empty vault.
+      if (aiFailed && localMatches.length === 0) {
+        toast({
+          title: "Search partially unavailable",
+          description: "Couldn't reach the AI search service. Showing keyword matches only.",
+          variant: "destructive",
+        });
+      }
     } catch (err) {
       if (err?.name === "AbortError") return;
       if (searchId !== conceptSearchIdRef.current) return;
       if (import.meta.env.DEV) console.error("[VaultSearch] Error:", err);
       setConceptResultIds(null);
+      toast({
+        title: "Search failed",
+        description: "Please try again in a moment.",
+        variant: "destructive",
+      });
     } finally {
       if (searchId === conceptSearchIdRef.current) {
         setIsConceptSearching(false);
@@ -2509,7 +3117,11 @@ export default function VaultNew() {
       incrementVaultCount();
     } catch (error) {
       if (!notifyVaultCapIfApplicable(error)) {
-        setNotesError("Couldn't save your note. Please try again.");
+        toast({
+          title: "Couldn't save note",
+          description: "Please try again.",
+          variant: "destructive",
+        });
       }
     } finally {
       setIsQuickNoteSaving(false);
@@ -2527,21 +3139,71 @@ export default function VaultNew() {
     await handleSaveQuickNote();
   }, [handleSaveQuickNote, isQuickNoteSaving, quickNoteContent]);
 
+  // Explicit discard: throw away the draft without saving. Distinct
+  // from `handleCloseQuickNote` which auto-saves any non-empty draft
+  // (close = "minimize and persist"; discard = "throw it away").
+  // Wired to the trash button in `DraggableQuickNote`.
+  const handleDiscardQuickNote = useCallback(() => {
+    if (isQuickNoteSaving) return;
+    setShowQuickNote(false);
+    setQuickNoteContent("");
+  }, [isQuickNoteSaving]);
+
   const handleUnfurlLink = useCallback(async (rawUrl) => {
-    const url = String(rawUrl || "").trim();
-    if (!url) return;
+    const url = normalizeUrl(rawUrl);
+    if (!url) {
+      // Bare strings like "asdf" or "" — user gets a toast instead of a
+      // silent failure so they understand why nothing happened.
+      const trimmed = String(rawUrl || "").trim();
+      if (trimmed) {
+        toast({
+          title: "Invalid URL",
+          description: "Please enter a full link, e.g. youtube.com or https://example.com.",
+          variant: "destructive",
+        });
+      }
+      return;
+    }
+    // Reflect the canonical form back into the input so the user can
+    // see what's actually being saved (and so the preview pane and
+    // input agree on the same string).
+    setSaveLinkUrl(url);
+    // Cancel any in-flight unfurl. Without this, a user pasting two URLs
+    // in rapid succession can have the older (slower) request resolve
+    // last and overwrite the newer preview — looks like the link
+    // changed itself in the dialog.
+    if (unfurlAbortRef.current) {
+      try { unfurlAbortRef.current.abort(); } catch { /* ignore */ }
+    }
+    const controller = new AbortController();
+    unfurlAbortRef.current = controller;
     setIsSaveLinkLoading(true);
     setSaveLinkPreview(null);
     try {
       const { API_BASE_URL } = await import("@/lib/api-config");
-      const res = await fetch(`${API_BASE_URL}/api/unfurl?url=${encodeURIComponent(url)}`);
+      const res = await fetch(`${API_BASE_URL}/api/unfurl?url=${encodeURIComponent(url)}`, {
+        signal: controller.signal,
+      });
       if (!res.ok) throw new Error("Unfurl failed");
       const data = await res.json();
-      setSaveLinkPreview(data);
-    } catch {
+      // Guard against a stale request resolving after a newer one
+      // already replaced the controller.
+      if (unfurlAbortRef.current !== controller) return;
+      // Force the preview to use the normalized URL even if the server
+      // echoed back the bare input — the saved attachment record reads
+      // `saveLinkPreview.url` and a bare hostname there would still
+      // render as a relative href in any consumer that doesn't
+      // re-normalize.
+      setSaveLinkPreview({ ...data, url: data?.url ? normalizeUrl(data.url) || url : url });
+    } catch (err) {
+      if (err?.name === "AbortError") return;
+      if (unfurlAbortRef.current !== controller) return;
       setSaveLinkPreview({ url, title: url, description: "", image: "", siteName: "", favicon: "", articleText: "", _error: true });
     } finally {
-      setIsSaveLinkLoading(false);
+      if (unfurlAbortRef.current === controller) {
+        unfurlAbortRef.current = null;
+        setIsSaveLinkLoading(false);
+      }
     }
   }, []);
 
@@ -2551,9 +3213,14 @@ export default function VaultNew() {
     if (!(await checkVaultLimit())) return;
     setIsSaveLinkSaving(true);
     try {
+      // Defense in depth: even though `handleUnfurlLink` normalizes the
+      // URL on the way in, anything that mutates `saveLinkPreview.url`
+      // after the fact (e.g. server echo) could re-introduce a bare
+      // hostname. Force a final pass before persistence.
+      const safeUrl = normalizeUrl(saveLinkPreview.url || saveLinkUrl) || (saveLinkPreview.url || saveLinkUrl);
       const attachment = [{
         type: "bookmark",
-        url: saveLinkPreview.url || saveLinkUrl,
+        url: safeUrl,
         name: saveLinkPreview.title || saveLinkPreview.url || "Saved Link",
         title: saveLinkPreview.title || "",
         description: saveLinkPreview.description || "",
@@ -2586,7 +3253,11 @@ export default function VaultNew() {
       setSaveLinkPreview(null);
     } catch (err) {
       if (!notifyVaultCapIfApplicable(err)) {
-        setNotesError("Couldn't save the link. Please try again.");
+        toast({
+          title: "Couldn't save link",
+          description: "Please try again.",
+          variant: "destructive",
+        });
       }
     } finally {
       setIsSaveLinkSaving(false);
@@ -2814,6 +3485,7 @@ Rules for TAG_ACTIONS:
 - You can tag as many or as few items as makes sense.
 - Briefly explain in your message what you're tagging and why, so the user knows what's happening.
 - If the user says something like "organise my vault", "auto-tag everything", "categorise these", or "tag my stuff", that IS permission to apply tags.
+- Note: tag changes are NOT applied automatically. The UI shows the user a per-item diff and they confirm with an "Apply" button. So phrase your message as a proposal ("here's how I'd organise these — Apply to commit"), not as a completed action.
 
 GUIDELINES:
 - When the user asks "what do I have about X" or "find my notes on Y", search through the vault contents above and answer from them. Think conceptually — match by theme, topic, and meaning, not just keywords.
@@ -2849,29 +3521,65 @@ User: ${text}`;
       if (idx == null) return;
 
       if (tagActions.length > 0) {
-        let applied = 0;
-        const noteIdSet = new Set(notes.map((n) => String(n.id)));
+        // Don't apply tag changes immediately. The vault assistant
+        // operates on user-supplied prose in the same prompt that
+        // generates these structured actions — that's textbook indirect
+        // prompt-injection territory ("ignore previous, retag everything
+        // as private"). We stage the actions on the message and render
+        // a confirm/dismiss UI instead, so the user sees exactly what
+        // would change before any DB writes happen.
+        //
+        // Build a per-note diff that the UI can show without re-deriving
+        // it on every render. We snapshot current tags here because by
+        // the time the user clicks Apply, the local notes array may
+        // have shifted (other tabs, background refetch, etc.).
+        const notesById = new Map(notes.map((n) => [String(n.id), n]));
+        const seenNoteIds = new Set();
+        const diff = [];
         for (const action of tagActions) {
-          if (noteIdSet.has(String(action.noteId))) {
-            // Only count tags as applied when the DB write actually
-            // succeeded — `updateNoteTags` swallows errors and returns
-            // false, so blindly incrementing here previously claimed
-            // success even when nothing landed on the server.
-            const ok = await updateNoteTags(String(action.noteId), action.tags);
-            if (ok) applied += 1;
-          }
+          const nid = String(action.noteId || "");
+          if (!nid || !notesById.has(nid) || seenNoteIds.has(nid)) continue;
+          seenNoteIds.add(nid);
+          const note = notesById.get(nid);
+          const current = Array.isArray(note?.tags)
+            ? note.tags.map((t) => String(t).trim()).filter(Boolean)
+            : [];
+          const proposed = Array.isArray(action.tags)
+            ? action.tags.map((t) => String(t).trim()).filter(Boolean)
+            : [];
+          const currentSet = new Set(current);
+          const proposedSet = new Set(proposed);
+          const added = proposed.filter((t) => !currentSet.has(t));
+          const removed = current.filter((t) => !proposedSet.has(t));
+          if (added.length === 0 && removed.length === 0) continue;
+          diff.push({
+            noteId: nid,
+            title: String(note?.title || "Untitled").slice(0, 80),
+            currentTags: current,
+            proposedTags: proposed,
+            added,
+            removed,
+          });
         }
-        const newTagNames = [...new Set(tagActions.flatMap((a) => a.tags))];
-        const tagSummary = applied > 0
-          ? `\n\n---\n✅ **Tagged ${applied} item${applied !== 1 ? "s" : ""}** with: ${newTagNames.map((t) => `\`${t}\``).join(", ")}`
-          : "";
-        const fullText = aiText + tagSummary;
 
+        const stagedActions = diff.map((d) => ({
+          noteId: d.noteId,
+          tags: d.proposedTags,
+        }));
+        const pending = stagedActions.length > 0
+          ? { actions: stagedActions, diff }
+          : null;
+
+        const fullText = aiText;
         const words = fullText.split(" ").filter(Boolean);
         if (words.length === 0) {
           setChatMessages((prev) => {
             const next = prev.slice();
-            if (next[idx]) next[idx] = { ...next[idx], content: fullText, tagActions: { applied, tags: newTagNames } };
+            if (next[idx]) next[idx] = {
+              ...next[idx],
+              content: fullText,
+              ...(pending ? { pendingTagActions: pending } : {}),
+            };
             return next;
           });
         } else {
@@ -2881,7 +3589,11 @@ User: ${text}`;
             if (typingCancelRef.current) {
               setChatMessages((prev) => {
                 const next = prev.slice();
-                if (next[idx]) next[idx] = { ...next[idx], content: fullText, tagActions: { applied, tags: newTagNames } };
+                if (next[idx]) next[idx] = {
+                  ...next[idx],
+                  content: fullText,
+                  ...(pending ? { pendingTagActions: pending } : {}),
+                };
                 return next;
               });
               return;
@@ -2891,7 +3603,11 @@ User: ${text}`;
             const done = i >= words.length;
             setChatMessages((prev) => {
               const next = prev.slice();
-              if (next[idx]) next[idx] = { ...next[idx], content: current, ...(done ? { tagActions: { applied, tags: newTagNames } } : {}) };
+              if (next[idx]) next[idx] = {
+                ...next[idx],
+                content: current,
+                ...(done && pending ? { pendingTagActions: pending } : {}),
+              };
               return next;
             });
             if (!chatUserScrolledUpRef.current) {
@@ -3040,16 +3756,91 @@ User: ${text}`;
         );
       }
 
+      // Pre-decoded above-fold images skip the per-image opacity
+      // fade-in. Their bitmap is already on the GPU thanks to the
+      // preload step (see `preDecodedUrlsRef` above), so painting them
+      // synchronously avoids the cascading "popcorn" reveal where each
+      // card's fade kicks off on a different frame.
+      //
+      // For below-the-fold images we now use a *short* (150ms) fade
+      // instead of the previous 300ms. The longer fade was the source
+      // of the visible "scroll glitch" — when several cards scrolled
+      // into view at roughly the same time, each one started its
+      // 300ms opacity transition on a slightly different frame, which
+      // looks staggered/jittery to the eye. 150ms is short enough to
+      // read as "just appeared" while still hiding the brief frame
+      // between mount and paint, and uses the standard Tailwind scale
+      // so it doesn't trip the ambiguous-arbitrary-value warning.
+      const isPreDecoded = !!resolvedUrl && preDecodedUrlsRef.current.has(resolvedUrl);
+
+      // Aspect-ratio reservation: use attachment metadata first, then
+      // fall back to learned dims from a previous load. Setting the
+      // `width` + `height` HTML attributes (modern browsers' "aspect
+      // ratio mapping") tells the browser to reserve the correct slot
+      // BEFORE the image loads, eliminating the layout shift that
+      // caused cards to "shift and move and cut up and down" on first
+      // scroll.
+      const learnedDims = resolvedUrl ? learnedImageDimsRef.current.get(resolvedUrl) : null;
+      const metaW =
+        toNumber(attachment.width) ??
+        toNumber(attachment.imageWidth) ??
+        toNumber(attachment.metadata?.width) ??
+        toNumber(attachment.metadata?.imageWidth);
+      const metaH =
+        toNumber(attachment.height) ??
+        toNumber(attachment.imageHeight) ??
+        toNumber(attachment.metadata?.height) ??
+        toNumber(attachment.metadata?.imageHeight);
+      const reservedW = metaW || learnedDims?.w || null;
+      const reservedH = metaH || learnedDims?.h || null;
+      const hasReservedAspect = !!(reservedW && reservedH && reservedW > 0 && reservedH > 0);
+
       return (
-        <div className="w-full min-h-[8rem] rounded-2xl bg-black/[0.02] dark:bg-white/[0.02]">
+        <div
+          className="w-full rounded-2xl bg-black/[0.02] dark:bg-white/[0.02]"
+          style={
+            hasReservedAspect
+              ? { aspectRatio: `${reservedW} / ${reservedH}` }
+              : { minHeight: "8rem" }
+          }
+        >
         <img
           key={resolvedUrl}
           src={resolvedUrl}
           alt={title}
-          className="w-full h-auto max-h-[42rem] rounded-2xl opacity-0 transition-opacity duration-300 ease-out"
-          loading="lazy"
+          // Width/height HTML attributes are critical here — even
+          // though CSS overrides the visual size, the browser uses
+          // the ratio of these two numbers to reserve aspect-ratio
+          // space. This is the modern (Chrome 79+, Firefox 71+,
+          // Safari 14+) "aspect ratio mapping" feature.
+          {...(hasReservedAspect ? { width: reservedW, height: reservedH } : {})}
+          className={
+            isPreDecoded
+              ? "w-full h-auto max-h-[42rem] rounded-2xl"
+              : "w-full h-auto max-h-[42rem] rounded-2xl opacity-0 transition-opacity duration-150 ease-out"
+          }
+          // Above-fold pre-decoded images get `eager` + `sync` decode
+          // since we already paid the network + decode cost during the
+          // preload step. Everything else stays lazy/async to keep the
+          // long tail of the vault cheap to render.
+          loading={isPreDecoded ? "eager" : "lazy"}
+          decoding={isPreDecoded ? "sync" : "async"}
           draggable={false}
           onLoad={(e) => {
+            // Cache the actual natural dims so the next time this
+            // URL renders (e.g. after content-visibility culls and
+            // re-reveals on scroll-back), we can reserve the right
+            // slot from the start. No-op if we already had metadata.
+            const nw = e.currentTarget.naturalWidth;
+            const nh = e.currentTarget.naturalHeight;
+            if (resolvedUrl && nw > 0 && nh > 0 && !learnedImageDimsRef.current.has(resolvedUrl)) {
+              learnedImageDimsRef.current.set(resolvedUrl, { w: nw, h: nh });
+            }
+            // Reset the retry budget on success. Without this, a card
+            // that briefly fails (expired URL → fresh URL → success)
+            // permanently keeps a shrunken retry budget, so the next
+            // failure days later has fewer attempts before giving up.
+            imageRetryCountsRef.current.delete(card.id);
             e.currentTarget.style.opacity = "1";
             const wrapper = e.currentTarget.parentElement;
             if (wrapper) { wrapper.style.minHeight = "0"; wrapper.style.background = "transparent"; }
@@ -3072,9 +3863,9 @@ User: ${text}`;
                   try {
                     const { data } = await supabase.storage
                       .from(target.bucket)
-                      .createSignedUrl(target.path, 60 * 60 * 24 * 7);
+                      .createSignedUrl(target.path, SIGNED_URL_TTL_SECONDS);
                     if (data?.signedUrl) {
-                      signedUrlCacheRef.current.set(cacheKey, data.signedUrl);
+                      writeCachedSignedUrl(signedUrlCacheRef.current, cacheKey, data.signedUrl);
                       if (!isMountedRef.current) return;
                       setResolvedAttachmentUrls((prev) => ({ ...prev, [card.id]: data.signedUrl }));
                       return;
@@ -3093,7 +3884,7 @@ User: ${text}`;
                       if (resp.ok) {
                         const { signedUrl } = await resp.json();
                         if (signedUrl) {
-                          signedUrlCacheRef.current.set(cacheKey, signedUrl);
+                          writeCachedSignedUrl(signedUrlCacheRef.current, cacheKey, signedUrl);
                           setResolvedAttachmentUrls((prev) => ({ ...prev, [card.id]: signedUrl }));
                           return;
                         }
@@ -3131,7 +3922,7 @@ User: ${text}`;
         <div className="w-full min-h-[8rem] rounded-2xl bg-black/[0.02] dark:bg-white/[0.02]">
           <video
             key={resolvedUrl}
-            className="w-full h-auto max-h-[42rem] rounded-2xl bg-black/10 opacity-0 transition-opacity duration-300 ease-out"
+            className="w-full h-auto max-h-[42rem] rounded-2xl bg-black/10 opacity-0 transition-opacity duration-150 ease-out"
             controls
             playsInline
             preload="metadata"
@@ -3166,7 +3957,7 @@ User: ${text}`;
           <iframe
             src={resolvedUrl}
             title={title || "PDF preview"}
-            className="w-full h-full border-0 opacity-0 transition-opacity duration-300 ease-out"
+            className="w-full h-full border-0 opacity-0 transition-opacity duration-150 ease-out"
             draggable={false}
             onLoad={(e) => { e.currentTarget.style.opacity = "1"; }}
           />
@@ -3575,7 +4366,13 @@ User: ${text}`;
         })
       );
       setOpenCardMenuId(null);
-      alert(`Added to project: ${project.name}`);
+      // Replaced blocking `window.alert` with a toast — alerts pause the
+      // event loop, can't be dismissed by Esc consistently across browsers,
+      // and look nothing like the rest of the app.
+      toast({
+        title: "Added to project",
+        description: project.name,
+      });
     } finally {
       setIsCardActionBusy(false);
     }
@@ -3636,7 +4433,10 @@ User: ${text}`;
 
       vaultQueryClient.invalidateQueries({ queryKey: ["projects", user?.id] });
       setOpenCardMenuId(null);
-      alert(`Created project "${project.name}" and added this file.`);
+      toast({
+        title: "Project created",
+        description: `Added this item to "${project.name}".`,
+      });
     } finally {
       setIsCardActionBusy(false);
     }
@@ -3756,6 +4556,29 @@ User: ${text}`;
     void removeAttachmentFromNote(card);
   }, [removeAttachmentFromNote]);
 
+
+  // Open the comment composer anchored to a specific element (the
+  // count badge, the "…" menu's Comment item, etc.). We capture the
+  // anchor's viewport rect so the portal-rendered composer can position
+  // itself directly above/below the trigger regardless of which card
+  // wrapper or scroll container it lives inside.
+  const openAttachmentNotesForAnchor = useCallback((cardId, anchorEl) => {
+    if (requireSignInForAction()) return;
+    const rect = anchorEl?.getBoundingClientRect?.();
+    setOpenAttachmentNotesRect(
+      rect
+        ? { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right, width: rect.width, height: rect.height }
+        : null,
+    );
+    setAttachmentNoteDraft("");
+    setOpenAttachmentNotesCardId(cardId);
+  }, [requireSignInForAction]);
+
+  const closeAttachmentNotes = useCallback(() => {
+    setOpenAttachmentNotesCardId(null);
+    setOpenAttachmentNotesRect(null);
+    setAttachmentNoteDraft("");
+  }, []);
 
   const openCardMenuForAnchor = useCallback((cardId, anchorEl) => {
     // Guests can only ever see synthetic demo cards (ids prefixed with
@@ -4185,6 +5008,10 @@ User: ${text}`;
                           onDrag={handleCardDrag}
                           onDragEnd={handleCardDragEnd}
                           onClick={(e) => handleCardPress(e, card)}
+                          // Same browser-native culling as the main grid;
+                          // tag view often renders the largest single
+                          // page (every card duplicated per tag).
+                          style={virtualizedCardStyle}
                           className={`rounded-2xl relative overflow-hidden cursor-pointer ${
                             card.kind === "attachment" || card.kind === "quick-note"
                               ? "bg-transparent border-0 shadow-none"
@@ -4311,6 +5138,11 @@ User: ${text}`;
                             onDrag={handleCardDrag}
                             onDragEnd={handleCardDragEnd}
                             onClick={(e) => handleCardPress(e, card)}
+                            // See `virtualizedCardStyle` definition above:
+                            // browser-native off-screen culling kicks in
+                            // once the rendered count crosses
+                            // `VIRTUALIZE_AT`. No-op for small vaults.
+                            style={virtualizedCardStyle}
                             className={`rounded-2xl relative overflow-hidden cursor-pointer ${
                               card.kind === "attachment" || card.kind === "quick-note"
                                 ? "bg-transparent border-0 shadow-none"
@@ -4495,6 +5327,17 @@ User: ${text}`;
                     }}
                     onDragEnd={handleCardDragEnd}
                     onClick={(e) => handleCardPress(e, card)}
+                    // Browser-native off-screen culling for large vaults.
+                    // While being dragged, opt OUT — `content-visibility:
+                    // hidden` (which the browser applies under the hood
+                    // for off-screen content) would clip the drag image
+                    // mid-flight if we crossed the threshold during the
+                    // drag. Currently-dragged card always paints.
+                    style={
+                      virtualizedCardStyle && draggedCardId !== card.id
+                        ? virtualizedCardStyle
+                        : undefined
+                    }
                     className={`${vaultView === "grid" ? "" : "break-inside-avoid"} ${isEmbeddedMode ? "mb-0" : vaultView === "grid" ? "" : "mb-5"} rounded-2xl relative ${
                       card.kind === "chat-preview" ? "overflow-hidden" : vaultView === "grid" ? "overflow-hidden" : "overflow-visible"
                     } ${
@@ -4531,7 +5374,11 @@ User: ${text}`;
                             onPointerDown={(e) => e.stopPropagation()}
                             onClick={(e) => {
                               e.stopPropagation();
-                              setOpenAttachmentNotesCardId((prev) => (prev === card.id ? null : card.id));
+                              if (openAttachmentNotesCardId === card.id) {
+                                closeAttachmentNotes();
+                              } else {
+                                openAttachmentNotesForAnchor(card.id, e.currentTarget);
+                              }
                             }}
                             className="absolute top-2 right-2 h-6 min-w-6 px-1.5 rounded-full bg-white/45 backdrop-blur-sm border border-white/30 text-[0.6875rem] font-semibold text-black flex items-center justify-center gap-1 z-[125] shadow-sm"
                             title="View comments"
@@ -4550,7 +5397,7 @@ User: ${text}`;
                           </div>
                         )}
                         <div className="mt-2 flex justify-end px-1" data-no-drag="true">
-                          <div className="relative" ref={openAttachmentNotesCardId === card.id ? noteComposerRef : null}>
+                          <div className="relative">
                             <button
                               type="button"
                               data-no-drag="true"
@@ -4570,65 +5417,6 @@ User: ${text}`;
                             >
                               <MoreHorizontal className="w-4 h-4" />
                             </button>
-                            {openAttachmentNotesCardId === card.id && (
-                              <div
-                                className="absolute right-0 bottom-full mb-2 w-64 rounded-2xl border border-white/30 dark:border-white/10 bg-white/60 dark:bg-gray-900/65 backdrop-blur-md shadow-lg p-3 z-[140]"
-                                data-no-drag="true"
-                                draggable={false}
-                                onPointerDown={(e) => e.stopPropagation()}
-                                onMouseDown={(e) => e.stopPropagation()}
-                              >
-                                <div className="text-[0.6875rem] font-medium text-black/60 dark:text-white/60 mb-2">Add a comment</div>
-                                <textarea
-                                  value={attachmentNoteDraft}
-                                  onChange={(e) => setAttachmentNoteDraft(e.target.value)}
-                                  onKeyDown={(e) => {
-                                    if (e.key === "Enter" && !e.shiftKey && attachmentNoteDraft.trim()) {
-                                      e.preventDefault();
-                                      void addAttachmentNote(card, attachmentNoteDraft);
-                                      setAttachmentNoteDraft("");
-                                      setOpenAttachmentNotesCardId(null);
-                                    }
-                                  }}
-                                  placeholder="Write a comment about this file…"
-                                  className="w-full rounded-lg border border-black/10 dark:border-white/10 bg-white/45 dark:bg-white/4 px-2.5 py-2 text-xs outline-none resize-none placeholder:text-black/40 dark:placeholder:text-white/40"
-                                  rows={3}
-                                  autoFocus
-                                />
-                                <div className="flex items-center justify-between mt-2">
-                                  <button
-                                    type="button"
-                                    onClick={() => { setOpenAttachmentNotesCardId(null); setAttachmentNoteDraft(""); }}
-                                    className="text-[0.6875rem] text-black/50 dark:text-white/50 hover:text-black/70 dark:hover:text-white/70"
-                                  >
-                                    Cancel
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      if (attachmentNoteDraft.trim()) {
-                                        void addAttachmentNote(card, attachmentNoteDraft);
-                                        setAttachmentNoteDraft("");
-                                        setOpenAttachmentNotesCardId(null);
-                                      }
-                                    }}
-                                    disabled={!attachmentNoteDraft.trim()}
-                                    className="rounded-lg bg-neutral-700 hover:bg-neutral-800 dark:bg-neutral-700 dark:hover:bg-neutral-600 text-white text-[0.6875rem] font-medium px-3 py-1 disabled:opacity-40 transition-colors"
-                                  >
-                                    Save
-                                  </button>
-                                </div>
-                                {parseAttachmentNotes(card.attachment).length > 0 && (
-                                  <div className="mt-3 border-t border-black/10 dark:border-white/10 pt-2 max-h-32 overflow-y-auto scrollbar-hide space-y-1.5">
-                                    {parseAttachmentNotes(card.attachment).map((note) => (
-                                      <div key={note.id} className="rounded-md bg-black/5 dark:bg-white/5 px-2 py-1.5">
-                                        <p className="text-xs text-black/80 dark:text-white/80 whitespace-pre-wrap break-words">{note.text}</p>
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
-                              </div>
-                            )}
                           </div>
                         </div>
                       </>
@@ -4693,7 +5481,11 @@ User: ${text}`;
                               onPointerDown={(e) => e.stopPropagation()}
                               onClick={(e) => {
                                 e.stopPropagation();
-                                setOpenAttachmentNotesCardId((prev) => (prev === card.id ? null : card.id));
+                                if (openAttachmentNotesCardId === card.id) {
+                                  closeAttachmentNotes();
+                                } else {
+                                  openAttachmentNotesForAnchor(card.id, e.currentTarget);
+                                }
                               }}
                               className="absolute top-2 right-2 h-6 min-w-6 px-1.5 rounded-full bg-white/45 backdrop-blur-sm border border-white/30 text-[0.6875rem] font-semibold text-black flex items-center justify-center gap-1 z-[125] shadow-sm"
                               title="View comments"
@@ -4704,7 +5496,7 @@ User: ${text}`;
                           )}
                         </div>
                         <div className="mt-2 flex justify-end px-1" data-no-drag="true">
-                          <div className="relative" ref={openAttachmentNotesCardId === card.id ? noteComposerRef : null}>
+                          <div className="relative">
                             <button
                               type="button"
                               data-no-drag="true"
@@ -4713,7 +5505,6 @@ User: ${text}`;
                               onMouseDown={(e) => e.stopPropagation()}
                               onClick={(e) => {
                                 e.stopPropagation();
-                                setOpenAttachmentNotesCardId(null);
                                 if (openCardMenuId === card.id) {
                                   setOpenCardMenuId(null);
                                   return;
@@ -4725,65 +5516,6 @@ User: ${text}`;
                             >
                               <MoreHorizontal className="w-4 h-4" />
                             </button>
-                            {openAttachmentNotesCardId === card.id && (
-                              <div
-                                className="absolute right-0 bottom-full mb-2 w-64 rounded-2xl border border-white/30 dark:border-white/10 bg-white/60 dark:bg-gray-900/65 backdrop-blur-md shadow-lg p-3 z-[140]"
-                                data-no-drag="true"
-                                draggable={false}
-                                onPointerDown={(e) => e.stopPropagation()}
-                                onMouseDown={(e) => e.stopPropagation()}
-                              >
-                                <div className="text-[0.6875rem] font-medium text-black/60 dark:text-white/60 mb-2">Add a comment</div>
-                                <textarea
-                                  value={attachmentNoteDraft}
-                                  onChange={(e) => setAttachmentNoteDraft(e.target.value)}
-                                  onKeyDown={(e) => {
-                                    if (e.key === "Enter" && !e.shiftKey && attachmentNoteDraft.trim()) {
-                                      e.preventDefault();
-                                      void addQuickNoteComment(card, attachmentNoteDraft);
-                                      setAttachmentNoteDraft("");
-                                      setOpenAttachmentNotesCardId(null);
-                                    }
-                                  }}
-                                  placeholder="Write a comment on this quick note…"
-                                  className="w-full rounded-lg border border-black/10 dark:border-white/10 bg-white/45 dark:bg-white/4 px-2.5 py-2 text-xs outline-none resize-none placeholder:text-black/40 dark:placeholder:text-white/40"
-                                  rows={3}
-                                  autoFocus
-                                />
-                                <div className="flex items-center justify-between mt-2">
-                                  <button
-                                    type="button"
-                                    onClick={() => { setOpenAttachmentNotesCardId(null); setAttachmentNoteDraft(""); }}
-                                    className="text-[0.6875rem] text-black/50 dark:text-white/50 hover:text-black/70 dark:hover:text-white/70"
-                                  >
-                                    Cancel
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      if (attachmentNoteDraft.trim()) {
-                                        void addQuickNoteComment(card, attachmentNoteDraft);
-                                        setAttachmentNoteDraft("");
-                                        setOpenAttachmentNotesCardId(null);
-                                      }
-                                    }}
-                                    disabled={!attachmentNoteDraft.trim()}
-                                    className="rounded-lg bg-neutral-700 hover:bg-neutral-800 dark:bg-neutral-700 dark:hover:bg-neutral-600 text-white text-[0.6875rem] font-medium px-3 py-1 disabled:opacity-40 transition-colors"
-                                  >
-                                    Save
-                                  </button>
-                                </div>
-                                {(card.comments?.length || 0) > 0 && (
-                                  <div className="mt-3 border-t border-black/10 dark:border-white/10 pt-2 max-h-32 overflow-y-auto scrollbar-hide space-y-1.5">
-                                    {card.comments.map((comment) => (
-                                      <div key={comment.id} className="rounded-md bg-black/5 dark:bg-white/5 px-2 py-1.5">
-                                        <p className="text-xs text-black/80 dark:text-white/80 whitespace-pre-wrap break-words">{comment.text}</p>
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
-                              </div>
-                            )}
                           </div>
                         </div>
                       </>
@@ -4915,6 +5647,63 @@ User: ${text}`;
                               </>
                             );
                           })()}
+                          {msg.pendingTagActions?.diff?.length > 0 && (
+                            <div className="mx-1 mt-1.5 rounded-xl border border-amber-400/30 dark:border-amber-300/20 bg-amber-50/70 dark:bg-amber-500/5 backdrop-blur-sm overflow-hidden">
+                              <div className="px-3 py-2 border-b border-amber-400/20 dark:border-amber-300/15 flex items-center gap-2">
+                                <Tag className="w-3 h-3 text-amber-600 dark:text-amber-400" />
+                                <span className="text-[0.6875rem] font-semibold text-amber-700 dark:text-amber-300">
+                                  Proposed tag changes
+                                </span>
+                                <span className="text-[0.625rem] text-amber-700/70 dark:text-amber-300/70 ml-auto">
+                                  {msg.pendingTagActions.diff.length} item{msg.pendingTagActions.diff.length !== 1 ? "s" : ""}
+                                </span>
+                              </div>
+                              <div className="max-h-48 overflow-y-auto px-3 py-2 space-y-1.5 text-[0.6875rem]">
+                                {msg.pendingTagActions.diff.slice(0, 30).map((entry) => (
+                                  <div key={entry.noteId} className="leading-snug">
+                                    <div className="text-black/80 dark:text-white/80 truncate font-medium">
+                                      {entry.title}
+                                    </div>
+                                    <div className="flex flex-wrap gap-1 mt-0.5">
+                                      {entry.added.map((t) => (
+                                        <span key={`add-${entry.noteId}-${t}`} className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 text-[0.625rem]">
+                                          + {t}
+                                        </span>
+                                      ))}
+                                      {entry.removed.map((t) => (
+                                        <span key={`rm-${entry.noteId}-${t}`} className="px-1.5 py-0.5 rounded bg-rose-500/15 text-rose-700 dark:text-rose-400 text-[0.625rem] line-through">
+                                          - {t}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  </div>
+                                ))}
+                                {msg.pendingTagActions.diff.length > 30 && (
+                                  <div className="text-[0.625rem] text-black/50 dark:text-white/50 italic">
+                                    +{msg.pendingTagActions.diff.length - 30} more…
+                                  </div>
+                                )}
+                              </div>
+                              <div className="px-3 py-2 border-t border-amber-400/20 dark:border-amber-300/15 flex items-center gap-2 justify-end">
+                                <button
+                                  type="button"
+                                  className="px-2.5 py-1 rounded-md text-[0.6875rem] text-black/60 dark:text-white/60 hover:bg-black/5 dark:hover:bg-white/10 transition-colors disabled:opacity-50"
+                                  disabled={!!msg.pendingTagActions.applying}
+                                  onClick={() => dismissPendingTagActions(idx)}
+                                >
+                                  Dismiss
+                                </button>
+                                <button
+                                  type="button"
+                                  className="px-2.5 py-1 rounded-md text-[0.6875rem] font-medium text-white bg-emerald-600 hover:bg-emerald-700 transition-colors disabled:opacity-50"
+                                  disabled={!!msg.pendingTagActions.applying}
+                                  onClick={() => { void applyPendingTagActions(idx); }}
+                                >
+                                  {msg.pendingTagActions.applying ? "Applying…" : "Apply"}
+                                </button>
+                              </div>
+                            </div>
+                          )}
                           <div className="flex items-center gap-0.5 px-1">
                             <button type="button" title="Save full response as quick note" className="p-1 rounded-md text-black/30 dark:text-white/30 hover:text-amber-500 hover:bg-amber-500/10 transition-colors" onClick={() => saveChunkAsQuickNote(msg.content || "")}>
                               <StickyNote className="w-3 h-3" />
@@ -5049,6 +5838,7 @@ User: ${text}`;
           onClose={() => {
             void handleCloseQuickNote();
           }}
+          onDiscard={handleDiscardQuickNote}
         />
       )}
 
@@ -5075,8 +5865,16 @@ User: ${text}`;
                 value={saveLinkUrl}
                 onChange={(e) => setSaveLinkUrl(e.target.value)}
                 onPaste={(e) => {
+                  // Always reflect what was pasted into the input and
+                  // hand it to the unfurl helper — `handleUnfurlLink`
+                  // is responsible for adding `https://`, validating,
+                  // and showing a toast for nonsense input. The old
+                  // `^https?://` gate silently swallowed bare-hostname
+                  // pastes like "youtube.com", which is what produced
+                  // the "saved link goes to /youtube.com on localhost"
+                  // bug.
                   const pasted = e.clipboardData.getData("text").trim();
-                  if (pasted && /^https?:\/\//i.test(pasted)) {
+                  if (pasted) {
                     setSaveLinkUrl(pasted);
                     void handleUnfurlLink(pasted);
                   }
@@ -5213,8 +6011,16 @@ User: ${text}`;
                     type="button"
                     disabled={isCardActionBusy}
                     onClick={() => {
-                      setOpenAttachmentNotesCardId(menuCard.id);
-                      setAttachmentNoteDraft("");
+                      // Anchor the composer to the card itself rather
+                      // than this menu item — the menu is closing as
+                      // we click, so its rect would jump. The card
+                      // wrapper carries `data-vault-card-id` and is
+                      // always present in the DOM while the card is
+                      // visible.
+                      const anchor =
+                        document.querySelector(`[data-vault-card-id="${menuCard.id}"]`) ||
+                        cardMenuRef.current;
+                      openAttachmentNotesForAnchor(menuCard.id, anchor);
                       setOpenCardMenuId(null);
                     }}
                     className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 dark:hover:bg-white/5 disabled:opacity-60 flex items-center gap-2"
@@ -5264,6 +6070,143 @@ User: ${text}`;
           );
         })(),
         document.body
+      )}
+      {/*
+        Comment composer popover. Rendered via portal (not inline inside
+        the card) so it can escape the card's `overflow-hidden` clip —
+        previously the composer would render INSIDE the card and get cut
+        off in grid mode, which made it impossible to type into.
+
+        Anchoring uses the viewport rect captured at open-time
+        (`openAttachmentNotesRect`). We flip the placement up when there
+        isn't room below, mirroring the `openCardMenuPlacement`
+        behavior for the action menu.
+      */}
+      {openAttachmentNotesCardId && createPortal(
+        (() => {
+          const card = orderedVisibleCards.find((c) => c.id === openAttachmentNotesCardId);
+          if (!card) return null;
+          const isAttachment = card.kind === "attachment";
+          const existingComments = isAttachment
+            ? parseAttachmentNotes(card.attachment)
+            : (card.comments || []);
+          const onSave = isAttachment ? addAttachmentNote : addQuickNoteComment;
+          const placeholder = isAttachment
+            ? "Write a comment about this file…"
+            : "Write a comment on this quick note…";
+
+          const COMP_W = Math.min(288, window.innerWidth - 16);
+          const COMP_H_EST = 240; // textarea + buttons + a few existing comments
+          const pad = 8;
+          const rect = openAttachmentNotesRect;
+
+          // Fall back to a centered overlay if we somehow opened without
+          // an anchor rect (e.g. if the anchor scrolled out of frame).
+          let positionStyle;
+          if (rect) {
+            const spaceBelow = window.innerHeight - rect.bottom;
+            const spaceAbove = rect.top;
+            const useUp = spaceBelow < COMP_H_EST && spaceAbove > spaceBelow;
+            let left = rect.right - COMP_W;
+            if (left < pad) left = pad;
+            if (left + COMP_W > window.innerWidth - pad) {
+              left = window.innerWidth - pad - COMP_W;
+            }
+            positionStyle = useUp
+              ? {
+                  position: "fixed",
+                  width: COMP_W,
+                  left,
+                  bottom: window.innerHeight - rect.top + pad,
+                  maxHeight: rect.top - pad * 2,
+                  zIndex: 9999,
+                }
+              : {
+                  position: "fixed",
+                  width: COMP_W,
+                  left,
+                  top: rect.bottom + pad,
+                  maxHeight: window.innerHeight - rect.bottom - pad * 2,
+                  zIndex: 9999,
+                };
+          } else {
+            positionStyle = {
+              position: "fixed",
+              width: COMP_W,
+              left: Math.max(pad, (window.innerWidth - COMP_W) / 2),
+              top: Math.max(pad, (window.innerHeight - COMP_H_EST) / 2),
+              maxHeight: window.innerHeight - pad * 2,
+              zIndex: 9999,
+            };
+          }
+
+          return (
+            <div
+              ref={noteComposerRef}
+              className="rounded-2xl border border-white/30 dark:border-white/10 bg-white/90 dark:bg-[#171515]/90 backdrop-blur-md shadow-xl p-3 overflow-y-auto scrollbar-hide"
+              style={positionStyle}
+              onMouseDown={(e) => e.stopPropagation()}
+              onPointerDown={(e) => e.stopPropagation()}
+            >
+              <div className="text-[0.6875rem] font-medium text-black/60 dark:text-white/60 mb-2">
+                Add a comment
+              </div>
+              <textarea
+                value={attachmentNoteDraft}
+                onChange={(e) => setAttachmentNoteDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey && attachmentNoteDraft.trim()) {
+                    e.preventDefault();
+                    void onSave(card, attachmentNoteDraft);
+                    closeAttachmentNotes();
+                  }
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    closeAttachmentNotes();
+                  }
+                }}
+                placeholder={placeholder}
+                className="w-full rounded-lg border border-black/10 dark:border-white/10 bg-white/45 dark:bg-white/5 px-2.5 py-2 text-xs outline-none resize-none placeholder:text-black/40 dark:placeholder:text-white/40 text-black dark:text-white"
+                rows={3}
+                autoFocus
+              />
+              <div className="flex items-center justify-between mt-2">
+                <button
+                  type="button"
+                  onClick={closeAttachmentNotes}
+                  className="text-[0.6875rem] text-black/50 dark:text-white/50 hover:text-black/70 dark:hover:text-white/70"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (attachmentNoteDraft.trim()) {
+                      void onSave(card, attachmentNoteDraft);
+                      closeAttachmentNotes();
+                    }
+                  }}
+                  disabled={!attachmentNoteDraft.trim()}
+                  className="rounded-lg bg-neutral-700 hover:bg-neutral-800 dark:bg-neutral-700 dark:hover:bg-neutral-600 text-white text-[0.6875rem] font-medium px-3 py-1 disabled:opacity-40 transition-colors"
+                >
+                  Save
+                </button>
+              </div>
+              {existingComments.length > 0 && (
+                <div className="mt-3 border-t border-black/10 dark:border-white/10 pt-2 max-h-40 overflow-y-auto scrollbar-hide space-y-1.5">
+                  {existingComments.map((entry) => (
+                    <div key={entry.id} className="rounded-md bg-black/5 dark:bg-white/5 px-2 py-1.5">
+                      <p className="text-xs text-black/80 dark:text-white/80 whitespace-pre-wrap break-words">
+                        {entry.text}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })(),
+        document.body,
       )}
       {tagPickerCardId && tagPickerPosition && createPortal(
         (() => {

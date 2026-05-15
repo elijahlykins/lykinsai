@@ -2988,7 +2988,7 @@ export default function SynthesisLayer() {
       <PlanGate
         minPlan="studio"
         feature="Mind Map"
-        description={`Your Free plan includes the Synthesis Layer up to ${FREE_SYNTHESIS_NODE_LIMIT} nodes. You've reached ${userCreatedNodeCount} — upgrade to Studio for the full, unlimited mind map.`}
+        description={`Your Free plan includes the Synthesis Layer up to ${FREE_SYNTHESIS_NODE_LIMIT} nodes. You've reached ${userCreatedNodeCount} — upgrade to Pro for the full, unlimited mind map.`}
       >
         {null}
       </PlanGate>

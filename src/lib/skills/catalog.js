@@ -228,7 +228,7 @@ export const SKILLS = [
     summary:
       "Visualize how every grid, project, and vault item connects in one live map.",
     status: "experimental",
-    statusLabel: "Studio plan",
+    statusLabel: "Pro plan",
     action: { route: "/synthesis-layer" },
   },
   {
