@@ -51,8 +51,7 @@ export default function MobileTabBar() {
     location.pathname === "/dashboard" ||
     location.pathname === "/omnia" ||
     location.pathname.startsWith("/grid/");
-  const isVaultActive =
-    location.pathname === "/vault" || location.pathname === "/vaultchat" || location.pathname === "/vault-chat";
+  const isVaultActive = location.pathname === "/vault";
 
   React.useEffect(() => {
     document.body.classList.add("has-mobile-tabbar");

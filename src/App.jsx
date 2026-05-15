@@ -23,7 +23,6 @@ import AppSidebar from "./components/AppSidebar";
 import MobileTabBar from "./components/MobileTabBar";
 import MobileExperienceNotice from "./components/MobileExperienceNotice";
 import VaultConnectionsShell from "./pages/VaultConnectionsShell";
-import VaultChatNew from "./pages/new/VaultChatNew";
 import TagManagementNew from "./pages/new/TagManagementNew";
 import BillingNew from "./pages/new/BillingNew";
 import GuestSignInPrompt from "./components/GuestSignInPrompt";
@@ -39,7 +38,6 @@ import { useIsMobile } from "@/hooks/useViewportTier";
 
 
 const legacyEnabled = String(import.meta.env.VITE_ENABLE_LEGACY_NOTES || "").toLowerCase() === "true";
-const LegacyVaultChat = React.lazy(() => import("./pages/VaultChat"));
 const LegacyTagManagement = React.lazy(() => import("./pages/TagManagement"));
 const loadingFallback = <LoadingScreen isLoading={true} />;
 
@@ -221,34 +219,12 @@ function AppShell() {
                 </ProtectedRoute>
               }
             />
-            <Route
-              path="/vaultchat"
-              element={
-                <ProtectedRoute>
-                  {legacyEnabled ? (
-                    <Suspense fallback={loadingFallback}>
-                      <LegacyVaultChat />
-                    </Suspense>
-                  ) : (
-                    <VaultChatNew />
-                  )}
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/vault-chat"
-              element={
-                <ProtectedRoute>
-                  {legacyEnabled ? (
-                    <Suspense fallback={loadingFallback}>
-                      <LegacyVaultChat />
-                    </Suspense>
-                  ) : (
-                    <VaultChatNew />
-                  )}
-                </ProtectedRoute>
-              }
-            />
+            {/* Legacy `/vaultchat` + `/vault-chat` paths now redirect to the
+                unified `/vault` surface so old bookmarks, sidebar links, and
+                onboarding deep-links don't dead-end. The standalone vault-chat
+                surface is gone. */}
+            <Route path="/vaultchat" element={<Navigate to="/vault" replace />} />
+            <Route path="/vault-chat" element={<Navigate to="/vault" replace />} />
             <Route
               path="/billing"
               element={

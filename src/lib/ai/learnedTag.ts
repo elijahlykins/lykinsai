@@ -1,7 +1,7 @@
 /**
  * Shared <learned> / <updated> tag helpers used by every authenticated
- * chat surface (OmniaFocusedChat + OmniaSideRail via chatSendOrchestrator,
- * VaultChat, and ProjectPlaceholder).
+ * chat surface (OmniaFocusedChat + OmniaSideRail via chatSendOrchestrator
+ * and ProjectPlaceholder).
  *
  * Two paths are supported and the surfaces should call them in this order:
  *

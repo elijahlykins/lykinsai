@@ -5,8 +5,8 @@
  *
  * Why this lives in its own module:
  *   • Every chat surface (OmniaFocusedChat / OmniaSideRail via
- *     chatSendOrchestrator, VaultChat, ProjectPlaceholder, useChatEngine,
- *     VaultNew) used to inline the same blame-the-model string. Drifting
+ *     chatSendOrchestrator, ProjectPlaceholder, useChatEngine, VaultNew)
+ *     used to inline the same blame-the-model string. Drifting
  *     copy meant some surfaces said "this model isn't working — try
  *     another model" while others said "something went wrong" — neither
  *     of which is honest about WHO failed (the network / provider, not

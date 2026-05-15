@@ -1527,8 +1527,8 @@ const ENVELOPE_KEY_RE = /"(?:assistant|response|actions|follow_up_questions|foll
 const ACTION_KEY_HINT_RE = /"type"\s*:\s*"(?:create_|update_|delete_|move_|resize_|color_|connect_|disconnect_|organize_|append_notes|update_notes|edit_block)/;
 
 /* ------------------------------------------------------------------ */
-/*  Learn-a-fact helpers live in src/lib/ai/learnedTag.ts so VaultChat */
-/*  / ProjectPlaceholder share the exact same parser + posters. The   */
+/*  Learn-a-fact helpers live in src/lib/ai/learnedTag.ts so the      */
+/*  ProjectPlaceholder shares the exact same parser + posters. The    */
 /*  primary tag-emit + fallback classifier wiring lives in            */
 /*  postProcessResponse below.                                         */
 /* ------------------------------------------------------------------ */
@@ -1929,40 +1929,56 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
   /* Phase 1: transcribe attachments */
   await transcribeAttachments(sentAttachments, apiBase, isBrickAction, signal, state.setChatStatusText);
 
-  /* Phase 2: canvas context + YouTube enrichment */
+  /* Phase 2: canvas context + YouTube enrichment
+   *
+   * The canvas / grid surface is unplugged in the current product, so
+   * `buildCanvasContext()` short-circuits to "" and the canvas store
+   * carries no blocks. We detect that once here and skip every
+   * grid-iterating code path below — focused-block YouTube transcript
+   * pickup, notes-panel injection, hasFocusedVideo / hasFocusedBricks
+   * checks, vision-image scanning across the board, and the dead
+   * action-path. Keeps the request payload small and the client-side
+   * pre-flight near-zero so chat feels instant. If/when the grid is
+   * re-enabled, the early-return below flips off automatically.
+   */
   let canvasContext = context.buildCanvasContext();
+  const canvasState = canvas.getCanvasState();
+  const canvasHasContent = Object.keys(canvasState.blocks || {}).length > 0;
 
-  const earlyFocused: string[] = (() => {
-    const s = canvas.getCanvasState();
-    return Array.isArray(s.focusedBrickIds) ? s.focusedBrickIds : [];
-  })();
+  const earlyFocused: string[] =
+    canvasHasContent && Array.isArray(canvasState.focusedBrickIds)
+      ? canvasState.focusedBrickIds
+      : [];
 
-  for (const fid of earlyFocused) {
-    const blk: any = canvas.getCanvasState().blocks?.[fid];
-    if (!blk) continue;
-    const t = String(blk.type || "").toLowerCase();
-    const m = String(blk.mode || blk.data?.mode || "").toLowerCase();
-    if (t !== "youtube" && !(t === "create" && m === "video")) continue;
-    const vid = String(blk.videoId || blk.data?.videoId || "");
-    const rawUrl = String(blk.url || blk.data?.url || "");
-    const resolvedVid = vid || extractYouTubeVideoId(rawUrl) || "";
-    if (!resolvedVid) continue;
-    const cached = youtube.youtubeTranscriptCache[resolvedVid];
-    if (cached?.transcript) {
-      const preview = cached.transcript.length > 2000 ? cached.transcript.slice(0, 2000) + "…" : cached.transcript;
-      const isDesc = cached.source === "description_fallback";
-      const label = isDesc
-        ? `[FOCUSED VIDEO DESCRIPTION — id=${fid} videoId=${resolvedVid} — This is the video's description/metadata, NOT a transcript of its spoken audio]`
-        : `[FOCUSED VIDEO TRANSCRIPT — id=${fid} videoId=${resolvedVid}]`;
-      canvasContext += `\n\n${label}\n${cached.title || "YouTube Video"}\n${preview}`;
+  if (canvasHasContent) {
+    for (const fid of earlyFocused) {
+      const blk: any = canvas.getCanvasState().blocks?.[fid];
+      if (!blk) continue;
+      const t = String(blk.type || "").toLowerCase();
+      const m = String(blk.mode || blk.data?.mode || "").toLowerCase();
+      if (t !== "youtube" && !(t === "create" && m === "video")) continue;
+      const vid = String(blk.videoId || blk.data?.videoId || "");
+      const rawUrl = String(blk.url || blk.data?.url || "");
+      const resolvedVid = vid || extractYouTubeVideoId(rawUrl) || "";
+      if (!resolvedVid) continue;
+      const cached = youtube.youtubeTranscriptCache[resolvedVid];
+      if (cached?.transcript) {
+        const preview = cached.transcript.length > 2000 ? cached.transcript.slice(0, 2000) + "…" : cached.transcript;
+        const isDesc = cached.source === "description_fallback";
+        const label = isDesc
+          ? `[FOCUSED VIDEO DESCRIPTION — id=${fid} videoId=${resolvedVid} — This is the video's description/metadata, NOT a transcript of its spoken audio]`
+          : `[FOCUSED VIDEO TRANSCRIPT — id=${fid} videoId=${resolvedVid}]`;
+        canvasContext += `\n\n${label}\n${cached.title || "YouTube Video"}\n${preview}`;
+      }
     }
+
+    const notesText = context.tiptapJsonToPlainText(context.notesContent).trim();
+    if (notesText) canvasContext += `\n\n[GRID NOTES]\n${notesText}`;
   }
 
-  const notesText = context.tiptapJsonToPlainText(context.notesContent).trim();
-  if (notesText) canvasContext += `\n\n[GRID NOTES]\n${notesText}`;
   const kbText = context.getKnowledgeBaseContext();
 
-  const hasFocusedVideo = earlyFocused.some((fid) => {
+  const hasFocusedVideo = canvasHasContent && earlyFocused.some((fid) => {
     const blk: any = canvas.getCanvasState().blocks?.[fid];
     if (!blk) return false;
     const t = String(blk.type || "").toLowerCase();
@@ -2005,9 +2021,12 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
   state.setChatStatusText("");
   state.setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: "" } : m)));
 
-  const st = canvas.getCanvasState();
-  const hasFocusedBricks = (st.focusedBrickIds || []).length > 0;
-  const focusedIds: string[] = Array.isArray(st.focusedBrickIds) ? st.focusedBrickIds : [];
+  // With the canvas surface unplugged there are no focused bricks and no
+  // board images to scan for vision. Both loops are no-ops on an empty
+  // store but skipping them entirely keeps the request build path tight.
+  const st = canvasHasContent ? canvas.getCanvasState() : { blocks: {}, blockOrder: [], focusedBrickIds: [], camera: { x: 0, y: 0 } } as any;
+  const hasFocusedBricks = canvasHasContent && (st.focusedBrickIds || []).length > 0;
+  const focusedIds: string[] = canvasHasContent && Array.isArray(st.focusedBrickIds) ? st.focusedBrickIds : [];
 
   const isImgBlock = (blk: any) => blk?.type === "image" || (blk?.type === "create" && (blk.mode === "image" || blk.mode === "generated"));
   const getImgSrc = (blk: any) => {
@@ -2015,41 +2034,43 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
     return (src && (src.startsWith("http") || src.startsWith("data:image/"))) ? src : "";
   };
 
-  const visionImageUrls: string[] = [];
-  for (const fid of focusedIds) {
-    const blk = st.blocks?.[fid];
-    if (!isImgBlock(blk)) continue;
-    const src = getImgSrc(blk);
-    if (src && !visionImageUrls.includes(src)) visionImageUrls.push(src);
-  }
-
-  const MAX_VISION_IMAGES = 8;
-  if (visionImageUrls.length < MAX_VISION_IMAGES) {
-    const cam = st.camera || { x: 0, y: 0 };
-    const vw = window.innerWidth || 1280;
-    const vh = window.innerHeight || 800;
-    const cx = (cam.x || 0) + vw / 2;
-    const cy = (cam.y || 0) + vh / 2;
-    const allIds = Array.isArray(st.blockOrder) ? st.blockOrder : [];
-    const focusedSet = new Set(focusedIds);
-    const boardImages = allIds
-      .filter((id: string) => !focusedSet.has(id) && st.blocks?.[id] && isImgBlock(st.blocks[id]))
-      .map((id: string) => {
-        const blk = st.blocks[id];
-        const bx = (blk.x || 0) + (blk.width || 0) / 2;
-        const by = (blk.y || 0) + (blk.height || 0) / 2;
-        return { id, src: getImgSrc(blk), dist: Math.hypot(bx - cx, by - cy) };
-      })
-      .filter((e) => e.src)
-      .sort((a, b) => a.dist - b.dist);
-    for (const img of boardImages) {
-      if (visionImageUrls.length >= MAX_VISION_IMAGES) break;
-      if (!visionImageUrls.includes(img.src)) visionImageUrls.push(img.src);
+  if (canvasHasContent) {
+    const visionImageUrls: string[] = [];
+    for (const fid of focusedIds) {
+      const blk = st.blocks?.[fid];
+      if (!isImgBlock(blk)) continue;
+      const src = getImgSrc(blk);
+      if (src && !visionImageUrls.includes(src)) visionImageUrls.push(src);
     }
-  }
 
-  for (const url of visionImageUrls) {
-    if (!attachedImageUrls.includes(url)) attachedImageUrls.push(url);
+    const MAX_VISION_IMAGES = 8;
+    if (visionImageUrls.length < MAX_VISION_IMAGES) {
+      const cam = st.camera || { x: 0, y: 0 };
+      const vw = window.innerWidth || 1280;
+      const vh = window.innerHeight || 800;
+      const cx = (cam.x || 0) + vw / 2;
+      const cy = (cam.y || 0) + vh / 2;
+      const allIds = Array.isArray(st.blockOrder) ? st.blockOrder : [];
+      const focusedSet = new Set(focusedIds);
+      const boardImages = allIds
+        .filter((id: string) => !focusedSet.has(id) && st.blocks?.[id] && isImgBlock(st.blocks[id]))
+        .map((id: string) => {
+          const blk = st.blocks[id];
+          const bx = (blk.x || 0) + (blk.width || 0) / 2;
+          const by = (blk.y || 0) + (blk.height || 0) / 2;
+          return { id, src: getImgSrc(blk), dist: Math.hypot(bx - cx, by - cy) };
+        })
+        .filter((e) => e.src)
+        .sort((a, b) => a.dist - b.dist);
+      for (const img of boardImages) {
+        if (visionImageUrls.length >= MAX_VISION_IMAGES) break;
+        if (!visionImageUrls.includes(img.src)) visionImageUrls.push(img.src);
+      }
+    }
+
+    for (const url of visionImageUrls) {
+      if (!attachedImageUrls.includes(url)) attachedImageUrls.push(url);
+    }
   }
 
   const hasVideoTranscript = Boolean(
@@ -2110,87 +2131,45 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
     // vault detail failed; using compact workspace summary only
   }
 
+  // Trim the request body to only what the server needs. With the canvas
+  // surface unplugged we never ship a `[CONTEXT]` block (canvasContext is
+  // always ""), `hasFocusedBricks` is always false, and there's no point
+  // serialising either across the wire — both branches on the server then
+  // skip context-sized prompt budgets and stay on the lighter chat path.
+  const trimmedCanvasContext = (canvasContext || "").slice(0, 14000);
   const requestBody = {
     model: identity.selectedModel,
     prompt: prompt.slice(0, 16000),
     text: textForServer,
     intent: "ask",
-    context: (canvasContext || "").slice(0, 14000),
     knowledgeBase: (kbText || "").slice(0, identity.projectId ? 4000 : 2000),
     conversation: truncatedConversation,
     conversationMemory: memoryText || undefined,
     workspaceContext: workspaceContextStr,
     projectId: identity.projectId,
     boardId: identity.routeBoardId || identity.boardId || undefined,
-    hasFocusedBricks,
     skipWebSearch: hasVideoTranscript,
+    ...(trimmedCanvasContext ? { context: trimmedCanvasContext } : {}),
+    ...(hasFocusedBricks ? { hasFocusedBricks: true } : {}),
     ...(mediaContext ? { mediaContext: mediaContext.slice(0, 8000) } : {}),
     ...(attachedImageUrls.length ? { imageUrls: attachedImageUrls } : {}),
     ...getAiPrefs(),
   };
 
-  /* Phase 4: action path check */
-  const hasFocusedTextBricks = focusedIds.some((fid) => {
-    const blk = st.blocks?.[fid];
-    return blk?.type === "text" && !isImgBlock(blk);
-  });
-  const hasBlocks = Object.keys(st.blocks || {}).length > 0;
-  // Generic verbs alone (move / change / edit / update / set / make / put /
-  // place / fix) match plenty of conversational turns ("let's change my
-  // approach", "we should fix this thinking", "edit my view of it"). When the
-  // user has ANY block on the board, those used to route to the action path
-  // and got capped at the json_action token limit — which is why long replies
-  // looked like they "got cut off after a few sentences". Require a real
-  // brick / block / grid / board / "this" / "it" / "them" reference so a
-  // plain conversational turn falls through to the streaming chat path.
-  const BLOCK_TARGET_RE = /\b(brick|bricks|block|blocks|note|notes|sheet|paper|doc|document|spreadsheet|table|list|todo|checklist|task\s*board|kanban|design\s*board|code\s*block|heading|h[1-3]|quote|callout|toggle|image|video|youtube|embed|website|grid|board|canvas|widget|tile|card|sticky|all\s+(?:of\s+)?(?:them|these|those)|every\s+(?:one|brick|block)|each\s+(?:one|brick|block)|both|this|that|these|those|it|them|they)\b/i;
-  const mentionsTarget = BLOCK_TARGET_RE.test(cappedText) || hasFocusedTextBricks;
-  const wantsBlockManipulation = /\b(move|rearrange|reposition|reorganize|arrange|align|swap|shift|place|put|drag|relocate|organize|spread|stack|line up|layout|lay out|center|scatter|space out|group together|side by side|resize|make.*(bigger|smaller|wider|taller|narrower|shorter)|delete|remove|trash|clear|get rid of|clean up|connect|wire|link|disconnect|unwire|unlink)\b/i.test(cappedText) && hasBlocks && mentionsTarget;
-  const wantsBlockEdit = /\b(edit|update|change|modify|rewrite|rename|set|fill in|populate|write in|add.*(to|into|in)|append|replace|fix|correct|colou?r|paint|highlight|style|theme)\b/i.test(cappedText) && hasBlocks && mentionsTarget;
-  const wantsBlockCreate = /\b(create|make|build|add|start|new|insert|place|put|drop|generate|set\s*up|spin\s*up|spawn|throw|stick|toss|need|want|give\s*me|gimme|show\s*me|pull(?:\s*in)?|load|embed|bookmark)\b/i.test(cappedText) && /\b(sheet|paper|doc|document|spreadsheet|table|budget|tracker|list|todo|checklist|task\s*board|kanban|design\s*board|code\s*block|heading|h[1-3]|quote|callout|brick|text\s*(?:block|brick)?|card|sticky|note\s*(?:block|brick)|toggle|media|image|video|embed|website|site|page|url|link|bookmark|voice|dictat(?:e|ion))\b/i.test(cappedText);
-  const wantsGridCreate = /\b(create|make|build|add|place|put|drop|generate|lay\s*out|set\s*up|write|draft|design|map\s*out|outline|sketch|plan|structure|diagram|flowchart|wireframe|spawn|throw|stick|toss|insert|pull(?:\s*in)?|load|embed|bookmark)\b/i.test(cappedText)
-    && /\b(on\s*(?:the|my|this)?\s*(?:grid|board|canvas)|in(?:to)?\s*(?:the|my|this)?\s*(?:grid|board|canvas)|(?:grid|board|canvas)\b)/i.test(cappedText);
-  // Dedicated detector for "pull / embed / drop / load this URL onto the
-  // grid"-style requests. Triggers as long as we see an embed-ish verb AND
-  // either an actual URL or a bare domain (`example.com`) or website noun
-  // ("this site", "the page", etc.). This catches phrasings the broader
-  // create regexes miss, like "embed https://example.com" or "pull google.com
-  // in" — where neither "grid/board" nor a block-noun appears.
-  const EMBED_VERBS_RE = /\b(pull(?:\s*in)?|embed|drop\s*(?:in)?|load|add|insert|put|place|paste|stick|throw)\b/i;
-  const URL_OR_DOMAIN_RE = /(https?:\/\/[^\s<>"')\]]+|\b[a-z0-9-]+\.(?:com|org|net|io|co|gov|edu|store|shop|app|dev|ai|xyz|tv|me)(?:\/[^\s]*)?)/i;
-  const WEBSITE_NOUNS_RE = /\b(this|that|the|a|an)\s+(?:site|website|page|url|link|address)\b|\b(?:site|website|page|url|link)\b/i;
-  const wantsEmbedWebsite = EMBED_VERBS_RE.test(cappedText)
-    && (URL_OR_DOMAIN_RE.test(cappedText) || WEBSITE_NOUNS_RE.test(cappedText));
-  const wantsOrganize = /\b(organize|sort|tidy|clean\s*up|auto[- ]?(?:layout|arrange|organize)|layout|lay\s*out|arrange|grid\s*(?:layout|organize)|group\s*(?:by|together|all)|categorize|cluster|rearrange\s*(?:everything|all|the\s*grid|my\s*(?:bricks|blocks|board)))\b/i.test(cappedText);
-  const wantsNotesAction = /\b(notes?\s*(page|panel|section|pad|area)?)\b/i.test(cappedText) && /\b(edit|update|change|modify|write|rewrite|add|append|clear|set|fill|put|type|draft|compose|replace|delete|remove)\b/i.test(cappedText);
-  // The block / brick / grid action path is intentionally DISABLED. The grid
-  // surface is not part of the current product, so we never want the AI to
-  // see the block-creation system prompt or attempt to emit action JSON. All
-  // chat turns flow through the streaming chat path below.
-  const wantsActionPath = false;
-  void wantsBlockManipulation; void wantsBlockEdit; void wantsBlockCreate;
-  void wantsGridCreate; void wantsOrganize; void wantsNotesAction; void wantsEmbedWebsite;
-  const wantsDelete = /\b(delete|remove|trash|clear|get rid of)\b/i.test(cappedText);
-  const focusedBrickActionIntent = hasFocusedTextBricks && /\b(edit|update|change|modify|rewrite|rename|set|fix|correct|colou?r|paint|highlight|style|theme|delete|remove|move|resize|make\s+(this|it)\s+\w|write|fill|replace|append|add\s+(to|into)|clear|format)\b/i.test(cappedText);
-
+  /* Phase 4: action path check
+   *
+   * The block / brick / grid action path is permanently disabled — the
+   * canvas surface is not part of the current product, so every chat
+   * turn flows through the streaming chat path below. The previous
+   * implementation kept ~50 lines of intent regexes + a dead
+   * `if (false && ...)` branch alive "in case the grid comes back",
+   * but they bloated the file, ran on every chat send, and shipped a
+   * confusing `wantsActionPath` API surface. If/when the canvas is
+   * re-enabled, the action path lives intact in `handleActionPath()` /
+   * `buildActionCanvasContext()` and can be re-wired here behind a
+   * single feature flag — we just stop pre-classifying intents.
+   */
   let responseBlockId: string | null = null;
-
-  // Action path is permanently disabled — the grid surface does not exist
-  // in this product, so we never call handleActionPath. Reference the
-  // computed variables so the linter doesn't flag them as unused.
-  void focusedBrickActionIntent;
-  if (false && (focusedBrickActionIntent || wantsActionPath)) {
-    const statusMsg = wantsNotesAction ? "Writing notes..."
-      : wantsDelete ? "Removing blocks..."
-      : wantsOrganize ? "Organizing grid..."
-      : wantsEmbedWebsite ? "Pulling site in..."
-      : wantsBlockEdit ? "Editing blocks..."
-      : (wantsBlockCreate || wantsGridCreate) ? "Creating blocks..."
-      : wantsBlockManipulation && !focusedBrickActionIntent ? "Arranging blocks..."
-      : "Editing bricks...";
-    const handled = await handleActionPath(p, apiBase, requestBody, cappedText, conversationArray, promptId, responseBlockId, statusMsg);
-    if (handled) return;
-  }
 
   /* Phase 5: streaming or invoke */
   let streamResponse: Response | null = null;

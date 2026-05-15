@@ -156,7 +156,7 @@ export default function TagManagementPage() {
           }
         }}
         onOpenSearch={() => navigate(createPageUrl('AISearch'))}
-        onOpenChat={() => navigate(createPageUrl('VaultChat'))}
+        onOpenChat={() => navigate('/app')}
         onOpenSettings={() => setSettingsOpen(true)}
         isCollapsed={sidebarCollapsed}
         onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}

@@ -1210,6 +1210,13 @@ export default function OmniaGridPage() {
   );
 
   const buildCanvasContext = useCallback(() => {
+    // GRID_DISABLED short-circuit. With the canvas surface unplugged the
+    // store contains no blocks for the user, so iterating it just to
+    // serialise an empty tiered context is pure overhead — and it used to
+    // ship a 14k-char "[CANVAS_CONTEXT]" payload to every chat request
+    // describing a grid the user can't see. Returning "" here makes the
+    // shared chat orchestrator skip the canvas branch entirely.
+    if (GRID_DISABLED) return "";
     const st = useCanvasStore.getState();
     const cam = (st as any).camera || { x: 0, y: 0 };
     const vw = window.innerWidth || 1280;
