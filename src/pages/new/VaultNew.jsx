@@ -77,8 +77,6 @@ import remarkGfm from "remark-gfm";
 import { useThinkingStatus } from "@/hooks/useThinkingStatus";
 import { splitResponseIntoChunks, normalizeChecklistSyntax, flattenNodeText, handleChunkDragStart } from "@/lib/chatChunks";
 import VaultConnectionsToggle from "@/components/connections/VaultConnectionsToggle";
-import VaultAppDock from "@/components/connections/VaultAppDock";
-
 // Tracks whether the vault has completed its initial image-preload gating at
 // least once during this SPA session. Persists across route remounts so
 // navigating away from /vault and back does not re-show the LoadingScreen
@@ -3834,8 +3832,11 @@ User: ${text}`;
             <Plus className="w-5 h-5" />
           </button>
 
-          {/* Bottom-center dock: every app currently plugged into LYKN. */}
-          <VaultAppDock user={user} />
+          {/* Bottom-center app dock lives one level up in
+              VaultConnectionsShell so a single instance renders across
+              both /vault and /connections — keeps the launcher visible
+              while the user is browsing the apps grid and avoids two
+              parallel polling loops fetching the same connection list. */}
         </>
       )}
 

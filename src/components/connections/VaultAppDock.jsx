@@ -70,12 +70,16 @@ export default function VaultAppDock({ user }) {
     return () => window.removeEventListener("focus", onFocus);
   }, [refresh]);
 
-  // Refresh whenever the user lands back on /vault. Since the
-  // VaultConnectionsShell keeps both surfaces mounted, the dock
-  // doesn't unmount across the toggle — so without this effect a
-  // newly-connected app would NOT show up until reload.
+  // Refresh whenever the user lands on /vault or /connections. The
+  // VaultConnectionsShell mounts a single dock across both routes, so
+  // toggling between them never unmounts us — without this effect a
+  // newly-connected app would NOT show up until full reload, even
+  // though it's exactly the moment the user wants to see it (right
+  // after approving an OAuth handshake on /connections).
   useEffect(() => {
-    if (pathname === "/vault") refresh();
+    if (pathname === "/vault" || pathname.startsWith("/connections")) {
+      refresh();
+    }
   }, [pathname, refresh]);
 
   // Build the list of connected app tiles. AI tools come first, then

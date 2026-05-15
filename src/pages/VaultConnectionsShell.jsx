@@ -1,6 +1,9 @@
 import { useLocation } from "react-router-dom";
+import { useMemo } from "react";
 import VaultNew from "./new/VaultNew";
 import Connections from "./Connections";
+import VaultAppDock from "@/components/connections/VaultAppDock";
+import { useAuth } from "@/lib/SupabaseAuth";
 
 // Keeps both `/vault` and `/connections` mounted simultaneously so the
 // in-page toggle between them feels instant. Without this, navigating
@@ -13,9 +16,27 @@ import Connections from "./Connections";
 // own copy of the toggle) belongs to the Vault subtree, so hiding the
 // subtree also hides that chrome — and the Connections subtree carries
 // its own fixed toggle strip, so they never collide.
+//
+// The bottom-center VaultAppDock used to live inside VaultNew, which
+// meant it disappeared the moment the user toggled to /connections —
+// exactly when the launcher is most useful (you're browsing apps to
+// connect, you want quick access to the ones you've already wired up).
+// Hoisting it to the shell renders one instance across both routes
+// from a single mount. The dock's data fetch (connections + tokens)
+// is the same one ConnectionsAppGrid runs, so a single shared dock
+// also avoids two parallel polling loops on /connections.
+//
+// We hide the dock when Vault is rendered in iframe-embedded mode
+// (?embedded=1) — that's the Omnia overlay use case, where the host
+// page already provides chrome and a floating launcher would collide.
 export default function VaultConnectionsShell() {
-  const { pathname } = useLocation();
+  const { pathname, search } = useLocation();
+  const { user } = useAuth();
   const showConnections = pathname.startsWith("/connections");
+  const isEmbedded = useMemo(
+    () => new URLSearchParams(search).get("embedded") === "1",
+    [search],
+  );
 
   return (
     <>
@@ -31,6 +52,7 @@ export default function VaultConnectionsShell() {
       >
         <Connections />
       </div>
+      {!isEmbedded && <VaultAppDock user={user} />}
     </>
   );
 }
