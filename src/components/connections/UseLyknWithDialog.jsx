@@ -13,6 +13,7 @@ import {
   AlertTriangle,
   Copy,
   CheckCircle2,
+  Download,
   ExternalLink,
   Loader2,
   ShieldAlert,

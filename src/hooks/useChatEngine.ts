@@ -1757,8 +1757,8 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
         if (!alreadyWarned) {
           try { sessionStorage.setItem(flagKey, "1"); } catch { /* ignore */ }
           toast({
-            title: "This is a demo grid",
-            description: "Changes here aren't saved — refresh and they're gone. Open a regular grid to keep this work.",
+            title: "This is a demo chat",
+            description: "Changes here aren't saved — refresh and they're gone. Sign in and start a new chat to keep this work.",
             duration: 8000,
           });
         }

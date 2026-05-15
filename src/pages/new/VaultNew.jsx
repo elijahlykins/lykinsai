@@ -76,6 +76,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useThinkingStatus } from "@/hooks/useThinkingStatus";
 import { splitResponseIntoChunks, normalizeChecklistSyntax, flattenNodeText, handleChunkDragStart } from "@/lib/chatChunks";
+import VaultConnectionsToggle from "@/components/connections/VaultConnectionsToggle";
+import VaultAppDock from "@/components/connections/VaultAppDock";
 
 // Tracks whether the vault has completed its initial image-preload gating at
 // least once during this SPA session. Persists across route remounts so
@@ -523,7 +525,6 @@ export default function VaultNew() {
     }
   }, [markVaultReady]);
   const [notesError, setNotesError] = useState("");
-  const [topPanelOpen, setTopPanelOpen] = useState(false);
   const [showChat, setShowChat] = useState(false);
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState("");
@@ -3807,78 +3808,35 @@ User: ${text}`;
       />
 
       {!isEmbeddedMode && (
-      <div className="fixed top-3 left-0 right-0 z-[70] px-3 flex items-center justify-end pointer-events-none">
-        <div className="pointer-events-auto flex items-center gap-2">
+        <>
+          {/* Top-right: just the Vault ↔ Connections toggle. The old top
+              panel (model picker, attach, chat, quick-note shortcuts) was
+              retired — uploads still work via drag-and-drop, and the
+              quick-note action lives in the bottom-right FAB below. */}
+          <div className="fixed top-3 left-0 right-0 z-[70] px-3 flex items-center justify-end pointer-events-none">
+            <div className="pointer-events-auto">
+              <VaultConnectionsToggle active="vault" />
+            </div>
+          </div>
+
+          {/* Bottom-right FAB: opens the quick-note composer. */}
           <button
             type="button"
-            onClick={() => setTopPanelOpen((v) => !v)}
-            className="rounded-full w-9 h-9 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center"
-            title={topPanelOpen ? "Hide panel" : "Show panel"}
+            onClick={handleToggleQuickNote}
+            title={showQuickNote ? "Hide quick note" : "New quick note"}
+            aria-label={showQuickNote ? "Hide quick note" : "New quick note"}
+            className={`fixed bottom-6 right-6 z-[70] w-12 h-12 rounded-full shadow-lg flex items-center justify-center transition-colors touch-manipulation ${
+              showQuickNote
+                ? "bg-amber-500 text-white hover:bg-amber-600"
+                : "bg-black text-white hover:bg-black/90 dark:bg-white dark:text-black dark:hover:bg-white/90"
+            }`}
           >
-            {topPanelOpen ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-            <span className="sr-only">{topPanelOpen ? "Hide panel" : "Show panel"}</span>
+            <Plus className="w-5 h-5" />
           </button>
 
-          {topPanelOpen && (
-            <div className="flex items-center gap-1 p-1 rounded-full glass-control flex-wrap">
-              <Select
-                value={selectedModel}
-                onValueChange={(value) => {
-                  setSelectedModel(value);
-                  try {
-                    const saved = localStorage.getItem("lykinsai_settings");
-                    const settings = saved ? JSON.parse(saved) : {};
-                    settings.aiModel = value;
-                    localStorage.setItem("lykinsai_settings", JSON.stringify(settings));
-                    window.dispatchEvent(new CustomEvent("lykinsai_settings_changed"));
-                  } catch {
-                    // ignore
-                  }
-                }}
-              >
-                <SelectTrigger className="w-[100px] sm:w-[124px] !h-7 rounded-full glass-control hover:opacity-90 text-[0.6875rem] font-medium px-2">
-                  <SelectValue placeholder="Model" />
-                </SelectTrigger>
-                <SelectContent
-                  align="end"
-                  className="glass-control border border-white/16 dark:border-white/8 bg-white/22 dark:bg-white/8 backdrop-blur-md overflow-hidden"
-                >
-                  <ModelSelectOptions />
-                </SelectContent>
-              </Select>
-
-              <div className="w-px h-4 bg-black/10 dark:bg-white/10 mx-1" />
-
-              <button
-                type="button"
-                onClick={handleRequestAddMedia}
-                className="rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center"
-                title="Add attachments"
-              >
-                <Plus className="w-4 h-4" />
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setShowChat((v) => !v)}
-                className={`rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center ${showChat ? "bg-blue-500/15" : ""}`}
-                title={showChat ? "Hide chat" : "Open chat"}
-              >
-                <MessageSquare className={`w-4 h-4 ${showChat ? "text-blue-500" : ""}`} />
-              </button>
-
-              <button
-                type="button"
-                onClick={handleToggleQuickNote}
-                className={`rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center ${showQuickNote ? "bg-amber-500/15" : ""}`}
-                title={showQuickNote ? "Hide quick note" : "New quick note"}
-              >
-                <StickyNote className={`w-4 h-4 ${showQuickNote ? "text-amber-500" : ""}`} />
-              </button>
-            </div>
-          )}
-        </div>
-      </div>
+          {/* Bottom-center dock: every app currently plugged into LYKN. */}
+          <VaultAppDock user={user} />
+        </>
       )}
 
       <main

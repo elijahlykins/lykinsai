@@ -58,6 +58,14 @@ import GridShareDialog from "@/components/omnia/GridShareDialog";
 import { useBoardPersistence, makeDefaultNotesPages } from "@/hooks/useBoardPersistence";
 import { useChatEngine } from "@/hooks/useChatEngine";
 
+// Feature flag — the LYKN Grid canvas surface is temporarily unplugged.
+// Keep this `true` to make the focused chat the main interface across `/app`,
+// `/grid/:boardId`, and `/omnia`. Flip back to `false` to re-enable the
+// canvas + mode-toggle UX without any other code changes. All grid logic,
+// state, and components remain wired up — they just never become visible
+// while this flag is on.
+const GRID_DISABLED = true;
+
 const TASK_LINE_RE = /^\s*(?:[-*]\s+)?\[([ xX])\]\s+(.+)$/;
 
 function tiptapJsonToPlainText(node: any): string {
@@ -614,7 +622,14 @@ export default function OmniaGridPage() {
   const loadBlocks = useCanvasStore((s) => s.loadBlocks);
   const reset = useCanvasStore((s) => s.reset);
   const gridSize = useCanvasStore((s) => s.gridSize);
-  const [topPanelOpen, setTopPanelOpen] = useState(true);
+  const [topPanelOpen, setTopPanelOpen] = useState(false);
+  // Collapse the top panel on every chat page load / switch. React-Router
+  // reuses the same OmniaGrid instance when navigating between `/grid/:id`
+  // boards, so without this effect a panel the user opened on one chat
+  // would stay open when they jumped to another.
+  useEffect(() => {
+    setTopPanelOpen(false);
+  }, [routeBoardId]);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
   const [showShareDialog, setShowShareDialog] = useState(false);
   const [showVaultSidebar, setShowVaultSidebar] = useState(false);
@@ -729,6 +744,8 @@ export default function OmniaGridPage() {
   // split-screen mode (narrow viewport, but still mouse + hover) doesn't
   // start up in the phone shell.
   const [chatMode, setChatMode] = useState(() => {
+    // Grid is unplugged — focused chat is the only experience.
+    if (GRID_DISABLED) return true;
     if (typeof window === "undefined") return false;
     if ((window.innerWidth || 1280) < 768 && getIsTouchOnlyDevice()) return true;
     const params = new URLSearchParams(window.location.search);
@@ -912,7 +929,7 @@ export default function OmniaGridPage() {
     const fullName = String(user?.user_metadata?.full_name || user?.user_metadata?.name || "").trim();
     const firstName = fullName ? fullName.split(/\s+/)[0] : "";
     const preferredName = String(firstName || emailName || "").trim();
-    return preferredName ? `Welcome to the grid, ${preferredName}` : "Welcome to the grid";
+    return preferredName ? `Welcome back, ${preferredName}` : "Start a new chat";
   }, [user?.email, user?.user_metadata?.full_name, user?.user_metadata?.name]);
 
   useEffect(() => {
@@ -1077,7 +1094,7 @@ export default function OmniaGridPage() {
       const detail = (e as CustomEvent<{ boardId?: string; title?: string }>)?.detail;
       if (!detail) return;
       if (String(detail.boardId || "") !== String(boardId || "")) return;
-      const next = String(detail.title || "").trim() || "New Grid";
+      const next = String(detail.title || "").trim() || "New Chat";
       setTitle(next);
     };
     window.addEventListener("omnia_board_renamed", onRenamed as EventListener);
@@ -2784,7 +2801,12 @@ export default function OmniaGridPage() {
         onModelChange={persistSelectedModel}
         chatMode={chatMode}
         isMobilePhone={isMobilePhone}
+        gridDisabled={GRID_DISABLED}
         onChatModeToggle={() => {
+          // Grid is unplugged — chat mode is permanent, this toggle is a
+          // no-op. The corresponding button is hidden by the toolbar via
+          // `gridDisabled`.
+          if (GRID_DISABLED) return;
           if (isMobilePhone) return; // Phones are chat-only — toggle is a no-op.
           setChatMode((v) => {
             if (!v) setChatRailVisible(false);
@@ -2793,6 +2815,9 @@ export default function OmniaGridPage() {
         }}
         chatRailVisible={chatRailVisible}
         onChatRailToggle={() => {
+          // Grid is unplugged — the side rail only renders when chatMode is
+          // false, so this toggle is meaningless right now.
+          if (GRID_DISABLED) return;
           if (isMobilePhone) return; // No side rail on phones (it's an overlay-only chat).
           setChatRailVisible((v) => {
             if (!v) {
@@ -2847,7 +2872,7 @@ export default function OmniaGridPage() {
             }
           }}
         >
-          <Canvas liveAIMode={false} isAiThinking={isChatLoading} thinkingStatusText={thinkingStatus} />
+          <Canvas liveAIMode={false} isAiThinking={isChatLoading} thinkingStatusText={thinkingStatus} hidden={GRID_DISABLED || chatMode} />
         </div>
       )}
 
@@ -3014,6 +3039,7 @@ export default function OmniaGridPage() {
           copiedMsgId={copiedMsgId}
           onCopyMessage={handleFocusedChatCopyMessage}
           addChatResponseToGrid={addChatResponseToGrid}
+          gridDisabled={GRID_DISABLED}
           renderFocusedAttachmentPreview={renderFocusedAttachmentPreview}
           onDragOver={handleFocusedChatDragOver}
           onDrop={handleFocusedChatDrop}
@@ -3030,7 +3056,7 @@ export default function OmniaGridPage() {
           <DialogHeaderAny>
             <DialogTitleAny className="text-black">Add Attachment</DialogTitleAny>
             <DialogDescriptionAny className="text-black/60">
-              Add links or upload files onto your grid
+              Add links or upload files to your chat
             </DialogDescriptionAny>
           </DialogHeaderAny>
 

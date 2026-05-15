@@ -101,7 +101,7 @@ export default function UseLyknWithSection({ user }) {
   );
 
   return (
-    <section className="mt-8">
+    <section className="mt-4">
       <div className="flex items-center justify-end gap-4 flex-wrap mb-4">
         <button
           type="button"
@@ -276,7 +276,6 @@ function OutboundCard({ target, onLaunch }) {
   const ctaDisabled = Boolean(target.comingSoon);
   return (
     <motion.div
-      layout
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       className="group relative rounded-2xl border border-black/[0.06] dark:border-white/10 bg-white/60 dark:bg-zinc-900/60 backdrop-blur-md p-4 flex flex-col gap-3 hover:border-black/15 dark:hover:border-white/20 transition-colors shadow-sm"

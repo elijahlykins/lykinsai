@@ -576,31 +576,6 @@ export default function Onboarding() {
     );
   }, [mcpUrl]);
 
-  const handlePerplexity = useCallback(async () => {
-    setPending("perplexity");
-    let copyOk = false;
-    try {
-      await navigator.clipboard.writeText(mcpUrl);
-      copyOk = true;
-    } catch {
-      copyOk = false;
-    }
-    setCopyJustWorked(copyOk);
-    setTimeout(() => setCopyJustWorked(false), 4000);
-    if (!copyOk) {
-      toast({
-        title: "Couldn't copy automatically",
-        description: "Use the copy-URL button in the card before pasting in Perplexity.",
-        variant: "destructive",
-      });
-    }
-    window.open(
-      "https://www.perplexity.ai/account/connectors",
-      "_blank",
-      "noopener,noreferrer",
-    );
-  }, [mcpUrl]);
-
   const handleGrok = useCallback(async () => {
     setPending("grok");
     let copyOk = false;
@@ -1135,27 +1110,6 @@ export default function Onboarding() {
                   npx mcp-remote
                 </code>
                 .
-              </>
-            }
-          />
-          <ConnectCard
-            id="perplexity"
-            name="Perplexity"
-            domain="perplexity.ai"
-            tagline="We open Perplexity's connector settings and copy the URL. Paste, approve, done."
-            badge="Guided"
-            connected={connected.has("perplexity")}
-            pending={pending === "perplexity" && !connected.has("perplexity")}
-            disabled={!user}
-            onConnect={handlePerplexity}
-            urlToCopy={mcpUrl}
-            urlCopied={copyJustWorked && pending === "perplexity"}
-            onCopyUrl={handleCopyUrl}
-            secondaryNote={
-              <>
-                Custom connectors require Perplexity Pro or Enterprise
-                Pro. On the page we open: + Add connector → paste URL →
-                authenticate with LYKN.
               </>
             }
           />

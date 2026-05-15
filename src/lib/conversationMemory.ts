@@ -89,7 +89,7 @@ async function loadFromBoardStates(
       const state = row.state;
       if (!state) continue;
 
-      const title = (row.omnia_boards as any)?.title || "New Grid";
+      const title = (row.omnia_boards as any)?.title || "New Chat";
       const chatMsgs: any[] = Array.isArray(state.chatMessages) ? state.chatMessages : [];
       if (!chatMsgs.length) continue;
 

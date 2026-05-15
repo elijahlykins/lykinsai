@@ -236,7 +236,7 @@ function buildGraph(
 
   const cats: { id: string; label: string; color: string; glow: string }[] = [];
   if (projects.length > 0 || forceCategoryIds.has("__cat_projects__")) cats.push({ id: "__cat_projects__", label: "Projects", color: palette.projects.bg, glow: palette.projects.glow });
-  if (boards.length > 0 || forceCategoryIds.has("__cat_grids__")) cats.push({ id: "__cat_grids__", label: "Grids", color: palette.grids.bg, glow: palette.grids.glow });
+  if (boards.length > 0 || forceCategoryIds.has("__cat_grids__")) cats.push({ id: "__cat_grids__", label: "Chats", color: palette.grids.bg, glow: palette.grids.glow });
   if (notes.length > 0 || forceCategoryIds.has("__cat_vault__")) cats.push({ id: "__cat_vault__", label: "Vault", color: palette.vault.bg, glow: palette.vault.glow });
 
   const allTags = new Set<string>();
@@ -256,7 +256,7 @@ function buildGraph(
 
   boards.forEach((b) => {
     const nid = `grid_${b.id}`;
-    nodes.push({ id: nid, label: b.title || "New Grid", kind: "grid", radius: 20, color: palette.grid.bg, glow: palette.grid.glow, parentId: "__cat_grids__", categoryId: "__cat_grids__", meta: { boardId: b.id, projectId: b.project_id } });
+    nodes.push({ id: nid, label: b.title || "New Chat", kind: "grid", radius: 20, color: palette.grid.bg, glow: palette.grid.glow, parentId: "__cat_grids__", categoryId: "__cat_grids__", meta: { boardId: b.id, projectId: b.project_id } });
     edges.push({ from: "__cat_grids__", to: nid });
     if (b.project_id && nodes.some((n) => n.id === `project_${b.project_id}`)) {
       edges.push({ from: `project_${b.project_id}`, to: nid, cross: true });
@@ -1619,7 +1619,7 @@ function DetailPanel({
               if (!linkedGrids.length) return null;
               return (
                 <div className="mb-4">
-                  <p className="text-[0.6875rem] font-medium text-gray-500 dark:text-gray-400 mb-2">Found in Grids</p>
+                  <p className="text-[0.6875rem] font-medium text-gray-500 dark:text-gray-400 mb-2">Found in Chats</p>
                   <div className="flex flex-col gap-1">
                     {linkedGrids.map((g) => (
                       <button
@@ -1743,7 +1743,7 @@ function DetailPanel({
 
               {connectedGrids.length > 0 && (
                 <div className="mb-3">
-                  <p className="text-[0.625rem] font-medium text-gray-400 dark:text-gray-500 mb-1.5 uppercase tracking-wider">Related Grids</p>
+                  <p className="text-[0.625rem] font-medium text-gray-400 dark:text-gray-500 mb-1.5 uppercase tracking-wider">Related Chats</p>
                   <div className="flex flex-col gap-1">
                     {connectedGrids.slice(0, 6).map((c) => (
                       // Click selects the grid neuron in the 3D graph (camera
@@ -2615,7 +2615,7 @@ export default function SynthesisLayer() {
       return {
         themes: prototypeNeurons.map((n) => n.text),
         narrative:
-          "This is your synthesis layer the moment it woke up. The neuron you just created is the only thing here — your projects, grids, vault, and tags are waiting to be filled.",
+          "This is your synthesis layer the moment it woke up. The neuron you just created is the only thing here — your projects, chats, vault, and tags are waiting to be filled.",
         signals: {},
       };
     }
@@ -3383,7 +3383,7 @@ export default function SynthesisLayer() {
       >
         <span>{effectiveProjects.length} projects</span>
         <span className="w-px h-3 bg-white/15" />
-        <span>{effectiveBoards.length} grids</span>
+        <span>{effectiveBoards.length} chats</span>
         <span className="w-px h-3 bg-white/15" />
         <span>{effectiveNotes.length} notes</span>
       </div>
@@ -3488,7 +3488,7 @@ export default function SynthesisLayer() {
       {/* Legend */}
       <div className="absolute bottom-6 left-6 z-20 flex flex-wrap gap-3 text-[0.625rem] text-white/55 pointer-events-none">
         <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: palette.projects.bg, color: palette.projects.bg }} /> Projects</span>
-        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: palette.grids.bg, color: palette.grids.bg }} /> Grids</span>
+        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: palette.grids.bg, color: palette.grids.bg }} /> Chats</span>
         <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: palette.vault.bg, color: palette.vault.bg }} /> Vault</span>
         <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: palette.tags.bg, color: palette.tags.bg }} /> Tags</span>
         <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: palette.neurons.bg, color: palette.neurons.bg }} /> AI Learned</span>

@@ -4,7 +4,6 @@ import { useLocation, useNavigate } from "react-router-dom";
 import {
   Brain,
   Bug,
-  Compass,
   CreditCard,
   Lock,
   LogOut,
@@ -51,8 +50,7 @@ export default function MobileTabBar() {
     location.pathname === "/app" ||
     location.pathname === "/dashboard" ||
     location.pathname === "/omnia" ||
-    location.pathname.startsWith("/grid/") ||
-    location.pathname.startsWith("/project/");
+    location.pathname.startsWith("/grid/");
   const isVaultActive =
     location.pathname === "/vault" || location.pathname === "/vaultchat" || location.pathname === "/vault-chat";
 
@@ -146,14 +144,6 @@ export default function MobileTabBar() {
                   onClick={() => {
                     setMoreOpen(false);
                     flushAndNavigate(nav, "/synthesis-layer");
-                  }}
-                />
-                <MoreItem
-                  icon={Compass}
-                  label="Discover"
-                  onClick={() => {
-                    setMoreOpen(false);
-                    flushAndNavigate(nav, "/discover");
                   }}
                 />
                 <MoreItem

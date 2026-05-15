@@ -153,7 +153,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
   const buildSnapshot = useCallback(() => {
     const st = useCanvasStore.getState();
     const current = titleRef.current;
-    const resolvedTitle = (current && String(current).trim()) ? String(current).trim() : "New Grid";
+    const resolvedTitle = (current && String(current).trim()) ? String(current).trim() : "New Chat";
     return {
       blocks: st.blocks,
       blockOrder: st.blockOrder,
@@ -496,7 +496,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
     const neverSavedBefore = !lastSaveTimeRef.current;
     const titleUntouched =
       !userRenamedRef.current &&
-      (!lastSavedTitleRef.current || lastSavedTitleRef.current === "New Grid");
+      (!lastSavedTitleRef.current || lastSavedTitleRef.current === "New Chat");
     if (neverSavedBefore && titleUntouched && isBoardEmpty()) {
       if (opts?.isFinal) {
         savingRef.current = true;
@@ -528,7 +528,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
     savingRef.current = true;
     try {
       const raw = buildSnapshot();
-      const savedTitle = (raw.title && String(raw.title).trim()) ? String(raw.title).trim() : "New Grid";
+      const savedTitle = (raw.title && String(raw.title).trim()) ? String(raw.title).trim() : "New Chat";
       raw.title = savedTitle;
       const snapshot = sanitizeSnapshotForDb(raw);
       const now = new Date().toISOString();
@@ -654,11 +654,11 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
   const commitBoardTitle = useCallback(async () => {
     if (!boardId || !userId) return;
     if (isDemoGridId(boardId)) return;
-    const next = String(titleRef.current || "").trim() || "New Grid";
+    const next = String(titleRef.current || "").trim() || "New Chat";
     if (next === lastSavedTitleRef.current) return;
     lastSavedTitleRef.current = next;
     setTitleTracked(next);
-    if (next !== "New Grid") userRenamedRef.current = true;
+    if (next !== "New Chat") userRenamedRef.current = true;
     await supabase
       .from("omnia_boards")
       .update({ title: next, updated_at: new Date().toISOString() })
@@ -682,10 +682,10 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
         userRenamedRef.current = false;
         const snapshot = getDemoGridSnapshot(routeBoardId);
         if (cancelled) return;
-        const demoTitle = String(snapshot?.title || "New Grid");
+        const demoTitle = String(snapshot?.title || "New Chat");
         setTitleTracked(demoTitle);
         lastSavedTitleRef.current = demoTitle;
-        userRenamedRef.current = demoTitle !== "New Grid";
+        userRenamedRef.current = demoTitle !== "New Chat";
         setBoardId(routeBoardId);
         reset();
         setChatMessages([]);
@@ -730,8 +730,8 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
         (async () => {
           hydratedRef.current = false;
           userRenamedRef.current = false;
-          setTitleTracked("New Grid");
-          lastSavedTitleRef.current = "New Grid";
+          setTitleTracked("New Chat");
+          lastSavedTitleRef.current = "New Chat";
           if (cancelled) return;
           setBoardId(routeBoardId);
           reset();
@@ -755,7 +755,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
       hydratedRef.current = false;
       userRenamedRef.current = false;
       let id: string | null = null;
-      let loadedTitle = "New Grid";
+      let loadedTitle = "New Chat";
       try {
         const existing = routeBoardId || localStorage.getItem("omnia_board_id");
         if (existing) {
@@ -767,7 +767,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
             .maybeSingle();
           if (data?.id) {
             id = data.id;
-            loadedTitle = String(data.title || "New Grid");
+            loadedTitle = String(data.title || "New Chat");
             if (data.title) setTitleTracked(loadedTitle);
             lastSavedTitleRef.current = loadedTitle;
           }
@@ -786,7 +786,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
             .maybeSingle();
           if (recent?.id) {
             id = recent.id;
-            loadedTitle = String(recent.title || "New Grid");
+            loadedTitle = String(recent.title || "New Chat");
             if (recent.title) setTitleTracked(loadedTitle);
             lastSavedTitleRef.current = loadedTitle;
             localStorage.setItem("omnia_board_id", id!);
@@ -799,20 +799,20 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
         try {
           const { data, error: insertErr } = await supabase
             .from("omnia_boards")
-            .insert(routeBoardId ? { id: routeBoardId, user_id: userId, title: "New Grid" } : { user_id: userId, title: "New Grid" })
+            .insert(routeBoardId ? { id: routeBoardId, user_id: userId, title: "New Chat" } : { user_id: userId, title: "New Chat" })
             .select("id, title")
             .maybeSingle();
           if (insertErr && import.meta.env.DEV) console.error("[LYKN] Board insert error:", insertErr.message);
           id = data?.id || null;
           if (data?.title) setTitleTracked(String(data.title));
-          lastSavedTitleRef.current = String(data?.title || "New Grid");
+          lastSavedTitleRef.current = String(data?.title || "New Chat");
           if (id) localStorage.setItem("omnia_board_id", id);
         } catch (insertCatch) {
           if (import.meta.env.DEV) console.error("[LYKN] Board creation failed:", insertCatch);
         }
       }
       if (cancelled) return;
-      if (loadedTitle !== "New Grid") userRenamedRef.current = true;
+      if (loadedTitle !== "New Chat") userRenamedRef.current = true;
       setBoardId(id);
       if (!id) {
         hydratedRef.current = true;

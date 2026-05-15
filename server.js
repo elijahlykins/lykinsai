@@ -4862,6 +4862,7 @@ app.get('/api/v1/synthesis/facts', requireAuthOrMcpToken, mcpMinuteLimiter, mcpD
 app.get('/api/v1/synthesis/vault/search', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_searchVault', req, res));
 app.get('/api/v1/synthesis/context-block', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_getContextBlock', req, res));
 app.get('/api/v1/synthesis/projects/state', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_getProjectState', req, res));
+app.get('/api/v1/synthesis/projects', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_listProjects', req, res));
 
 // Write endpoints — same auth. Tools internally enforce 'write' scope for
 // MCP-token requests, but mints default to read+write on every plan, so

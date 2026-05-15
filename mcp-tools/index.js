@@ -46,6 +46,7 @@ import { proposeFactTool } from './proposeFact.js';
 import { setActiveProjectTool } from './setActiveProject.js';
 import { pushProjectStateTool } from './pushProjectState.js';
 import { getProjectStateTool } from './getProjectState.js';
+import { listProjectsTool } from './listProjects.js';
 
 export const MCP_TOOLS = [
   // Tier 1 — Core beliefs (governance, ratified)
@@ -54,6 +55,7 @@ export const MCP_TOOLS = [
   proposeBeliefTool,
   recordRuleApplicationTool,
   // Tier 2 — Project state (working memory, git-style)
+  listProjectsTool,
   setActiveProjectTool,
   pushProjectStateTool,
   getProjectStateTool,

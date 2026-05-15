@@ -927,19 +927,19 @@ export default function ProjectPlaceholder() {
     const lastFolder = folders[folders.length - 1];
     let lastActivity = "No recent activity yet.";
     if (lastFile) lastActivity = `Last added file: ${lastFile.name}.`;
-    else if (lastBoard) lastActivity = `Last created grid: ${lastBoard.title}.`;
+    else if (lastBoard) lastActivity = `Last created chat: ${lastBoard.title}.`;
     else if (lastFolder) lastActivity = `Last created folder: ${lastFolder.name}.`;
 
     const suggestions: string[] = [];
-    if (boards.length === 0) suggestions.push("Create a grid to capture ideas.");
+    if (boards.length === 0) suggestions.push("Start a chat to capture ideas.");
     if (folders.length === 0) suggestions.push("Add folders to organize files.");
     if (files.length === 0) suggestions.push("Drop files into a folder to get started.");
-    if (files.length > 0 && boards.length > 0) suggestions.push("Connect files to grids in Connections.");
-    if (boards.length > 3) suggestions.push("Group related grids under folders.");
+    if (files.length > 0 && boards.length > 0) suggestions.push("Connect files to chats in Connections.");
+    if (boards.length > 3) suggestions.push("Group related chats under folders.");
     if (suggestions.length === 0) suggestions.push("Keep building — everything looks organized.");
 
     return {
-      summary: `You have ${boards.length} grid${boards.length === 1 ? "" : "s"}, ${folders.length} folder${
+      summary: `You have ${boards.length} chat${boards.length === 1 ? "" : "s"}, ${folders.length} folder${
         folders.length === 1 ? "" : "s"
       }, and ${files.length} file${files.length === 1 ? "" : "s"} in this project. ${lastActivity}`,
       suggestions: suggestions.slice(0, 4),
@@ -951,12 +951,12 @@ export default function ProjectPlaceholder() {
     if (!projectId) return;
     const { data } = await supabase
       .from("omnia_boards")
-      .insert({ user_id: user.id, title: "New Grid", project_id: projectId })
+      .insert({ user_id: user.id, title: "New Chat", project_id: projectId })
       .select("id, title")
       .single();
     const id = data?.id;
     if (id) {
-      setBoards((prev) => [{ id, title: data?.title || "New Grid", folderId: activeFolderId }, ...prev]);
+      setBoards((prev) => [{ id, title: data?.title || "New Chat", folderId: activeFolderId }, ...prev]);
       const folderMap = readStored<Record<string, string | null>>(
         `project:${projectId}:boardFolders`,
         {}
@@ -970,9 +970,9 @@ export default function ProjectPlaceholder() {
 
   const handleRenameBoard = async (board: BoardEntry) => {
     if (!user?.id) return;
-    const next = window.prompt("Rename grid", board.title);
+    const next = window.prompt("Rename chat", board.title);
     if (next === null) return;
-    const name = next.trim() || "New Grid";
+    const name = next.trim() || "New Chat";
     await supabase
       .from("omnia_boards")
       .update({ title: name })
@@ -983,7 +983,7 @@ export default function ProjectPlaceholder() {
 
   const handleDeleteBoard = async (board: BoardEntry) => {
     if (!user?.id) return;
-    const ok = window.confirm("Delete this grid? This cannot be undone.");
+    const ok = window.confirm("Delete this chat? This cannot be undone.");
     if (!ok) return;
     await supabase.from("omnia_board_states").delete().eq("board_id", board.id);
     await supabase.from("omnia_boards").delete().eq("id", board.id).eq("user_id", user.id);
@@ -1890,9 +1890,9 @@ INSTRUCTIONS:
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-3">
             {[
-              { label: "Grids", value: boards.length, color: "#1d4ed8" },
+              { label: "Chats", value: boards.length, color: "#1d4ed8" },
               { label: "Files", value: files.length, color: "#3b82f6" },
-              { label: "Chats", value: chatMessages.filter((m) => m.role === "user").length, color: "#60a5fa" },
+              { label: "Messages", value: chatMessages.filter((m) => m.role === "user").length, color: "#60a5fa" },
               { label: "Connections", value: 0, color: "#93c5fd" },
             ].map((stat) => (
               <div key={stat.label} className="rounded-xl border border-white/25 dark:border-white/10 bg-white/25 dark:bg-transparent backdrop-blur-sm p-3 text-center">
@@ -2029,15 +2029,15 @@ INSTRUCTIONS:
           )}
         </div>
 
-        {/* Center: Grids + Files */}
+        {/* Center: Chats + Files */}
         <div className="min-w-0 space-y-6">
-          {/* Grids */}
+          {/* Chats */}
           <section className="overflow-visible relative z-10">
             <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
               <div className="min-w-0">
-                <h2 className="text-base sm:text-lg font-semibold">Grids</h2>
+                <h2 className="text-base sm:text-lg font-semibold">Chats</h2>
                 <p className="text-[0.6875rem] sm:text-xs text-black/60 dark:text-white/60">
-                  Create and organize grids inside this project.
+                  Start and organize chats inside this project.
                 </p>
               </div>
             </div>
@@ -2051,7 +2051,7 @@ INSTRUCTIONS:
                 <div className="w-9 h-9 rounded-lg bg-white/60 dark:bg-white/10 border border-white/70 dark:border-white/15 flex items-center justify-center">
                   <Plus className="w-5 h-5 text-black/50 dark:text-white/50" />
                 </div>
-                <span className="text-xs font-medium text-black/60 dark:text-white/60">Create new grid</span>
+                <span className="text-xs font-medium text-black/60 dark:text-white/60">Start new chat</span>
               </button>
 
               {filteredBoards.map((board) => (
@@ -2065,7 +2065,7 @@ INSTRUCTIONS:
                     className="w-full h-[88px] rounded-xl border border-white/30 dark:border-white/10 bg-white/30 dark:bg-transparent hover:bg-white/45 dark:hover:bg-white/5 backdrop-blur-sm p-4 shadow-md dark:shadow-none text-left transition-all flex flex-col justify-center"
                   >
                     <div className="text-sm font-semibold truncate">{board.title}</div>
-                    <div className="mt-1 text-xs text-black/50 dark:text-white/50">Grid</div>
+                    <div className="mt-1 text-xs text-black/50 dark:text-white/50">Chat</div>
                   </button>
                   <div className="absolute top-2 right-2 z-20 opacity-0 group-hover:opacity-100 transition-opacity">
                     <div className="relative" ref={openBoardMenuId === board.id ? boardMenuRef : null}>
@@ -2076,7 +2076,7 @@ INSTRUCTIONS:
                           setOpenBoardMenuId((prev) => (prev === board.id ? null : board.id));
                         }}
                         className="px-1 py-0.5 text-black/60 dark:text-white/60 hover:text-black dark:hover:text-white transition-colors"
-                        aria-label="Grid actions"
+                        aria-label="Chat actions"
                       >
                         <MoreHorizontal className="w-4 h-4" />
                       </button>
@@ -2664,7 +2664,7 @@ INSTRUCTIONS:
       <Dialog open={!!moveBoardId} onOpenChange={(open) => !open && setMoveBoardId(null)}>
         <DialogContent className="rounded-2xl border border-white/30 dark:border-white/10 bg-[#f2f2f7]/65 dark:bg-neutral-900/90 backdrop-blur-md text-black dark:text-white shadow-lg">
           <DialogHeader>
-            <DialogTitle>Move grid</DialogTitle>
+            <DialogTitle>Move chat</DialogTitle>
           </DialogHeader>
           <div className="space-y-2">
             {(allProjects as Array<{ id: string; name: string }>)

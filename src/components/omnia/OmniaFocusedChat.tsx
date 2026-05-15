@@ -171,6 +171,15 @@ export interface OmniaFocusedChatProps {
 
   addChatResponseToGrid: (text: string) => void;
 
+  /**
+   * When true the canvas surface is unmounted (chat-only mode). The
+   * "Add to grid" / "Add this section to grid" buttons and the
+   * canvas-files collage panel are hidden because they'd be no-ops the
+   * user can't see. Passed through from `OmniaGrid`'s `GRID_DISABLED`
+   * feature flag.
+   */
+  gridDisabled?: boolean;
+
   renderFocusedAttachmentPreview: (att: FocusedChatAttachment) => React.ReactNode;
 
   onDragOver: (e: React.DragEvent) => void;
@@ -218,6 +227,7 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
   copiedMsgId,
   onCopyMessage,
   addChatResponseToGrid,
+  gridDisabled = false,
   renderFocusedAttachmentPreview,
   onDragOver,
   onDrop,
@@ -254,8 +264,9 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
 
   return (
     <>
-      {/* Left collage panel — grid files */}
-      {canvasFileBlocks.length > 0 && !isMobileGrid && (
+      {/* Left collage panel — canvas files. Hidden in chat-only mode
+          (`gridDisabled`) because the source surface isn't mounted. */}
+      {canvasFileBlocks.length > 0 && !isMobileGrid && !gridDisabled && (
         <div className="fixed bottom-0 z-[66] w-[13.75rem] overflow-y-auto scrollbar-hide p-3 space-y-2 bg-transparent border-r border-black/5 dark:border-white/5 transition-all duration-300" style={{ top: "var(--header-height-sm, 4.2rem)", left: "var(--sidebar-offset, 0px)" }}>
           <p className="text-[0.625rem] font-semibold uppercase tracking-wider text-black/40 dark:text-white/40 px-1 mb-1">Grid Files</p>
           <div className="flex flex-col gap-2">
@@ -576,7 +587,7 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
                                     {normalizeChecklistSyntax(chunk)}
                                   </ReactMarkdown>
                                 </div>
-                                {!isSingle && !isMobilePhone && (
+                                {!isSingle && !isMobilePhone && !gridDisabled && (
                                   <button
                                     type="button"
                                     title={selectedChunks.size > 1 ? "Add selected sections to grid" : "Add this section to grid"}
@@ -657,7 +668,7 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
                         </div>
                       )}
                       <div className="flex items-center gap-0.5 px-3 pb-2 pt-0.5">
-                        {!isMobilePhone && (
+                        {!isMobilePhone && !gridDisabled && (
                           <button type="button" title="Add to grid" className="p-1.5 rounded-md text-black/40 dark:text-white/40 hover:text-blue-500 hover:bg-blue-500/10 transition-colors" onClick={() => addChatResponseToGrid(msg.aiResponse || "")}>
                             <GridIcon className="w-3.5 h-3.5" />
                           </button>

@@ -166,6 +166,16 @@ export const OUTBOUND_TARGETS = [
     //    inside the dialog — written to match each tool's actual UI
     //    so the user can follow it without alt-tabbing back here.
     openUrl: "https://chatgpt.com/",
+    // Plan gate is nuanced: custom MCP connectors are paid-only (Pro /
+    // Team / Enterprise + Dev Mode), but Free / Plus users can still
+    // wire LYKN up via personal-access-token. We still warn before the
+    // dialog opens because the dialog defaults to the MCP path.
+    requiresPaidPlan: {
+      shortLabel: "Requires ChatGPT Pro+",
+      title: "ChatGPT custom MCP connectors need a paid plan",
+      message:
+        "Custom MCP connectors require ChatGPT Pro, Team, or Enterprise (with Developer Mode enabled). Free and Plus accounts can still wire LYKN up via the personal-access-token path inside the dialog. Continue?",
+    },
     planNote:
       "Custom MCP connectors require ChatGPT Pro / Team / Enterprise + Developer Mode. Free / Plus accounts can still use the personal-access-token paths above.",
     installSteps: [
@@ -176,68 +186,6 @@ export const OUTBOUND_TARGETS = [
       "Paste the URL above into MCP Server URL, set Authentication = OAuth, click Create.",
       "Approve the LYKN consent screen when it pops — that's it.",
     ],
-  },
-  {
-    id: "perplexity",
-    clientKind: "perplexity",
-    name: "Perplexity",
-    domain: "perplexity.ai",
-    color: "#20808D",
-    installType: "oauth-mcp",
-    transport: "Streamable HTTP MCP via Perplexity Connectors (OAuth)",
-    // ── Perplexity launched custom remote MCP connectors in 2026 on
-    //    Pro and Enterprise. Same OAuth handshake as Claude / Cursor
-    //    once installed (our /mcp 401 → discovery → DCR → consent),
-    //    but Perplexity does NOT ship a prefill deep link for the
-    //    Add Custom Connector modal — closest analog would be the
-    //    open issue at github.com/anthropics/claude-ai-mcp#74 asking
-    //    Anthropic for the same; nothing comparable from Perplexity
-    //    yet. So we fall back to the ChatGPT-style guided pattern:
-    //    auto-copy LYKN's MCP URL, open the Connectors settings
-    //    page in a new tab, show the 4-step checklist inside the
-    //    dialog. Connection auto-detection works identically because
-    //    the resulting DCR-issued bearer is what we poll for.
-    summary:
-      "AI search + research. Pro and Enterprise plans get custom remote MCP connectors with full OAuth. Click Connect — we copy LYKN's URL and open Perplexity's Connectors settings, you paste once, approve, and Perplexity's answers start drawing from your beliefs, rules, facts, and vault.",
-    helpUrl: "https://www.perplexity.ai/help-center/en/articles/11502712-custom-connectors-on-perplexity",
-    helpLabel: "Perplexity Connectors help",
-    available: true,
-    tier: 1,
-    direction: "bidirectional",
-    // No connectMode set → falls through to the default "open-url"
-    // path in OauthMcpSection.handleConnect (copy URL + open new tab).
-    openUrl: "https://www.perplexity.ai/account/connectors",
-    // ── Surfaced ON THE CARD (amber ribbon) and at the TOP of the
-    //    dialog. Use sparingly — this is for "may not work even if
-    //    you do everything right" caveats that the user needs to see
-    //    BEFORE they invest time clicking through.
-    //
-    //    Perplexity is gating custom-connector loading behind a
-    //    Cloudflare Access policy on `_restricted/restricted-feature-
-    //    loader-*.js`. Even paid Pro accounts can hit `auth_status:
-    //    NONE` from CF Access today, in which case the Add modal
-    //    submits without ever calling our /oauth/register and 422s on
-    //    Perplexity's own `/rest/sources/custom`. Their UI then shows
-    //    a generic "Dynamic client registration did not return a
-    //    client_id" error that blames the MCP server even though we
-    //    were never contacted. Front-load the caveat so users don't
-    //    file LYKN bugs for it.
-    cardWarning:
-      "Perplexity is rolling this out gradually — some Pro accounts can't connect yet (Cloudflare Access denies their custom-connectors bundle, surfacing as a generic “DCR didn't return a client_id” error). Max / Enterprise accounts work. Pro accounts: if it fails, it's their rollout, not LYKN.",
-    // Front-loaded plan-gating: the LAST thing we want is a Free-plan
-    // user clicking Connect, getting a tab to Perplexity, and discovering
-    // there's no Add Custom Connector button. Surface this BEFORE the
-    // click so they self-select out.
-    planNote:
-      "Requires Perplexity Pro, Max, or Enterprise (custom remote connectors aren't available on the Free plan). The Connectors page will just show built-in integrations if you're not paid.",
-    installSteps: [
-      "Open Perplexity → Settings → Connectors (we deep-linked you there).",
-      "Click + Custom connector → choose Remote.",
-      "Paste the URL above into the Server URL field. Authentication = OAuth.",
-      "Click Connect / Save → approve the LYKN consent screen when it pops — that's it.",
-    ],
-    successHint:
-      "Add a custom instruction to your Spaces or default profile telling Perplexity to call LYKN when it needs context about you — e.g. \"Before answering personal questions, consult my LYKN context with lykn_getContextBlock.\" Without that nudge, Perplexity won't reach for it on its own the way Claude does.",
   },
   {
     id: "gemini",
@@ -325,6 +273,14 @@ export const OUTBOUND_TARGETS = [
     direction: "bidirectional",
     connectMode: "codex-cli",
     openUrl: "https://developers.openai.com/codex/mcp",
+    // Subscription-gated: Codex CLI is bundled with paid ChatGPT plans.
+    // No standalone Codex billing, but Free ChatGPT users can't use it.
+    requiresPaidPlan: {
+      shortLabel: "Requires paid ChatGPT plan",
+      title: "Codex CLI needs a paid ChatGPT plan",
+      message:
+        "Codex CLI uses your ChatGPT account for auth — it's bundled with paid ChatGPT plans (Plus, Pro, Business, or Enterprise). Free ChatGPT accounts can't run Codex. There's no separate Codex billing. Continue?",
+    },
     planNote:
       "Requires Codex CLI installed locally (`npm i -g @openai/codex` or download from openai.com/codex). Subscription-gated: ships with paid ChatGPT plans (Plus / Pro / Business / Enterprise) — Codex CLI uses your ChatGPT account, no separate billing.",
     installSteps: [
@@ -367,6 +323,12 @@ export const OUTBOUND_TARGETS = [
     openUrl: "https://grok.com/manage-connectors",
     // Front-loaded plan gate so Free users self-select out before
     // discovering the connectors page is paywalled.
+    requiresPaidPlan: {
+      shortLabel: "Requires SuperGrok",
+      title: "Grok needs a SuperGrok subscription",
+      message:
+        "Grok's custom connectors page is paywalled to SuperGrok and SuperGrok Heavy subscribers — the Free Grok tier doesn't expose connectors at all. iOS / Android Grok apps inherit the same connector list once you connect on web. Continue?",
+    },
     planNote:
       "Requires a Grok subscription — SuperGrok or SuperGrok Heavy. The Free Grok tier doesn't expose the connectors page. iOS and Android Grok apps inherit the same connector list once you connect on web.",
     installSteps: [
@@ -478,6 +440,12 @@ export const OUTBOUND_TARGETS = [
     direction: "bidirectional",
     connectMode: "jetbrains-config",
     openUrl: "https://www.jetbrains.com/help/ai-assistant/mcp.html",
+    requiresPaidPlan: {
+      shortLabel: "Requires JetBrains AI Pro+",
+      title: "JetBrains AI Assistant needs a paid plan",
+      message:
+        "AI Assistant + Junie require any paid JetBrains AI plan (AI Pro or AI Ultimate) — MCP support spans both tiers. You'll also need JetBrains IDE 2025.2+ and Node.js installed locally (we bridge via npx mcp-remote because JetBrains' native HTTP MCP transport doesn't do OAuth DCR yet). Continue?",
+    },
     planNote:
       "JetBrains IDE 2025.2 or later with AI Assistant enabled (any paid AI Pro / AI Ultimate plan — MCP support spans the tiers). Also requires Node.js installed locally because JetBrains' native HTTP MCP transport doesn't do OAuth DCR auto-discovery yet — we bridge via `npx mcp-remote`. Junie users can paste the same snippet into `~/.junie/mcp/mcp.json`.",
     installSteps: [
@@ -524,6 +492,12 @@ export const OUTBOUND_TARGETS = [
     // (their custom-MCP docs read as universally available across paid
     // tiers), but custom integrations historically require Replit Core
     // or above. We surface this honestly rather than over-promise free.
+    requiresPaidPlan: {
+      shortLabel: "Requires Replit Core+",
+      title: "Replit needs a paid account",
+      message:
+        "Replit's custom MCP integration requires Replit Core or above — same tier that unlocks Replit Agent itself. Agent has to be enabled for your account before the Integrations page shows the MCP Servers section. Continue?",
+    },
     planNote:
       "Requires a paid Replit account (Core or above) — same tier that unlocks Agent itself. Replit Agent has to be enabled for your account before the Integrations page shows the MCP Servers section.",
     installSteps: [
@@ -582,6 +556,7 @@ export const OUTBOUND_TARGETS = [
     // prefill spec like Replit / Cursor / Claude.
     openUrl: "https://lovable.dev/",
     requiresPaidPlan: {
+      shortLabel: "Requires Lovable Pro+",
       title: "Lovable custom MCP needs a paid plan",
       message:
         "Lovable's custom MCP servers (chat connectors) are paid-only — you'll need Lovable Pro ($25/mo) or above. Free accounts can use the prebuilt connectors (Notion, Linear, Atlassian, etc.) but can't add LYKN as a custom server. Continue?",
@@ -712,6 +687,7 @@ export const OUTBOUND_TARGETS = [
     // their personal workspace, and then discovering they can't use
     // it. Last-chance bail-out at click time.
     requiresPaidPlan: {
+      shortLabel: "Requires Notion Business+",
       title: "Notion AI Custom Agents need Business or Enterprise",
       message:
         "Notion AI Custom Agents with custom MCP servers require a Notion Business or Enterprise workspace (not Pro / Plus / Free — those plans don't expose Custom Agents at all). A workspace admin also has to toggle Custom MCP servers on first. Continue?",

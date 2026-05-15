@@ -35,6 +35,14 @@ type CanvasProps = {
   liveAIMode?: boolean;
   isAiThinking?: boolean;
   thinkingStatusText?: string;
+  /**
+   * When true the canvas surface is unplugged (chat-only mode in
+   * `OmniaGrid`). Hides the bottom-left floating trash control, which
+   * portals to `document.body` and would otherwise stay visible
+   * underneath the chat shell even though there are no blocks to drag
+   * onto it.
+   */
+  hidden?: boolean;
 };
 
 const ENABLE_CANVAS_HOTKEYS = false;
@@ -742,7 +750,7 @@ const CanvasBlock = React.memo(function CanvasBlock({
   }
 });
 
-export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatusText = "" }: CanvasProps) {
+export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThinking = false, thinkingStatusText = "", hidden = false }: CanvasProps) {
   const { user } = useAuth();
   const { checkVaultLimit, incrementVaultCount, upgradeModal, dismissUpgradeModal } = useUsageGate();
 
@@ -8003,8 +8011,11 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
         );
       })()}
 
-      {/* Zoom toggle + panel — portaled to body so sidebar never covers it */}
-      {createPortal(
+      {/* Zoom toggle + panel + trash — portaled to body so sidebar never
+          covers them. Suppressed entirely when the canvas surface is
+          hidden (chat-only mode) since zoom/grid/trash controls are
+          all canvas-only affordances. */}
+      {!hidden && createPortal(
         <div className="fixed z-[200] flex items-end gap-2" style={{ bottom: "16px", left: sidebarOpen ? "calc(16px + var(--sidebar-offset, 12rem))" : "16px", transition: "left 200ms ease" }} onPointerDown={(e) => e.stopPropagation()}>
           <button
             type="button"

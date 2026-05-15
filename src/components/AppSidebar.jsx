@@ -3,16 +3,13 @@ import ReactDOM from "react-dom";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   Brain,
-  ChevronDown,
   ChevronLeft,
   ChevronRight,
-  Compass,
   CreditCard,
   Edit2,
-  FolderPlus,
   Bug,
-  Lock,
   LogOut,
+  MessageCircle,
   MoreHorizontal,
   Plug,
   Plus,
@@ -22,7 +19,6 @@ import {
   Trash2,
 } from "lucide-react";
 import FeedbackModal from "@/components/FeedbackModal";
-import { GridIcon } from "@/components/ui/GridIcon";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -31,17 +27,6 @@ import {
   PROTOTYPE_STEP_EVENT,
   readPrototypeStep,
 } from "@/lib/prototypeHandoff";
-
-const PROJECTS_CHANGED_EVENT = "lykinsai_projects_changed";
-
-const projectColors = [
-  "rgba(219,234,254,0.6)",
-  "rgba(220,252,231,0.55)",
-  "rgba(237,233,254,0.55)",
-  "rgba(254,249,195,0.55)",
-  "rgba(224,231,255,0.55)",
-  "rgba(240,253,250,0.55)",
-];
 
 export default function AppSidebar({
   controlledOpen,
@@ -137,32 +122,9 @@ export default function AppSidebar({
   const queryClient = useQueryClient();
   const [menuBoardId, setMenuBoardId] = useState(null);
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0 });
-  const [showProjectPicker, setShowProjectPicker] = useState(false);
-  const [pickerPos, setPickerPos] = useState({ top: 0, left: 0 });
-  const [menuProjectId, setMenuProjectId] = useState(null);
-  const [menuProjectPos, setMenuProjectPos] = useState({ top: 0, left: 0 });
-  const [projectsExpanded, setProjectsExpanded] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [feedbackType, setFeedbackType] = useState("bug");
   const menuRef = useRef(null);
-  const addToProjectRef = useRef(null);
-  const pickerRef = useRef(null);
-  const projectMenuRef = useRef(null);
-
-  const { data: projects = [] } = useQuery({
-    queryKey: ["projects", user?.id],
-    queryFn: async () => {
-      if (!user?.id) return [];
-      const { data } = await supabase
-        .from("omnia_projects")
-        .select("id, name, updated_at")
-        .eq("user_id", user.id)
-        .order("updated_at", { ascending: false })
-        .limit(50);
-      return data || [];
-    },
-    enabled: !!user?.id,
-  });
 
   const { data: boards = [] } = useQuery({
     queryKey: ["boards", user?.id],
@@ -180,12 +142,9 @@ export default function AppSidebar({
   });
 
   useEffect(() => {
-    const onProjectsChanged = () => queryClient.invalidateQueries({ queryKey: ["projects", user?.id] });
     const onBoardsChanged = () => queryClient.invalidateQueries({ queryKey: ["boards", user?.id] });
-    window.addEventListener(PROJECTS_CHANGED_EVENT, onProjectsChanged);
     window.addEventListener("lykinsai_boards_changed", onBoardsChanged);
     return () => {
-      window.removeEventListener(PROJECTS_CHANGED_EVENT, onProjectsChanged);
       window.removeEventListener("lykinsai_boards_changed", onBoardsChanged);
     };
   }, [queryClient, user?.id]);
@@ -212,62 +171,17 @@ export default function AppSidebar({
   useEffect(() => {
     if (!menuBoardId) return;
     const onClick = (e) => {
-      const inMenu = menuRef.current && menuRef.current.contains(e.target);
-      const inPicker = pickerRef.current && pickerRef.current.contains(e.target);
-      if (!inMenu && !inPicker) {
+      if (menuRef.current && !menuRef.current.contains(e.target)) {
         setMenuBoardId(null);
-        setShowProjectPicker(false);
       }
     };
     document.addEventListener("mousedown", onClick);
     return () => document.removeEventListener("mousedown", onClick);
   }, [menuBoardId]);
 
-  useEffect(() => {
-    if (!menuProjectId) return;
-    const onClick = (e) => {
-      if (projectMenuRef.current && !projectMenuRef.current.contains(e.target)) {
-        setMenuProjectId(null);
-      }
-    };
-    document.addEventListener("mousedown", onClick);
-    return () => document.removeEventListener("mousedown", onClick);
-  }, [menuProjectId]);
-
-  const deleteProject = async (projectId) => {
-    if (!user?.id) return;
-    if (!window.confirm("Delete this project and unlink its grids? This cannot be undone.")) return;
-    await supabase
-      .from("omnia_boards")
-      .update({ project_id: null })
-      .eq("project_id", projectId)
-      .eq("user_id", user.id);
-    await supabase.from("omnia_projects").delete().eq("id", projectId).eq("user_id", user.id);
-    setMenuProjectId(null);
-    window.dispatchEvent(new Event(PROJECTS_CHANGED_EVENT));
-    window.dispatchEvent(new Event("lykinsai_boards_changed"));
-    if (location.pathname === `/project/${projectId}`) nav("/app");
-  };
-
-  const renameProject = async (projectId) => {
-    if (!user?.id) return;
-    const project = projects.find((p) => p.id === projectId);
-    const currentName = project?.name || "Untitled Project";
-    const next = window.prompt("Rename project", currentName);
-    if (next === null) return;
-    const name = next.trim() || "Untitled Project";
-    await supabase
-      .from("omnia_projects")
-      .update({ name, updated_at: new Date().toISOString() })
-      .eq("id", projectId)
-      .eq("user_id", user.id);
-    setMenuProjectId(null);
-    window.dispatchEvent(new Event(PROJECTS_CHANGED_EVENT));
-  };
-
   const deleteBoard = async (boardId) => {
     if (!user?.id) return;
-    if (!window.confirm("Delete this grid? This cannot be undone.")) return;
+    if (!window.confirm("Delete this chat? This cannot be undone.")) return;
     await supabase.from("omnia_board_states").delete().eq("board_id", boardId);
     await supabase.from("omnia_boards").delete().eq("id", boardId).eq("user_id", user.id);
     setMenuBoardId(null);
@@ -276,26 +190,13 @@ export default function AppSidebar({
     if (location.pathname === `/grid/${boardId}`) nav("/app");
   };
 
-  const addBoardToProject = async (boardId, projectId) => {
-    if (!user?.id) return;
-    await supabase
-      .from("omnia_boards")
-      .update({ project_id: projectId })
-      .eq("id", boardId)
-      .eq("user_id", user.id);
-    setMenuBoardId(null);
-    setShowProjectPicker(false);
-    window.dispatchEvent(new Event("lykinsai_boards_changed"));
-    window.dispatchEvent(new Event(PROJECTS_CHANGED_EVENT));
-  };
-
   const renameBoard = async (boardId) => {
     if (!user?.id) return;
     const board = boards.find((b) => b.id === boardId);
-    const currentTitle = board?.title || "New Grid";
-    const next = window.prompt("Rename grid", currentTitle);
+    const currentTitle = board?.title || "New Chat";
+    const next = window.prompt("Rename chat", currentTitle);
     if (next === null) return;
-    const name = next.trim() || "New Grid";
+    const name = next.trim() || "New Chat";
     await supabase
       .from("omnia_boards")
       .update({ title: name, updated_at: new Date().toISOString() })
@@ -358,7 +259,7 @@ export default function AppSidebar({
                 goTo(`/grid/${newId}`);
               }}
               className="flex-shrink-0 w-7 h-7 rounded-md hover:bg-blue-500/15 transition-colors flex items-center justify-center text-black/60 dark:text-white/60"
-              title="New grid"
+              title="New chat"
             >
               <SquarePen className="w-3.5 h-3.5" />
             </button>
@@ -372,36 +273,18 @@ export default function AppSidebar({
                 effectiveHighlightGrid ? "lykn-sidebar-grid-glow" : ""
               }`}
             >
-              <GridIcon
+              <MessageCircle
                 className={`w-3.5 h-3.5 ${
                   effectiveHighlightGrid
                     ? "text-amber-300"
                     : "text-black/60 dark:text-white/60"
                 }`}
               />
-              Grid
-            </button>
-            <button
-              type="button"
-              onClick={() => goTo("/vault")}
-              className={`w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2 ${
-                effectiveHighlightVault ? "lykn-sidebar-vault-glow" : ""
-              }`}
-            >
-              <Lock
-                className={`w-3.5 h-3.5 ${
-                  effectiveHighlightVault
-                    ? "text-emerald-300"
-                    : "text-black/60 dark:text-white/60"
-                }`}
-              />
-              Vault
+              Chat
             </button>
           </div>
 
-          <div className="my-2 border-t border-black/5 dark:border-white/5" />
-
-          <div className="flex flex-col gap-0.5">
+          <div className="flex flex-col gap-0.5 mt-0.5">
             <button
               type="button"
               onClick={(e) => {
@@ -431,103 +314,27 @@ export default function AppSidebar({
             </button>
             <button
               type="button"
-              onClick={() => goTo("/discover")}
-              className="w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
+              onClick={() => goTo("/vault")}
+              className={`w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2 ${
+                effectiveHighlightVault ? "lykn-sidebar-vault-glow" : ""
+              }`}
             >
-              <Compass className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
-              Discover
-            </button>
-            <button
-              type="button"
-              onClick={() => goTo("/connections")}
-              className="w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
-            >
-              <Plug className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
+              <Plug
+                className={`w-3.5 h-3.5 ${
+                  effectiveHighlightVault
+                    ? "text-emerald-300"
+                    : "text-black/60 dark:text-white/60"
+                }`}
+              />
               Connections
             </button>
           </div>
         </div>
 
-        {/* ── Projects (fixed, collapsible) ── */}
-        <div className="flex-shrink-0 mt-2">
-          <button
-            type="button"
-            onClick={() => setProjectsExpanded((v) => !v)}
-            className="flex items-center gap-1.5 px-2 py-0.5 w-full text-left hover:bg-blue-500/10 rounded-md transition-colors"
-          >
-            <ChevronDown className={`w-3 h-3 text-black/40 dark:text-white/40 transition-transform ${projectsExpanded ? "" : "-rotate-90"}`} />
-            <span className="text-[0.625rem] font-semibold uppercase tracking-wider text-black/50 dark:text-white/50">Projects</span>
-          </button>
-          {projectsExpanded && (
-            <div>
-              <button
-                type="button"
-                onClick={async () => {
-                  if (!user?.id) return;
-                  const { data } = await supabase
-                    .from("omnia_projects")
-                    .insert({ user_id: user.id, name: "New Project" })
-                    .select("id")
-                    .single();
-                  if (data?.id) {
-                    window.dispatchEvent(new Event(PROJECTS_CHANGED_EVENT));
-                    goTo(`/project/${data.id}`);
-                  }
-                }}
-                className="w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2 text-black/60 dark:text-white/60"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                Add New Project
-              </button>
-              <div className="flex flex-col gap-0.5">
-                {projects.length === 0 ? (
-                  <div className="text-[0.6875rem] text-black/40 dark:text-white/40 px-2.5 py-1">No projects yet</div>
-                ) : (
-                  projects.map((project) => {
-                    const isActive = location.pathname === `/project/${project.id}`;
-                    return (
-                      <div key={project.id} className="group relative flex items-center">
-                        <button
-                          type="button"
-                          onClick={() => goTo(`/project/${project.id}`)}
-                          className={`flex-1 min-w-0 text-left text-[0.6875rem] pl-2.5 pr-7 py-1 rounded-md flex items-center gap-2 transition-colors ${
-                            isActive ? "bg-blue-500/15" : "hover:bg-blue-500/15"
-                          }`}
-                        >
-                          <span className={`inline-block h-1.5 w-1.5 rounded-full flex-shrink-0 ${isActive ? "bg-blue-500" : "bg-black/30 dark:bg-white/30"}`} />
-                          <span className="truncate">{project.name}</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setMenuBoardId(null);
-                            setShowProjectPicker(false);
-                            if (menuProjectId === project.id) {
-                              setMenuProjectId(null);
-                            } else {
-                              const rect = e.currentTarget.getBoundingClientRect();
-                              setMenuProjectPos({ top: rect.bottom + 4, left: rect.right });
-                              setMenuProjectId(project.id);
-                            }
-                          }}
-                          className="absolute right-1 top-1/2 -translate-y-1/2 w-5 h-5 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-blue-500/15 transition-opacity"
-                        >
-                          <MoreHorizontal className="w-3 h-3 text-black/50 dark:text-white/50" />
-                        </button>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* ── Grids (scrollable) ── */}
+        {/* ── Chats (scrollable) ── */}
         <div className="flex-1 min-h-0 flex flex-col mt-2">
           <div className="flex-shrink-0 flex items-center justify-between px-2 py-0.5">
-            <span className="text-[0.625rem] font-semibold uppercase tracking-wider text-black/50 dark:text-white/50">Grids</span>
+            <span className="text-[0.625rem] font-semibold uppercase tracking-wider text-black/50 dark:text-white/50">Chats</span>
           </div>
           <div className="flex-shrink-0">
             <button
@@ -539,7 +346,7 @@ export default function AppSidebar({
               className="w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2 text-black/60 dark:text-white/60"
             >
               <Plus className="w-3.5 h-3.5" />
-              Add New Grid
+              Add New Chat
             </button>
           </div>
           <div className="flex-1 min-h-0 overflow-y-auto scrollbar-hide">
@@ -551,7 +358,7 @@ export default function AppSidebar({
                 // as if it were the visitor's own work — confusing for
                 // anyone trying out LYKN cold. Now signed-out users only
                 // ever see what THEY create through the walkthrough.
-                <div className="text-[0.6875rem] text-black/40 dark:text-white/40 px-2.5 py-1">No grids yet</div>
+                <div className="text-[0.6875rem] text-black/40 dark:text-white/40 px-2.5 py-1">No chats yet</div>
               ) : !user && isPrototypePreview ? (
                 // Prototype-handoff preview: the user has exactly one
                 // "grid" — the saved transcript of their first chat
@@ -577,7 +384,7 @@ export default function AppSidebar({
                   );
                 })()
               ) : boards.length === 0 ? (
-                <div className="text-[0.6875rem] text-black/40 dark:text-white/40 px-2.5 py-1">No grids yet</div>
+                <div className="text-[0.6875rem] text-black/40 dark:text-white/40 px-2.5 py-1">No chats yet</div>
               ) : (
                 boards.map((board) => {
                   const isActive = location.pathname === `/grid/${board.id}`;
@@ -591,21 +398,18 @@ export default function AppSidebar({
                         }`}
                       >
                         <span className={`inline-block h-1.5 w-1.5 rounded-full flex-shrink-0 ${isActive ? "bg-blue-500" : "bg-black/30 dark:bg-white/30"}`} />
-                        <span className="truncate">{board.title || "New Grid"}</span>
+                        <span className="truncate">{board.title || "New Chat"}</span>
                       </button>
                       <button
                         type="button"
                         onClick={(e) => {
                           e.stopPropagation();
-                          setMenuProjectId(null);
                           if (menuBoardId === board.id) {
                             setMenuBoardId(null);
-                            setShowProjectPicker(false);
                           } else {
                             const rect = e.currentTarget.getBoundingClientRect();
                             setMenuPos({ top: rect.bottom + 4, left: rect.right });
                             setMenuBoardId(board.id);
-                            setShowProjectPicker(false);
                           }
                         }}
                         className="absolute right-1 top-1/2 -translate-y-1/2 w-5 h-5 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-blue-500/15 transition-opacity"
@@ -665,32 +469,6 @@ export default function AppSidebar({
         defaultType={feedbackType}
       />
 
-      {menuProjectId && ReactDOM.createPortal(
-        <div
-          ref={projectMenuRef}
-          className="fixed z-[9999] w-44 rounded-lg border border-white/8 bg-neutral-800 shadow-md py-1 text-[0.6875rem] text-white/80"
-          style={{ top: menuProjectPos.top, left: menuProjectPos.left }}
-        >
-          <button
-            type="button"
-            className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-blue-500/15 transition-colors"
-            onClick={() => renameProject(menuProjectId)}
-          >
-            <Edit2 className="w-3 h-3 text-black/50 dark:text-white/50" />
-            Rename
-          </button>
-          <button
-            type="button"
-            className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-red-50 dark:hover:bg-red-950/40 text-red-600 dark:text-red-400 transition-colors"
-            onClick={() => deleteProject(menuProjectId)}
-          >
-            <Trash2 className="w-3 h-3" />
-            Delete project
-          </button>
-        </div>,
-        document.body
-      )}
-
       {menuBoardId && ReactDOM.createPortal(
         <div
           ref={menuRef}
@@ -705,88 +483,13 @@ export default function AppSidebar({
             <Edit2 className="w-3 h-3 text-black/50 dark:text-white/50" />
             Rename
           </button>
-          <div
-            ref={addToProjectRef}
-            className="relative"
-            onMouseEnter={() => {
-              if (addToProjectRef.current) {
-                const r = addToProjectRef.current.getBoundingClientRect();
-                setPickerPos({ top: r.top, left: r.right + 4 });
-              }
-              setShowProjectPicker(true);
-            }}
-            onMouseLeave={() => setShowProjectPicker(false)}
-          >
-            <button
-              type="button"
-              className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-blue-500/15 transition-colors"
-            >
-              <FolderPlus className="w-3 h-3 text-black/50 dark:text-white/50" />
-              Add to project
-              <ChevronRight className="w-3 h-3 text-black/30 dark:text-white/30 ml-auto" />
-            </button>
-            {showProjectPicker && ReactDOM.createPortal(
-              <div
-                ref={pickerRef}
-                className="fixed z-[10000] w-44 rounded-lg border border-white/8 bg-neutral-800 shadow-md py-1 text-[0.6875rem] text-white/80"
-                style={{ top: pickerPos.top, left: pickerPos.left }}
-                onMouseEnter={() => setShowProjectPicker(true)}
-                onMouseLeave={() => setShowProjectPicker(false)}
-              >
-                <button
-                  type="button"
-                  className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-blue-500/15 transition-colors font-medium"
-                  onClick={async () => {
-                    const boardToAdd = menuBoardId;
-                    if (!user?.id || !boardToAdd) return;
-                    const { data } = await supabase
-                      .from("omnia_projects")
-                      .insert({ user_id: user.id, name: "New Project" })
-                      .select("id")
-                      .single();
-                    if (data?.id) {
-                      await supabase
-                        .from("omnia_boards")
-                        .update({ project_id: data.id })
-                        .eq("id", boardToAdd)
-                        .eq("user_id", user.id);
-                      setMenuBoardId(null);
-                      setShowProjectPicker(false);
-                      window.dispatchEvent(new Event("lykinsai_boards_changed"));
-                      window.dispatchEvent(new Event(PROJECTS_CHANGED_EVENT));
-                      goTo(`/project/${data.id}`);
-                    }
-                  }}
-                >
-                  <Plus className="w-3 h-3 text-black/50 dark:text-white/50" />
-                  Create new project
-                </button>
-                {projects.length > 0 && (
-                  <div className="border-t border-black/5 dark:border-white/5 mt-1 pt-1">
-                    {projects.map((p) => (
-                      <button
-                        key={p.id}
-                        type="button"
-                        className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-blue-500/15 transition-colors"
-                        onClick={() => addBoardToProject(menuBoardId, p.id)}
-                      >
-                        <span className="inline-block h-1.5 w-1.5 rounded-full bg-black/30 dark:bg-white/30 flex-shrink-0" />
-                        <span className="truncate">{p.name}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>,
-              document.body
-            )}
-          </div>
           <button
             type="button"
             className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-red-50 dark:hover:bg-red-950/40 text-red-600 dark:text-red-400 transition-colors"
             onClick={() => deleteBoard(menuBoardId)}
           >
             <Trash2 className="w-3 h-3" />
-            Delete grid
+            Delete chat
           </button>
         </div>,
         document.body

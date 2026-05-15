@@ -16,22 +16,19 @@ import LandingPrototype from "./pages/LandingPrototype";
 import Why from "./pages/Why";
 import Synthesis from "./pages/Synthesis";
 import OmniaGrid from "./pages/OmniaGrid";
-import ProjectPlaceholder from "./pages/ProjectPlaceholder";
 import Settings from "./pages/Settings";
 import SynthesisLayer from "./pages/SynthesisLayer";
-import Discover from "./pages/Discover";
 import SharedGrid from "./pages/SharedGrid";
 import AppSidebar from "./components/AppSidebar";
 import MobileTabBar from "./components/MobileTabBar";
 import MobileExperienceNotice from "./components/MobileExperienceNotice";
-import VaultNew from "./pages/new/VaultNew";
+import VaultConnectionsShell from "./pages/VaultConnectionsShell";
 import VaultChatNew from "./pages/new/VaultChatNew";
 import TagManagementNew from "./pages/new/TagManagementNew";
 import BillingNew from "./pages/new/BillingNew";
 import VaultUploadToast from "./components/files/VaultUploadToast";
 import GuestSignInPrompt from "./components/GuestSignInPrompt";
 import ShareReceiver from "./pages/ShareReceiver";
-import Connections from "./pages/Connections";
 import Onboarding from "./pages/Onboarding";
 import AdminUsage from "./pages/AdminUsage";
 import OAuthConsent from "./pages/OAuthConsent";
@@ -65,12 +62,6 @@ function AdminOnly({ children }) {
     .filter(Boolean);
   const email = String(user?.email || "").toLowerCase();
   if (!email || !allowed.includes(email)) return <PageNotFound />;
-  return children;
-}
-
-function MobileRedirect({ children, to = "/app" }) {
-  const isMobile = useIsMobile();
-  if (isMobile) return <Navigate to={to} replace />;
   return children;
 }
 
@@ -189,26 +180,16 @@ function AppShell() {
                 hydrated from localStorage). The dynamic route below picks
                 it up just like a real grid. */}
             <Route path="/grid/:boardId" element={<ProtectedRoute><OmniaGrid /></ProtectedRoute>} />
-            <Route
-              path="/project/:projectId"
-              element={
-                <MobileRedirect to="/app">
-                  <ProjectPlaceholder />
-                </MobileRedirect>
-              }
-            />
             <Route path="/omnia" element={<ProtectedRoute><OmniaGrid /></ProtectedRoute>} />
-            <Route path="/vault" element={<VaultNew />} />
-            <Route path="/discover" element={<ProtectedRoute><Discover /></ProtectedRoute>} />
+            {/* Vault + Connections share a single layout route so the
+                shell (which keeps both surfaces mounted side-by-side)
+                survives navigation between `/vault` ↔ `/connections`,
+                making the in-page toggle feel instant. */}
+            <Route element={<VaultConnectionsShell />}>
+              <Route path="/vault" element={null} />
+              <Route path="/connections" element={null} />
+            </Route>
             <Route path="/share" element={<ShareReceiver />} />
-            <Route
-              path="/connections"
-              element={
-                <ProtectedRoute>
-                  <Connections />
-                </ProtectedRoute>
-              }
-            />
             <Route
               path="/onboarding/connect"
               element={
