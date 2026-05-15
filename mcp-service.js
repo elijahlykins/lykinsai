@@ -44,11 +44,52 @@ import crypto from 'crypto';
 
 export const MCP_TOKEN_PREFIX = 'lkn_live_';
 
+// Whitelist of client_kind values we accept on `lykn_mcp_tokens.client_kind`.
+//
+// Must stay a SUPERSET of every value `classifyClientKind` (oauth-server.js)
+// can emit AND every `clientKind` that ships in OUTBOUND_TARGETS — anything
+// not in the set gets coerced to `'other'` by createMcpToken, which makes
+// it invisible to the Vault app dock and the Connections grid (they look
+// up tiles via OUTBOUND_TARGETS.find(t => t.clientKind === kind)).
+//
+// Granularity vs. UI consolidation: we deliberately keep both `'claude'`
+// (the merged catalog tile) AND `'claude-web'` / `'claude-desktop'` (the
+// granular DCR-derived analytics kinds) — the dock/grid alias the legacy
+// values to `'claude'` at lookup time. See `aliasClientKindForCatalog`
+// in src/lib/connectors/outboundTargets.js.
 export const MCP_CLIENT_KINDS = new Set([
+  // Claude family — `claude` is the merged tile, the others are granular
+  // DCR signals that alias to it on the UI side.
+  'claude',
+  'claude-web',
   'claude-desktop',
   'claude-code',
-  'cursor',
+  // OpenAI surfaces.
   'chatgpt',
+  'codex-cli',
+  // Google.
+  'gemini',
+  // Coding agents / IDE clients.
+  'cursor',
+  'windsurf',
+  'jetbrains',
+  'github-copilot',
+  'replit',
+  'lovable',
+  'v0-lovable',
+  // Search / synthesis assistants.
+  'perplexity',
+  'grok',
+  'notion-ai',
+  // Workflow + voice + media.
+  'zapier',
+  'elevenlabs',
+  'fathom',
+  'mem-ai',
+  'midjourney',
+  'sora-veo',
+  'figma-ai',
+  // Catch-all fallback — kept last for findability.
   'other',
 ]);
 

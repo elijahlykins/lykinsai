@@ -972,6 +972,32 @@ export const OUTBOUND_TARGETS = [
   },
 ];
 
+/**
+ * Map a granular `client_kind` value (as stored on lykn_mcp_tokens.client_kind)
+ * to the `clientKind` of the OUTBOUND_TARGETS entry that should represent
+ * it in the UI.
+ *
+ * Background: oauth-server.js's `classifyClientKind` intentionally keeps
+ * Claude granularity (`claude-web` for claude.ai redirects, `claude-desktop`
+ * for the desktop bridge, `claude-code` for the CLI) for analytics purposes,
+ * even though we collapsed the consumer-facing Claude (web/Desktop/mobile/
+ * Cowork) cards into a single `clientKind: "claude"` tile in this catalog
+ * (see commit e6a61a1). This helper is the bridge: lookups in the Vault
+ * dock and the Connections grid run incoming `client_kind` values through
+ * here before doing the catalog match, so a `claude-web` token from DCR
+ * still lights up the merged Claude tile.
+ *
+ * Claude Code stays separate (`claude-code`) — different install path
+ * (CLI command vs. web modal) means it's still its own tile.
+ *
+ * Anything we don't have a special alias for is returned unchanged so
+ * future kinds with 1:1 catalog tiles keep working without edits here.
+ */
+export function aliasClientKindForCatalog(kind) {
+  if (kind === "claude-web" || kind === "claude-desktop") return "claude";
+  return kind;
+}
+
 // Tier metadata for the Connections page. The page groups cards by
 // tier id and renders these labels/descriptions as subheaders.
 export const OUTBOUND_TIERS = [
@@ -1202,7 +1228,7 @@ export function buildJetBrainsConfigSnippet({ mcpUrl }) {
  */
 export function buildCursorOauthDeeplink({ mcpUrl }) {
   const config = {
-    url: String(mcpUrl || "https://lykn.io/mcp"),
+    url: String(mcpUrl || PUBLIC_LYKN_MCP_URL),
   };
   const encoded = base64UrlEncode(JSON.stringify(config));
   return `cursor://anysphere.cursor-deeplink/mcp/install?name=lykn&config=${encoded}`;
@@ -1279,14 +1305,23 @@ export function buildCopilotInstallLink({ mcpUrl }) {
 // Production LYKN MCP URL — the canonical https endpoint AI clients
 // connect to. Used as the fallback any time we build a deep link for
 // a client that REQUIRES https (Claude rejects non-https connector
-// URLs; Cursor and ChatGPT have similar constraints in prod). Dev
-// machines on http://localhost can override this via the
+// URLs; Cursor and ChatGPT have similar constraints in prod).
+//
+// Important: this MUST be the API host, not the marketing host.
+// lykn.io is the SPA on Vercel — `lykn.io/mcp` happily 200s with
+// index.html, which makes Claude/ChatGPT think the URL exists then
+// fail with "Couldn't reach the MCP server" the moment they POST a
+// JSON-RPC initialize. The actual /mcp route lives on the Render
+// backend (lykn-ideation.onrender.com) and answers 401 + a proper
+// WWW-Authenticate header so the client can run OAuth discovery.
+//
+// Dev machines on http://localhost can override this via the
 // VITE_PUBLIC_MCP_URL env var when they have an https tunnel
 // (ngrok, cloudflared, etc) pointed at their local server.
 const PUBLIC_LYKN_MCP_URL =
   (typeof import.meta !== "undefined" &&
     import.meta?.env?.VITE_PUBLIC_MCP_URL) ||
-  "https://lykn.io/mcp";
+  "https://lykn-ideation.onrender.com/mcp";
 
 /**
  * Force a connector URL to be https. Claude (and most production AI
@@ -1363,8 +1398,11 @@ function base64UrlEncode(str) {
  */
 export function buildRawInstallInfo({ token, mcpUrl, restBase }) {
   return {
-    mcpUrl: String(mcpUrl || "https://lykn.io/mcp"),
-    restBase: String(restBase || "https://lykn.io/api/v1/synthesis"),
+    mcpUrl: String(mcpUrl || PUBLIC_LYKN_MCP_URL),
+    restBase: String(
+      restBase ||
+        PUBLIC_LYKN_MCP_URL.replace(/\/mcp$/, "/api/v1/synthesis"),
+    ),
     token: String(token || ""),
     headerExample: `Authorization: Bearer ${String(token || "<your-token>")}`,
   };

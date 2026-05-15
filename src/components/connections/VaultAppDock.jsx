@@ -4,7 +4,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
 import { API_BASE_URL } from "@/lib/api-config";
 import { CONNECTORS } from "@/lib/connectors/catalog";
-import { OUTBOUND_TARGETS } from "@/lib/connectors/outboundTargets";
+import { OUTBOUND_TARGETS, aliasClientKindForCatalog } from "@/lib/connectors/outboundTargets";
 
 // Floating macOS-style dock at the bottom-center of the Vault page.
 //
@@ -85,7 +85,11 @@ export default function VaultAppDock({ user }) {
     const seenKinds = new Set();
     for (const tok of tokens) {
       if (tok.status !== "active") continue;
-      const kind = tok.client_kind;
+      // Granular DCR-emitted kinds (claude-web, claude-desktop) get
+      // aliased to the merged catalog kind (claude) so a Claude OAuth
+      // token from claude.ai still resolves to the consolidated Claude
+      // tile. See aliasClientKindForCatalog for the merge contract.
+      const kind = aliasClientKindForCatalog(tok.client_kind);
       if (!kind || seenKinds.has(kind)) continue;
       seenKinds.add(kind);
       const target = OUTBOUND_TARGETS.find((t) => t.clientKind === kind);

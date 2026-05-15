@@ -5,7 +5,7 @@ import { supabase } from "@/lib/supabase";
 import { API_BASE_URL } from "@/lib/api-config";
 import { toast } from "@/components/ui/use-toast";
 import { CONNECTORS } from "@/lib/connectors/catalog";
-import { OUTBOUND_TARGETS } from "@/lib/connectors/outboundTargets";
+import { OUTBOUND_TARGETS, aliasClientKindForCatalog } from "@/lib/connectors/outboundTargets";
 import OAuthConnectDialog from "@/components/connections/OAuthConnectDialog";
 import UseLyknWithDialog from "@/components/connections/UseLyknWithDialog";
 
@@ -125,9 +125,15 @@ export default function ConnectionsAppGrid({ user }) {
     const m = new Map();
     for (const t of tokens) {
       if (t.status !== "active") continue;
-      const arr = m.get(t.client_kind) || [];
+      // Alias granular DCR-emitted kinds (claude-web, claude-desktop) to
+      // the merged catalog kind (claude) so a token minted via the
+      // claude.ai OAuth flow still flips the consolidated Claude tile to
+      // "Connected". Without this aliasing, only the granular kinds match
+      // and a real Claude OAuth handshake looks unconnected here.
+      const kind = aliasClientKindForCatalog(t.client_kind);
+      const arr = m.get(kind) || [];
       arr.push(t);
-      m.set(t.client_kind, arr);
+      m.set(kind, arr);
     }
     return m;
   }, [tokens]);
