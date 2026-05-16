@@ -443,26 +443,20 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     setAssistantTaskChecks((prev) => ({ ...prev, [msgId]: { ...(prev[msgId] || {}), [taskKey]: checked } }));
   }, []);
 
-  const buildChatMarkdownComponents = useCallback((msgId: string) => ({
+  // Static, identity-stable markdown components shared across every message.
+  // Previously this object was recreated on every `buildChatMarkdownComponents`
+  // call (which fires per-message inside the chat render loop, which itself
+  // re-runs on every streaming token). A new components object causes
+  // ReactMarkdown to drop its memoization and re-walk the AST from scratch
+  // — for a 50-message chat that was thousands of wasted markdown re-parses
+  // per second during streaming.
+  const STATIC_MD_COMPONENTS = useMemo(() => ({
     h1: ({ children }: any) => React.createElement("h1", { className: "text-xl font-semibold mt-3 mb-2" }, children),
     h2: ({ children }: any) => React.createElement("h2", { className: "text-lg font-semibold mt-3 mb-2" }, children),
     h3: ({ children }: any) => React.createElement("h3", { className: "text-base font-semibold mt-2.5 mb-1.5" }, children),
     p: ({ children }: any) => React.createElement("p", { className: "my-1.5 whitespace-pre-wrap" }, children),
     ul: ({ children }: any) => React.createElement("ul", { className: "my-2 list-disc pl-5 space-y-1" }, children),
     ol: ({ children }: any) => React.createElement("ol", { className: "my-2 list-decimal pl-5 space-y-1" }, children),
-    li: ({ children }: any) => {
-      const raw = flattenNodeText(children).trim();
-      const match = raw.match(/^\[( |x|X)\]\s+(.+)$/);
-      if (!match) return React.createElement("li", { className: "leading-relaxed" }, children);
-      const defaultChecked = String(match[1]).toLowerCase() === "x";
-      const taskText = match[2];
-      const taskKey = raw;
-      const checked = assistantTaskChecks[msgId]?.[taskKey] ?? defaultChecked;
-      return React.createElement("li", { className: `list-none ml-[-1.25rem] flex items-start gap-2 leading-relaxed ${checked ? "opacity-60" : ""}` },
-        React.createElement("input", { type: "checkbox", className: "mt-[0.28rem] shrink-0 accent-blue-500", checked, onChange: (e: any) => updateTaskCheck(msgId, taskKey, e.target.checked) }),
-        React.createElement("span", { className: checked ? "line-through" : "" }, taskText),
-      );
-    },
     strong: ({ children }: any) => React.createElement("strong", { className: "font-semibold" }, children),
     blockquote: ({ children }: any) => React.createElement("blockquote", { className: "border-l-2 border-black/20 dark:border-white/20 pl-3 my-2 text-black/70 dark:text-white/70 italic" }, children),
     code: ({ children, className }: any) => {
@@ -477,7 +471,37 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     tr: ({ children }: any) => React.createElement("tr", { className: "border-b border-black/10" }, children),
     th: ({ children }: any) => React.createElement("th", { className: "text-left px-3 py-2 font-semibold" }, children),
     td: ({ children }: any) => React.createElement("td", { className: "px-3 py-2" }, children),
-  }), [assistantTaskChecks, updateTaskCheck]);
+  }), []);
+
+  // Per-msgId components cache. The only msg-dependent component is `li`
+  // (because it reads `assistantTaskChecks[msgId]` for checkbox state).
+  // We cache the assembled object per msgId and only invalidate the entry
+  // whose `assistantTaskChecks[msgId]` reference changed — every other
+  // message keeps a referentially-stable components object across renders.
+  const componentsCacheRef = useRef<Map<string, { checks: any; comps: Record<string, React.ComponentType<any>> }>>(new Map());
+  const buildChatMarkdownComponents = useCallback((msgId: string): Record<string, React.ComponentType<any>> => {
+    const checks = assistantTaskChecks[msgId];
+    const cached = componentsCacheRef.current.get(msgId);
+    if (cached && cached.checks === checks) return cached.comps;
+    const comps: Record<string, React.ComponentType<any>> = {
+      ...STATIC_MD_COMPONENTS,
+      li: ({ children }: any) => {
+        const raw = flattenNodeText(children).trim();
+        const match = raw.match(/^\[( |x|X)\]\s+(.+)$/);
+        if (!match) return React.createElement("li", { className: "leading-relaxed" }, children);
+        const defaultChecked = String(match[1]).toLowerCase() === "x";
+        const taskText = match[2];
+        const taskKey = raw;
+        const isChecked = checks?.[taskKey] ?? defaultChecked;
+        return React.createElement("li", { className: `list-none ml-[-1.25rem] flex items-start gap-2 leading-relaxed ${isChecked ? "opacity-60" : ""}` },
+          React.createElement("input", { type: "checkbox", className: "mt-[0.28rem] shrink-0 accent-blue-500", checked: isChecked, onChange: (e: any) => updateTaskCheck(msgId, taskKey, e.target.checked) }),
+          React.createElement("span", { className: isChecked ? "line-through" : "" }, taskText),
+        );
+      },
+    };
+    componentsCacheRef.current.set(msgId, { checks, comps });
+    return comps;
+  }, [STATIC_MD_COMPONENTS, assistantTaskChecks, updateTaskCheck]);
 
   const getChatRailWidthPx = useCallback((vw: number) => {
     if (chatMode) return 0;
@@ -1003,26 +1027,20 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   }, [calcAiBubbleSize, normalizeAiTextForBlock, updateBlock]);
 
   const typeResponseIntoChat = useCallback((promptId: string, fullText: string): Promise<void> => {
+    // Previously this fake-typed responses at 3 words / 30ms (~100 wps),
+    // which added up to seconds of artificial delay on long replies. The
+    // streaming path commits tokens directly now; the replay path no
+    // longer needs (or wants) a separate animation.
     return new Promise((resolve) => {
       if (chatTypingTimerRef.current) { window.clearInterval(chatTypingTimerRef.current); chatTypingTimerRef.current = null; }
       const prev = chatTypingPendingRef.current;
       if (prev) { setChatMessages((msgs) => msgs.map((m) => (m.id === prev.promptId ? { ...m, aiResponse: prev.fullText } : m))); prev.resolve(); chatTypingPendingRef.current = null; }
-      const words = fullText.split(/(\s+)/);
-      let idx = 0;
-      chatTypingPendingRef.current = { promptId, fullText, resolve };
-      setChatMessages((msgs) => msgs.map((m) => (m.id === promptId ? { ...m, aiResponse: "" } : m)));
-      chatTypingTimerRef.current = window.setInterval(() => {
-        idx += 3;
-        const partial = words.slice(0, idx).join("");
-        setChatMessages((msgs) => msgs.map((m) => (m.id === promptId ? { ...m, aiResponse: partial } : m)));
-        if (!chatUserScrolledUpRef.current) { const el = chatScrollRef.current; if (el) { chatProgrammaticScrollRef.current = true; el.scrollTop = el.scrollHeight; } }
-        if (idx >= words.length) {
-          if (chatTypingTimerRef.current) window.clearInterval(chatTypingTimerRef.current);
-          chatTypingTimerRef.current = null; chatTypingPendingRef.current = null;
-          setChatMessages((msgs) => msgs.map((m) => (m.id === promptId ? { ...m, aiResponse: fullText } : m)));
-          resolve();
-        }
-      }, 30);
+      setChatMessages((msgs) => msgs.map((m) => (m.id === promptId ? { ...m, aiResponse: fullText } : m)));
+      if (!chatUserScrolledUpRef.current) {
+        const el = chatScrollRef.current;
+        if (el) { chatProgrammaticScrollRef.current = true; el.scrollTop = el.scrollHeight; }
+      }
+      resolve();
     });
   }, []);
 
@@ -1774,7 +1792,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     const text = chatInputRef.current.trim();
     if (!text || isChatLoading || isSendingRef.current) return;
     chatUserScrolledUpRef.current = false;
-    if (streamTypingRafRef.current) { clearTimeout(streamTypingRafRef.current); streamTypingRafRef.current = null; }
+    if (streamTypingRafRef.current) { cancelAnimationFrame(streamTypingRafRef.current); streamTypingRafRef.current = null; }
     streamTargetTextRef.current = "";
     streamDisplayedLenRef.current = 0;
     streamPromptIdRef.current = null;
@@ -1894,7 +1912,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   const handleStopAi = useCallback(() => {
     activeAiAbortRef.current?.abort();
     activeAiAbortRef.current = null;
-    if (streamTypingRafRef.current) { clearTimeout(streamTypingRafRef.current); streamTypingRafRef.current = null; }
+    if (streamTypingRafRef.current) { cancelAnimationFrame(streamTypingRafRef.current); streamTypingRafRef.current = null; }
     if (streamPromptIdRef.current && streamDisplayedLenRef.current < streamTargetTextRef.current.length) {
       setChatMessages((prev) => prev.map((m) => (m.id === streamPromptIdRef.current ? { ...m, aiResponse: streamTargetTextRef.current } : m)));
     }
@@ -2042,7 +2060,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     if (chatTypingTimerRef.current) window.clearInterval(chatTypingTimerRef.current);
     chatTypingTimerRef.current = null;
     chatTypingPendingRef.current = null;
-    if (streamTypingRafRef.current) { clearTimeout(streamTypingRafRef.current); streamTypingRafRef.current = null; }
+    if (streamTypingRafRef.current) { cancelAnimationFrame(streamTypingRafRef.current); streamTypingRafRef.current = null; }
   }, []);
 
   return {

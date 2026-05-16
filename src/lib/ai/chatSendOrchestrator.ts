@@ -831,7 +831,7 @@ async function runGuestChat(
   const { accumulated } = await handleStreamingResponse(p, streamResponse, promptId, null, cappedText);
 
   if (streamRefs.streamTypingRafRef.current) {
-    clearTimeout(streamRefs.streamTypingRafRef.current);
+    cancelAnimationFrame(streamRefs.streamTypingRafRef.current);
     streamRefs.streamTypingRafRef.current = null;
   }
   if (streamRefs.streamPromptIdRef.current && streamRefs.streamDisplayedLenRef.current < streamRefs.streamTargetTextRef.current.length) {
@@ -956,27 +956,28 @@ async function handleStreamingResponse(
                   canvas.updateBlock(responseBlockId, { content: normalized, width: size.width, height: size.height });
                 }
               }
+              // Direct commit — no fake typewriter. The previous
+              // implementation throttled visible characters at 2-6 chars per
+              // 18ms (~333 chars/sec ceiling), which made every reply feel
+              // sluggish even when Gemini streamed in <1s. We now commit
+              // the latest `visibleText` to the message bubble immediately
+              // and rely on rAF coalescing inside React to keep the render
+              // rate bounded. `streamDisplayedLenRef` tracks the committed
+              // length so postProcessResponse can still tell if a final
+              // commit is needed.
+              streamRefs.streamDisplayedLenRef.current = visibleText.length;
               if (!streamRefs.streamTypingRafRef.current) {
-                const typeTick = () => {
+                streamRefs.streamTypingRafRef.current = window.requestAnimationFrame(() => {
+                  streamRefs.streamTypingRafRef.current = null;
                   const target = streamRefs.streamTargetTextRef.current;
-                  const cur = streamRefs.streamDisplayedLenRef.current;
-                  if (cur < target.length) {
-                    const behind = target.length - cur;
-                    const step = Math.max(2, Math.min(6, Math.ceil(behind / 6)));
-                    streamRefs.streamDisplayedLenRef.current = Math.min(cur + step, target.length);
-                    const partial = target.substring(0, streamRefs.streamDisplayedLenRef.current);
-                    const pid = streamRefs.streamPromptIdRef.current;
-                    if (pid) state.setChatMessages((prev) => prev.map((m) => (m.id === pid ? { ...m, aiResponse: partial } : m)));
-                    if (!streamRefs.chatUserScrolledUpRef.current) {
-                      const el = streamRefs.chatScrollRef.current;
-                      if (el) { streamRefs.chatProgrammaticScrollRef.current = true; el.scrollTop = el.scrollHeight; }
-                    }
-                    streamRefs.streamTypingRafRef.current = window.setTimeout(typeTick, 18);
-                  } else {
-                    streamRefs.streamTypingRafRef.current = null;
+                  const pid = streamRefs.streamPromptIdRef.current;
+                  if (!pid) return;
+                  state.setChatMessages((prev) => prev.map((m) => (m.id === pid ? { ...m, aiResponse: target } : m)));
+                  if (!streamRefs.chatUserScrolledUpRef.current) {
+                    const el = streamRefs.chatScrollRef.current;
+                    if (el) { streamRefs.chatProgrammaticScrollRef.current = true; el.scrollTop = el.scrollHeight; }
                   }
-                };
-                streamRefs.streamTypingRafRef.current = window.setTimeout(typeTick, 18);
+                });
               }
             }
           } catch {}
@@ -1755,14 +1756,14 @@ async function postProcessResponse(
   // breaking the prompt-level "hidden from user" contract.
   const finalDisplayText = mediaResult.cleanText !== textAfterYt ? mediaResult.cleanText : textAfterYt;
   const webLinks = postProcessing.extractWebLinksFromText(finalDisplayText);
-  // Stop the typewriter animation BEFORE we commit the final text. Otherwise
-  // the next typeTick fires ~18ms later with a stale `streamTargetTextRef`
-  // and overwrites our final commit with a substring of the in-stream view,
-  // which is how a user sees "server finished but UI is cut off". We also
-  // sync the target ref to the final text so any in-flight tick that already
-  // started can't introduce regressions.
+  // Cancel any pending rAF commit BEFORE we set the final text. Otherwise
+  // the queued frame fires with a stale `streamTargetTextRef` and overwrites
+  // our final commit with the pre-cleanup in-stream view (which is how a
+  // user sees "server finished but UI is cut off"). We also sync the target
+  // ref to the final text so any in-flight frame that already started can't
+  // introduce regressions.
   if (p.streamRefs.streamTypingRafRef.current) {
-    clearTimeout(p.streamRefs.streamTypingRafRef.current);
+    cancelAnimationFrame(p.streamRefs.streamTypingRafRef.current);
     p.streamRefs.streamTypingRafRef.current = null;
   }
   p.streamRefs.streamTargetTextRef.current = finalDisplayText;
@@ -2198,7 +2199,7 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
     let accumulated = streamResult.accumulated;
     responseBlockId = streamResult.responseBlockId;
 
-    if (streamRefs.streamTypingRafRef.current) { clearTimeout(streamRefs.streamTypingRafRef.current); streamRefs.streamTypingRafRef.current = null; }
+    if (streamRefs.streamTypingRafRef.current) { cancelAnimationFrame(streamRefs.streamTypingRafRef.current); streamRefs.streamTypingRafRef.current = null; }
     if (streamRefs.streamPromptIdRef.current && streamRefs.streamDisplayedLenRef.current < streamRefs.streamTargetTextRef.current.length) {
       state.setChatMessages((prev) => prev.map((m) => (m.id === streamRefs.streamPromptIdRef.current ? { ...m, aiResponse: streamRefs.streamTargetTextRef.current } : m)));
     }
