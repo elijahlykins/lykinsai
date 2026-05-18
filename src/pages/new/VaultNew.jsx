@@ -79,11 +79,98 @@ import remarkGfm from "remark-gfm";
 import { useThinkingStatus } from "@/hooks/useThinkingStatus";
 import { splitResponseIntoChunks, normalizeChecklistSyntax, flattenNodeText, handleChunkDragStart } from "@/lib/chatChunks";
 import VaultConnectionsToggle from "@/components/connections/VaultConnectionsToggle";
+import { CONNECTORS } from "@/lib/connectors/catalog";
 // Tracks whether the vault has completed its initial image-preload gating at
 // least once during this SPA session. Persists across route remounts so
 // navigating away from /vault and back does not re-show the LoadingScreen
 // while the browser's image cache is already warm.
 let sessionVaultReady = false;
+
+// Connector-sourced notes (Notion pages, Gmail stars, Slack saves, …)
+// land in the vault as one note per item. Without grouping, a freshly-
+// synced Gmail or Notion workspace floods the grid with dozens of nearly
+// identical cards before the user sees their own work, so we collapse
+// every per-connector batch into a single app-style tile labelled with
+// the connector name + item count. Tapping the tile drills into a
+// folder-view of just that connector's items (`openSourceFolder`).
+//
+// The map below keys on the `source` column each adapter writes to the
+// notes table (see e.g. connectors/notion.js → 'notion_page',
+// connectors/gmail.js → 'gmail_starred') and points at the connector id
+// in `src/lib/connectors/catalog.js`. Display fields (name, domain,
+// favicon) are then derived from that single catalog at runtime, so
+// adding a new collapsable connector is one line here once the adapter
+// is writing a stable `source` value.
+//
+// Multiple sources can fold into the same connector tile when one
+// platform exposes more than one ingest stream — Reddit saves both
+// posts and comments, Mastodon both favourites and bookmarks. They all
+// roll up under their parent app.
+const SOURCE_TO_CONNECTOR_ID = {
+  notion_page: "notion",
+  gmail_starred: "gmail",
+  outlook_flagged: "outlook-365",
+  gdrive_starred: "google-drive",
+  gdocs_starred: "google-docs",
+  gsheets_starred: "google-sheets",
+  gslides_starred: "google-drive",
+  gcal_event: "google-calendar",
+  youtube_liked: "youtube",
+  slack_saved: "slack",
+  github_starred: "github",
+  linear_issue: "linear",
+  todoist_task: "todoist",
+  trello_card: "trello",
+  canva_design: "canva",
+  vimeo_liked: "vimeo",
+  dribbble_liked: "dribbble",
+  readwise: "readwise",
+  raindrop_bookmark: "raindrop",
+  spotify_liked: "spotify",
+  pinterest_pin: "pinterest",
+  x_bookmark: "x",
+  bluesky_like: "bluesky",
+  reddit_saved_post: "reddit",
+  reddit_saved_comment: "reddit",
+  mastodon_favourite: "mastodon",
+  mastodon_bookmark: "mastodon",
+};
+
+// Resolve a note's `source` value to the display config used by the
+// folder tile. Caches lookups so the per-card visibleCards loop doesn't
+// pay a CONNECTORS.find() cost on every render.
+const sourceFolderCache = new Map();
+function resolveSourceFolder(source) {
+  if (!source) return null;
+  if (sourceFolderCache.has(source)) return sourceFolderCache.get(source);
+  const connectorId = SOURCE_TO_CONNECTOR_ID[source];
+  if (!connectorId) {
+    sourceFolderCache.set(source, null);
+    return null;
+  }
+  const connector = CONNECTORS.find((c) => c.id === connectorId);
+  if (!connector) {
+    sourceFolderCache.set(source, null);
+    return null;
+  }
+  const cfg = {
+    connectorId,
+    name: connector.name,
+    domain: connector.domain || "",
+    // Prefer the catalog's explicit `iconUrl` (Google's per-product
+    // brand assets, etc.) so e.g. Sheets renders the green spreadsheet
+    // glyph instead of a generic Google "G". Fall back to S2 favicons —
+    // same resolver path the connections-page DockFavicon uses — for
+    // connectors that don't ship a custom icon.
+    favicon:
+      connector.iconUrl ||
+      (connector.domain
+        ? `https://www.google.com/s2/favicons?sz=128&domain=${encodeURIComponent(connector.domain)}`
+        : ""),
+  };
+  sourceFolderCache.set(source, cfg);
+  return cfg;
+}
 
 // Marker parsing is delegated to `attachmentsMarker.ts` so all consumers
 // share the same JSON-string-aware scanner. The previous inline bracket
@@ -793,6 +880,30 @@ export default function VaultNew() {
   const [saveLinkPreview, setSaveLinkPreview] = useState(null);
   const [showSignInBlocker, setShowSignInBlocker] = useState(false);
   const [previewCard, setPreviewCard] = useState(null);
+  // Per-connector "folder" view. When non-null, the vault grid collapses
+  // every connector-sourced card (e.g. Notion pages) into a single tile
+  // and clicking that tile opens this state to the connector's id. The
+  // grid then renders only that connector's items plus a "back to all"
+  // affordance. null = normal mixed view.
+  const [openSourceFolder, setOpenSourceFolder] = useState(null);
+  // Display data for the folder-view header (name, domain, favicon).
+  // Derived from the shared CONNECTORS catalog so we don't duplicate
+  // app metadata in this file — any change to a connector's branding
+  // flows here automatically.
+  const openFolderConnector = useMemo(() => {
+    if (!openSourceFolder) return null;
+    const connector = CONNECTORS.find((c) => c.id === openSourceFolder);
+    if (!connector) return null;
+    return {
+      name: connector.name,
+      domain: connector.domain || "",
+      favicon:
+        connector.iconUrl ||
+        (connector.domain
+          ? `https://www.google.com/s2/favicons?sz=128&domain=${encodeURIComponent(connector.domain)}`
+          : ""),
+    };
+  }, [openSourceFolder]);
   const [isSaveLinkLoading, setIsSaveLinkLoading] = useState(false);
   const [isSaveLinkSaving, setIsSaveLinkSaving] = useState(false);
   const [vaultSearch, setVaultSearch] = useState("");
@@ -1573,8 +1684,31 @@ export default function VaultNew() {
       const chatPreview = extractChatPreview(cleanContent);
       const youtubeLinks = extractYouTubeLinks(cleanContent);
       const dateLabel = formatDate(note.updated_at || note.created_at);
+      const rawSource = String(note?.source || "").toLowerCase();
+      const rawTags = Array.isArray(note?.tags) ? note.tags.map((t) => String(t).toLowerCase()) : [];
+      // Legacy guard: normalize older rows to the source values the
+      // current folder-collapse logic expects.
+      //   • Pre-`source`-column Notion rows can still be identified by
+      //     the `notion` tag the connector has always written.
+      //   • Drive items synced before the per-app split (Docs / Sheets /
+      //     Drive) all landed under `gdrive_starred`. Split them retro-
+      //     actively by the mime-derived tag (`doc`, `sheet`, `slides`)
+      //     so historical Docs flow into the Google Docs tile and
+      //     historical Sheets flow into the Google Sheets tile without
+      //     requiring a DB migration or a re-sync.
+      let noteSource = rawSource;
+      if (rawSource === "" && rawTags.includes("notion")) {
+        noteSource = "notion_page";
+      } else if (rawSource === "gdrive_starred") {
+        if (rawTags.includes("doc")) noteSource = "gdocs_starred";
+        else if (rawTags.includes("sheet")) noteSource = "gsheets_starred";
+        else if (rawTags.includes("slides")) noteSource = "gslides_starred";
+      }
+      const updatedAtMs = note?.updated_at ? new Date(note.updated_at).getTime() : 0;
+      const createdAtMs = note?.created_at ? new Date(note.created_at).getTime() : 0;
+      const lastTouchedMs = Math.max(updatedAtMs, createdAtMs);
       const isStandaloneQuickNote =
-        String(note?.source || "").toLowerCase() === "quick_note" ||
+        noteSource === "quick_note" ||
         (String(note?.title || "").trim().toLowerCase() === "quick note" && attachments.length === 0);
       const excerpt = isStandaloneQuickNote
         ? buildTextExcerpt(String(cleanContent || "").replace(/\r\n/g, "\n"))
@@ -1597,6 +1731,8 @@ export default function VaultNew() {
           noteExcerpt,
           dateLabel,
           tags: noteTags,
+          source: noteSource,
+          lastTouchedMs,
         });
       });
 
@@ -1620,6 +1756,8 @@ export default function VaultNew() {
             noteExcerpt,
             dateLabel,
             tags: noteTags,
+            source: noteSource,
+            lastTouchedMs,
           });
         });
       }
@@ -1636,6 +1774,8 @@ export default function VaultNew() {
           noteExcerpt,
           dateLabel,
           tags: noteTags,
+          source: noteSource,
+          lastTouchedMs,
         });
       }
 
@@ -1650,6 +1790,8 @@ export default function VaultNew() {
           dateLabel,
           tags: noteTags,
           comments: parseQuickNoteComments(note),
+          source: noteSource,
+          lastTouchedMs,
         });
       }
     });
@@ -2304,10 +2446,107 @@ export default function VaultNew() {
   }, [user?.id, vaultCards, drainUrlResolveQueue, failedImageIds]);
 
   const visibleCards = useMemo(() => {
-    return vaultCards.filter(
+    const baseline = vaultCards.filter(
       (card) => card.kind !== "chat-preview" && !pendingDeleteCardIds.has(card.id),
     );
-  }, [vaultCards, pendingDeleteCardIds]);
+
+    // Folder-view: when the user has tapped into a connector tile, the
+    // grid is dedicated to that connector's items. We skip the collapse
+    // pass entirely and just narrow the list. Matching is done by
+    // connector id (not raw `source`) so a connector that writes
+    // multiple source strings — Reddit posts+comments, Mastodon
+    // favourites+bookmarks — still shows everything under one folder.
+    if (openSourceFolder) {
+      return baseline.filter((card) => {
+        const cfg = resolveSourceFolder(card.source);
+        return cfg && cfg.connectorId === openSourceFolder;
+      });
+    }
+
+    // Tag/type views explicitly slice the vault by tag or media type,
+    // so collapsing here would either fight that grouping or hide the
+    // folder tile under "Untagged". Pass through unchanged — the user
+    // can still get the folder collapse by switching back to the main
+    // collage/grid/masonry views.
+    if (vaultView === "tags" || vaultView === "type") return baseline;
+
+    // When the user is actively searching or running a concept query,
+    // skip the collapse so individual connector items surface in the
+    // results. Without this a search for "roadmap" would never match
+    // anything from Notion because the only Notion-shaped card in the
+    // visible list is the synthetic folder tile, whose title is just
+    // "Notion".
+    const hasActiveQuery =
+      Boolean(String(embeddedSearch || "").trim()) || conceptResultIds !== null;
+    if (hasActiveQuery) return baseline;
+
+    // Bucket every connector-sourced card by its connector id so we can
+    // synthesize one folder tile per app. Two different `source` values
+    // that fold into the same connector (Reddit posts + comments,
+    // Mastodon favourites + bookmarks, …) share a single bucket and
+    // therefore a single tile.
+    const grouped = new Map();
+    for (const card of baseline) {
+      const cfg = resolveSourceFolder(card.source);
+      if (!cfg) continue;
+      let bucket = grouped.get(cfg.connectorId);
+      if (!bucket) {
+        bucket = {
+          cfg,
+          count: 0,
+          lastTouchedMs: 0,
+          sampleTags: new Set(),
+          sourceValues: new Set(),
+          firstIndex: Infinity,
+        };
+        grouped.set(cfg.connectorId, bucket);
+      }
+      bucket.count += 1;
+      bucket.sourceValues.add(card.source);
+      if ((card.lastTouchedMs || 0) > bucket.lastTouchedMs) {
+        bucket.lastTouchedMs = card.lastTouchedMs || 0;
+      }
+      (card.tags || []).slice(0, 3).forEach((t) => bucket.sampleTags.add(t));
+    }
+
+    if (grouped.size === 0) return baseline;
+
+    const result = [];
+    const injectedConnectors = new Set();
+    for (const card of baseline) {
+      const cfg = resolveSourceFolder(card.source);
+      if (cfg) {
+        if (!injectedConnectors.has(cfg.connectorId)) {
+          injectedConnectors.add(cfg.connectorId);
+          const bucket = grouped.get(cfg.connectorId);
+          result.push({
+            id: `__source_folder:${cfg.connectorId}`,
+            kind: "source-folder",
+            // `source` on the synthetic tile stores the connector id so
+            // openSourceFolder filtering and tile click handling can key
+            // on a single stable value regardless of how many underlying
+            // source strings the connector writes.
+            source: cfg.connectorId,
+            connectorId: cfg.connectorId,
+            sourceName: cfg.name,
+            domain: cfg.domain,
+            favicon: cfg.favicon,
+            count: bucket.count,
+            title: cfg.name,
+            dateLabel: bucket.lastTouchedMs
+              ? formatDate(new Date(bucket.lastTouchedMs).toISOString())
+              : "",
+            tags: Array.from(bucket.sampleTags),
+            lastTouchedMs: bucket.lastTouchedMs,
+          });
+        }
+        // Skip the original — it's represented by the folder tile.
+        continue;
+      }
+      result.push(card);
+    }
+    return result;
+  }, [vaultCards, pendingDeleteCardIds, openSourceFolder, vaultView, embeddedSearch, conceptResultIds]);
 
   const initialCardIdsRef = useRef(null);
   if (vaultReady && initialCardIdsRef.current === null) {
@@ -2498,11 +2737,37 @@ export default function VaultNew() {
   }, [vaultView]);
 
   const orderedVisibleCards = useMemo(() => {
+    // Source-folder tiles (the Notion/Gmail/Slack/etc. summary cards) are
+    // pinned to the top of the grid no matter what the user's manual
+    // drag-reorder state looks like. The intent is "your connected apps
+    // are always the first thing you see" — equivalent to the macOS
+    // dock's leading-edge anchor — so even after a user has dragged
+    // their own memories around, the connector row stays put.
+    //
+    // Among themselves the tiles sort by recency of last-touched item
+    // (most active connector first). We deliberately do NOT thread them
+    // through `orderByPage` because:
+    //   • Source-folder cards are synthetic — they vanish when a
+    //     connector is disconnected and reappear on next sync, so
+    //     persisting their position in localStorage would leak stale
+    //     ids.
+    //   • Dragging them is already blocked in handleCardDragStart
+    //     (they collapse N real cards behind one tile; reordering
+    //     across that boundary has no sensible target), so there's
+    //     nothing the user could persist anyway.
+    const folderCards = [];
+    const otherCards = [];
+    for (const card of filteredVisibleCards) {
+      if (card.kind === "source-folder") folderCards.push(card);
+      else otherCards.push(card);
+    }
+    folderCards.sort((a, b) => (b.lastTouchedMs || 0) - (a.lastTouchedMs || 0));
+
     const currentOrder = orderByPage.everything || [];
-    const visibleMap = new Map(filteredVisibleCards.map((card) => [card.id, card]));
+    const visibleMap = new Map(otherCards.map((card) => [card.id, card]));
     const ordered = currentOrder.map((id) => visibleMap.get(id)).filter(Boolean);
-    const remaining = filteredVisibleCards.filter((card) => !currentOrder.includes(card.id));
-    return [...ordered, ...remaining];
+    const remaining = otherCards.filter((card) => !currentOrder.includes(card.id));
+    return [...folderCards, ...ordered, ...remaining];
   }, [filteredVisibleCards, orderByPage]);
 
   // ── Off-screen card culling (browser-native virtualization) ──
@@ -2674,6 +2939,13 @@ export default function VaultNew() {
     // In-flight (ghost) uploads aren't backed by a note yet, so dragging
     // them around the grid (or out to the canvas) has no meaningful target.
     if (card?.ghost) {
+      e.preventDefault();
+      return;
+    }
+    // Source-folder tiles are synthetic — they collapse N real cards into
+    // one. Reordering or dragging them out of the vault has no sensible
+    // semantics, so block the drag entirely.
+    if (card?.kind === "source-folder") {
       e.preventDefault();
       return;
     }
@@ -2883,6 +3155,15 @@ export default function VaultNew() {
   const handleCardPress = useCallback((e, card) => {
     if (!card) return;
     if (draggedCardId) return;
+    // Connector folder tiles aren't previewable — they're a navigation
+    // affordance into a per-connector subview of the grid.
+    if (card.kind === "source-folder") {
+      setOpenCardMenuId(null);
+      setOpenAttachmentNotesCardId(null);
+      setPreviewCard(null);
+      setOpenSourceFolder(card.source);
+      return;
+    }
     // Ghost cards (still-uploading previews) behave exactly like a normal
     // card in the grid: the user can click to open the preview / view
     // mode and watch the video. DB-bound actions (tag / delete / notes)
@@ -4941,6 +5222,36 @@ User: ${text}`;
 
         {!loading && !isLoadingNotes && (vaultReady || !user) && !notesError && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.35, ease: "easeOut" }}>
+            {openSourceFolder && openFolderConnector && (
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <button
+                  type="button"
+                  onClick={() => setOpenSourceFolder(null)}
+                  className="inline-flex items-center gap-1.5 rounded-full glass-control px-3 py-1.5 text-[0.75rem] font-medium text-black/75 dark:text-white/75 hover:text-black dark:hover:text-white transition-colors"
+                >
+                  <ChevronRight className="w-3.5 h-3.5 rotate-180" />
+                  <span>Back to Vault</span>
+                </button>
+                <div className="flex items-center gap-2 min-w-0">
+                  {openFolderConnector.favicon && (
+                    <img
+                      src={openFolderConnector.favicon}
+                      alt=""
+                      width={20}
+                      height={20}
+                      className="block rounded-sm shrink-0"
+                      onError={(e) => { e.currentTarget.style.display = "none"; }}
+                    />
+                  )}
+                  <h2 className="text-sm font-semibold text-black/80 dark:text-white/80 truncate">
+                    {openFolderConnector.name}
+                  </h2>
+                  <span className="text-xs text-black/40 dark:text-white/40 font-medium shrink-0">
+                    {orderedVisibleCards.length} {orderedVisibleCards.length === 1 ? "item" : "items"}
+                  </span>
+                </div>
+              </div>
+            )}
             {orderedVisibleCards.length === 0 ? (
               <div className="flex flex-col items-start gap-4">
                 <div className="break-inside-avoid mb-5 rounded-2xl border-2 border-dashed border-blue-500/30 p-6 flex flex-col items-center justify-center text-center w-full sm:w-64 min-h-[160px] gap-3">
@@ -5363,7 +5674,12 @@ User: ${text}`;
                         Sample
                       </span>
                     )}
-                    {card.kind === "attachment" ? (
+                    {card.kind === "source-folder" ? (
+                      <SourceFolderTile
+                        card={card}
+                        heightClass={vaultView === "grid" ? "h-44" : "h-44"}
+                      />
+                    ) : card.kind === "attachment" ? (
                       <>
                         {renderAttachmentCard(card, vaultView === "grid" ? "h-44" : getAttachmentHeightClass(card))}
                         {parseAttachmentNotes(card.attachment).length > 0 && (
@@ -6611,6 +6927,51 @@ User: ${text}`;
         open={showSignInBlocker}
         onClose={() => setShowSignInBlocker(false)}
       />
+    </div>
+  );
+}
+
+// ─── SourceFolderTile ──────────────────────────────────────────────────────
+// A single tile that stands in for every card sourced from one connector
+// (e.g. Notion). Visually it reads as "the connector's app icon" — favicon
+// centered, name underneath, item count badge in the corner — so the user
+// recognizes it at a glance rather than parsing it as a Finder-style
+// folder. Tapping it opens a per-connector subview of the vault grid.
+function SourceFolderTile({ card, heightClass = "h-44" }) {
+  const itemLabel = card.count === 1 ? "1 item" : `${card.count} items`;
+  return (
+    <div
+      className={`relative rounded-2xl ${heightClass} flex flex-col items-center justify-center text-center overflow-hidden`}
+    >
+      <span className="absolute top-2 right-2 rounded-full bg-black/55 text-white text-[0.6875rem] font-semibold px-2 py-0.5 backdrop-blur-sm">
+        {card.count}
+      </span>
+      <div className="w-14 h-14 rounded-2xl bg-white dark:bg-white/95 ring-1 ring-black/[0.06] shadow-sm flex items-center justify-center mb-2 overflow-hidden">
+        {card.favicon ? (
+          <img
+            src={card.favicon}
+            alt={`${card.sourceName} icon`}
+            width={36}
+            height={36}
+            className="block object-contain"
+            style={{ width: 36, height: 36 }}
+            draggable={false}
+            onError={(e) => { e.currentTarget.style.display = "none"; }}
+          />
+        ) : (
+          <span className="text-lg font-semibold text-black/65 dark:text-zinc-700">
+            {card.sourceName?.[0] || "?"}
+          </span>
+        )}
+      </div>
+      <div className="px-3">
+        <div className="text-sm font-semibold text-black/85 dark:text-white/85 truncate">
+          {card.sourceName}
+        </div>
+        <div className="text-[0.6875rem] text-black/55 dark:text-white/55 mt-0.5">
+          {itemLabel}
+        </div>
+      </div>
     </div>
   );
 }

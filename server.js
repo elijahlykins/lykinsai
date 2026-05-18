@@ -839,6 +839,7 @@ function sanitizeStaleSurfaceLanguage(text) {
 const PROMPT_SECTION_MARKERS = [
   '[USER_PREFERENCES]', '[INTENT]', '[CONVERSATION]', '[CONVERSATION_MEMORY',
   '[WORKSPACE_CONTEXT]', '[REQUEST_CONTEXT]', '[FULL_CONTEXT]',
+  '[VAULT_URL_MATCHES]',
   '[PROJECT_KNOWLEDGE]', '[PROJECT_ID]', '[CONTEXT]',
   '[ATTACHED_IMAGES]', '[LATEST_USER_MESSAGE]', '[USER]',
 ];
@@ -1216,6 +1217,417 @@ async function fetchSynthesisRetrievalSection(authHeader, queryText, userId = nu
     console.warn('⚠️ Synthesis retrieval error:', e?.message || e);
     return '';
   }
+}
+
+// ============================================
+// CONNECTED-SOURCE URL → VAULT NOTE LOOKUP
+// ============================================
+// When the user pastes a URL from a service we sync (Notion, Drive, GitHub,
+// Linear, Figma, Slack, etc.) the literal URL string doesn't semantically
+// match the embedded page chunks, so synthesis retrieval misses. Generic
+// web scraping also fails because these endpoints are auth-gated and
+// return a login page (or nothing) to our unauthenticated fetch. The
+// content IS in the vault as a `notes` row whose `content` contains the
+// URL inside a bookmark JSON marker — we just need an exact-match lookup
+// keyed off the URL itself. This block injects the matching note body
+// into the prompt so the model can answer "what does this Notion page
+// say?" / "summarize this Linear ticket" / etc. against the real text
+// instead of stalling with "I can't access external pages."
+//
+// Per-URL note body cap: ~6K chars. Total block cap: ~18K chars (the
+// outer prompt assembly already truncates aggressively if the combined
+// prompt exceeds the model's context window). We limit to 3 URLs per
+// message so a paste of "here are 50 docs" doesn't run away.
+const CONNECTED_SOURCE_HOSTS = [
+  // hostname pattern → friendly label for the prompt
+  { re: /\bnotion\.so\b/i,             label: 'Notion' },
+  { re: /\b(docs|drive|sheets|slides)\.google\.com\b/i, label: 'Google Drive/Docs' },
+  { re: /\bcalendar\.google\.com\b/i,  label: 'Google Calendar' },
+  { re: /\bmail\.google\.com\b/i,      label: 'Gmail' },
+  { re: /\boutlook\.(live|office)\.com\b/i, label: 'Outlook' },
+  { re: /\bslack\.com\b/i,             label: 'Slack' },
+  { re: /\bgithub\.com\b/i,            label: 'GitHub' },
+  { re: /\blinear\.app\b/i,            label: 'Linear' },
+  { re: /\btodoist\.com\b/i,           label: 'Todoist' },
+  { re: /\btrello\.com\b/i,            label: 'Trello' },
+  { re: /\bfigma\.com\b/i,             label: 'Figma' },
+  { re: /\bcanva\.com\b/i,             label: 'Canva' },
+  { re: /\bloom\.com\b/i,              label: 'Loom' },
+  { re: /\bvimeo\.com\b/i,             label: 'Vimeo' },
+  { re: /\bdribbble\.com\b/i,          label: 'Dribbble' },
+  { re: /\bbehance\.net\b/i,           label: 'Behance' },
+  { re: /\breadwise\.io\b/i,           label: 'Readwise' },
+  { re: /\braindrop\.io\b/i,           label: 'Raindrop' },
+  { re: /\binstapaper\.com\b/i,        label: 'Instapaper' },
+  { re: /\bgetpocket\.com\b/i,         label: 'Pocket' },
+  { re: /\bspotify\.com\b/i,           label: 'Spotify' },
+  { re: /\bmusic\.apple\.com\b/i,      label: 'Apple Music' },
+  { re: /\bsoundcloud\.com\b/i,        label: 'SoundCloud' },
+  { re: /\bpinterest\.com\b/i,         label: 'Pinterest' },
+  { re: /\bbsky\.app\b/i,              label: 'Bluesky' },
+  { re: /\breddit\.com\b/i,            label: 'Reddit' },
+  // Mastodon is federated — we only sync, so we match any mastodon URL by path heuristic.
+];
+
+const VAULT_URL_LOOKUP_MAX_URLS = 3;
+const VAULT_URL_LOOKUP_PER_NOTE_CHARS = 6000;
+const VAULT_URL_LOOKUP_TOTAL_CHARS = 18000;
+
+// ---------------------------------------------------------------------------
+// LIVE RE-FETCH: pull a Notion page body directly from Notion's API at
+// chat time, when the synced vault note's body is empty. This converts
+// drag-into-chat into a real-time read for the dragged item — which is
+// the user's actual mental model ("I dragged this in, you should read
+// it"). Cached aggressively (we write the fresh body back to the vault
+// note so subsequent turns hit the cheap synced path).
+// ---------------------------------------------------------------------------
+// Extracts the 32-char Notion page id from any of the URL formats Notion
+// emits. Notion page URLs always end with a 32-char hex id (sometimes
+// with hyphens, sometimes bare). Examples:
+//   https://www.notion.so/Lykins-AI-Project-Overview-e6016e5d764a47f...
+//   https://www.notion.so/e6016e5d764a47f48b9b3c2c1d3e4f5a
+//   https://www.notion.so/workspace/Page-Title-e6016e5d764a47f48b9b...
+function extractNotionPageIdFromUrl(url) {
+  if (!url || typeof url !== 'string') return null;
+  // Strip query/fragment.
+  const clean = url.split('?')[0].split('#')[0];
+  // Last path segment.
+  const last = clean.split('/').filter(Boolean).pop() || '';
+  // Notion page ids are 32 hex chars, optionally hyphenated 8-4-4-4-12.
+  // The last segment is either `<title>-<32hex>` or just `<32hex>`.
+  const match = last.match(/([0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i);
+  if (!match) return null;
+  // Normalize to hyphenated form, which is what /v1/blocks/{id} accepts.
+  const raw = match[1].replace(/-/g, '');
+  if (raw.length !== 32) return null;
+  return `${raw.slice(0, 8)}-${raw.slice(8, 12)}-${raw.slice(12, 16)}-${raw.slice(16, 20)}-${raw.slice(20)}`;
+}
+
+// Pulls the user's active Notion access token from social_connections,
+// extracts the page id from the URL, and calls the Notion connector's
+// fetchPageBody helper. Returns the flattened text body (possibly empty).
+// Bounded at 6s wall clock — anything longer would tank chat latency.
+const LIVE_REFETCH_TIMEOUT_MS = 6000;
+let _connectorTokenHelpers = null;
+let _notionFetchPageBody = null;
+
+async function loadConnectorTokenHelpers() {
+  if (_connectorTokenHelpers) return _connectorTokenHelpers;
+  const mod = await import('./connectors-service.js');
+  _connectorTokenHelpers = { decryptToken: mod.decryptToken };
+  return _connectorTokenHelpers;
+}
+
+async function loadNotionFetchPageBody() {
+  if (_notionFetchPageBody) return _notionFetchPageBody;
+  const mod = await import('./connectors/notion.js');
+  _notionFetchPageBody = mod.fetchPageBody;
+  return _notionFetchPageBody;
+}
+
+async function liveRefetchNotionPageBody(userId, url) {
+  if (!supabaseAdmin || !userId || !url) return '';
+  const pageId = extractNotionPageIdFromUrl(url);
+  if (!pageId) {
+    console.warn(`📡 live-refetch: could not parse Notion page id from ${url}`);
+    return '';
+  }
+  // Find the user's active Notion connection. There can technically be
+  // multiple (different workspaces); pick the most recently synced.
+  const { data: conns, error } = await supabaseAdmin
+    .from('social_connections')
+    .select('id, access_token, status')
+    .eq('user_id', userId)
+    .eq('provider', 'notion')
+    .order('last_synced_at', { ascending: false, nullsFirst: false })
+    .limit(3);
+  if (error) {
+    console.warn(`📡 live-refetch: connection lookup failed:`, error.message);
+    return '';
+  }
+  const active = (conns || []).find((c) => c.status !== 'reauth' && c.status !== 'error') || (conns || [])[0];
+  if (!active?.access_token) {
+    console.warn(`📡 live-refetch: no active Notion connection for user ${userId}`);
+    return '';
+  }
+  let accessToken;
+  try {
+    const { decryptToken } = await loadConnectorTokenHelpers();
+    accessToken = decryptToken(active.access_token);
+  } catch (e) {
+    console.warn(`📡 live-refetch: token decrypt failed:`, e?.message || e);
+    return '';
+  }
+  if (!accessToken) return '';
+  let fetchPageBodyFn;
+  try {
+    fetchPageBodyFn = await loadNotionFetchPageBody();
+  } catch (e) {
+    console.warn(`📡 live-refetch: could not load notion connector:`, e?.message || e);
+    return '';
+  }
+  // Wall-clock bound so a slow Notion API can't hang the chat turn.
+  try {
+    const result = await Promise.race([
+      fetchPageBodyFn({ accessToken, pageId }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('live-refetch timed out')), LIVE_REFETCH_TIMEOUT_MS)),
+    ]);
+    return String(result || '').trim();
+  } catch (e) {
+    console.warn(`📡 live-refetch threw:`, e?.message || e);
+    return '';
+  }
+}
+
+// Cache the freshly fetched body back into the vault note so future turns
+// (or queries from other surfaces) hit the cheap synced path instead of
+// re-fetching from Notion. Surgically updates only the post-marker portion
+// of `content` so we don't disturb the attachments JSON.
+async function persistLiveFetchedBody({ userId, noteId, content, freshBody }) {
+  if (!supabaseAdmin || !userId || !noteId || !freshBody) return;
+  const raw = String(content || '');
+  const span = findAttachmentsMarkerSpan(raw);
+  let nextContent;
+  if (span) {
+    nextContent = `${raw.slice(0, span.markerEnd)}\n${freshBody}`.replace(/\n{3,}/g, '\n\n').trim();
+  } else {
+    nextContent = `${raw.trim()}\n\n${freshBody}`.trim();
+  }
+  await supabaseAdmin
+    .from('notes')
+    .update({ content: nextContent, updated_at: new Date().toISOString() })
+    .eq('id', noteId)
+    .eq('user_id', userId);
+  // Reindex synthesis chunks + regenerate summary so the next semantic
+  // retrieval / drag-in uses the fresh content. Fire-and-forget.
+  enrichVaultNoteSummary({ userId, noteId }).catch(() => {});
+}
+
+function detectConnectedSourceUrls(text) {
+  const t = String(text || '');
+  if (!t) return [];
+  const allUrls = (t.match(URL_RE) || []).slice(0, 20);
+  const seen = new Set();
+  const matches = [];
+  for (const url of allUrls) {
+    if (seen.has(url)) continue;
+    seen.add(url);
+    const hit = CONNECTED_SOURCE_HOSTS.find((h) => h.re.test(url));
+    if (hit) matches.push({ url, label: hit.label });
+    if (matches.length >= VAULT_URL_LOOKUP_MAX_URLS) break;
+  }
+  return matches;
+}
+
+// Extracts the user-supplied portion of an assembled prompt for URL
+// detection. We need to scan THIS turn's user message + any drag-into-chat
+// attachment context, but NOT historical conversation URLs (the user
+// already discussed those).
+//
+// The prompt shape we receive varies by code path:
+//   • Orchestrator raw (req.body.prompt before stream-side rebuild):
+//       Conversation so far:\n…\n\nLatest user message:\n<text>[Attached content]…
+//   • After buildLyknStreamPrompt rewrites prompt with the persona:
+//       <persona>\n\n[FULL_CONTEXT]\n<orchestrator raw>\n\n[USER]\n<text>
+//   • Invoke-mode buildLyknChatPrompt rewrite:
+//       <persona>\n\n[CONVERSATION]\n…\n\n[WORKSPACE_CONTEXT]\n…\n\n[REQUEST_CONTEXT]\n<orchestrator raw>\n\n[LATEST_USER_MESSAGE]\n<text>
+//
+// We look (in priority order) for [Attached content] / Latest user message /
+// [REQUEST_CONTEXT] / [LATEST_USER_MESSAGE] / [USER] — the first marker
+// found wins, and we slice forward from it. This catches dragged Notion /
+// Drive / GitHub / etc. URLs regardless of which code path assembled the
+// prompt. Cap at 12K chars so an enormous pasted blob can't dominate the
+// regex scan.
+function extractUserSuppliedContent(prompt, fallbackText) {
+  const p = String(prompt || '');
+  if (!p) return String(fallbackText || '');
+  // [Attached content] is the strongest signal — emitted by the orchestrator's
+  // buildAttachmentContext exclusively for drag-into-chat items. If present,
+  // start the scan there to ensure we always see attachment URLs.
+  const attMarker = '[Attached content]';
+  const attIdx = p.lastIndexOf(attMarker);
+  if (attIdx >= 0) return p.slice(attIdx, attIdx + 12000);
+  const markers = [
+    'Latest user message:\n',
+    '[REQUEST_CONTEXT]\n',
+    '[LATEST_USER_MESSAGE]\n',
+    '[USER]\n',
+  ];
+  for (const m of markers) {
+    const idx = p.lastIndexOf(m);
+    if (idx >= 0) return p.slice(idx + m.length, idx + m.length + 12000);
+  }
+  return String(fallbackText || p.slice(-12000));
+}
+
+// `content` stores Notion/etc. bookmarks as [ATTACHMENTS_JSON:[{"url":"..."}]],
+// followed by the flattened page body. We use Postgres `ilike` with the URL
+// as a substring — exact equality won't work because the URL is embedded in
+// a JSON blob alongside other fields. The bookmark `url` field is the only
+// place a connected-source URL appears verbatim, so substring matches are
+// unambiguous in practice.
+async function fetchVaultNotesByUrls(userId, urlMatches) {
+  if (!supabaseAdmin || !userId || !urlMatches.length) return '';
+  const out = [];
+  let totalChars = 0;
+  // Track noteIds we touched so we can opportunistically enqueue a summary
+  // backfill for any that lack `ai_summary` (e.g. older Notion-synced rows
+  // from before the sync-side enrichment hook was wired). Fire-and-forget.
+  const noteIdsNeedingSummary = [];
+  for (const { url, label } of urlMatches) {
+    try {
+      const { data, error } = await supabaseAdmin
+        .from('notes')
+        .select('id, title, content, source, updated_at, tags, ai_summary, ai_signals')
+        .eq('user_id', userId)
+        .ilike('content', `%${url}%`)
+        .order('updated_at', { ascending: false })
+        .limit(1);
+      if (error) {
+        console.warn(`⚠️ vault URL lookup error for ${url}:`, error.message);
+        continue;
+      }
+      const row = (data || [])[0];
+      if (!row) {
+        out.push(
+          `URL: ${url}\nMATCH: none\nNOTE: This ${label} URL is NOT currently in the user's synced vault. Either the user hasn't connected ${label}, the integration wasn't granted access to this specific page, or it was created/shared after the last sync. Tell them this concretely and offer to fix it via the Connections page — do NOT claim you can read the URL.`,
+        );
+        continue;
+      }
+      const title = String(row.title || 'Untitled').slice(0, 200);
+      const tags = Array.isArray(row.tags) ? row.tags.join(', ') : '';
+      // Robust parser: marker-aware extraction of the flattened page body
+      // appended after `[ATTACHMENTS_JSON:[…]]`. The naive `indexOf(']]')`
+      // approach we had broke whenever the JSON contained `]]` inside a
+      // string value (which is normal for Notion bodies — wiki links,
+      // code blocks, project specs).
+      let body = extractBodyAfterAttachmentsMarker(row.content);
+      let bodySource = body.length ? 'synced' : 'none';
+
+      // LIVE RE-FETCH FALLBACK
+      // When the stored body is empty (page synced before body capture was
+      // wired, or the original sync's /v1/blocks call returned an empty
+      // result for some reason), and we still have an active OAuth token
+      // for this connector, fetch the page content directly from the
+      // provider's API right now and inject the fresh result. This makes
+      // drag-into-chat behave like real-time access for the dragged item,
+      // which is the user's mental model — they dragged it expecting the
+      // AI to "read" it.
+      //
+      // Only attempted for connectors with an API endpoint that can return
+      // the page body cheaply from a URL. Notion is currently the only one
+      // wired in (its /v1/blocks/{id}/children is exactly what we already
+      // use at sync time). Live fetch is bounded to one connector call
+      // per turn and capped at ~5s wall clock to keep chat latency sane.
+      if (!body && label === 'Notion') {
+        try {
+          const liveBody = await liveRefetchNotionPageBody(userId, url);
+          if (liveBody && liveBody.length > 0) {
+            body = liveBody;
+            bodySource = 'live-refetch';
+            console.log(`📡 live-refetch succeeded for ${url}: ${liveBody.length} chars`);
+            // Best-effort: persist the freshly fetched body back into the
+            // vault note so future turns hit the cached path instead of
+            // re-fetching. Fire-and-forget; never blocks chat response.
+            persistLiveFetchedBody({ userId, noteId: row.id, content: row.content, freshBody: liveBody })
+              .catch((e) => console.warn(`⚠️ persist live-fetched body for ${row.id} failed:`, e?.message || e));
+          }
+        } catch (e) {
+          console.warn(`⚠️ live-refetch threw for ${url}:`, e?.message || e);
+        }
+      }
+      const summary = String(row.ai_summary || '').trim();
+      const signals = row.ai_signals && typeof row.ai_signals === 'object' ? row.ai_signals : null;
+      const themes = Array.isArray(signals?.themes) ? signals.themes.filter(Boolean).slice(0, 8).join(', ') : '';
+      const entities = Array.isArray(signals?.entities) ? signals.entities.filter(Boolean).slice(0, 8).join(', ') : '';
+
+      // Diagnostic: connectors that capture only metadata (databases-only
+      // Notion pages, image-only Pinterest pins, etc.) leave body empty.
+      // Without this log we couldn't tell whether "model says it can't
+      // read the body" meant "body was zero chars" or "body was there
+      // and the model ignored it." Logged at every URL lookup.
+      console.log(`📄 vault note id=${row.id} title="${title.slice(0, 60)}" → summary=${summary ? `${summary.length}c` : 'none'} body=${body.length}c (${bodySource}) content=${(row.content || '').length}c`);
+
+      const trimmed = body.slice(0, VAULT_URL_LOOKUP_PER_NOTE_CHARS);
+      const truncatedNote = body.length > VAULT_URL_LOOKUP_PER_NOTE_CHARS
+        ? `\n\n…(BODY truncated to fit the prompt budget; the source page is ${body.length} chars total. Answer from this excerpt + SUMMARY. If the user asks about a section we didn't include, say so and ask them to narrow.)`
+        : '';
+
+      // Block layout (in order of cheapness for the model to consume):
+      //   1. URL + source identity
+      //   2. TITLE
+      //   3. SUMMARY (AI-generated, 2-5 sentences) — answer from this first if it covers the question
+      //   4. THEMES / ENTITIES — quick signal tags
+      //   5. BODY — full flattened page content, truncated to budget
+      // The model is instructed in the persona to use SUMMARY first and
+      // only walk the BODY when the question needs deeper grounding.
+      const parts = [
+        `URL: ${url}`,
+        `SOURCE: ${label} (synced; vault note id=${row.id}, source=${row.source})`,
+        `TITLE: ${title}`,
+      ];
+      if (tags) parts.push(`TAGS: ${tags}`);
+      if (summary) parts.push(`SUMMARY (AI-generated, 2-5 sentences — use this FIRST):\n${summary}`);
+      else parts.push('SUMMARY: (not yet generated — fall back to BODY for this turn; a summary will be generated on the next sync)');
+      if (themes) parts.push(`THEMES: ${themes}`);
+      if (entities) parts.push(`ENTITIES: ${entities}`);
+
+      // BODY presentation depends on what actually got synced. Connector
+      // bodies vary wildly: a text-heavy Notion page might be 5K+ chars
+      // of flattened prose, while a databases-only / images-only page
+      // could be zero. We label each case explicitly so the model can
+      // tell the user something true instead of stalling.
+      const sourceLabel = bodySource === 'live-refetch'
+        ? `live-fetched from ${label} just now`
+        : `synced into vault`;
+      if (body.length === 0) {
+        parts.push(
+          `BODY: (empty — we tried both the synced cache and a live re-fetch from ${label}; neither returned text content. This usually means the page contains only databases, embeds, images, sub-pages, or other non-text blocks that we can't transcribe. The SUMMARY above is the only textual content available. Tell the user honestly: "the page exists in your vault but has no flattened text body — it's likely all databases/embeds/images. Want me to work from the title, or paste the relevant section?")`,
+        );
+      } else if (body.length < 200) {
+        parts.push(
+          `BODY (only ${body.length} chars of text body extracted from this ${label} page, ${sourceLabel} — sparse content, likely a stub or mostly-embedded page):\n${trimmed}`,
+        );
+      } else {
+        parts.push(
+          `BODY (full flattened page text, ${body.length} chars, ${sourceLabel} — this IS the page content, treat it as authoritative for any question about the document):\n${trimmed}${truncatedNote}`,
+        );
+      }
+
+      if (!summary && row.id) noteIdsNeedingSummary.push(row.id);
+
+      const block = parts.join('\n');
+      if (totalChars + block.length > VAULT_URL_LOOKUP_TOTAL_CHARS) {
+        out.push(`URL: ${url}\nMATCH: found (id=${row.id}) but omitted from this prompt to stay under context budget. Ask the user to narrow to one URL at a time.`);
+        continue;
+      }
+      out.push(block);
+      totalChars += block.length;
+    } catch (e) {
+      console.warn(`⚠️ vault URL lookup threw for ${url}:`, e?.message || e);
+    }
+  }
+  if (!out.length) return '';
+  const matchCount = out.filter((b) => b.includes('SOURCE:')).length;
+  console.log(`🔗 Vault URL lookup: matched ${matchCount}/${urlMatches.length} URLs (${noteIdsNeedingSummary.length} need summary backfill)`);
+
+  // Fire-and-forget: enqueue summary generation for any matched note that
+  // lacks `ai_summary`. The model still gets the BODY on this turn, but
+  // future turns will have the cheaper SUMMARY-first path available.
+  if (noteIdsNeedingSummary.length) {
+    for (const id of noteIdsNeedingSummary) {
+      enrichVaultNoteSummary({ userId, noteId: id }).catch((e) => {
+        console.warn(`⚠️ background enrich for note ${id} failed:`, e?.message || e);
+      });
+    }
+  }
+
+  return [
+    '[VAULT_URL_MATCHES]',
+    "The user's latest message contains URLs from services we sync into their Vault. For each URL below, we did an exact lookup against their synced notes. When MATCH says 'found', you have the SUMMARY (2-5 sentence AI-generated overview) and the BODY (full flattened page text). ANSWERING RULE: try the SUMMARY first — if it answers the user's question, quote/paraphrase from it and stop. If the question needs specifics the summary doesn't cover (a particular section, exact quote, specific number, sub-page detail), drop into the BODY and answer from there. Never claim you can't access the page when MATCH=found — the content IS in this prompt. When MATCH=none, say so concretely and offer the Connections-page fix; do NOT ask the user to paste the content.",
+    '',
+    out.join('\n\n---\n\n'),
+  ].join('\n');
 }
 
 // ============================================
@@ -2742,12 +3154,16 @@ const LYKN_CHAT_PERSONA_STATIC = [
   "- [PROJECT_KNOWLEDGE] (when present) — the active project's knowledge base.",
   "- [USER_IDENTITY] (when present) — the user's first name + active projects.",
   "- [USER_MODEL] (when present) — themes/style summary from past chats. Tone hint, not factual ground truth.",
-  "- [SYNTHESIS_RETRIEVAL] (when present) — semantically matched snippets from their embedded workspace index.",
+  "- [SYNTHESIS_RETRIEVAL] (when present) — semantically matched snippets from their embedded workspace index, including connected-source content.",
+  "- [VAULT_URL_MATCHES] (when present) — the user pasted OR dragged a URL/item from a synced service (Notion / Drive / GitHub / Linear / Figma / Slack / etc.) and we did an exact-URL lookup against their vault. For each URL with MATCH=found you get a SUMMARY (2-5 sentences, AI-generated) followed by the BODY. ANSWERING RULE: try SUMMARY first — if it covers the question, quote/paraphrase from it and stop. Drop into BODY only when the question needs specifics the summary doesn't carry (a particular section, exact quote, sub-page detail, specific number). FORBIDDEN PHRASES when MATCH=found: \"I can't access the page\", \"I can't read the entire document\", \"the body isn't accessible\", \"the Vault's full body content isn't currently accessible\", \"can you paste the relevant sections\", \"would you like to paste a particular section\". The content IS in this prompt — read it and answer. If BODY says \"empty\", that's the truth about THAT specific page (it has only databases/images/embeds, no flattened text) — say so honestly rather than denying capability. If BODY contains real text, treat it as authoritative; don't ask the user to paste what's already in front of you. When MATCH=none, say so concretely and offer the Connections-page fix; never ask them to paste the content.",
   "- [CONVERSATION] — full current-session history including your own previous responses.",
   "- [CONVERSATION_MEMORY] (when present) — past exchanges from other projects/Vault.",
   "- Web data when present: [WEB_SEARCH_RESULTS] / [DEEP_BROWSE_CONTENT] / [SCRAPED_WEB_PAGES] / [YOUTUBE_SEARCH_RESULTS].",
   "- [ATTACHED_IMAGES] (when present) — N image(s) sent as actual pixel data.",
-  "You DO have access to all of this. NEVER say 'I don't have access to your files / vault / notes / accounts', 'I can't see your X', or any variation. The data is in this prompt — use it.",
+  "",
+  "CONNECTED SOURCES (live inside the Vault): When the user OAuths a service from the Connections page, our connectors sync that content into the Vault as regular notes — and they appear inside [WORKSPACE_CONTEXT] and [SYNTHESIS_RETRIEVAL] just like manually saved items. Sources we sync include: Notion pages (full page body flattened to text — paragraphs, headings, lists, to-dos, toggles, quotes, callouts, code, tables, sub-page refs), Gmail / Outlook messages, Slack messages, GitHub, Linear, Todoist, Trello, Loom, Vimeo, Figma, Canva, Dribbble, Behance, Readwise / Raindrop / Instapaper / Matter / Pocket highlights, Spotify / Apple Music / SoundCloud, Pinterest pins, X / Bluesky / Reddit / Mastodon posts, Google Drive / Calendar, plus anything caught by the browser extension, bookmarklet, share-target, email-to-vault, or RSS. You CAN read all of it. If the user asks 'can you read my Notion / Gmail / Slack / Readwise / etc.?' the answer is YES — those items show up as Vault notes (often tagged with the source name) and as embedded chunks in synthesis retrieval. Treat them as first-class Vault content. Note one real caveat worth mentioning if relevant: non-text attachments inside connected pages (images, PDFs, audio, video files) aren't transcribed — only the surrounding text body is captured.",
+  "",
+  "You DO have access to all of this. NEVER say 'I don't have access to your files / vault / notes / accounts / Notion / Gmail / Slack / [any connected service]', 'I can't see your X', or any variation. The data is in this prompt — use it. If a specific item you'd expect isn't visible, say so concretely (\"I don't see a Notion page about X in what synced — want me to check your Connections page to make sure the integration was granted access to that page?\") instead of denying capability wholesale.",
   "",
   "PERSONALISATION: Use the user's first name (from [USER_IDENTITY]) SPARINGLY. The default is to NOT use their name — most replies should not include it at all. Never open a reply with their name (\"Elijah, ...\" is forbidden). Reserve the name for genuine emotional turning points (a hard moment, a real win, a goodbye), not casual greetings or transitions. At most once per response, and most responses should be zero. When the user says 'my project' / 'this project' and you can match it to a real project in [USER_IDENTITY], refer to it by NAME (\"this fits with your LYKN launch\"). Never invent a project, role, or biographical fact. When the user shares something new about themselves, acknowledge briefly and carry it forward.",
   "",
@@ -2825,11 +3241,15 @@ const LYKN_STREAM_PERSONA_STATIC = [
   "DATA ACCESS — what's in this prompt:",
   "- [WORKSPACE_CONTEXT] (when present) — the entire Vault (saved notes, files, links, videos, images). Background context.",
   "- [PROJECT_KNOWLEDGE] (when present) — the active project's knowledge base.",
-  "- [USER_IDENTITY] / [USER_MODEL] / [SYNTHESIS_RETRIEVAL] (when present).",
+  "- [USER_IDENTITY] / [USER_MODEL] / [SYNTHESIS_RETRIEVAL] (when present). Synthesis retrieval includes embedded chunks from connected-source content.",
+  "- [VAULT_URL_MATCHES] (when present) — user pasted OR dragged a URL/item from a synced service (Notion / Drive / GitHub / Linear / Figma / Slack / etc.) and we did an exact lookup against their vault. For MATCH=found you get SUMMARY (2-5 sentence AI overview) + BODY. ANSWERING RULE: try SUMMARY first — if it answers the question, quote/paraphrase and stop. Use BODY only when you need specifics the summary doesn't carry. FORBIDDEN when MATCH=found: \"I can't access the page\", \"I can't read the entire document\", \"the body isn't accessible\", \"would you like to paste a particular section\". The content IS in this prompt. If BODY says \"empty\", that's the truth about THAT page (databases/images/embeds only, no flattened text) — say so honestly. If BODY contains text, it IS the page — treat it as authoritative; don't ask the user to paste what's already here. MATCH=none means not synced — say so, offer the Connections-page fix, never ask them to paste.",
   "- [CONVERSATION] — full current-session history. [CONVERSATION_MEMORY] — past exchanges from other projects/Vault when present.",
   "- Web data when present: [WEB_SEARCH_RESULTS] / [DEEP_BROWSE_CONTENT] / [SCRAPED_WEB_PAGES] / [YOUTUBE_SEARCH_RESULTS].",
   "- [ATTACHED_IMAGES] (when present) — N image(s) as actual pixel data.",
-  "You DO have access. NEVER say 'I don't have access to your X', 'I can't see your X', or any variation. The data is in this prompt — use it.",
+  "",
+  "CONNECTED SOURCES (live inside the Vault): When the user OAuths a service from the Connections page, our connectors sync that content into the Vault as regular notes — they appear inside [WORKSPACE_CONTEXT] and [SYNTHESIS_RETRIEVAL] just like manually saved items. Sources we sync include: Notion pages (full page body flattened to text — paragraphs, headings, lists, to-dos, toggles, quotes, callouts, code, tables, sub-page refs), Gmail / Outlook, Slack, GitHub, Linear, Todoist, Trello, Loom, Vimeo, Figma, Canva, Dribbble, Behance, Readwise / Raindrop / Instapaper / Matter / Pocket, Spotify / Apple Music / SoundCloud, Pinterest, X / Bluesky / Reddit / Mastodon, Google Drive / Calendar, plus browser extension / bookmarklet / share-target / email-to-vault / RSS captures. You CAN read all of it. If the user asks 'can you read my Notion / Gmail / Slack / Readwise / etc.?' the answer is YES — those items appear as Vault notes (often tagged with the source name) and as embedded chunks in synthesis retrieval. Caveat worth mentioning only when relevant: non-text attachments inside connected pages (images, PDFs, audio, video files) aren't transcribed — only the text body is captured.",
+  "",
+  "You DO have access. NEVER say 'I don't have access to your X', 'I can't see your X', or any variation — including for Notion, Gmail, Slack, or any other connected service. The data is in this prompt — use it. If a specific item you'd expect isn't visible, say so concretely (\"I don't see a Notion page about X in what synced — want to check the Connections page to confirm that page was shared with the integration?\") instead of denying capability wholesale.",
   "",
   "PERSONALISATION: Use the user's first name (from [USER_IDENTITY]) SPARINGLY. The default is to NOT use their name — most replies should not include it at all. Never open a reply with their name (\"Elijah, ...\" is forbidden). Reserve the name for genuine emotional turning points, not casual greetings or transitions. At most once per response, and most responses should be zero. Match 'my project' / 'this project' to real projects in [USER_IDENTITY] when confident — refer by NAME. Never invent a project, role, or biographical fact. When the user shares something new about themselves, acknowledge briefly and carry it forward.",
   "",
@@ -6831,47 +7251,55 @@ app.post('/api/discover/ingest', async (req, res) => {
   }
 });
 
-/**
- * Post-save: LLM summary + signals on notes row, then re-embed vault_note for retrieval.
- * Requires migration 025 (ai_summary, ai_signals on notes).
- */
-app.post('/api/vault/enrich-note', requireAuth, synthesisLimiter, async (req, res) => {
+// ---------------------------------------------------------------------------
+// REUSABLE: generate ai_summary + ai_signals for a vault note
+// ---------------------------------------------------------------------------
+// Lifted out of the HTTP endpoint so it can be called from anywhere the
+// server has a (userId, noteId) and we want a summary on the row — namely:
+//   • POST /api/vault/enrich-note  (frontend-triggered, debounced after save)
+//   • connectors/notion.js → savePageAsNote (sync-time backfill so synced
+//     pages get a usable summary the first time they show up in the vault)
+//   • fetchVaultNotesByUrls fallback enqueue (catches anything that slipped
+//     past both other paths — older rows from before the connector wired
+//     into this helper)
+//
+// Returns { ok, skipped?, reason?, summary?, signals? }. Never throws —
+// connector sync and chat retrieval both treat enrichment as best-effort.
+//
+// Idempotent: hashes the stripped body and skips the LLM call when the
+// hash matches `ai_content_hash` and a summary already exists. So calling
+// this on every sync is cheap (one DB read) when the page hasn't changed.
+async function enrichVaultNoteSummary({ userId, noteId, supabaseAdmin: clientOverride }) {
+  if (!userId || !noteId) return { ok: false, reason: 'missing_args' };
+  if (!process.env.OPENAI_API_KEY) return { ok: false, reason: 'openai_key_missing' };
+  const client = clientOverride || supabaseAdmin;
+  if (!client) return { ok: false, reason: 'no_supabase_admin' };
+
   try {
-    const userId = req.user?.id;
-    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-    const noteId = String(req.body?.noteId || '').trim();
-    if (!noteId) return res.status(400).json({ error: 'noteId required' });
-    if (!process.env.OPENAI_API_KEY) return res.status(503).json({ error: 'LLM not configured' });
-
-    const client = supabaseAdmin || createSynthesisUserClient(req.headers.authorization);
-    if (!client) return res.status(503).json({ error: 'Database not configured' });
-
     const { data: note, error: nErr } = await client
       .from('notes')
       .select('id, title, content, user_id, ai_summary, ai_content_hash')
       .eq('id', noteId)
       .eq('user_id', userId)
       .maybeSingle();
-
     if (nErr) {
-      // PostgREST/Postgres error messages can leak schema names, RLS
-      // expressions, or column names. Log the full detail server-side
-      // and return a stable error code to the client.
-      console.error('❌ enrich-note: note lookup failed:', nErr?.message || nErr);
-      return res.status(500).json({ error: 'note_lookup_failed' });
+      console.error('❌ enrichVaultNoteSummary: note lookup failed:', nErr?.message || nErr);
+      return { ok: false, reason: 'note_lookup_failed' };
     }
-    if (!note) return res.status(404).json({ error: 'Note not found' });
+    if (!note) return { ok: false, reason: 'not_found' };
 
+    // backfillStripAttachments is now marker-aware — for connector-synced
+    // notes it preserves the body that lives AFTER the attachments marker
+    // instead of nuking it. Critical: without this, every Notion / Gmail /
+    // Slack page enrich call would summarise just the title.
     const stripped = backfillStripAttachments(note.content);
     const contentHash = sha256(stripped.slice(0, 12000));
 
-    // ── Skip LLM if content unchanged since last enrichment ──
     if (note.ai_content_hash === contentHash && note.ai_summary) {
-      return res.json({ ok: true, skipped: true, reason: 'content_unchanged' });
+      return { ok: true, skipped: true, reason: 'content_unchanged', summary: note.ai_summary };
     }
 
     const llmInput = `Title: ${String(note.title || '').trim()}\n\n${stripped.slice(0, 12000)}`;
-
     const sys = `You compress vault items for search and UI. Output ONLY valid JSON:
 {"summary":"2-5 sentences: what this item is, topics, and type (document, link, media, bookmark, etc.)","signals":{"themes":["short labels"],"entities":["names or products if any"]}}
 Use empty arrays if unknown. Be factual; infer only from the text.`;
@@ -6893,32 +7321,33 @@ Use empty arrays if unknown. Be factual; infer only from the text.`;
         ],
       }),
     });
-
     if (!ores.ok) {
       console.warn('⚠️ vault enrich LLM HTTP', ores.status);
-      return res.status(502).json({ error: 'enrich_llm_failed' });
+      return { ok: false, reason: 'llm_failed', status: ores.status };
     }
 
     const odata = await ores.json();
-
-    getOrCreateSession(userId, req.body?.boardId).then((session) => {
+    // Usage tracking is fire-and-forget; we don't await it inside this
+    // critical path because background callers (connector sync) shouldn't
+    // pay extra latency for telemetry.
+    try {
       const usage = extractOpenAIUsage(odata);
+      const session = await getOrCreateSession(userId, null);
       logAiUsage({
         sessionId: session?.id, userId, actionType: 'vault_enrich',
         model: 'gpt-4.1-nano', provider: 'openai',
         inputTokens: usage.input_tokens || estimateTokens(llmInput),
         outputTokens: usage.output_tokens || estimateTokens(odata?.choices?.[0]?.message?.content || ''),
-        metadata: { endpoint: 'enrich-note', noteId },
+        metadata: { source: 'enrichVaultNoteSummary', noteId },
       });
-    }).catch(() => {});
+    } catch { /* telemetry never blocks enrichment */ }
 
     let parsed;
     try {
       parsed = JSON.parse(odata?.choices?.[0]?.message?.content || '{}');
     } catch {
-      return res.status(502).json({ error: 'enrich_parse_failed' });
+      return { ok: false, reason: 'parse_failed' };
     }
-
     const summary = String(parsed.summary || '').trim().slice(0, 2000);
     const signals =
       parsed.signals && typeof parsed.signals === 'object' && !Array.isArray(parsed.signals)
@@ -6935,35 +7364,72 @@ Use empty arrays if unknown. Be factual; infer only from the text.`;
       })
       .eq('id', noteId)
       .eq('user_id', userId);
-
     if (upErr) {
       const msg = upErr.message || '';
       if (msg.includes('ai_summary') || msg.includes('ai_signals') || msg.includes('ai_content_hash') || upErr.code === 'PGRST204') {
-        return res.status(503).json({
-          error: 'notes_ai_columns_missing',
-          hint: 'Apply migration 025_notes_ai_summary_signals.sql and 026_ai_caching_layer.sql',
-        });
+        return { ok: false, reason: 'columns_missing', hint: 'Apply migration 025_notes_ai_summary_signals.sql' };
       }
-      // Don't echo `upErr.message` — it can include the SQL constraint
-      // name, the offending column, or the RLS predicate the row hit.
-      // Operators get the full detail in the log; clients get a code.
-      console.error('❌ enrich-note: ai column update failed:', msg, upErr?.code);
-      return res.status(500).json({ error: 'enrich_update_failed' });
+      console.error('❌ enrichVaultNoteSummary: ai column update failed:', msg, upErr?.code);
+      return { ok: false, reason: 'update_failed' };
     }
 
-    const baseText = backfillVaultText(note.title, note.content);
-    const embedRaw = summary ? `Summary (AI):\n${summary}\n\n${baseText}` : baseText;
-    const chunks = chunkTextForSynthesis(embedRaw);
-    if (!chunks.length) {
-      return res.json({ ok: true, chunks: 0, enriched: true });
+    return { ok: true, summary, signals };
+  } catch (e) {
+    console.error('❌ enrichVaultNoteSummary threw:', e?.message || e);
+    return { ok: false, reason: 'threw', detail: e?.message };
+  }
+}
+
+/**
+ * Post-save: LLM summary + signals on notes row, then re-embed vault_note for retrieval.
+ * Requires migration 025 (ai_summary, ai_signals on notes).
+ */
+app.post('/api/vault/enrich-note', requireAuth, synthesisLimiter, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const noteId = String(req.body?.noteId || '').trim();
+    if (!noteId) return res.status(400).json({ error: 'noteId required' });
+
+    const client = supabaseAdmin || createSynthesisUserClient(req.headers.authorization);
+    if (!client) return res.status(503).json({ error: 'Database not configured' });
+
+    const result = await enrichVaultNoteSummary({ userId, noteId, supabaseAdmin: client });
+    if (!result.ok) {
+      // Map internal reasons → HTTP responses. Keep the surface narrow
+      // so we don't leak Postgres error text to clients.
+      const reason = result.reason || 'enrich_failed';
+      if (reason === 'openai_key_missing') return res.status(503).json({ error: 'LLM not configured' });
+      if (reason === 'not_found')          return res.status(404).json({ error: 'Note not found' });
+      if (reason === 'llm_failed')         return res.status(502).json({ error: 'enrich_llm_failed' });
+      if (reason === 'parse_failed')       return res.status(502).json({ error: 'enrich_parse_failed' });
+      if (reason === 'columns_missing')    return res.status(503).json({ error: 'notes_ai_columns_missing', hint: result.hint });
+      return res.status(500).json({ error: reason });
     }
+    if (result.skipped) return res.json({ ok: true, skipped: true, reason: result.reason });
 
-    const n = await replaceSynthesisChunks(userId, req.headers.authorization, 'vault_note', noteId, chunks, {
-      title: note.title,
-      vaultEnriched: true,
-    });
-
-    return res.json({ ok: true, chunks: n, enriched: true });
+    // Re-embed for synthesis retrieval with the new summary prepended to
+    // the chunk corpus — improves retrieval precision because the summary
+    // acts as a dense per-chunk semantic key.
+    const { data: noteAfter } = await client
+      .from('notes')
+      .select('title, content')
+      .eq('id', noteId)
+      .eq('user_id', userId)
+      .maybeSingle();
+    if (noteAfter) {
+      const baseText = backfillVaultText(noteAfter.title, noteAfter.content);
+      const embedRaw = result.summary ? `Summary (AI):\n${result.summary}\n\n${baseText}` : baseText;
+      const chunks = chunkTextForSynthesis(embedRaw);
+      if (chunks.length) {
+        const n = await replaceSynthesisChunks(userId, req.headers.authorization, 'vault_note', noteId, chunks, {
+          title: noteAfter.title,
+          vaultEnriched: true,
+        });
+        return res.json({ ok: true, chunks: n, enriched: true });
+      }
+    }
+    return res.json({ ok: true, chunks: 0, enriched: true });
   } catch (e) {
     console.error('❌ vault enrich-note:', e?.message || e);
     return res.status(500).json({ error: 'enrich_failed' });
@@ -6988,8 +7454,74 @@ function verifyBackfillSecret(req) {
 
 const backfillSleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Server-side port of src/lib/vault/attachmentsMarker.ts:findAttachmentsMarker.
+// Walks the JSON array with string/escape tracking so brackets inside string
+// values (filenames like `report[2025].pdf`, code snippets like `arr[0]`,
+// even literal `]]` inside a Notion page body that the connector packed
+// into `articleText`) don't desync the parser.
+//
+// Returns null when the marker isn't present or the JSON can't be parsed.
+function findAttachmentsMarkerSpan(content) {
+  if (!content) return null;
+  const MARKER = '[ATTACHMENTS_JSON:';
+  const start = content.indexOf(MARKER);
+  if (start === -1) return null;
+  const jsonStart = start + MARKER.length;
+  if (content[jsonStart] !== '[') return null;
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  let jsonEnd = -1;
+  for (let i = jsonStart; i < content.length; i += 1) {
+    const ch = content[i];
+    if (escape) { escape = false; continue; }
+    if (inString) {
+      if (ch === '\\') escape = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') { inString = true; continue; }
+    if (ch === '[') depth += 1;
+    else if (ch === ']') {
+      depth -= 1;
+      if (depth === 0) { jsonEnd = i + 1; break; }
+    }
+  }
+  if (jsonEnd === -1) return null;
+  try {
+    const parsed = JSON.parse(content.slice(jsonStart, jsonEnd));
+    if (!Array.isArray(parsed)) return null;
+    let markerEnd = jsonEnd;
+    if (content[markerEnd] === ']') markerEnd += 1;
+    return { start, jsonEnd, markerEnd, attachments: parsed };
+  } catch {
+    return null;
+  }
+}
+
+// Strips ONLY the marker substring, preserving everything before AND after.
+// Critical for Notion / Gmail / Slack / etc. notes where the connector
+// writes `Title\n\n[ATTACHMENTS_JSON:[…]]\n<flattened body>` — the old
+// "strip from marker to EOF" approach silently deleted every byte of
+// connected-source body content before it ever reached the LLM, so
+// `ai_summary` was generated from the title alone (useless).
 function backfillStripAttachments(content) {
-  return String(content || '').replace(/\[ATTACHMENTS_JSON:[\s\S]*$/, '').trim();
+  const raw = String(content || '');
+  const span = findAttachmentsMarkerSpan(raw);
+  if (!span) return raw.trim();
+  return `${raw.slice(0, span.start)}${raw.slice(span.markerEnd)}`
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+// Returns the flattened body portion appended AFTER the attachments marker.
+// For manually-saved notes (marker at end with no trailing body) this is
+// empty. For connector-synced notes this is the bulk of the page content.
+function extractBodyAfterAttachmentsMarker(content) {
+  const raw = String(content || '');
+  const span = findAttachmentsMarkerSpan(raw);
+  if (!span) return raw.trim();
+  return raw.slice(span.markerEnd).trim();
 }
 
 function backfillVaultText(title, content) {
@@ -7886,7 +8418,27 @@ ${t}
     // we always pull it for chat-style intents — even "none" tier benefits.
     const skipIdentity  = !isChatIntent;
     const skipYouTube   = enrichTier === 'none' || !needsYouTubeSearch(pureUserMessage || searchText);
-    const [scrapedContent, searchResults, synthesisRetrieval, beliefSection, userIdentitySection, youtubeResults] = await Promise.all([
+    // Connected-source URLs (Notion / Drive / GitHub / Linear / Figma / …)
+    // get looked up against the user's synced vault notes by exact URL match.
+    // Always on for chat intents — cheap (one indexed query per URL, max 3
+    // URLs) and the failure case (no match) still produces a useful prompt
+    // section that prevents the model from stalling with "I can't access
+    // external pages."
+    //
+    // IMPORTANT: scan the *attachment-aware* portion of the prompt, not just
+    // the user's typed message. When the user drags a vault item into the
+    // chat, the URL ends up in the [Attached content] block appended after
+    // "Latest user message:" — pureUserMessage strips that out.
+    const vaultUrlScanText = extractUserSuppliedContent(prompt, pureUserMessage || searchText);
+    const vaultUrlMatchesPromise = (isChatIntent && req.user?.id)
+      ? (() => {
+          const matches = detectConnectedSourceUrls(vaultUrlScanText);
+          if (!matches.length) return Promise.resolve('');
+          console.log(`🔗 Detected ${matches.length} connected-source URL(s):`, matches.map((m) => `${m.label}:${m.url.slice(0, 60)}`).join(', '));
+          return fetchVaultNotesByUrls(req.user.id, matches);
+        })()
+      : Promise.resolve('');
+    const [scrapedContent, searchResults, synthesisRetrieval, beliefSection, userIdentitySection, youtubeResults, vaultUrlMatches] = await Promise.all([
       skipScrape ? Promise.resolve("") : scrapeUrlsFromText(searchText, { force: explicitUrlIntent }),
       skipSearch ? Promise.resolve("") : runWebSearchIfNeeded(searchText, { hasFocusedBricks: Boolean(hasFocusedBricks), hasContext: hasContextForSearch }),
       !skipSynthesis
@@ -7899,6 +8451,7 @@ ${t}
         ? fetchUserIdentitySection(req.headers.authorization, req.user)
         : Promise.resolve(""),
       skipYouTube ? Promise.resolve("") : runYouTubeSearchIfNeeded(pureUserMessage || searchText),
+      vaultUrlMatchesPromise,
     ]);
     // BELIEF-WINDOW ROUTER: when the user has ratified beliefs+rules and
     // this turn doesn't look like a recall question, skip the wide
@@ -7919,6 +8472,7 @@ ${t}
     if (beliefSection.text) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(beliefSection.text);
     if (userModelSection) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(userModelSection);
     if (synthesisRetrieval) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(synthesisRetrieval);
+    if (vaultUrlMatches) prompt += "\n\n" + vaultUrlMatches;
     if (scrapedContent) prompt += "\n\n" + scrapedContent;
     if (searchResults) prompt += "\n\n" + searchResults;
     if (youtubeResults) prompt += "\n\n" + youtubeResults;
@@ -8959,7 +9513,21 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
     const streamSkipIdentity  = !isChatIntent;
     const streamSkipYouTube   = streamEnrichTier === 'none' || !needsYouTubeSearch(streamPureUserMessage || streamSearchText);
     _ck(`before enrichment Promise.all (tier=${streamEnrichTier}, skipScrape=${streamSkipScrape}, skipSearch=${streamSkipSearch}, skipSynth=${streamSkipSynthesis}, skipUM=${streamSkipUserModel}, skipBeliefs=${streamSkipBeliefs}, skipIdentity=${streamSkipIdentity}, skipYT=${streamSkipYouTube})`);
-    const [scrapedContent, searchResults, synthesisRetrieval, beliefSection, userIdentitySection, youtubeResults] = await Promise.all([
+    // Connected-source URL → vault lookup (see invoke path for rationale).
+    // Always on for chat intents; cheap; fixes the "I can't access external
+    // pages" stall when the user pastes OR drags a Notion/Drive/etc. URL.
+    // Scan the prompt (which includes "[Attached content]" from drag-into-
+    // chat) rather than the 500-char user-typed pureUserMessage slice.
+    const streamVaultUrlScanText = extractUserSuppliedContent(prompt, streamPureUserMessage || streamSearchText);
+    const streamVaultUrlMatchesPromise = (isChatIntent && req.user?.id)
+      ? (() => {
+          const matches = detectConnectedSourceUrls(streamVaultUrlScanText);
+          if (!matches.length) return Promise.resolve('');
+          console.log(`🔗 [stream] Detected ${matches.length} connected-source URL(s):`, matches.map((m) => `${m.label}:${m.url.slice(0, 60)}`).join(', '));
+          return fetchVaultNotesByUrls(req.user.id, matches);
+        })()
+      : Promise.resolve('');
+    const [scrapedContent, searchResults, synthesisRetrieval, beliefSection, userIdentitySection, youtubeResults, vaultUrlMatches] = await Promise.all([
       streamSkipScrape ? Promise.resolve("") : scrapeUrlsFromText(streamSearchText, { force: streamExplicitUrlIntent }),
       streamSkipSearch ? Promise.resolve("") : runWebSearchIfNeeded(streamSearchText, { hasFocusedBricks: Boolean(hasFocusedBricks), hasContext: hasContextForStreamSearch }),
       !streamSkipSynthesis
@@ -8972,6 +9540,7 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
         ? fetchUserIdentitySection(req.headers.authorization, req.user)
         : Promise.resolve(""),
       streamSkipYouTube ? Promise.resolve("") : runYouTubeSearchIfNeeded(streamPureUserMessage || streamSearchText),
+      streamVaultUrlMatchesPromise,
     ]);
     _ck('after enrichment Promise.all');
     // BELIEF-WINDOW ROUTER (stream): when the user has ratified beliefs+rules
@@ -8993,6 +9562,7 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
     if (beliefSection.text) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(beliefSection.text);
     if (userModelSection) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(userModelSection);
     if (synthesisRetrieval) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(synthesisRetrieval);
+    if (vaultUrlMatches) prompt += "\n\n" + vaultUrlMatches;
     if (scrapedContent) prompt += "\n\n" + scrapedContent;
     if (searchResults) prompt += "\n\n" + searchResults;
     if (youtubeResults) prompt += "\n\n" + youtubeResults;
@@ -12621,7 +13191,7 @@ app.delete('/api/connections/:id', requireAuth, async (req, res) => {
 const HOST = process.env.HOST || '0.0.0.0';
 const frontendUrl = process.env.FRONTEND_URL || 'https://lykn.io';
 
-export { app };
+export { app, enrichVaultNoteSummary };
 
 if (process.env.NODE_ENV !== 'test') {
   app.listen(PORT, HOST, () => {

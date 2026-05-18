@@ -361,6 +361,24 @@ function formatVaultCardLineForAi(card: VaultAiCard): string {
     const name = card.title || (att.name as string) || "Untitled file";
     const attIdx = Number.isInteger(card.attachmentIndex) ? ` attachmentIndex=${card.attachmentIndex}` : "";
     const extras: string[] = [];
+    // Connected-source items (Notion / Gmail / Slack / Readwise / etc.) save
+    // the real body text into `attachment.articleText`. For those we lift the
+    // per-card excerpt to 2500 chars because that text IS the document — a
+    // 500-char teaser is useless for "summarise my Notion page about X".
+    // Generic bookmarks stay at 500 since their articleText is just scraped
+    // metadata, not the source of truth. The outer workspaceContext budget
+    // (28K) still truncates after concat, so older items get clipped before
+    // recent ones — acceptable since fetchNotesForVaultAi orders by
+    // updated_at DESC.
+    const CONNECTED_SOURCE_OEMBED_TYPES = new Set([
+      "notion", "gmail", "outlook", "slack", "github", "linear",
+      "todoist", "trello", "loom", "vimeo", "figma", "canva",
+      "dribbble", "behance", "readwise", "raindrop", "pinterest",
+      "bluesky", "reddit", "mastodon", "gdrive", "gcal", "spotify",
+    ]);
+    const oembedType = String((att as any).oembedType || "").toLowerCase();
+    const isConnectedSource = CONNECTED_SOURCE_OEMBED_TYPES.has(oembedType);
+    const articleBudget = isConnectedSource ? 2500 : 500;
     if (card.parentTitle && card.parentTitle !== name && card.parentTitle !== "Untitled note") {
       extras.push(`From note: "${card.parentTitle}"`);
     }
@@ -368,7 +386,7 @@ function formatVaultCardLineForAi(card: VaultAiCard): string {
     if ((att as any).aiDescription) extras.push(`Visual: ${String((att as any).aiDescription).slice(0, 300)}`);
     if ((att as any).extractedText) extras.push(`Content: ${String((att as any).extractedText).slice(0, 500)}`);
     if ((att as any).description) extras.push(`Desc: ${String((att as any).description).slice(0, 250)}`);
-    if ((att as any).articleText) extras.push(`Article: ${String((att as any).articleText).slice(0, 500)}`);
+    if ((att as any).articleText) extras.push(`${isConnectedSource ? oembedType : "Article"}: ${String((att as any).articleText).slice(0, articleBudget)}`);
     if ((att as any).siteName) extras.push(`Site: ${(att as any).siteName}`);
     if ((att as any).url) extras.push(`URL: ${(att as any).url}`);
     const fileNotes = parseAttachmentNotes(att);

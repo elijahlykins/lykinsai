@@ -127,6 +127,7 @@ export default function VaultAppDock({ user }) {
         kind: "input",
         name: connector.name,
         domain: connector.domain,
+        iconUrl: connector.iconUrl || null,
         launchUrl: resolveLaunchUrl(connector.domain),
         meta: metaBits.join(" · ") || "Connected",
         needsAttention: conn.status === "reauth",
@@ -171,6 +172,7 @@ export default function VaultAppDock({ user }) {
             <DockIcon
               key={tile.key}
               domain={tile.domain}
+              iconUrl={tile.iconUrl}
               name={tile.name}
               meta={tile.meta}
               needsAttention={tile.needsAttention}
@@ -242,7 +244,7 @@ function LyknDockTile({ onClick }) {
 
 // ─── DockIcon ──────────────────────────────────────────────────────────────
 
-function DockIcon({ domain, name, meta, needsAttention, onClick }) {
+function DockIcon({ domain, iconUrl, name, meta, needsAttention, onClick }) {
   const [hovered, setHovered] = useState(false);
   return (
     <button
@@ -255,7 +257,7 @@ function DockIcon({ domain, name, meta, needsAttention, onClick }) {
       title={`Open ${name}`}
       className="relative h-12 w-12 rounded-xl flex items-center justify-center bg-white dark:bg-white/95 ring-1 ring-black/[0.06] shadow-sm overflow-hidden transition-transform hover:scale-110 hover:-translate-y-1 touch-manipulation"
     >
-      <DockFavicon domain={domain} name={name} />
+      <DockFavicon domain={domain} iconUrl={iconUrl} name={name} />
       {needsAttention && (
         <span className="absolute -top-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-rose-500 ring-2 ring-white dark:ring-zinc-950" />
       )}
@@ -269,14 +271,18 @@ function DockIcon({ domain, name, meta, needsAttention, onClick }) {
   );
 }
 
-function DockFavicon({ domain, name }) {
+function DockFavicon({ domain, iconUrl, name }) {
   const [attempt, setAttempt] = useState(0);
-  const candidates = domain
-    ? [
-        `https://www.google.com/s2/favicons?sz=128&domain=${encodeURIComponent(domain)}`,
-        `https://icons.duckduckgo.com/ip3/${domain}.ico`,
-      ]
-    : [];
+  // Same precedence as the connections-page AppFavicon: explicit
+  // catalog-provided iconUrl wins (Google Workspace product logos,
+  // future brand-asset overrides), then S2, then DuckDuckGo as a
+  // last resort.
+  const candidates = [];
+  if (iconUrl) candidates.push(iconUrl);
+  if (domain) {
+    candidates.push(`https://www.google.com/s2/favicons?sz=128&domain=${encodeURIComponent(domain)}`);
+    candidates.push(`https://icons.duckduckgo.com/ip3/${domain}.ico`);
+  }
   if (!candidates.length || attempt >= candidates.length) {
     return (
       <span className="text-[14px] font-semibold text-black/65 dark:text-zinc-700">

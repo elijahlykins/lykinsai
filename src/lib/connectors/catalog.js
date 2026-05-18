@@ -60,6 +60,11 @@ export const CONNECTORS = [
     category: "social",
     name: "YouTube",
     domain: "youtube.com",
+    // Google's official product logo (gstatic CDN). Preferred over the
+    // S2 favicon resolver because S2 returns a small low-quality glyph
+    // and the per-app logos are part of Google's brand assets so they're
+    // versioned + crisply rendered at 2x.
+    iconUrl: "https://www.gstatic.com/images/branding/product/2x/youtube_48dp.png",
     color: "#FF0033",
     auth: "Google OAuth",
     pulls: ["Liked videos"],
@@ -230,6 +235,7 @@ export const CONNECTORS = [
     category: "productivity",
     name: "Google Drive",
     domain: "drive.google.com",
+    iconUrl: "https://www.gstatic.com/images/branding/product/2x/drive_2020q4_48dp.png",
     color: "#1FA463",
     auth: "Google OAuth",
     pulls: ["Starred files (metadata only)"],
@@ -238,11 +244,54 @@ export const CONNECTORS = [
     statusLabel: "Pending Google review",
     summary: "Surfaces every starred file in your Drive. Pre-verification: Google Cloud test users only.",
   },
+  // `aliasOf` tiles share the underlying OAuth handshake AND the
+  // `social_connections` row of their parent connector. The user clicks
+  // Connect once on any of (Drive / Docs / Sheets) and all three tiles
+  // light up green, then Drive's sync routes items into per-app sources
+  // (gdocs_starred, gsheets_starred) so each lands under its own
+  // collapsed folder tile in the Vault. The auth dialog redirects to
+  // the parent connector's flow; the alias never gets its own OAuth
+  // adapter or env config. This is the right shape for any platform
+  // where multiple "products" share a single account (Google's Workspace,
+  // Microsoft 365, etc.).
+  {
+    id: "google-docs",
+    category: "productivity",
+    name: "Google Docs",
+    domain: "docs.google.com",
+    iconUrl: "https://www.gstatic.com/images/branding/product/2x/docs_2020q4_48dp.png",
+    color: "#4285F4",
+    auth: "Google OAuth",
+    pulls: ["Starred Google Docs"],
+    realtime: "Polling (60 min)",
+    status: "verification",
+    statusLabel: "Pending Google review",
+    summary:
+      "Every Google Doc you star lands in your Vault. Shares a single Google sign-in with Drive and Sheets.",
+    aliasOf: "google-drive",
+  },
+  {
+    id: "google-sheets",
+    category: "productivity",
+    name: "Google Sheets",
+    domain: "sheets.google.com",
+    iconUrl: "https://www.gstatic.com/images/branding/product/2x/sheets_2020q4_48dp.png",
+    color: "#0F9D58",
+    auth: "Google OAuth",
+    pulls: ["Starred Google Sheets"],
+    realtime: "Polling (60 min)",
+    status: "verification",
+    statusLabel: "Pending Google review",
+    summary:
+      "Every Google Sheet you star lands in your Vault. Shares a single Google sign-in with Drive and Docs.",
+    aliasOf: "google-drive",
+  },
   {
     id: "google-calendar",
     category: "productivity",
     name: "Google Calendar",
     domain: "calendar.google.com",
+    iconUrl: "https://www.gstatic.com/images/branding/product/2x/calendar_2020q4_48dp.png",
     color: "#4285F4",
     auth: "Google OAuth",
     pulls: ["Upcoming events (30 days)"],
@@ -256,6 +305,7 @@ export const CONNECTORS = [
     category: "productivity",
     name: "Gmail",
     domain: "mail.google.com",
+    iconUrl: "https://www.gstatic.com/images/branding/product/2x/gmail_2020q4_48dp.png",
     color: "#EA4335",
     auth: "Google OAuth",
     pulls: ["Starred emails"],

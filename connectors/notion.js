@@ -374,7 +374,45 @@ async function savePageAsNote({ supabaseAdmin, accessToken, userId, item, worksp
     }
   }
 
+  // AI summary generation for the synced Notion page. Without this, the
+  // chat layer's [VAULT_URL_MATCHES] block falls back to dumping the full
+  // body every time the user drags this page in — wasteful and slow.
+  // With it, the model gets a 2-5 sentence overview up front and only
+  // walks the body when the summary doesn't cover the question (matches
+  // the "summary-first, body-on-demand" design we're targeting for all
+  // connected-source vault items).
+  //
+  // Strict fire-and-forget: we never block the sync loop on summary
+  // generation, and we never propagate failures. enrichVaultNoteSummary
+  // is idempotent (hashes the stripped body), so calling it on every
+  // sync is a no-op for unchanged pages — one DB read, no LLM call.
+  if (noteId) {
+    enrichNoteSummary(noteId, userId).catch((err) => {
+      console.warn(`[notion] summary enrich threw for ${url}: ${err?.message || err}`);
+    });
+  }
+
   return mode;
+}
+
+// Bridge to server.js's `enrichVaultNoteSummary`. We lazy-import to avoid
+// a circular dependency (server.js imports this connector module at boot).
+let _enrichVaultNoteSummary = null;
+async function enrichNoteSummary(noteId, userId) {
+  if (!_enrichVaultNoteSummary) {
+    try {
+      const mod = await import('../server.js');
+      _enrichVaultNoteSummary = mod.enrichVaultNoteSummary;
+    } catch (e) {
+      console.warn(`[notion] could not lazy-load enrichVaultNoteSummary: ${e?.message || e}`);
+      return;
+    }
+  }
+  if (typeof _enrichVaultNoteSummary !== 'function') return;
+  const result = await _enrichVaultNoteSummary({ userId, noteId });
+  if (result && !result.ok && result.reason && result.reason !== 'openai_key_missing' && result.reason !== 'columns_missing') {
+    console.warn(`[notion] enrich for ${noteId} returned not-ok: ${result.reason}`);
+  }
 }
 
 // Notion stores a page's title as a "title" property on the page. Different
@@ -413,7 +451,7 @@ function extractNotionIcon(item) {
 // text we got rather than abandoning the page. Auth errors propagate as
 // ConnectorAuthError so the sync orchestrator flips the connection to
 // 'reauth'.
-async function fetchPageBody({ accessToken, pageId }) {
+export async function fetchPageBody({ accessToken, pageId }) {
   const lines = [];
   let blocksFetched = 0;
 

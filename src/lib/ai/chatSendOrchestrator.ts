@@ -2107,9 +2107,19 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
   // than "any authenticated turn." For all other turns we fall back to
   // the compact `wsContext.full` summary, which already has
   // lightweight per-source rollups.
+  // Vault-detail mode also fires on direct mentions of OAuth-connected
+  // sources — Notion / Gmail / Slack / Readwise / etc. all sync into the
+  // `notes` table as regular rows, so a question like "what's in my Notion
+  // docs?" or "find the Slack message I saved about X" should get the
+  // detailed dump even though the user never said the word "vault." Without
+  // this, those queries fall back to the 100-char compact excerpts and the
+  // AI loses access to nearly all of the synced body content.
   const wantsVaultDetail =
     wantsMediaPull ||
     /\b(vault|saved\s*(item|items|note|notes|file|files|link|links|content|stuff|things)|my\s*(notes?|saved)|knowledge\s*base|memory|memories|library)\b/i.test(
+      text,
+    ) ||
+    /\b(?:my|the|saved|connected|synced)?\s*(notion|gmail|outlook|slack|github|linear|todoist|trello|loom|vimeo|figma|canva|dribbble|behance|readwise|raindrop|instapaper|matter|pocket|spotify|apple\s*music|soundcloud|pinterest|bluesky|reddit|mastodon|google\s*(drive|calendar)|drive|calendar)\b/i.test(
       text,
     );
 

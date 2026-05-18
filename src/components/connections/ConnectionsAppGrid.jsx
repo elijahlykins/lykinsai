@@ -30,6 +30,8 @@ const PHASE_1_INPUT_IDS = [
   "gmail",
   "outlook-365",
   "google-drive",
+  "google-docs",
+  "google-sheets",
   { placeholder: true, id: "onedrive", name: "OneDrive", domain: "onedrive.live.com", summary: "Files and folders feed LYKN the shape of your active work." },
   "google-calendar",
   "notion",
@@ -238,9 +240,17 @@ export default function ConnectionsAppGrid({ user }) {
 
           if (tile.kind === "input") {
             const connector = tile.connector;
-            const userConns = connectionsByProvider.get(connector.id) || [];
+            // Alias tiles (e.g. Google Docs → Google Drive) share their
+            // parent connector's OAuth handshake and connection row.
+            // Resolve to the parent for connection-state lookups and
+            // OAuth routing, but keep the alias's own catalog entry for
+            // display (logo, name, description).
+            const authConnector = connector.aliasOf
+              ? CONNECTORS.find((c) => c.id === connector.aliasOf) || connector
+              : connector;
+            const userConns = connectionsByProvider.get(authConnector.id) || [];
             const isConnected = userConns.some((c) => c.status === "active" || c.status === "paused");
-            const isConfigured = providerConfig[connector.id] !== false;
+            const isConfigured = providerConfig[authConnector.id] !== false;
             const paidWarning = getInputPaidWarning(connector);
             const badge = !isConfigured
               ? { tone: "neutral", label: "Not configured" }
@@ -255,6 +265,7 @@ export default function ConnectionsAppGrid({ user }) {
               <AppTile
                 key={tile.key}
                 logoDomain={connector.domain}
+                logoUrl={connector.iconUrl}
                 name={connector.name}
                 typeLabel="Input tool"
                 description={connector.summary}
@@ -270,7 +281,11 @@ export default function ConnectionsAppGrid({ user }) {
                     // eslint-disable-next-line no-alert
                     if (!window.confirm(`${paidWarning.title}\n\n${paidWarning.message}`)) return;
                   }
-                  setActiveInputConnector(connector);
+                  // For alias tiles we open the dialog against the
+                  // parent connector so the OAuth handshake hits the
+                  // adapter that actually exists on the server. The
+                  // alias's own catalog row has no `/start` endpoint.
+                  setActiveInputConnector(authConnector);
                 }}
               />
             );
@@ -338,6 +353,7 @@ export default function ConnectionsAppGrid({ user }) {
 
 function AppTile({
   logoDomain,
+  logoUrl,
   name,
   typeLabel,
   description,
@@ -354,7 +370,7 @@ function AppTile({
     >
       <div className="flex items-start gap-3">
         <div className="h-12 w-12 rounded-2xl flex items-center justify-center flex-shrink-0 bg-white dark:bg-white/95 ring-1 ring-black/[0.06] shadow-sm overflow-hidden">
-          <AppFavicon domain={logoDomain} name={name} />
+          <AppFavicon domain={logoDomain} iconUrl={logoUrl} name={name} />
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
@@ -397,14 +413,20 @@ function AppTile({
   );
 }
 
-function AppFavicon({ domain, name }) {
+function AppFavicon({ domain, iconUrl, name }) {
   const [attempt, setAttempt] = useState(0);
-  const candidates = domain
-    ? [
-        `https://www.google.com/s2/favicons?sz=128&domain=${encodeURIComponent(domain)}`,
-        `https://icons.duckduckgo.com/ip3/${domain}.ico`,
-      ]
-    : [];
+  // Prefer an explicit catalog-level `iconUrl` over the S2 favicon
+  // service. Google Workspace apps in particular need this — S2 returns
+  // the same generic Google "G" for docs.google.com / sheets.google.com /
+  // mail.google.com, so all the Google tiles end up looking identical.
+  // Falling through to the favicon services keeps every other connector
+  // working with no per-connector config.
+  const candidates = [];
+  if (iconUrl) candidates.push(iconUrl);
+  if (domain) {
+    candidates.push(`https://www.google.com/s2/favicons?sz=128&domain=${encodeURIComponent(domain)}`);
+    candidates.push(`https://icons.duckduckgo.com/ip3/${domain}.ico`);
+  }
   if (!candidates.length || attempt >= candidates.length) {
     return <ShieldAlert className="h-6 w-6 text-black/55 dark:text-white/65" strokeWidth={1.75} />;
   }

@@ -106,16 +106,43 @@ async function saveDriveFile({ supabaseAdmin, userId, file }) {
     authorHandle: file.owners?.[0]?.emailAddress || '',
   };
 
+  // Route the file into a per-app source/tag set so the Vault's
+  // connector-folder collapse can split Docs / Sheets / Slides / Drive
+  // into distinct tiles even though they all come from a single Drive
+  // API call. `gdrive_starred` is reserved for "everything else"
+  // (PDFs, images, folders, generic uploads) so the Google Drive tile
+  // continues to mean "non-app files I starred."
+  const { source, appTag } = driveSourceFor(file.mimeType);
+
   return saveGoogleNote({
     supabaseAdmin,
     userId,
     url,
     title,
     attachment,
-    tags: ['google-drive', 'starred', driveTagFor(file.mimeType), 'link', 'uploaded'].filter(Boolean),
-    source: 'gdrive_starred',
+    tags: [appTag, 'starred', driveTagFor(file.mimeType), 'link', 'uploaded'].filter(Boolean),
+    source,
     createdAt: file.modifiedTime ? new Date(file.modifiedTime).toISOString() : undefined,
   });
+}
+
+// Maps a Drive mime type to the `notes.source` value the file should be
+// written under, plus the human-readable connector tag that goes in the
+// `tags` column. Keeping these aligned with the catalog ids
+// (google-docs, google-sheets, google-slides, google-drive) lets the
+// Vault's SOURCE_TO_CONNECTOR_ID map route everything cleanly.
+function driveSourceFor(mime) {
+  if (!mime) return { source: 'gdrive_starred', appTag: 'google-drive' };
+  if (mime === 'application/vnd.google-apps.document') {
+    return { source: 'gdocs_starred', appTag: 'google-docs' };
+  }
+  if (mime === 'application/vnd.google-apps.spreadsheet') {
+    return { source: 'gsheets_starred', appTag: 'google-sheets' };
+  }
+  if (mime === 'application/vnd.google-apps.presentation') {
+    return { source: 'gslides_starred', appTag: 'google-slides' };
+  }
+  return { source: 'gdrive_starred', appTag: 'google-drive' };
 }
 
 function humanMime(mime) {
