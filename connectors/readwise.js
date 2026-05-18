@@ -25,6 +25,7 @@
 // ============================================================================
 
 import { ConnectorAuthError } from '../connectors-service.js';
+import { saveConnectorNote } from './_save.js';
 
 const RW_AUTH_URL = 'https://readwise.io/api/v2/auth/';
 const RW_EXPORT_URL = 'https://readwise.io/api/v2/export/';
@@ -145,7 +146,7 @@ export const readwiseAdapter = {
           userId: connection.user_id,
           book,
         });
-        if (result === 'saved') saved++;
+        if (result === 'saved' || result === 'updated') saved++;
         else skipped++;
 
         // Track the latest updated_at so the next sync only asks for
@@ -190,14 +191,6 @@ async function saveBookAsNote({ supabaseAdmin, userId, book }) {
     book.source_url ||
     `https://readwise.io/bookreview/${book.user_book_id}`;
 
-  const { data: existing } = await supabaseAdmin
-    .from('notes')
-    .select('id')
-    .eq('user_id', userId)
-    .ilike('content', `%${url}%`)
-    .limit(1);
-  if (existing && existing.length > 0) return 'skipped';
-
   const title = book.readable_title || book.title || 'Readwise highlight';
   const author = book.author || '';
   const category = book.category || ''; // books, articles, tweets, supplementals, podcasts
@@ -239,8 +232,6 @@ async function saveBookAsNote({ supabaseAdmin, userId, book }) {
     authorHandle: '',
   };
 
-  const noteContent = `${title}\n\n[ATTACHMENTS_JSON:${JSON.stringify([attachment])}]`;
-
   const tags = ['readwise', 'highlight', 'link', 'uploaded'];
   if (category) tags.push(String(category).toLowerCase());
   if (source) tags.push(String(source).toLowerCase());
@@ -249,26 +240,22 @@ async function saveBookAsNote({ supabaseAdmin, userId, book }) {
     ? new Date(book.last_highlight_at).toISOString()
     : undefined;
 
-  const { error } = await supabaseAdmin
-    .from('notes')
-    .insert({
-      user_id: userId,
-      title,
-      content: noteContent,
-      source: 'readwise',
-      tags,
-      created_at: createdAt,
-    });
-  if (error) {
-    const { error: err2 } = await supabaseAdmin
-      .from('notes')
-      .insert({ user_id: userId, title, content: noteContent });
-    if (err2) {
-      console.error(`[readwise] note insert failed for ${url}:`, err2.message);
-      return 'skipped';
-    }
-  }
-  return 'saved';
+  // Body for embedding: skip the bookmark-style "by Author / category"
+  // header and let the multi-highlight blockquote be the embed text.
+  // The description already contains the full quoted text + the
+  // user's notes per highlight, so we pass it through as-is.
+  return saveConnectorNote({
+    supabaseAdmin,
+    userId,
+    url,
+    title,
+    attachment,
+    tags,
+    source: 'readwise',
+    createdAt,
+    body: description,
+    embedMetadata: { source: 'readwise', title, url, author, category, readwise_source: source },
+  });
 }
 
 // ---------------------------------------------------------------------------

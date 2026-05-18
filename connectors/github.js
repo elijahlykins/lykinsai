@@ -14,6 +14,7 @@
 // ============================================================================
 
 import { ConnectorAuthError } from '../connectors-service.js';
+import { saveConnectorNote } from './_save.js';
 
 const GITHUB_AUTH_URL = 'https://github.com/login/oauth/authorize';
 const GITHUB_TOKEN_URL = 'https://github.com/login/oauth/access_token';
@@ -228,7 +229,7 @@ export const githubAdapter = {
           repo,
           starredAt,
         });
-        if (result === 'saved') saved++;
+        if (result === 'saved' || result === 'updated') saved++;
         else skipped++;
 
         if (starredAt && (!newestStarredAt || starredAt > newestStarredAt)) {
@@ -262,15 +263,6 @@ async function saveRepoAsNote({ supabaseAdmin, userId, repo, starredAt }) {
   if (!repo?.html_url) return 'skipped';
   const url = repo.html_url;
 
-  // Cheap pre-check: same URL already in vault?
-  const { data: existing } = await supabaseAdmin
-    .from('notes')
-    .select('id')
-    .eq('user_id', userId)
-    .ilike('content', `%${url}%`)
-    .limit(1);
-  if (existing && existing.length > 0) return 'skipped';
-
   const title = repo.full_name || repo.name || url;
   const description = (repo.description || '').slice(0, 1200);
   const language = repo.language ? ` · ${repo.language}` : '';
@@ -296,32 +288,27 @@ async function saveRepoAsNote({ supabaseAdmin, userId, repo, starredAt }) {
     authorHandle: owner ? `@${owner}` : '',
   };
 
-  const noteContent = `${title}\n\n[ATTACHMENTS_JSON:${JSON.stringify([attachment])}]`;
-
   const tags = ['github', 'starred', 'link', 'uploaded'];
   if (repo.language) tags.push(String(repo.language).toLowerCase());
 
-  const { error } = await supabaseAdmin
-    .from('notes')
-    .insert({
-      user_id: userId,
-      title,
-      content: noteContent,
-      source: 'github_starred',
-      tags,
-      created_at: starredAt ? starredAt.toISOString() : undefined,
-    });
+  // Repo description is what the algorithm should "know" — short
+  // README equivalent, used by the synthesis layer for semantic
+  // retrieval against the user's starred-repos shelf.
+  const body = description
+    ? `${owner ? `Owner: ${owner}\n` : ''}${repo.language ? `Language: ${repo.language}\n` : ''}\n${description}`
+    : '';
 
-  if (error) {
-    // Schema mismatch fallback (mirrors saveLinkToVault on the client).
-    const { error: err2 } = await supabaseAdmin
-      .from('notes')
-      .insert({ user_id: userId, title, content: noteContent });
-    if (err2) {
-      console.error(`[github] note insert failed for ${url}:`, err2.message);
-      return 'skipped';
-    }
-  }
-  return 'saved';
+  return saveConnectorNote({
+    supabaseAdmin,
+    userId,
+    url,
+    title,
+    attachment,
+    tags,
+    source: 'github_starred',
+    createdAt: starredAt ? starredAt.toISOString() : undefined,
+    body,
+    embedMetadata: { source: 'github_starred', title, url, owner, language: repo.language || '' },
+  });
 }
 

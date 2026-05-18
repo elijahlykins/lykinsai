@@ -17,6 +17,7 @@
 // ============================================================================
 
 import { ConnectorAuthError } from '../connectors-service.js';
+import { saveConnectorNote } from './_save.js';
 
 const PIN_AUTH_URL = 'https://www.pinterest.com/oauth/';
 const PIN_TOKEN_URL = 'https://api.pinterest.com/v5/oauth/token';
@@ -181,7 +182,7 @@ export const pinterestAdapter = {
           userId: connection.user_id,
           pin: item,
         });
-        if (result === 'saved') saved++;
+        if (result === 'saved' || result === 'updated') saved++;
         else skipped++;
 
         if (created > newest) newest = created;
@@ -211,14 +212,6 @@ async function savePinAsNote({ supabaseAdmin, userId, pin }) {
   const url = pin.link || (pin.id ? `https://www.pinterest.com/pin/${pin.id}/` : '');
   if (!url) return 'skipped';
 
-  const { data: existing } = await supabaseAdmin
-    .from('notes')
-    .select('id')
-    .eq('user_id', userId)
-    .ilike('content', `%${url}%`)
-    .limit(1);
-  if (existing && existing.length > 0) return 'skipped';
-
   const title = (pin.title || pin.alt_text || pin.description || 'Pinterest Pin').slice(0, 280);
   const description = (pin.description || '').slice(0, 1200);
   const image = pin.media?.images?.['600x']?.url ||
@@ -241,29 +234,20 @@ async function savePinAsNote({ supabaseAdmin, userId, pin }) {
     authorName: '',
     authorHandle: '',
   };
-  const noteContent = `${title}\n\n[ATTACHMENTS_JSON:${JSON.stringify([attachment])}]`;
 
   const tags = ['pinterest', 'pin', 'link', 'uploaded'];
   const createdAt = pin.created_at ? new Date(pin.created_at).toISOString() : undefined;
 
-  const { error } = await supabaseAdmin
-    .from('notes')
-    .insert({
-      user_id: userId,
-      title,
-      content: noteContent,
-      source: 'pinterest_pin',
-      tags,
-      created_at: createdAt,
-    });
-  if (error) {
-    const { error: err2 } = await supabaseAdmin
-      .from('notes')
-      .insert({ user_id: userId, title, content: noteContent });
-    if (err2) {
-      console.error(`[pinterest] note insert failed for ${url}:`, err2.message);
-      return 'skipped';
-    }
-  }
-  return 'saved';
+  return saveConnectorNote({
+    supabaseAdmin,
+    userId,
+    url,
+    title,
+    attachment,
+    tags,
+    source: 'pinterest_pin',
+    createdAt,
+    body: description,
+    embedMetadata: { source: 'pinterest_pin', title, url },
+  });
 }

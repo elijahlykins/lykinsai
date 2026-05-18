@@ -22,6 +22,7 @@
 // ============================================================================
 
 import { ConnectorAuthError } from '../connectors-service.js';
+import { saveConnectorNote } from './_save.js';
 
 const TR_API = 'https://api.trello.com/1';
 const TR_AUTHORIZE = 'https://trello.com/1/authorize';
@@ -195,7 +196,7 @@ export const trelloAdapter = {
           card,
           board,
         });
-        if (result === 'saved') saved++;
+        if (result === 'saved' || result === 'updated') saved++;
         else skipped++;
 
         if (dla > newest) newest = dla;
@@ -227,14 +228,6 @@ async function saveTrelloCardAsNote({ supabaseAdmin, userId, card, board }) {
   if (!card?.url || !card?.shortLink) return 'skipped';
   const url = card.url;
 
-  const { data: existing } = await supabaseAdmin
-    .from('notes')
-    .select('id')
-    .eq('user_id', userId)
-    .ilike('content', `%${card.shortLink}%`)
-    .limit(1);
-  if (existing && existing.length > 0) return 'skipped';
-
   const title = card.name || 'Untitled card';
   const desc = (card.desc || '').slice(0, 1200);
   const dueLine = card.due ? `Due ${new Date(card.due).toLocaleString()}\n\n` : '';
@@ -257,36 +250,48 @@ async function saveTrelloCardAsNote({ supabaseAdmin, userId, card, board }) {
     authorHandle: '',
   };
 
-  const noteContent = `${title}\n\n[ATTACHMENTS_JSON:${JSON.stringify([attachment])}]`;
-
   const tags = ['trello', 'card', 'link', 'uploaded'];
+  const labelNames = [];
   if (Array.isArray(card.labels)) {
     for (const l of card.labels.slice(0, 5)) {
-      if (l?.name) tags.push(String(l.name).toLowerCase().slice(0, 24));
+      if (l?.name) {
+        const name = String(l.name).toLowerCase().slice(0, 24);
+        tags.push(name);
+        labelNames.push(name);
+      }
     }
   }
   const createdAt = card.dateLastActivity
     ? new Date(card.dateLastActivity).toISOString()
     : undefined;
 
-  const { error } = await supabaseAdmin
-    .from('notes')
-    .insert({
-      user_id: userId,
-      title,
-      content: noteContent,
+  const body = [
+    board?.name ? `Board: ${board.name}` : '',
+    card.due ? `Due: ${new Date(card.due).toLocaleString()}` : '',
+    labelNames.length ? `Labels: ${labelNames.join(', ')}` : '',
+    desc ? '\n' + desc : '',
+  ].filter(Boolean).join('\n');
+
+  return saveConnectorNote({
+    supabaseAdmin,
+    userId,
+    // Trello cards historically dedupe on shortLink (a 8-char id) rather
+    // than the full URL, so older notes saved before this refactor still
+    // collide cleanly.
+    dedupeNeedle: card.shortLink,
+    url,
+    title,
+    attachment,
+    tags,
+    source: 'trello_card',
+    createdAt,
+    body,
+    embedMetadata: {
       source: 'trello_card',
-      tags,
-      created_at: createdAt,
-    });
-  if (error) {
-    const { error: err2 } = await supabaseAdmin
-      .from('notes')
-      .insert({ user_id: userId, title, content: noteContent });
-    if (err2) {
-      console.error(`[trello] note insert failed for ${url}:`, err2.message);
-      return 'skipped';
-    }
-  }
-  return 'saved';
+      title,
+      url,
+      board: board?.name || '',
+      labels: labelNames,
+    },
+  });
 }

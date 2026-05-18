@@ -21,6 +21,7 @@
 // ============================================================================
 
 import { ConnectorAuthError } from '../connectors-service.js';
+import { saveConnectorNote } from './_save.js';
 
 const FETCH_TIMEOUT_MS = 12_000;
 const PAGE_SIZE = 40; // Mastodon's max for these endpoints
@@ -283,7 +284,7 @@ async function syncStream({
         instanceHost: new URL(instanceUrl).host,
         stream,
       });
-      if (result === 'saved') saved++;
+      if (result === 'saved' || result === 'updated') saved++;
       else skipped++;
 
       // Track the largest id we've seen — Mastodon ids are sortable
@@ -314,14 +315,6 @@ async function saveStatusAsNote({ supabaseAdmin, userId, status, instanceHost, s
   if (!status?.url || !status?.id) return 'skipped';
   const url = status.url;
 
-  const { data: existing } = await supabaseAdmin
-    .from('notes')
-    .select('id')
-    .eq('user_id', userId)
-    .ilike('content', `%${status.id}%`)
-    .limit(1);
-  if (existing && existing.length > 0) return 'skipped';
-
   // Mastodon `content` is HTML; strip tags for the description.
   const text = htmlToText(status.content || '').slice(0, 1200);
   const author = status.account || {};
@@ -350,31 +343,39 @@ async function saveStatusAsNote({ supabaseAdmin, userId, status, instanceHost, s
     authorHandle: `@${handle}`,
   };
 
-  const noteContent = `${title}\n\n[ATTACHMENTS_JSON:${JSON.stringify([attachment])}]`;
-
   const tags = ['mastodon', stream === 'bookmarks' ? 'bookmark' : 'favourite', 'link', 'uploaded'];
   const createdAt = status.created_at ? new Date(status.created_at).toISOString() : undefined;
+  const source = stream === 'bookmarks' ? 'mastodon_bookmark' : 'mastodon_favourite';
 
-  const { error } = await supabaseAdmin
-    .from('notes')
-    .insert({
-      user_id: userId,
+  const body = [
+    `${author.display_name || handle} (@${handle})`,
+    `Instance: ${instanceHost}`,
+    '',
+    text,
+  ].filter(Boolean).join('\n');
+
+  return saveConnectorNote({
+    supabaseAdmin,
+    userId,
+    // Mastodon statuses dedupe on the status id (instance-local) which
+    // is shorter and more stable than the full federated URL.
+    dedupeNeedle: String(status.id),
+    url,
+    title,
+    attachment,
+    tags,
+    source,
+    createdAt,
+    body,
+    embedMetadata: {
+      source,
       title,
-      content: noteContent,
-      source: stream === 'bookmarks' ? 'mastodon_bookmark' : 'mastodon_favourite',
-      tags,
-      created_at: createdAt,
-    });
-  if (error) {
-    const { error: err2 } = await supabaseAdmin
-      .from('notes')
-      .insert({ user_id: userId, title, content: noteContent });
-    if (err2) {
-      console.error(`[mastodon] note insert failed for ${url}:`, err2.message);
-      return 'skipped';
-    }
-  }
-  return 'saved';
+      url,
+      author_handle: handle,
+      instance: instanceHost,
+      status_id: String(status.id),
+    },
+  });
 }
 
 // Cheap HTML stripper for Mastodon status content. Doesn't try to be a

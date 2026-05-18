@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence, useDragControls } from "framer-motion";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/SupabaseAuth";
@@ -32,7 +32,6 @@ import {
   Maximize2,
 } from "lucide-react";
 import BeliefWindowPanel from "@/components/synthesis/BeliefWindowPanel";
-import SynthesisUpdatesPanel from "@/components/synthesis/SynthesisUpdatesPanel";
 import { API_BASE_URL } from "@/lib/api-config";
 import { GridIcon } from "@/components/ui/GridIcon";
 import {
@@ -213,12 +212,29 @@ function buildGraph(
   // Active beliefs (Hyrum-Smith belief-window layer). Rendered as their own
   // category cluster so the user can see the principles the AI answers
   // through. Empty array means we omit the category entirely.
-  beliefs: Array<{ id: string; belief_text: string; serves_need: string; confidence: number }> = [],
+  beliefs: Array<{
+    id: string;
+    belief_text: string;
+    serves_need: string;
+    confidence: number;
+    status?: string;
+    rationale?: string | null;
+    source?: string | null;
+    created_at?: string;
+  }> = [],
   // User-stated / user-confirmed atomic facts. Rendered as additional
   // "AI Learned" neurons so freshly-saved Basic neurons appear in the
   // graph instantly (otherwise they'd only surface after a synthesis
   // profile rebuild, which made the Save button look like a no-op).
-  manualFacts: Array<{ id: string; fact_kind: string; fact_text: string; confidence: number }> = [],
+  manualFacts: Array<{
+    id: string;
+    fact_kind: string;
+    fact_text: string;
+    confidence: number;
+    status?: string;
+    first_seen_at?: string;
+    last_seen_at?: string;
+  }> = [],
   // Optional: categories that should always appear even if they have no
   // children. Used by the landing prototype so a brand-new guest sees the
   // shell of their future workspace (Projects / Grids / Vault / Tags)
@@ -364,6 +380,10 @@ function buildGraph(
         beliefText: b.belief_text,
         servesNeed: b.serves_need,
         confidence: b.confidence,
+        beliefStatus: b.status || "active",
+        beliefRationale: b.rationale || null,
+        beliefSource: b.source || null,
+        beliefCreatedAt: b.created_at || null,
       },
     });
     edges.push({ from: "__cat_beliefs__", to: nid });
@@ -464,6 +484,9 @@ function buildGraph(
         factKind: f.fact_kind,
         factText: f.fact_text,
         confidence: f.confidence,
+        factStatus: f.status || "stated",
+        factFirstSeenAt: f.first_seen_at || null,
+        factLastSeenAt: f.last_seen_at || null,
       },
     });
     edges.push({ from: "__cat_neurons__", to: nid });
@@ -1278,6 +1301,345 @@ function VaultAttachment({ att }: { att: any }) {
   return null;
 }
 
+// ---------------------------------------------------------------------
+// "Why / when / accept" detail sections rendered inside DetailPanel
+// for synthesis-layer items. Pulled out into their own components so
+// each can own its accept-button loading state without breaking the
+// hooks rules in the surrounding DetailPanel render.
+// ---------------------------------------------------------------------
+
+function formatRelativeWhen(iso?: string | null): string {
+  if (!iso) return "";
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return "";
+  const diff = Date.now() - t;
+  const min = Math.round(diff / 60_000);
+  if (min < 1) return "just now";
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.round(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const day = Math.round(hr / 24);
+  if (day < 7) return `${day}d ago`;
+  return new Date(t).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: new Date(t).getFullYear() !== new Date().getFullYear() ? "numeric" : undefined,
+  });
+}
+
+function clientDisplayLabel(slug?: string | null): string {
+  if (!slug) return "your synthesis layer";
+  const map: Record<string, string> = {
+    claude: "Claude",
+    "claude-desktop": "Claude Desktop",
+    "claude-web": "Claude (web)",
+    "claude-code": "Claude Code",
+    cursor: "Cursor",
+    gemini: "Gemini",
+    chatgpt: "ChatGPT",
+    "lykn-chat": "LYKN",
+    "lykn-promotion": "LYKN synthesis",
+    manual: "you",
+  };
+  return map[slug] || slug;
+}
+
+const BeliefDetailSection: React.FC<{ node: MindNode }> = ({ node }) => {
+  const beliefId = String(node.meta?.beliefId || "");
+  const beliefText = String(node.meta?.beliefText || node.label || "");
+  const beliefStatus = String(node.meta?.beliefStatus || "active");
+  const rationale = node.meta?.beliefRationale as string | null | undefined;
+  const sourceClient = node.meta?.beliefSource as string | null | undefined;
+  const createdAt = node.meta?.beliefCreatedAt as string | null | undefined;
+  const servesNeed = String(node.meta?.servesNeed || "");
+  const confidence = typeof node.meta?.confidence === "number" ? node.meta.confidence : null;
+
+  const [status, setStatus] = useState(beliefStatus);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+
+  useEffect(() => {
+    // Reset when the focused belief changes — the panel re-mounts
+    // via `key={selectedNode.id}` so this is mostly belt-and-braces.
+    setStatus(beliefStatus);
+    setError(null);
+  }, [beliefId, beliefStatus]);
+
+  const isProposed = status === "proposed";
+
+  const accept = async () => {
+    if (!beliefId || pending) return;
+    setPending(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/beliefs/${beliefId}/ratify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      if (!res.ok) {
+        setError(`Couldn't accept (status ${res.status}). Try again.`);
+        return;
+      }
+      setStatus("active");
+      // Refresh the belief cluster + load-in greeting so the badge
+      // count drops and the node re-colors to "active".
+      queryClient.invalidateQueries({ queryKey: ["mindmap_active_beliefs"] });
+      queryClient.invalidateQueries({ queryKey: ["belief_window"] });
+    } catch (e) {
+      setError((e as Error)?.message || "Network error. Try again.");
+    } finally {
+      setPending(false);
+    }
+  };
+
+  return (
+    <div className="mb-4">
+      <div className="flex items-center gap-2 mb-3">
+        <Atom size={13} className="text-amber-400" />
+        <span
+          className={`text-[0.6rem] px-1.5 py-0.5 rounded-full font-medium ${
+            isProposed
+              ? "bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300"
+              : "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300"
+          }`}
+        >
+          {isProposed ? "Proposed belief" : "Active belief"}
+        </span>
+        {servesNeed ? (
+          <span className="text-[0.6rem] text-gray-400 dark:text-gray-500 capitalize">
+            Serves {servesNeed}
+          </span>
+        ) : null}
+      </div>
+
+      <p className="text-[0.875rem] text-gray-800 dark:text-gray-100 leading-relaxed mb-3">
+        “{beliefText}”
+      </p>
+
+      {rationale ? (
+        <div className="mb-3">
+          <p className="text-[0.625rem] font-medium text-gray-400 dark:text-gray-500 mb-1 uppercase tracking-wider">
+            Why it was added
+          </p>
+          <div className="text-[0.75rem] text-gray-600 dark:text-gray-300 leading-relaxed rounded-lg bg-black/[0.02] dark:bg-white/[0.03] p-3 whitespace-pre-wrap">
+            {rationale}
+          </div>
+        </div>
+      ) : (
+        <div className="mb-3">
+          <p className="text-[0.625rem] font-medium text-gray-400 dark:text-gray-500 mb-1 uppercase tracking-wider">
+            Why it was added
+          </p>
+          <p className="text-[0.75rem] text-gray-500 dark:text-gray-400 italic">
+            {clientDisplayLabel(sourceClient)} surfaced this as a recurring principle in how you think.
+          </p>
+        </div>
+      )}
+
+      {createdAt ? (
+        <div className="mb-4">
+          <p className="text-[0.625rem] font-medium text-gray-400 dark:text-gray-500 mb-1 uppercase tracking-wider">
+            When it was added
+          </p>
+          <p className="text-[0.75rem] text-gray-600 dark:text-gray-300">
+            {new Date(createdAt).toLocaleString(undefined, {
+              month: "short",
+              day: "numeric",
+              year: "numeric",
+              hour: "numeric",
+              minute: "2-digit",
+            })}{" "}
+            <span className="text-gray-400 dark:text-gray-500">· {formatRelativeWhen(createdAt)}</span>
+            {sourceClient ? (
+              <span className="text-gray-400 dark:text-gray-500"> · from {clientDisplayLabel(sourceClient)}</span>
+            ) : null}
+          </p>
+        </div>
+      ) : null}
+
+      {confidence != null ? (
+        <p className="text-[0.6875rem] text-gray-500 dark:text-gray-400 mb-3">
+          Confidence: <span className="font-medium">{Math.round(confidence * 100)}%</span>
+        </p>
+      ) : null}
+
+      {isProposed ? (
+        <div className="space-y-2">
+          <button
+            type="button"
+            onClick={accept}
+            disabled={pending || !beliefId}
+            className="w-full flex items-center justify-center gap-2 text-[0.8125rem] font-semibold py-2.5 rounded-lg bg-emerald-500/90 hover:bg-emerald-500 disabled:bg-emerald-500/40 text-white transition-colors shadow-[0_2px_10px_rgba(16,185,129,0.25)]"
+          >
+            {pending ? (
+              <>
+                <Loader2 size={14} className="animate-spin" />
+                Accepting…
+              </>
+            ) : (
+              <>
+                <Check size={14} />
+                Accept as official belief
+              </>
+            )}
+          </button>
+          {error ? (
+            <p className="text-[0.6875rem] text-red-500">{error}</p>
+          ) : (
+            <p className="text-[0.625rem] text-gray-400 dark:text-gray-500 text-center">
+              Accepting promotes this to your active belief layer and proposes 2–3 rules to support it.
+            </p>
+          )}
+        </div>
+      ) : (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 text-[0.75rem]">
+          <Check size={13} />
+          Active in your belief layer
+        </div>
+      )}
+    </div>
+  );
+};
+
+const FactDetailSection: React.FC<{ node: MindNode }> = ({ node }) => {
+  const factId = String(node.meta?.factId || "");
+  const factText = String(node.meta?.factText || node.label || "");
+  const factKindLbl = String(node.meta?.kindLabel || "Identity fact");
+  const factStatus = String(node.meta?.factStatus || "stated");
+  const firstSeenAt = node.meta?.factFirstSeenAt as string | null | undefined;
+  const confidence = typeof node.meta?.confidence === "number" ? node.meta.confidence : null;
+
+  const [status, setStatus] = useState(factStatus);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+
+  useEffect(() => {
+    setStatus(factStatus);
+    setError(null);
+  }, [factId, factStatus]);
+
+  const needsConfirm = status === "inferred" || status === "unconfirmed";
+
+  const accept = async () => {
+    if (!factId || pending) return;
+    setPending(true);
+    setError(null);
+    try {
+      const { error: upErr } = await supabase
+        .from("lykn_user_model_facts")
+        .update({ status: "confirmed" })
+        .eq("id", factId);
+      if (upErr) {
+        setError(upErr.message || "Couldn't accept. Try again.");
+        return;
+      }
+      setStatus("confirmed");
+      queryClient.invalidateQueries({ queryKey: ["mindmap_manual_facts"] });
+    } catch (e) {
+      setError((e as Error)?.message || "Network error. Try again.");
+    } finally {
+      setPending(false);
+    }
+  };
+
+  return (
+    <div className="mb-4">
+      <div className="flex items-center gap-2 mb-3">
+        <Sparkles size={13} className="text-pink-400" />
+        <span
+          className={`text-[0.6rem] px-1.5 py-0.5 rounded-full font-medium ${
+            needsConfirm
+              ? "bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300"
+              : "bg-pink-100 dark:bg-pink-900/30 text-pink-700 dark:text-pink-300"
+          }`}
+        >
+          {needsConfirm ? "Awaiting confirmation" : factKindLbl}
+        </span>
+        <span className="text-[0.6rem] text-gray-400 dark:text-gray-500">Neuron</span>
+      </div>
+
+      <p className="text-[0.875rem] text-gray-800 dark:text-gray-100 leading-relaxed mb-3">
+        “{factText}”
+      </p>
+
+      <div className="mb-3">
+        <p className="text-[0.625rem] font-medium text-gray-400 dark:text-gray-500 mb-1 uppercase tracking-wider">
+          Why it was added
+        </p>
+        <p className="text-[0.75rem] text-gray-600 dark:text-gray-300 leading-relaxed">
+          {status === "stated"
+            ? "You stated this directly in chat — LYKN saved it as a Basic neuron."
+            : status === "confirmed"
+              ? "You confirmed this when LYKN surfaced it from your conversations."
+              : "LYKN's synthesis layer inferred this from patterns in your chats and vault. It's awaiting your confirmation before becoming a permanent neuron."}
+        </p>
+      </div>
+
+      {firstSeenAt ? (
+        <div className="mb-4">
+          <p className="text-[0.625rem] font-medium text-gray-400 dark:text-gray-500 mb-1 uppercase tracking-wider">
+            When it was added
+          </p>
+          <p className="text-[0.75rem] text-gray-600 dark:text-gray-300">
+            {new Date(firstSeenAt).toLocaleString(undefined, {
+              month: "short",
+              day: "numeric",
+              year: "numeric",
+              hour: "numeric",
+              minute: "2-digit",
+            })}{" "}
+            <span className="text-gray-400 dark:text-gray-500">· {formatRelativeWhen(firstSeenAt)}</span>
+          </p>
+        </div>
+      ) : null}
+
+      {confidence != null ? (
+        <p className="text-[0.6875rem] text-gray-500 dark:text-gray-400 mb-3">
+          Confidence: <span className="font-medium">{Math.round(confidence * 100)}%</span>
+        </p>
+      ) : null}
+
+      {needsConfirm ? (
+        <div className="space-y-2">
+          <button
+            type="button"
+            onClick={accept}
+            disabled={pending || !factId}
+            className="w-full flex items-center justify-center gap-2 text-[0.8125rem] font-semibold py-2.5 rounded-lg bg-emerald-500/90 hover:bg-emerald-500 disabled:bg-emerald-500/40 text-white transition-colors shadow-[0_2px_10px_rgba(16,185,129,0.25)]"
+          >
+            {pending ? (
+              <>
+                <Loader2 size={14} className="animate-spin" />
+                Confirming…
+              </>
+            ) : (
+              <>
+                <Check size={14} />
+                Accept as official neuron
+              </>
+            )}
+          </button>
+          {error ? (
+            <p className="text-[0.6875rem] text-red-500">{error}</p>
+          ) : (
+            <p className="text-[0.625rem] text-gray-400 dark:text-gray-500 text-center">
+              Accepting marks this as confirmed — LYKN will lean on it for context on every reply.
+            </p>
+          )}
+        </div>
+      ) : (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 text-[0.75rem]">
+          <Check size={13} />
+          {status === "confirmed" ? "Confirmed neuron" : "Active neuron"}
+        </div>
+      )}
+    </div>
+  );
+};
+
 /* ------------------------------------------------------------------ */
 /*  Detail panel                                                       */
 /* ------------------------------------------------------------------ */
@@ -1502,12 +1864,12 @@ function DetailPanel({
       )}
       {/* Header. Desktop has no internal close button — the page-level
           chevron toggle (z-[100], right-4) is the canonical close
-          affordance for every right-side panel, mirroring how
-          SynthesisUpdatesPanel handles dismissal. We right-pad the row
-          so the kind label clears the always-visible chevron. Mobile
-          keeps an X because the bottom-sheet form factor lives at the
-          bottom of the screen and reaching the top-right corner mid-
-          read is awkward; the sheet also supports drag-to-dismiss. */}
+          affordance for every right-side panel. We right-pad the row
+          so the kind label clears the chevron when it's visible.
+          Mobile keeps an X because the bottom-sheet form factor lives
+          at the bottom of the screen and reaching the top-right
+          corner mid-read is awkward; the sheet also supports
+          drag-to-dismiss. */}
       <div className={
         isMobile
           ? "flex items-center gap-3 px-5 pt-2 pb-3"
@@ -1681,7 +2043,13 @@ function DetailPanel({
           </div>
         )}
 
-        {node.kind === "neuron" && (() => {
+        {node.kind === "belief" && <BeliefDetailSection node={node} />}
+
+        {node.kind === "neuron" && node.meta?.neuronKind === "fact" && (
+          <FactDetailSection node={node} />
+        )}
+
+        {node.kind === "neuron" && node.meta?.neuronKind !== "fact" && (() => {
           const kind = node.meta?.neuronKind as string || "pattern";
           const source = node.meta?.source as string || "";
           const connectedVault = connected.filter((c) => c.kind === "vault");
@@ -2235,20 +2603,45 @@ export default function SynthesisLayer() {
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // The welcome modal is no longer the on-page-load greeter for the
-  // synthesis layer — the SynthesisUpdatesPanel ("Recent activity" right-
-  // side pullout) is. We keep the showWelcome state and setter around so
-  // the prototype-handoff animation flow's `setShowWelcome(false)` calls
-  // still compile, but the WelcomePanel itself is no longer rendered
-  // anywhere on this page. Default is false unconditionally.
+  // synthesis layer — the load-in chat greeting is. We keep the
+  // showWelcome state and setter around so the prototype-handoff
+  // animation flow's `setShowWelcome(false)` calls still compile, but
+  // the WelcomePanel itself is no longer rendered anywhere on this
+  // page. Default is false unconditionally.
   const [showWelcome, setShowWelcome] = useState(false);
 
-  // Recent-activity panel open state. Lifted to the page so the toolbar
-  // can render a "Recent activity" reopen pill when the panel is closed,
-  // and so the page is the single source of truth for "is the right-
-  // side updates pullout currently visible." Auto-opens on mount; close
-  // is in-memory only (no persisted dismissal) so reload reopens.
-  const [updatesOpen, setUpdatesOpen] = useState(true);
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
+
+  // Deep-link entry point used by the chat load-in greeting:
+  //   ?focus=<node_id>      → select that node so the 3D scene flies
+  //                           to it AND opens its node-specific
+  //                           DetailPanel. Each update routes to its
+  //                           own dedicated detail panel — there is
+  //                           no longer a shared "what's new" pullout
+  //                           on this page.
+  // Read once on mount via the current location; we don't keep this
+  // param in the URL after handling it (router-replace) so refreshes
+  // don't re-fire the same intent.
+  const _routerLocation = useLocation();
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(_routerLocation.search);
+    const focusId = params.get("focus");
+    if (focusId) setSelectedId(focusId);
+    // Legacy `?showUpdates=1` param: silently strip if any old links
+    // are still in flight (cached emails, third-party copies of the
+    // chat greeting). The panel it used to open no longer exists.
+    const legacyShowUpdates = params.has("showUpdates");
+    if (focusId || legacyShowUpdates) {
+      const cleaned = new URLSearchParams(_routerLocation.search);
+      cleaned.delete("focus");
+      cleaned.delete("showUpdates");
+      const qs = cleaned.toString();
+      const url = `${_routerLocation.pathname}${qs ? `?${qs}` : ""}${_routerLocation.hash || ""}`;
+      window.history.replaceState({}, "", url);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [camera, setCamera] = useState({ x: 0, y: 0, zoom: 1 });
   const [dimensions, setDimensions] = useState({ w: 1200, h: 800 });
   const [layoutMode, setLayoutMode] = useState<LayoutMode>("connections");
@@ -2347,9 +2740,9 @@ export default function SynthesisLayer() {
         "postgres_changes",
         { event: "UPDATE", schema: "public", table: "lykn_project_state", filter: `user_id=eq.${uid}` },
         () => {
-          // SynthesisUpdatesPanel refetches /api/v1/synthesis/activity
-          // every time it opens, so we don't need to invalidate it
-          // here. We DO want the projects list to refresh in case a
+          // The chat load-in greeting refetches /api/v1/synthesis/activity
+          // on every fresh `/app` load, so we don't need to invalidate
+          // it here. We DO want the projects list to refresh in case a
           // remote push created/renamed/archived a project.
           queryClient.invalidateQueries({ queryKey: ["mindmap_projects", uid] });
         },
@@ -2428,15 +2821,25 @@ export default function SynthesisLayer() {
       if (!user?.id) return [] as Array<{
         id: string; belief_text: string; serves_need: string; confidence: number;
       }>;
+      // Pull both active and proposed beliefs so the chat load-in
+      // greeting's "Awaiting your approval" bubbles can deep-link
+      // into the DetailPanel for a brand-new (still-proposed)
+      // belief via `?focus=belief_<id>` — without this, the focused
+      // node wouldn't exist in the graph and the pullout wouldn't
+      // open. The detail panel's existing approval UI takes over
+      // from there. Active beliefs are surfaced first so they still
+      // dominate the visual cluster.
       const { data } = await supabase
         .from("lykn_beliefs")
-        .select("id, belief_text, serves_need, confidence")
+        .select("id, belief_text, serves_need, confidence, status, rationale, source, created_at")
         .eq("user_id", user.id)
-        .eq("status", "active")
+        .in("status", ["active", "proposed"])
+        .order("status", { ascending: true }) // 'active' < 'proposed' lexically
         .order("confidence", { ascending: false })
-        .limit(30);
+        .limit(60);
       return (data || []) as Array<{
         id: string; belief_text: string; serves_need: string; confidence: number;
+        status?: string; rationale?: string | null; source?: string | null; created_at?: string;
       }>;
     },
     enabled: !!user?.id,
@@ -2458,15 +2861,23 @@ export default function SynthesisLayer() {
       if (!user?.id) return [] as Array<{
         id: string; fact_kind: string; fact_text: string; status: string; confidence: number;
       }>;
+      // Include every non-dismissed fact so the chat load-in
+      // greeting's "New neurons" bubble can deep-link via
+      // `?focus=fact_<id>` even for facts that are still in
+      // 'inferred' or 'unconfirmed' status. We keep the
+      // stated/confirmed ones at the top for visual prominence;
+      // the rest still appear so the DetailPanel can render them.
       const { data } = await supabase
         .from("lykn_user_model_facts")
-        .select("id, fact_kind, fact_text, status, confidence")
+        .select("id, fact_kind, fact_text, status, confidence, first_seen_at, last_seen_at")
         .eq("user_id", user.id)
-        .in("status", ["stated", "confirmed"])
+        .neq("status", "dismissed")
+        .order("status", { ascending: true })
         .order("last_seen_at", { ascending: false })
-        .limit(60);
+        .limit(120);
       return (data || []) as Array<{
         id: string; fact_kind: string; fact_text: string; status: string; confidence: number;
+        first_seen_at?: string; last_seen_at?: string;
       }>;
     },
     enabled: !!user?.id,
@@ -2944,13 +3355,12 @@ export default function SynthesisLayer() {
   const panelOpen = selectedNode != null || showWelcome;
   // Unified "is any right-side pullout open?" so the top-right chevron
   // toggle can act as the single close affordance for ALL right-edge
-  // panels (Recent activity, Core Beliefs, Detail, Welcome). Previously
-  // each panel had its own internal X button and the chevron only knew
-  // about Recent activity, which made the close UX inconsistent.
+  // panels (Core Beliefs, Detail, Welcome). The shared "what's new"
+  // updates panel was retired in favour of routing each individual
+  // update to its own node-specific DetailPanel via `?focus=<id>`.
   const anyRightPanelOpen =
-    updatesOpen || beliefWindowOpen || selectedNode != null || showWelcome;
+    beliefWindowOpen || selectedNode != null || showWelcome;
   const closeAllRightPanels = useCallback(() => {
-    setUpdatesOpen(false);
     setBeliefWindowOpen(false);
     setSelectedId(null);
     setShowWelcome(false);
@@ -3161,66 +3571,33 @@ export default function SynthesisLayer() {
         onClose={() => setBeliefWindowOpen(false)}
       />
 
-      {/* "What's new" right-side pullout — auto-opens once per browser
-          session when there are events newer than the user's last visit.
-          Replaces both the prior bottom-right card stack iteration AND
-          the standalone "Activity" toolbar button: this surface is the
-          one entry point for "what changed in my synthesis layer." See
-          ui_updates_experience in project state (claude-desktop revised
-          spec) for the design intent. Panel is graph-agnostic; we wire
-          onFocusTarget here because the page owns camera/selection state.
-          Belief / fact / project node ids follow the existing
-          `<kind>_<uuid>` convention used by buildGraph. */}
-      <SynthesisUpdatesPanel
-        active
-        open={updatesOpen}
-        onClose={() => setUpdatesOpen(false)}
-        onFocusTarget={(target) => {
-          if (target.kind === "rule") return;
-          const nodeId =
-            target.kind === "belief"
-              ? `belief_${target.id}`
-              : target.kind === "fact"
-                ? `fact_${target.id}`
-                : `project_${target.id}`;
-          setSelectedId(nodeId);
-        }}
-      />
+      {/* The shared "what's new" / Recent activity pullout was retired.
+          Each individual update from the chat load-in greeting now
+          deep-links to its own node-specific DetailPanel via
+          `?focus=<id>`, which is the canonical "dedicated panel for
+          that one thing" surface. The synthesis layer no longer owns
+          a generic updates list. */}
 
-      {/* Universal right-side pullout toggle — mirrors the AppSidebar's
-          chevron on the left edge. Always visible, always at the same
-          fixed corner, and sits at z-[100] so it stays on top of every
-          right-edge panel (Recent activity z-[80], Core Beliefs z-[90],
-          Detail panel z-30) and acts as a single close affordance for
-          all of them. Behavior:
-            • If any right-side panel is open → close them all.
-            • If none are open → open the Recent activity panel (the
-              default, since that's the panel users open most often).
-          Each panel still ships with its own internal X for proximity,
-          but the chevron is the canonical "dismiss the right side" UI. */}
-      <button
-        type="button"
-        onClick={() => {
-          if (anyRightPanelOpen) {
-            closeAllRightPanels();
-          } else {
-            setUpdatesOpen(true);
+      {/* Universal right-side close affordance — mirrors the
+          AppSidebar's chevron on the left edge. Only visible when one
+          of the remaining right-side panels (DetailPanel, Core Beliefs,
+          Welcome) is open; dismisses all of them in one click. Each
+          panel still ships with its own internal X for proximity. */}
+      {anyRightPanelOpen ? (
+        <button
+          type="button"
+          onClick={closeAllRightPanels}
+          className={
+            isMobile
+              ? "fixed top-3 right-3 z-[100] rounded-full w-8 h-8 hover:bg-blue-500/15 dark:hover:bg-blue-400/20 transition-colors flex items-center justify-center"
+              : "fixed top-4 right-4 z-[100] rounded-full w-8 h-8 hover:bg-blue-500/15 dark:hover:bg-blue-400/20 transition-colors flex items-center justify-center"
           }
-        }}
-        className={
-          isMobile
-            ? "fixed top-3 right-3 z-[100] rounded-full w-8 h-8 hover:bg-blue-500/15 dark:hover:bg-blue-400/20 transition-colors flex items-center justify-center"
-            : "fixed top-4 right-4 z-[100] rounded-full w-8 h-8 hover:bg-blue-500/15 dark:hover:bg-blue-400/20 transition-colors flex items-center justify-center"
-        }
-        title={anyRightPanelOpen ? "Hide panel" : "Show panel"}
-        aria-label={anyRightPanelOpen ? "Hide right-side panel" : "Show recent activity"}
-      >
-        {anyRightPanelOpen ? (
+          title="Hide panel"
+          aria-label="Hide right-side panel"
+        >
           <ChevronRight className="w-4 h-4" />
-        ) : (
-          <ChevronLeft className="w-4 h-4" />
-        )}
-      </button>
+        </button>
+      ) : null}
 
       {/* Core Beliefs has no standalone toolbar trigger — it's reached
           through the bottom-right "+" menu's "Core Belief neuron" entry,
@@ -3396,7 +3773,7 @@ export default function SynthesisLayer() {
           and shifts left when the detail panel opens. */}
       <div
         className="absolute bottom-6 z-20 flex items-end gap-2.5 transition-[right] duration-300"
-        style={{ right: panelOpen || beliefWindowOpen || updatesOpen ? 384 : 24 }}
+        style={{ right: panelOpen || beliefWindowOpen ? 384 : 24 }}
       >
         {/* Add-neuron entry — bigger, circular, sits visually as the
             primary action of the cluster. Picking a type opens a
@@ -3506,8 +3883,10 @@ export default function SynthesisLayer() {
       {/* Neuron detail panel — opens when a node is selected (from a graph
           tap, an updates-panel row click, or a programmatic focus). The
           welcome modal that used to live in this slot has been retired:
-          on-page-load greeting is now the SynthesisUpdatesPanel auto-open
-          on the right edge. */}
+          on-page-load greeting now lives in chat — LYKN posts a fresh
+          "what's been happening / approvals needed / project updates"
+          message at the top of a new chat every time the user loads
+          into `/app`. See `fetchLoadInUpdatesMessage`. */}
       <AnimatePresence>
         {selectedNode ? (
           <DetailPanel

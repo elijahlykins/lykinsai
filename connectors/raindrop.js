@@ -14,6 +14,7 @@
 // ============================================================================
 
 import { ConnectorAuthError } from '../connectors-service.js';
+import { saveConnectorNote } from './_save.js';
 
 const RD_AUTH_URL = 'https://raindrop.io/oauth/authorize';
 const RD_TOKEN_URL = 'https://raindrop.io/oauth/access_token';
@@ -162,7 +163,7 @@ export const raindropAdapter = {
           userId: connection.user_id,
           drop,
         });
-        if (result === 'saved') saved++;
+        if (result === 'saved' || result === 'updated') saved++;
         else skipped++;
 
         if (created > newest) newest = created;
@@ -191,14 +192,6 @@ async function saveDropAsNote({ supabaseAdmin, userId, drop }) {
   const url = drop.link;
   if (!url) return 'skipped';
 
-  const { data: existing } = await supabaseAdmin
-    .from('notes')
-    .select('id')
-    .eq('user_id', userId)
-    .ilike('content', `%${url}%`)
-    .limit(1);
-  if (existing && existing.length > 0) return 'skipped';
-
   const title = (drop.title || url).slice(0, 280);
   const description = (drop.excerpt || drop.note || '').slice(0, 1200);
   const image = drop.cover || '';
@@ -218,30 +211,29 @@ async function saveDropAsNote({ supabaseAdmin, userId, drop }) {
     authorName: '',
     authorHandle: '',
   };
-  const noteContent = `${title}\n\n[ATTACHMENTS_JSON:${JSON.stringify([attachment])}]`;
 
   const dropTags = (drop.tags || []).map((t) => String(t).toLowerCase());
   const tags = ['raindrop', 'bookmark', ...dropTags, 'link', 'uploaded'];
   const createdAt = drop.created ? new Date(drop.created).toISOString() : undefined;
 
-  const { error } = await supabaseAdmin
-    .from('notes')
-    .insert({
-      user_id: userId,
-      title,
-      content: noteContent,
-      source: 'raindrop_bookmark',
-      tags,
-      created_at: createdAt,
-    });
-  if (error) {
-    const { error: err2 } = await supabaseAdmin
-      .from('notes')
-      .insert({ user_id: userId, title, content: noteContent });
-    if (err2) {
-      console.error(`[raindrop] note insert failed for ${url}:`, err2.message);
-      return 'skipped';
-    }
-  }
-  return 'saved';
+  // User's own annotation has priority over the article excerpt for
+  // embedding — it captures *why* they saved it, not just what it is.
+  const body = [
+    drop.note ? `Note: ${drop.note}` : '',
+    drop.excerpt && drop.excerpt !== drop.note ? '\n' + drop.excerpt : '',
+    dropTags.length ? `\nTags: ${dropTags.join(', ')}` : '',
+  ].filter(Boolean).join('\n');
+
+  return saveConnectorNote({
+    supabaseAdmin,
+    userId,
+    url,
+    title,
+    attachment,
+    tags,
+    source: 'raindrop_bookmark',
+    createdAt,
+    body,
+    embedMetadata: { source: 'raindrop_bookmark', title, url, domain: drop.domain || '' },
+  });
 }

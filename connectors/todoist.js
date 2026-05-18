@@ -14,6 +14,7 @@
 // ============================================================================
 
 import { ConnectorAuthError } from '../connectors-service.js';
+import { saveConnectorNote } from './_save.js';
 
 const TD_AUTH_URL = 'https://todoist.com/oauth/authorize';
 const TD_TOKEN_URL = 'https://todoist.com/oauth/access_token';
@@ -143,7 +144,7 @@ export const todoistAdapter = {
         userId: connection.user_id,
         task,
       });
-      if (result === 'saved') saved++;
+      if (result === 'saved' || result === 'updated') saved++;
       else skipped++;
 
       newSeen.push(task.id);
@@ -169,14 +170,6 @@ export const todoistAdapter = {
 async function saveTaskAsNote({ supabaseAdmin, userId, task }) {
   const url = task.url || `https://todoist.com/showTask?id=${task.id}`;
 
-  const { data: existing } = await supabaseAdmin
-    .from('notes')
-    .select('id')
-    .eq('user_id', userId)
-    .ilike('content', `%${url}%`)
-    .limit(1);
-  if (existing && existing.length > 0) return 'skipped';
-
   const title = (task.content || 'Todoist task').slice(0, 280);
   const desc = (task.description || '').slice(0, 1200);
   const due = task.due?.date || task.due?.string || '';
@@ -200,30 +193,28 @@ async function saveTaskAsNote({ supabaseAdmin, userId, task }) {
     authorName: '',
     authorHandle: '',
   };
-  const noteContent = `${title}\n\n[ATTACHMENTS_JSON:${JSON.stringify([attachment])}]`;
 
   const labels = (task.labels || []).map((l) => String(l).toLowerCase());
   const tags = ['todoist', 'task', ...labels, 'link', 'uploaded'];
   const createdAt = task.created_at ? new Date(task.created_at).toISOString() : undefined;
 
-  const { error } = await supabaseAdmin
-    .from('notes')
-    .insert({
-      user_id: userId,
-      title,
-      content: noteContent,
-      source: 'todoist_task',
-      tags,
-      created_at: createdAt,
-    });
-  if (error) {
-    const { error: err2 } = await supabaseAdmin
-      .from('notes')
-      .insert({ user_id: userId, title, content: noteContent });
-    if (err2) {
-      console.error(`[todoist] note insert failed for ${url}:`, err2.message);
-      return 'skipped';
-    }
-  }
-  return 'saved';
+  const body = [
+    due ? `Due: ${due}` : '',
+    priority ? `Priority: ${priority}` : '',
+    labels.length ? `Labels: ${labels.join(', ')}` : '',
+    desc ? '\n' + desc : '',
+  ].filter(Boolean).join('\n');
+
+  return saveConnectorNote({
+    supabaseAdmin,
+    userId,
+    url,
+    title,
+    attachment,
+    tags,
+    source: 'todoist_task',
+    createdAt,
+    body,
+    embedMetadata: { source: 'todoist_task', title, url, due, priority, labels },
+  });
 }

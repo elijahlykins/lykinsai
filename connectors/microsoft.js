@@ -19,6 +19,7 @@
 // ============================================================================
 
 import { ConnectorAuthError } from '../connectors-service.js';
+import { saveConnectorNote } from './_save.js';
 
 const MS_AUTH_URL = 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize';
 const MS_TOKEN_URL = 'https://login.microsoftonline.com/common/oauth2/v2.0/token';
@@ -181,7 +182,7 @@ export const microsoftAdapter = {
           userId: connection.user_id,
           msg,
         });
-        if (result === 'saved') saved++;
+        if (result === 'saved' || result === 'updated') saved++;
         else skipped++;
 
         if (received > newest) newest = received;
@@ -211,20 +212,13 @@ async function saveOutlookMessage({ supabaseAdmin, userId, msg }) {
   const url = msg.webLink;
   if (!url) return 'skipped';
 
-  const { data: existing } = await supabaseAdmin
-    .from('notes')
-    .select('id')
-    .eq('user_id', userId)
-    .ilike('content', `%${url}%`)
-    .limit(1);
-  if (existing && existing.length > 0) return 'skipped';
-
   const subject = (msg.subject || '(no subject)').slice(0, 280);
   const from = msg.from?.emailAddress || {};
   const fromName = from.name || from.address || '';
   const fromEmail = from.address || '';
   const snippet = (msg.bodyPreview || '').replace(/\s+/g, ' ').slice(0, 1200);
-  const description = `${fromName}${fromEmail && fromName ? ` <${fromEmail}>` : ''}\n\n${snippet}`;
+  const fromLine = `${fromName}${fromEmail && fromName ? ` <${fromEmail}>` : ''}`;
+  const description = `${fromLine}\n\n${snippet}`;
 
   const attachment = {
     type: 'bookmark',
@@ -241,29 +235,27 @@ async function saveOutlookMessage({ supabaseAdmin, userId, msg }) {
     authorName: fromName,
     authorHandle: fromEmail,
   };
-  const noteContent = `${subject}\n\n[ATTACHMENTS_JSON:${JSON.stringify([attachment])}]`;
 
   const tags = ['outlook', 'flagged', 'email', 'link', 'uploaded'];
   const createdAt = msg.receivedDateTime ? new Date(msg.receivedDateTime).toISOString() : undefined;
 
-  const { error } = await supabaseAdmin
-    .from('notes')
-    .insert({
-      user_id: userId,
-      title: subject,
-      content: noteContent,
-      source: 'outlook_flagged',
-      tags,
-      created_at: createdAt,
-    });
-  if (error) {
-    const { error: err2 } = await supabaseAdmin
-      .from('notes')
-      .insert({ user_id: userId, title: subject, content: noteContent });
-    if (err2) {
-      console.error(`[outlook] note insert failed for ${url}:`, err2.message);
-      return 'skipped';
-    }
-  }
-  return 'saved';
+  const body = [
+    fromLine ? `From: ${fromLine}` : '',
+    `Subject: ${subject}`,
+    '',
+    snippet,
+  ].filter(Boolean).join('\n');
+
+  return saveConnectorNote({
+    supabaseAdmin,
+    userId,
+    url,
+    title: subject,
+    attachment,
+    tags,
+    source: 'outlook_flagged',
+    createdAt,
+    body,
+    embedMetadata: { source: 'outlook_flagged', title: subject, url, from: fromEmail || fromName, subject },
+  });
 }

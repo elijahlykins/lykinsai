@@ -20,6 +20,7 @@
 
 import crypto from 'crypto';
 import { ConnectorAuthError } from '../connectors-service.js';
+import { saveConnectorNote } from './_save.js';
 
 const CV_AUTH_URL = 'https://www.canva.com/api/oauth/authorize';
 const CV_TOKEN_URL = 'https://api.canva.com/rest/v1/oauth/token';
@@ -214,7 +215,7 @@ export const canvaAdapter = {
           userId: connection.user_id,
           design: d,
         });
-        if (result === 'saved') saved++;
+        if (result === 'saved' || result === 'updated') saved++;
         else skipped++;
 
         if (updatedMs > newest) newest = updatedMs;
@@ -254,14 +255,6 @@ async function saveCanvaDesignAsNote({ supabaseAdmin, userId, design }) {
     design.urls?.edit_url ||
     `https://www.canva.com/design/${design.id}/view`;
 
-  const { data: existing } = await supabaseAdmin
-    .from('notes')
-    .select('id')
-    .eq('user_id', userId)
-    .ilike('content', `%${design.id}%`)
-    .limit(1);
-  if (existing && existing.length > 0) return 'skipped';
-
   const title = design.title || 'Untitled Canva design';
   const thumbnail = design.thumbnail?.url || '';
 
@@ -281,30 +274,24 @@ async function saveCanvaDesignAsNote({ supabaseAdmin, userId, design }) {
     authorHandle: '',
   };
 
-  const noteContent = `${title}\n\n[ATTACHMENTS_JSON:${JSON.stringify([attachment])}]`;
   const tags = ['canva', 'design', 'link', 'uploaded'];
   const createdAt = design.created_at
     ? new Date(Number(design.created_at) * 1000).toISOString()
     : undefined;
 
-  const { error } = await supabaseAdmin
-    .from('notes')
-    .insert({
-      user_id: userId,
-      title,
-      content: noteContent,
-      source: 'canva_design',
-      tags,
-      created_at: createdAt,
-    });
-  if (error) {
-    const { error: err2 } = await supabaseAdmin
-      .from('notes')
-      .insert({ user_id: userId, title, content: noteContent });
-    if (err2) {
-      console.error(`[canva] note insert failed for ${url}:`, err2.message);
-      return 'skipped';
-    }
-  }
-  return 'saved';
+  return saveConnectorNote({
+    supabaseAdmin,
+    userId,
+    // Canva designs dedupe on the design id rather than the URL
+    // because view/edit URLs include a per-session token suffix that
+    // varies between syncs.
+    dedupeNeedle: design.id,
+    url,
+    title,
+    attachment,
+    tags,
+    source: 'canva_design',
+    createdAt,
+    embedMetadata: { source: 'canva_design', title, url, design_id: design.id },
+  });
 }

@@ -30,6 +30,54 @@ export interface LinkPreviewProps {
 // floor that excludes obvious junk without rejecting real (small) icons.
 const MIN_USABLE_IMAGE_PX = 24;
 
+// Map a bookmark host to its canonical app icon. Used as a fallback
+// when the connector-supplied `attachment.favicon` is missing, broken,
+// or — most importantly for Google products — points at an asset that
+// returns the generic Google "G" logo instead of the per-app brand
+// icon (Gmail's "M", Drive's triangle, Calendar's date tile, etc.).
+//
+// Without this override, Google's S2 favicon service for any
+// `*.google.com` host returns the same Google "G", which makes a vault
+// folder full of Gmail emails or Drive files visually indistinguishable
+// from each other. The gstatic URLs below are the same brand assets
+// the connector catalog (`src/lib/connectors/catalog.js`) uses for the
+// app cards, so a Gmail email card's icon now matches the Gmail
+// connector tile exactly.
+//
+// Keep keys lowercase + un-prefixed (no `www.`) — `safeHostname` already
+// strips the `www.` prefix before we look up here.
+const BRAND_ICON_BY_HOST: Record<string, string> = {
+  "mail.google.com": "https://www.gstatic.com/images/branding/product/2x/gmail_2020q4_48dp.png",
+  "calendar.google.com": "https://www.gstatic.com/images/branding/product/2x/calendar_2020q4_48dp.png",
+  "drive.google.com": "https://www.gstatic.com/images/branding/product/2x/drive_2020q4_48dp.png",
+  "docs.google.com": "https://www.gstatic.com/images/branding/product/2x/docs_2020q4_48dp.png",
+  "sheets.google.com": "https://www.gstatic.com/images/branding/product/2x/sheets_2020q4_48dp.png",
+  "slides.google.com": "https://www.gstatic.com/images/branding/product/2x/slides_2020q4_48dp.png",
+  "keep.google.com": "https://www.gstatic.com/images/branding/product/2x/keep_2020q4_48dp.png",
+  "youtube.com": "https://www.gstatic.com/images/branding/product/2x/youtube_48dp.png",
+};
+
+// `docs.google.com` covers Docs, Sheets, Slides via path. Override based
+// on the path segment so e.g. a Sheet's card shows the Sheets icon.
+//
+// Calendar is the odd one out among Google products: `event.htmlLink`
+// resolves to `https://www.google.com/calendar/event?eid=…`, so the
+// hostname is `google.com` (after stripping `www.`) — not the
+// `calendar.google.com` we'd otherwise key on. Without the path-based
+// override below, every Calendar bookmark falls through the BRAND_ICON
+// map and ends up with the generic Google "G" from Clearbit / S2.
+function brandIconFor(url: string, host: string): string {
+  if (host === "docs.google.com") {
+    if (url.includes("/document/")) return BRAND_ICON_BY_HOST["docs.google.com"];
+    if (url.includes("/spreadsheets/")) return BRAND_ICON_BY_HOST["sheets.google.com"];
+    if (url.includes("/presentation/")) return BRAND_ICON_BY_HOST["slides.google.com"];
+  }
+  if (host === "google.com" && url.includes("/calendar/")) {
+    return BRAND_ICON_BY_HOST["calendar.google.com"];
+  }
+  return BRAND_ICON_BY_HOST[host] || "";
+}
+
 function safeHostname(raw: string): string {
   try {
     return new URL(raw).hostname.replace(/^www\./, "");
@@ -211,6 +259,16 @@ export const LinkPreview = memo(function LinkPreview({
   const trimmedDesc = String(description || "").slice(0, 280).trim();
   const hasImage = Boolean(String(image || "").trim());
   const displayTitle = trimmedTitle || domain || url;
+  // For known connector hosts (Gmail, Drive, Calendar, etc.) prefer the
+  // canonical gstatic brand icon over whatever favicon the bookmark
+  // shipped with. This corrects two failure modes in one shot:
+  //   • Connector adapters whose favicon URL has rotted (Gmail's old
+  //     `google.com/gmail/about/...` asset, etc.).
+  //   • The S2 favicon fallback returning the generic Google "G" for
+  //     every `*.google.com` subdomain, which made every Gmail / Drive /
+  //     Calendar card visually identical.
+  const brandIcon = useMemo(() => brandIconFor(url, host), [url, host]);
+  const effectiveFavicon = brandIcon || favicon;
 
   // Special-case: X / Twitter tweet with body text → render the tweet card.
   if (oembedType === "twitter" && trimmedDesc) {
@@ -270,13 +328,14 @@ export const LinkPreview = memo(function LinkPreview({
           url={url}
           host={host}
           initialSrc={hasImage ? (image as string) : ""}
-          favicon={favicon}
+          favicon={effectiveFavicon}
+          brandIcon={brandIcon}
           compact={variant === "canvas"}
         />
       </div>
       <div className="p-3.5 space-y-1.5 shrink-0">
         <div className="flex items-center gap-1.5 text-black/50 dark:text-white/50">
-          <FaviconOrGlobe favicon={favicon} host={host} />
+          <FaviconOrGlobe favicon={effectiveFavicon} host={host} />
           <span className="text-[0.625rem] font-medium truncate">{domain}</span>
           <ExternalLink className="w-2.5 h-2.5 ml-auto opacity-0 group-hover/bm:opacity-100 transition-opacity" />
         </div>
@@ -325,12 +384,14 @@ function SmartCover({
   host,
   initialSrc,
   favicon,
+  brandIcon,
   compact,
 }: {
   url: string;
   host: string;
   initialSrc: string;
   favicon?: string;
+  brandIcon?: string;
   compact?: boolean;
 }) {
   const heroCandidates = useMemo(() => {
@@ -346,13 +407,21 @@ function SmartCover({
 
   const logoCandidates = useMemo(() => {
     if (!host) return [] as string[];
-    return [
+    // The brand icon (when known — Gmail, Drive, Calendar, etc.) is
+    // tried FIRST so we never fall through to clearbit / S2 for hosts
+    // we have a canonical asset for. Without this prepend, the cascade
+    // would land on Google's S2 favicon for every `*.google.com`
+    // subdomain and render the generic Google "G".
+    const list: string[] = [];
+    if (brandIcon) list.push(brandIcon);
+    list.push(
       `https://${host}/apple-touch-icon.png`,
       `https://${host}/apple-touch-icon-precomposed.png`,
       `https://logo.clearbit.com/${host}`,
       `https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=256`,
-    ];
-  }, [host]);
+    );
+    return list;
+  }, [host, brandIcon]);
 
   type Phase = "hero" | "logo" | "monogram";
   const [phase, setPhase] = useState<Phase>(heroCandidates.length > 0 ? "hero" : "logo");

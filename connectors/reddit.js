@@ -15,6 +15,7 @@
 // ============================================================================
 
 import { ConnectorAuthError } from '../connectors-service.js';
+import { saveConnectorNote } from './_save.js';
 
 const REDDIT_AUTH_URL = 'https://www.reddit.com/api/v1/authorize';
 const REDDIT_TOKEN_URL = 'https://www.reddit.com/api/v1/access_token';
@@ -202,7 +203,7 @@ export const redditAdapter = {
           userId: connection.user_id,
           child,
         });
-        if (result === 'saved') saved++;
+        if (result === 'saved' || result === 'updated') saved++;
         else skipped++;
       }
 
@@ -236,15 +237,6 @@ async function saveItemAsNote({ supabaseAdmin, userId, child }) {
     : `https://www.reddit.com${d.permalink}`;
   if (!url) return 'skipped';
 
-  // Pre-check: same URL already saved (deduped against /share, RSS, etc.)
-  const { data: existing } = await supabaseAdmin
-    .from('notes')
-    .select('id')
-    .eq('user_id', userId)
-    .ilike('content', `%${url}%`)
-    .limit(1);
-  if (existing && existing.length > 0) return 'skipped';
-
   const subreddit = d.subreddit_name_prefixed || (d.subreddit ? `r/${d.subreddit}` : '');
   const author = d.author ? `u/${d.author}` : '';
   const title = isPost
@@ -274,31 +266,31 @@ async function saveItemAsNote({ supabaseAdmin, userId, child }) {
     authorName: author,
     authorHandle: author,
   };
-  const noteContent = `${title}\n\n[ATTACHMENTS_JSON:${JSON.stringify([attachment])}]`;
 
   const tags = ['reddit', 'saved', isPost ? 'post' : 'comment', 'link', 'uploaded'];
   if (d.subreddit) tags.push(`r/${d.subreddit}`);
 
   const createdAt = d.created_utc ? new Date(Number(d.created_utc) * 1000).toISOString() : undefined;
 
-  const { error } = await supabaseAdmin
-    .from('notes')
-    .insert({
-      user_id: userId,
-      title,
-      content: noteContent,
-      source: isPost ? 'reddit_saved_post' : 'reddit_saved_comment',
-      tags,
-      created_at: createdAt,
-    });
-  if (error) {
-    const { error: err2 } = await supabaseAdmin
-      .from('notes')
-      .insert({ user_id: userId, title, content: noteContent });
-    if (err2) {
-      console.error(`[reddit] note insert failed for ${url}:`, err2.message);
-      return 'skipped';
-    }
-  }
-  return 'saved';
+  // Embed body: subreddit + author + selftext/comment body. Reddit
+  // saves are append-only from the user's POV, but we still upsert
+  // so an edited self-post reflects.
+  const body = [
+    subreddit ? `Subreddit: ${subreddit}` : '',
+    author ? `Author: ${author}` : '',
+    description ? '\n' + description : '',
+  ].filter(Boolean).join('\n');
+
+  return saveConnectorNote({
+    supabaseAdmin,
+    userId,
+    url,
+    title,
+    attachment,
+    tags,
+    source: isPost ? 'reddit_saved_post' : 'reddit_saved_comment',
+    createdAt,
+    body,
+    embedMetadata: { source: isPost ? 'reddit_saved_post' : 'reddit_saved_comment', title, url, subreddit, author },
+  });
 }

@@ -84,7 +84,7 @@ async function syncCalendarEvents({ connection, supabaseAdmin, accessToken }) {
         userId: connection.user_id,
         event,
       });
-      if (result === 'saved') saved++;
+      if (result === 'saved' || result === 'updated') saved++;
       else skipped++;
     }
 
@@ -129,7 +129,7 @@ async function saveCalendarEvent({ supabaseAdmin, userId, event }) {
     title,
     description,
     image: '',
-    favicon: 'https://calendar.google.com/googlecalendar/images/favicon_v2014_15.ico',
+    favicon: 'https://www.gstatic.com/images/branding/product/2x/calendar_2020q4_48dp.png',
     siteName: 'Google Calendar',
     articleText: description,
     oembedType: 'gcal',
@@ -137,6 +137,22 @@ async function saveCalendarEvent({ supabaseAdmin, userId, event }) {
     authorName: event.organizer?.displayName || event.organizer?.email || '',
     authorHandle: '',
   };
+
+  // Synthesis embed body — title + when/where + cleaned description so
+  // the algorithm can answer "what's on my calendar this week?" via
+  // semantic retrieval instead of relying on substring matches alone.
+  const cleanedDesc = (event.description || '').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+  const attendees = Array.isArray(event.attendees)
+    ? event.attendees.map((a) => a.email || a.displayName).filter(Boolean).slice(0, 12).join(', ')
+    : '';
+  const body = [
+    title,
+    formatRange(start, end),
+    location ? `Location: ${location}` : '',
+    meetLink ? `Conference: ${meetLink}` : '',
+    attendees ? `Attendees: ${attendees}` : '',
+    cleanedDesc ? '\n' + cleanedDesc.slice(0, 2000) : '',
+  ].filter(Boolean).join('\n');
 
   return saveGoogleNote({
     supabaseAdmin,
@@ -147,6 +163,14 @@ async function saveCalendarEvent({ supabaseAdmin, userId, event }) {
     tags: ['google-calendar', 'event', 'link', 'uploaded'],
     source: 'gcal_event',
     createdAt: start ? new Date(start).toISOString() : undefined,
+    body,
+    embedMetadata: {
+      source: 'gcal_event',
+      title,
+      url,
+      starts_at: start || null,
+      ends_at: end || null,
+    },
   });
 }
 

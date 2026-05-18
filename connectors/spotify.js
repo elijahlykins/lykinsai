@@ -20,6 +20,7 @@
 // ============================================================================
 
 import { ConnectorAuthError } from '../connectors-service.js';
+import { saveConnectorNote } from './_save.js';
 
 const SP_AUTH_URL = 'https://accounts.spotify.com/authorize';
 const SP_TOKEN_URL = 'https://accounts.spotify.com/api/token';
@@ -199,7 +200,7 @@ export const spotifyAdapter = {
           userId: connection.user_id,
           item,
         });
-        if (result === 'saved') saved++;
+        if (result === 'saved' || result === 'updated') saved++;
         else skipped++;
 
         if (addedTime > newestAddedAt) newestAddedAt = addedTime;
@@ -233,14 +234,6 @@ async function saveTrackAsNote({ supabaseAdmin, userId, item }) {
   const url = track.external_urls?.spotify || (track.id ? `https://open.spotify.com/track/${track.id}` : '');
   if (!url) return 'skipped';
 
-  const { data: existing } = await supabaseAdmin
-    .from('notes')
-    .select('id')
-    .eq('user_id', userId)
-    .ilike('content', `%${url}%`)
-    .limit(1);
-  if (existing && existing.length > 0) return 'skipped';
-
   const trackName = track.name || 'Track';
   const artists = (track.artists || []).map((a) => a.name).filter(Boolean);
   const artistStr = artists.join(', ') || 'Unknown artist';
@@ -268,31 +261,31 @@ async function saveTrackAsNote({ supabaseAdmin, userId, item }) {
     authorName: artistStr,
     authorHandle: '',
   };
-  const noteContent = `${title}\n\n[ATTACHMENTS_JSON:${JSON.stringify([attachment])}]`;
 
   const tags = ['spotify', 'liked', 'music', 'link', 'uploaded'];
   const addedAt = item.added_at ? new Date(item.added_at).toISOString() : undefined;
 
-  const { error } = await supabaseAdmin
-    .from('notes')
-    .insert({
-      user_id: userId,
-      title,
-      content: noteContent,
-      source: 'spotify_liked',
-      tags,
-      created_at: addedAt,
-    });
-  if (error) {
-    const { error: err2 } = await supabaseAdmin
-      .from('notes')
-      .insert({ user_id: userId, title, content: noteContent });
-    if (err2) {
-      console.error(`[spotify] note insert failed for ${url}:`, err2.message);
-      return 'skipped';
-    }
-  }
-  return 'saved';
+  // Spotify gives us track metadata only — artist, album, duration.
+  // No lyrics. Embedding still helps semantic retrieval over the
+  // user's listening taste ("show me chillout tracks I've liked").
+  const body = [
+    `Track: ${trackName}`,
+    `Artist: ${artistStr}`,
+    albumName ? `Album: ${albumName}` : '',
+  ].filter(Boolean).join('\n');
+
+  return saveConnectorNote({
+    supabaseAdmin,
+    userId,
+    url,
+    title,
+    attachment,
+    tags,
+    source: 'spotify_liked',
+    createdAt: addedAt,
+    body,
+    embedMetadata: { source: 'spotify_liked', title, url, artists, album: albumName },
+  });
 }
 
 function formatDuration(ms) {

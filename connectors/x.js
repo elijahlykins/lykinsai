@@ -23,6 +23,7 @@
 
 import crypto from 'crypto';
 import { ConnectorAuthError } from '../connectors-service.js';
+import { saveConnectorNote } from './_save.js';
 
 const X_AUTH_URL = 'https://twitter.com/i/oauth2/authorize';
 const X_TOKEN_URL = 'https://api.twitter.com/2/oauth2/token';
@@ -237,7 +238,7 @@ export const xAdapter = {
           author,
           mediaByKey,
         });
-        if (result === 'saved') saved++;
+        if (result === 'saved' || result === 'updated') saved++;
         else skipped++;
 
         if (created > newest) newest = created;
@@ -269,14 +270,6 @@ async function saveTweet({ supabaseAdmin, userId, tweet, author, mediaByKey }) {
     ? `https://x.com/${handle}/status/${tweet.id}`
     : `https://x.com/i/status/${tweet.id}`;
 
-  const { data: existing } = await supabaseAdmin
-    .from('notes')
-    .select('id')
-    .eq('user_id', userId)
-    .ilike('content', `%${tweet.id}%`)
-    .limit(1);
-  if (existing && existing.length > 0) return 'skipped';
-
   const text = (tweet.text || '').replace(/\s+/g, ' ').slice(0, 1200);
   const title = `@${handle || 'x'}: ${text.slice(0, 100)}`.slice(0, 280);
 
@@ -299,29 +292,30 @@ async function saveTweet({ supabaseAdmin, userId, tweet, author, mediaByKey }) {
     authorName: author.name || handle,
     authorHandle: handle ? `@${handle}` : '',
   };
-  const noteContent = `${title}\n\n[ATTACHMENTS_JSON:${JSON.stringify([attachment])}]`;
 
   const tags = ['x', 'twitter', 'bookmark', 'link', 'uploaded'];
   const createdAt = tweet.created_at ? new Date(tweet.created_at).toISOString() : undefined;
 
-  const { error } = await supabaseAdmin
-    .from('notes')
-    .insert({
-      user_id: userId,
-      title,
-      content: noteContent,
-      source: 'x_bookmark',
-      tags,
-      created_at: createdAt,
-    });
-  if (error) {
-    const { error: err2 } = await supabaseAdmin
-      .from('notes')
-      .insert({ user_id: userId, title, content: noteContent });
-    if (err2) {
-      console.error(`[x] note insert failed for ${url}:`, err2.message);
-      return 'skipped';
-    }
-  }
-  return 'saved';
+  const body = [
+    `${author.name || handle}${handle ? ` (@${handle})` : ''}`,
+    '',
+    text,
+  ].filter(Boolean).join('\n');
+
+  return saveConnectorNote({
+    supabaseAdmin,
+    userId,
+    // X tweets dedupe on the tweet id rather than the full URL because
+    // legacy notes used the @handle form whose URL can vary if the
+    // user later renames their account.
+    dedupeNeedle: String(tweet.id),
+    url,
+    title,
+    attachment,
+    tags,
+    source: 'x_bookmark',
+    createdAt,
+    body,
+    embedMetadata: { source: 'x_bookmark', title, url, author_handle: handle, tweet_id: String(tweet.id) },
+  });
 }

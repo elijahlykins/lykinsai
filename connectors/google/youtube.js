@@ -59,7 +59,7 @@ async function syncYouTubeLikes({ connection, supabaseAdmin, accessToken }) {
         userId: connection.user_id,
         video: v,
       });
-      if (result === 'saved') saved++;
+      if (result === 'saved' || result === 'updated') saved++;
       else skipped++;
 
       if (publishedAt > newest) newest = publishedAt;

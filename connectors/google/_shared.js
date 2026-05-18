@@ -24,6 +24,7 @@
 // ============================================================================
 
 import { ConnectorAuthError } from '../../connectors-service.js';
+import { embedAndStoreChunks } from '../../synthesis-service.js';
 
 const G_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const G_TOKEN_URL = 'https://oauth2.googleapis.com/token';
@@ -172,9 +173,22 @@ async function fetchUserinfo(accessToken) {
 // Common note-saving helper for Google content
 // ---------------------------------------------------------------------------
 /**
- * Insert a Google item as a vault note, deduped by URL. Returns 'saved' /
- * 'skipped'. Each Google service builds the attachment shape itself and
- * calls this for the actual insert.
+ * Upsert a Google item as a vault note (deduped by URL) and — when a
+ * `body` is supplied — push it through the synthesis embed pipeline so
+ * vector retrieval can find it the same way it finds Notion pages.
+ *
+ * Returns 'saved' (new row), 'updated' (existing row's title/content
+ * refreshed because the upstream item changed) or 'skipped' (no URL,
+ * insert error, or row already up to date).
+ *
+ * Why upsert + embed (not the original "skip if URL present"):
+ *   1. Drive docs get renamed, Calendar events get rescheduled, etc.
+ *      The old skip-on-URL path silently dropped those edits.
+ *   2. Without `embedAndStoreChunks`, AI semantic retrieval misses
+ *      every connector-imported note. Gmail / Calendar / Drive items
+ *      lived in the vault but were invisible to chat retrieval —
+ *      Notion was the only adapter wired through. Centralising the
+ *      embed call here closes that loop for every Google service.
  */
 export async function saveGoogleNote({
   supabaseAdmin,
@@ -185,39 +199,139 @@ export async function saveGoogleNote({
   tags,
   source,
   createdAt,
+  // Optional plain-text body to embed for synthesis retrieval. When
+  // present we also append it to `content` (after the attachments
+  // marker, same layout as Notion) so MCP `lykn_searchVault`'s
+  // substring search picks it up too. When absent we only embed the
+  // bookmark shell (title + description) which is still better than
+  // nothing for retrieval.
+  body = '',
+  // Extra fields stamped onto the synthesis chunk's metadata column.
+  // Defaults to `{ source, title, url }` if not provided.
+  embedMetadata = null,
 }) {
   if (!url) return 'skipped';
 
-  const { data: existing } = await supabaseAdmin
+  // `noteContent` layout matches Notion's: title, attachments JSON,
+  // optional body. The vault UI parses the JSON marker for the
+  // bookmark card; the substring/embed paths read the entire string.
+  const attachmentsLine = `[ATTACHMENTS_JSON:${JSON.stringify([attachment])}]`;
+  const noteContent = body
+    ? [title, '', attachmentsLine, '\n' + body].join('\n').trim()
+    : `${title}\n\n${attachmentsLine}`;
+
+  // Find an existing row for this URL. We key on a substring scan
+  // because the bookmark JSON always embeds the canonical URL and
+  // those URLs are stable across edits (Gmail message id, Calendar
+  // event id, Drive file id, etc.).
+  const { data: existingRows } = await supabaseAdmin
     .from('notes')
-    .select('id')
+    .select('id, content')
     .eq('user_id', userId)
     .ilike('content', `%${url}%`)
     .limit(1);
-  if (existing && existing.length > 0) return 'skipped';
+  const existing = existingRows && existingRows[0];
 
-  const noteContent = `${title}\n\n[ATTACHMENTS_JSON:${JSON.stringify([attachment])}]`;
+  let noteId = existing?.id || null;
+  let mode = existing ? 'updated' : 'saved';
 
-  const { error } = await supabaseAdmin
-    .from('notes')
-    .insert({
-      user_id: userId,
-      title,
-      content: noteContent,
-      source,
-      tags,
-      created_at: createdAt,
-    });
-  if (error) {
-    const { error: err2 } = await supabaseAdmin
+  if (existing) {
+    // No-op if upstream content is unchanged — saves a write per sync
+    // for the >99% of items that haven't changed since last poll.
+    if (String(existing.content || '') === noteContent) {
+      // Still re-embed if body is present and chunks might be stale;
+      // embedAndStoreChunks itself short-circuits on hash match so this
+      // is cheap.
+      mode = 'skipped';
+    } else {
+      const { error: updErr } = await supabaseAdmin
+        .from('notes')
+        .update({
+          title,
+          content: noteContent,
+          // Backfill source + tags on every update. Rows created before
+          // the `source` column existed (or that hit the fallback insert
+          // path below in an earlier sync) carry NULL source/tags, which
+          // prevents the vault folder-collapse logic from rolling them
+          // up under their connector tile (e.g. all Calendar events end
+          // up as loose bookmark cards instead of one "Google Calendar"
+          // folder). Re-stamping on each upstream change retroactively
+          // classifies them the first time the row changes upstream,
+          // without needing a separate backfill migration.
+          source,
+          tags,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', existing.id)
+        .eq('user_id', userId);
+      if (updErr) {
+        console.error(`[${source}] note update failed for ${url}:`, updErr.message);
+        return 'skipped';
+      }
+    }
+  } else {
+    const { data: inserted, error: insErr } = await supabaseAdmin
       .from('notes')
-      .insert({ user_id: userId, title, content: noteContent });
-    if (err2) {
-      console.error(`[${source}] note insert failed for ${url}:`, err2.message);
-      return 'skipped';
+      .insert({
+        user_id: userId,
+        title,
+        content: noteContent,
+        source,
+        tags,
+        created_at: createdAt,
+      })
+      .select('id')
+      .single();
+    if (insErr) {
+      // Fallback: caps trigger / column error → degrade to a minimal
+      // insert with no source/tags so the user at least sees the row.
+      const { data: insFallback, error: err2 } = await supabaseAdmin
+        .from('notes')
+        .insert({ user_id: userId, title, content: noteContent })
+        .select('id')
+        .single();
+      if (err2) {
+        console.error(`[${source}] note insert failed for ${url}:`, err2.message);
+        return 'skipped';
+      }
+      noteId = insFallback?.id || null;
+    } else {
+      noteId = inserted?.id || null;
     }
   }
-  return 'saved';
+
+  // Fire-and-forget synthesis embed. We always try to embed (even on
+  // 'skipped' / no body) because the chunk store is keyed on
+  // (user_id, source_type, source_id, chunk_index) and the helper is
+  // hash-skip idempotent — running it on every sync is essentially
+  // free for unchanged items but guarantees freshly-renamed Drive
+  // docs / re-described Calendar events / etc. land in the vector
+  // store the same tick we update the vault.
+  if (noteId) {
+    const embedText = body
+      ? `${title}\n\n${body}`.trim()
+      : `${title}\n\n${attachment?.description || ''}`.trim();
+    if (embedText && embedText.length >= 8) {
+      try {
+        const result = await embedAndStoreChunks({
+          supabaseAdmin,
+          userId,
+          sourceType: 'vault_note',
+          sourceId: noteId,
+          text: embedText,
+          metadata: embedMetadata || { source, title, url },
+        });
+        if (!result.ok && result.reason && result.reason !== 'openai_key_missing') {
+          console.warn(`[${source}] embed failed for ${url}: ${result.reason}`);
+        }
+      } catch (err) {
+        // Embedding is best-effort; never let an OpenAI 429 break sync.
+        console.warn(`[${source}] embed threw for ${url}: ${err.message}`);
+      }
+    }
+  }
+
+  return mode;
 }
 
 // ---------------------------------------------------------------------------

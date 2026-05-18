@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { CheckCircle2, ShieldAlert, Loader2 } from "lucide-react";
+import { CheckCircle2, ShieldAlert, Loader2, Search, X } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { API_BASE_URL } from "@/lib/api-config";
 import { toast } from "@/components/ui/use-toast";
-import { CONNECTORS } from "@/lib/connectors/catalog";
+import { CONNECTORS, CONNECTOR_CATEGORIES } from "@/lib/connectors/catalog";
 import { OUTBOUND_TARGETS, aliasClientKindForCatalog } from "@/lib/connectors/outboundTargets";
 import OAuthConnectDialog from "@/components/connections/OAuthConnectDialog";
 import UseLyknWithDialog from "@/components/connections/UseLyknWithDialog";
@@ -23,25 +23,12 @@ import UseLyknWithDialog from "@/components/connections/UseLyknWithDialog";
 //
 // Filter pill at the top swaps between All / AI tools / Input tools.
 
-// Phase 1 input integrations — sync with project state
-// `input_integration_roadmap`. Strings reference catalog ids;
-// placeholders mark roadmap items whose adapter isn't built yet.
-const PHASE_1_INPUT_IDS = [
-  "gmail",
-  "outlook-365",
-  "google-drive",
-  "google-docs",
-  "google-sheets",
-  { placeholder: true, id: "onedrive", name: "OneDrive", domain: "onedrive.live.com", summary: "Files and folders feed LYKN the shape of your active work." },
-  "google-calendar",
-  "notion",
-  "slack",
-  "github",
-  "linear",
-  { placeholder: true, id: "asana", name: "Asana", domain: "asana.com", summary: "Task ownership and project trees teach LYKN where your week's effort is actually going." },
-  "x",
-  { placeholder: true, id: "linkedin", name: "LinkedIn", domain: "linkedin.com", summary: "Profile, network activity, and saved posts contribute professional-identity neurons." },
-];
+// The Connections page renders EVERY entry in the catalog so users can
+// see the full map of what LYKN can ingest. Cards whose backend isn't
+// wired yet still appear — they just present as "Coming soon" /
+// "Capture only" so the page never lies about what's possible. The old
+// curated `PHASE_1_INPUT_IDS` array is gone; the source of truth is the
+// catalog itself plus per-row `status`.
 
 const FILTERS = [
   { id: "all", label: "All" },
@@ -73,6 +60,7 @@ function getInputPaidWarning(connector) {
 
 export default function ConnectionsAppGrid({ user }) {
   const [filter, setFilter] = useState("all");
+  const [query, setQuery] = useState("");
   const [connections, setConnections] = useState([]);
   const [providerConfig, setProviderConfig] = useState({});
   const [tokens, setTokens] = useState([]);
@@ -140,58 +128,164 @@ export default function ConnectionsAppGrid({ user }) {
     return m;
   }, [tokens]);
 
-  // Build the unified tile list. AI tools come first (the marquee),
-  // then input tools, both in their curated order.
+  // Build the unified tile list. AI tools (the marquee) lead, then
+  // every input connector in catalog order, with a section header tile
+  // emitted whenever the category changes. Section tiles render as a
+  // full-width band inside the grid (col-span-full) and are filtered
+  // out when their bucket is empty under the current filter.
   const allTiles = useMemo(() => {
-    const aiTiles = OUTBOUND_TARGETS.filter((t) => t.tier === 1).map((target) => ({
-      key: `ai:${target.id}`,
-      kind: "ai",
-      target,
-    }));
+    const out = [];
 
-    const inputTiles = PHASE_1_INPUT_IDS.map((entry) => {
-      if (typeof entry === "object" && entry.placeholder) {
-        return { key: `input:${entry.id}`, kind: "placeholder", placeholder: entry };
+    const aiTargets = OUTBOUND_TARGETS.filter((t) => t.tier === 1);
+    if (aiTargets.length > 0) {
+      out.push({
+        key: "section:ai",
+        kind: "section",
+        sectionBucket: "ai",
+        label: "AI Tools",
+        description: "Use LYKN's synthesis layer inside your AI of choice.",
+      });
+      for (const target of aiTargets) {
+        out.push({ key: `ai:${target.id}`, kind: "ai", target });
       }
-      const row = CONNECTORS.find((c) => c.id === entry);
-      if (!row) {
-        return { key: `input:${entry}`, kind: "placeholder", placeholder: { id: entry, name: entry } };
-      }
-      return { key: `input:${row.id}`, kind: "input", connector: row };
-    });
+    }
 
-    return [...aiTiles, ...inputTiles];
+    let currentCategory = null;
+    for (const connector of CONNECTORS) {
+      if (connector.category !== currentCategory) {
+        currentCategory = connector.category;
+        const cat = CONNECTOR_CATEGORIES.find((x) => x.id === currentCategory);
+        out.push({
+          key: `section:${currentCategory}`,
+          kind: "section",
+          sectionBucket: "input",
+          label: cat?.label || currentCategory,
+          description: cat?.description,
+        });
+      }
+      out.push({ key: `input:${connector.id}`, kind: "input", connector });
+    }
+
+    return out;
   }, []);
 
+  // Filter: drop tiles outside the current bucket, apply the free-text
+  // search to app tiles (sections always pass — they get culled below
+  // if their bucket ends up empty), then drop section headers whose
+  // section has no surviving tiles after the filter.
   const visibleTiles = useMemo(() => {
-    if (filter === "ai") return allTiles.filter((t) => t.kind === "ai");
-    if (filter === "input") return allTiles.filter((t) => t.kind === "input" || t.kind === "placeholder");
-    return allTiles;
-  }, [filter, allTiles]);
+    const keepBucket = (t) => {
+      if (filter === "all") return true;
+      if (filter === "ai") return t.kind === "ai" || (t.kind === "section" && t.sectionBucket === "ai");
+      if (filter === "input") return t.kind === "input" || (t.kind === "section" && t.sectionBucket === "input");
+      return true;
+    };
+    const q = query.trim().toLowerCase();
+    const matchesQuery = (t) => {
+      if (!q) return true;
+      if (t.kind === "section") return true;
+      if (t.kind === "ai") {
+        const target = t.target;
+        return (
+          (target.name || "").toLowerCase().includes(q) ||
+          (target.summary || "").toLowerCase().includes(q) ||
+          (target.clientKind || "").toLowerCase().includes(q) ||
+          (target.id || "").toLowerCase().includes(q) ||
+          "ai tool".includes(q)
+        );
+      }
+      if (t.kind === "input") {
+        const c = t.connector;
+        const cat = CONNECTOR_CATEGORIES.find((x) => x.id === c.category);
+        return (
+          (c.name || "").toLowerCase().includes(q) ||
+          (c.summary || "").toLowerCase().includes(q) ||
+          (c.id || "").toLowerCase().includes(q) ||
+          (c.category || "").toLowerCase().includes(q) ||
+          (cat?.label || "").toLowerCase().includes(q) ||
+          "input tool".includes(q)
+        );
+      }
+      return false;
+    };
+    const filtered = allTiles.filter((t) => keepBucket(t) && matchesQuery(t));
+    const out = [];
+    for (let i = 0; i < filtered.length; i++) {
+      const t = filtered[i];
+      if (t.kind === "section") {
+        const next = filtered[i + 1];
+        if (!next || next.kind === "section") continue;
+      }
+      out.push(t);
+    }
+    return out;
+  }, [filter, allTiles, query]);
+
+  const hasResults = visibleTiles.some((t) => t.kind !== "section");
 
   return (
     <section>
-      {/* ── Filter pill ───────────────────────────────────────────── */}
-      <div className="mb-5 flex items-center gap-1 p-1 rounded-full glass-control w-fit">
-        {FILTERS.map((f) => (
-          <button
-            key={f.id}
-            type="button"
-            onClick={() => setFilter(f.id)}
-            className={`px-3 py-1 rounded-full text-[11px] font-medium transition-colors ${
-              filter === f.id
-                ? "bg-black text-white dark:bg-white dark:text-black shadow-sm"
-                : "text-black/60 dark:text-white/60 hover:text-black dark:hover:text-white"
-            }`}
-          >
-            {f.label}
-          </button>
-        ))}
+      {/* ── Toolbar: filter pill + search ─────────────────────────── */}
+      <div className="mb-5 flex flex-wrap items-center gap-3">
+        <div className="flex items-center gap-1 p-1 rounded-full glass-control w-fit">
+          {FILTERS.map((f) => (
+            <button
+              key={f.id}
+              type="button"
+              onClick={() => setFilter(f.id)}
+              className={`px-3 py-1 rounded-full text-[11px] font-medium transition-colors ${
+                filter === f.id
+                  ? "bg-black text-white dark:bg-white dark:text-black shadow-sm"
+                  : "text-black/60 dark:text-white/60 hover:text-black dark:hover:text-white"
+              }`}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
+        <div className="relative flex-1 min-w-[200px] max-w-sm">
+          <Search
+            className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-black/40 dark:text-white/40"
+            strokeWidth={2}
+          />
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search connections…"
+            aria-label="Search connections"
+            className="w-full rounded-full border border-black/[0.08] dark:border-white/[0.12] bg-white/60 dark:bg-zinc-900/60 backdrop-blur-md pl-8 pr-8 py-1.5 text-[12px] text-black/85 dark:text-white/90 placeholder:text-black/40 dark:placeholder:text-white/40 outline-none focus:border-black/25 dark:focus:border-white/30 transition-colors"
+          />
+          {query && (
+            <button
+              type="button"
+              onClick={() => setQuery("")}
+              aria-label="Clear search"
+              className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-0.5 text-black/45 dark:text-white/45 hover:bg-black/[0.06] dark:hover:bg-white/[0.08] hover:text-black/70 dark:hover:text-white/80 transition-colors"
+            >
+              <X className="h-3 w-3" strokeWidth={2.25} />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* ── Unified grid ─────────────────────────────────────────── */}
       <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
         {visibleTiles.map((tile) => {
+          if (tile.kind === "section") {
+            return (
+              <div key={tile.key} className="col-span-full mt-3 first:mt-0">
+                <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-black/55 dark:text-white/55">
+                  {tile.label}
+                </h2>
+                {tile.description && (
+                  <p className="mt-0.5 text-[11.5px] text-black/45 dark:text-white/45">
+                    {tile.description}
+                  </p>
+                )}
+              </div>
+            );
+          }
           if (tile.kind === "ai") {
             const target = tile.target;
             const isConnected = (tokensByKind.get(target.clientKind) || []).length > 0;
@@ -208,6 +302,7 @@ export default function ConnectionsAppGrid({ user }) {
             return (
               <AppTile
                 key={tile.key}
+                anchorId={target.clientKind || target.id}
                 logoDomain={target.domain}
                 name={target.name}
                 typeLabel="AI tool"
@@ -252,29 +347,68 @@ export default function ConnectionsAppGrid({ user }) {
             const isConnected = userConns.some((c) => c.status === "active" || c.status === "paused");
             const isConfigured = providerConfig[authConnector.id] !== false;
             const paidWarning = getInputPaidWarning(connector);
-            const badge = !isConfigured
-              ? { tone: "neutral", label: "Not configured" }
-              : isConnected
-                ? { tone: "emerald", label: "Connected", icon: CheckCircle2 }
-                : connector.status === "verification"
-                  ? { tone: "amber", label: connector.statusLabel || "Pending review" }
-                  : paidWarning
-                    ? { tone: "amber", label: connector.statusLabel || `Requires ${connector.name} plan` }
-                    : null;
+            // Capture-only tiles (Google Keep, Instagram, Figma, …)
+            // surface a clear "no programmatic sync available" story.
+            // Clicking the tile is informational — it explains the
+            // alternate ingest paths (browser extension, share sheet,
+            // email-to-vault) rather than opening an OAuth dialog that
+            // would just fail.
+            const isCaptureOnly = connector.status === "no-api";
+            const isComingSoon = connector.status === "soon";
+            const badge = isCaptureOnly
+              ? { tone: "neutral", label: connector.statusLabel || "Capture only" }
+              : isComingSoon
+                ? { tone: "amber", label: connector.statusLabel || "Coming soon" }
+                : !isConfigured
+                  ? { tone: "neutral", label: "Not configured" }
+                  : isConnected
+                    ? { tone: "emerald", label: "Connected", icon: CheckCircle2 }
+                    : connector.status === "verification"
+                      ? { tone: "amber", label: connector.statusLabel || "Pending review" }
+                      : paidWarning
+                        ? { tone: "amber", label: connector.statusLabel || `Requires ${connector.name} plan` }
+                        : null;
             return (
               <AppTile
                 key={tile.key}
+                anchorId={connector.id}
                 logoDomain={connector.domain}
                 logoUrl={connector.iconUrl}
                 name={connector.name}
                 typeLabel="Input tool"
                 description={connector.summary}
                 badge={badge}
-                ctaLabel={isConnected ? "Manage" : "Connect"}
-                ctaVariant={isConnected ? "ghost" : "primary"}
+                ctaLabel={
+                  isCaptureOnly
+                    ? "How to capture"
+                    : isComingSoon
+                      ? "Notify me"
+                      : isConnected
+                        ? "Manage"
+                        : "Connect"
+                }
+                ctaVariant={isConnected || isCaptureOnly || isComingSoon ? "ghost" : "primary"}
                 onClick={() => {
                   if (!user) {
                     toast({ title: "Sign in to connect", description: "Input tools are tied to your LYKN account." });
+                    return;
+                  }
+                  if (isCaptureOnly) {
+                    toast({
+                      title: `${connector.name} — capture-only`,
+                      description:
+                        connector.summary ||
+                        "No programmatic API. Use the LYKN browser extension or mobile share sheet to save items one at a time.",
+                    });
+                    return;
+                  }
+                  if (isComingSoon) {
+                    toast({
+                      title: `${connector.name} is on the way`,
+                      description:
+                        connector.summary ||
+                        "Adapter not wired yet — we'll light this card up when it lands.",
+                    });
                     return;
                   }
                   if (!isConnected && paidWarning) {
@@ -291,31 +425,24 @@ export default function ConnectionsAppGrid({ user }) {
             );
           }
 
-          // Placeholder (adapter not built yet)
-          const p = tile.placeholder;
-          return (
-            <AppTile
-              key={tile.key}
-              logoDomain={p.domain}
-              name={p.name}
-              typeLabel="Input tool"
-              description={p.summary || "Adapter not wired yet — coming soon."}
-              badge={{ tone: "amber", label: "Coming soon" }}
-              ctaLabel="Notify me"
-              onClick={() => {
-                if (!user) {
-                  toast({ title: "Sign in to connect", description: "Input tools are tied to your LYKN account." });
-                  return;
-                }
-                toast({
-                  title: `${p.name} is on the way`,
-                  description: "Adapter not wired yet — we'll light this card up when it lands.",
-                });
-              }}
-            />
-          );
+          return null;
         })}
       </div>
+
+      {!hasResults && query.trim() && (
+        <div className="mt-6 rounded-2xl border border-dashed border-black/10 dark:border-white/10 p-6 text-center">
+          <p className="text-[12.5px] text-black/65 dark:text-white/65">
+            No connections match <span className="font-medium text-black/85 dark:text-white/90">“{query.trim()}”</span>.
+          </p>
+          <button
+            type="button"
+            onClick={() => setQuery("")}
+            className="mt-2 text-[11px] font-medium text-black/55 dark:text-white/55 underline-offset-2 hover:underline hover:text-black/80 dark:hover:text-white/80"
+          >
+            Clear search
+          </button>
+        </div>
+      )}
 
       {loading && (
         <p className="mt-3 text-[10.5px] text-black/40 dark:text-white/40 inline-flex items-center gap-1.5">
@@ -352,6 +479,7 @@ export default function ConnectionsAppGrid({ user }) {
 // ─── AppTile ───────────────────────────────────────────────────────────────
 
 function AppTile({
+  anchorId,
   logoDomain,
   logoUrl,
   name,
@@ -362,11 +490,42 @@ function AppTile({
   ctaVariant = "ghost",
   onClick,
 }) {
+  // Lets the load-in greeting's "Connect Google Calendar" prompt (and
+  // other deep links of the form /connections#<connector-id>) scroll
+  // the matching tile into view and pulse a highlight ring on arrival.
+  const ref = useRef(null);
+  const [highlight, setHighlight] = useState(false);
+  useEffect(() => {
+    if (!anchorId) return;
+    const onHash = () => {
+      const target = (window.location.hash || "").replace(/^#/, "");
+      if (target !== anchorId) return;
+      const el = ref.current;
+      if (!el) return;
+      try {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+      } catch {
+        el.scrollIntoView();
+      }
+      setHighlight(true);
+      window.setTimeout(() => setHighlight(false), 2400);
+    };
+    onHash();
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, [anchorId]);
+
   return (
     <motion.div
+      ref={ref}
+      id={anchorId}
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
-      className="group relative rounded-2xl border border-black/[0.06] dark:border-white/10 bg-white/60 dark:bg-zinc-900/60 backdrop-blur-md p-4 flex flex-col gap-3 hover:border-black/15 dark:hover:border-white/20 transition-colors shadow-sm"
+      className={`group relative rounded-2xl border bg-white/60 dark:bg-zinc-900/60 backdrop-blur-md p-4 flex flex-col gap-3 transition-colors shadow-sm scroll-mt-24 ${
+        highlight
+          ? "border-emerald-400/70 ring-2 ring-emerald-400/40 shadow-[0_0_24px_rgba(16,185,129,0.25)]"
+          : "border-black/[0.06] dark:border-white/10 hover:border-black/15 dark:hover:border-white/20"
+      }`}
     >
       <div className="flex items-start gap-3">
         <div className="h-12 w-12 rounded-2xl flex items-center justify-center flex-shrink-0 bg-white dark:bg-white/95 ring-1 ring-black/[0.06] shadow-sm overflow-hidden">

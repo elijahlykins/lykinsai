@@ -13,6 +13,7 @@
 // ============================================================================
 
 import { ConnectorAuthError } from '../connectors-service.js';
+import { saveConnectorNote } from './_save.js';
 
 const VIM_AUTH_URL = 'https://api.vimeo.com/oauth/authorize';
 const VIM_TOKEN_URL = 'https://api.vimeo.com/oauth/access_token';
@@ -143,7 +144,7 @@ export const vimeoAdapter = {
           userId: connection.user_id,
           video,
         });
-        if (result === 'saved') saved++;
+        if (result === 'saved' || result === 'updated') saved++;
         else skipped++;
 
         if (created > newest) newest = created;
@@ -172,14 +173,6 @@ async function saveVideoAsNote({ supabaseAdmin, userId, video }) {
   const url = video.link;
   if (!url) return 'skipped';
 
-  const { data: existing } = await supabaseAdmin
-    .from('notes')
-    .select('id')
-    .eq('user_id', userId)
-    .ilike('content', `%${url}%`)
-    .limit(1);
-  if (existing && existing.length > 0) return 'skipped';
-
   const title = (video.name || 'Vimeo video').slice(0, 280);
   const description = (video.description || '').replace(/\s+/g, ' ').slice(0, 1200);
   const author = video.user?.name || '';
@@ -201,29 +194,25 @@ async function saveVideoAsNote({ supabaseAdmin, userId, video }) {
     authorName: author,
     authorHandle: '',
   };
-  const noteContent = `${title}\n\n[ATTACHMENTS_JSON:${JSON.stringify([attachment])}]`;
 
   const tags = ['vimeo', 'video', 'liked', 'link', 'uploaded'];
   const createdAt = video.created_time ? new Date(video.created_time).toISOString() : undefined;
 
-  const { error } = await supabaseAdmin
-    .from('notes')
-    .insert({
-      user_id: userId,
-      title,
-      content: noteContent,
-      source: 'vimeo_liked',
-      tags,
-      created_at: createdAt,
-    });
-  if (error) {
-    const { error: err2 } = await supabaseAdmin
-      .from('notes')
-      .insert({ user_id: userId, title, content: noteContent });
-    if (err2) {
-      console.error(`[vimeo] note insert failed for ${url}:`, err2.message);
-      return 'skipped';
-    }
-  }
-  return 'saved';
+  const body = [
+    author ? `Creator: ${author}` : '',
+    description ? '\n' + description : '',
+  ].filter(Boolean).join('\n');
+
+  return saveConnectorNote({
+    supabaseAdmin,
+    userId,
+    url,
+    title,
+    attachment,
+    tags,
+    source: 'vimeo_liked',
+    createdAt,
+    body,
+    embedMetadata: { source: 'vimeo_liked', title, url, author },
+  });
 }

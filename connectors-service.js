@@ -41,6 +41,15 @@ import { blueskyAdapter } from './connectors/bluesky.js';
 import { canvaAdapter } from './connectors/canva.js';
 import { trelloAdapter } from './connectors/trello.js';
 import { mastodonAdapter } from './connectors/mastodon.js';
+import { hackernewsAdapter } from './connectors/hackernews.js';
+import { lastfmAdapter } from './connectors/lastfm.js';
+import { pinboardAdapter } from './connectors/pinboard.js';
+import { hardcoverAdapter } from './connectors/hardcover.js';
+import { karakeepAdapter } from './connectors/karakeep.js';
+import { linkdingAdapter } from './connectors/linkding.js';
+import { goodreadsAdapter } from './connectors/goodreads.js';
+import { amazonWishlistAdapter } from './connectors/amazon-wishlist.js';
+import { appleCalendarAdapter } from './connectors/apple/calendar.js';
 
 // ---------------------------------------------------------------------------
 // Adapter spec (informal — JS, no types)
@@ -87,6 +96,26 @@ export const CONNECTOR_REGISTRY = {
   readwise: readwiseAdapter,
   bluesky: blueskyAdapter,
   trello: trelloAdapter,
+  // Hacker News and Last.fm are username-only (HN: no key at all; Last.fm:
+  // uses a shared LASTFM_API_KEY server-side, no per-user OAuth). Pinboard
+  // is classic username:token paste.
+  hackernews: hackernewsAdapter,
+  lastfm: lastfmAdapter,
+  pinboard: pinboardAdapter,
+  // Hardcover (GraphQL bearer token), plus two self-hosted bookmark
+  // managers that take a URL + token (no shared server credentials).
+  hardcover: hardcoverAdapter,
+  karakeep: karakeepAdapter,
+  linkding: linkdingAdapter,
+  // RSS-driven tiles (no auth, no API key — user pastes a public feed URL
+  // or list identifier). The adapter resolves it into a canonical feed.
+  goodreads: goodreadsAdapter,
+  'amazon-wishlist': amazonWishlistAdapter,
+  // ── Apple iCloud (CalDAV / CardDAV — app-specific password) ─────────
+  // Apple ships no user OAuth; the sanctioned path is a per-app password
+  // generated at appleid.apple.com. Same token-mode plumbing as Trello /
+  // Bluesky app-passwords / Pinboard.
+  'apple-calendar': appleCalendarAdapter,
 };
 
 // Where each provider's credentials live in process.env. Keeping this as a
@@ -382,6 +411,28 @@ export async function saveConnection({
   provider,
   exchanged,
 }) {
+  // Preserve a re-connecting user's custom `sync_interval_minutes` if
+  // they've previously dialled it from the UI. New connections (no
+  // pre-existing row) get the tighter 15-minute default; reconnects
+  // keep whatever the user picked. The migration's column default is
+  // 60, but for connector data ("the algorithm should know") we want
+  // sync to feel near-live by default.
+  let intervalMinutes = 15;
+  try {
+    const { data: prior } = await supabaseAdmin
+      .from('social_connections')
+      .select('sync_interval_minutes')
+      .eq('user_id', userId)
+      .eq('provider', provider)
+      .eq('provider_user_id', exchanged.providerUserId)
+      .maybeSingle();
+    if (prior?.sync_interval_minutes && Number.isFinite(prior.sync_interval_minutes)) {
+      intervalMinutes = prior.sync_interval_minutes;
+    }
+  } catch {
+    // First-time connect or schema hiccup — fall through with the 15-min default.
+  }
+
   const row = {
     user_id: userId,
     provider,
@@ -400,6 +451,7 @@ export async function saveConnection({
     status: 'active',
     consecutive_errors: 0,
     last_error: null,
+    sync_interval_minutes: intervalMinutes,
   };
 
   const { data, error } = await supabaseAdmin

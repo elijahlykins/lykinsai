@@ -23,6 +23,7 @@
 // ============================================================================
 
 import { ConnectorAuthError } from '../connectors-service.js';
+import { saveConnectorNote } from './_save.js';
 
 const BSKY_PDS = 'https://bsky.social';
 const FETCH_TIMEOUT_MS = 12_000;
@@ -186,7 +187,7 @@ export const blueskyAdapter = {
           userId: connection.user_id,
           post,
         });
-        if (result === 'saved') saved++;
+        if (result === 'saved' || result === 'updated') saved++;
         else skipped++;
 
         if (indexedAt && (!newestIso || new Date(indexedAt) > new Date(newestIso))) {
@@ -225,14 +226,6 @@ async function saveBskyPostAsNote({ supabaseAdmin, userId, post }) {
   if (!handle || !rkey) return 'skipped';
   const url = `https://bsky.app/profile/${handle}/post/${rkey}`;
 
-  const { data: existing } = await supabaseAdmin
-    .from('notes')
-    .select('id')
-    .eq('user_id', userId)
-    .ilike('content', `%${rkey}%`)
-    .limit(1);
-  if (existing && existing.length > 0) return 'skipped';
-
   const text = (post.record?.text || '').replace(/\s+/g, ' ').slice(0, 1200);
   const authorName = post.author?.displayName || handle;
   const title = `@${handle}: ${text.slice(0, 100)}`.slice(0, 280);
@@ -257,32 +250,32 @@ async function saveBskyPostAsNote({ supabaseAdmin, userId, post }) {
     authorHandle: `@${handle}`,
   };
 
-  const noteContent = `${title}\n\n[ATTACHMENTS_JSON:${JSON.stringify([attachment])}]`;
   const tags = ['bluesky', 'like', 'link', 'uploaded'];
   const createdAt = post.record?.createdAt
     ? new Date(post.record.createdAt).toISOString()
     : undefined;
 
-  const { error } = await supabaseAdmin
-    .from('notes')
-    .insert({
-      user_id: userId,
-      title,
-      content: noteContent,
-      source: 'bluesky_like',
-      tags,
-      created_at: createdAt,
-    });
-  if (error) {
-    const { error: err2 } = await supabaseAdmin
-      .from('notes')
-      .insert({ user_id: userId, title, content: noteContent });
-    if (err2) {
-      console.error(`[bluesky] note insert failed for ${url}:`, err2.message);
-      return 'skipped';
-    }
-  }
-  return 'saved';
+  const body = [
+    `${authorName} (@${handle})`,
+    '',
+    text,
+  ].filter(Boolean).join('\n');
+
+  return saveConnectorNote({
+    supabaseAdmin,
+    userId,
+    // Bluesky posts dedupe on the rkey (the trailing path segment of
+    // the at:// URI) — handles can change but rkeys are stable.
+    dedupeNeedle: rkey,
+    url,
+    title,
+    attachment,
+    tags,
+    source: 'bluesky_like',
+    createdAt,
+    body,
+    embedMetadata: { source: 'bluesky_like', title, url, author_handle: handle, rkey },
+  });
 }
 
 // Bluesky embeds nest several layers. The two most common shapes are

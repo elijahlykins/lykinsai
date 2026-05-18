@@ -109,6 +109,7 @@ let sessionVaultReady = false;
 const SOURCE_TO_CONNECTOR_ID = {
   notion_page: "notion",
   gmail_starred: "gmail",
+  gmail_inbox: "gmail",
   outlook_flagged: "outlook-365",
   gdrive_starred: "google-drive",
   gdocs_starred: "google-docs",
@@ -1690,6 +1691,15 @@ export default function VaultNew() {
       // current folder-collapse logic expects.
       //   • Pre-`source`-column Notion rows can still be identified by
       //     the `notion` tag the connector has always written.
+      //   • Pre-`source`-column Gmail rows (and any rows that hit the
+      //     fallback insert path in `saveGoogleNote` — caps trigger /
+      //     schema mismatch — which drops `source` + `tags`) likewise
+      //     leak through with blank source. The connector always writes
+      //     a `gmail` tag, so we recover them by tag and fold to
+      //     `gmail_starred` (any `gmail_*` slug maps to the same
+      //     "gmail" connector tile via SOURCE_TO_CONNECTOR_ID, so the
+      //     specific choice doesn't matter — the UI just needs *some*
+      //     value that resolves to the Gmail folder).
       //   • Drive items synced before the per-app split (Docs / Sheets /
       //     Drive) all landed under `gdrive_starred`. Split them retro-
       //     actively by the mime-derived tag (`doc`, `sheet`, `slides`)
@@ -1699,10 +1709,50 @@ export default function VaultNew() {
       let noteSource = rawSource;
       if (rawSource === "" && rawTags.includes("notion")) {
         noteSource = "notion_page";
+      } else if (rawSource === "" && rawTags.includes("gmail")) {
+        noteSource = rawTags.includes("inbox") ? "gmail_inbox" : "gmail_starred";
+      } else if (rawSource === "" && rawTags.includes("google-calendar")) {
+        // Calendar.js always writes a `google-calendar` tag alongside
+        // the source. Recover rows whose `source` column was dropped by
+        // the fallback insert path in `saveGoogleNote` so they still
+        // fold into the Google Calendar folder tile.
+        noteSource = "gcal_event";
       } else if (rawSource === "gdrive_starred") {
         if (rawTags.includes("doc")) noteSource = "gdocs_starred";
         else if (rawTags.includes("sheet")) noteSource = "gsheets_starred";
         else if (rawTags.includes("slides")) noteSource = "gslides_starred";
+      }
+
+      // Belt-and-suspenders URL fallback for rows that hit the truly-
+      // degraded fallback insert path in `saveGoogleNote` (caps trigger
+      // / schema mismatch), which drops BOTH `source` and `tags`. The
+      // bookmark URL inside the attachment payload is the only signal
+      // left, so we sniff well-known connector domains for the few
+      // sources we know historically broke. Order matters: more
+      // specific hosts (mail/calendar/drive) come before any catch-alls.
+      if (noteSource === "" && attachments.length > 0) {
+        const firstUrl = String(attachments[0]?.url || "").toLowerCase();
+        if (firstUrl.includes("mail.google.com")) {
+          noteSource = "gmail_starred";
+        } else if (
+          // Google Calendar's `htmlLink` is `https://www.google.com/calendar/event?eid=...`,
+          // not `calendar.google.com/...`, so the bare-host substring
+          // check below would never match real event URLs. Accept both
+          // the modern (`www.google.com/calendar/`) and legacy
+          // (`calendar.google.com`) shapes so historical rows still
+          // collapse into the Google Calendar folder tile.
+          firstUrl.includes("/calendar/event") ||
+          firstUrl.includes("calendar.google.com")
+        ) {
+          noteSource = "gcal_event";
+        } else if (firstUrl.includes("drive.google.com") || firstUrl.includes("docs.google.com")) {
+          if (firstUrl.includes("/document/")) noteSource = "gdocs_starred";
+          else if (firstUrl.includes("/spreadsheets/")) noteSource = "gsheets_starred";
+          else if (firstUrl.includes("/presentation/")) noteSource = "gslides_starred";
+          else noteSource = "gdrive_starred";
+        } else if (firstUrl.includes("notion.so") || firstUrl.includes("notion.site")) {
+          noteSource = "notion_page";
+        }
       }
       const updatedAtMs = note?.updated_at ? new Date(note.updated_at).getTime() : 0;
       const createdAtMs = note?.created_at ? new Date(note.created_at).getTime() : 0;

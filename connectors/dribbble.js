@@ -13,6 +13,7 @@
 // ============================================================================
 
 import { ConnectorAuthError } from '../connectors-service.js';
+import { saveConnectorNote } from './_save.js';
 
 const DR_AUTH_URL = 'https://dribbble.com/oauth/authorize';
 const DR_TOKEN_URL = 'https://dribbble.com/oauth/token';
@@ -130,7 +131,7 @@ export const dribbbleAdapter = {
           shot,
           likedAt: like.created_at,
         });
-        if (result === 'saved') saved++;
+        if (result === 'saved' || result === 'updated') saved++;
         else skipped++;
 
         if (likedAt > newest) newest = likedAt;
@@ -158,14 +159,6 @@ export const dribbbleAdapter = {
 async function saveShotAsNote({ supabaseAdmin, userId, shot, likedAt }) {
   const url = shot.html_url || shot.url;
   if (!url) return 'skipped';
-
-  const { data: existing } = await supabaseAdmin
-    .from('notes')
-    .select('id')
-    .eq('user_id', userId)
-    .ilike('content', `%${url}%`)
-    .limit(1);
-  if (existing && existing.length > 0) return 'skipped';
 
   const title = (shot.title || 'Dribbble shot').slice(0, 280);
   const description = (shot.description || '')
@@ -195,29 +188,25 @@ async function saveShotAsNote({ supabaseAdmin, userId, shot, likedAt }) {
     authorName: author,
     authorHandle: handle ? `@${handle}` : '',
   };
-  const noteContent = `${title}\n\n[ATTACHMENTS_JSON:${JSON.stringify([attachment])}]`;
 
   const tags = ['dribbble', 'design', 'liked', 'link', 'uploaded'];
   const createdAt = likedAt ? new Date(likedAt).toISOString() : undefined;
 
-  const { error } = await supabaseAdmin
-    .from('notes')
-    .insert({
-      user_id: userId,
-      title,
-      content: noteContent,
-      source: 'dribbble_liked',
-      tags,
-      created_at: createdAt,
-    });
-  if (error) {
-    const { error: err2 } = await supabaseAdmin
-      .from('notes')
-      .insert({ user_id: userId, title, content: noteContent });
-    if (err2) {
-      console.error(`[dribbble] note insert failed for ${url}:`, err2.message);
-      return 'skipped';
-    }
-  }
-  return 'saved';
+  const body = [
+    author ? `Designer: ${author}${handle ? ` (@${handle})` : ''}` : '',
+    description ? '\n' + description : '',
+  ].filter(Boolean).join('\n');
+
+  return saveConnectorNote({
+    supabaseAdmin,
+    userId,
+    url,
+    title,
+    attachment,
+    tags,
+    source: 'dribbble_liked',
+    createdAt,
+    body,
+    embedMetadata: { source: 'dribbble_liked', title, url, author_handle: handle },
+  });
 }

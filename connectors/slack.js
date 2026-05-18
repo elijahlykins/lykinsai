@@ -20,6 +20,7 @@
 // ============================================================================
 
 import { ConnectorAuthError } from '../connectors-service.js';
+import { saveConnectorNote } from './_save.js';
 
 const SL_AUTH_URL = 'https://slack.com/oauth/v2/authorize';
 const SL_TOKEN_URL = 'https://slack.com/api/oauth.v2.access';
@@ -184,7 +185,7 @@ export const slackAdapter = {
           message: msg,
           workspaceDomain,
         });
-        if (result === 'saved') saved++;
+        if (result === 'saved' || result === 'updated') saved++;
         else skipped++;
 
         if (ts > newestTs) newestTs = ts;
@@ -222,14 +223,6 @@ async function saveSavedMessage({
   const tsNoDot = message.ts.replace('.', '');
   const url = `https://${workspaceDomain}.slack.com/archives/${channelId}/p${tsNoDot}`;
 
-  const { data: existing } = await supabaseAdmin
-    .from('notes')
-    .select('id')
-    .eq('user_id', userId)
-    .ilike('content', `%${url}%`)
-    .limit(1);
-  if (existing && existing.length > 0) return 'skipped';
-
   const text = (message.text || '').replace(/\s+/g, ' ').slice(0, 1200) || '(no content)';
   const author = message.username || message.user || 'Slack user';
   const title = `Slack: ${text.slice(0, 100)}`.slice(0, 280);
@@ -249,30 +242,28 @@ async function saveSavedMessage({
     authorName: author,
     authorHandle: '',
   };
-  const noteContent = `${title}\n\n[ATTACHMENTS_JSON:${JSON.stringify([attachment])}]`;
 
   const tags = ['slack', 'saved', 'message', 'link', 'uploaded'];
   const tsMs = Math.floor(parseFloat(message.ts) * 1000);
   const createdAt = tsMs ? new Date(tsMs).toISOString() : undefined;
 
-  const { error } = await supabaseAdmin
-    .from('notes')
-    .insert({
-      user_id: userId,
-      title,
-      content: noteContent,
-      source: 'slack_saved',
-      tags,
-      created_at: createdAt,
-    });
-  if (error) {
-    const { error: err2 } = await supabaseAdmin
-      .from('notes')
-      .insert({ user_id: userId, title, content: noteContent });
-    if (err2) {
-      console.error(`[slack] note insert failed for ${url}:`, err2.message);
-      return 'skipped';
-    }
-  }
-  return 'saved';
+  const body = [
+    author ? `From: ${author}` : '',
+    workspaceDomain ? `Workspace: ${workspaceDomain}.slack.com` : '',
+    '',
+    text,
+  ].filter(Boolean).join('\n');
+
+  return saveConnectorNote({
+    supabaseAdmin,
+    userId,
+    url,
+    title,
+    attachment,
+    tags,
+    source: 'slack_saved',
+    createdAt,
+    body,
+    embedMetadata: { source: 'slack_saved', title, url, author, workspace: workspaceDomain || '' },
+  });
 }

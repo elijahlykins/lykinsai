@@ -390,8 +390,7 @@ export default function BeliefWindowPanel({ open, onClose, initialComposerOpen }
               toggle in SynthesisLayer (z-[100], right-4) is the canonical
               close affordance for every right-side panel and already
               wires through to setBeliefWindowOpen(false). We right-pad
-              so the title clears that always-visible toggle, matching
-              the SynthesisUpdatesPanel pattern. */}
+              so the title clears that toggle when it's visible. */}
           <header className="pl-5 pr-12 py-4 border-b border-white/8 flex items-center gap-2.5">
             <Atom size={15} className="text-blue-300" />
             <h2 className="text-sm font-semibold text-white/90 tracking-wide">

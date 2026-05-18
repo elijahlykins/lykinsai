@@ -65,6 +65,7 @@ import {
   saveConnection,
   runSync,
   makeConnectorPoller,
+  pollDueConnections,
   encryptToken,
 } from './connectors-service.js';
 import {
@@ -12781,6 +12782,31 @@ app.post('/api/feeds/poll-due', async (req, res) => {
   }
 });
 
+// Admin / cron endpoint: poll every connector that's currently due. Mirrors
+// the RSS `POST /api/feeds/poll-due` endpoint, protected by the same shared
+// secret. This is the entry point a serverless deployment (Vercel / Lambda /
+// Netlify) hits on a 1-minute cron, since `setInterval` doesn't survive
+// between requests there. Long-lived hosts (Render, self-hosted) get the
+// same fan-out via `makeConnectorPoller` below; this endpoint is the
+// fallback path for environments where the in-process poller is disabled.
+app.post('/api/connections/poll-due', async (req, res) => {
+  try {
+    const auth = req.headers.authorization || '';
+    const provided = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+    const expected = process.env.ADMIN_INGEST_SECRET || process.env.DISCOVER_INGEST_SECRET;
+    if (!expected || provided !== expected) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    if (!supabaseAdmin) return res.status(503).json({ error: 'Database unavailable' });
+
+    const limit = Math.max(1, Math.min(100, Number(req.body?.limit) || 25));
+    const result = await pollDueConnections({ supabaseAdmin, limit });
+    return res.json(result);
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'Poll failed' });
+  }
+});
+
 // ============================================
 // CONNECTOR FRAMEWORK (OAuth providers — GitHub, Reddit, Notion, ...)
 // ============================================
@@ -13240,10 +13266,11 @@ if (process.env.NODE_ENV !== 'test') {
     }
 
     // Connector poller — same on/off rules as RSS. Polls /user/starred
-    // (GitHub), /saved (Reddit), Notion pages, etc. on each connection's
-    // configured interval. On serverless, schedule a cron against
+    // (GitHub), /saved (Reddit), Notion pages, Gmail inbox, Calendar,
+    // etc. on each connection's configured interval. On serverless,
+    // schedule a 1-minute cron against
     //   POST /api/connections/poll-due
-    // (TODO: expose this admin endpoint when we deploy serverless).
+    // with `Authorization: Bearer ${ADMIN_INGEST_SECRET}`.
     const explicitConnToggle = process.env.CONNECTOR_POLLER_ENABLED;
     const connectorPollerOn =
       explicitConnToggle === '1' || explicitConnToggle === 'true'
@@ -13252,15 +13279,22 @@ if (process.env.NODE_ENV !== 'test') {
           ? false
           : !isServerless;
     if (connectorPollerOn && supabaseAdmin) {
+      // 60s default tick (was 90s). The per-connection
+      // `sync_interval_minutes` floor is 5 minutes, so a faster tick
+      // doesn't burn provider quota — it just reduces the lag between
+      // a connection becoming due and the next sync running. Combined
+      // with the 15-minute default interval set in saveConnection, a
+      // newly-connected provider should see new mail / docs in the
+      // vault within ~15 minutes of it landing upstream.
       const intervalMs = Math.max(
         15_000,
-        Number(process.env.CONNECTOR_POLLER_INTERVAL_MS) || 90_000,
+        Number(process.env.CONNECTOR_POLLER_INTERVAL_MS) || 60_000,
       );
       const poller = makeConnectorPoller({ supabaseAdmin, intervalMs });
       poller.start();
     } else {
       console.log(
-        '→ Connector poller: ⚪ disabled (set CONNECTOR_POLLER_ENABLED=1 to enable)',
+        '→ Connector poller: ⚪ disabled (set CONNECTOR_POLLER_ENABLED=1 or schedule a cron against POST /api/connections/poll-due)',
       );
     }
 

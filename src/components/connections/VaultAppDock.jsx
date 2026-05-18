@@ -7,7 +7,8 @@ import { CONNECTORS } from "@/lib/connectors/catalog";
 import { OUTBOUND_TARGETS, aliasClientKindForCatalog } from "@/lib/connectors/outboundTargets";
 import lyknIconUrl from "@/assets/FINAL/LYKN-ICON-A-Squircle/PNGs/LYKN-Icon-A-Squircle-BLUE-master.png";
 
-// Floating macOS-style dock at the bottom-center of the Vault page.
+// Floating macOS-style dock for the Vault page and a vertical variant
+// rendered along the left edge of the focused-chat surface.
 //
 // LAUNCHER, not a management surface. Each icon is a connected app —
 // both input tools (Gmail, Slack, Notion…) and AI tools (Claude,
@@ -22,10 +23,17 @@ import lyknIconUrl from "@/assets/FINAL/LYKN-ICON-A-Squircle/PNGs/LYKN-Icon-A-Sq
 // click. A red dot on a tile means "needs reconnect — open Connections
 // to fix it."
 //
-// Positioning: `fixed bottom-6 left-1/2 -translate-x-1/2`. The Vault
-// already has a `+` quick-note FAB at `bottom-6 right-6`; the dock
-// sits centered so the two never collide.
-export default function VaultAppDock({ user }) {
+// Positioning:
+//   horizontal (default) — `fixed bottom-6 left-1/2 -translate-x-1/2`,
+//     used on Vault / Connections. The Vault already has a `+` quick-
+//     note FAB at `bottom-6 right-6`; the dock sits centered so the
+//     two never collide.
+//   vertical — `fixed top-1/2 -translate-y-1/2` anchored just inside
+//     the chat column (`var(--sidebar-offset)`), used by OmniaGrid in
+//     focused-chat mode so the launcher is always visible while the
+//     user is working in chat.
+export default function VaultAppDock({ user, orientation = "horizontal" }) {
+  const isVertical = orientation === "vertical";
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const [connections, setConnections] = useState([]);
@@ -157,16 +165,39 @@ export default function VaultAppDock({ user }) {
     window.open(tile.launchUrl, "_blank", "noopener,noreferrer");
   };
 
+  // Vertical variant anchors itself just inside the chat column, using
+  // the same sidebar offset every other chat chrome consumes. The icons
+  // stack top-to-bottom; tooltips flip to the right edge so they don't
+  // run off the screen.
+  // The vertical dock anchors to `var(--sidebar-offset)`, which animates
+  // when the global sidebar opens/closes. Without an explicit transition
+  // on `left` the dock snaps to its new x as soon as the variable flips,
+  // while the chat column eases (transition-all duration-300) — the two
+  // motions desync and the dock visibly jumps. We match the chat
+  // column's easing on `left` so the dock glides in lockstep with it.
+  const outerCls = isVertical
+    ? "fixed top-1/2 -translate-y-1/2 z-[65] pointer-events-none transition-[left] duration-300 ease-in-out"
+    : "fixed bottom-6 left-1/2 -translate-x-1/2 z-[65] pointer-events-none";
+  const outerStyle = isVertical
+    ? { left: "calc(var(--sidebar-offset, 0px) + 0.75rem)" }
+    : undefined;
+  const innerCls = isVertical
+    ? "flex flex-col items-center gap-1.5 px-2 py-2 rounded-2xl glass-control shadow-lg"
+    : "flex items-end gap-1.5 px-2 py-2 rounded-2xl glass-control shadow-lg";
+  const plugCls = isVertical
+    ? "mt-1 h-12 w-12 rounded-xl flex items-center justify-center text-black/45 dark:text-white/45 hover:text-black/80 dark:hover:text-white/80 hover:bg-black/[0.05] dark:hover:bg-white/[0.05] transition-colors"
+    : "ml-1 h-12 w-12 rounded-xl flex items-center justify-center text-black/45 dark:text-white/45 hover:text-black/80 dark:hover:text-white/80 hover:bg-black/[0.05] dark:hover:bg-white/[0.05] transition-colors";
+
   return (
-    <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[65] pointer-events-none">
+    <div className={outerCls} style={outerStyle}>
       <div className="pointer-events-auto">
-        <div className="flex items-end gap-1.5 px-2 py-2 rounded-2xl glass-control shadow-lg">
+        <div className={innerCls}>
           {/* LYKN home — always at the leading edge, always available.
               Routes to the chat surface (/app) which is the canonical
               "open LYKN" destination. Rendered with the same white-card
               shell as the connected-app DockIcons so it reads as "the
               first app in the row" rather than a special anchor. */}
-          <LyknDockTile onClick={() => navigate("/app")} />
+          <LyknDockTile onClick={() => navigate("/app")} vertical={isVertical} />
 
           {tiles.map((tile) => (
             <DockIcon
@@ -177,13 +208,14 @@ export default function VaultAppDock({ user }) {
               meta={tile.meta}
               needsAttention={tile.needsAttention}
               onClick={() => handleLaunch(tile)}
+              vertical={isVertical}
             />
           ))}
           <button
             type="button"
             onClick={() => navigate("/connections")}
             title={tiles.length > 0 ? "Connect another app" : "Connect an app"}
-            className="ml-1 h-12 w-12 rounded-xl flex items-center justify-center text-black/45 dark:text-white/45 hover:text-black/80 dark:hover:text-white/80 hover:bg-black/[0.05] dark:hover:bg-white/[0.05] transition-colors"
+            className={plugCls}
           >
             <Plug className="w-4 h-4" />
             <span className="sr-only">
@@ -203,8 +235,17 @@ export default function VaultAppDock({ user }) {
 // row" rather than a special-case anchor. The BLUE squircle PNG is
 // rendered at the same 32px favicon size DockFavicon uses for connected
 // apps, keeping the visual rhythm consistent across the whole dock.
-function LyknDockTile({ onClick }) {
+function LyknDockTile({ onClick, vertical = false }) {
   const [hovered, setHovered] = useState(false);
+  // Vertical dock: tile lifts to the right on hover (and tooltip
+  // anchors to the right edge) instead of the horizontal dock's
+  // upward lift + tooltip-above behavior.
+  const liftCls = vertical
+    ? "hover:scale-110 hover:translate-x-1"
+    : "hover:scale-110 hover:-translate-y-1";
+  const tooltipCls = vertical
+    ? "absolute left-full ml-2 top-1/2 -translate-y-1/2 whitespace-nowrap px-2.5 py-1 rounded-md bg-black/85 dark:bg-white/95 text-white dark:text-black text-[10.5px] font-medium shadow-md pointer-events-none"
+    : "absolute bottom-full mb-2 left-1/2 -translate-x-1/2 whitespace-nowrap px-2.5 py-1 rounded-md bg-black/85 dark:bg-white/95 text-white dark:text-black text-[10.5px] font-medium shadow-md pointer-events-none";
   return (
     <button
       type="button"
@@ -214,7 +255,7 @@ function LyknDockTile({ onClick }) {
       onFocus={() => setHovered(true)}
       onBlur={() => setHovered(false)}
       title="Open LYKN"
-      className="relative h-12 w-12 rounded-xl flex items-center justify-center bg-white dark:bg-white/95 ring-1 ring-black/[0.06] shadow-sm overflow-hidden transition-transform hover:scale-110 hover:-translate-y-1 touch-manipulation"
+      className={`relative h-12 w-12 rounded-xl flex items-center justify-center bg-white dark:bg-white/95 ring-1 ring-black/[0.06] shadow-sm overflow-hidden transition-transform touch-manipulation ${liftCls}`}
     >
       {/* The squircle PNG already bakes its own padding around the
           LYKN mark, so rendering at 32px (the DockFavicon canvas size)
@@ -233,7 +274,7 @@ function LyknDockTile({ onClick }) {
         draggable={false}
       />
       {hovered && (
-        <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 whitespace-nowrap px-2.5 py-1 rounded-md bg-black/85 dark:bg-white/95 text-white dark:text-black text-[10.5px] font-medium shadow-md pointer-events-none">
+        <div className={tooltipCls}>
           <div>LYKN</div>
           <div className="text-[9.5px] opacity-70">Open chat</div>
         </div>
@@ -244,8 +285,14 @@ function LyknDockTile({ onClick }) {
 
 // ─── DockIcon ──────────────────────────────────────────────────────────────
 
-function DockIcon({ domain, iconUrl, name, meta, needsAttention, onClick }) {
+function DockIcon({ domain, iconUrl, name, meta, needsAttention, onClick, vertical = false }) {
   const [hovered, setHovered] = useState(false);
+  const liftCls = vertical
+    ? "hover:scale-110 hover:translate-x-1"
+    : "hover:scale-110 hover:-translate-y-1";
+  const tooltipCls = vertical
+    ? "absolute left-full ml-2 top-1/2 -translate-y-1/2 whitespace-nowrap px-2.5 py-1 rounded-md bg-black/85 dark:bg-white/95 text-white dark:text-black text-[10.5px] font-medium shadow-md pointer-events-none"
+    : "absolute bottom-full mb-2 left-1/2 -translate-x-1/2 whitespace-nowrap px-2.5 py-1 rounded-md bg-black/85 dark:bg-white/95 text-white dark:text-black text-[10.5px] font-medium shadow-md pointer-events-none";
   return (
     <button
       type="button"
@@ -255,14 +302,14 @@ function DockIcon({ domain, iconUrl, name, meta, needsAttention, onClick }) {
       onFocus={() => setHovered(true)}
       onBlur={() => setHovered(false)}
       title={`Open ${name}`}
-      className="relative h-12 w-12 rounded-xl flex items-center justify-center bg-white dark:bg-white/95 ring-1 ring-black/[0.06] shadow-sm overflow-hidden transition-transform hover:scale-110 hover:-translate-y-1 touch-manipulation"
+      className={`relative h-12 w-12 rounded-xl flex items-center justify-center bg-white dark:bg-white/95 ring-1 ring-black/[0.06] shadow-sm overflow-hidden transition-transform touch-manipulation ${liftCls}`}
     >
       <DockFavicon domain={domain} iconUrl={iconUrl} name={name} />
       {needsAttention && (
         <span className="absolute -top-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-rose-500 ring-2 ring-white dark:ring-zinc-950" />
       )}
       {hovered && (
-        <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 whitespace-nowrap px-2.5 py-1 rounded-md bg-black/85 dark:bg-white/95 text-white dark:text-black text-[10.5px] font-medium shadow-md pointer-events-none">
+        <div className={tooltipCls}>
           <div>{name}</div>
           {meta && <div className="text-[9.5px] opacity-70">{meta}</div>}
         </div>

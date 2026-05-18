@@ -45,6 +45,7 @@ import NotesPanel from "@/components/notes/NotesPanel";
 import { saveExchange, getMemoryForPrompt, invalidateMemoryCache } from "@/lib/conversationMemory";
 import { scheduleSynthesisReindex } from "@/lib/synthesis/queueReindex";
 import { snapshotToSynthesisText } from "@/lib/synthesis/sourceText";
+import { fetchLoadInUpdatesMessage } from "@/lib/synthesis/loadInUpdates";
 import { useProjectFiles } from "@/hooks/useProjectFiles";
 import OmniaToolbar from "@/components/omnia/OmniaToolbar";
 import OmniaCenterWelcome from "@/components/omnia/OmniaCenterWelcome";
@@ -53,6 +54,8 @@ import OmniaVaultOverlay from "@/components/omnia/OmniaVaultOverlay";
 import FileDropModeDialog from "@/components/omnia/FileDropModeDialog";
 import OmniaSideRail from "@/components/omnia/OmniaSideRail";
 import OmniaFocusedChat from "@/components/omnia/OmniaFocusedChat";
+import VaultAppDock from "@/components/connections/VaultAppDock";
+import LoadInBriefingPanel from "@/components/omnia/LoadInBriefingPanel";
 import MobileFocusedChatGrids from "@/components/omnia/MobileFocusedChatGrids";
 import GridShareDialog from "@/components/omnia/GridShareDialog";
 import { useBoardPersistence, makeDefaultNotesPages } from "@/hooks/useBoardPersistence";
@@ -65,6 +68,17 @@ import { useChatEngine } from "@/hooks/useChatEngine";
 // state, and components remain wired up — they just never become visible
 // while this flag is on.
 const GRID_DISABLED = true;
+
+// Module-level "first mount of this page load" sentinel — reset on
+// every hard page load (since the JS module re-evaluates) and flipped
+// to false the first time OmniaGrid mounts. We use it to decide
+// whether to bounce a `/grid/<id>` URL back to `/app` so the load-in
+// greeting trigger can mint a fresh chat with the latest updates.
+// Without this, reloading the tab while parked at `/grid/<id>` would
+// leave the user staring at the same stale conversation forever —
+// the trigger only fires when `routeBoardId` is absent (i.e. on
+// `/app`), so the URL needs to drop back there to re-arm it.
+let omniaGridDidConsumeFirstLoad = false;
 
 const TASK_LINE_RE = /^\s*(?:[-*]\s+)?\[([ xX])\]\s+(.+)$/;
 
@@ -171,8 +185,74 @@ type PromptMessage = {
   aiYouTubeUrls?: { url: string; videoId: string }[];
   aiWebLinks?: string[];
   sources?: { title: string; url: string }[];
-  kind?: "prompt";
+  kind?: "prompt" | "load-in-greeting";
   attachments?: FocusedChatAttachment[];
+  // Action buttons rendered below the assistant bubble. Populated only
+  // by the load-in greeting today. Optional / ignored otherwise.
+  aiResponseActions?: Array<{
+    label: string;
+    href: string;
+    description?: string;
+    tone?: "primary" | "neutral" | "amber" | "emerald" | "fuchsia";
+    /** Optional brand-mark URL for "Connect <Platform>" prompts. */
+    iconUrl?: string;
+  }>;
+  // Structured sections for the load-in greeting: heading per topic,
+  // each row carrying its own inline CTA button. When present the
+  // renderer prefers this over the flat `aiResponseActions` strip.
+  aiResponseSections?: Array<{
+    id: string;
+    heading: string;
+    intro?: string;
+    items: Array<{
+      title: string;
+      subtitle?: string;
+      iconUrl?: string;
+      action?: {
+        label: string;
+        href: string;
+        description?: string;
+        tone?: "primary" | "neutral" | "amber" | "emerald" | "fuchsia";
+        iconUrl?: string;
+      };
+    }>;
+    summary?: string;
+    groups?: Array<{
+      id: string;
+      label: string;
+      iconUrl?: string;
+      domain?: string;
+      count: number;
+      latestTitle?: string;
+      latestRelative?: string;
+      items: Array<{
+        id: string;
+        title: string;
+        subtitle?: string;
+        href?: string;
+      }>;
+    }>;
+    chips?: Array<{
+      id: string;
+      label: string;
+      iconUrl: string;
+      href: string;
+      tone?: "primary" | "neutral" | "amber" | "emerald" | "fuchsia";
+    }>;
+    /**
+     * When present, identifies this section as user-authored (a row in
+     * `lykn_load_in_user_sections`). The chat renderer attaches inline
+     * edit / delete affordances to sections that carry this id.
+     */
+    userSectionId?: string;
+  }>;
+  /**
+   * Roll-up counts + 7-day activity series for the at-a-glance
+   * dashboard panel rendered next to the load-in greeting. Pulled
+   * verbatim from `LoadInUpdatesPayload.stats`. Optional so the
+   * field is harmless for non-greeting turns.
+   */
+  aiResponseStats?: import("@/lib/synthesis/loadInUpdates").LoadInUpdatesStats;
 };
 
 type CreateAction =
@@ -925,6 +1005,122 @@ export default function OmniaGridPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // --------------------------------------------------------------------
+  // Load-in updates greeting (signed-in users)
+  // --------------------------------------------------------------------
+  // Every fresh page load mints a brand-new chat where LYKN opens by
+  // recapping recent synthesis activity, awaiting approvals, project
+  // updates, calendar, etc. This is the "here's what changed" surface
+  // that replaced the retired synthesis-layer updates panel — the chat
+  // is now the front door so the user can react conversationally
+  // (approve a belief, follow up on a project update, etc.).
+  //
+  // Fires on two triggers, both gated by the `omniaGridDidConsumeFirstLoad`
+  // module flag (false on every hard page reload, true after the first
+  // mint of a given JS runtime):
+  //
+  //   1. First mount of a fresh runtime — even if the URL is already
+  //      `/grid/<old-id>`. We mint a new board and `replace`-navigate
+  //      directly to `/grid/<newId>` in a single hop, so the user never
+  //      sees a flicker through `/app`. This is the path every browser
+  //      reload / "reopen tab" enters through.
+  //   2. Subsequent navigations to `/app` (sidebar "new chat" button,
+  //      hash links, etc.). The module flag has already flipped, but
+  //      `!routeBoardId` arms the mint exactly once per `/app` visit.
+  //
+  // Mechanics:
+  //   • Fetch the activity payload (`fetchLoadInUpdatesMessage`).
+  //   • Stash it in `sessionStorage` keyed by a freshly minted UUID.
+  //   • `replace`-navigate to `/grid/<newId>`. The consume half (below,
+  //     after `useBoardPersistence` runs) reads back the payload, seeds
+  //     the chat with a single load-in-greeting message, and clears
+  //     the sessionStorage entry.
+  //
+  // We *must* navigate to a real board id rather than parking on `/app` —
+  // without one, `useBoardPersistence` auto-hydrates the previous board
+  // from `localStorage.omnia_board_id` and clobbers our seeded greeting.
+  //
+  // Prototype/guest users are intentionally skipped: their grid URLs
+  // are demo content, not Supabase-backed boards, and the walkthrough
+  // intro owns the chat surface for that flow.
+  const loadInGreetingSeededRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!user?.id) return;
+    if (planLoading) return;
+    if (hasPrototypeNeurons()) return;
+
+    const isFirstLoadOfRuntime = !omniaGridDidConsumeFirstLoad;
+    const onApp = !routeBoardId;
+    // Fire on (a) the very first OmniaGrid mount of this JS runtime
+    // regardless of URL, or (b) any subsequent landing on `/app`. The
+    // first-mount case covers hard reloads sitting at `/grid/<old>` —
+    // we mint a new board and replace the URL in one hop, no `/app`
+    // flicker in between. The `/app` case covers the in-app "new chat"
+    // sidebar action.
+    if (!isFirstLoadOfRuntime && !onApp) return;
+    omniaGridDidConsumeFirstLoad = true;
+
+    const emailName = String(user?.email || "").split("@")[0].trim();
+    const fullName = String(
+      user?.user_metadata?.full_name || user?.user_metadata?.name || "",
+    ).trim();
+    const firstName = fullName ? fullName.split(/\s+/)[0] : "";
+    const greetingName = firstName || emailName || null;
+
+    // Mint the board id SYNCHRONOUSLY and navigate immediately so the
+    // URL settles into its final state on this very tick. The actual
+    // briefing payload (calendar pull, synthesis activity, connector
+    // sync) fetches in the background and is layered onto the chat
+    // through the stale-greeting refresh path once it lands.
+    //
+    // The placeholder we stash in sessionStorage is intentionally
+    // minimal — just enough for the consume effect to seed a single
+    // `load-in-greeting` message (it bails on an empty `message`). The
+    // consume effect's type-out then fires for one tick over the
+    // placeholder, after which the stale-greeting refresh effect
+    // overlays the real briefing in place. Net result: the URL is
+    // correct instantly, the chat opens almost immediately with a
+    // "catching you up" line, then quietly upgrades to the full
+    // dashboard + sections as data arrives.
+    const newId =
+      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    try {
+      sessionStorage.setItem(
+        `lykn:loadInGreeting:${newId}`,
+        JSON.stringify({
+          message: greetingName
+            ? `Catching you up, ${greetingName}…`
+            : "Catching you up…",
+          sections: [],
+          actions: [],
+          stats: undefined,
+          greetingName,
+        }),
+      );
+      localStorage.setItem("lykn:lastLoadInGreetingBoardId", newId);
+      // Intentionally NOT setting `loadInGreetingMintedThisSession=1`
+      // here — that flag short-circuits the stale-greeting refresh
+      // effect, but we *want* that effect to run because the payload
+      // we stashed above is only a placeholder.
+      sessionStorage.removeItem("lykn:loadInGreetingMintedThisSession");
+    } catch {
+      // private mode → seeding will fail; bail rather than navigate
+      // to a board that can't be hydrated.
+      return;
+    }
+    // Single direct hop from wherever-we-are to `/grid/<newId>`.
+    // `replace` so the previous URL doesn't pollute browser history.
+    nav(`/grid/${newId}`, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id, planLoading, routeBoardId]);
+
+  // The matching "consume" half of the load-in-greeting flow lives below
+  // (after `useBoardPersistence` is called) — it needs `boardId` from
+  // the hook in scope to wait for hydration to settle.
+
   const createWelcomeText = useMemo(() => {
     const emailName = String(user?.email || "").split("@")[0].trim();
     const fullName = String(user?.user_metadata?.full_name || user?.user_metadata?.name || "").trim();
@@ -1085,6 +1281,356 @@ export default function OmniaGridPage() {
     resolveProjectFileToFile,
   } = useProjectFiles(boardId, user?.id);
   projectIdRef.current = projectId ?? null;
+
+  // Load-in greeting (consume half — paired with the trigger effect
+  // further up). Once useBoardPersistence has hydrated the brand-new
+  // board, look for a sessionStorage entry stashed by the trigger and
+  // seed the chat with LYKN's "what's been happening / approvals /
+  // project updates" recap.
+  useEffect(() => {
+    if (!routeBoardId) return;
+    if (!user?.id) return;
+    // `boardId === routeBoardId` is the cleanest signal we have for
+    // "hydration of this board is complete and chatMessages was just
+    // reset to []" — `useBoardPersistence` sets boardId synchronously
+    // alongside the reset, so observing the match means we're safe to
+    // append without racing the reset.
+    if (boardId !== routeBoardId) return;
+    if (loadInGreetingSeededRef.current.has(routeBoardId)) return;
+
+    let raw: string | null = null;
+    try {
+      raw = sessionStorage.getItem(`lykn:loadInGreeting:${routeBoardId}`);
+    } catch {
+      // ignore
+    }
+    if (!raw) return;
+
+    type LoadInAction = NonNullable<PromptMessage["aiResponseActions"]>[number];
+    type LoadInSection = NonNullable<PromptMessage["aiResponseSections"]>[number];
+    type LoadInStats = PromptMessage["aiResponseStats"];
+    let parsed: {
+      message?: string;
+      actions?: LoadInAction[];
+      sections?: LoadInSection[];
+      stats?: LoadInStats;
+      greetingName?: string;
+    } = {};
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      parsed = {};
+    }
+    const message = String(parsed?.message || "").trim();
+    const actions: LoadInAction[] = Array.isArray(parsed?.actions)
+      ? parsed.actions
+      : [];
+    const sections: LoadInSection[] = Array.isArray(parsed?.sections)
+      ? parsed.sections
+      : [];
+    const stats: LoadInStats = parsed?.stats || undefined;
+    const greetingNameForPanel = String(parsed?.greetingName || "").trim() || undefined;
+    try {
+      sessionStorage.removeItem(`lykn:loadInGreeting:${routeBoardId}`);
+    } catch {
+      // ignore
+    }
+    if (!message) return;
+    loadInGreetingSeededRef.current.add(routeBoardId);
+
+    // Match the existing prototype-intro pattern: a tiny synthetic
+    // "Catch me up" user prompt sits above LYKN's recap as the
+    // `aiResponse` of that prompt (PromptMessage.role is hard-typed to
+    // "user", every reply belongs to a prompt). We then progressively
+    // populate `aiResponse` word-by-word so the user sees LYKN typing
+    // out the update in real time — same cadence as the other in-app
+    // intros. Action buttons (`aiResponseActions`) are attached at the
+    // end of the type-out so they don't pop in mid-stream.
+    const promptId = `loadin-intro-${Date.now()}`;
+    const timeouts: number[] = [];
+
+    // Tokenise on whitespace BUT keep the whitespace tokens in the
+    // array so spaces / newlines accumulate naturally as we slice.
+    const words = message.split(/(\s+)/);
+    // Bigger messages need to type a touch faster so the user isn't
+    // staring at a half-rendered list for 20s. We scale step time
+    // inversely to length, clamped to a tight band.
+    // Cadence scales with length so multi-category recaps don't take
+    // forever. Bands roughly target a 6–10s total type-out regardless
+    // of how rich the user's day was.
+    const baseStepMs =
+      words.length > 600
+        ? 6
+        : words.length > 400
+          ? 9
+          : words.length > 220
+            ? 14
+            : words.length > 120
+              ? 20
+              : 26;
+
+    timeouts.push(
+      window.setTimeout(() => {
+        setChatRailOpen(true);
+        setChatRailVisible(true);
+        setChatMessages((prev) =>
+          prev.length > 0
+            ? prev
+            : [
+                {
+                  id: promptId,
+                  role: "user",
+                  // No synthetic user prompt — the load-in greeting is
+                  // an unprompted assistant briefing. `kind` flags this
+                  // turn so the renderer hides the user bubble and
+                  // skips the "AI Response" collapsible wrapper.
+                  content: "",
+                  aiResponse: "",
+                  kind: "load-in-greeting",
+                  // Attach the dashboard stats immediately so the
+                  // right-side briefing panel animates in alongside the
+                  // type-out, not as a last-tick pop-in.
+                  aiResponseStats: stats,
+                  ...(greetingNameForPanel
+                    ? ({ greetingName: greetingNameForPanel } as any)
+                    : {}),
+                },
+              ],
+        );
+
+        let i = 0;
+        const tick = () => {
+          i += 1;
+          const partial = words.slice(0, i).join("");
+          setChatMessages((prev) =>
+            prev.map((m) =>
+              m.id === promptId ? { ...m, aiResponse: partial } : m,
+            ),
+          );
+          if (i < words.length) {
+            timeouts.push(window.setTimeout(tick, baseStepMs));
+          } else if (sections.length > 0 || actions.length > 0) {
+            // Reveal the section blocks (and the legacy flat action
+            // strip, for any consumer that still reads it) one tick
+            // after the last word lands so the transition reads as
+            // "LYKN finished, here's what you can do next" rather
+            // than buttons popping in simultaneously with the final
+            // period.
+            timeouts.push(
+              window.setTimeout(() => {
+                setChatMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === promptId
+                      ? {
+                          ...m,
+                          aiResponseSections:
+                            sections.length > 0 ? sections : undefined,
+                          aiResponseActions:
+                            sections.length > 0
+                              ? undefined
+                              : actions.length > 0
+                                ? actions
+                                : undefined,
+                        }
+                      : m,
+                  ),
+                );
+              }, 240),
+            );
+          }
+        };
+        tick();
+      }, 250),
+    );
+
+    return () => {
+      for (const t of timeouts) window.clearTimeout(t);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeBoardId, user?.id, boardId]);
+
+  // Stale-greeting refresh: any time we land on a board whose ONLY
+  // chat turn is a `load-in-greeting` (i.e. the user hasn't typed
+  // anything yet — they just came back to a board that was minted
+  // purely to host the welcome recap), re-fetch the load-in payload
+  // and rewrite the assistant turn in place. The URL stays stable,
+  // but the user always sees up-to-the-minute activity instead of
+  // whatever was persisted on the previous visit.
+  //
+  // We guard tightly to avoid clobbering legitimate state:
+  //   • `boardId === routeBoardId` — wait for hydration to settle.
+  //   • Exactly one message, role=user, kind="load-in-greeting".
+  //   • One refresh per board id per session (ref-tracked).
+  //   • `mintedThisSession` flag short-circuits the freshly-minted
+  //     case so we don't double-fetch right after the trigger seeds
+  //     a brand-new board.
+  const loadInGreetingRefreshedRef = useRef<Set<string>>(new Set());
+
+  // Reusable refresher used by both the on-mount effect below and the
+  // inline user-sections composer in the chat surface. Re-fetches the
+  // greeting payload and overlays it onto the single load-in-greeting
+  // message in-place (no remount, no URL change). Returns a no-op if
+  // the chat isn't currently sitting on a load-in greeting.
+  //
+  // When the current message is the "Catching you up…" placeholder
+  // (i.e. we're upgrading a freshly-minted greeting board on first
+  // load, not refreshing an already-shown one), we replay the same
+  // word-by-word type-out animation the consume effect uses so the
+  // briefing fades into view instead of snapping in all at once.
+  const refreshLoadInGreetingInPlace = useCallback(async () => {
+    if (!user?.id) return;
+    const emailName = String(user?.email || "").split("@")[0].trim();
+    const fullName = String(
+      user?.user_metadata?.full_name || user?.user_metadata?.name || "",
+    ).trim();
+    const firstName = fullName ? fullName.split(/\s+/)[0] : "";
+    const greetingName = firstName || emailName || null;
+    let payload: Awaited<ReturnType<typeof fetchLoadInUpdatesMessage>> | null =
+      null;
+    try {
+      payload = await fetchLoadInUpdatesMessage({ greetingName });
+    } catch {
+      payload = null;
+    }
+    if (!payload) return;
+
+    // Sniff whether we're overlaying a placeholder vs. refreshing a
+    // briefing the user has already been reading. Placeholder text is
+    // always "Catching you up…" / "Catching you up, <name>…" — short
+    // and ends in an ellipsis.
+    let isPlaceholder = false;
+    let targetMsgId: string | null = null;
+    setChatMessages((prev) => {
+      if (prev.length === 1 && prev[0].kind === "load-in-greeting") {
+        const cur = prev[0];
+        const txt = String(cur.aiResponse || "").trim();
+        isPlaceholder = txt.startsWith("Catching you up") && txt.endsWith("…");
+        targetMsgId = cur.id;
+      }
+      return prev;
+    });
+
+    if (!isPlaceholder) {
+      // Already-shown briefing → instant overlay, no animation.
+      setChatMessages((prev) => {
+        if (prev.length !== 1) return prev;
+        const cur = prev[0];
+        if (cur.kind !== "load-in-greeting") return prev;
+        return [
+          {
+            ...cur,
+            aiResponse: payload!.message,
+            aiResponseSections:
+              (payload!.sections && payload!.sections.length > 0)
+                ? payload!.sections
+                : undefined,
+            aiResponseActions:
+              (!payload!.sections || payload!.sections.length === 0) &&
+              payload!.actions && payload!.actions.length > 0
+                ? payload!.actions
+                : undefined,
+            aiResponseStats: payload!.stats,
+            ...(greetingName ? ({ greetingName } as any) : {}),
+          },
+        ];
+      });
+      return;
+    }
+
+    // Placeholder upgrade → clear the placeholder, attach the
+    // dashboard stats immediately, then type out the real message
+    // word-by-word using the same cadence as the consume effect.
+    if (!targetMsgId) return;
+    const words = payload.message.split(/(\s+)/);
+    const baseStepMs =
+      words.length > 600
+        ? 6
+        : words.length > 400
+          ? 9
+          : words.length > 220
+            ? 14
+            : words.length > 120
+              ? 20
+              : 26;
+    setChatMessages((prev) =>
+      prev.map((m) =>
+        m.id === targetMsgId
+          ? {
+              ...m,
+              aiResponse: "",
+              aiResponseSections: undefined,
+              aiResponseActions: undefined,
+              aiResponseStats: payload!.stats,
+              ...(greetingName ? ({ greetingName } as any) : {}),
+            }
+          : m,
+      ),
+    );
+    let i = 0;
+    const tick = () => {
+      i += 1;
+      const partial = words.slice(0, i).join("");
+      setChatMessages((prev) =>
+        prev.map((m) =>
+          m.id === targetMsgId ? { ...m, aiResponse: partial } : m,
+        ),
+      );
+      if (i < words.length) {
+        window.setTimeout(tick, baseStepMs);
+      } else if (
+        (payload!.sections && payload!.sections.length > 0) ||
+        (payload!.actions && payload!.actions.length > 0)
+      ) {
+        window.setTimeout(() => {
+          setChatMessages((prev) =>
+            prev.map((m) =>
+              m.id === targetMsgId
+                ? {
+                    ...m,
+                    aiResponseSections:
+                      payload!.sections && payload!.sections.length > 0
+                        ? payload!.sections
+                        : undefined,
+                    aiResponseActions:
+                      payload!.sections && payload!.sections.length > 0
+                        ? undefined
+                        : payload!.actions && payload!.actions.length > 0
+                          ? payload!.actions
+                          : undefined,
+                  }
+                : m,
+            ),
+          );
+        }, 240);
+      }
+    };
+    tick();
+  }, [user?.id, user?.email, user?.user_metadata]);
+
+  useEffect(() => {
+    if (!routeBoardId) return;
+    if (!user?.id) return;
+    if (boardId !== routeBoardId) return;
+    if (chatMessages.length !== 1) return;
+    const only = chatMessages[0];
+    if (!only || only.kind !== "load-in-greeting") return;
+    let mintedThisSession = false;
+    try {
+      mintedThisSession =
+        sessionStorage.getItem("lykn:loadInGreetingMintedThisSession") === "1";
+    } catch {
+      /* ignore */
+    }
+    if (mintedThisSession && loadInGreetingSeededRef.current.has(routeBoardId)) {
+      // The trigger+consume pair already populated this board with
+      // fresh data on the mint cycle — don't double-fetch.
+      return;
+    }
+    if (loadInGreetingRefreshedRef.current.has(routeBoardId)) return;
+    loadInGreetingRefreshedRef.current.add(routeBoardId);
+    void refreshLoadInGreetingInPlace();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeBoardId, user?.id, boardId, chatMessages]);
 
   // Keep the in-memory grid title in sync when a peer surface (mobile
   // grids drawer, sidebar menu, etc.) renames the active board out of
@@ -1898,6 +2444,15 @@ export default function OmniaGridPage() {
   useEffect(() => {
     if (!chatMode && !chatRailVisible) return;
     if (chatUserScrolledUpRef.current) return;
+    // The load-in greeting is an unprompted briefing meant to be read
+    // from the top — auto-scrolling to the bottom as the message types
+    // out would yank the salutation and the first few bullets out of
+    // view. Skip the stick-to-bottom behaviour while the chat is a
+    // standalone greeting and let the user start at the top.
+    const onlyGreeting =
+      chatMessages.length === 1 &&
+      chatMessages[0]?.kind === "load-in-greeting";
+    if (onlyGreeting) return;
     const el = chatScrollRef.current;
     if (!el) return;
     chatProgrammaticScrollRef.current = true;
@@ -3056,8 +3611,47 @@ export default function OmniaGridPage() {
           onReaction={handleFocusedChatReaction}
           onRegenerate={handleFocusedChatRegenerate}
           onRegenerateNonUser={handleFocusedChatRegenerateNonUser}
+          onLoadInGreetingRefresh={refreshLoadInGreetingInPlace}
         />
       )}
+
+      {/* Vertical app launcher on the left edge of the chat surface.
+          Same connected-apps dock that sits at the bottom of the Vault,
+          flipped to a stacked column so it lives alongside the chat
+          column without crowding it. Desktop-only — the phone layout
+          already uses every pixel of horizontal space for the chat
+          bubbles, and the bottom tab bar covers the launcher's job
+          there. */}
+      {chatMode && !isMobilePhone && !isMobileGrid && (
+        <VaultAppDock user={user} orientation="vertical" />
+      )}
+
+      {/* Floating load-in briefing panel — anchored to the far right
+          of the viewport, outside the chat column. Visible only while
+          the user is sitting on a fresh load-in greeting (single
+          unprompted assistant message) on a screen wide enough to
+          fit the panel without crowding the chat surface. */}
+      {chatMode && !isMobilePhone && !isMobileGrid && (() => {
+        const greeting =
+          chatMessages.length === 1 && chatMessages[0]?.kind === "load-in-greeting"
+            ? chatMessages[0]
+            : null;
+        if (!greeting?.aiResponseStats) return null;
+        return (
+          <div
+            className="hidden lg:block fixed right-4 xl:right-8 top-20 z-[80]"
+            style={{
+              maxHeight: "calc(100vh - 6rem)",
+              width: "20rem",
+            }}
+          >
+            <LoadInBriefingPanel
+              stats={greeting.aiResponseStats}
+              greetingName={(greeting as any).greetingName}
+            />
+          </div>
+        );
+      })()}
 
       <DialogAny open={showAttachMenu} onOpenChange={setShowAttachMenu}>
         <DialogContentAny className="rounded-2xl border border-white/30 bg-[#f2f2f7]/65 backdrop-blur-md text-black shadow-lg">

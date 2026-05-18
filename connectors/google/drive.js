@@ -56,7 +56,7 @@ async function syncDriveStarred({ connection, supabaseAdmin, accessToken }) {
         userId: connection.user_id,
         file: f,
       });
-      if (result === 'saved') saved++;
+      if (result === 'saved' || result === 'updated') saved++;
       else skipped++;
 
       if (modified > newest) newest = modified;
@@ -114,6 +114,19 @@ async function saveDriveFile({ supabaseAdmin, userId, file }) {
   // continues to mean "non-app files I starred."
   const { source, appTag } = driveSourceFor(file.mimeType);
 
+  // Synthesis embed body — title + filetype + ownership context. Drive
+  // doesn't give us file contents from the bookmark-only sync path
+  // (would need a follow-up `files.export` call per Doc/Sheet, which
+  // would 10x the API quota), so we embed the metadata. That's still
+  // enough for the algorithm to know "Eli has a Notion-related Google
+  // Doc shared by Sam" without reading the body.
+  const body = [
+    title,
+    `Type: ${humanMime(file.mimeType)}`,
+    owner ? `Owner: ${owner}` : '',
+    file.owners?.[0]?.emailAddress ? `<${file.owners[0].emailAddress}>` : '',
+  ].filter(Boolean).join('\n');
+
   return saveGoogleNote({
     supabaseAdmin,
     userId,
@@ -123,6 +136,14 @@ async function saveDriveFile({ supabaseAdmin, userId, file }) {
     tags: [appTag, 'starred', driveTagFor(file.mimeType), 'link', 'uploaded'].filter(Boolean),
     source,
     createdAt: file.modifiedTime ? new Date(file.modifiedTime).toISOString() : undefined,
+    body,
+    embedMetadata: {
+      source,
+      title,
+      url,
+      mime: file.mimeType || '',
+      owner,
+    },
   });
 }
 

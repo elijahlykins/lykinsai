@@ -15,6 +15,7 @@
 // ============================================================================
 
 import { ConnectorAuthError } from '../connectors-service.js';
+import { saveConnectorNote } from './_save.js';
 
 const LIN_AUTH_URL = 'https://linear.app/oauth/authorize';
 const LIN_TOKEN_URL = 'https://api.linear.app/oauth/token';
@@ -185,7 +186,7 @@ export const linearAdapter = {
           userId: connection.user_id,
           issue,
         });
-        if (result === 'saved') saved++;
+        if (result === 'saved' || result === 'updated') saved++;
         else skipped++;
 
         if (updated > newest) newest = updated;
@@ -215,14 +216,6 @@ async function saveIssueAsNote({ supabaseAdmin, userId, issue }) {
   const url = issue.url;
   if (!url) return 'skipped';
 
-  const { data: existing } = await supabaseAdmin
-    .from('notes')
-    .select('id')
-    .eq('user_id', userId)
-    .ilike('content', `%${url}%`)
-    .limit(1);
-  if (existing && existing.length > 0) return 'skipped';
-
   const title = `${issue.identifier} — ${issue.title}`.slice(0, 280);
   const desc = (issue.description || '').slice(0, 1200);
   const stateLabel = issue.state?.name || '';
@@ -245,29 +238,38 @@ async function saveIssueAsNote({ supabaseAdmin, userId, issue }) {
     authorName: '',
     authorHandle: '',
   };
-  const noteContent = `${title}\n\n[ATTACHMENTS_JSON:${JSON.stringify([attachment])}]`;
 
   const tags = ['linear', 'issue', issue.team?.key?.toLowerCase(), 'link', 'uploaded'].filter(Boolean);
   const createdAt = issue.updatedAt ? new Date(issue.updatedAt).toISOString() : undefined;
 
-  const { error } = await supabaseAdmin
-    .from('notes')
-    .insert({
-      user_id: userId,
-      title,
-      content: noteContent,
+  // Issue body: state + team + priority + description. Linear issues
+  // genuinely change over time (description edits, state transitions),
+  // so the upsert path in saveConnectorNote is what we want here —
+  // every sync reflects the current state of the issue.
+  const body = [
+    stateLabel ? `State: ${stateLabel}` : '',
+    teamLabel ? `Team: ${teamLabel}` : '',
+    issue.priorityLabel ? `Priority: ${issue.priorityLabel}` : '',
+    desc ? '\n' + desc : '',
+  ].filter(Boolean).join('\n');
+
+  return saveConnectorNote({
+    supabaseAdmin,
+    userId,
+    url,
+    title,
+    attachment,
+    tags,
+    source: 'linear_issue',
+    createdAt,
+    body,
+    embedMetadata: {
       source: 'linear_issue',
-      tags,
-      created_at: createdAt,
-    });
-  if (error) {
-    const { error: err2 } = await supabaseAdmin
-      .from('notes')
-      .insert({ user_id: userId, title, content: noteContent });
-    if (err2) {
-      console.error(`[linear] note insert failed for ${url}:`, err2.message);
-      return 'skipped';
-    }
-  }
-  return 'saved';
+      title,
+      url,
+      identifier: issue.identifier || '',
+      state: stateLabel,
+      team: teamLabel,
+    },
+  });
 }

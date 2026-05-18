@@ -1,8 +1,10 @@
 import React, { useRef, useEffect, useMemo, useState, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import {
+  ArrowRight,
   Check, ChevronRight, Copy, Download, FileText, Globe,
-  GripVertical, Link2, MoreHorizontal, Music, Play, RefreshCw,
-  Save, Share2, StickyNote, ThumbsDown, ThumbsUp,
+  GripVertical, Link2, MoreHorizontal, Music, Pencil, Play, Plus, RefreshCw,
+  Save, Share2, StickyNote, ThumbsDown, ThumbsUp, Trash2, X as XIcon,
 } from "lucide-react";
 import { GridIcon } from "@/components/ui/GridIcon";
 import ReactMarkdown from "react-markdown";
@@ -10,6 +12,7 @@ import remarkGfm from "remark-gfm";
 import NeuronPill from "@/components/synthesis/NeuronPill";
 import AppliedRulePill from "@/components/synthesis/AppliedRulePill";
 import type { FactNeuron } from "@/lib/ai/learnedTag";
+import { supabase } from "@/lib/supabase";
 
 const TASK_LINE_RE = /^\s*(?:[-*]\s+)?\[([ xX])\]\s+(.+)$/;
 
@@ -101,7 +104,7 @@ type PromptMessage = {
   aiYouTubeUrls?: { url: string; videoId: string }[];
   aiWebLinks?: string[];
   sources?: { title: string; url: string }[];
-  kind?: "prompt";
+  kind?: "prompt" | "load-in-greeting";
   attachments?: FocusedChatAttachment[];
   /**
    * Set when the AI's reply ended with a hidden <learned>/<reason> or
@@ -113,6 +116,100 @@ type PromptMessage = {
    * response so the user sees LYKN learning about them in real time.
    */
   factNeuron?: FactNeuron;
+  /**
+   * Action buttons rendered below the AI response bubble. Currently
+   * used by the load-in greeting seeded by OmniaGrid — each action is
+   * a route the user can jump to (synthesis layer with a focused
+   * belief, a project's chat, etc.). Internal `href`s (starting with
+   * `/`) route via react-router; everything else opens in a new tab.
+   * Optional and ignored when absent, so other turns are unaffected.
+   */
+  aiResponseActions?: Array<{
+    label: string;
+    href: string;
+    description?: string;
+    tone?: "primary" | "neutral" | "amber" | "emerald" | "fuchsia";
+    /**
+     * Optional remote icon (used by the "Connect <Platform>" prompts
+     * in the load-in greeting). When present, replaces the default
+     * ArrowRight glyph with the platform's brand mark.
+     */
+    iconUrl?: string;
+  }>;
+  /**
+   * Structured load-in greeting sections. When present, the renderer
+   * shows the assistant bubble as: short welcome (`aiResponse`) at the
+   * top → a heading per section → each row inside the section with an
+   * optional inline CTA button. Takes precedence over the flat
+   * `aiResponseActions` strip for this turn.
+   */
+  aiResponseSections?: Array<{
+    id: string;
+    heading: string;
+    intro?: string;
+    items: Array<{
+      title: string;
+      subtitle?: string;
+      /**
+       * Optional row-leading thumbnail — used by the Project Updates
+       * lane to surface the AI app that made the most recent move on
+       * each project (Claude / Cursor / ChatGPT favicon).
+       */
+      iconUrl?: string;
+      action?: {
+        label: string;
+        href: string;
+        description?: string;
+        tone?: "primary" | "neutral" | "amber" | "emerald" | "fuchsia";
+        iconUrl?: string;
+      };
+    }>;
+    /** When set, the section renders as a prose paragraph in place of the items list. */
+    summary?: string;
+    /**
+     * When set, the section renders as a stack of collapsible
+     * "notification bubble" rows — one per source app — instead of
+     * the flat `items` list. Each bubble shows the app's logo and
+     * expands inline to a list of items, each linking to its
+     * canonical source URL.
+     */
+    groups?: Array<{
+      id: string;
+      label: string;
+      iconUrl?: string;
+      domain?: string;
+      count: number;
+      latestTitle?: string;
+      latestRelative?: string;
+      items: Array<{
+        id: string;
+        title: string;
+        subtitle?: string;
+        href?: string;
+      }>;
+    }>;
+    chips?: Array<{
+      id: string;
+      label: string;
+      iconUrl: string;
+      href: string;
+      tone?: "primary" | "neutral" | "amber" | "emerald" | "fuchsia";
+    }>;
+    /**
+     * Marks a user-authored section (row in `lykn_load_in_user_sections`).
+     * When present, the renderer attaches inline edit / delete buttons
+     * next to the heading so the user can manage their own additions
+     * from inside the briefing.
+     */
+    userSectionId?: string;
+  }>;
+  /**
+   * Roll-up stats for the right-side dashboard panel rendered next to
+   * the load-in greeting. Pre-computed by `loadInUpdates.ts` so the
+   * panel never has to walk `aiResponseSections` to draw the chart.
+   * Shape mirrors `LoadInUpdatesStats` and is passed through verbatim.
+   */
+  aiResponseStats?: import("@/lib/synthesis/loadInUpdates").LoadInUpdatesStats;
 };
 
 type CanvasFileBlock = {
@@ -192,6 +289,15 @@ export interface OmniaFocusedChatProps {
 
   onRegenerate: (msgId: string, content: string) => void;
   onRegenerateNonUser: (msgId: string, idx: number) => void;
+
+  /**
+   * Refetches the load-in greeting payload and overlays it onto the
+   * currently-rendered greeting message in place. Invoked by the
+   * inline user-sections composer after every CRUD so the bubble (and
+   * the right-side dashboard panel) reflect the new state without a
+   * full page reload. Optional — non-greeting surfaces leave it unset.
+   */
+  onLoadInGreetingRefresh?: () => void | Promise<void>;
 }
 
 /* ------------------------------------------------------------------ */
@@ -233,6 +339,425 @@ type MessageItemProps = {
   handleChunkClick: (e: React.MouseEvent, chunkKey: string, chunkText: string) => void;
   getSelectedText: (fallbackKey: string, fallbackText: string) => string;
   registerChunks: (msgId: string, entries: Array<{ key: string; text: string }>) => void;
+  /**
+   * Forwarded from `OmniaFocusedChatProps`. The inline user-sections
+   * composer calls this after any insert / update / delete so the
+   * greeting bubble (and dashboard panel) pick up the new state.
+   */
+  onLoadInGreetingRefresh?: () => void | Promise<void>;
+};
+
+/**
+ * Notification-style bubble for one connector source inside a
+ * load-in greeting section. Collapsed: a row showing the app's
+ * branded logo + label + count + preview of the latest item.
+ * Expanded: a dropdown list of items, each linking out to its
+ * canonical source URL (the actual Gmail email, Notion page, etc.).
+ * Each bubble owns its own open/closed state — sections may stack
+ * several bubbles and the user opens whichever they care about.
+ */
+const LoadInBubble: React.FC<{
+  msgId: string;
+  group: {
+    id: string;
+    label: string;
+    iconUrl?: string;
+    domain?: string;
+    count: number;
+    latestTitle?: string;
+    latestRelative?: string;
+    items: Array<{ id: string; title: string; subtitle?: string; href?: string }>;
+  };
+}> = ({ msgId, group }) => {
+  const [open, setOpen] = useState(false);
+  const navigate = useNavigate();
+  const iconCandidate =
+    group.iconUrl ||
+    (group.domain
+      ? `https://www.google.com/s2/favicons?sz=128&domain=${encodeURIComponent(group.domain)}`
+      : null);
+  return (
+    <div className="rounded-2xl border border-white/40 dark:border-white/10 bg-white/50 dark:bg-white/[0.04] backdrop-blur-md shadow-[0_2px_10px_rgba(0,0,0,0.06)] overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-white/40 dark:hover:bg-white/[0.06] transition-colors"
+      >
+        {iconCandidate ? (
+          <img
+            src={iconCandidate}
+            alt=""
+            className="w-7 h-7 rounded-md object-contain flex-shrink-0 bg-white/60 dark:bg-white/10 p-0.5"
+            loading="lazy"
+            referrerPolicy="no-referrer"
+            onError={(e) => {
+              (e.currentTarget as HTMLImageElement).style.display = "none";
+            }}
+          />
+        ) : (
+          <div className="w-7 h-7 rounded-md bg-white/60 dark:bg-white/10 flex-shrink-0" />
+        )}
+        <div className="flex-1 min-w-0 leading-tight">
+          <div className="flex items-center gap-2">
+            <span className="text-[13px] font-semibold text-black/85 dark:text-white/90 truncate">
+              {group.label}
+            </span>
+            <span className="text-[11px] opacity-60 flex-shrink-0">
+              {group.count} new
+            </span>
+          </div>
+          <div className="text-[12px] opacity-75 truncate mt-0.5">
+            {group.latestTitle
+              ? `${group.latestTitle}${group.latestRelative ? ` · ${group.latestRelative}` : ""}`
+              : group.latestRelative || ""}
+          </div>
+        </div>
+        <ChevronRight
+          className={`w-4 h-4 text-black/40 dark:text-white/40 flex-shrink-0 transition-transform duration-200 ${open ? "rotate-90" : ""}`}
+        />
+      </button>
+      <div
+        className={`grid transition-[grid-template-rows,opacity] duration-200 ease-in-out ${open ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"}`}
+      >
+        <div className="overflow-hidden min-h-0">
+          <div className="px-2 pb-2 pt-1 space-y-1 border-t border-white/30 dark:border-white/5">
+            {group.items.map((it) => {
+              const hasHref = typeof it.href === "string" && it.href.length > 0;
+              const isInternal = hasHref && it.href!.startsWith("/");
+              const inner = (
+                <div className="flex items-start gap-2 px-2 py-1.5 rounded-lg hover:bg-white/50 dark:hover:bg-white/[0.06] transition-colors">
+                  <div className="flex-1 min-w-0 leading-tight">
+                    <div className="text-[12.5px] text-black/85 dark:text-white/90 truncate">
+                      {it.title}
+                    </div>
+                    {it.subtitle ? (
+                      <div className="text-[11px] opacity-60 mt-0.5 truncate">
+                        {it.subtitle}
+                      </div>
+                    ) : null}
+                  </div>
+                  {hasHref ? (
+                    <ArrowRight className="w-3.5 h-3.5 opacity-40 mt-1 flex-shrink-0" />
+                  ) : null}
+                </div>
+              );
+              if (!hasHref) {
+                return <div key={`${msgId}-${group.id}-${it.id}`}>{inner}</div>;
+              }
+              // Internal hrefs route via react-router so we don't
+              // hard-reload the app and lose chat state; external
+              // hrefs (Gmail / Notion / Slack URLs etc.) open in a
+              // new tab.
+              const onClick = (e: React.MouseEvent) => {
+                if (!isInternal) return;
+                if (e.metaKey || e.ctrlKey || e.shiftKey || (e as any).button === 1) return;
+                e.preventDefault();
+                navigate(it.href!);
+              };
+              return (
+                <a
+                  key={`${msgId}-${group.id}-${it.id}`}
+                  href={it.href}
+                  onClick={onClick}
+                  target={isInternal ? undefined : "_blank"}
+                  rel={isInternal ? undefined : "noopener noreferrer"}
+                  className="block"
+                >
+                  {inner}
+                </a>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/**
+ * Inline editor / composer that lets the user add personal sections to
+ * the bottom of their daily load-in briefing. Talks to
+ * `lykn_load_in_user_sections` directly (RLS-scoped to the current
+ * user) and asks the parent to refresh the greeting payload after
+ * every CRUD so the rest of the bubble stays in sync.
+ *
+ * Three modes:
+ *   • idle    — shows a dashed "+ Add a section" tile.
+ *   • create  — heading + body inputs with Save / Cancel.
+ *   • saving  — spinner-y disabled state while supabase round-trips.
+ *
+ * Edit and delete affordances for already-saved user sections are
+ * rendered inline next to each section heading by `MessageItem`; this
+ * component is only responsible for *new* sections plus the
+ * "edit current section X" form when the parent passes editingId.
+ */
+const LoadInUserSectionsComposer: React.FC<{
+  onChanged?: () => void | Promise<void>;
+}> = ({ onChanged }) => {
+  const [mode, setMode] = useState<"idle" | "create">("idle");
+  const [heading, setHeading] = useState("");
+  const [body, setBody] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const reset = () => {
+    setHeading("");
+    setBody("");
+    setError(null);
+    setMode("idle");
+  };
+
+  const save = useCallback(async () => {
+    const h = heading.trim();
+    if (!h) {
+      setError("Add a heading so I know what to call this section.");
+      return;
+    }
+    if (h.length > 120) {
+      setError("Heading is too long — keep it under 120 characters.");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const { data: session } = await supabase.auth.getSession();
+      const userId = session?.session?.user?.id;
+      if (!userId) {
+        setError("You need to be signed in to add a section.");
+        setSaving(false);
+        return;
+      }
+      const { error: insertErr } = await supabase
+        .from("lykn_load_in_user_sections")
+        .insert({
+          user_id: userId,
+          heading: h,
+          body: body.trim(),
+        });
+      if (insertErr) {
+        setError(insertErr.message || "Couldn't save — try again?");
+        setSaving(false);
+        return;
+      }
+      reset();
+      if (onChanged) await onChanged();
+    } catch (e: any) {
+      setError(String(e?.message || e || "Save failed."));
+    } finally {
+      setSaving(false);
+    }
+  }, [heading, body, onChanged]);
+
+  if (mode === "idle") {
+    return (
+      <button
+        type="button"
+        onClick={() => setMode("create")}
+        className="group/addsec w-full flex items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-black/15 dark:border-white/15 bg-white/30 dark:bg-white/[0.025] hover:bg-white/55 dark:hover:bg-white/[0.05] hover:border-black/30 dark:hover:border-white/30 px-4 py-3 text-[12.5px] font-medium text-black/60 dark:text-white/60 hover:text-black/85 dark:hover:text-white/85 transition-all"
+      >
+        <Plus className="w-3.5 h-3.5 opacity-70 group-hover/addsec:opacity-100 transition-opacity" />
+        <span>Add a section</span>
+      </button>
+    );
+  }
+
+  return (
+    <div className="rounded-2xl border border-white/40 dark:border-white/10 bg-white/55 dark:bg-white/[0.04] backdrop-blur-md shadow-[0_2px_10px_rgba(0,0,0,0.06)] overflow-hidden">
+      <div className="px-3 pt-3 pb-2 flex items-center justify-between">
+        <div className="text-[11px] uppercase tracking-wider font-semibold text-black/55 dark:text-white/55">
+          New section
+        </div>
+        <button
+          type="button"
+          onClick={reset}
+          disabled={saving}
+          className="p-1 rounded-md text-black/45 dark:text-white/45 hover:text-black/80 dark:hover:text-white/80 hover:bg-black/5 dark:hover:bg-white/[0.06] transition-colors disabled:opacity-40"
+          aria-label="Cancel"
+        >
+          <XIcon className="w-3.5 h-3.5" />
+        </button>
+      </div>
+      <div className="px-3 pb-3 space-y-2">
+        <input
+          type="text"
+          value={heading}
+          onChange={(e) => setHeading(e.target.value)}
+          placeholder="Heading (e.g. Today's focus)"
+          maxLength={120}
+          disabled={saving}
+          className="w-full bg-white/70 dark:bg-white/[0.04] border border-black/10 dark:border-white/10 rounded-lg px-3 py-2 text-[13px] font-semibold text-black/85 dark:text-white/90 placeholder:font-normal placeholder:text-black/35 dark:placeholder:text-white/30 focus:outline-none focus:border-black/25 dark:focus:border-white/25 transition-colors"
+        />
+        <textarea
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+          placeholder="Add notes, links, bullets — markdown works."
+          rows={4}
+          maxLength={4000}
+          disabled={saving}
+          className="w-full bg-white/70 dark:bg-white/[0.04] border border-black/10 dark:border-white/10 rounded-lg px-3 py-2 text-[12.5px] leading-relaxed text-black/80 dark:text-white/85 placeholder:text-black/35 dark:placeholder:text-white/30 focus:outline-none focus:border-black/25 dark:focus:border-white/25 transition-colors resize-y"
+        />
+        {error ? (
+          <div className="text-[11.5px] text-rose-600 dark:text-rose-300">{error}</div>
+        ) : null}
+        <div className="flex items-center justify-end gap-2 pt-1">
+          <button
+            type="button"
+            onClick={reset}
+            disabled={saving}
+            className="px-3 py-1.5 rounded-md text-[12px] font-medium text-black/60 dark:text-white/60 hover:bg-black/5 dark:hover:bg-white/[0.06] transition-colors disabled:opacity-40"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={save}
+            disabled={saving || !heading.trim()}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-blue-400/40 bg-blue-500/15 hover:bg-blue-500/25 text-blue-700 dark:text-blue-200 text-[12px] font-semibold transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {saving ? (
+              <RefreshCw className="w-3 h-3 animate-spin" />
+            ) : (
+              <Check className="w-3 h-3" />
+            )}
+            <span>{saving ? "Saving…" : "Save section"}</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/**
+ * Editable view of a single user-authored section. Renders inline in
+ * place of the static heading + body when the user clicks "edit" on a
+ * section they own. Supports rename, body rewrite, and delete.
+ */
+const LoadInUserSectionEditor: React.FC<{
+  sectionId: string;
+  initialHeading: string;
+  initialBody: string;
+  onDone: () => void;
+  onChanged?: () => void | Promise<void>;
+}> = ({ sectionId, initialHeading, initialBody, onDone, onChanged }) => {
+  const [heading, setHeading] = useState(initialHeading);
+  const [body, setBody] = useState(initialBody);
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const save = useCallback(async () => {
+    const h = heading.trim();
+    if (!h) {
+      setError("Heading can't be empty.");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const { error: updErr } = await supabase
+        .from("lykn_load_in_user_sections")
+        .update({ heading: h, body: body.trim() })
+        .eq("id", sectionId);
+      if (updErr) {
+        setError(updErr.message || "Couldn't save changes.");
+        setSaving(false);
+        return;
+      }
+      if (onChanged) await onChanged();
+      onDone();
+    } catch (e: any) {
+      setError(String(e?.message || e || "Save failed."));
+    } finally {
+      setSaving(false);
+    }
+  }, [heading, body, sectionId, onChanged, onDone]);
+
+  const remove = useCallback(async () => {
+    setDeleting(true);
+    setError(null);
+    try {
+      const { error: delErr } = await supabase
+        .from("lykn_load_in_user_sections")
+        .delete()
+        .eq("id", sectionId);
+      if (delErr) {
+        setError(delErr.message || "Couldn't delete.");
+        setDeleting(false);
+        return;
+      }
+      if (onChanged) await onChanged();
+      onDone();
+    } catch (e: any) {
+      setError(String(e?.message || e || "Delete failed."));
+      setDeleting(false);
+    }
+  }, [sectionId, onChanged, onDone]);
+
+  const busy = saving || deleting;
+
+  return (
+    <div className="rounded-2xl border border-white/40 dark:border-white/10 bg-white/55 dark:bg-white/[0.04] backdrop-blur-md shadow-[0_2px_10px_rgba(0,0,0,0.06)] overflow-hidden">
+      <div className="px-3 pt-3 pb-2 flex items-center justify-between">
+        <div className="text-[11px] uppercase tracking-wider font-semibold text-black/55 dark:text-white/55">
+          Editing section
+        </div>
+        <button
+          type="button"
+          onClick={remove}
+          disabled={busy}
+          className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium text-rose-600 dark:text-rose-300 hover:bg-rose-500/10 transition-colors disabled:opacity-40"
+          aria-label="Delete section"
+        >
+          <Trash2 className="w-3 h-3" />
+          <span>{deleting ? "Deleting…" : "Delete"}</span>
+        </button>
+      </div>
+      <div className="px-3 pb-3 space-y-2">
+        <input
+          type="text"
+          value={heading}
+          onChange={(e) => setHeading(e.target.value)}
+          maxLength={120}
+          disabled={busy}
+          className="w-full bg-white/70 dark:bg-white/[0.04] border border-black/10 dark:border-white/10 rounded-lg px-3 py-2 text-[13px] font-semibold text-black/85 dark:text-white/90 focus:outline-none focus:border-black/25 dark:focus:border-white/25 transition-colors"
+        />
+        <textarea
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+          rows={4}
+          maxLength={4000}
+          disabled={busy}
+          className="w-full bg-white/70 dark:bg-white/[0.04] border border-black/10 dark:border-white/10 rounded-lg px-3 py-2 text-[12.5px] leading-relaxed text-black/80 dark:text-white/85 focus:outline-none focus:border-black/25 dark:focus:border-white/25 transition-colors resize-y"
+        />
+        {error ? (
+          <div className="text-[11.5px] text-rose-600 dark:text-rose-300">{error}</div>
+        ) : null}
+        <div className="flex items-center justify-end gap-2 pt-1">
+          <button
+            type="button"
+            onClick={onDone}
+            disabled={busy}
+            className="px-3 py-1.5 rounded-md text-[12px] font-medium text-black/60 dark:text-white/60 hover:bg-black/5 dark:hover:bg-white/[0.06] transition-colors disabled:opacity-40"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={save}
+            disabled={busy || !heading.trim()}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-blue-400/40 bg-blue-500/15 hover:bg-blue-500/25 text-blue-700 dark:text-blue-200 text-[12px] font-semibold transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {saving ? (
+              <RefreshCw className="w-3 h-3 animate-spin" />
+            ) : (
+              <Check className="w-3 h-3" />
+            )}
+            <span>{saving ? "Saving…" : "Save"}</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 };
 
 const MessageItem = React.memo(function MessageItem({
@@ -247,8 +772,10 @@ const MessageItem = React.memo(function MessageItem({
   onSaveYouTube, onSaveAttachment, onSaveAiImage, onSaveLink,
   addChatResponseToGrid,
   handleChunkClick, getSelectedText, registerChunks,
+  onLoadInGreetingRefresh,
 }: MessageItemProps) {
   const aiResponse = msg.aiResponse || "";
+  const navigate = useNavigate();
 
   // Memoize the expensive chunk-split per message. During streaming this
   // recomputes only when this specific message's aiResponse grows; every
@@ -267,10 +794,20 @@ const MessageItem = React.memo(function MessageItem({
   // ReactMarkdown instance below never sees a fresh `components` prop
   // unless the per-msg checklist state actually changes.
   const mdComponents = useMemo(() => buildChatMarkdownComponents(msg.id), [buildChatMarkdownComponents, msg.id]);
+  // Load-in greeting turns are unprompted assistant briefings — they
+  // have no user prompt bubble and their body is always expanded
+  // inline (no chevron/"AI Response" fold). Branched explicitly here
+  // so the surrounding render logic stays untouched for real turns.
+  const isLoadInGreeting = msg.kind === "load-in-greeting";
+
+  // Which user-authored section (if any) is currently being edited
+  // inside this message. Tracked per-message so opening the editor
+  // on one section doesn't collapse another. Cleared on save / cancel.
+  const [editingUserSectionId, setEditingUserSectionId] = useState<string | null>(null);
 
   return (
     <React.Fragment>
-      {msg.role === "user" && (
+      {msg.role === "user" && !isLoadInGreeting && (
         <div className="flex flex-col items-end gap-2">
           {msg.attachments && msg.attachments.length > 0 && (
             <div className="max-w-[80%] flex flex-wrap gap-2 justify-end">
@@ -374,26 +911,32 @@ const MessageItem = React.memo(function MessageItem({
       {msg.role === "user" && msg.aiResponse && (
         <div className="flex justify-start">
           <div className="max-w-[80%] w-full">
-            <button
-              type="button"
-              className={`w-full flex items-center gap-2 transition-all text-left ${
-                isAiExpanded
-                  ? "px-4 py-2.5 rounded-2xl border border-white/50 dark:border-white/15 bg-white/30 dark:bg-white/5 backdrop-blur-sm hover:bg-white/50 dark:hover:bg-white/10"
-                  : "px-0 py-0.5 rounded-none border border-transparent bg-transparent backdrop-blur-none hover:bg-transparent"
-              }`}
-              onClick={() => toggleAiExpanded(msg.id)}
-            >
-              <ChevronRight className={`w-4 h-4 text-black/40 dark:text-white/40 flex-shrink-0 transition-transform duration-200 ${isAiExpanded ? "rotate-90" : ""}`} />
-              {!isAiExpanded && (
-                <span className="text-sm text-black/60 dark:text-white/60 truncate leading-tight flex-1">
-                  {(msg as any).aiImageUrl ? "Generated image" : getCollapsedPreview(msg.aiResponse || "")}
-                </span>
-              )}
-              {isAiExpanded && (
-                <span className="text-sm text-black/40 dark:text-white/40 font-medium flex-1">AI Response</span>
-              )}
-            </button>
-            <div className={`grid transition-[grid-template-rows,opacity] duration-200 ease-in-out ${isAiExpanded ? "grid-rows-[1fr] opacity-100 mt-1" : "grid-rows-[0fr] opacity-0"}`}>
+            {!isLoadInGreeting && (
+              <button
+                type="button"
+                className={`w-full flex items-center gap-2 transition-all text-left ${
+                  isAiExpanded
+                    ? "px-4 py-2.5 rounded-2xl border border-white/50 dark:border-white/15 bg-white/30 dark:bg-white/5 backdrop-blur-sm hover:bg-white/50 dark:hover:bg-white/10"
+                    : "px-0 py-0.5 rounded-none border border-transparent bg-transparent backdrop-blur-none hover:bg-transparent"
+                }`}
+                onClick={() => toggleAiExpanded(msg.id)}
+              >
+                <ChevronRight className={`w-4 h-4 text-black/40 dark:text-white/40 flex-shrink-0 transition-transform duration-200 ${isAiExpanded ? "rotate-90" : ""}`} />
+                {!isAiExpanded && (
+                  <span className="text-sm text-black/60 dark:text-white/60 truncate leading-tight flex-1">
+                    {(msg as any).aiImageUrl ? "Generated image" : getCollapsedPreview(msg.aiResponse || "")}
+                  </span>
+                )}
+                {isAiExpanded && (
+                  <span className="text-sm text-black/40 dark:text-white/40 font-medium flex-1">AI Response</span>
+                )}
+              </button>
+            )}
+            <div className={
+              isLoadInGreeting
+                ? "mt-0"
+                : `grid transition-[grid-template-rows,opacity] duration-200 ease-in-out ${isAiExpanded ? "grid-rows-[1fr] opacity-100 mt-1" : "grid-rows-[0fr] opacity-0"}`
+            }>
               <div className="overflow-hidden min-h-0 group/aifocused">
                 {(msg as any).aiImageUrl ? (
                   <div className="px-4 py-3">
@@ -403,70 +946,378 @@ const MessageItem = React.memo(function MessageItem({
                     </button>
                   </div>
                 ) : (() => {
-                  const isSingle = chunks.length <= 1;
+                  // Render the AI response as a single continuous
+                  // markdown block. The drag-into-grid feature has
+                  // been retired, so we no longer split each reply
+                  // into per-paragraph "section chunks" with their
+                  // own select / drag affordances — that machinery
+                  // added a lot of visual noise (hover boxes, grip
+                  // handles, "add to grid" buttons) for a workflow
+                  // that no longer exists.
+                  //
+                  // The load-in greeting still peels its opening
+                  // salutation off as a hero heading so the briefing
+                  // has a clear visual anchor; everything after the
+                  // first blank line is rendered as ordinary
+                  // markdown underneath.
+                  const raw = String(aiResponse || "");
+                  let heading: string | null = null;
+                  let body = raw;
+                  if (isLoadInGreeting) {
+                    const trimmed = raw.trimStart();
+                    const nl = trimmed.indexOf("\n");
+                    const first =
+                      nl < 0 ? trimmed : trimmed.slice(0, nl).trim();
+                    const rest = nl < 0 ? "" : trimmed.slice(nl + 1).trimStart();
+                    if (first && first.length < 120 && !/^[#\-*]/.test(first)) {
+                      heading = first;
+                      body = rest;
+                    }
+                  }
                   return (
-                    <div className="px-4 py-3 space-y-2">
-                      {chunks.map((chunk, ci) => {
-                        const chunkKey = `${msg.id}-fchunk-${ci}`;
-                        const isSelected = selectedChunks.has(chunkKey);
-                        return (
-                          <div key={chunkKey} className="group/fchunk relative">
-                            <div
-                              draggable
-                              onClick={(e) => { if (!isSingle) handleChunkClick(e, chunkKey, chunk); }}
-                              onDragStart={(e) => {
-                                let sel = "";
-                                try {
-                                  const s = window.getSelection();
-                                  if (s && s.rangeCount > 0 && !s.isCollapsed) {
-                                    const range = s.getRangeAt(0);
-                                    const target = e.currentTarget as Node;
-                                    if (target.contains(range.commonAncestorContainer)) {
-                                      const t = String(s.toString() || "").trim();
-                                      if (t && chunk.includes(t)) sel = t;
-                                    }
-                                  }
-                                } catch { /* ignore */ }
-                                const text = sel || getSelectedText(chunkKey, chunk);
-                                e.dataTransfer.effectAllowed = "copy";
-                                e.dataTransfer.setData("application/x-omnia-chat-response", text);
-                                e.dataTransfer.setData("text/plain", text);
-                                try {
-                                  const count = selectedChunks.has(chunkKey) ? selectedChunks.size : (selectedChunks.size > 0 ? selectedChunks.size + 1 : 1);
-                                  const label = count > 1 ? `${count} sections` : (text.length > 80 ? text.slice(0, 77) + "…" : text);
-                                  const ghost = document.createElement("div");
-                                  ghost.textContent = label;
-                                  ghost.style.cssText = "position:fixed;top:-9999px;padding:8px 12px;border-radius:10px;background:rgba(59,130,246,0.15);font-size:12px;max-width:260px;overflow:hidden;white-space:nowrap";
-                                  document.body.appendChild(ghost);
-                                  e.dataTransfer.setDragImage(ghost, 0, 0);
-                                  requestAnimationFrame(() => ghost.remove());
-                                } catch {}
-                              }}
-                              className={`text-sm leading-relaxed break-words text-black/85 dark:text-white/85 cursor-grab active:cursor-grabbing transition-all rounded-xl ${isSelected ? "px-3 py-2 border border-blue-400/50 bg-blue-50/60 dark:bg-blue-500/[0.06] dark:border-blue-400/25 shadow-sm" : isSingle ? "" : "px-3 py-2 hover:bg-white/40 dark:hover:bg-white/10 hover:ring-1 hover:ring-blue-400/20"}`}
-                            >
-                              <div className={`absolute -left-3 top-1/2 -translate-y-1/2 opacity-0 group-hover/fchunk:opacity-100 transition-opacity ${isSingle ? "hidden" : ""}`}>
-                                <GripVertical className="w-3.5 h-3.5 text-blue-400/60" />
-                              </div>
-                              <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
-                                {normalizeChecklistSyntax(chunk)}
-                              </ReactMarkdown>
-                            </div>
-                            {!isSingle && !isMobilePhone && !gridDisabled && (
-                              <button
-                                type="button"
-                                title={selectedChunks.size > 1 ? "Add selected sections to grid" : "Add this section to grid"}
-                                className="absolute right-1.5 top-1.5 opacity-0 group-hover/fchunk:opacity-100 transition-opacity p-1 rounded-md text-blue-400/70 hover:text-blue-500 hover:bg-blue-500/10"
-                                onClick={() => addChatResponseToGrid(selectedChunks.size > 0 ? getSelectedText(chunkKey, chunk) : chunk)}
-                              >
-                                <GridIcon className="w-3 h-3" />
-                              </button>
-                            )}
-                          </div>
-                        );
-                      })}
+                    <div className="px-4 py-3">
+                      {heading ? (
+                        <h1 className="text-3xl sm:text-4xl font-bold tracking-tight leading-tight text-black/90 dark:text-white/90 mb-3">
+                          {heading}
+                        </h1>
+                      ) : null}
+                      {body ? (
+                        <div className="text-sm leading-relaxed break-words text-black/85 dark:text-white/85">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
+                            {normalizeChecklistSyntax(body)}
+                          </ReactMarkdown>
+                        </div>
+                      ) : null}
                     </div>
                   );
                 })()}
+                {Array.isArray(msg.aiResponseSections) && msg.aiResponseSections.length > 0 && (
+                  // Structured load-in greeting: heading per topic, each
+                  // update rendered as a row with an inline CTA button.
+                  // Replaces the prior flat "all buttons at the bottom"
+                  // layout — every row's action is co-located with the
+                  // update it relates to, so a user scanning by topic
+                  // never has to look elsewhere to take an action on
+                  // that line. Falls back to `aiResponseActions` only
+                  // when no sections were attached to the message.
+                  <div className="px-4 pb-3 pt-2 space-y-4">
+                    {msg.aiResponseSections.map((sec) => {
+                      const isUserSection =
+                        typeof sec.userSectionId === "string" &&
+                        sec.userSectionId.length > 0;
+                      const isEditing =
+                        isUserSection && editingUserSectionId === sec.userSectionId;
+                      if (isEditing) {
+                        return (
+                          <div key={`${msg.id}-sec-${sec.id}`}>
+                            <LoadInUserSectionEditor
+                              sectionId={sec.userSectionId!}
+                              initialHeading={sec.heading}
+                              initialBody={sec.summary || ""}
+                              onDone={() => setEditingUserSectionId(null)}
+                              onChanged={onLoadInGreetingRefresh}
+                            />
+                          </div>
+                        );
+                      }
+                      return (
+                      <div key={`${msg.id}-sec-${sec.id}`} className="space-y-2 group/usersec">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="text-lg font-semibold tracking-tight text-black/90 dark:text-white/90">
+                            {sec.heading}
+                          </div>
+                          {isUserSection ? (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setEditingUserSectionId(sec.userSectionId!)
+                              }
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium text-black/45 dark:text-white/45 hover:text-black/85 dark:hover:text-white/85 hover:bg-black/5 dark:hover:bg-white/[0.06] transition-colors opacity-0 group-hover/usersec:opacity-100 focus:opacity-100"
+                              aria-label="Edit section"
+                            >
+                              <Pencil className="w-3 h-3" />
+                              <span>Edit</span>
+                            </button>
+                          ) : null}
+                        </div>
+                        {sec.intro ? (
+                          <div className="text-[13px] opacity-70 -mt-1">
+                            {sec.intro}
+                          </div>
+                        ) : null}
+                        {sec.summary ? (
+                          // Prose-summary text. Renders as a paragraph
+                          // before any bubble stack so the user gets
+                          // the recap, then can drill into specifics.
+                          <div className="text-sm leading-relaxed text-black/85 dark:text-white/85">
+                            <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
+                              {sec.summary}
+                            </ReactMarkdown>
+                          </div>
+                        ) : null}
+                        {Array.isArray(sec.groups) && sec.groups.length > 0 ? (
+                          // Notification-bubble layout: one collapsible
+                          // bubble per source / group. Click to drop
+                          // down into the underlying items, each of
+                          // which links out to its canonical URL
+                          // (external for connector items, internal
+                          // for synthesis-layer beliefs / neurons).
+                          <div className="space-y-2">
+                            {sec.groups.map((group) => (
+                              <LoadInBubble
+                                key={`${msg.id}-${sec.id}-grp-${group.id}`}
+                                msgId={msg.id}
+                                group={group}
+                              />
+                            ))}
+                          </div>
+                        ) : Array.isArray(sec.chips) && sec.chips.length > 0 ? (
+                          // App-shelf layout: a row of brand-mark
+                          // chips for the "Connect the rest" section.
+                          // No labelled rows or pitch text — just the
+                          // logos of recommended apps, laid out like
+                          // a home-screen tray. Tapping one routes to
+                          // /connections#<id> which the connections
+                          // grid auto-scrolls and highlights.
+                          <div className="flex flex-wrap gap-2 pt-1">
+                            {sec.chips.map((chip) => {
+                              const isInternal = chip.href.startsWith("/");
+                              const onChipClick = (e: React.MouseEvent) => {
+                                if (!isInternal) return;
+                                if (
+                                  e.metaKey ||
+                                  e.ctrlKey ||
+                                  e.shiftKey ||
+                                  (e as any).button === 1
+                                )
+                                  return;
+                                e.preventDefault();
+                                navigate(chip.href);
+                              };
+                              return (
+                                <a
+                                  key={`${msg.id}-${sec.id}-chip-${chip.id}`}
+                                  href={chip.href}
+                                  onClick={onChipClick}
+                                  target={isInternal ? undefined : "_blank"}
+                                  rel={isInternal ? undefined : "noopener noreferrer"}
+                                  title={`Connect ${chip.label}`}
+                                  aria-label={`Connect ${chip.label}`}
+                                  className="group/chip flex flex-col items-center gap-1 w-[68px] py-2 px-1 rounded-xl border border-white/40 dark:border-white/10 bg-white/45 dark:bg-white/[0.04] hover:bg-white/70 dark:hover:bg-white/[0.08] hover:border-black/15 dark:hover:border-white/20 backdrop-blur-sm transition-all hover:-translate-y-0.5 hover:shadow-[0_6px_18px_rgba(0,0,0,0.08)]"
+                                >
+                                  <div className="w-10 h-10 rounded-lg bg-white dark:bg-white/95 ring-1 ring-black/[0.06] dark:ring-white/10 shadow-sm flex items-center justify-center overflow-hidden">
+                                    <img
+                                      src={chip.iconUrl}
+                                      alt=""
+                                      className="w-7 h-7 object-contain"
+                                      loading="lazy"
+                                      referrerPolicy="no-referrer"
+                                      onError={(e) => {
+                                        (e.currentTarget as HTMLImageElement).style.display = "none";
+                                      }}
+                                    />
+                                  </div>
+                                  <span className="text-[10.5px] font-medium text-black/65 dark:text-white/65 truncate max-w-full leading-tight">
+                                    {chip.label}
+                                  </span>
+                                </a>
+                              );
+                            })}
+                          </div>
+                        ) : sec.summary ? null : (
+                        <div className="space-y-1.5">
+                          {sec.items.map((item, ii) => {
+                            const act = item.action;
+                            const tone = act?.tone || "neutral";
+                            const btnToneCls = !act
+                              ? ""
+                              : tone === "primary"
+                                ? "border-blue-400/40 bg-blue-500/10 hover:bg-blue-500/15 text-blue-700 dark:text-blue-200"
+                                : tone === "amber"
+                                  ? "border-amber-400/40 bg-amber-500/10 hover:bg-amber-500/15 text-amber-700 dark:text-amber-200"
+                                  : tone === "emerald"
+                                    ? "border-emerald-400/40 bg-emerald-500/10 hover:bg-emerald-500/15 text-emerald-700 dark:text-emerald-200"
+                                    : tone === "fuchsia"
+                                      ? "border-fuchsia-400/40 bg-fuchsia-500/10 hover:bg-fuchsia-500/15 text-fuchsia-700 dark:text-fuchsia-200"
+                                      : "border-white/25 dark:border-white/10 bg-white/35 dark:bg-white/5 hover:bg-white/55 dark:hover:bg-white/10 text-black/75 dark:text-white/80";
+                            const isInternal = act?.href.startsWith("/") ?? false;
+                            const onActClick = (e: React.MouseEvent) => {
+                              if (!act) return;
+                              if (!isInternal) return;
+                              if (e.metaKey || e.ctrlKey || e.shiftKey || (e as any).button === 1) return;
+                              e.preventDefault();
+                              navigate(act.href);
+                            };
+                            const hasIcon =
+                              typeof act?.iconUrl === "string" &&
+                              act.iconUrl.length > 0;
+                            const hasItemIcon =
+                              typeof item?.iconUrl === "string" &&
+                              item.iconUrl.length > 0;
+                            return (
+                              <div
+                                key={`${msg.id}-sec-${sec.id}-row-${ii}`}
+                                className="flex items-start gap-3 rounded-lg border border-white/10 dark:border-white/5 bg-white/30 dark:bg-white/[0.03] px-3 py-2"
+                              >
+                                {hasItemIcon ? (
+                                  <div className="w-7 h-7 rounded-md bg-white dark:bg-white/95 ring-1 ring-black/[0.06] dark:ring-white/10 shadow-sm overflow-hidden flex items-center justify-center flex-shrink-0 mt-0.5">
+                                    <img
+                                      src={item.iconUrl}
+                                      alt=""
+                                      className="w-5 h-5 object-contain"
+                                      loading="lazy"
+                                      referrerPolicy="no-referrer"
+                                      onError={(e) => {
+                                        (e.currentTarget as HTMLImageElement).style.display = "none";
+                                      }}
+                                    />
+                                  </div>
+                                ) : null}
+                                <div className="flex-1 min-w-0 leading-tight">
+                                  <div className="text-[12.5px] font-medium text-black/85 dark:text-white/90 truncate">
+                                    {item.title}
+                                  </div>
+                                  {item.subtitle ? (
+                                    <div className="text-[11px] opacity-70 mt-0.5 truncate">
+                                      {item.subtitle}
+                                    </div>
+                                  ) : null}
+                                </div>
+                                {act ? (
+                                  <a
+                                    href={act.href}
+                                    onClick={onActClick}
+                                    target={isInternal ? undefined : "_blank"}
+                                    rel={isInternal ? undefined : "noopener noreferrer"}
+                                    className={`group/lyknrow inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11.5px] font-semibold transition-all backdrop-blur-sm flex-shrink-0 ${btnToneCls}`}
+                                  >
+                                    {hasIcon ? (
+                                      <img
+                                        src={act.iconUrl}
+                                        alt=""
+                                        className="w-3.5 h-3.5 flex-shrink-0 rounded-sm object-contain"
+                                        loading="lazy"
+                                        referrerPolicy="no-referrer"
+                                        onError={(e) => {
+                                          (e.currentTarget as HTMLImageElement).style.display = "none";
+                                        }}
+                                      />
+                                    ) : null}
+                                    <span>{act.label}</span>
+                                    {!hasIcon ? (
+                                      <ArrowRight className="w-3 h-3 opacity-70 group-hover/lyknrow:translate-x-0.5 transition-transform" />
+                                    ) : null}
+                                  </a>
+                                ) : null}
+                              </div>
+                            );
+                          })}
+                        </div>
+                        )}
+                      </div>
+                      );
+                    })}
+                    {isLoadInGreeting && (
+                      // User-authored sections composer. Lives at the
+                      // very bottom of the briefing so the user can
+                      // pin their own focus / mantras / reminders to
+                      // the daily load-in alongside the auto-built
+                      // lanes. CRUD round-trips to supabase, then
+                      // triggers the parent to re-fetch the greeting
+                      // so the new section appears in place.
+                      <LoadInUserSectionsComposer
+                        onChanged={onLoadInGreetingRefresh}
+                      />
+                    )}
+                  </div>
+                )}
+                {isLoadInGreeting &&
+                  !(Array.isArray(msg.aiResponseSections) && msg.aiResponseSections.length > 0) && (
+                    // Fallback: load-in greeting with no auto-built
+                    // sections still surfaces the "+ Add a section"
+                    // affordance so a brand-new user can pin their
+                    // own first card before anything else lands.
+                    <div className="px-4 pb-3 pt-2">
+                      <LoadInUserSectionsComposer
+                        onChanged={onLoadInGreetingRefresh}
+                      />
+                    </div>
+                  )}
+                {Array.isArray(msg.aiResponseActions) && msg.aiResponseActions.length > 0 && !(Array.isArray(msg.aiResponseSections) && msg.aiResponseSections.length > 0) && (
+                  // Legacy flat-strip layout — kept as a fallback for any
+                  // turn that ships actions without the structured
+                  // sections payload. Internal hrefs (`/...`) navigate
+                  // via react-router so they don't trigger a full page
+                  // reload; everything else opens in a new tab.
+                  <div className="px-4 pb-3 pt-1 flex flex-wrap gap-2">
+                    {msg.aiResponseActions.map((act, ai) => {
+                      const tone = act.tone || "neutral";
+                      const toneCls =
+                        tone === "primary"
+                          ? "border-blue-400/40 bg-blue-500/10 hover:bg-blue-500/15 text-blue-700 dark:text-blue-200"
+                          : tone === "amber"
+                            ? "border-amber-400/40 bg-amber-500/10 hover:bg-amber-500/15 text-amber-700 dark:text-amber-200"
+                            : tone === "emerald"
+                              ? "border-emerald-400/40 bg-emerald-500/10 hover:bg-emerald-500/15 text-emerald-700 dark:text-emerald-200"
+                              : tone === "fuchsia"
+                                ? "border-fuchsia-400/40 bg-fuchsia-500/10 hover:bg-fuchsia-500/15 text-fuchsia-700 dark:text-fuchsia-200"
+                                : "border-white/25 dark:border-white/10 bg-white/35 dark:bg-white/5 hover:bg-white/55 dark:hover:bg-white/10 text-black/75 dark:text-white/80";
+                      const isInternal = act.href.startsWith("/");
+                      const onClick = (e: React.MouseEvent) => {
+                        if (!isInternal) return; // let the anchor handle external nav
+                        // Allow modifier-clicks (cmd/ctrl/middle) to keep
+                        // their browser-native "open in new tab" behavior.
+                        if (e.metaKey || e.ctrlKey || e.shiftKey || (e as any).button === 1) return;
+                        e.preventDefault();
+                        navigate(act.href);
+                      };
+                      // Glyph: prefer the platform's brand favicon
+                      // (used by the "Connect <Platform>" prompts) so
+                      // each suggested connector is immediately
+                      // recognisable. Fallback is the default arrow
+                      // we ship with every other load-in action.
+                      const hasIcon = typeof act.iconUrl === "string" && act.iconUrl.length > 0;
+                      return (
+                        <a
+                          key={`${msg.id}-act-${ai}`}
+                          href={act.href}
+                          onClick={onClick}
+                          target={isInternal ? undefined : "_blank"}
+                          rel={isInternal ? undefined : "noopener noreferrer"}
+                          className={`group/lyknact inline-flex items-start gap-2 rounded-xl border px-3 py-2 text-left transition-all backdrop-blur-sm shadow-[0_2px_8px_rgba(0,0,0,0.04)] ${toneCls}`}
+                        >
+                          {hasIcon ? (
+                            <img
+                              src={act.iconUrl}
+                              alt=""
+                              className="w-4 h-4 mt-[2px] flex-shrink-0 rounded-sm object-contain"
+                              loading="lazy"
+                              referrerPolicy="no-referrer"
+                              onError={(e) => {
+                                // If the brand favicon 404s (rare,
+                                // but Google's s2 service sometimes
+                                // misses obscure domains), hide the
+                                // broken <img> so the layout doesn't
+                                // ship a blank box.
+                                (e.currentTarget as HTMLImageElement).style.display = "none";
+                              }}
+                            />
+                          ) : (
+                            <ArrowRight className="w-3.5 h-3.5 mt-[3px] flex-shrink-0 opacity-70 group-hover/lyknact:translate-x-0.5 transition-transform" />
+                          )}
+                          <span className="flex flex-col leading-tight">
+                            <span className="text-xs font-semibold">{act.label}</span>
+                            {act.description ? (
+                              <span className="text-[10.5px] opacity-70 mt-0.5">
+                                {act.description}
+                              </span>
+                            ) : null}
+                          </span>
+                        </a>
+                      );
+                    })}
+                  </div>
+                )}
                 {(msg as any).aiYouTubeUrls && (msg as any).aiYouTubeUrls.length > 0 && (
                   <div className="px-4 pb-3 space-y-3">
                     {(msg as any).aiYouTubeUrls.map((yt: { url: string; videoId: string }) => (
@@ -694,6 +1545,7 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
   onReaction,
   onRegenerate,
   onRegenerateNonUser,
+  onLoadInGreetingRefresh,
 }) {
   const [selectedChunks, setSelectedChunks] = useState<Set<string>>(new Set());
   const chunkMapRef = useRef<Map<string, string>>(new Map());
@@ -887,6 +1739,7 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
                 handleChunkClick={handleChunkClick}
                 getSelectedText={getSelectedText}
                 registerChunks={registerChunks}
+                onLoadInGreetingRefresh={onLoadInGreetingRefresh}
               />
             ))}
             {isChatLoading && (
