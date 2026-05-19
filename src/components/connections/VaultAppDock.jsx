@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Plug } from "lucide-react";
+import { ChevronRight, Plug, X } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
 import { API_BASE_URL } from "@/lib/api-config";
@@ -32,12 +32,43 @@ import lyknIconUrl from "@/assets/FINAL/LYKN-ICON-A-Squircle/PNGs/LYKN-Icon-A-Sq
 //     the chat column (`var(--sidebar-offset)`), used by OmniaGrid in
 //     focused-chat mode so the launcher is always visible while the
 //     user is working in chat.
+// Per-orientation localStorage key for the user's "hide this dock"
+// preference. Vertical lives in the chat surface, horizontal lives on
+// Vault/Connections — different surfaces, different preferences, so we
+// keep them split. Vault dock currently has no hide UI; the key is
+// reserved in case we add one later.
+const HIDE_PREF_KEY = {
+  vertical: "lykn:chatAppDock:hidden",
+  horizontal: "lykn:vaultAppDock:hidden",
+};
+
 export default function VaultAppDock({ user, orientation = "horizontal" }) {
   const isVertical = orientation === "vertical";
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const [connections, setConnections] = useState([]);
   const [tokens, setTokens] = useState([]);
+  // Persist the user's "hide this dock" choice across reloads. SSR-safe
+  // (window check) and lazy so we never paint the dock for a frame
+  // before remembering it was dismissed.
+  const [hidden, setHidden] = useState(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      return window.localStorage.getItem(HIDE_PREF_KEY[orientation]) === "1";
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      if (hidden) window.localStorage.setItem(HIDE_PREF_KEY[orientation], "1");
+      else window.localStorage.removeItem(HIDE_PREF_KEY[orientation]);
+    } catch {
+      // localStorage may be blocked (Safari private mode, etc.) —
+      // preference just won't persist, but in-session toggle still works.
+    }
+  }, [hidden, orientation]);
 
   const refresh = useCallback(async () => {
     if (!user) {
@@ -188,6 +219,30 @@ export default function VaultAppDock({ user, orientation = "horizontal" }) {
     ? "mt-1 h-12 w-12 rounded-xl flex items-center justify-center text-black/45 dark:text-white/45 hover:text-black/80 dark:hover:text-white/80 hover:bg-black/[0.05] dark:hover:bg-white/[0.05] transition-colors"
     : "ml-1 h-12 w-12 rounded-xl flex items-center justify-center text-black/45 dark:text-white/45 hover:text-black/80 dark:hover:text-white/80 hover:bg-black/[0.05] dark:hover:bg-white/[0.05] transition-colors";
 
+  // Collapsed state — only wired for the vertical (in-chat) dock. When
+  // the user dismisses the dock we keep a slim affordance in the exact
+  // same spot so they can bring it back without hunting for a setting.
+  // Horizontal dock has no hide UI today, so falls through to the full
+  // dock render unconditionally.
+  if (hidden && isVertical) {
+    return (
+      <div className={outerCls} style={outerStyle}>
+        <div className="pointer-events-auto">
+          <button
+            type="button"
+            onClick={() => setHidden(false)}
+            title="Show app launcher"
+            aria-label="Show app launcher"
+            className="group h-12 w-6 rounded-r-xl rounded-l-md flex items-center justify-center glass-control shadow-lg text-black/45 dark:text-white/45 hover:text-black/80 dark:hover:text-white/80 hover:w-7 transition-all"
+          >
+            <ChevronRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" />
+            <span className="sr-only">Show app launcher</span>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className={outerCls} style={outerStyle}>
       <div className="pointer-events-auto">
@@ -222,6 +277,22 @@ export default function VaultAppDock({ user, orientation = "horizontal" }) {
               {tiles.length > 0 ? "Connect another app" : "Connect an app"}
             </span>
           </button>
+          {/* Hide-dock affordance — only rendered in the chat (vertical)
+              context. Deliberately quieter than the app tiles so it
+              reads as chrome, not an app to launch. Tucks in at the
+              far end of the stack so it's the last thing in the row. */}
+          {isVertical && (
+            <button
+              type="button"
+              onClick={() => setHidden(true)}
+              title="Hide app launcher"
+              aria-label="Hide app launcher"
+              className="mt-0.5 h-6 w-12 rounded-md flex items-center justify-center text-black/35 dark:text-white/35 hover:text-black/70 dark:hover:text-white/70 hover:bg-black/[0.05] dark:hover:bg-white/[0.05] transition-colors"
+            >
+              <X className="w-3 h-3" />
+              <span className="sr-only">Hide app launcher</span>
+            </button>
+          )}
         </div>
       </div>
     </div>

@@ -8,7 +8,7 @@
 // is a launchpad — click anywhere meaningful to deep-link straight
 // into the relevant surface.
 
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
@@ -26,6 +26,7 @@ import {
   CalendarDays,
   Sparkles,
   TrendingUp,
+  X,
 } from "lucide-react";
 import type { LoadInUpdatesStats } from "@/lib/synthesis/loadInUpdates";
 
@@ -34,6 +35,13 @@ interface Props {
   /** Optional first-name greeting, e.g. "Eli" — shown above the hero. */
   greetingName?: string;
 }
+
+// User's persistent "hide today's briefing card" preference. Keeping
+// this in localStorage (not session state) so dismissing it once means
+// it stays dismissed across reloads — the panel is opt-in eye candy,
+// not load-bearing UI, so we honour the user's choice indefinitely
+// until they explicitly bring it back via the reopen pill.
+const HIDE_PREF_KEY = "lykn:loadInBrief:hidden";
 
 // Per-lane brand palette. We keep them muted so the panel reads as a
 // dashboard, not a parade of saturated swatches — each colour is the
@@ -72,6 +80,27 @@ function shortDay(iso: string): string {
 
 const LoadInBriefingPanel: React.FC<Props> = ({ stats, greetingName }) => {
   const navigate = useNavigate();
+
+  // Hide-state mirrors the same lazy-init + persistence pattern as the
+  // chat app dock so both dismissibles behave identically from the
+  // user's perspective.
+  const [hidden, setHidden] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      return window.localStorage.getItem(HIDE_PREF_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      if (hidden) window.localStorage.setItem(HIDE_PREF_KEY, "1");
+      else window.localStorage.removeItem(HIDE_PREF_KEY);
+    } catch {
+      // localStorage may be blocked — preference just won't persist.
+    }
+  }, [hidden]);
 
   // SPA-friendly anchor handler. Internal hrefs route via the router
   // (no full page reload), but cmd/ctrl/shift/middle-click still get
@@ -146,8 +175,34 @@ const LoadInBriefingPanel: React.FC<Props> = ({ stats, greetingName }) => {
   // Lane row hover tracking — drives the per-row scale + glow plus
   // the count-badge pop. Kept in component state so the hover-state
   // can decorate multiple sub-elements off the same single source of
-  // truth.
+  // truth. MUST be declared before the `hidden` early return below so
+  // hook order stays stable across renders (React enforces this).
   const [hoveredLane, setHoveredLane] = useState<string | null>(null);
+
+  // Collapsed render — a small pill in the same anchor slot so the
+  // briefing can always be brought back, without taking up the full
+  // 320px column the open card needs. Early return lives below every
+  // hook declaration on purpose: returning before a hook would change
+  // the hook count between renders and trip React's invariant.
+  if (hidden) {
+    return (
+      <motion.button
+        type="button"
+        onClick={() => setHidden(false)}
+        initial={{ opacity: 0, x: 16 }}
+        animate={{ opacity: 1, x: 0 }}
+        whileHover={{ y: -1 }}
+        transition={{ duration: 0.28, ease: "easeOut" }}
+        title="Show today's briefing"
+        aria-label="Show today's briefing"
+        className="group inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-full border border-white/40 dark:border-white/10 bg-white/60 dark:bg-white/[0.06] backdrop-blur-xl shadow-[0_4px_18px_rgba(15,23,42,0.08)] dark:shadow-[0_4px_18px_rgba(0,0,0,0.4)] text-[10.5px] font-semibold text-black/65 dark:text-white/65 hover:text-black/90 dark:hover:text-white/90 hover:bg-white/80 dark:hover:bg-white/[0.10] transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/40"
+      >
+        <Sparkles className="w-3 h-3 text-blue-500/80 dark:text-blue-300/80" />
+        <span className="tabular-nums">{heroCount}</span>
+        <span className="opacity-70">briefing</span>
+      </motion.button>
+    );
+  }
 
   return (
     <motion.aside
@@ -168,8 +223,23 @@ const LoadInBriefingPanel: React.FC<Props> = ({ stats, greetingName }) => {
         className="pointer-events-none absolute -inset-x-8 -top-8 h-24 opacity-0 group-hover/panel:opacity-100 transition-opacity duration-500 bg-[radial-gradient(ellipse_at_top,rgba(96,165,250,0.22),transparent_70%)] dark:bg-[radial-gradient(ellipse_at_top,rgba(96,165,250,0.18),transparent_70%)]"
       />
 
+      {/* Dismiss control — top-right of the card. Subtle by default so
+          it doesn't compete with the hero stat, but legible on hover.
+          Clicking it collapses the card to the reopen pill rendered
+          above. */}
+      <button
+        type="button"
+        onClick={() => setHidden(true)}
+        title="Hide briefing"
+        aria-label="Hide briefing"
+        className="absolute top-2.5 right-2.5 z-10 h-6 w-6 rounded-full flex items-center justify-center text-black/35 dark:text-white/35 hover:text-black/80 dark:hover:text-white/85 hover:bg-black/[0.06] dark:hover:bg-white/[0.08] transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/40"
+      >
+        <X className="w-3.5 h-3.5" />
+        <span className="sr-only">Hide briefing</span>
+      </button>
+
       <div className="relative px-5 pt-5 pb-4">
-        <div className="flex items-center gap-1.5 text-[10.5px] uppercase tracking-[0.12em] font-semibold text-black/55 dark:text-white/55">
+        <div className="flex items-center gap-1.5 pr-7 text-[10.5px] uppercase tracking-[0.12em] font-semibold text-black/55 dark:text-white/55">
           <Sparkles className="w-3 h-3" />
           <span>{greetingTag}</span>
         </div>
