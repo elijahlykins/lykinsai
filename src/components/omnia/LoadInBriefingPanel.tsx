@@ -47,28 +47,27 @@ const HIDE_PREF_KEY = "lykn:loadInBrief:hidden";
 // dashboard, not a parade of saturated swatches — each colour is the
 // 400-tone of its lane so the bars stay legible in both light and
 // dark themes without re-mapping.
-const LANE_COLOR: Record<keyof LoadInUpdatesStats["byCategory"], string> = {
+type LaneKey = Exclude<keyof LoadInUpdatesStats["byCategory"], "health">;
+
+const LANE_COLOR: Record<LaneKey, string> = {
   productivity: "#60a5fa",
   social: "#e879f9",
   reading: "#fbbf24",
   media: "#f472b6",
-  health: "#34d399",
 };
 
-const LANE_LABEL: Record<keyof LoadInUpdatesStats["byCategory"], string> = {
+const LANE_LABEL: Record<LaneKey, string> = {
   productivity: "Productivity",
   social: "Social",
   reading: "Reading",
   media: "Media",
-  health: "Health",
 };
 
-const LANE_HREF: Record<keyof LoadInUpdatesStats["byCategory"], string> = {
+const LANE_HREF: Record<LaneKey, string> = {
   productivity: "/vault?category=productivity",
   social: "/vault?category=social",
   reading: "/vault?category=reading",
   media: "/vault?category=media",
-  health: "/vault?category=health",
 };
 
 /** Format `YYYY-MM-DD` into a short weekday label, e.g. "Mon". */
@@ -124,13 +123,15 @@ const LoadInBriefingPanel: React.FC<Props> = ({ stats, greetingName }) => {
       Object.entries(stats.byCategory) as Array<
         [keyof LoadInUpdatesStats["byCategory"], number]
       >
-    ).map(([key, count]) => ({
-      key,
-      label: LANE_LABEL[key],
-      count,
-      color: LANE_COLOR[key],
-      href: LANE_HREF[key],
-    }));
+    )
+      .filter((entry): entry is [LaneKey, number] => entry[0] !== "health")
+      .map(([key, count]) => ({
+        key,
+        label: LANE_LABEL[key],
+        count,
+        color: LANE_COLOR[key],
+        href: LANE_HREF[key],
+      }));
     entries.sort((a, b) => b.count - a.count);
     return entries;
   }, [stats.byCategory]);

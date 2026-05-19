@@ -23,12 +23,34 @@ import UseLyknWithDialog from "@/components/connections/UseLyknWithDialog";
 //
 // Filter pill at the top swaps between All / AI tools / Input tools.
 
-// The Connections page renders EVERY entry in the catalog so users can
-// see the full map of what LYKN can ingest. Cards whose backend isn't
-// wired yet still appear — they just present as "Coming soon" /
-// "Capture only" so the page never lies about what's possible. The old
-// curated `PHASE_1_INPUT_IDS` array is gone; the source of truth is the
-// catalog itself plus per-row `status`.
+// The Connections page only renders input connectors whose adapter is
+// actually wired in code — even if the upstream gate is still pending.
+// That means we INCLUDE:
+//   • "available" — live and syncing today.
+//   • "beta"      — live first-party capture surfaces (share sheet,
+//                   browser extension, bookmarklet, RSS).
+//   • "verification" — fully built; blocked on Google brand-verification
+//                      review (YouTube, Drive, Docs, Sheets, Calendar,
+//                      Gmail). OAuth works for Google Cloud test users
+//                      so the tile is still useful to render.
+//   • "paid"      — fully built; OAuth works, data sync gated on a paid
+//                   upstream tier (X/Twitter bookmarks). Paid-plan
+//                   warning is surfaced at click time.
+// We EXCLUDE:
+//   • "soon"   — no adapter in code yet. Showing these advertises
+//                connections we can't actually make.
+//   • "no-api" — capture-only surfaces ("How to capture"). Per the
+//                product decision, leave these out until we have a
+//                clean ingest story for each.
+// The catalog itself stays exhaustive; this is just the view filter.
+// AI tools (OUTBOUND_TARGETS) are unaffected — their tier 1 curation
+// lives upstream.
+const CONNECTABLE_INPUT_STATUSES = new Set([
+  "available",
+  "beta",
+  "verification",
+  "paid",
+]);
 
 const FILTERS = [
   { id: "all", label: "All" },
@@ -128,11 +150,16 @@ export default function ConnectionsAppGrid({ user }) {
     return m;
   }, [tokens]);
 
-  // Build the unified tile list. AI tools (the marquee) lead, then
-  // every input connector in catalog order, with a section header tile
-  // emitted whenever the category changes. Section tiles render as a
-  // full-width band inside the grid (col-span-full) and are filtered
-  // out when their bucket is empty under the current filter.
+  // Build the unified tile list. AI tools (the marquee) lead, then one
+  // section per connector category in CONNECTOR_CATEGORIES order, with
+  // every visible connector for that category grouped under it. We
+  // iterate categories first (instead of walking the catalog in source
+  // order) so a single out-of-order entry — e.g. YouTube sitting in
+  // `social` between Notion and the rest of the Google productivity
+  // tiles — can't cause the same heading to render twice. Section
+  // tiles render as a full-width band inside the grid (col-span-full)
+  // and are filtered out when their bucket is empty under the current
+  // filter (see `visibleTiles`).
   const allTiles = useMemo(() => {
     const out = [];
 
@@ -150,20 +177,21 @@ export default function ConnectionsAppGrid({ user }) {
       }
     }
 
-    let currentCategory = null;
-    for (const connector of CONNECTORS) {
-      if (connector.category !== currentCategory) {
-        currentCategory = connector.category;
-        const cat = CONNECTOR_CATEGORIES.find((x) => x.id === currentCategory);
-        out.push({
-          key: `section:${currentCategory}`,
-          kind: "section",
-          sectionBucket: "input",
-          label: cat?.label || currentCategory,
-          description: cat?.description,
-        });
+    for (const cat of CONNECTOR_CATEGORIES) {
+      const connectorsInCat = CONNECTORS.filter(
+        (c) => c.category === cat.id && CONNECTABLE_INPUT_STATUSES.has(c.status),
+      );
+      if (connectorsInCat.length === 0) continue;
+      out.push({
+        key: `section:${cat.id}`,
+        kind: "section",
+        sectionBucket: "input",
+        label: cat.label || cat.id,
+        description: cat.description,
+      });
+      for (const connector of connectorsInCat) {
+        out.push({ key: `input:${connector.id}`, kind: "input", connector });
       }
-      out.push({ key: `input:${connector.id}`, kind: "input", connector });
     }
 
     return out;

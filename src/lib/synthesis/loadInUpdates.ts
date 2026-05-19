@@ -126,11 +126,7 @@ const SOURCE_CATEGORY: Record<string, ConnectorCategory> = {
   mastodon_bookmark: "social",
   mastodon_favourite: "social",
   bluesky_like: "social",
-  pinterest_pin: "social",
-  reddit_saved: "social",
-  reddit_upvote: "social",
   youtube_liked: "social",
-  vimeo_liked: "social",
   dribbble_liked: "social",
 
   // Productivity & docs
@@ -153,7 +149,6 @@ const SOURCE_CATEGORY: Record<string, ConnectorCategory> = {
   raindrop_bookmark: "reading",
 
   // Music, media, design
-  spotify_liked: "media",
   canva_design: "media",
 
   // Health & activity — daily summaries from wearables and trackers
@@ -174,11 +169,7 @@ const SOURCE_LABEL: Record<string, string> = {
   mastodon_bookmark: "Mastodon",
   mastodon_favourite: "Mastodon",
   bluesky_like: "Bluesky",
-  pinterest_pin: "Pinterest",
-  reddit_saved: "Reddit",
-  reddit_upvote: "Reddit",
   youtube_liked: "YouTube",
-  vimeo_liked: "Vimeo",
   dribbble_liked: "Dribbble",
   notion_page: "Notion",
   linear_issue: "Linear",
@@ -195,7 +186,6 @@ const SOURCE_LABEL: Record<string, string> = {
   gdrive_starred: "Google Drive",
   readwise: "Readwise",
   raindrop_bookmark: "Raindrop",
-  spotify_liked: "Spotify",
   canva_design: "Canva",
   oura_daily: "Oura",
   whoop_daily: "WHOOP",
@@ -234,15 +224,10 @@ const SOURCE_TO_CONNECTOR_ID: Record<string, string> = {
   mastodon_bookmark: "mastodon",
   mastodon_favourite: "mastodon",
   bluesky_like: "bluesky",
-  pinterest_pin: "pinterest",
-  reddit_saved: "reddit",
-  reddit_upvote: "reddit",
   youtube_liked: "youtube",
-  vimeo_liked: "vimeo",
   dribbble_liked: "dribbble",
   readwise: "readwise",
   raindrop_bookmark: "raindrop",
-  spotify_liked: "spotify",
   canva_design: "canva",
   oura_daily: "oura",
   whoop_daily: "whoop",
@@ -493,8 +478,6 @@ const PROVIDER_TO_CATEGORY: Record<string, ConnectorCategory> = {
   twitter: "social",
   bluesky: "social",
   mastodon: "social",
-  pinterest: "social",
-  reddit: "social",
   youtube: "social",
   // productivity
   notion: "productivity",
@@ -513,9 +496,7 @@ const PROVIDER_TO_CATEGORY: Record<string, ConnectorCategory> = {
   readwise: "reading",
   raindrop: "reading",
   // media
-  spotify: "media",
   canva: "media",
-  vimeo: "media",
   dribbble: "media",
   // health & activity
   oura: "health",
@@ -620,11 +601,11 @@ const CATEGORY_SUGGESTION: Record<ConnectorCategory, CategorySuggestion> = {
     tone: "emerald",
   },
   social: {
-    platform: "Bluesky",
-    benefit: "track what you're saving and reacting to across social",
-    href: "/connections#bluesky",
-    iconUrl: faviconFor("bsky.app"),
-    alternates: ["X", "Mastodon", "Reddit"],
+    platform: "YouTube",
+    benefit: "track the videos you're liking and saving",
+    href: "/connections#youtube",
+    iconUrl: "https://www.gstatic.com/images/branding/product/2x/youtube_48dp.png",
+    alternates: [],
     tone: "fuchsia",
   },
   productivity: {
@@ -636,19 +617,19 @@ const CATEGORY_SUGGESTION: Record<ConnectorCategory, CategorySuggestion> = {
     tone: "primary",
   },
   reading: {
-    platform: "Readwise",
-    benefit: "pick up the articles and highlights you're collecting",
-    href: "/connections#readwise",
-    iconUrl: faviconFor("readwise.io"),
-    alternates: ["Raindrop"],
+    platform: "Raindrop",
+    benefit: "pick up the articles and links you're collecting",
+    href: "/connections#raindrop",
+    iconUrl: faviconFor("raindrop.io"),
+    alternates: [],
     tone: "neutral",
   },
   media: {
-    platform: "Spotify",
-    benefit: "fold music and design picks into your daily context",
-    href: "/connections#spotify",
-    iconUrl: faviconFor("spotify.com"),
-    alternates: ["Canva", "Vimeo"],
+    platform: "Canva",
+    benefit: "fold your design picks into your daily context",
+    href: "/connections#canva",
+    iconUrl: faviconFor("canva.com"),
+    alternates: ["Dribbble"],
     tone: "neutral",
   },
   health: {
@@ -1256,15 +1237,6 @@ function buildActions(
         href: "/vault?category=media",
         description: `${mediaCount} new music / design item${mediaCount === 1 ? "" : "s"}`,
         tone: "neutral",
-      });
-    }
-    const healthCount = connector.byCategory.health.length;
-    if (healthCount > 0) {
-      actions.push({
-        label: "Open health",
-        href: "/vault?category=health",
-        description: `${healthCount} new wearable reading${healthCount === 1 ? "" : "s"}`,
-        tone: "emerald",
       });
     }
   }
@@ -2020,23 +1992,18 @@ const CONNECT_LANE_CHIPS: Record<
     { connectorId: "linear", label: "Linear" },
     { connectorId: "todoist", label: "Todoist" },
     { connectorId: "github", label: "GitHub" },
+    { connectorId: "trello", label: "Trello" },
     { connectorId: "gmail", label: "Gmail" },
+    { connectorId: "google-drive", label: "Google Drive" },
+    { connectorId: "google-calendar", label: "Google Calendar" },
   ],
   social: [
-    { connectorId: "x", label: "X" },
-    { connectorId: "bluesky", label: "Bluesky" },
-    { connectorId: "mastodon", label: "Mastodon" },
-    { connectorId: "reddit", label: "Reddit" },
-    { connectorId: "pinterest", label: "Pinterest" },
+    { connectorId: "youtube", label: "YouTube" },
   ],
   reading: [
-    { connectorId: "readwise", label: "Readwise" },
     { connectorId: "raindrop", label: "Raindrop" },
   ],
   media: [
-    { connectorId: "spotify", label: "Spotify" },
-    { connectorId: "canva", label: "Canva" },
-    { connectorId: "vimeo", label: "Vimeo" },
     { connectorId: "youtube", label: "YouTube" },
   ],
   health: [
@@ -2261,13 +2228,6 @@ function formatMessage(
       `${pluralize(productivityCount, "new item")} from your productivity tools`,
     );
   }
-  if (healthCount > 0) {
-    bullets.push(
-      `${pluralize(healthCount, "new health update", "new health updates")}`,
-    );
-  } else if (!healthConfiguredForBullets) {
-    bullets.push("No wearable or health tracker connected yet");
-  }
   if (approvalsCount > 0) {
     bullets.push(
       `${pluralize(approvalsCount, "thing awaiting your approval", "things awaiting your approval")}`,
@@ -2330,15 +2290,6 @@ function formatMessage(
       connector?.byCategory.productivity ?? [],
       "primary",
       status.configured.has("productivity"),
-    ),
-  );
-  // Health is a permanent fixture like calendar — when no wearable is
-  // wired up it renders a "Connect Oura / WHOOP / ..." prompt instead
-  // of silently disappearing, so the lane is always discoverable.
-  pushIfSome(
-    buildHealthSection(
-      connector?.byCategory.health ?? [],
-      status.configured.has("health"),
     ),
   );
   pushIfSome(buildApprovalsSectionStructured(events));
@@ -2613,32 +2564,17 @@ export async function fetchLoadInUpdatesMessage(
   // still land in time for the *next* refresh.
   await kickConnectorSync(
     [
-      "google-calendar",
-      "gcal",
-      "gmail",
-      "google-drive",
       "notion",
       "slack",
       "github",
       "linear",
       "todoist",
-      "readwise",
+      "trello",
       "raindrop",
-      "bluesky",
-      "mastodon",
-      "x",
-      "reddit",
-      "pinterest",
+      "gmail",
+      "google-drive",
+      "google-calendar",
       "youtube",
-      "spotify",
-      "vimeo",
-      "canva",
-      "oura",
-      "whoop",
-      "fitbit",
-      "garmin",
-      "withings",
-      "strava",
     ],
     6000,
   );

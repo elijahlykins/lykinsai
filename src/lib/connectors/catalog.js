@@ -61,24 +61,6 @@ export const CONNECTOR_CATEGORIES = [
 export const CONNECTORS = [
   // ── Social & Content ─────────────────────────────────────────────
   {
-    id: "youtube",
-    category: "social",
-    name: "YouTube",
-    domain: "youtube.com",
-    // Google's official product logo (gstatic CDN). Preferred over the
-    // S2 favicon resolver because S2 returns a small low-quality glyph
-    // and the per-app logos are part of Google's brand assets so they're
-    // versioned + crisply rendered at 2x.
-    iconUrl: "https://www.gstatic.com/images/branding/product/2x/youtube_48dp.png",
-    color: "#FF0033",
-    auth: "Google OAuth",
-    pulls: ["Liked videos"],
-    realtime: "Polling (60 min)",
-    status: "verification",
-    statusLabel: "Pending Google review",
-    summary: "Auto-imports every video you Like. Pre-verification: Google Cloud test users only.",
-  },
-  {
     id: "twitch",
     category: "social",
     name: "Twitch",
@@ -91,131 +73,6 @@ export const CONNECTORS = [
     statusLabel: "Coming soon",
     summary:
       "Channels you follow and clips you save flow into your Vault. Read-only. Adapter not wired yet.",
-  },
-  {
-    id: "pinterest",
-    category: "social",
-    name: "Pinterest",
-    domain: "pinterest.com",
-    color: "#E60023",
-    auth: "Pinterest OAuth",
-    pulls: ["All your pins"],
-    realtime: "Polling (60 min)",
-    status: "available",
-    statusLabel: "Live",
-    summary: "Auto-imports every pin you save. Read-only.",
-  },
-  {
-    id: "x",
-    category: "social",
-    name: "X (Twitter)",
-    domain: "x.com",
-    color: "#000000",
-    auth: "OAuth 2.0 PKCE",
-    pulls: ["Bookmarks"],
-    realtime: "Polling (60 min)",
-    status: "paid",
-    statusLabel: "Requires X API Basic ($200/mo)",
-    summary:
-      "Auto-imports every tweet you Bookmark. The /bookmarks endpoint requires X API Basic tier; OAuth itself works on Free.",
-  },
-  {
-    id: "reddit",
-    category: "social",
-    name: "Reddit",
-    domain: "reddit.com",
-    color: "#FF4500",
-    auth: "Reddit OAuth",
-    pulls: ["Saved posts & comments"],
-    realtime: "Polling (60 min)",
-    status: "available",
-    statusLabel: "Live",
-    summary: "Auto-imports every post and comment you save on Reddit. Read-only.",
-  },
-  {
-    id: "hackernews",
-    category: "social",
-    name: "Hacker News",
-    domain: "news.ycombinator.com",
-    color: "#FF6600",
-    auth: "Username only",
-    pulls: ["Your submissions", "Favorites"],
-    realtime: "Polling (60 min)",
-    status: "available",
-    statusLabel: "Live",
-    summary:
-      "Pulls your submissions and favorited stories from Hacker News. No password needed — uses the public Firebase API + your username.",
-    authMode: "token",
-    connectFields: [
-      {
-        name: "username",
-        label: "Hacker News username",
-        placeholder: "yourname",
-        secret: false,
-        required: true,
-        helpText: "Your HN handle. Only public activity is pulled (submissions, favorites).",
-      },
-    ],
-  },
-  {
-    id: "bluesky",
-    category: "social",
-    name: "Bluesky",
-    domain: "bsky.app",
-    color: "#0085FF",
-    auth: "App password",
-    pulls: ["Liked posts"],
-    realtime: "Polling (60 min)",
-    status: "available",
-    statusLabel: "Live",
-    summary:
-      "Auto-imports every post you Like on Bluesky. Uses an App Password (not your real password) so it's revocable any time from Bluesky settings.",
-    authMode: "token",
-    connectFields: [
-      {
-        name: "identifier",
-        label: "Bluesky handle",
-        placeholder: "you.bsky.social",
-        secret: false,
-        required: true,
-        helpText: "Your full handle (no @). E.g. yourname.bsky.social.",
-      },
-      {
-        name: "password",
-        label: "App password",
-        placeholder: "xxxx-xxxx-xxxx-xxxx",
-        secret: true,
-        required: true,
-        helpText:
-          "Create one at bsky.app → Settings → App passwords. Don't use your real account password.",
-      },
-    ],
-    tokenHelpUrl: "https://bsky.app/settings/app-passwords",
-    tokenHelpLabel: "Create an app password",
-  },
-  {
-    id: "mastodon",
-    category: "social",
-    name: "Mastodon",
-    domain: "joinmastodon.org",
-    color: "#6364FF",
-    auth: "Per-instance OAuth",
-    pulls: ["Favourited posts", "Bookmarked posts"],
-    realtime: "Polling (60 min)",
-    status: "available",
-    statusLabel: "Live",
-    summary:
-      "Auto-imports every post you favourite or bookmark on any Mastodon instance. Read-only. Works with mastodon.social, hachyderm.io, fosstodon.org, or any standard Mastodon server.",
-    oauthPrefields: [
-      {
-        name: "instance",
-        label: "Your Mastodon instance",
-        placeholder: "mastodon.social",
-        required: true,
-        helpText:
-          "The hostname of your server (no https://). LYKN will register a fresh app on that instance and send you to its login page.",
-      },
-    ],
   },
   {
     id: "threads",
@@ -339,6 +196,27 @@ export const CONNECTORS = [
     summary:
       "Google Keep's REST API is Workspace-only and excludes personal Gmail accounts. Save individual Keep notes via the Save to LYKN button or the mobile share sheet.",
   },
+  // Google family (Drive / Docs / Sheets / Calendar / Gmail / YouTube).
+  // All share one OAuth client (`GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`).
+  // Status: `verification` — adapters are live and the handshake works
+  // for Google Cloud test users today; production users see Google's
+  // "unverified app" warning and have to click through. Brand
+  // verification submission is the unlock for a clean consent screen.
+  {
+    id: "youtube",
+    category: "social",
+    name: "YouTube",
+    domain: "youtube.com",
+    iconUrl: "https://www.gstatic.com/images/branding/product/2x/youtube_48dp.png",
+    color: "#FF0033",
+    auth: "Google OAuth",
+    pulls: ["Liked videos"],
+    realtime: "Polling (60 min)",
+    status: "verification",
+    statusLabel: "Pending Google review",
+    summary:
+      "Auto-imports every video you Like. Pre-verification: Google Cloud test users only — others see an unverified-app warning.",
+  },
   {
     id: "google-drive",
     category: "productivity",
@@ -351,18 +229,15 @@ export const CONNECTORS = [
     realtime: "Polling (60 min)",
     status: "verification",
     statusLabel: "Pending Google review",
-    summary: "Surfaces every starred file in your Drive. Pre-verification: Google Cloud test users only.",
+    summary:
+      "Surfaces every starred file in your Drive. Pre-verification: Google Cloud test users only.",
   },
   // `aliasOf` tiles share the underlying OAuth handshake AND the
   // `social_connections` row of their parent connector. The user clicks
   // Connect once on any of (Drive / Docs / Sheets) and all three tiles
   // light up green, then Drive's sync routes items into per-app sources
   // (gdocs_starred, gsheets_starred) so each lands under its own
-  // collapsed folder tile in the Vault. The auth dialog redirects to
-  // the parent connector's flow; the alias never gets its own OAuth
-  // adapter or env config. This is the right shape for any platform
-  // where multiple "products" share a single account (Google's Workspace,
-  // Microsoft 365, etc.).
+  // collapsed folder tile in the Vault.
   {
     id: "google-docs",
     category: "productivity",
@@ -407,7 +282,8 @@ export const CONNECTORS = [
     realtime: "Polling (60 min)",
     status: "verification",
     statusLabel: "Pending Google review",
-    summary: "Imports events from your primary calendar. Pre-verification: Google Cloud test users only.",
+    summary:
+      "Imports events from your primary calendar. Pre-verification: Google Cloud test users only.",
   },
   {
     id: "gmail",
@@ -421,27 +297,15 @@ export const CONNECTORS = [
     realtime: "Polling (60 min)",
     status: "verification",
     statusLabel: "Pending Google review (restricted scope)",
-    summary: "Captures every starred email. Pre-verification: Google Cloud test users only.",
+    summary:
+      "Captures every starred email. Pre-verification: Google Cloud test users only.",
   },
-  {
-    id: "outlook-365",
-    category: "productivity",
-    name: "Microsoft 365",
-    domain: "microsoft365.com",
-    color: "#0078D4",
-    auth: "Microsoft Graph",
-    pulls: ["Flagged Outlook emails"],
-    realtime: "Polling (60 min)",
-    status: "available",
-    statusLabel: "Live",
-    summary: "Auto-imports every email you flag in Outlook. Read-only.",
-  },
-  // Microsoft 365 alias tiles — one Microsoft sign-in lights up the
-  // full Office family, same pattern as Google Drive/Docs/Sheets above.
-  // Each shares the `outlook-365` `social_connections` row and routes
-  // sync into its own per-app source (teams_saved, onedrive_starred,
-  // onenote_recent) so the items land under their own folder tiles in
-  // the Vault.
+
+  // Microsoft 365 family (outlook-365 parent + ms-teams / onedrive /
+  // onenote aliases). Parent removed from the catalog while we hold off
+  // on Azure publisher verification. Aliases below are kept as "soon"
+  // placeholders so the relationship is documented for future restore;
+  // the status filter on the Connections page hides them today.
   {
     id: "ms-teams",
     category: "productivity",
@@ -637,42 +501,6 @@ export const CONNECTORS = [
     statusLabel: "Coming soon",
     summary:
       "Active TickTick tasks flow into your Vault. Adapter not wired yet.",
-  },
-  {
-    id: "apple-calendar",
-    category: "productivity",
-    name: "Apple Calendar",
-    domain: "icloud.com",
-    color: "#FF3B30",
-    auth: "App-specific password",
-    pulls: ["Upcoming + recent events (−7d to +30d)"],
-    realtime: "Polling (15 min)",
-    status: "available",
-    statusLabel: "Live",
-    summary:
-      "Auto-imports events from every iCloud calendar via CalDAV. Uses an app-specific password generated at appleid.apple.com — we never see your Apple ID password, and you can revoke access at any time.",
-    authMode: "token",
-    connectFields: [
-      {
-        name: "email",
-        label: "Apple ID email",
-        placeholder: "you@icloud.com",
-        secret: false,
-        required: true,
-        helpText: "The email address on your Apple ID (works for @icloud.com, @me.com, @mac.com, or a third-party domain).",
-      },
-      {
-        name: "password",
-        label: "App-specific password",
-        placeholder: "xxxx-xxxx-xxxx-xxxx",
-        secret: true,
-        required: true,
-        helpText:
-          "Generate one at appleid.apple.com → Sign-In & Security → App-Specific Passwords. Don't use your real Apple ID password.",
-      },
-    ],
-    tokenHelpUrl: "https://appleid.apple.com/account/manage",
-    tokenHelpLabel: "Generate an app-specific password",
   },
   {
     id: "apple-reminders",
@@ -1028,19 +856,6 @@ export const CONNECTORS = [
       "Figma's API doesn't expose a 'list my files' endpoint, so auto-import isn't possible. Save individual Figma files via the Save to LYKN button or paste a file URL.",
   },
   {
-    id: "canva",
-    category: "design",
-    name: "Canva",
-    domain: "canva.com",
-    color: "#00C4CC",
-    auth: "Canva Connect API",
-    pulls: ["Your designs"],
-    realtime: "Polling (60 min)",
-    status: "available",
-    statusLabel: "Live",
-    summary: "Auto-imports every design in your Canva account. Read-only.",
-  },
-  {
     id: "loom",
     category: "design",
     name: "Loom",
@@ -1053,32 +868,6 @@ export const CONNECTORS = [
     statusLabel: "Enterprise API only",
     summary:
       "Loom's REST API is gated to their Enterprise/SDK tier. Save individual Loom videos via the Save to LYKN button.",
-  },
-  {
-    id: "vimeo",
-    category: "design",
-    name: "Vimeo",
-    domain: "vimeo.com",
-    color: "#1AB7EA",
-    auth: "Vimeo OAuth",
-    pulls: ["Liked videos"],
-    realtime: "Polling (60 min)",
-    status: "available",
-    statusLabel: "Live",
-    summary: "Auto-imports every video you Like on Vimeo. Read-only.",
-  },
-  {
-    id: "dribbble",
-    category: "design",
-    name: "Dribbble",
-    domain: "dribbble.com",
-    color: "#EA4C89",
-    auth: "Dribbble OAuth",
-    pulls: ["Liked shots"],
-    realtime: "Polling (60 min)",
-    status: "available",
-    statusLabel: "Live",
-    summary: "Auto-imports every shot you Like on Dribbble. Read-only.",
   },
   {
     id: "behance",
@@ -1179,114 +968,8 @@ export const CONNECTORS = [
     summary:
       "GoodLinks has no public sync API. Use the iOS/macOS share sheet to push links from GoodLinks into LYKN.",
   },
-  {
-    id: "amazon-wishlist",
-    category: "design",
-    name: "Amazon Wishlist",
-    domain: "amazon.com",
-    color: "#FF9900",
-    auth: "Public RSS",
-    pulls: ["Public wishlist items via RSS"],
-    realtime: "Polling (60 min)",
-    status: "available",
-    statusLabel: "Live (via RSS)",
-    summary:
-      "Amazon has no first-party wishlist API, but public wishlists expose an RSS feed LYKN polls. Paste your wishlist URL, list ID, or a third-party RSS bridge URL.",
-    authMode: "token",
-    connectFields: [
-      {
-        name: "feed",
-        label: "Amazon wishlist URL or RSS feed",
-        placeholder: "https://www.amazon.com/hz/wishlist/ls/XXXXXXXXX",
-        secret: false,
-        required: true,
-        helpText:
-          "Paste your wishlist's share URL and we'll convert it. If Amazon's RSS endpoint doesn't work in your region, paste a third-party RSS bridge URL instead.",
-      },
-    ],
-  },
 
   // ── Read-it-later & Highlights ────────────────────────────────────
-  {
-    id: "readwise",
-    category: "read",
-    name: "Readwise",
-    domain: "readwise.io",
-    color: "#0F0F0F",
-    auth: "Access token",
-    pulls: ["Books, articles, and tweets you've highlighted"],
-    realtime: "Polling (60 min)",
-    status: "available",
-    statusLabel: "Live",
-    summary:
-      "Pulls every source you've highlighted (Kindle, Apple Books, Substack, web) into the vault, with your highlights bundled in.",
-    authMode: "token",
-    connectFields: [
-      {
-        name: "token",
-        label: "Readwise access token",
-        placeholder: "Paste your token",
-        secret: true,
-        required: true,
-        helpText: "Found at readwise.io/access_token. Read-only, revocable any time.",
-      },
-    ],
-    tokenHelpUrl: "https://readwise.io/access_token",
-    tokenHelpLabel: "Get your access token",
-  },
-  {
-    id: "hardcover",
-    category: "read",
-    name: "Hardcover",
-    domain: "hardcover.app",
-    color: "#7C3AED",
-    auth: "API token",
-    pulls: ["Books on your shelves", "Reading status", "Your reviews"],
-    realtime: "Polling (60 min)",
-    status: "available",
-    statusLabel: "Live",
-    summary:
-      "Books and reading lists from Hardcover (the modern Goodreads replacement) land in your Vault — shelf status, ratings, and reviews included.",
-    authMode: "token",
-    connectFields: [
-      {
-        name: "token",
-        label: "Hardcover API token",
-        placeholder: "Paste your token",
-        secret: true,
-        required: true,
-        helpText: "Generate one in Hardcover under Account → API.",
-      },
-    ],
-  },
-  {
-    id: "goodreads",
-    category: "read",
-    name: "Goodreads",
-    domain: "goodreads.com",
-    color: "#553B08",
-    auth: "Public RSS",
-    pulls: ["Shelves via RSS"],
-    realtime: "Polling (60 min)",
-    status: "available",
-    statusLabel: "Live (via RSS)",
-    summary:
-      "Goodreads retired its API in 2020, but every shelf still publishes an RSS feed LYKN polls — books, covers, your ratings, and reviews all flow in.",
-    authMode: "token",
-    connectFields: [
-      {
-        name: "feed",
-        label: "Goodreads shelf RSS URL or user id",
-        placeholder: "https://www.goodreads.com/review/list_rss/12345?shelf=read",
-        secret: false,
-        required: true,
-        helpText:
-          "Find your shelf's RSS link on goodreads.com/review/list/USERID, or just paste your numeric user id and we'll default to your \"read\" shelf.",
-      },
-    ],
-    tokenHelpUrl: "https://www.goodreads.com/review/list",
-    tokenHelpLabel: "Find your shelf RSS link",
-  },
   {
     id: "storygraph",
     category: "read",
@@ -1357,99 +1040,6 @@ export const CONNECTORS = [
     summary: "Every bookmark you save in Raindrop flows into your Vault. Read-only.",
   },
   {
-    id: "pinboard",
-    category: "read",
-    name: "Pinboard",
-    domain: "pinboard.in",
-    color: "#1A6DC3",
-    auth: "API token",
-    pulls: ["All your bookmarks"],
-    realtime: "Polling (60 min)",
-    status: "available",
-    statusLabel: "Live",
-    summary:
-      "Auto-imports every bookmark you save on Pinboard, with original tags and notes preserved. Read-only.",
-    authMode: "token",
-    connectFields: [
-      {
-        name: "token",
-        label: "Pinboard API token",
-        placeholder: "username:HEXTOKEN",
-        secret: true,
-        required: true,
-        helpText: "Found at pinboard.in/settings/password. Format: username:TOKEN.",
-      },
-    ],
-    tokenHelpUrl: "https://pinboard.in/settings/password",
-    tokenHelpLabel: "Get your API token",
-  },
-  {
-    id: "karakeep",
-    category: "read",
-    name: "Karakeep",
-    domain: "karakeep.app",
-    color: "#000000",
-    auth: "API token",
-    pulls: ["Bookmarks and lists"],
-    realtime: "Polling (60 min)",
-    status: "available",
-    statusLabel: "Live",
-    summary:
-      "Self-hostable bookmark manager (formerly Hoarder). Connects via instance URL + API key — bookmarks, tags, and notes flow into your Vault.",
-    authMode: "token",
-    connectFields: [
-      {
-        name: "endpoint",
-        label: "Karakeep URL",
-        placeholder: "https://karakeep.yourdomain.com",
-        secret: false,
-        required: true,
-        helpText: "The base URL of your Karakeep instance (or https://app.karakeep.app for hosted).",
-      },
-      {
-        name: "token",
-        label: "API key",
-        placeholder: "Paste your API key",
-        secret: true,
-        required: true,
-        helpText: "Generate one under Settings → API Keys in Karakeep.",
-      },
-    ],
-  },
-  {
-    id: "linkding",
-    category: "read",
-    name: "Linkding",
-    domain: "linkding.link",
-    color: "#1ABC9C",
-    auth: "API token",
-    pulls: ["All bookmarks", "Tags and notes"],
-    realtime: "Polling (60 min)",
-    status: "available",
-    statusLabel: "Live",
-    summary:
-      "Self-hostable bookmark manager. Connects via instance URL + REST API token — bookmarks, tags, and your private notes flow into your Vault.",
-    authMode: "token",
-    connectFields: [
-      {
-        name: "endpoint",
-        label: "Linkding URL",
-        placeholder: "https://linkding.yourdomain.com",
-        secret: false,
-        required: true,
-        helpText: "The base URL of your Linkding instance.",
-      },
-      {
-        name: "token",
-        label: "REST API token",
-        placeholder: "Paste your token",
-        secret: true,
-        required: true,
-        helpText: "Found at Settings → Integrations → REST API in Linkding.",
-      },
-    ],
-  },
-  {
     id: "instapaper",
     category: "read",
     name: "Instapaper",
@@ -1494,19 +1084,6 @@ export const CONNECTORS = [
 
   // ── Music & Audio ────────────────────────────────────────────────
   {
-    id: "spotify",
-    category: "music",
-    name: "Spotify",
-    domain: "spotify.com",
-    color: "#1DB954",
-    auth: "Spotify OAuth",
-    pulls: ["Liked Songs"],
-    realtime: "Polling (60 min)",
-    status: "available",
-    statusLabel: "Live",
-    summary: "Auto-imports every song you Like into your Vault. Read-only.",
-  },
-  {
     id: "youtube-music",
     category: "music",
     name: "YouTube Music",
@@ -1521,31 +1098,6 @@ export const CONNECTORS = [
     summary:
       "Auto-imports every song you Like on YouTube Music. Shares a single Google sign-in with YouTube and Drive. Adapter not wired yet.",
     aliasOf: "youtube",
-  },
-  {
-    id: "lastfm",
-    category: "music",
-    name: "Last.fm",
-    domain: "last.fm",
-    color: "#D51007",
-    auth: "Last.fm API",
-    pulls: ["Loved tracks"],
-    realtime: "Polling (60 min)",
-    status: "available",
-    statusLabel: "Live",
-    summary:
-      "Pulls every track you've loved on Last.fm into your Vault as bookmark notes. Read-only — no password required.",
-    authMode: "token",
-    connectFields: [
-      {
-        name: "username",
-        label: "Last.fm username",
-        placeholder: "yourname",
-        secret: false,
-        required: true,
-        helpText: "Your public Last.fm handle. No password needed — loved-tracks are public.",
-      },
-    ],
   },
   {
     id: "discogs",
@@ -1774,48 +1326,10 @@ export const CONNECTORS = [
       "Daily Withings summaries (weight, sleep, activity) flow into your Vault. Adapter not wired yet.",
   },
 
-  // ── Universal Capture ────────────────────────────────────────────
-  // First-party capture surfaces — no domain, no brand logo. Renders the
-  // Lucide fallback in BrandIcon.
-  {
-    id: "share-target",
-    category: "capture",
-    name: "Mobile Share Sheet",
-    color: "#111827",
-    auth: "PWA install",
-    pulls: ["Anything you tap Share on"],
-    realtime: "On share",
-    status: "beta",
-    statusLabel: "Live",
-    summary:
-      "Add LYKN to your phone's home screen and it appears in every app's Share sheet.",
-  },
-  {
-    id: "browser-extension",
-    category: "capture",
-    name: "Browser Extension",
-    color: "#111827",
-    auth: "Local install",
-    pulls: ["Any page, link, image, or video"],
-    realtime: "On click",
-    status: "beta",
-    statusLabel: "Live",
-    summary:
-      "One-click save from any website with a toolbar button or right-click menu.",
-  },
-  {
-    id: "bookmarklet",
-    category: "capture",
-    name: "Bookmarklet",
-    color: "#111827",
-    auth: "Drag to bookmarks bar",
-    pulls: ["Any open page"],
-    realtime: "On click",
-    status: "beta",
-    statusLabel: "Live",
-    summary:
-      "A draggable bookmark that saves the current page to LYKN with one click. No install.",
-  },
+  // Universal Capture surfaces (share-target / browser-extension /
+  // bookmarklet) cut from the Connections page launch lineup pending a
+  // user-visible polish pass. Code paths still live in extensions/ and
+  // public manifests — re-adding them is a catalog copy-back when ready.
   {
     id: "email-to-vault",
     category: "capture",
@@ -1828,20 +1342,6 @@ export const CONNECTORS = [
     summary:
       "A unique email address for your vault. Forward newsletters, share links, anything.",
   },
-  {
-    id: "rss",
-    category: "capture",
-    name: "RSS / Atom feeds",
-    color: "#FF6600",
-    auth: "None",
-    pulls: ["Any blog, podcast, Substack, etc."],
-    realtime: "Polling",
-    status: "beta",
-    statusLabel: "Live",
-    summary:
-      "One connector covers Substack, Medium, blogs, podcasts, YouTube channels, GitHub releases.",
-  },
-
   // ── Automation & AI ──────────────────────────────────────────────
   {
     id: "mcp",
