@@ -1408,3 +1408,93 @@ export const CONNECTOR_STATUSES = {
   paid: { label: "Paid API only", tone: "amber" },
   "no-api": { label: "Capture only", tone: "neutral" },
 };
+
+// ──────────────────────────────────────────────────────────────────────
+// Connector id → `notes.source` slugs
+//
+// Every adapter under `/connectors/*.js` calls `saveConnectorNote(...)`
+// (or the Google/Apple equivalents) with a `source:` slug that lands on
+// `notes.source`. The synthesis layer keys provenance off that slug —
+// `get_belief_provenance` / `get_connector_synthesis_counts` aggregate
+// by `notes.source`, and the briefing / tile / graph UIs need to walk
+// from a catalog connector id back to its slugs to render footer chips
+// or to filter the synthesis view to a single app.
+//
+// Multi-slug entries handle adapters that split one connection into
+// several sub-sources (Drive → Docs/Sheets/Slides via aliasOf; Gmail
+// emits both starred + inbox slugs; Mastodon emits bookmarks +
+// favourites). Aliased catalog tiles share their *parent* connector's
+// OAuth handshake but get their own dedicated slug so the per-tile
+// counts stay app-accurate (a Google Docs tile counts gdocs_starred,
+// not the whole Drive pile).
+//
+// Catalog ids without a `notes.source` slug (capture-only / soon /
+// no-api tiles, automation outbound entries) intentionally omit from
+// this map — UIs gracefully render a zero-count footer for them.
+export const CONNECTOR_NOTES_SOURCES = {
+  // Productivity & docs
+  notion: ["notion_page"],
+  slack: ["slack_saved"],
+  github: ["github_starred"],
+  linear: ["linear_issue"],
+  todoist: ["todoist_task"],
+  trello: ["trello_card"],
+  // Google family — each aliased tile maps to its specific slug so the
+  // per-tile count reflects that app's items only.
+  "google-drive": ["gdrive_starred", "gslides_starred"],
+  "google-docs": ["gdocs_starred"],
+  "google-sheets": ["gsheets_starred"],
+  "google-calendar": ["gcal_event"],
+  gmail: ["gmail_starred", "gmail_inbox"],
+  "outlook-365": ["outlook_flagged"],
+  // Read-it-later & highlights
+  readwise: ["readwise"],
+  raindrop: ["raindrop_bookmark"],
+  pinboard: ["pinboard"],
+  linkding: ["linkding"],
+  karakeep: ["karakeep"],
+  // Social & content
+  x: ["x_bookmark"],
+  bluesky: ["bluesky_like"],
+  mastodon: ["mastodon_bookmark", "mastodon_favourite"],
+  youtube: ["youtube_liked"],
+  reddit: ["reddit_saved_post", "reddit_saved_comment"],
+  hackernews: ["hackernews_favorite", "hackernews_submitted"],
+  pinterest: ["pinterest_pin"],
+  dribbble: ["dribbble_liked"],
+  vimeo: ["vimeo_liked"],
+  // Books & media
+  goodreads: ["goodreads"],
+  hardcover: ["hardcover"],
+  "amazon-wishlist": ["amazon_wishlist"],
+  // Music & audio
+  spotify: ["spotify_liked"],
+  lastfm: ["lastfm_loved"],
+  // Design
+  canva: ["canva_design"],
+  // Apple
+  "apple-reminders": [],
+  "apple-calendar": ["apple_calendar_event"],
+  // Health & activity — adapters aren't shipped yet but the slugs
+  // they'll write are documented in src/lib/synthesis/loadInUpdates.ts.
+  oura: ["oura_daily"],
+  whoop: ["whoop_daily"],
+  fitbit: ["fitbit_daily"],
+  garmin: ["garmin_daily"],
+  withings: ["withings_daily"],
+  strava: ["strava_activity"],
+};
+
+/**
+ * Resolve a connector id to the set of `notes.source` slugs that
+ * adapter writes. Honors `aliasOf` so e.g. asking for "ms-teams" (whose
+ * adapter isn't wired) does not silently fall back to the Microsoft
+ * parent's slugs — only the parent's own tile aggregates those.
+ *
+ * @param {string} connectorId
+ * @returns {string[]} list of `notes.source` slugs, possibly empty.
+ */
+export function getConnectorSourceSlugs(connectorId) {
+  if (!connectorId) return [];
+  return CONNECTOR_NOTES_SOURCES[connectorId] || [];
+}

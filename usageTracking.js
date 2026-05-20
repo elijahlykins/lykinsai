@@ -134,6 +134,7 @@ const CREDIT_COSTS = {
   describe_text:        1,
   summarize_conversation: 1,
   name_grid:            0,
+  name_chat:            0,
   discover_takeaway:    0,
 };
 

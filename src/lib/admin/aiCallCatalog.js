@@ -375,6 +375,23 @@ export const AI_SURFACES = [
     metered: true,
     optimization: "Already cheapest model + cache. Negligible.",
   },
+  {
+    id: "name_chat",
+    name: "Auto-name chat",
+    description:
+      "Picks a 2-5 word title for a chat from the first user message + assistant reply, then writes it through to omnia_boards.title server-side.",
+    endpoint: "POST /api/ai/name-chat",
+    file: "server.js",
+    lineRange: "~10950-11073",
+    providers: ["openai"],
+    models: ["gpt-4.1-nano"],
+    actionTypes: ["name_chat"],
+    tier: "low",
+    guestAccessible: false,
+    metered: true,
+    optimization:
+      "Cheapest model + per-snippet content cache + per-user prompt cache key. Fires fire-and-forget after the first turn, gated on title still being 'New Chat'.",
+  },
 ];
 
 // Tiers in display order, with colors for the UI.

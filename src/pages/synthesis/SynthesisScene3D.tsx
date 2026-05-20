@@ -55,6 +55,13 @@ export interface Scene3DEdge {
   from: string;
   to: string;
   cross?: boolean;
+  /**
+   * Provenance overlay: edge came from the belief→fact→source RPC
+   * pass, not the heuristic theme/tag cross-edges. Rendered with a
+   * distinct indigo tint + higher base opacity so the "web of
+   * beliefs" reads even when the underlying provenance is sparse.
+   */
+  provenance?: boolean;
 }
 
 interface Props {
@@ -395,6 +402,13 @@ interface EdgeProps {
   isTopicMode: boolean;
   edgeRelevance: number;
   /**
+   * Provenance overlay edge (belief→fact, fact→vault, fact→board). Drawn
+   * in the belief category indigo at a higher base opacity than regular
+   * cross-edges so the "this belief is grounded in these things" web
+   * reads as a distinct layer over the heuristic theme links.
+   */
+  isProvenance?: boolean;
+  /**
    * If true, this edge is the "leading line" of a neuron formation — it
    * draws out from `a` toward `b` over EDGE_FORMATION_DURATION_S in bright
    * electric blue, then sits at full extent.
@@ -448,7 +462,7 @@ function FormingEdge({ a, b }: { a: Scene3DNode; b: Scene3DNode }) {
   );
 }
 
-function Edge({ a, b, isHl, isDimmed, isCross, isTopicMode, edgeRelevance, isForming = false }: EdgeProps) {
+function Edge({ a, b, isHl, isDimmed, isCross, isProvenance = false, isTopicMode, edgeRelevance, isForming = false }: EdgeProps) {
   const points = useMemo(
     () => [
       new THREE.Vector3(a.x, a.y, a.z),
@@ -461,24 +475,49 @@ function Edge({ a, b, isHl, isDimmed, isCross, isTopicMode, edgeRelevance, isFor
     return <FormingEdge a={a} b={b} />;
   }
 
+  // Provenance edges sit visually between heuristic cross-edges and
+  // structural edges: more present than a faint dashed theme link
+  // (because the user explicitly asked "show me the web of beliefs")
+  // but not so loud they drown out the hover-highlighted path.
   const opacity = isDimmed
     ? 0.06
     : isTopicMode && edgeRelevance < 0.3
       ? 0.10
       : isHl
         ? 0.95
-        : isCross
-          ? 0.20
-          : 0.40;
+        : isProvenance
+          ? 0.55
+          : isCross
+            ? 0.20
+            : 0.40;
+
+  // Indigo matches `palette.beliefs.bg` in SynthesisLayer.tsx so the
+  // provenance overlay reads as "these edges come from the belief
+  // cluster you can see above," not a random new color.
+  const PROVENANCE_COLOR = "#a5b4fc";
+  const color = isHl
+    ? a.color
+    : isProvenance
+      ? PROVENANCE_COLOR
+      : "#94a3b8";
+  const lineWidth = isHl
+    ? 1.6
+    : isProvenance
+      ? 1.1
+      : isCross
+        ? 0.5
+        : 0.8;
 
   return (
     <Line
       points={points}
-      color={isHl ? a.color : "#94a3b8"}
-      lineWidth={isHl ? 1.6 : isCross ? 0.5 : 0.8}
+      color={color}
+      lineWidth={lineWidth}
       transparent
       opacity={opacity}
-      dashed={isCross}
+      // Heuristic cross-edges stay dashed (they're inferred). Provenance
+      // edges render solid so the eye reads them as audited, not guessed.
+      dashed={isCross && !isProvenance}
       dashSize={6}
       gapSize={6}
       toneMapped={false}
@@ -532,6 +571,7 @@ function SceneInner({
             isHl={isHl}
             isDimmed={isDimmed}
             isCross={!!e.cross}
+            isProvenance={!!e.provenance}
             isTopicMode={isTopicMode}
             edgeRelevance={edgeRelevance}
             isForming={isFormingEdge}

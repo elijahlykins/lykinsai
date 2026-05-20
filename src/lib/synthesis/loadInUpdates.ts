@@ -338,6 +338,90 @@ async function fetchActivity(): Promise<ActivityResponse | null> {
   }
 }
 
+// One provenance entry per (belief, fact, source) triple as returned
+// by the `get_belief_provenance` Postgres RPC. Used to render the
+// "Grounded in <X>, <Y>" chip row under each proposed-belief item in
+// the daily briefing. Only the fields the briefing actually consumes
+// are typed here; the RPC returns a few more (fact_text, observed_at)
+// that the synthesis-layer 3D graph uses but the briefing ignores.
+export interface BeliefProvenanceRow {
+  belief_id: string;
+  fact_id: string;
+  source_type: string;
+  source_id: string;
+  source_label: string | null;
+  source_connector: string | null;
+}
+
+// One row from the concepts_moved_since RPC (058). Drives the
+// "Your '<concept>' moved this week" section in the briefing. The
+// RPC returns concepts that gained at least one link in the window,
+// with a jsonb deltas payload counting how much landed where.
+export interface ConceptsMovedRow {
+  concept_id: string;
+  label: string;
+  kind: string;
+  status: string;
+  source: string;
+  deltas: {
+    notes?: number;
+    facts?: number;
+    beliefs?: number;
+    chats?: number;
+    latest_at?: string | null;
+  } | null;
+  latest_at: string | null;
+}
+
+/**
+ * Pull the concepts that gained links in the last `windowHours`
+ * hours via the `concepts_moved_since` RPC. Returns [] on any
+ * failure path (RPC missing, RLS denial, offline) so the briefing
+ * just omits the section rather than blowing up.
+ */
+async function fetchConceptsMovedRecently(
+  windowHours = 168, // 7d default
+): Promise<ConceptsMovedRow[]> {
+  try {
+    const since = new Date(Date.now() - windowHours * 60 * 60 * 1000).toISOString();
+    const { data, error } = await supabase.rpc("concepts_moved_since", { since });
+    if (error || !Array.isArray(data)) return [];
+    return data as ConceptsMovedRow[];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Resolve belief_id -> short list of "grounded in" entries for the
+ * briefing chips. Returns an empty map when no belief ids are passed
+ * or when the RPC fails for any reason (offline, RLS denial, the
+ * migration hasn't been applied yet) — callers should treat the
+ * provenance row as optional.
+ */
+async function fetchBeliefProvenance(
+  beliefIds: string[],
+): Promise<Map<string, BeliefProvenanceRow[]>> {
+  const empty = new Map<string, BeliefProvenanceRow[]>();
+  if (!Array.isArray(beliefIds) || beliefIds.length === 0) return empty;
+  try {
+    const { data, error } = await supabase.rpc("get_belief_provenance", {
+      belief_ids: beliefIds,
+    });
+    if (error || !Array.isArray(data)) return empty;
+    const m = new Map<string, BeliefProvenanceRow[]>();
+    for (const raw of data as BeliefProvenanceRow[]) {
+      if (!raw?.belief_id) continue;
+      const arr = m.get(raw.belief_id) || [];
+      arr.push(raw);
+      m.set(raw.belief_id, arr);
+    }
+    return m;
+  } catch {
+    return empty;
+  }
+}
+
 // --------------------------------------------------------------------------
 // Connector activity fetching
 // --------------------------------------------------------------------------
@@ -950,6 +1034,47 @@ export interface LoadInUpdatesItem {
  * reveal the underlying items, each linking out to its canonical
  * source URL (the actual Gmail email, Notion page, etc.).
  */
+/**
+ * One row inside a notification bubble (LoadInUpdatesGroup.items).
+ *
+ * `provenance` is a small ordered list of "grounded in <X>" chips the
+ * renderer shows under the title so the user can see, at a glance, the
+ * source notes/boards/chats this row traces back to — and click straight
+ * into them. Today it's populated only for proposed-belief rows
+ * (powered by the `get_belief_provenance` RPC), but the field is shape-
+ * compatible with any future row that wants to surface receipts
+ * (newly-learned facts, activated rules, etc.).
+ *
+ * Older cached briefings won't carry `provenance`; the renderer must
+ * handle the field being absent without breaking.
+ */
+export interface LoadInUpdatesGroupItem {
+  id: string;
+  title: string;
+  subtitle?: string;
+  href?: string;
+  /**
+   * Up to ~3 grounding chips. Each chip should deep-link into the
+   * source surface (vault note, calendar event, external URL) so the
+   * "this came from these things you saw this week" promise is one
+   * click away.
+   */
+  provenance?: Array<{
+    /** Stable id used as React key — usually the source row id. */
+    id: string;
+    /** Short, branded label, e.g. "Notion: Sprint plan" or "Gmail: Re: launch". */
+    label: string;
+    /** Internal route (starts with `/`) or absolute URL the chip navigates to. */
+    href?: string;
+    /**
+     * Catalog connector id (`notion`, `gmail`, …) when we recognize the
+     * source's `notes.source` slug. Lets the renderer attach the right
+     * brand mark / favicon instead of a generic chip face.
+     */
+    connectorId?: string;
+  }>;
+}
+
 export interface LoadInUpdatesGroup {
   /** Stable id, typically the source slug. */
   id: string;
@@ -966,12 +1091,7 @@ export interface LoadInUpdatesGroup {
   /** Relative time for the most-recently-synced item ("2h ago"). */
   latestRelative?: string;
   /** Individual items revealed when the bubble expands. */
-  items: Array<{
-    id: string;
-    title: string;
-    subtitle?: string;
-    href?: string;
-  }>;
+  items: LoadInUpdatesGroupItem[];
 }
 
 export interface LoadInUpdatesSection {
@@ -1824,8 +1944,84 @@ function buildHealthSection(
   };
 }
 
+// --------------------------------------------------------------------------
+// Concepts-moved section — "your <X> concept moved this week"
+// --------------------------------------------------------------------------
+// Renders one bubble per concept that gained links in the briefing
+// window, with a single item per bubble summarising what landed
+// (notes / facts / beliefs / chats) and a deep link to the concept
+// node on the 3D synthesis layer page. Capped at 5 concepts so the
+// briefing doesn't blow up for power users with a wide topic
+// surface — the rest still live in /synthesis-layer.
+function buildConceptsMovedSection(
+  rows: ConceptsMovedRow[],
+): LoadInUpdatesSection | null {
+  if (!Array.isArray(rows) || rows.length === 0) return null;
+
+  // Drop dismissed-status rows defensively (the RPC already filters
+  // them, but a stale cached briefing could carry one through).
+  const live = rows.filter((r) => r.status !== "dismissed");
+  if (live.length === 0) return null;
+
+  // Sort by total movement desc; the RPC already orders this way but
+  // we re-sort here so the section is order-stable across cached
+  // payloads that may have been written before the ordering was
+  // tightened.
+  const sumDeltas = (r: ConceptsMovedRow) => {
+    const d = r.deltas || {};
+    return (d.notes || 0) + (d.facts || 0) + (d.beliefs || 0) + (d.chats || 0);
+  };
+  live.sort((a, b) => sumDeltas(b) - sumDeltas(a));
+
+  // Filter: a concept only earns a bubble if it moved by at least 1
+  // link in any category. Zero-movement rows shouldn't reach us, but
+  // the guard keeps the section honest.
+  const filtered = live.filter((r) => sumDeltas(r) > 0).slice(0, 5);
+  if (filtered.length === 0) return null;
+
+  const partLabel = (n: number, sing: string): string =>
+    `${n} ${n === 1 ? sing : `${sing}s`}`;
+
+  const groups: LoadInUpdatesGroup[] = filtered.map((r) => {
+    const d = r.deltas || {};
+    const parts: string[] = [];
+    if (d.notes) parts.push(partLabel(d.notes, "note"));
+    if (d.facts) parts.push(partLabel(d.facts, "neuron"));
+    if (d.beliefs) parts.push(partLabel(d.beliefs, "belief"));
+    if (d.chats) parts.push(partLabel(d.chats, "chat"));
+    const subtitle = parts.join(" · ");
+    const total = sumDeltas(r);
+    return {
+      id: `concept-${r.concept_id}`,
+      label: r.label,
+      count: total,
+      latestTitle: subtitle,
+      latestRelative: r.latest_at ? relativeTime(r.latest_at) : undefined,
+      items: [
+        {
+          id: `concept-item-${r.concept_id}`,
+          title: `Your "${r.label}" concept moved`,
+          subtitle,
+          href: `/synthesis-layer?focus=concept_${r.concept_id}`,
+        },
+      ],
+    };
+  });
+
+  return {
+    id: "concepts-moved",
+    heading: "Concepts that moved this week",
+    intro: filtered.length === 1
+      ? "One topic across your notes, chats, and learning pulled in new signals."
+      : `${filtered.length} topics across your notes, chats, and learning pulled in new signals.`,
+    items: [],
+    groups,
+  };
+}
+
 function buildApprovalsSectionStructured(
   events: ActivityEvent[],
+  provenanceByBelief: Map<string, BeliefProvenanceRow[]> = new Map(),
 ): LoadInUpdatesSection | null {
   // Roll everything the synthesis layer has surfaced recently into
   // notification bubbles — proposed beliefs, freshly-activated
@@ -1854,11 +2050,50 @@ function buildApprovalsSectionStructured(
       clients.length >= 2
         ? `${joinClients(clients)} surfaced this · ${relativeTime(e.when)}`
         : `Proposed by ${clientDisplay(e.by_client)} · ${relativeTime(e.when)}`;
+    // "Grounded in" chips. Walk the per-belief provenance rows the
+    // RPC returned, dedupe by source_id (the same vault note can show
+    // up under multiple facts), and cap at 3 entries so the row stays
+    // scannable. Each chip deep-links to the underlying vault note
+    // so the user can verify the receipts in one click.
+    const provenance: NonNullable<LoadInUpdatesGroupItem["provenance"]> = [];
+    const seenSources = new Set<string>();
+    const rows = provenanceByBelief.get(e.target_id) || [];
+    for (const row of rows) {
+      const sid = row.source_id || "";
+      if (!sid || seenSources.has(sid)) continue;
+      seenSources.add(sid);
+      // Brand-aware chip label. When we know the connector (Notion,
+      // Gmail, ...) prefix the note title with its display name —
+      // "Notion: Sprint plan" reads instantly while a bare note
+      // title in a chip can feel orphaned.
+      const connector = row.source_connector || "";
+      const connectorLabel = connector ? SOURCE_LABEL[connector] : "";
+      const rawLabel = row.source_label || "Source";
+      const label = connectorLabel
+        ? `${connectorLabel}: ${rawLabel}`
+        : rawLabel;
+      const connectorId = connector ? SOURCE_TO_CONNECTOR_ID[connector] : undefined;
+      // Internal deep link for vault notes; non-vault sources (board,
+      // conversation, intake) route to the synthesis layer focused on
+      // the underlying fact so the user can still trace the chain.
+      const href =
+        row.source_type === "vault_note"
+          ? `/vault?note=${encodeURIComponent(sid)}`
+          : `/synthesis-layer?focus=fact_${encodeURIComponent(row.fact_id)}`;
+      provenance.push({
+        id: sid,
+        label: label.length > 60 ? `${label.slice(0, 58)}…` : label,
+        href,
+        connectorId: connectorId || undefined,
+      });
+      if (provenance.length >= 3) break;
+    }
     proposedItems.push({
       id: e.target_id,
       title: e.target_label || "a new belief",
       subtitle,
       href: `/synthesis-layer?focus=belief_${encodeURIComponent(e.target_id)}`,
+      ...(provenance.length > 0 ? { provenance } : {}),
     });
     if (proposedItems.length >= 8) break;
   }
@@ -2124,6 +2359,8 @@ function formatMessage(
   status: ConnectorStatusMap,
   opts: BuildOptions,
   userSections: LoadInUpdatesSection[] = [],
+  provenanceByBelief: Map<string, BeliefProvenanceRow[]> = new Map(),
+  conceptsMoved: ConceptsMovedRow[] = [],
 ): LoadInUpdatesPayload {
   const sections = collectSections(events);
   const { recent, approvals, projects } = sections;
@@ -2292,7 +2529,13 @@ function formatMessage(
       status.configured.has("productivity"),
     ),
   );
-  pushIfSome(buildApprovalsSectionStructured(events));
+  pushIfSome(buildApprovalsSectionStructured(events, provenanceByBelief));
+  // Concepts that moved this week — first-class topic layer (stage 2).
+  // Inserted just under the approvals section because conceptually
+  // it's the same "what's happening in your synthesis layer" beat:
+  // approvals say what the AI wants to add, concepts-moved says
+  // what's already growing across everything you've touched.
+  pushIfSome(buildConceptsMovedSection(conceptsMoved));
   // Project updates are intentionally near the bottom — the user
   // skims the bulleted opener for "what changed today" then drills
   // into the conversational lanes (calendar, connectors, approvals)
@@ -2585,16 +2828,41 @@ export async function fetchLoadInUpdatesMessage(
       fetchConnectorStatus(),
       fetchUserAuthoredSections(),
     ]);
+  // Pull provenance for the small list of beliefs that will actually
+  // get rendered as approval items (deduped, capped at 8 inside
+  // buildApprovalsSectionStructured). We mirror that dedup here so
+  // the RPC payload stays tiny — there's no point fetching provenance
+  // for a 9th proposed belief we'll never show.
+  const events = synthesisResp?.events || [];
+  const proposedIds: string[] = [];
+  const seenProposedIds = new Set<string>();
+  for (const ev of events) {
+    if (ev.type !== "belief_proposed") continue;
+    if (!ev.target_id || seenProposedIds.has(ev.target_id)) continue;
+    seenProposedIds.add(ev.target_id);
+    proposedIds.push(ev.target_id);
+    if (proposedIds.length >= 8) break;
+  }
+  // Best-effort: an RPC failure leaves provenanceByBelief empty so
+  // the briefing still renders with the prior shape (no chip row).
+  // Same shape for the concepts_moved fetch — RPC may not be deployed
+  // yet on older environments, so we tolerate an empty array.
+  const [provenanceByBelief, conceptsMoved] = await Promise.all([
+    fetchBeliefProvenance(proposedIds),
+    fetchConceptsMovedRecently(),
+  ]);
   // We deliberately fall through to formatMessage even when both
   // activity fetches fail — `statusResp` (always returns at minimum
   // an empty configured-set) is enough to drive the "Connect X"
   // prompts, which is the most important onboarding affordance for
   // a freshly-signed-up user who literally has nothing else to show.
   return formatMessage(
-    synthesisResp?.events || [],
+    events,
     connectorResp,
     statusResp,
     opts,
     userSections,
+    provenanceByBelief,
+    conceptsMoved,
   );
 }

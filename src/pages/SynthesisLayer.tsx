@@ -73,7 +73,7 @@ const isBlockedDemoId = (id: string | null | undefined): boolean => {
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
 
-type NodeKind = "root" | "category" | "project" | "grid" | "vault" | "tag" | "neuron" | "belief";
+type NodeKind = "root" | "category" | "project" | "grid" | "vault" | "tag" | "neuron" | "belief" | "concept";
 
 interface MindNode {
   id: string;
@@ -91,6 +91,14 @@ interface MindEdge {
   from: string;
   to: string;
   cross?: boolean;
+  /**
+   * Marks edges that came from the belief→fact→source provenance pass
+   * (see the get_belief_provenance RPC). Rendered in the belief
+   * category color at higher opacity so the "this belief is grounded
+   * in these things" web reads as a distinct overlay rather than
+   * disappearing into the existing heuristic cross-edges.
+   */
+  provenance?: boolean;
 }
 
 interface SimNode extends MindNode {
@@ -124,6 +132,12 @@ const palette = {
   // a separate, higher-order tier (deeper indigo, brighter glow) so the
   // user reads the cluster as "principles" not just more facts.
   beliefs:  { bg: "#818cf8", glow: "rgba(129,140,248,0.40)" },
+  // Concepts are the cross-cutting topic layer (056-058 migrations).
+  // Palette is a warm amber so they read as a third cluster distinct
+  // from neurons (pink) and beliefs (indigo). The concept cluster
+  // semantically lives "between" beliefs and the raw notes/facts —
+  // they organise everything else without being normative.
+  concepts: { bg: "#f97316", glow: "rgba(249,115,22,0.35)" },
   project:  { bg: "#a78bfa", glow: "rgba(167,139,250,0.25)" },
   grid:     { bg: "#60a5fa", glow: "rgba(96,165,250,0.25)" },
   note:     { bg: "#34d399", glow: "rgba(52,211,153,0.25)" },
@@ -135,6 +149,10 @@ const palette = {
   // principles look like little stars, which matches the intent that
   // beliefs are the highest-order tier and the AI's brightest signal.
   belief:   { bg: "#ffffff", glow: "rgba(255,255,255,0.45)" },
+  // Individual concept nodes — slightly desaturated amber so they
+  // recede next to belief stars but still pop out as a coherent
+  // cluster amid the colored category groups around them.
+  concept:  { bg: "#fb923c", glow: "rgba(251,146,60,0.30)" },
 };
 
 /* ------------------------------------------------------------------ */
@@ -235,6 +253,39 @@ function buildGraph(
     first_seen_at?: string;
     last_seen_at?: string;
   }> = [],
+  // Provenance walked server-side from `lykn_beliefs.promoted_from_facts`
+  // and each promoting fact's `evidence[]` array. Drives the cross-
+  // cluster edges (belief→fact, fact→vault note, fact→board) that turn
+  // the 3D view into a visible web rather than four clusters around a
+  // root. Loaded by `get_belief_provenance` and grouped by belief_id
+  // for cheap iteration here. Empty map = no edges added (older clients
+  // without the migration still render the legacy hierarchy fine).
+  beliefProvenance: Map<string, Array<{ factId: string; sourceType: string; sourceId: string }>> = new Map(),
+  // First-class concepts (058 RPC: concepts_overview). Each carries
+  // its label + counts so the graph can both render a concept node
+  // and immediately know how connected it is for layout / sizing.
+  // Empty array means we omit the concepts category entirely (same
+  // behavior as the beliefs cluster when no beliefs are active).
+  concepts: Array<{
+    concept_id: string;
+    label: string;
+    kind: string;
+    source: string;
+    status: string;
+    confidence: number;
+    note_count: number;
+    fact_count: number;
+    belief_count: number;
+    chat_count: number;
+    last_touched_at?: string | null;
+  }> = [],
+  // Links per concept — populated by paging through concept_links()
+  // for the concepts in view. Map<concept_id, Array<link>> where
+  // each link is { kind: note|fact|belief|chat, targetId }.
+  // Drives the concept-cluster cross-edges to the underlying nodes
+  // (concept → vault, concept → fact, concept → belief, concept →
+  // grid) so the orange concept layer ties everything together.
+  conceptLinks: Map<string, Array<{ kind: "note" | "fact" | "belief" | "chat"; targetId: string }>> = new Map(),
   // Optional: categories that should always appear even if they have no
   // children. Used by the landing prototype so a brand-new guest sees the
   // shell of their future workspace (Projects / Grids / Vault / Tags)
@@ -345,6 +396,28 @@ function buildGraph(
     cats.push({ id: "__cat_beliefs__", label: "Beliefs", color: palette.beliefs.bg, glow: palette.beliefs.glow });
   }
 
+  // Concepts — first-class topic layer (migrations 056-058). Lives as
+  // its own category sibling to Beliefs so the user reads it as the
+  // cross-cutting glue between the colored clusters around it. We hide
+  // dismissed concepts and concepts with zero attachments by default
+  // — the orange dots only earn their pixels when they're tying
+  // something together. Filtering happens here so downstream layout +
+  // cross-edge passes only see the kept concepts.
+  const liveConcepts = (concepts || []).filter((c) => {
+    if (!c?.concept_id) return false;
+    if (c.status === "dismissed") return false;
+    const total = (c.note_count || 0) + (c.fact_count || 0) + (c.belief_count || 0) + (c.chat_count || 0);
+    // user_authored / promoted_from_* concepts always render even at
+    // zero links so the user can see what they've explicitly minted;
+    // ai_clustered + proposed concepts hide until they've earned at
+    // least one link to avoid cluttering the graph with noise.
+    if (total > 0) return true;
+    return c.source !== "ai_clustered" || c.status === "active";
+  });
+  if (liveConcepts.length > 0 || forceCategoryIds.has("__cat_concepts__")) {
+    cats.push({ id: "__cat_concepts__", label: "Concepts", color: palette.concepts.bg, glow: palette.concepts.glow });
+  }
+
   // (categories were already pushed above, but neurons cat needs to go in too)
   if ((neuronItems.length > 0 || manualFacts.length > 0) && !nodes.some((n) => n.id === "__cat_neurons__")) {
     nodes.push({ id: "__cat_neurons__", label: "AI Learned", kind: "category", radius: 30, color: palette.neurons.bg, glow: palette.neurons.glow, parentId: rootId });
@@ -354,12 +427,59 @@ function buildGraph(
     nodes.push({ id: "__cat_beliefs__", label: "Beliefs", kind: "category", radius: 32, color: palette.beliefs.bg, glow: palette.beliefs.glow, parentId: rootId });
     edges.push({ from: rootId, to: "__cat_beliefs__" });
   }
+  if ((liveConcepts.length > 0 || forceCategoryIds.has("__cat_concepts__")) && !nodes.some((n) => n.id === "__cat_concepts__")) {
+    nodes.push({ id: "__cat_concepts__", label: "Concepts", kind: "category", radius: 30, color: palette.concepts.bg, glow: palette.concepts.glow, parentId: rootId });
+    edges.push({ from: rootId, to: "__cat_concepts__" });
+  }
+
+  // Concept nodes — placed under their own category. Sized by total
+  // attached items so concepts with deep coverage (lots of notes /
+  // facts / beliefs / chats) read as landmarks; sparsely-attached
+  // proposals stay small. Cross-cluster edges to the underlying
+  // notes / facts / beliefs / boards are drawn in the cross-edge
+  // pass below using `conceptLinks` once every node has been
+  // created (same pattern beliefs use for provenance edges).
+  const conceptIdToNodeId = new Map<string, string>();
+  liveConcepts.forEach((c) => {
+    const nid = `concept_${c.concept_id}`;
+    conceptIdToNodeId.set(c.concept_id, nid);
+    const total = (c.note_count || 0) + (c.fact_count || 0) + (c.belief_count || 0) + (c.chat_count || 0);
+    // Bigger than vault notes (18) and neurons (16), smaller than
+    // beliefs (24). Concepts that bind together a dozen items
+    // visibly outweigh those tying together two.
+    const radius = 18 + Math.min(8, Math.floor(total / 3));
+    const labelShown = c.label.length > 32 ? `${c.label.slice(0, 30)}…` : c.label;
+    nodes.push({
+      id: nid,
+      label: labelShown,
+      kind: "concept",
+      radius,
+      color: palette.concept.bg,
+      glow: palette.concept.glow,
+      parentId: "__cat_concepts__",
+      categoryId: "__cat_concepts__",
+      meta: {
+        conceptId: c.concept_id,
+        conceptLabel: c.label,
+        conceptKind: c.kind,
+        conceptSource: c.source,
+        conceptStatus: c.status,
+        conceptConfidence: c.confidence,
+        conceptNoteCount: c.note_count,
+        conceptFactCount: c.fact_count,
+        conceptBeliefCount: c.belief_count,
+        conceptChatCount: c.chat_count,
+        conceptLastTouchedAt: c.last_touched_at || null,
+      },
+    });
+    edges.push({ from: "__cat_concepts__", to: nid });
+  });
 
   // Belief nodes — placed under their own category. Each belief is bigger
   // than a neuron because it represents a higher-order principle. Cross-
-  // edges to related neurons / vault notes are deliberately NOT drawn here
-  // (the BeliefWindowPanel side panel is the canonical place to inspect
-  // a belief's supporting facts) so the 3D view stays readable.
+  // cluster edges to the supporting facts (and through them to the
+  // source vault notes / boards) are drawn in the provenance pass at
+  // the bottom of this function once every node has been created.
   beliefs.forEach((b) => {
     const nid = `belief_${b.id}`;
     nodes.push({
@@ -389,9 +509,27 @@ function buildGraph(
     edges.push({ from: "__cat_beliefs__", to: nid });
   });
 
+  // Slugs covered by a first-class concept node. We demote the
+  // heuristic `neuron_theme_*` / `neuron_topic_*` neurons that just
+  // mirror those slugs so the user doesn't see the same label twice
+  // (once as an orange concept, once as a pink neuron) in the same
+  // scene. Other neuron kinds (goals, vocabulary, reasoning style)
+  // always render — they're orthogonal to concepts.
+  const conceptCoverSlugs = new Set<string>(
+    liveConcepts.map((c) => String(c.label || "").toLowerCase().trim()).filter(Boolean),
+  );
+
   const neuronNodeIds = new Set<string>();
   neuronItems.forEach((ni) => {
     if (neuronNodeIds.has(ni.id)) return;
+    // If a first-class concept already represents this label, drop
+    // the duplicate neuron node — the cross-edges the neuron block
+    // would have built (notes/boards/projects/tags by string match)
+    // are reconstructed by the concept→target pass below using the
+    // real concept_links data, which is strictly higher signal.
+    if ((ni.kind === "theme" || ni.kind === "topic") && conceptCoverSlugs.has(ni.label.toLowerCase().trim())) {
+      return;
+    }
     neuronNodeIds.add(ni.id);
     const kindLabel = ni.kind === "theme" ? "Theme" : ni.kind === "goal" ? "Goal" : ni.kind === "topic" ? "Topic" : "Pattern";
     nodes.push({
@@ -497,10 +635,33 @@ function buildGraph(
   const boardTitleLower = new Map(boards.map((b) => [`grid_${b.id}`, (b.title || "").toLowerCase()]));
   const projectNameLower = new Map(projects.map((p) => [`project_${p.id}`, (p.name || "").toLowerCase()]));
   const edgeSet = new Set(edges.map((e) => `${e.from}__${e.to}`));
-  const addCrossEdge = (from: string, to: string) => {
+  const addCrossEdge = (from: string, to: string, opts?: { provenance?: boolean }) => {
     const key = `${from}__${to}`;
     const keyRev = `${to}__${from}`;
-    if (!edgeSet.has(key) && !edgeSet.has(keyRev) && from !== to) {
+    if (from === to) return;
+    // Provenance edges always get added — even if a heuristic
+    // cross-edge already connects the same pair — so the renderer
+    // can promote the visual treatment to the indigo provenance
+    // style. We dedupe within the provenance pass below by
+    // upgrading an existing entry in-place.
+    if (opts?.provenance) {
+      // If we already drew a heuristic cross-edge between this
+      // pair, upgrade it to provenance instead of adding a second
+      // duplicate line.
+      const existing = edges.find(
+        (e) =>
+          (e.from === from && e.to === to) ||
+          (e.from === to && e.to === from),
+      );
+      if (existing) {
+        existing.provenance = true;
+        return;
+      }
+      edgeSet.add(key);
+      edges.push({ from, to, cross: true, provenance: true });
+      return;
+    }
+    if (!edgeSet.has(key) && !edgeSet.has(keyRev)) {
       edgeSet.add(key);
       edges.push({ from, to, cross: true });
     }
@@ -579,6 +740,81 @@ function buildGraph(
     });
   });
 
+  // -------------------------------------------------------------------
+  // Provenance cross-edges: belief → fact → source
+  // -------------------------------------------------------------------
+  // For each belief in view, walk its `promoted_from_facts` (carried by
+  // `beliefProvenance`) and draw:
+  //   • belief_<id> → fact_<id>           (audit edge — which facts seeded it)
+  //   • fact_<id>   → vault_<note_id>     (when evidence cites a vault note
+  //                                         AND that note node exists)
+  //   • fact_<id>   → grid_<board_id>     (when evidence cites a board AND
+  //                                         that board node exists)
+  // Edges to nodes we never built (a fact that hasn't surfaced in
+  // manualFacts, or a source we don't have a node for) are silently
+  // skipped so the graph never references missing nodes. Uses the same
+  // `addCrossEdge` helper as the heuristic cross-edges so dedup and
+  // direction-flip handling stay consistent.
+  const nodeIdSet = new Set(nodes.map((n) => n.id));
+  beliefs.forEach((b) => {
+    const beliefNodeId = `belief_${b.id}`;
+    if (!nodeIdSet.has(beliefNodeId)) return;
+    const entries = beliefProvenance.get(b.id);
+    if (!entries || entries.length === 0) return;
+    for (const entry of entries) {
+      const factNodeId = `fact_${entry.factId}`;
+      if (nodeIdSet.has(factNodeId)) {
+        addCrossEdge(beliefNodeId, factNodeId, { provenance: true });
+      }
+      if (entry.sourceType === "vault_note" && entry.sourceId) {
+        const vaultNodeId = `vault_${entry.sourceId}`;
+        if (nodeIdSet.has(vaultNodeId)) {
+          addCrossEdge(
+            nodeIdSet.has(factNodeId) ? factNodeId : beliefNodeId,
+            vaultNodeId,
+            { provenance: true },
+          );
+        }
+      } else if (entry.sourceType === "board" && entry.sourceId) {
+        const gridNodeId = `grid_${entry.sourceId}`;
+        if (nodeIdSet.has(gridNodeId)) {
+          addCrossEdge(
+            nodeIdSet.has(factNodeId) ? factNodeId : beliefNodeId,
+            gridNodeId,
+            { provenance: true },
+          );
+        }
+      }
+    }
+  });
+
+  // -------------------------------------------------------------------
+  // Concept cross-edges: concept_<id> → vault/grid/fact/belief
+  // -------------------------------------------------------------------
+  // For each concept in view, walk its concept_links rows and draw an
+  // edge to every linked vault note / board / fact / belief node. Uses
+  // the same provenance:true treatment as the belief edges above so
+  // the renderer paints them in solid indigo and the cross-cluster
+  // web reads as a coherent overlay. Links to nodes we never built
+  // (a fact that hasn't surfaced in manualFacts, a board outside this
+  // user's view, etc.) are silently skipped — the graph never points
+  // at missing nodes.
+  liveConcepts.forEach((c) => {
+    const conceptNodeId = conceptIdToNodeId.get(c.concept_id);
+    if (!conceptNodeId || !nodeIdSet.has(conceptNodeId)) return;
+    const links = conceptLinks.get(c.concept_id);
+    if (!links || links.length === 0) return;
+    for (const link of links) {
+      let targetNodeId: string | null = null;
+      if (link.kind === "note") targetNodeId = `vault_${link.targetId}`;
+      else if (link.kind === "chat") targetNodeId = `grid_${link.targetId}`;
+      else if (link.kind === "fact") targetNodeId = `fact_${link.targetId}`;
+      else if (link.kind === "belief") targetNodeId = `belief_${link.targetId}`;
+      if (!targetNodeId || !nodeIdSet.has(targetNodeId)) continue;
+      addCrossEdge(conceptNodeId, targetNodeId, { provenance: true });
+    }
+  });
+
   return { nodes, edges };
 }
 
@@ -627,6 +863,17 @@ function computeIdeaRelevance(nodes: MindNode[], edges: MindEdge[], idea: string
       else if (tag.includes(il) || il.includes(tag)) score = 0.85;
     } else if (n.kind === "neuron") {
       if (n.label.toLowerCase().includes(il) || il.includes(n.label.toLowerCase())) score = 0.95;
+    } else if (n.kind === "concept") {
+      // Concepts are the canonical topic labels — exact slug match
+      // ranks at 1, partial match still scores high so the "By
+      // Idea" layout pulls the right concept node toward the center
+      // along with its neighbours.
+      const conceptLabel = (n.meta?.conceptLabel || n.label || "").toLowerCase();
+      if (conceptLabel === il) score = 1;
+      else if (conceptLabel.includes(il) || il.includes(conceptLabel)) score = 0.95;
+    } else if (n.kind === "belief") {
+      const txt = (n.meta?.beliefText || n.label || "").toLowerCase();
+      if (txt.includes(il)) score = 0.7;
     }
     scores.set(n.id, score);
   });
@@ -716,6 +963,13 @@ function simulateLayout(
   });
   const kindZOffset: Record<string, number> = {
     neuron: 90,
+    // Concepts sit slightly forward of vault/grid but behind neurons
+    // so the orange cluster reads as a mid-depth band stitching the
+    // colored clusters around it together, not as a wall in front
+    // of everything else.
+    concept: 30,
+    // Beliefs ride above the rest — landmarks pop forward.
+    belief: 70,
     project: 45,
     grid: 0,
     vault: -30,
@@ -1640,6 +1894,380 @@ const FactDetailSection: React.FC<{ node: MindNode }> = ({ node }) => {
   );
 };
 
+// ---------------------------------------------------------------------
+// Concept detail section — rendered inside DetailPanel when the user
+// taps a `concept_<id>` node. Pulls the concept's links via the
+// concept_links RPC and surfaces rename / dismiss / restore + merge
+// actions. We deliberately keep this co-located with the other detail
+// sections so the panel stays a single component; a full standalone
+// /concepts page is out of scope for stage 2 (see plan).
+// ---------------------------------------------------------------------
+const ConceptDetailSection: React.FC<{
+  node: MindNode;
+  allConcepts: Array<{ concept_id: string; label: string; status: string }>;
+  onSelectNode: (id: string) => void;
+  onNavigate: (path: string) => void;
+}> = ({ node, allConcepts, onSelectNode, onNavigate }) => {
+  const conceptId = String(node.meta?.conceptId || "");
+  const conceptLabel = String(node.meta?.conceptLabel || node.label || "");
+  const conceptSource = String(node.meta?.conceptSource || "");
+  const conceptStatusInitial = String(node.meta?.conceptStatus || "active");
+  const conceptKind = String(node.meta?.conceptKind || "topic");
+  const noteCount = (node.meta?.conceptNoteCount as number) || 0;
+  const factCount = (node.meta?.conceptFactCount as number) || 0;
+  const beliefCount = (node.meta?.conceptBeliefCount as number) || 0;
+  const chatCount = (node.meta?.conceptChatCount as number) || 0;
+
+  const [status, setStatus] = useState(conceptStatusInitial);
+  const [editing, setEditing] = useState(false);
+  const [draftLabel, setDraftLabel] = useState(conceptLabel);
+  const [mergePickerOpen, setMergePickerOpen] = useState(false);
+  const [pending, setPending] = useState<null | "rename" | "dismiss" | "restore" | "merge">(null);
+  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+
+  useEffect(() => {
+    setStatus(conceptStatusInitial);
+    setDraftLabel(conceptLabel);
+    setEditing(false);
+    setMergePickerOpen(false);
+    setError(null);
+  }, [conceptId, conceptStatusInitial, conceptLabel]);
+
+  const { data: links = [] } = useQuery({
+    queryKey: ["concept_links", conceptId],
+    queryFn: async () => {
+      if (!conceptId) return [] as Array<{
+        target_kind: "note" | "fact" | "belief" | "chat";
+        target_id: string;
+        target_label: string;
+        source: string;
+        weight: number;
+      }>;
+      const { data, error: rpcErr } = await supabase.rpc("concept_links", {
+        p_concept_id: conceptId,
+      });
+      if (rpcErr) return [];
+      return (data || []) as Array<{
+        target_kind: "note" | "fact" | "belief" | "chat";
+        target_id: string;
+        target_label: string;
+        source: string;
+        weight: number;
+      }>;
+    },
+    enabled: !!conceptId,
+  });
+
+  const sourceLabel = ({
+    ai_clustered: "AI-clustered",
+    user_authored: "User-created",
+    promoted_from_tag: "From a tag",
+    promoted_from_theme: "From a profile theme",
+  } as Record<string, string>)[conceptSource] || conceptSource || "AI-clustered";
+
+  const invalidateConcepts = () => {
+    queryClient.invalidateQueries({ queryKey: ["mindmap_concepts"] });
+    queryClient.invalidateQueries({ queryKey: ["mindmap_concept_links"] });
+    queryClient.invalidateQueries({ queryKey: ["concept_links", conceptId] });
+  };
+
+  const callApi = async (path: string, method: string, body?: any) => {
+    const sess = (await supabase.auth.getSession()).data.session;
+    const token = sess?.access_token;
+    const res = await fetch(`${API_BASE_URL}${path}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (!res.ok) {
+      const txt = await res.text().catch(() => "");
+      throw new Error(`HTTP ${res.status}${txt ? `: ${txt.slice(0, 120)}` : ""}`);
+    }
+    return res.json().catch(() => ({}));
+  };
+
+  const saveRename = async () => {
+    const next = draftLabel.trim();
+    if (!next || next.length > 128 || next === conceptLabel) {
+      setEditing(false);
+      return;
+    }
+    setPending("rename");
+    setError(null);
+    try {
+      await callApi(`/api/v1/concepts/${conceptId}`, "PATCH", { label: next });
+      setEditing(false);
+      invalidateConcepts();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setPending(null);
+    }
+  };
+
+  const dismiss = async () => {
+    setPending("dismiss");
+    setError(null);
+    try {
+      await callApi(`/api/v1/concepts/${conceptId}`, "PATCH", { status: "dismissed" });
+      setStatus("dismissed");
+      invalidateConcepts();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setPending(null);
+    }
+  };
+
+  const restore = async () => {
+    setPending("restore");
+    setError(null);
+    try {
+      await callApi(`/api/v1/concepts/${conceptId}`, "PATCH", { status: "active" });
+      setStatus("active");
+      invalidateConcepts();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setPending(null);
+    }
+  };
+
+  const doMerge = async (intoId: string) => {
+    setPending("merge");
+    setError(null);
+    try {
+      await callApi(`/api/v1/concepts/${conceptId}/merge`, "POST", { into_id: intoId });
+      setMergePickerOpen(false);
+      invalidateConcepts();
+      // Camera-focus on the surviving concept so the user can see
+      // where the merged links landed.
+      onSelectNode(`concept_${intoId}`);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setPending(null);
+    }
+  };
+
+  const mergeCandidates = allConcepts.filter(
+    (c) => c.concept_id !== conceptId && c.status !== "dismissed",
+  );
+
+  const linkRow = (l: { target_kind: string; target_id: string; target_label: string }) => {
+    const targetId =
+      l.target_kind === "note" ? `vault_${l.target_id}`
+      : l.target_kind === "fact" ? `fact_${l.target_id}`
+      : l.target_kind === "belief" ? `belief_${l.target_id}`
+      : l.target_kind === "chat" ? `grid_${l.target_id}`
+      : null;
+    const tone =
+      l.target_kind === "note" ? "bg-emerald-50/50 dark:bg-emerald-900/10 hover:bg-emerald-100/60 dark:hover:bg-emerald-900/20"
+      : l.target_kind === "chat" ? "bg-sky-50/50 dark:bg-sky-900/10 hover:bg-sky-100/60 dark:hover:bg-sky-900/20"
+      : l.target_kind === "fact" ? "bg-pink-50/50 dark:bg-pink-900/10 hover:bg-pink-100/60 dark:hover:bg-pink-900/20"
+      : "bg-indigo-50/50 dark:bg-indigo-900/10 hover:bg-indigo-100/60 dark:hover:bg-indigo-900/20";
+    return (
+      <button
+        key={`${l.target_kind}-${l.target_id}`}
+        type="button"
+        onClick={() => {
+          if (targetId) onSelectNode(targetId);
+        }}
+        title={l.target_label}
+        className={`flex items-center gap-2 px-2 py-1 rounded-md text-left cursor-pointer w-full transition-colors ${tone}`}
+      >
+        <span className="text-[0.55rem] uppercase tracking-wider text-gray-400 dark:text-gray-500 w-10 flex-shrink-0">
+          {l.target_kind}
+        </span>
+        <span className="text-[0.6875rem] text-gray-600 dark:text-gray-300 truncate">
+          {l.target_label}
+        </span>
+      </button>
+    );
+  };
+
+  const linksByKind = useMemo(() => {
+    const m: Record<string, typeof links> = { note: [], fact: [], belief: [], chat: [] };
+    for (const l of links) {
+      if (m[l.target_kind]) m[l.target_kind].push(l);
+    }
+    return m;
+  }, [links]);
+
+  return (
+    <div className="mb-4">
+      <div className="flex items-center gap-2 mb-3">
+        <Hash size={13} className="text-orange-400" />
+        <span
+          className={`text-[0.6rem] px-1.5 py-0.5 rounded-full font-medium ${
+            status === "dismissed"
+              ? "bg-gray-100 dark:bg-gray-800/40 text-gray-500 dark:text-gray-400"
+              : status === "proposed"
+              ? "bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300"
+              : "bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300"
+          }`}
+        >
+          {status === "dismissed" ? "Dismissed" : status === "proposed" ? "Proposed concept" : "Active concept"}
+        </span>
+        <span className="text-[0.6rem] text-gray-400 dark:text-gray-500 capitalize">
+          {conceptKind}
+        </span>
+      </div>
+
+      {editing ? (
+        <div className="mb-3 flex items-center gap-2">
+          <input
+            value={draftLabel}
+            onChange={(e) => setDraftLabel(e.target.value.slice(0, 128))}
+            className="flex-1 text-[0.875rem] bg-white/5 border border-white/10 rounded-md px-2 py-1 text-gray-800 dark:text-gray-100"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") saveRename();
+              else if (e.key === "Escape") {
+                setEditing(false);
+                setDraftLabel(conceptLabel);
+              }
+            }}
+            autoFocus
+          />
+          <button
+            type="button"
+            onClick={saveRename}
+            disabled={pending !== null}
+            className="text-[0.75rem] px-2 py-1 rounded-md bg-orange-500/90 hover:bg-orange-500 disabled:bg-orange-500/40 text-white"
+          >
+            {pending === "rename" ? "…" : "Save"}
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setEditing(true)}
+          className="text-left mb-3 group"
+          title="Click to rename"
+        >
+          <p className="text-[1rem] text-gray-800 dark:text-gray-100 leading-tight font-semibold group-hover:text-orange-500 transition-colors">
+            {conceptLabel}
+          </p>
+          <p className="text-[0.625rem] text-gray-400 dark:text-gray-500 mt-0.5">
+            {sourceLabel} · click to rename
+          </p>
+        </button>
+      )}
+
+      <div className="grid grid-cols-4 gap-1 mb-4">
+        <div className="rounded-md bg-emerald-50/40 dark:bg-emerald-900/10 px-2 py-1.5 text-center">
+          <div className="text-[0.875rem] font-semibold text-emerald-600 dark:text-emerald-300">{noteCount}</div>
+          <div className="text-[0.55rem] uppercase tracking-wider text-emerald-500/70 dark:text-emerald-400/70">Notes</div>
+        </div>
+        <div className="rounded-md bg-pink-50/40 dark:bg-pink-900/10 px-2 py-1.5 text-center">
+          <div className="text-[0.875rem] font-semibold text-pink-600 dark:text-pink-300">{factCount}</div>
+          <div className="text-[0.55rem] uppercase tracking-wider text-pink-500/70 dark:text-pink-400/70">Neurons</div>
+        </div>
+        <div className="rounded-md bg-indigo-50/40 dark:bg-indigo-900/10 px-2 py-1.5 text-center">
+          <div className="text-[0.875rem] font-semibold text-indigo-600 dark:text-indigo-300">{beliefCount}</div>
+          <div className="text-[0.55rem] uppercase tracking-wider text-indigo-500/70 dark:text-indigo-400/70">Beliefs</div>
+        </div>
+        <div className="rounded-md bg-sky-50/40 dark:bg-sky-900/10 px-2 py-1.5 text-center">
+          <div className="text-[0.875rem] font-semibold text-sky-600 dark:text-sky-300">{chatCount}</div>
+          <div className="text-[0.55rem] uppercase tracking-wider text-sky-500/70 dark:text-sky-400/70">Chats</div>
+        </div>
+      </div>
+
+      {(["note", "fact", "belief", "chat"] as const).map((kind) => {
+        const rows = linksByKind[kind] || [];
+        if (rows.length === 0) return null;
+        const heading =
+          kind === "note" ? "Notes" : kind === "fact" ? "Neurons" : kind === "belief" ? "Beliefs" : "Chats";
+        return (
+          <div key={kind} className="mb-3">
+            <p className="text-[0.625rem] font-medium text-gray-400 dark:text-gray-500 mb-1.5 uppercase tracking-wider">
+              {heading}
+            </p>
+            <div className="flex flex-col gap-1">
+              {rows.slice(0, 8).map((l) => linkRow(l))}
+              {rows.length > 8 && (
+                <p className="text-[0.6rem] text-gray-400 dark:text-gray-500 italic pl-1">
+                  + {rows.length - 8} more
+                </p>
+              )}
+            </div>
+          </div>
+        );
+      })}
+
+      {/* Vault deep-link footer — sends the user to the filtered vault
+          view for this concept. The /vault page already supports a
+          ?concept= query param? if not, this still navigates to the
+          page and the user can find the notes via search. */}
+      <div className="mb-4">
+        <button
+          type="button"
+          onClick={() => onNavigate(`/vault?concept=${encodeURIComponent(conceptId)}`)}
+          className="w-full text-[0.6875rem] py-1.5 rounded-md bg-white/5 hover:bg-white/10 text-gray-500 dark:text-gray-400 transition-colors flex items-center justify-center gap-1.5"
+        >
+          <ExternalLink size={11} />
+          Open in vault
+        </button>
+      </div>
+
+      <div className="space-y-2">
+        {status !== "dismissed" ? (
+          <>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setMergePickerOpen((v) => !v)}
+                disabled={pending !== null || mergeCandidates.length === 0}
+                className="flex-1 text-[0.75rem] py-1.5 rounded-md bg-white/5 hover:bg-white/10 disabled:bg-white/5 disabled:text-gray-500 text-gray-700 dark:text-gray-200 transition-colors"
+                title={mergeCandidates.length === 0 ? "No other concepts to merge into" : "Merge this concept into another"}
+              >
+                {mergePickerOpen ? "Cancel merge" : "Merge into…"}
+              </button>
+              <button
+                type="button"
+                onClick={dismiss}
+                disabled={pending !== null}
+                className="flex-1 text-[0.75rem] py-1.5 rounded-md bg-red-500/10 hover:bg-red-500/20 disabled:bg-red-500/5 text-red-500 dark:text-red-400 transition-colors"
+              >
+                {pending === "dismiss" ? "…" : "Dismiss"}
+              </button>
+            </div>
+            {mergePickerOpen && (
+              <div className="rounded-md border border-white/8 bg-black/[0.03] dark:bg-white/[0.03] max-h-[12rem] overflow-y-auto">
+                {mergeCandidates.slice(0, 30).map((c) => (
+                  <button
+                    key={c.concept_id}
+                    type="button"
+                    onClick={() => doMerge(c.concept_id)}
+                    disabled={pending !== null}
+                    className="w-full text-left text-[0.75rem] px-3 py-1.5 hover:bg-white/5 text-gray-700 dark:text-gray-200 disabled:opacity-50"
+                  >
+                    {c.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </>
+        ) : (
+          <button
+            type="button"
+            onClick={restore}
+            disabled={pending !== null}
+            className="w-full text-[0.75rem] py-1.5 rounded-md bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 dark:text-emerald-300 transition-colors"
+          >
+            {pending === "restore" ? "Restoring…" : "Restore concept"}
+          </button>
+        )}
+        {error && <p className="text-[0.6875rem] text-red-500">{error}</p>}
+      </div>
+    </div>
+  );
+};
+
 /* ------------------------------------------------------------------ */
 /*  Detail panel                                                       */
 /* ------------------------------------------------------------------ */
@@ -1652,6 +2280,7 @@ function DetailPanel({
   onNavigate,
   onSelectNode,
   prototypeChat,
+  allConcepts,
 }: {
   node: MindNode;
   allNodes: MindNode[];
@@ -1670,6 +2299,12 @@ function DetailPanel({
    * "First Conversation" grid (since it has no real /grid route).
    */
   prototypeChat?: { role: "user" | "ai"; content: string }[];
+  /**
+   * Every live concept the user owns. Powers the concept detail
+   * section's merge picker — without it, the user can't pick a
+   * target to merge into without leaving the panel.
+   */
+  allConcepts?: Array<{ concept_id: string; label: string; status: string }>;
 }) {
   // Landing-prototype handoff: the buildGraph patch in SynthesisLayer
   // stamps these onto every prototype-neuron node. When present, the
@@ -2044,6 +2679,15 @@ function DetailPanel({
         )}
 
         {node.kind === "belief" && <BeliefDetailSection node={node} />}
+
+        {node.kind === "concept" && (
+          <ConceptDetailSection
+            node={node}
+            allConcepts={allConcepts || []}
+            onSelectNode={onSelectNode}
+            onNavigate={onNavigate}
+          />
+        )}
 
         {node.kind === "neuron" && node.meta?.neuronKind === "fact" && (
           <FactDetailSection node={node} />
@@ -2883,6 +3527,152 @@ export default function SynthesisLayer() {
     enabled: !!user?.id,
   });
 
+  // Belief → fact → source provenance for the active/proposed beliefs in
+  // view. Powers the cross-cluster edges that turn the 3D mind from
+  // four parallel clusters around a root into a visibly-interconnected
+  // web: belief→fact (from `promoted_from_facts`) and fact→vault/grid
+  // (from `lykn_user_model_facts.evidence[]`). The same RPC is shared
+  // with the connector tile footers and the load-in briefing chips so
+  // the three surfaces tell exactly the same provenance story.
+  //
+  // We refetch alongside `activeBeliefs` because a newly-promoted
+  // belief or newly-cited fact should light up edges within the same
+  // realtime update tick.
+  const beliefIdsKey = useMemo(
+    () => activeBeliefs.map((b) => b.id).sort().join(","),
+    [activeBeliefs],
+  );
+  const { data: beliefProvenanceRows = [] } = useQuery({
+    queryKey: ["mindmap_belief_provenance", user?.id, beliefIdsKey],
+    queryFn: async () => {
+      if (!user?.id || activeBeliefs.length === 0) {
+        return [] as Array<{
+          belief_id: string; fact_id: string; source_type: string; source_id: string;
+        }>;
+      }
+      const { data, error } = await supabase.rpc("get_belief_provenance", {
+        belief_ids: activeBeliefs.map((b) => b.id),
+      });
+      if (error) return [];
+      return (data || []) as Array<{
+        belief_id: string; fact_id: string; fact_text: string;
+        source_type: string; source_id: string; source_label: string | null;
+        source_connector: string | null; observed_at: string | null;
+      }>;
+    },
+    enabled: !!user?.id && activeBeliefs.length > 0,
+  });
+
+  // Group rows by belief_id so buildGraph can walk one belief at a time.
+  // Map<belief_id, Array<{ factId, sourceType, sourceId }>>
+  const beliefProvenance = useMemo(() => {
+    const m = new Map<string, Array<{ factId: string; sourceType: string; sourceId: string }>>();
+    for (const row of beliefProvenanceRows) {
+      if (!row?.belief_id || !row?.fact_id) continue;
+      const arr = m.get(row.belief_id) || [];
+      arr.push({
+        factId: row.fact_id,
+        sourceType: row.source_type || "",
+        sourceId: row.source_id || "",
+      });
+      m.set(row.belief_id, arr);
+    }
+    return m;
+  }, [beliefProvenanceRows]);
+
+  // ---- Concepts (stage-2 topic layer) -----------------------------
+  // First-class concept nodes via the concepts_overview RPC (058).
+  // Each row carries note/fact/belief/chat counts so the graph can
+  // size and filter them in one pass without a second round-trip.
+  // We pull them eagerly alongside beliefs because concepts are the
+  // cross-cutting glue between everything else in the graph — a
+  // late fetch would cause the orange cluster to pop in after the
+  // initial layout had already settled.
+  const { data: conceptRows = [] } = useQuery({
+    queryKey: ["mindmap_concepts", user?.id],
+    queryFn: async () => {
+      if (!user?.id) {
+        return [] as Array<{
+          concept_id: string; label: string; kind: string; source: string;
+          status: string; confidence: number;
+          note_count: number; fact_count: number; belief_count: number; chat_count: number;
+          last_touched_at: string | null;
+        }>;
+      }
+      const { data, error } = await supabase.rpc("concepts_overview");
+      if (error) return [];
+      return (data || []) as Array<{
+        concept_id: string; label: string; slug: string; kind: string; source: string;
+        status: string; confidence: number;
+        note_count: number; fact_count: number; belief_count: number; chat_count: number;
+        last_touched_at: string | null; created_at: string;
+      }>;
+    },
+    enabled: !!user?.id,
+  });
+
+  // Concept links — page through concept_links() once per visible
+  // (non-dismissed) concept. Caps fan-out at 30 concepts to keep the
+  // initial paint under a budget; the nightly job's dedup keeps the
+  // typical count well below that for any single user. We could move
+  // to a single SQL view returning ALL links for the user in one
+  // call later; this shape is the cheapest path that reuses 058's
+  // already-tested concept_links RPC and stays consistent with how
+  // belief provenance is fetched.
+  const conceptIdsKey = useMemo(
+    () => conceptRows
+      .filter((c) => c.status !== "dismissed")
+      .slice(0, 30)
+      .map((c) => c.concept_id)
+      .sort()
+      .join(","),
+    [conceptRows],
+  );
+  const { data: conceptLinkRows = [] } = useQuery({
+    queryKey: ["mindmap_concept_links", user?.id, conceptIdsKey],
+    queryFn: async () => {
+      if (!user?.id || !conceptIdsKey) {
+        return [] as Array<{ concept_id: string; target_kind: string; target_id: string }>;
+      }
+      const conceptIds = conceptIdsKey.split(",").filter(Boolean);
+      const all: Array<{ concept_id: string; target_kind: string; target_id: string }> = [];
+      // Fan out in small batches so a user with many concepts doesn't
+      // saturate the connection pool. Promise.all per batch.
+      const BATCH = 6;
+      for (let i = 0; i < conceptIds.length; i += BATCH) {
+        const chunk = conceptIds.slice(i, i + BATCH);
+        const results = await Promise.all(
+          chunk.map((cid) =>
+            supabase
+              .rpc("concept_links", { p_concept_id: cid })
+              .then((r) => ({ cid, rows: (r.data || []) as Array<{ target_kind: string; target_id: string }> }))
+              .catch(() => ({ cid, rows: [] })),
+          ),
+        );
+        for (const { cid, rows } of results) {
+          for (const row of rows) {
+            all.push({ concept_id: cid, target_kind: row.target_kind, target_id: row.target_id });
+          }
+        }
+      }
+      return all;
+    },
+    enabled: !!user?.id && !!conceptIdsKey,
+  });
+
+  // Map<concept_id, Array<{kind, targetId}>> for buildGraph.
+  const conceptLinks = useMemo(() => {
+    const m = new Map<string, Array<{ kind: "note" | "fact" | "belief" | "chat"; targetId: string }>>();
+    for (const row of conceptLinkRows) {
+      const k = row.target_kind;
+      if (k !== "note" && k !== "fact" && k !== "belief" && k !== "chat") continue;
+      const arr = m.get(row.concept_id) || [];
+      arr.push({ kind: k, targetId: row.target_id });
+      m.set(row.concept_id, arr);
+    }
+    return m;
+  }, [conceptLinkRows]);
+
   // Stable empty-map for guests (and any signed-in user with no chunks
   // yet) — without this, a fresh `synthesisChunks` array reference on each
   // render would make buildVaultGridMap return a fresh `new Map()` every
@@ -3065,7 +3855,7 @@ export default function SynthesisLayer() {
   const rootLabel = isPrototypeHandoff ? "Your Synthesis Layer" : "Your Mind";
   const { nodes: allNodes, edges } = useMemo(
     () => {
-      const built = buildGraph(effectiveProjects, effectiveBoards, effectiveNotes, synthesisThemes, synthesisData, vaultGridMap, activeBeliefs, manualFacts, forceCategoryIds, rootLabel);
+      const built = buildGraph(effectiveProjects, effectiveBoards, effectiveNotes, synthesisThemes, synthesisData, vaultGridMap, activeBeliefs, manualFacts, beliefProvenance, conceptRows, conceptLinks, forceCategoryIds, rootLabel);
       // Prototype handoff: stamp each prototype-neuron node with the
       // ordinal (1st, 2nd, ...) and the AI-supplied "why" reason so the
       // detail panel can render "Nth neuron created" + a custom blurb
@@ -3101,7 +3891,7 @@ export default function SynthesisLayer() {
       }
       return built;
     },
-    [effectiveProjects, effectiveBoards, effectiveNotes, synthesisThemes, synthesisData, vaultGridMap, activeBeliefs, manualFacts, forceCategoryIds, rootLabel, isPrototypeHandoff, prototypeNeurons],
+    [effectiveProjects, effectiveBoards, effectiveNotes, synthesisThemes, synthesisData, vaultGridMap, activeBeliefs, manualFacts, beliefProvenance, conceptRows, conceptLinks, forceCategoryIds, rootLabel, isPrototypeHandoff, prototypeNeurons],
   );
   const nodeMap = useMemo(() => new Map(allNodes.map((n) => [n.id, n])), [allNodes]);
 
@@ -3906,6 +4696,15 @@ export default function SynthesisLayer() {
             // so the synthetic "First Conversation" grid renders the
             // actual messages instead of an empty grid stub.
             prototypeChat={isPrototypeHandoff ? prototypeChat : undefined}
+            // First-class concepts (056-058). The concept detail
+            // section uses this list to populate its merge picker.
+            // We pass the full live set so merging into a concept that
+            // happens to be off-screen still works.
+            allConcepts={conceptRows.map((c) => ({
+              concept_id: c.concept_id,
+              label: c.label,
+              status: c.status,
+            }))}
           />
         ) : null}
       </AnimatePresence>

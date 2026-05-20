@@ -186,6 +186,20 @@ type PromptMessage = {
         title: string;
         subtitle?: string;
         href?: string;
+        /**
+         * Optional "grounded in" chips rendered under the title. Used
+         * today for proposed-belief rows so the user can see (and
+         * click into) the source notes / events the belief was
+         * promoted from, instead of trusting the synthesis layer
+         * blind. Absent on older cached briefings; renderer must
+         * handle the array being missing without breaking.
+         */
+        provenance?: Array<{
+          id: string;
+          label: string;
+          href?: string;
+          connectorId?: string;
+        }>;
       }>;
     }>;
     chips?: Array<{
@@ -424,6 +438,14 @@ const LoadInBubble: React.FC<{
             {group.items.map((it) => {
               const hasHref = typeof it.href === "string" && it.href.length > 0;
               const isInternal = hasHref && it.href!.startsWith("/");
+              // Optional grounding chips ("Grounded in: <Notion page>,
+              // <Calendar event>, ...") rendered under the item's
+              // subtitle. Older cached briefings won't carry the
+              // `provenance` array, so we only render the row when at
+              // least one chip is present.
+              const provenance = Array.isArray((it as { provenance?: unknown }).provenance)
+                ? (it as { provenance?: Array<{ id: string; label: string; href?: string; connectorId?: string }> }).provenance!
+                : [];
               const inner = (
                 <div className="flex items-start gap-2 px-2 py-1.5 rounded-lg hover:bg-white/50 dark:hover:bg-white/[0.06] transition-colors">
                   <div className="flex-1 min-w-0 leading-tight">
@@ -433,6 +455,50 @@ const LoadInBubble: React.FC<{
                     {it.subtitle ? (
                       <div className="text-[11px] opacity-60 mt-0.5 truncate">
                         {it.subtitle}
+                      </div>
+                    ) : null}
+                    {provenance.length > 0 ? (
+                      <div className="mt-1 flex items-center gap-1 flex-wrap">
+                        <span className="text-[10.5px] uppercase tracking-wider opacity-50">
+                          Grounded in
+                        </span>
+                        {provenance.slice(0, 3).map((chip) => {
+                          const chipHasHref = typeof chip.href === "string" && chip.href.length > 0;
+                          const chipInternal = chipHasHref && chip.href!.startsWith("/");
+                          const onChipClick = (e: React.MouseEvent) => {
+                            // Stop the parent row's anchor click from
+                            // double-navigating when the chip lives
+                            // inside an outer <a>.
+                            e.stopPropagation();
+                            if (!chipInternal || !chipHasHref) return;
+                            if (e.metaKey || e.ctrlKey || e.shiftKey || (e as unknown as { button?: number }).button === 1) return;
+                            e.preventDefault();
+                            navigate(chip.href!);
+                          };
+                          const chipFace = (
+                            <span className="inline-flex max-w-[180px] items-center rounded-full border border-black/[0.08] dark:border-white/10 bg-black/[0.03] dark:bg-white/[0.04] px-1.5 py-[1px] text-[10.5px] font-medium text-black/70 dark:text-white/70 truncate">
+                              {chip.label}
+                            </span>
+                          );
+                          if (!chipHasHref) {
+                            return (
+                              <span key={chip.id}>{chipFace}</span>
+                            );
+                          }
+                          return (
+                            <a
+                              key={chip.id}
+                              href={chip.href}
+                              onClick={onChipClick}
+                              target={chipInternal ? undefined : "_blank"}
+                              rel={chipInternal ? undefined : "noopener noreferrer"}
+                              className="inline-flex max-w-[180px] hover:opacity-90"
+                              title={chip.label}
+                            >
+                              {chipFace}
+                            </a>
+                          );
+                        })}
                       </div>
                     ) : null}
                   </div>

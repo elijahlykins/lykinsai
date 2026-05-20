@@ -96,6 +96,7 @@ import {
   listRecentAttributions,
   NEEDS,
 } from './beliefSystem.js';
+import { embedAndPersistConcept } from './conceptEmbedding.js';
 import {
   makeRequireAuthOrMcpToken,
   createMcpToken,
@@ -5534,6 +5535,270 @@ app.post('/api/v1/synthesis/facts/proposals', requireAuthOrMcpToken, mcpMinuteLi
 app.post('/api/v1/synthesis/projects/active', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_setActiveProject', req, res));
 app.post('/api/v1/synthesis/projects/state', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_pushProjectState', req, res));
 
+// --- Concepts (056-058) ---------------------------------------------------
+// First-class concept/topic layer with hybrid AI/user authorship. The
+// nightly jobs/conceptsJob.js writes ai_clustered rows (status='proposed');
+// these endpoints are the user-facing CRUD + the read paths the 3D graph
+// and briefing call. All routes require the JWT requireAuth — concepts
+// are an internal UI surface, not part of the MCP REST contract.
+app.get('/api/v1/concepts', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const client = createSynthesisUserClient(req.headers.authorization) || supabaseAdmin;
+    if (!client) return res.status(503).json({ error: 'Database not configured' });
+    const { data, error } = await client.rpc('concepts_overview');
+    if (error) {
+      console.error('concepts overview:', error);
+      return res.status(400).json({ error: error.message });
+    }
+    return res.json({ concepts: data || [] });
+  } catch (e) {
+    console.error('GET /api/v1/concepts:', e);
+    return res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+app.get('/api/v1/concepts/:id/links', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const conceptId = String(req.params.id || '');
+    if (!/^[0-9a-fA-F-]{36}$/.test(conceptId)) {
+      return res.status(400).json({ error: 'Invalid concept id' });
+    }
+    const client = createSynthesisUserClient(req.headers.authorization) || supabaseAdmin;
+    if (!client) return res.status(503).json({ error: 'Database not configured' });
+    const { data, error } = await client.rpc('concept_links', { p_concept_id: conceptId });
+    if (error) {
+      console.error('concept_links:', error);
+      return res.status(400).json({ error: error.message });
+    }
+    return res.json({ links: data || [] });
+  } catch (e) {
+    console.error('GET /api/v1/concepts/:id/links:', e);
+    return res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+app.post('/api/v1/concepts', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const body = req.body || {};
+    const rawLabel = typeof body.label === 'string' ? body.label.trim() : '';
+    if (rawLabel.length < 1 || rawLabel.length > 128) {
+      return res.status(400).json({ error: 'label must be 1-128 chars' });
+    }
+    const kind = ['theme', 'topic', 'entity'].includes(body.kind) ? body.kind : 'topic';
+    const slug = rawLabel.toLowerCase().replace(/\s+/g, ' ').slice(0, 128);
+
+    const client = createSynthesisUserClient(req.headers.authorization) || supabaseAdmin;
+    if (!client) return res.status(503).json({ error: 'Database not configured' });
+
+    // Idempotent: if the user already has a live concept with this
+    // slug, return it (status bumped to active and last_touched_at
+    // refreshed) — same shape the merge / dismiss path uses.
+    const { data: existing } = await client
+      .from('lykn_concepts')
+      .select('id')
+      .eq('user_id', userId)
+      .eq('slug', slug)
+      .is('merged_into_id', null)
+      .maybeSingle();
+
+    if (existing?.id) {
+      await client
+        .from('lykn_concepts')
+        .update({
+          status: 'active',
+          last_touched_at: new Date().toISOString(),
+        })
+        .eq('id', existing.id)
+        .eq('user_id', userId);
+      return res.json({ id: existing.id, existed: true });
+    }
+
+    const { data: inserted, error: insErr } = await client
+      .from('lykn_concepts')
+      .insert({
+        user_id: userId,
+        label: rawLabel,
+        slug,
+        kind,
+        source: 'user_authored',
+        status: 'active',
+        confidence: 1.0,
+      })
+      .select('id')
+      .single();
+    if (insErr) {
+      console.error('insert concept:', insErr);
+      return res.status(400).json({ error: insErr.message });
+    }
+    // Fire-and-forget embed-on-write.
+    embedAndPersistConcept(client, { conceptId: inserted.id, userId, label: rawLabel }).catch(() => {});
+    return res.json({ id: inserted.id, existed: false });
+  } catch (e) {
+    console.error('POST /api/v1/concepts:', e);
+    return res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+app.patch('/api/v1/concepts/:id', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const conceptId = String(req.params.id || '');
+    if (!/^[0-9a-fA-F-]{36}$/.test(conceptId)) {
+      return res.status(400).json({ error: 'Invalid concept id' });
+    }
+    const body = req.body || {};
+    const patch = {};
+    let didRename = false;
+    let newLabel = null;
+
+    if (typeof body.label === 'string') {
+      newLabel = body.label.trim();
+      if (newLabel.length < 1 || newLabel.length > 128) {
+        return res.status(400).json({ error: 'label must be 1-128 chars' });
+      }
+      patch.label = newLabel;
+      patch.slug = newLabel.toLowerCase().replace(/\s+/g, ' ').slice(0, 128);
+      didRename = true;
+    }
+    if (typeof body.status === 'string') {
+      if (!['proposed', 'active', 'dismissed'].includes(body.status)) {
+        return res.status(400).json({ error: 'invalid status' });
+      }
+      patch.status = body.status;
+      if (body.status === 'dismissed') {
+        patch.dismissed_at = new Date().toISOString();
+      } else {
+        patch.dismissed_at = null;
+      }
+    }
+    if (typeof body.kind === 'string') {
+      if (!['theme', 'topic', 'entity'].includes(body.kind)) {
+        return res.status(400).json({ error: 'invalid kind' });
+      }
+      patch.kind = body.kind;
+    }
+    if (Object.keys(patch).length === 0) {
+      return res.status(400).json({ error: 'no fields to update' });
+    }
+    patch.last_touched_at = new Date().toISOString();
+
+    const client = createSynthesisUserClient(req.headers.authorization) || supabaseAdmin;
+    if (!client) return res.status(503).json({ error: 'Database not configured' });
+
+    const { error: upErr } = await client
+      .from('lykn_concepts')
+      .update(patch)
+      .eq('id', conceptId)
+      .eq('user_id', userId);
+    if (upErr) {
+      console.error('patch concept:', upErr);
+      return res.status(400).json({ error: upErr.message });
+    }
+    if (didRename && newLabel) {
+      // Clear stale embedding + re-embed under the new label.
+      await client
+        .from('lykn_concepts')
+        .update({ embedding: null, embedded_at: null })
+        .eq('id', conceptId)
+        .eq('user_id', userId);
+      embedAndPersistConcept(client, { conceptId, userId, label: newLabel }).catch(() => {});
+    }
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('PATCH /api/v1/concepts/:id:', e);
+    return res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+app.post('/api/v1/concepts/:id/merge', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const fromId = String(req.params.id || '');
+    const intoId = String(req.body?.into_id || '');
+    if (!/^[0-9a-fA-F-]{36}$/.test(fromId) || !/^[0-9a-fA-F-]{36}$/.test(intoId)) {
+      return res.status(400).json({ error: 'Invalid id(s)' });
+    }
+    const client = createSynthesisUserClient(req.headers.authorization) || supabaseAdmin;
+    if (!client) return res.status(503).json({ error: 'Database not configured' });
+
+    const { data, error } = await client.rpc('merge_concepts', {
+      from_id: fromId,
+      into_id: intoId,
+    });
+    if (error) {
+      console.error('merge_concepts:', error);
+      return res.status(400).json({ error: error.message });
+    }
+    return res.json({ merged_rows: data });
+  } catch (e) {
+    console.error('POST /api/v1/concepts/:id/merge:', e);
+    return res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+app.post('/api/v1/concepts/:id/link', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const conceptId = String(req.params.id || '');
+    if (!/^[0-9a-fA-F-]{36}$/.test(conceptId)) {
+      return res.status(400).json({ error: 'Invalid concept id' });
+    }
+    const targetKind = String(req.body?.target_kind || '');
+    const targetId = String(req.body?.target_id || '');
+    if (!/^[0-9a-fA-F-]{36}$/.test(targetId)) {
+      return res.status(400).json({ error: 'Invalid target id' });
+    }
+    const table = ({
+      note: 'concept_notes',
+      fact: 'concept_facts',
+      belief: 'concept_beliefs',
+      chat: 'concept_chats',
+    })[targetKind];
+    const column = ({
+      note: 'note_id',
+      fact: 'fact_id',
+      belief: 'belief_id',
+      chat: 'board_id',
+    })[targetKind];
+    if (!table || !column) {
+      return res.status(400).json({ error: 'invalid target_kind' });
+    }
+    const client = createSynthesisUserClient(req.headers.authorization) || supabaseAdmin;
+    if (!client) return res.status(503).json({ error: 'Database not configured' });
+
+    const row = {
+      user_id: userId,
+      concept_id: conceptId,
+      [column]: targetId,
+      weight: 1.0,
+      source: 'user',
+    };
+    const { error } = await client
+      .from(table)
+      .upsert(row, {
+        onConflict: `user_id,concept_id,${column}`,
+        ignoreDuplicates: false,
+      });
+    if (error) {
+      console.error(`upsert ${table}:`, error);
+      return res.status(400).json({ error: error.message });
+    }
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('POST /api/v1/concepts/:id/link:', e);
+    return res.status(500).json({ error: 'Internal error' });
+  }
+});
+
 // --- Streamable HTTP MCP server -------------------------------------------
 //
 // POST /mcp:  full JSON-RPC roundtrip per request (initialize, tools/list,
@@ -10663,6 +10928,146 @@ app.post('/api/ai/name-grid', requireAuth, aiLimiter, async (req, res) => {
     return res.json({ title });
   } catch (error) {
     console.error('❌ name-grid error:', error?.message);
+    return res.status(500).json({ error: 'Naming failed' });
+  }
+});
+
+// ──────────────────────────────────────────────────
+// Auto-name chat — fire-and-forget after the first user→assistant
+// exchange. Generates a 2-5 word title from the first turn, writes it
+// straight to `omnia_boards.title` (server-owned so RLS / auth all run
+// on the trusted side), and returns the title for the client to surface
+// in the sidebar / toolbar via the existing `omnia_board_renamed` and
+// `lykinsai_boards_changed` events.
+//
+// Guards (server-side, defence-in-depth — client also gates):
+//   • only renames if the board's current title is still the default
+//     ("New Chat") — never overwrite a manual rename
+//   • verifies user_id ownership before writing
+//   • silent no-op on any failure (returns 200 with applied:false) so
+//     a flake never breaks the chat surface
+// ──────────────────────────────────────────────────
+app.post('/api/ai/name-chat', requireAuth, aiLimiter, async (req, res) => {
+  try {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) return res.status(503).json({ error: 'LLM not configured' });
+
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Not signed in' });
+
+    const boardId = String(req.body?.boardId || '').trim();
+    const userMessage = String(req.body?.userMessage || '').trim();
+    const assistantReply = String(req.body?.assistantReply || '').trim();
+
+    if (!boardId) return res.status(400).json({ error: 'boardId required' });
+    if (userMessage.length < 4 && assistantReply.length < 20) {
+      return res.json({ applied: false, reason: 'too_short' });
+    }
+
+    // Verify board ownership AND that the title is still the default
+    // before we spend a token generating a name.
+    if (!supabaseAdmin) {
+      return res.status(503).json({ error: 'Database not configured' });
+    }
+    const { data: board, error: boardErr } = await supabaseAdmin
+      .from('omnia_boards')
+      .select('id, title, user_id')
+      .eq('id', boardId)
+      .eq('user_id', userId)
+      .maybeSingle();
+    if (boardErr || !board) {
+      return res.json({ applied: false, reason: 'not_found' });
+    }
+    const currentTitle = String(board.title || '').trim();
+    if (currentTitle && currentTitle !== 'New Chat' && currentTitle !== 'Untitled board') {
+      return res.json({ applied: false, reason: 'already_named', title: currentTitle });
+    }
+
+    // Compose a tight transcript snippet for the namer. The user message
+    // carries the topic; the assistant reply disambiguates intent. Cap
+    // each side so we stay well under the 1500-char snippet budget.
+    const userSlice = userMessage.slice(0, 800);
+    const replySlice = assistantReply.slice(0, 700);
+    const snippet = [
+      userSlice ? `User: ${userSlice}` : '',
+      replySlice ? `Assistant: ${replySlice}` : '',
+    ].filter(Boolean).join('\n\n');
+
+    const nameCache = memCache('chat-name');
+    const cacheKey = sha256(snippet);
+    const cached = nameCache.get(cacheKey);
+    let title = cached;
+
+    let usageData = null;
+    let rawOutput = '';
+    if (!title) {
+      const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'gpt-4.1-nano',
+          temperature: 0.4,
+          max_tokens: 20,
+          // Static system prompt → pin to a per-user cache slot so the
+          // OpenAI prompt-cache discount applies on every rename for the
+          // same account.
+          prompt_cache_key: `chat-name:${userId}`,
+          messages: [
+            {
+              role: 'system',
+              content: 'You name chat conversations. Given the first user message and assistant reply, respond with ONLY a short, specific title (2-5 words) that captures the topic. No quotes, no punctuation, no explanation, no trailing period. Just the title in title case.',
+            },
+            { role: 'user', content: snippet },
+          ],
+        }),
+      });
+      if (!openaiRes.ok) {
+        return res.status(502).json({ error: 'naming_failed' });
+      }
+      const data = await openaiRes.json();
+      usageData = data;
+      rawOutput = data.choices?.[0]?.message?.content?.trim() || '';
+      title = rawOutput.replace(/^["']+|["']+$/g, '').replace(/[.!?,;:]+$/g, '').trim().slice(0, 60);
+      if (!title) return res.status(502).json({ error: 'empty_title' });
+      nameCache.set(cacheKey, title);
+    }
+
+    // Write through. We re-check the current title in the WHERE clause
+    // so a concurrent manual rename in another tab wins the race.
+    const { data: updated, error: updateErr } = await supabaseAdmin
+      .from('omnia_boards')
+      .update({ title, updated_at: new Date().toISOString() })
+      .eq('id', boardId)
+      .eq('user_id', userId)
+      .in('title', ['New Chat', 'Untitled board', ''])
+      .select('id, title')
+      .maybeSingle();
+
+    if (updateErr) {
+      console.error('❌ name-chat update error:', updateErr.message);
+      return res.status(500).json({ error: 'persist_failed' });
+    }
+    if (!updated) {
+      return res.json({ applied: false, reason: 'race_lost', title });
+    }
+
+    console.log('[LYKN] Auto-named chat:', title);
+
+    if (usageData) {
+      getOrCreateSession(userId).then((session) => {
+        const usage = extractOpenAIUsage(usageData);
+        logAiUsage({
+          sessionId: session?.id, userId, actionType: 'name_chat',
+          model: 'gpt-4.1-nano', provider: 'openai',
+          inputTokens: usage.input_tokens || estimateTokens(snippet),
+          outputTokens: usage.output_tokens || estimateTokens(rawOutput),
+        });
+      }).catch(() => {});
+    }
+
+    return res.json({ applied: true, title });
+  } catch (error) {
+    console.error('❌ name-chat error:', error?.message);
     return res.status(500).json({ error: 'Naming failed' });
   }
 });

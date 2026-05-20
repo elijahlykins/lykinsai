@@ -1,10 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { CheckCircle2, ShieldAlert, Loader2, Search, X } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
 import { API_BASE_URL } from "@/lib/api-config";
 import { toast } from "@/components/ui/use-toast";
-import { CONNECTORS, CONNECTOR_CATEGORIES } from "@/lib/connectors/catalog";
+import {
+  CONNECTORS,
+  CONNECTOR_CATEGORIES,
+  CONNECTOR_NOTES_SOURCES,
+  getConnectorSourceSlugs,
+} from "@/lib/connectors/catalog";
 import { OUTBOUND_TARGETS, aliasClientKindForCatalog } from "@/lib/connectors/outboundTargets";
 import OAuthConnectDialog from "@/components/connections/OAuthConnectDialog";
 import UseLyknWithDialog from "@/components/connections/UseLyknWithDialog";
@@ -81,6 +87,7 @@ function getInputPaidWarning(connector) {
 }
 
 export default function ConnectionsAppGrid({ user }) {
+  const navigate = useNavigate();
   const [filter, setFilter] = useState("all");
   const [query, setQuery] = useState("");
   const [connections, setConnections] = useState([]);
@@ -89,6 +96,13 @@ export default function ConnectionsAppGrid({ user }) {
   const [loading, setLoading] = useState(false);
   const [activeAiTarget, setActiveAiTarget] = useState(null);
   const [activeInputConnector, setActiveInputConnector] = useState(null);
+  // Per-`notes.source` aggregate of (notes, facts, beliefs) so each
+  // input tile can show how much of the user's synthesis layer traces
+  // back to that one app. Loaded once on mount via the
+  // `get_connector_synthesis_counts` RPC; refreshed alongside the
+  // connections list so newly-synced items light up the footer.
+  // Map<sourceSlug, { notes, facts, beliefs }>
+  const [synthesisCounts, setSynthesisCounts] = useState(new Map());
 
   const refresh = useCallback(async () => {
     if (!user) {
@@ -99,9 +113,14 @@ export default function ConnectionsAppGrid({ user }) {
     }
     setLoading(true);
     try {
-      const [connRes, tokRes] = await Promise.all([
+      const [connRes, tokRes, countsRes] = await Promise.all([
         authedFetch("/api/connections"),
         authedFetch("/api/v1/synthesis/tokens"),
+        // Direct supabase RPC — auth.uid() scopes results to this user.
+        // Network failure or RLS denial falls through to a zero-counts
+        // map so tiles silently omit the footer rather than blocking
+        // the page.
+        supabase.rpc("get_connector_synthesis_counts"),
       ]);
       if (connRes.ok) {
         const data = await connRes.json();
@@ -111,6 +130,18 @@ export default function ConnectionsAppGrid({ user }) {
       if (tokRes.ok) {
         const data = await tokRes.json();
         setTokens(Array.isArray(data?.tokens) ? data.tokens : []);
+      }
+      if (countsRes && !countsRes.error && Array.isArray(countsRes.data)) {
+        const m = new Map();
+        for (const row of countsRes.data) {
+          if (!row?.connector_source) continue;
+          m.set(row.connector_source, {
+            notes: Number(row.note_count) || 0,
+            facts: Number(row.fact_count) || 0,
+            beliefs: Number(row.belief_count) || 0,
+          });
+        }
+        setSynthesisCounts(m);
       }
     } catch {
       // Silent — the dialogs each have their own load/retry path.
@@ -132,6 +163,36 @@ export default function ConnectionsAppGrid({ user }) {
     }
     return m;
   }, [connections]);
+
+  // For each catalog connector id, sum the (notes, facts, beliefs)
+  // across every `notes.source` slug that adapter writes. Most
+  // connectors map 1:1 (notion → notion_page) but several emit
+  // multiple slugs (Gmail → gmail_starred + gmail_inbox, Mastodon →
+  // bookmark + favourite, Drive → starred + slides). Aliased tiles
+  // (Google Docs / Sheets) get their *own* slug here so the per-tile
+  // footer reflects that app's items only — not the whole Drive pile.
+  // Map<connectorId, { notes, facts, beliefs }>
+  const synthesisCountsByConnector = useMemo(() => {
+    const m = new Map();
+    for (const c of CONNECTORS) {
+      const slugs = CONNECTOR_NOTES_SOURCES[c.id] || [];
+      if (slugs.length === 0) continue;
+      let notes = 0;
+      let facts = 0;
+      let beliefs = 0;
+      for (const slug of slugs) {
+        const row = synthesisCounts.get(slug);
+        if (!row) continue;
+        notes += row.notes;
+        facts += row.facts;
+        beliefs += row.beliefs;
+      }
+      if (notes > 0 || facts > 0 || beliefs > 0) {
+        m.set(c.id, { notes, facts, beliefs });
+      }
+    }
+    return m;
+  }, [synthesisCounts]);
 
   const tokensByKind = useMemo(() => {
     const m = new Map();
@@ -332,10 +393,12 @@ export default function ConnectionsAppGrid({ user }) {
                 key={tile.key}
                 anchorId={target.clientKind || target.id}
                 logoDomain={target.domain}
+                logoUrl={undefined}
                 name={target.name}
                 typeLabel="AI tool"
                 description={target.summary}
                 badge={badge}
+                chips={null}
                 ctaLabel={isConnected ? "Manage" : target.comingSoon ? "Notify me" : "Connect"}
                 ctaVariant={isConnected ? "ghost" : "primary"}
                 onClick={() => {
@@ -396,6 +459,46 @@ export default function ConnectionsAppGrid({ user }) {
                       : paidWarning
                         ? { tone: "amber", label: connector.statusLabel || `Requires ${connector.name} plan` }
                         : null;
+            // Synthesis-counts footer surfaces the chain of impact for
+            // a connected input tool: how many vault notes the adapter
+            // has produced, how many user-model facts cite those notes,
+            // and how many beliefs were promoted from those facts.
+            // Only rendered when the tile is actually connected AND
+            // we have at least one non-zero count — unconnected /
+            // capture-only tiles stay quiet to avoid clutter.
+            const counts =
+              isConnected && !isCaptureOnly && !isComingSoon
+                ? synthesisCountsByConnector.get(connector.id) || null
+                : null;
+            // Deep-link targets for each chip. We pass the first slug
+            // for the connector (most are 1:1) so the receiving page
+            // can filter to that one source. Pages that don't yet read
+            // ?source= ignore it harmlessly — the click still lands on
+            // the right surface.
+            const primarySlug = getConnectorSourceSlugs(connector.id)[0] || "";
+            const chips = counts
+              ? [
+                  {
+                    key: "notes",
+                    label: `${counts.notes} note${counts.notes === 1 ? "" : "s"}`,
+                    onClick: () => navigate(`/vault${primarySlug ? `?source=${encodeURIComponent(primarySlug)}` : ""}`),
+                  },
+                  ...(counts.facts > 0
+                    ? [{
+                        key: "facts",
+                        label: `${counts.facts} fact${counts.facts === 1 ? "" : "s"}`,
+                        onClick: () => navigate(`/synthesis-layer${primarySlug ? `?source=${encodeURIComponent(primarySlug)}&focus=facts` : "?focus=facts"}`),
+                      }]
+                    : []),
+                  ...(counts.beliefs > 0
+                    ? [{
+                        key: "beliefs",
+                        label: `${counts.beliefs} belief${counts.beliefs === 1 ? "" : "s"}`,
+                        onClick: () => navigate(`/synthesis-layer${primarySlug ? `?source=${encodeURIComponent(primarySlug)}&focus=beliefs` : "?focus=beliefs"}`),
+                      }]
+                    : []),
+                ]
+              : null;
             return (
               <AppTile
                 key={tile.key}
@@ -406,6 +509,7 @@ export default function ConnectionsAppGrid({ user }) {
                 typeLabel="Input tool"
                 description={connector.summary}
                 badge={badge}
+                chips={chips}
                 ctaLabel={
                   isCaptureOnly
                     ? "How to capture"
@@ -514,6 +618,7 @@ function AppTile({
   typeLabel,
   description,
   badge,
+  chips,
   ctaLabel,
   ctaVariant = "ghost",
   onClick,
@@ -583,6 +688,27 @@ function AppTile({
       <p className="text-[11.5px] leading-relaxed text-black/60 dark:text-white/60 line-clamp-3">
         {description}
       </p>
+      {chips && chips.length > 0 && (
+        <div
+          className="flex items-center gap-1.5 flex-wrap"
+          aria-label={`${name} synthesis impact`}
+        >
+          {chips.map((chip) => (
+            <button
+              key={chip.key}
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                chip.onClick?.();
+              }}
+              className="inline-flex items-center rounded-full border border-black/[0.08] dark:border-white/[0.12] bg-black/[0.03] dark:bg-white/[0.04] px-2 py-[2px] text-[10.5px] font-medium text-black/65 dark:text-white/65 hover:bg-black/[0.06] dark:hover:bg-white/[0.08] hover:text-black/85 dark:hover:text-white/85 transition-colors"
+              title={`Open ${chip.label}`}
+            >
+              {chip.label}
+            </button>
+          ))}
+        </div>
+      )}
       <div className="mt-auto flex items-center justify-end">
         <button
           type="button"

@@ -1775,6 +1775,62 @@ async function postProcessResponse(
   if (p.aiThread.length > 40) p.aiThread.splice(0, p.aiThread.length - 40);
   typing.maybeRunConversationSummary();
   if (identity.userId) { invalidateMemoryCache(); saveExchange(identity.userId, "grid", identity.routeBoardId || identity.boardId || null, p.context.titleRef.current || null, cappedText, finalDisplayText); }
+
+  // === AUTO-NAME — fire-and-forget after the first user→assistant turn.
+  // Generates a 2-5 word title from this exchange and writes it through
+  // to `omnia_boards.title` server-side, then surfaces the new title in
+  // every mounted view (sidebar, mobile sheet, toolbar) via the existing
+  // `omnia_board_renamed` + `lykinsai_boards_changed` events.
+  //
+  // Gates:
+  //   • signed-in user (guests have no DB row)
+  //   • we have a real board id (route or persisted)
+  //   • title is still the default — never clobber a manual rename
+  //   • exactly 2 turns in the local thread (the user push at line ~1902
+  //     plus the assistant push above) — i.e. this was the first exchange
+  //
+  // Errors are silent — a missed title just means the chat keeps the
+  // "New Chat" placeholder, which is exactly what it shows today.
+  const namingBoardId = identity.routeBoardId || identity.boardId;
+  const currentTitle = String(p.context.titleRef.current || "").trim();
+  const isFirstExchange = p.aiThread.length === 2;
+  if (
+    identity.userId &&
+    namingBoardId &&
+    isFirstExchange &&
+    (!currentTitle || currentTitle === "New Chat" || currentTitle === "Untitled board")
+  ) {
+    void (async () => {
+      try {
+        const { API_BASE_URL: apiBase } = await import("@/lib/api-config");
+        const res = await fetch(`${apiBase}/api/ai/name-chat`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            boardId: namingBoardId,
+            userMessage: cappedText,
+            assistantReply: finalDisplayText,
+          }),
+        });
+        if (!res.ok) return;
+        const json = await res.json().catch(() => null);
+        const newTitle = json?.applied && typeof json.title === "string" ? json.title.trim() : "";
+        if (!newTitle) return;
+        // Mirror the manual-rename event contract in MobileFocusedChatGrids
+        // / AppSidebar so OmniaGrid's rename listener picks up the title
+        // (which also syncs `titleRef.current`, preventing the next
+        // autosave from writing the stale local copy back).
+        window.dispatchEvent(
+          new CustomEvent("omnia_board_renamed", {
+            detail: { boardId: namingBoardId, title: newTitle },
+          }),
+        );
+        window.dispatchEvent(new Event("lykinsai_boards_changed"));
+      } catch {
+        // Auto-naming is purely cosmetic — never let a flake bubble up.
+      }
+    })();
+  }
   if (responseBlockId) {
     const normalized = canvas.normalizeAiTextForBlock(finalDisplayText);
     const curBlk: any = canvas.getCanvasState().blocks?.[responseBlockId];
