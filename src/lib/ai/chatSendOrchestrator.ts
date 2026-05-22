@@ -33,6 +33,15 @@ import { toast } from "@/components/ui/use-toast";
 // requests a model locked behind their plan. Toast once per session per pair
 // to avoid spamming chatty users.
 const notifiedDowngrades = new Set<string>();
+
+// Per-session memory of which boards we've already auto-named (or tried
+// hard enough to). The server is the source of truth — it short-circuits
+// on a non-default title — but tracking client-side prevents redundant
+// requests on every subsequent message after a successful rename, and
+// caps retries on boards that legitimately have no nameable content yet.
+const autoNamedBoardsSucceeded = new Set<string>();
+const autoNamedBoardsAttempts = new Map<string, number>();
+const AUTO_NAME_MAX_ATTEMPTS = 4;
 function maybeNotifyModelDowngrade(res: Response | null | undefined) {
   if (!res) return;
   const header = res.headers.get("x-model-downgraded");
@@ -1776,7 +1785,9 @@ async function postProcessResponse(
   typing.maybeRunConversationSummary();
   if (identity.userId) { invalidateMemoryCache(); saveExchange(identity.userId, "grid", identity.routeBoardId || identity.boardId || null, p.context.titleRef.current || null, cappedText, finalDisplayText); }
 
-  // === AUTO-NAME — fire-and-forget after the first user→assistant turn.
+  // === AUTO-NAME — fire-and-forget after any user→assistant turn while
+  // the chat is still using the default placeholder title.
+  //
   // Generates a 2-5 word title from this exchange and writes it through
   // to `omnia_boards.title` server-side, then surfaces the new title in
   // every mounted view (sidebar, mobile sheet, toolbar) via the existing
@@ -1786,20 +1797,33 @@ async function postProcessResponse(
   //   • signed-in user (guests have no DB row)
   //   • we have a real board id (route or persisted)
   //   • title is still the default — never clobber a manual rename
-  //   • exactly 2 turns in the local thread (the user push at line ~1902
-  //     plus the assistant push above) — i.e. this was the first exchange
+  //   • haven't already named this board in this session (server is the
+  //     real source of truth, but skipping the round-trip is free)
+  //   • haven't already burned the per-board retry budget — caps the
+  //     "user keeps chatting with title stuck on New Chat" case at a few
+  //     extra attempts instead of hitting /api/ai/name-chat on every send
+  //
+  // Note we intentionally don't require `aiThread.length === 2` like an
+  // earlier revision did — that branch only fired on a brand-new chat's
+  // very first reply, so any chat created before this feature shipped
+  // (or any first-attempt that lost a race / hit a network blip) was
+  // stuck on "New Chat" forever even as the user kept chatting.
   //
   // Errors are silent — a missed title just means the chat keeps the
   // "New Chat" placeholder, which is exactly what it shows today.
   const namingBoardId = identity.routeBoardId || identity.boardId;
   const currentTitle = String(p.context.titleRef.current || "").trim();
-  const isFirstExchange = p.aiThread.length === 2;
+  const titleIsDefault =
+    !currentTitle || currentTitle === "New Chat" || currentTitle === "Untitled board";
+  const prevAttempts = namingBoardId ? autoNamedBoardsAttempts.get(namingBoardId) || 0 : 0;
   if (
     identity.userId &&
     namingBoardId &&
-    isFirstExchange &&
-    (!currentTitle || currentTitle === "New Chat" || currentTitle === "Untitled board")
+    titleIsDefault &&
+    !autoNamedBoardsSucceeded.has(namingBoardId) &&
+    prevAttempts < AUTO_NAME_MAX_ATTEMPTS
   ) {
+    autoNamedBoardsAttempts.set(namingBoardId, prevAttempts + 1);
     void (async () => {
       try {
         const { API_BASE_URL: apiBase } = await import("@/lib/api-config");
@@ -1814,8 +1838,17 @@ async function postProcessResponse(
         });
         if (!res.ok) return;
         const json = await res.json().catch(() => null);
+        // `already_named` (manual rename in another tab, or a previous
+        // auto-name that succeeded but raced our local cache) returns
+        // applied:false but still includes the live title — treat that
+        // as success so we stop retrying and pick up the real title.
+        if (json?.reason === "already_named" && typeof json?.title === "string" && json.title.trim()) {
+          autoNamedBoardsSucceeded.add(namingBoardId);
+          return;
+        }
         const newTitle = json?.applied && typeof json.title === "string" ? json.title.trim() : "";
         if (!newTitle) return;
+        autoNamedBoardsSucceeded.add(namingBoardId);
         // Mirror the manual-rename event contract in MobileFocusedChatGrids
         // / AppSidebar so OmniaGrid's rename listener picks up the title
         // (which also syncs `titleRef.current`, preventing the next

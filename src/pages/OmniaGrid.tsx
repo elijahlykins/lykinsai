@@ -637,23 +637,15 @@ export default function OmniaGridPage() {
   const { boardId: routeBoardId } = useParams<{ boardId?: string }>();
   const { user, signInWithOAuth } = useAuth();
 
-  // Walkthrough closure: reaching the canonical Grid surface (`/app`)
-  // is the final beat of the landing-prototype guided tour. Mark the
-  // step "done" so the sidebar glow + restriction don't follow the
-  // user around forever.
-  //
-  // Specifically gated on `!routeBoardId` so opening a particular grid
-  // (`/grid/<id>` — e.g. the prototype "First Conversation" grid that
-  // can be clicked from the Synthesis Layer mid-walkthrough) doesn't
-  // accidentally fast-forward past the vault + grid glows.
-  useEffect(() => {
-    if (routeBoardId) return;
-    const step = readPrototypeStep();
-    if (step === "synthesis" || step === "vault" || step === "grid") {
-      writePrototypeStep("done");
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // (Removed: an old effect here used to auto-write `step="done"` on
+  // mount of `/app`, which was the final beat of the walkthrough back
+  // when /app was the literal end of the tour. Now the chat card's
+  // Finish button is the authoritative "done" signal — auto-writing
+  // on mount silently released the walkthrough lock the moment the
+  // visitor arrived, unmounted the chrome guard, and made the chat
+  // intro card's gate flip from "step === grid" → "step === done"
+  // before the chat-intro effect could even read it. The Finish
+  // button at the bottom of the card now handles the transition.)
 
   const { modelTier, loading: planLoading, isGuest } = useUserPlan();
   const requireSignIn = useCallback((what: string = "save your work") => {
@@ -909,6 +901,17 @@ export default function OmniaGridPage() {
   const [prototypeSignInTriggered, setPrototypeSignInTriggered] = useState(false);
   const [prototypeSignInEmail, setPrototypeSignInEmail] = useState("");
 
+  // Chat walkthrough card (final beat of the guided tour). Mirrors the
+  // synthesis-layer / vault / connections welcome cards: typewriter
+  // text + a "Finish" button at the bottom. The button closes the
+  // card, marks the walkthrough done, and arms the sign-in wall so
+  // the next interaction with the chat surface funnels the visitor
+  // into creating an account.
+  const [chatIntroShown, setChatIntroShown] = useState(false);
+  const [chatIntroText, setChatIntroText] = useState("");
+  const [chatIntroDone, setChatIntroDone] = useState(false);
+  const typingCancelRef = useRef(false);
+
   useEffect(() => {
     const onResize = () => setViewportWidth(window.innerWidth || 1280);
     window.addEventListener("resize", onResize);
@@ -927,73 +930,82 @@ export default function OmniaGridPage() {
   useEffect(() => {
     if (user?.id) return;
     if (routeBoardId) return; // only on /app, not on a specific /grid/<id>
-    if (!hasPrototypeNeurons()) return;
-    let alreadyPlayed = false;
-    try {
-      alreadyPlayed = sessionStorage.getItem(PROTO_GRID_INTRO_SS_KEY) === "1";
-    } catch {
-      // private mode etc.
-    }
-    if (alreadyPlayed) return;
-    try {
-      sessionStorage.setItem(PROTO_GRID_INTRO_SS_KEY, "1");
-    } catch {
-      // ignore
+    // Two-stage gate:
+    //   1. If the walkthrough step is "grid" (Connections' advance arrow
+    //      just bumped us here), ALWAYS show the card. This is the
+    //      authoritative signal that the visitor is mid-walkthrough,
+    //      regardless of any stale sessionStorage state. Without this
+    //      override, a visitor who already hit Finish earlier in the
+    //      session (then refreshed back to landing → restarted the
+    //      tour) would silently skip the chat card because the
+    //      session-scoped stamp was still set.
+    //   2. Otherwise (no walkthrough running — e.g. a guest who came
+    //      straight to /app without going through the tour), fall
+    //      back to the sessionStorage one-shot so we don't spam them
+    //      with the card on every /app load.
+    // The Finish button stamps `PROTO_GRID_INTRO_SS_KEY` only on
+    // explicit click; refreshes mid-typing replay from the top.
+    const stepNow = readPrototypeStep();
+    if (stepNow !== "grid") {
+      let alreadyFinished = false;
+      try {
+        alreadyFinished = sessionStorage.getItem(PROTO_GRID_INTRO_SS_KEY) === "1";
+      } catch {
+        // private mode etc.
+      }
+      if (alreadyFinished) return;
+    } else {
+      // Walkthrough is live: clear any stale stamp so future replays
+      // (i.e. visitor restarts the tour from the landing page) get
+      // the card again without needing to close the tab.
+      try {
+        sessionStorage.removeItem(PROTO_GRID_INTRO_SS_KEY);
+      } catch {
+        // private mode etc.
+      }
     }
 
-    const introText = [
-      "And this is **chat** — where you actually talk to your synthetic intelligence.",
-      "",
-      "Every reply you get here is grounded in **you**: the neurons in your **Synthesis Layer**, the files and notes in your **Vault**, and the AI tools you wire up under **Connections**. Ask anything — LYKN answers as something custom-built for you, not a stranger trained on everyone.",
-      "",
-      "Each chat is saved to your sidebar so you can pick a thread back up later, and every turn quietly feeds new neurons into your synthesis layer — so the longer you use it, the more it becomes yours.",
-      "",
-      "Try it: ask me something right here, and watch your synthetic intelligence answer.",
-    ].join("\n");
+    // Final beat of the walkthrough: orientation card matched to the
+    // synthesis-layer / vault / connections cards (same dark glass,
+    // same right-edge pinning, same typewriter cadence). The earlier
+    // iteration injected a fake "What's chat for?" prompt + typed
+    // assistant response directly into the chat rail. The fake
+    // exchange read like LYKN talking to itself before the visitor
+    // ever sent a message, which set up the wrong mental model for
+    // the surface they're about to use. Rendering the orientation as
+    // a card keeps the tour consistent end-to-end and leaves the
+    // chat rail empty + ready for the visitor's first real message.
 
-    const promptId = `proto-grid-intro-${Date.now()}`;
+    const fullText =
+      "And this is chat, where you actually talk to your synthetic intelligence.\n\n" +
+      "Every reply you get here is grounded in you: the neurons in your synthesis layer, the files in your vault, and the AI tools you wire up under connections. Ask anything, and LYKN answers as something custom-built for you, not a stranger trained on everyone.";
+
     const timeouts: number[] = [];
+    typingCancelRef.current = false;
 
     timeouts.push(window.setTimeout(() => {
-      setChatRailOpen(true);
-      setChatRailVisible(true);
-      setChatMessages((prev) => [
-        ...prev,
-        {
-          id: promptId,
-          role: "user",
-          content: "What's chat for?",
-          aiResponse: "",
-          kind: "prompt",
-        },
-      ]);
+      setChatIntroShown(true);
+      setChatIntroText("");
+      setChatIntroDone(false);
     }, 600));
 
     timeouts.push(window.setTimeout(() => {
-      const words = introText.split(/(\s+)/); // keep whitespace tokens
+      const words = fullText.split(" ").filter(Boolean);
       let i = 0;
+      let current = "";
       const tick = () => {
+        if (typingCancelRef.current) {
+          setChatIntroText(fullText);
+          setChatIntroDone(true);
+          return;
+        }
+        current += (i === 0 ? "" : " ") + words[i];
         i += 1;
-        const partial = words.slice(0, i).join("");
-        setChatMessages((prev) =>
-          prev.map((m) => (m.id === promptId ? { ...m, aiResponse: partial } : m))
-        );
+        setChatIntroText(current);
         if (i < words.length) {
           timeouts.push(window.setTimeout(tick, 28));
         } else {
-          // Walkthrough is fully consumed — close it out so glows + nav
-          // restrictions don't follow the user around forever, and arm
-          // the one-shot sign-in wall. We don't auto-open the modal —
-          // the user's next click on the canvas will trigger it. That
-          // way the prompt feels like a natural consequence of trying
-          // to use the grid, not an interruption mid-typing.
-          timeouts.push(window.setTimeout(() => {
-            const step = readPrototypeStep();
-            if (step === "synthesis" || step === "vault" || step === "grid") {
-              writePrototypeStep("done");
-            }
-            setPrototypeSignInArmed(true);
-          }, 1200));
+          setChatIntroDone(true);
         }
       };
       tick();
@@ -1006,35 +1018,141 @@ export default function OmniaGridPage() {
   }, []);
 
   // --------------------------------------------------------------------
+  // Guest chat persistence (sessionStorage)
+  // --------------------------------------------------------------------
+  // For unauthenticated visitors on `/app` (no `routeBoardId`), we want
+  // chats to survive React Router navigation within the SPA — e.g. a
+  // guest sends a message, clicks over to the synthesis layer to peek
+  // at a neuron, and returns to `/app` — without persisting across
+  // tab close / new visits. localStorage would over-promise (the
+  // visitor hasn't signed in, so we shouldn't anchor anything to
+  // their browser long-term); in-memory React state under-delivers
+  // (OmniaGrid unmounts on every route change and the chat resets to
+  // []). sessionStorage is the only tier that maps to "save while
+  // you're on this page; gone when you exit and come back."
+  //
+  // Cleared automatically the moment the visitor signs in so their
+  // real Supabase-backed chats take over without a stale local copy
+  // shadowing them.
+  const GUEST_CHAT_SS_KEY = "lykn_guest_chat_v1";
+  const guestChatRestoredRef = useRef(false);
+  const guestChatPersistTimerRef = useRef<number | null>(null);
+
+  // One-shot restore on initial mount. Gated on `!user?.id` so a
+  // sign-in mid-session doesn't pull the guest copy back over the
+  // real one; and on `!routeBoardId` so opening a specific
+  // `/grid/<id>` lets the existing snapshot/localStorage path
+  // hydrate that board normally.
+  useEffect(() => {
+    if (guestChatRestoredRef.current) return;
+    if (user?.id) return;
+    if (routeBoardId) return;
+    guestChatRestoredRef.current = true;
+    try {
+      const raw = sessionStorage.getItem(GUEST_CHAT_SS_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed?.chatMessages) && parsed.chatMessages.length > 0) {
+        setChatMessages(parsed.chatMessages);
+        chatMessagesRef.current = parsed.chatMessages;
+        setChatRailOpen(true);
+        setChatRailVisible(true);
+        if (Array.isArray(parsed?.aiThread) && parsed.aiThread.length > 0) {
+          aiThreadRef.current = parsed.aiThread;
+        }
+      }
+    } catch {
+      // corrupt sessionStorage / private mode — fall back to empty.
+    }
+  }, [user?.id, routeBoardId]);
+
+  // Persist on every chat change. Debounced by 600ms so AI token
+  // streaming doesn't hammer sessionStorage on every progressive
+  // update — the chat surface mutates `chatMessages` per token while
+  // a reply streams in.
+  useEffect(() => {
+    if (user?.id) return;
+    if (routeBoardId) return;
+    if (guestChatPersistTimerRef.current != null) {
+      window.clearTimeout(guestChatPersistTimerRef.current);
+    }
+    guestChatPersistTimerRef.current = window.setTimeout(() => {
+      try {
+        if (chatMessages.length === 0) {
+          sessionStorage.removeItem(GUEST_CHAT_SS_KEY);
+          return;
+        }
+        sessionStorage.setItem(
+          GUEST_CHAT_SS_KEY,
+          JSON.stringify({
+            chatMessages,
+            aiThread: aiThreadRef.current || [],
+          }),
+        );
+      } catch {
+        // quota / private mode — surfacing this would be louder than
+        // the broken promise of in-memory chat persistence we'd be
+        // covering.
+      }
+    }, 600);
+    return () => {
+      if (guestChatPersistTimerRef.current != null) {
+        window.clearTimeout(guestChatPersistTimerRef.current);
+      }
+    };
+  }, [user?.id, routeBoardId, chatMessages]);
+
+  // Clear the guest copy the moment the visitor signs in. Their
+  // real chats live in Supabase + the existing localStorage cache,
+  // and the now-stale guest snapshot would otherwise sit around
+  // until the tab closes.
+  useEffect(() => {
+    if (!user?.id) return;
+    try {
+      sessionStorage.removeItem(GUEST_CHAT_SS_KEY);
+    } catch {
+      // ignore
+    }
+  }, [user?.id]);
+
+  // --------------------------------------------------------------------
   // Load-in updates greeting (signed-in users)
   // --------------------------------------------------------------------
-  // Every fresh page load mints a brand-new chat where LYKN opens by
-  // recapping recent synthesis activity, awaiting approvals, project
-  // updates, calendar, etc. This is the "here's what changed" surface
-  // that replaced the retired synthesis-layer updates panel — the chat
-  // is now the front door so the user can react conversationally
-  // (approve a belief, follow up on a project update, etc.).
+  // LYKN opens with a dashboard chat that recaps recent synthesis
+  // activity, awaiting approvals, project updates, calendar, etc. This
+  // is the "here's what changed" surface that replaced the retired
+  // synthesis-layer updates panel — the chat is now the front door so
+  // the user can react conversationally (approve a belief, follow up on
+  // a project update, etc.).
   //
-  // Fires on two triggers, both gated by the `omniaGridDidConsumeFirstLoad`
-  // module flag (false on every hard page reload, true after the first
-  // mint of a given JS runtime):
+  // The dashboard board is a *persistent* per-user surface: we mint it
+  // once, save its id to localStorage (`lykn:lastLoadInGreetingBoardId`),
+  // and reuse the same board across reloads, redirects, and sidebar
+  // "Chat" navigations. Each visit refreshes the briefing content in
+  // place via the stale-greeting refresh effect (further down) rather
+  // than minting a new chat. As soon as the user types into the
+  // dashboard board, we forget the pointer (handled by a sibling
+  // effect below) so the next visit mints a fresh dashboard instead
+  // of dropping the user back into their previous chat.
   //
-  //   1. First mount of a fresh runtime — even if the URL is already
-  //      `/grid/<old-id>`. We mint a new board and `replace`-navigate
-  //      directly to `/grid/<newId>` in a single hop, so the user never
-  //      sees a flicker through `/app`. This is the path every browser
-  //      reload / "reopen tab" enters through.
-  //   2. Subsequent navigations to `/app` (sidebar "new chat" button,
-  //      hash links, etc.). The module flag has already flipped, but
-  //      `!routeBoardId` arms the mint exactly once per `/app` visit.
+  // Fires whenever OmniaGrid mounts at `/app` (no `routeBoardId`) or
+  // on the very first mount of the JS runtime regardless of URL — the
+  // first-mount branch covers hard reloads sitting at a stale
+  // `/grid/<old>` or transient `/app` redirects (e.g. Privacy → / →
+  // `GuestOnly` → `/app`). The sidebar "New chat" button bypasses
+  // this entirely by navigating directly to `/grid/<newUUID>`; the
+  // sidebar "Chat" entry intentionally lands back on the dashboard.
   //
   // Mechanics:
-  //   • Fetch the activity payload (`fetchLoadInUpdatesMessage`).
-  //   • Stash it in `sessionStorage` keyed by a freshly minted UUID.
-  //   • `replace`-navigate to `/grid/<newId>`. The consume half (below,
-  //     after `useBoardPersistence` runs) reads back the payload, seeds
-  //     the chat with a single load-in-greeting message, and clears
-  //     the sessionStorage entry.
+  //   • Look up the saved dashboard id in `localStorage`. If one
+  //     exists, navigate there. Otherwise mint a fresh UUID.
+  //   • Stash a placeholder briefing in `sessionStorage` keyed by the
+  //     target id. The consume half (below, after `useBoardPersistence`
+  //     runs) only applies it when the board hydrates empty — for a
+  //     reused dashboard with a persisted greeting it's a no-op.
+  //   • `replace`-navigate to `/grid/<id>`. The stale-greeting refresh
+  //     effect then fetches the latest activity payload and overlays
+  //     it onto the single `load-in-greeting` message in place.
   //
   // We *must* navigate to a real board id rather than parking on `/app` —
   // without one, `useBoardPersistence` auto-hydrates the previous board
@@ -1054,10 +1172,10 @@ export default function OmniaGridPage() {
     const onApp = !routeBoardId;
     // Fire on (a) the very first OmniaGrid mount of this JS runtime
     // regardless of URL, or (b) any subsequent landing on `/app`. The
-    // first-mount case covers hard reloads sitting at `/grid/<old>` —
-    // we mint a new board and replace the URL in one hop, no `/app`
-    // flicker in between. The `/app` case covers the in-app "new chat"
-    // sidebar action.
+    // first-mount case covers hard reloads sitting at `/grid/<old>`;
+    // the `/app` case covers redirects through the home route and the
+    // sidebar "Chat" entry — both should land on the persistent
+    // dashboard rather than mint a new chat each time.
     if (!isFirstLoadOfRuntime && !onApp) return;
     omniaGridDidConsumeFirstLoad = true;
 
@@ -1068,28 +1186,41 @@ export default function OmniaGridPage() {
     const firstName = fullName ? fullName.split(/\s+/)[0] : "";
     const greetingName = firstName || emailName || null;
 
-    // Mint the board id SYNCHRONOUSLY and navigate immediately so the
-    // URL settles into its final state on this very tick. The actual
-    // briefing payload (calendar pull, synthesis activity, connector
-    // sync) fetches in the background and is layered onto the chat
-    // through the stale-greeting refresh path once it lands.
-    //
-    // The placeholder we stash in sessionStorage is intentionally
-    // minimal — just enough for the consume effect to seed a single
-    // `load-in-greeting` message (it bails on an empty `message`). The
-    // consume effect's type-out then fires for one tick over the
-    // placeholder, after which the stale-greeting refresh effect
-    // overlays the real briefing in place. Net result: the URL is
-    // correct instantly, the chat opens almost immediately with a
-    // "catching you up" line, then quietly upgrades to the full
-    // dashboard + sections as data arrives.
-    const newId =
-      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    // Always prefer the user's existing dashboard board over minting a
+    // new one — that's the whole point of the persistent dashboard:
+    // same board, fresh updates, every visit. The pointer is cleared
+    // by the "graduation" effect below once the user types into the
+    // dashboard, so we only mint when there's no still-pristine board
+    // to return to.
+    let savedDashboardId: string | null = null;
+    try {
+      const raw = localStorage.getItem("lykn:lastLoadInGreetingBoardId");
+      savedDashboardId = raw && raw.trim() ? raw.trim() : null;
+    } catch {
+      savedDashboardId = null;
+    }
+
+    // Already sitting on the saved dashboard URL? Nothing to navigate —
+    // `useBoardPersistence` will hydrate the persisted greeting and the
+    // stale-greeting refresh effect will overlay fresh updates in place.
+    if (savedDashboardId && routeBoardId === savedDashboardId) return;
+
+    // Reuse the existing dashboard id if we have one, otherwise mint
+    // a new UUID. The placeholder we stash in sessionStorage is
+    // intentionally minimal — just enough for the consume effect to
+    // seed a single `load-in-greeting` message when the board
+    // hydrates empty (fresh mint path). For a reused dashboard whose
+    // chat already contains the persisted greeting, the consume
+    // effect's `prev.length > 0 ? prev : [...]` guard turns the seed
+    // into a no-op and the refresh effect handles updating in place.
+    const targetId =
+      savedDashboardId ||
+      (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
         ? crypto.randomUUID()
-        : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
     try {
       sessionStorage.setItem(
-        `lykn:loadInGreeting:${newId}`,
+        `lykn:loadInGreeting:${targetId}`,
         JSON.stringify({
           message: greetingName
             ? `Catching you up, ${greetingName}…`
@@ -1100,7 +1231,7 @@ export default function OmniaGridPage() {
           greetingName,
         }),
       );
-      localStorage.setItem("lykn:lastLoadInGreetingBoardId", newId);
+      localStorage.setItem("lykn:lastLoadInGreetingBoardId", targetId);
       // Intentionally NOT setting `loadInGreetingMintedThisSession=1`
       // here — that flag short-circuits the stale-greeting refresh
       // effect, but we *want* that effect to run because the payload
@@ -1111,11 +1242,15 @@ export default function OmniaGridPage() {
       // to a board that can't be hydrated.
       return;
     }
-    // Single direct hop from wherever-we-are to `/grid/<newId>`.
+    // Single direct hop from wherever-we-are to `/grid/<targetId>`.
     // `replace` so the previous URL doesn't pollute browser history.
-    nav(`/grid/${newId}`, { replace: true });
+    nav(`/grid/${targetId}`, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id, planLoading, routeBoardId]);
+
+  // The matching "graduation" effect that clears the saved dashboard
+  // pointer once the user types into it lives below, after
+  // `useBoardPersistence` provides us with the resolved `boardId`.
 
   // The matching "consume" half of the load-in-greeting flow lives below
   // (after `useBoardPersistence` is called) — it needs `boardId` from
@@ -1631,6 +1766,27 @@ export default function OmniaGridPage() {
     void refreshLoadInGreetingInPlace();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [routeBoardId, user?.id, boardId, chatMessages]);
+
+  // Dashboard graduation: as soon as the user types into a dashboard
+  // board (chatMessages grows past the single load-in-greeting turn),
+  // forget the saved pointer. The board now belongs to a real
+  // conversation, and the next page reload should mint a fresh
+  // dashboard rather than drop the user back into mid-chat.
+  useEffect(() => {
+    if (!boardId) return;
+    if (chatMessages.length <= 1) return;
+    const first = chatMessages[0] as any;
+    if (!first || first.kind !== "load-in-greeting") return;
+    try {
+      if (
+        localStorage.getItem("lykn:lastLoadInGreetingBoardId") === boardId
+      ) {
+        localStorage.removeItem("lykn:lastLoadInGreetingBoardId");
+      }
+    } catch {
+      /* ignore */
+    }
+  }, [boardId, chatMessages]);
 
   // Keep the in-memory grid title in sync when a peer surface (mobile
   // grids drawer, sidebar menu, etc.) renames the active board out of
@@ -3864,6 +4020,71 @@ export default function OmniaGridPage() {
       )}
 
       <UpgradeModal modal={upgradeModal} onDismiss={dismissUpgradeModal} />
+
+      {/* Chat walkthrough card (final beat). Matches the synthesis-layer,
+          vault, and connections cards — same dark glass, same right-edge
+          pinning, same typewriter cadence — so the four cards read as
+          one continuous tour. The "Finish" button closes the card,
+          stamps the walkthrough as done, and arms the sign-in wall.
+          We intentionally don't open the wall here; the visitor's
+          next click on the canvas or chat-send is what surfaces it,
+          which keeps the wall feeling like a natural consequence of
+          trying to use the app rather than an interrupt mid-typing. */}
+      {chatIntroShown && (
+        <div className="fixed right-6 top-20 z-[9995] w-[min(88vw,18rem)]">
+          <div
+            className="pointer-events-auto relative rounded-2xl bg-[rgba(15,15,18,0.78)] backdrop-blur-md border border-white/10 px-4 py-3.5 shadow-[0_18px_50px_rgba(0,0,0,0.5)]"
+            style={{
+              animation:
+                "vaultIntroCardIn 360ms cubic-bezier(0.22,1,0.36,1) both",
+            }}
+          >
+            {/* Dismiss button intentionally removed — the walkthrough
+                is a forced flow for guests, and the only way past the
+                chat card is the Finish button below (which also arms
+                the sign-in wall) or signing in directly. See the
+                matching comment on the synthesis-layer welcome card. */}
+            <p className="text-[0.8rem] leading-relaxed text-white/80 whitespace-pre-wrap min-h-[7rem] pr-4">
+              {chatIntroText}
+              {!chatIntroDone && (
+                <span aria-hidden="true" className="lykn-wake-cursor">
+                  |
+                </span>
+              )}
+            </p>
+            {chatIntroDone && (
+              <div className="mt-3 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => {
+                    typingCancelRef.current = true;
+                    setChatIntroShown(false);
+                    // Stamp the one-shot here (not on effect entry) so
+                    // refreshes during the typing don't accidentally
+                    // consume the tour beat — only an explicit Finish
+                    // counts as "the visitor saw it."
+                    try {
+                      sessionStorage.setItem(PROTO_GRID_INTRO_SS_KEY, "1");
+                    } catch {
+                      // private mode etc.
+                    }
+                    const step = readPrototypeStep();
+                    if (step === "synthesis" || step === "vault" || step === "grid") {
+                      writePrototypeStep("done");
+                    }
+                    setPrototypeSignInArmed(true);
+                  }}
+                  className="rounded-full bg-blue-500/20 hover:bg-blue-500/30 border border-blue-400/40 text-blue-100 hover:text-white px-3 py-1 text-[0.75rem] font-medium transition-colors"
+                  aria-label="Finish walkthrough"
+                  title="Finish walkthrough"
+                >
+                  Finish
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Landing-prototype handoff (final beat): surfaces after the typed
           grid intro finishes for guests who came through the walkthrough.

@@ -26,6 +26,7 @@ import {
   Send,
   Square,
   Trash2,
+  ArrowRight,
   ArrowUp,
   Table2,
   Upload,
@@ -61,7 +62,8 @@ import {
 } from "@/lib/demoVault";
 import {
   hasPrototypeNeurons,
-  PROTO_VAULT_INTRO_SS_KEY,
+  isWalkthroughLockActive,
+  PROTOTYPE_STEP_EVENT,
   readPrototypeStep,
   writePrototypeStep,
 } from "@/lib/prototypeHandoff";
@@ -648,10 +650,37 @@ function extractYouTubeLinks(content = "") {
   return [...new Set(matches)];
 }
 
+const VAULT_VIEW_OPTIONS = [
+  { id: "collage", icon: Layers, label: "Collage" },
+  { id: "grid", icon: Grid2X2, label: "Grid" },
+  { id: "tags", icon: Tag, label: "Tags" },
+  { id: "type", icon: LayoutGrid, label: "Type" },
+];
+
 export default function VaultNew() {
   const location = useLocation();
   const nav = useNavigate();
   const { user, loading } = useAuth();
+  // Walkthrough lockdown gate — kept in sync with same-tab step changes
+  // (writePrototypeStep dispatches PROTOTYPE_STEP_EVENT) and cross-tab
+  // `storage` events so the toggle pill re-appears the moment the
+  // visitor clicks Finish or signs in.
+  const [walkthroughStepForLock, setWalkthroughStepForLock] = useState(() =>
+    typeof window === "undefined" ? null : readPrototypeStep(),
+  );
+  useEffect(() => {
+    const sync = () => setWalkthroughStepForLock(readPrototypeStep());
+    window.addEventListener(PROTOTYPE_STEP_EVENT, sync);
+    window.addEventListener("storage", sync);
+    return () => {
+      window.removeEventListener(PROTOTYPE_STEP_EVENT, sync);
+      window.removeEventListener("storage", sync);
+    };
+  }, []);
+  const isPrototypeWalkthroughLocked = isWalkthroughLockActive(
+    user?.id ?? null,
+    walkthroughStepForLock,
+  );
   const addMediaTriggerRef = useRef(null);
   const isEmbeddedMode = useMemo(
     () => new URLSearchParams(location.search).get("embedded") === "1",
@@ -713,6 +742,19 @@ export default function VaultNew() {
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState("");
   const [isChatLoading, setIsChatLoading] = useState(false);
+  // Standalone walkthrough welcome card. Replaces the old chat-rail
+  // intro: instead of typing the orientation message into the (now-
+  // retired) vault chat surface, we render a self-contained floating
+  // text box that types the same copy out on screen. Same gating, same
+  // word-by-word animation, same downstream walkthrough-step nudge.
+  // `introWelcomeShown` controls visibility (true once the intro is
+  // armed; false once the user dismisses), `introWelcomeText` is the
+  // currently-typed substring, and `introWelcomeDone` flips true the
+  // moment the full string has been written so the dismiss button can
+  // unhide and the blinking caret can stop.
+  const [introWelcomeShown, setIntroWelcomeShown] = useState(false);
+  const [introWelcomeText, setIntroWelcomeText] = useState("");
+  const [introWelcomeDone, setIntroWelcomeDone] = useState(false);
   const [isDictating, setIsDictating] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const mediaRecorderRef = useRef(null);
@@ -735,45 +777,39 @@ export default function VaultNew() {
     };
   }, []);
 
-  // Landing-prototype handoff: on first load of the Connections page,
-  // open the chat rail and have LYKN type out a short orientation
-  // message — how Connections and the Vault work together to feed the
-  // Synthesis Layer. Only fires once per session for guests who came
-  // from the prototype; LandingPrototype clears the flag whenever a
-  // brand-new walkthrough kicks off, so a fresh first neuron re-arms it.
+  // Landing-prototype handoff: on first load of the Vault, surface a
+  // short orientation message that types itself out on screen — how
+  // Connections and the Vault work together to feed the Synthesis
+  // Layer. Originally typed into the vault chat rail, but the chat
+  // surface here was retired, so we render a standalone welcome card
+  // instead. Only fires once per session for guests who came from the
+  // prototype; LandingPrototype clears the flag whenever a brand-new
+  // walkthrough kicks off, so a fresh first neuron re-arms it.
   useEffect(() => {
     if (user?.id) return;
-    if (!hasPrototypeNeurons()) return;
-    let alreadyPlayed = false;
-    try {
-      alreadyPlayed = sessionStorage.getItem(PROTO_VAULT_INTRO_SS_KEY) === "1";
-    } catch {
-      // ignore (private mode etc.) — falling back to "play once per mount"
-      // is fine; the alternative is never showing it at all.
-    }
-    if (alreadyPlayed) return;
-    try {
-      sessionStorage.setItem(PROTO_VAULT_INTRO_SS_KEY, "1");
-    } catch {
-      // ignore
-    }
-
+    // The intro fires for any unauthenticated guest landing on /vault.
+    // We deliberately removed the previous "must have prototype neurons
+    // OR be in a walkthrough step" gate — both signals were getting
+    // wiped before this effect could read them (the wake-screen
+    // hand-off clears localStorage state when the visitor signs out /
+    // restarts, and `VaultConnectionsShell` is a sibling route so a
+    // synthesis → vault navigation can race the writePrototypeStep
+    // call from the synthesis arrow). For a guest, the only sensible
+    // thing to show on /vault is the orientation card anyway, so
+    // there's no harm in always playing it once per mount.
     const fullText =
-      "This is your Connections + Vault — two halves of the same long-term memory.\n\n" +
-      "Connections wire your synthetic intelligence into the AI tools you already use — Cursor, Claude, ChatGPT, Notion, and the rest. Once a tool is connected, it can read from your Synthesis Layer and pull from your Vault, so every assistant you talk to is grounded in you.\n\n" +
-      "The Vault is where the raw material lives. Drag any file in (PDFs, images, video, audio, screenshots, web links, quick notes — really any file type) and LYKN reads it, breaks it down into what it actually means about you, and turns those meanings into new neurons connected to the ones already there.\n\n" +
-      "Try it: drag a file anywhere on this page, paste a link, or scroll down to wire up your first connection.";
-    const introId = "lykn-vault-intro";
+      "This is your Vault, the raw material that feeds your digital brain.\n\n" +
+      "Drag any file in (PDFs, images, video, audio, screenshots, web links, quick notes) and LYKN reads it, breaks down what it means about you, and turns those meanings into new neurons connected to the ones already there.\n\n" +
+      "Think of this as your AI drive.";
 
-    // Slight stagger so the rail slide-in animation lands first; typing
-    // starts a beat later so the text doesn't appear mid-transition.
+    // Slight stagger so the card's mount-in animation lands first;
+    // typing starts a beat later so the text doesn't appear mid-
+    // transition.
     const openTimer = window.setTimeout(() => {
       if (!isMountedRef.current) return;
-      setShowChat(true);
-      setChatMessages((prev) => {
-        if (prev.some((m) => m.id === introId)) return prev;
-        return [...prev, { id: introId, role: "assistant", content: "" }];
-      });
+      setIntroWelcomeShown(true);
+      setIntroWelcomeText("");
+      setIntroWelcomeDone(false);
     }, 600);
 
     const startTypingTimer = window.setTimeout(() => {
@@ -784,26 +820,18 @@ export default function VaultNew() {
       const tick = () => {
         if (!isMountedRef.current) return;
         if (typingCancelRef.current) {
-          setChatMessages((prev) => {
-            const next = prev.slice();
-            const idx = next.findIndex((m) => m.id === introId);
-            if (idx !== -1) next[idx] = { ...next[idx], content: fullText };
-            return next;
-          });
+          setIntroWelcomeText(fullText);
+          setIntroWelcomeDone(true);
           return;
         }
         current += (i === 0 ? "" : " ") + words[i];
         i += 1;
-        setChatMessages((prev) => {
-          const next = prev.slice();
-          const idx = next.findIndex((m) => m.id === introId);
-          if (idx !== -1) next[idx] = { ...next[idx], content: current };
-          return next;
-        });
+        setIntroWelcomeText(current);
         if (i < words.length) {
           typingTimerRef.current = window.setTimeout(tick, 28);
         } else {
           typingTimerRef.current = null;
+          setIntroWelcomeDone(true);
           // Walkthrough nudge: a beat after the intro finishes typing,
           // advance to the chat step. The auto-mounted AppSidebar
           // listens for the step change and reopens itself with the
@@ -833,8 +861,17 @@ export default function VaultNew() {
     };
     // Intentionally empty deps — this is a one-shot intro keyed off the
     // first mount for guests who have prototype neurons. Re-running when
-    // `user` flips on sign-in would replay the typing into a real chat.
+    // `user` flips on sign-in would replay the typing animation.
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const dismissIntroWelcome = useCallback(() => {
+    typingCancelRef.current = true;
+    if (typingTimerRef.current) {
+      window.clearTimeout(typingTimerRef.current);
+      typingTimerRef.current = null;
+    }
+    setIntroWelcomeShown(false);
   }, []);
 
   const chatInputValueRef = useRef("");
@@ -847,6 +884,17 @@ export default function VaultNew() {
   const vaultTrashHoldStartAtRef = useRef(null);
   const vaultTrashHoldTimeoutRef = useRef(null);
   const vaultTrashRef = useRef(null);
+  const [sidebarOpen, setSidebarOpen] = useState(() =>
+    typeof document !== "undefined" && document.body.classList.contains("sidebar-push")
+  );
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const update = () => setSidebarOpen(document.body.classList.contains("sidebar-push"));
+    update();
+    const observer = new MutationObserver(update);
+    observer.observe(document.body, { attributes: true, attributeFilter: ["class"] });
+    return () => observer.disconnect();
+  }, []);
   // Cards the user just drag-dropped on the trash but whose actual
   // server delete is still pending behind an undo grace window. Hidden
   // from the grid optimistically; restored if the user clicks Undo;
@@ -933,6 +981,8 @@ export default function VaultNew() {
   const [selectedFilterTags, setSelectedFilterTags] = useState([]);
   const [showEmbeddedTagDropdown, setShowEmbeddedTagDropdown] = useState(false);
   const embeddedTagDropdownRef = useRef(null);
+  const [showVaultViewDropdown, setShowVaultViewDropdown] = useState(false);
+  const vaultViewDropdownRef = useRef(null);
   const [tagPickerCardId, setTagPickerCardId] = useState(null);
   const [tagPickerPosition, setTagPickerPosition] = useState(null);
   const [newTagInput, setNewTagInput] = useState("");
@@ -1541,8 +1591,14 @@ export default function VaultNew() {
       if (embeddedTagDropdownRef.current && !embeddedTagDropdownRef.current.contains(event.target)) {
         setShowEmbeddedTagDropdown(false);
       }
+      if (vaultViewDropdownRef.current && !vaultViewDropdownRef.current.contains(event.target)) {
+        setShowVaultViewDropdown(false);
+      }
     };
-    const onBlur = () => setShowEmbeddedTagDropdown(false);
+    const onBlur = () => {
+      setShowEmbeddedTagDropdown(false);
+      setShowVaultViewDropdown(false);
+    };
     // Escape closes the open dropdown / tag picker — same expectation
     // as every other floating menu on the page. Without this the only
     // way to dismiss the tag picker without selecting was clicking
@@ -1556,6 +1612,7 @@ export default function VaultNew() {
       setTagPickerPosition(null);
       setNewTagInput("");
       setShowEmbeddedTagDropdown(false);
+      setShowVaultViewDropdown(false);
     };
     window.addEventListener("mousedown", onPointerDown);
     window.addEventListener("blur", onBlur);
@@ -4961,15 +5018,27 @@ User: ${text}`;
 
       {!isEmbeddedMode && (
         <>
-          {/* Top-right: just the Vault ↔ Connections toggle. The old top
-              panel (model picker, attach, chat, quick-note shortcuts) was
-              retired — uploads still work via drag-and-drop, and the
-              quick-note action lives in the bottom-right FAB below. */}
-          <div className="fixed top-3 left-0 right-0 z-[70] px-3 flex items-center justify-end pointer-events-none">
-            <div className="pointer-events-auto">
-              <VaultConnectionsToggle active="vault" />
+          {/* Top-right: the Vault ↔ Connections toggle. Fixed so it
+              stays anchored to the same screen position when toggling
+              between /vault and /connections — otherwise the content
+              widths between the two pages can differ slightly and the
+              inline toggle visibly shifts on every flip. The old top
+              panel (model picker, attach, chat, quick-note shortcuts)
+              was retired — uploads still work via drag-and-drop, and
+              the quick-note action lives in the bottom-right FAB below. */}
+          {/* Walkthrough lockdown: hide the Vault ↔ Connections pill
+              while the visitor is being forced through the linear
+              tour. The cards' arrows are the only intended forward
+              affordance during the walkthrough; letting them jump to
+              connections out-of-order via this pill would skip the
+              vault arrow's step-advancement side effects. */}
+          {!isPrototypeWalkthroughLocked && (
+            <div className="fixed top-3 left-0 right-0 z-[70] px-3 flex items-center justify-end pointer-events-none">
+              <div className="pointer-events-auto">
+                <VaultConnectionsToggle active="vault" />
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Bottom-right FAB: opens the quick-note composer. */}
           <button
@@ -4979,7 +5048,7 @@ User: ${text}`;
             aria-label={showQuickNote ? "Hide quick note" : "New quick note"}
             className={`fixed bottom-6 right-6 z-[70] w-12 h-12 rounded-full shadow-lg flex items-center justify-center transition-colors touch-manipulation ${
               showQuickNote
-                ? "bg-amber-500 text-white hover:bg-amber-600"
+                ? "bg-blue-500/15 text-blue-600 hover:bg-blue-500/25 dark:bg-blue-400/20 dark:text-blue-400 dark:hover:bg-blue-400/30"
                 : "bg-black text-white hover:bg-black/90 dark:bg-white dark:text-black dark:hover:bg-white/90"
             }`}
           >
@@ -4995,7 +5064,7 @@ User: ${text}`;
       )}
 
       <main
-        className={`relative z-20 mx-auto w-full px-4 sm:px-6 lg:px-8 ${isEmbeddedMode ? "pt-6" : "pt-24"} pb-16 transition-[margin-right,max-width] duration-300`}
+        className={`relative z-20 mx-auto w-full px-4 sm:px-6 lg:px-8 ${isEmbeddedMode ? "pt-6" : "pt-16"} pb-16 transition-[margin-right,max-width] duration-300`}
         style={{ transform: "translateZ(0)", marginRight: showChat && !isMobileChat ? `${chatRailWidthPx}px` : 0, maxWidth: showChat && !isMobileChat ? `calc(100% - ${chatRailWidthPx}px)` : "1560px" }}
         onDragEnter={handleMainDragEnter}
         onDragOver={handleMainDragOver}
@@ -5014,37 +5083,56 @@ User: ${text}`;
         <section className="mb-6">
           {isEmbeddedMode ? (
             <div className="space-y-3">
-              <div className="flex items-center gap-3">
-                <input
-                  type="text"
-                  value={embeddedSearch}
-                  onChange={(e) => setEmbeddedSearch(e.target.value)}
-                  placeholder="Search memories..."
-                  className="flex-1 h-10 rounded-xl border border-black/8 dark:border-white/8 bg-white/55 dark:bg-white/4 px-3 text-sm outline-none"
-                />
-                <div className="flex items-center rounded-xl glass-control p-1 gap-0.5 shrink-0">
-                  {[
-                    { id: "collage", icon: Layers, label: "Collage" },
-                    { id: "grid", icon: Grid2X2, label: "Grid" },
-                    { id: "tags", icon: Tag, label: "Tags" },
-                    { id: "type", icon: LayoutGrid, label: "Type" },
-                  ].map((v) => (
-                    <button
-                      key={v.id}
-                      type="button"
-                      onClick={() => setVaultView(v.id)}
-                      className={`flex items-center justify-center w-8 h-8 rounded-lg text-[0.6875rem] font-medium transition-all ${
-                        vaultView === v.id
-                          ? "bg-blue-500/12 text-blue-600 dark:bg-blue-400/15 dark:text-blue-400"
-                          : "text-black/50 dark:text-white/50 hover:text-black/80 dark:hover:text-white/80 hover:bg-black/[0.04] dark:hover:bg-white/[0.06]"
-                      }`}
-                      title={v.label}
-                    >
-                      <v.icon className="w-3.5 h-3.5" />
-                    </button>
-                  ))}
-                </div>
-              </div>
+              <input
+                type="text"
+                value={embeddedSearch}
+                onChange={(e) => setEmbeddedSearch(e.target.value)}
+                placeholder="Search memories..."
+                className="w-full h-10 rounded-xl border border-black/8 dark:border-white/8 bg-white/55 dark:bg-white/4 px-3 text-sm outline-none"
+              />
+              <div className="flex flex-wrap items-center gap-2">
+                {(() => {
+                  const current = VAULT_VIEW_OPTIONS.find((v) => v.id === vaultView) || VAULT_VIEW_OPTIONS[0];
+                  const CurrentIcon = current.icon;
+                  return (
+                    <div className="relative" ref={vaultViewDropdownRef}>
+                      <button
+                        type="button"
+                        onClick={() => setShowVaultViewDropdown((v) => !v)}
+                        className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[0.6875rem] font-medium bg-black/[0.04] hover:bg-black/[0.07] text-black/60 hover:text-black/80 dark:bg-white/10 dark:hover:bg-white/15 dark:text-white/60 transition-colors"
+                      >
+                        <CurrentIcon className="w-3 h-3" />
+                        {current.label}
+                        <ChevronDown className={`w-3 h-3 transition-transform ${showVaultViewDropdown ? "rotate-180" : ""}`} />
+                      </button>
+                      {showVaultViewDropdown && (
+                        <div className="absolute top-full left-0 mt-1 w-44 rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-[#1c1c1c]/80 backdrop-blur-md shadow-md z-[400] py-1">
+                          {VAULT_VIEW_OPTIONS.map((v) => {
+                            const Icon = v.icon;
+                            const active = vaultView === v.id;
+                            return (
+                              <button
+                                key={v.id}
+                                type="button"
+                                onClick={() => {
+                                  setVaultView(v.id);
+                                  setShowVaultViewDropdown(false);
+                                }}
+                                className={`w-full flex items-center gap-2 px-3 py-1.5 text-left text-[0.6875rem] hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors ${
+                                  active ? "text-blue-600 dark:text-blue-400 font-medium" : "text-black/70 dark:text-white/70"
+                                }`}
+                              >
+                                <Icon className="w-3.5 h-3.5 shrink-0" />
+                                <span className="flex-1 truncate">{v.label}</span>
+                                {active && <Check className="w-3 h-3" />}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
               {allTags.length > 0 && (
                 <div className="relative" ref={embeddedTagDropdownRef}>
                   <button
@@ -5068,7 +5156,7 @@ User: ${text}`;
                     </button>
                   )}
                   {showEmbeddedTagDropdown && (
-                    <div className="absolute top-full left-0 mt-1 w-52 max-h-56 overflow-y-auto rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-[#1c1c1c]/80 backdrop-blur-md shadow-md z-50 py-1 scrollbar-hide">
+                    <div className="absolute top-full left-0 mt-1 w-52 max-h-56 overflow-y-auto rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-[#1c1c1c]/80 backdrop-blur-md shadow-md z-[400] py-1 scrollbar-hide">
                       {(() => {
                         const untaggedActive = selectedFilterTags.includes("__untagged__");
                         return (
@@ -5117,6 +5205,7 @@ User: ${text}`;
                   )}
                 </div>
               )}
+              </div>
             </div>
           ) : (
             <>
@@ -5124,7 +5213,7 @@ User: ${text}`;
               <p className="text-black/60 dark:text-white/60 mt-1">
                 Your digital collage of media files, videos, images, and quick notes. Drag and drop files or folders anywhere on this page.
               </p>
-              <div className="mt-4 flex flex-wrap items-center gap-3">
+              <div className="mt-4 flex flex-wrap items-center gap-3 relative z-[400]" style={{ minHeight: 1 }}>
                 <form
                   className="relative w-full sm:flex-1 sm:max-w-xl"
                   onSubmit={(e) => {
@@ -5166,30 +5255,122 @@ User: ${text}`;
                     ) : null}
                   </div>
                 </form>
-
-                <div className="flex items-center rounded-xl glass-control p-1 gap-0.5 shrink-0 w-full sm:w-auto">
-                  {[
-                    { id: "collage", icon: Layers, label: "Collage" },
-                    { id: "grid", icon: Grid2X2, label: "Grid" },
-                    { id: "tags", icon: Tag, label: "Tags" },
-                    { id: "type", icon: LayoutGrid, label: "Type" },
-                  ].map((v) => (
-                    <button
-                      key={v.id}
-                      type="button"
-                      onClick={() => setVaultView(v.id)}
-                      className={`flex-1 sm:flex-initial flex items-center justify-center sm:justify-start gap-1.5 rounded-lg px-2.5 py-1.5 text-[0.6875rem] font-medium transition-all ${
-                        vaultView === v.id
-                          ? "bg-blue-500/12 text-blue-600 dark:bg-blue-400/15 dark:text-blue-400"
-                          : "text-black/50 dark:text-white/50 hover:text-black/80 dark:hover:text-white/80 hover:bg-black/[0.04] dark:hover:bg-white/[0.06]"
-                      }`}
-                      title={v.label}
-                    >
-                      <v.icon className="w-3.5 h-3.5" />
-                      <span className="hidden sm:inline">{v.label}</span>
-                    </button>
-                  ))}
-                </div>
+                {(() => {
+                  const current = VAULT_VIEW_OPTIONS.find((v) => v.id === vaultView) || VAULT_VIEW_OPTIONS[0];
+                  const CurrentIcon = current.icon;
+                  return (
+                    <div className="relative shrink-0" ref={vaultViewDropdownRef}>
+                      <button
+                        type="button"
+                        onClick={() => setShowVaultViewDropdown((v) => !v)}
+                        className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[0.6875rem] font-medium text-black/65 dark:text-white/65 hover:text-black/90 dark:hover:text-white/90 hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors"
+                      >
+                        <CurrentIcon className="w-3 h-3" />
+                        {current.label}
+                        <ChevronDown className={`w-3 h-3 transition-transform ${showVaultViewDropdown ? "rotate-180" : ""}`} />
+                      </button>
+                      {showVaultViewDropdown && (
+                        <div className="absolute top-full right-0 mt-1 w-44 rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-[#1c1c1c]/80 backdrop-blur-md shadow-md z-[400] py-1">
+                          {VAULT_VIEW_OPTIONS.map((v) => {
+                            const Icon = v.icon;
+                            const active = vaultView === v.id;
+                            return (
+                              <button
+                                key={v.id}
+                                type="button"
+                                onClick={() => {
+                                  setVaultView(v.id);
+                                  setShowVaultViewDropdown(false);
+                                }}
+                                className={`w-full flex items-center gap-2 px-3 py-1.5 text-left text-[0.6875rem] hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors ${
+                                  active ? "text-blue-600 dark:text-blue-400 font-medium" : "text-black/70 dark:text-white/70"
+                                }`}
+                              >
+                                <Icon className="w-3.5 h-3.5 shrink-0" />
+                                <span className="flex-1 truncate">{v.label}</span>
+                                {active && <Check className="w-3 h-3" />}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+                {allTags.length > 0 && (
+                  <div className="relative shrink-0" ref={embeddedTagDropdownRef}>
+                    <div className="inline-flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setShowEmbeddedTagDropdown((v) => !v)}
+                        className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[0.6875rem] font-medium text-black/65 dark:text-white/65 hover:text-black/90 dark:hover:text-white/90 hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors"
+                      >
+                        <Tag className="w-3 h-3" />
+                        {selectedFilterTags.length > 0
+                          ? `${selectedFilterTags.length} tag${selectedFilterTags.length > 1 ? "s" : ""} selected`
+                          : "Filter by tag"}
+                        <ChevronDown className={`w-3 h-3 transition-transform ${showEmbeddedTagDropdown ? "rotate-180" : ""}`} />
+                      </button>
+                      {selectedFilterTags.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setSelectedFilterTags([])}
+                          className="text-[0.6875rem] text-blue-500 hover:text-blue-600"
+                        >
+                          Clear filters
+                        </button>
+                      )}
+                    </div>
+                    {showEmbeddedTagDropdown && (
+                      <div className="absolute top-full right-0 mt-1 w-64 max-h-72 overflow-y-auto rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-[#1c1c1c]/80 backdrop-blur-md shadow-md z-[400] py-1 scrollbar-hide">
+                        {(() => {
+                          const untaggedActive = selectedFilterTags.includes("__untagged__");
+                          return (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setSelectedFilterTags((prev) =>
+                                  untaggedActive ? prev.filter((t) => t !== "__untagged__") : [...prev, "__untagged__"]
+                                )
+                              }
+                              className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[0.6875rem] hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors border-b border-black/5 dark:border-white/5 mb-0.5"
+                            >
+                              <div className={`w-3.5 h-3.5 rounded flex items-center justify-center shrink-0 ${untaggedActive ? "bg-blue-500/15 text-blue-600 dark:bg-blue-400/20 dark:text-blue-400 ring-1 ring-blue-500/25" : "border border-black/20 dark:border-white/20"}`}>
+                                {untaggedActive && <Check className="w-2.5 h-2.5" />}
+                              </div>
+                              <span className={`flex-1 truncate italic ${untaggedActive ? "text-black/90 dark:text-white/90 font-medium" : "text-black/50 dark:text-white/50"}`}>
+                                Not Tagged
+                              </span>
+                            </button>
+                          );
+                        })()}
+                        {allTags.map((tag) => {
+                          const active = selectedFilterTags.includes(tag.name);
+                          return (
+                            <button
+                              key={tag.name}
+                              type="button"
+                              onClick={() =>
+                                setSelectedFilterTags((prev) =>
+                                  active ? prev.filter((t) => t !== tag.name) : [...prev, tag.name]
+                                )
+                              }
+                              className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[0.6875rem] hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors"
+                            >
+                              <div className={`w-3.5 h-3.5 rounded flex items-center justify-center shrink-0 ${active ? "bg-blue-500/15 text-blue-600 dark:bg-blue-400/20 dark:text-blue-400 ring-1 ring-blue-500/25" : "border border-black/20 dark:border-white/20"}`}>
+                                {active && <Check className="w-2.5 h-2.5" />}
+                              </div>
+                              <span className={`flex-1 truncate ${active ? "text-black/90 dark:text-white/90 font-medium" : "text-black/65 dark:text-white/65"}`}>
+                                {tag.name}
+                              </span>
+                              <span className="text-[0.625rem] text-black/30 dark:text-white/30">{tag.count}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
               {isConceptSearching && (
                 <p className="mt-2 text-xs text-black/40 dark:text-white/40">Reading through your vault...</p>
@@ -5219,47 +5400,6 @@ User: ${text}`;
                 </div>
                 );
               })()}
-              <div className="mt-4 flex flex-wrap items-center gap-2" style={{ minHeight: 1, transform: "translateZ(0)" }}>
-                {allTags.length > 0 && (
-                  <>
-                    <Tag className="w-3.5 h-3.5 text-black/35 dark:text-white/35 shrink-0" />
-                    {allTags.map((tag) => {
-                      const active = selectedFilterTags.includes(tag.name);
-                      return (
-                        <button
-                          key={tag.name}
-                          type="button"
-                          onClick={() =>
-                            setSelectedFilterTags((prev) =>
-                              active ? prev.filter((t) => t !== tag.name) : [...prev, tag.name]
-                            )
-                          }
-                          className={`inline-flex items-center gap-1 rounded-full font-medium transition-all ${
-                            active
-                              ? "bg-blue-500/12 text-blue-600 dark:bg-blue-400/15 dark:text-blue-400 ring-1 ring-blue-500/20 dark:ring-blue-400/25"
-                              : "glass-control text-black/65 dark:text-white/65 hover:text-black/85 dark:hover:text-white/85"
-                          }`}
-                          style={{ fontSize: 11, lineHeight: 1, height: 22, paddingLeft: 8, paddingRight: 8 }}
-                        >
-                          {tag.name}
-                          <span className={`text-[0.625rem] ${active ? "text-blue-500/60 dark:text-blue-400/60" : "text-black/35 dark:text-white/35"}`}>
-                            {tag.count}
-                          </span>
-                        </button>
-                      );
-                    })}
-                    {selectedFilterTags.length > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => setSelectedFilterTags([])}
-                        className="text-[0.6875rem] text-blue hover:opacity-80 ml-1"
-                      >
-                        Clear filters
-                      </button>
-                    )}
-                  </>
-                )}
-              </div>
             </>
           )}
         </section>
@@ -5897,6 +6037,61 @@ User: ${text}`;
           </motion.div>
         )}
       </main>
+
+      {/* Standalone walkthrough welcome card — mirrors the synthesis-layer
+          welcome (same dark glass treatment, same typewriter cadence) but
+          pinned to the right edge of the viewport so the hand-off feels
+          like the user is reading the next chapter of the same book. The
+          arrow button at the bottom of the card flips the walkthrough
+          step forward and navigates to the Connections page, which is
+          the next surface in the linear tour. Pointer-events on the
+          wrapper are off so guests can keep dragging files / scrolling
+          underneath while the card animates; the card itself
+          re-enables pointer events for its own buttons. */}
+      {introWelcomeShown && (
+        <div className="fixed right-6 top-20 z-[9995] w-[min(88vw,18rem)]">
+          <div
+            className="pointer-events-auto relative rounded-2xl bg-[rgba(15,15,18,0.78)] backdrop-blur-md border border-white/10 px-4 py-3.5 shadow-[0_18px_50px_rgba(0,0,0,0.5)]"
+            style={{
+              animation:
+                "vaultIntroCardIn 360ms cubic-bezier(0.22,1,0.36,1) both",
+            }}
+          >
+            {/* Dismiss button intentionally removed — the walkthrough
+                is a forced flow for guests, and the only way past the
+                vault card is the arrow → /connections hand-off (or
+                signing in, which unmounts the card). See the matching
+                comment on the synthesis-layer welcome card. */}
+            <p className="text-[0.8rem] leading-relaxed text-white/80 whitespace-pre-wrap min-h-[7rem] pr-4">
+              {introWelcomeText}
+              {!introWelcomeDone && (
+                <span
+                  aria-hidden="true"
+                  className="lykn-wake-cursor"
+                >
+                  |
+                </span>
+              )}
+            </p>
+            {introWelcomeDone && (
+              <div className="mt-3 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => {
+                    dismissIntroWelcome();
+                    nav("/connections");
+                  }}
+                  className="rounded-full bg-blue-500/20 hover:bg-blue-500/30 border border-blue-400/40 text-blue-100 hover:text-white p-1.5 transition-colors"
+                  aria-label="Next: Connections"
+                  title="Next: Connections"
+                >
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {showChat && isMobileChat && (
         <div
@@ -6933,7 +7128,7 @@ User: ${text}`;
       {/* Drag-to-delete trash can — desktop only. On phones the bottom-left
           corner conflicts with the mobile tab bar and the drag-and-hold
           gesture isn't usable on touch, so the affordance is hidden. */}
-      {!isEmbeddedMode && !isMobileChat && createPortal(
+      {!isEmbeddedMode && !isMobileChat && !sidebarOpen && createPortal(
         <div
           className="fixed z-[200] flex items-end gap-2"
           style={{ bottom: "16px", left: "16px", pointerEvents: "none" }}

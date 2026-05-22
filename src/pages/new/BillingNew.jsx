@@ -49,7 +49,7 @@ function PriceDisplay({ plan, period }) {
         <span className="text-xs text-black/35 dark:text-white/45 font-medium">/mo</span>
       </div>
       {isAnnual && savings > 0 && (
-        <p className="text-xs text-emerald-600 font-medium mt-1">
+        <p className="text-xs text-black/55 dark:text-white/55 font-medium mt-1">
           Save ${savings}/year
         </p>
       )}
@@ -63,8 +63,8 @@ function FeatureList({ features }) {
       {features.map((f, i) => (
         <li key={i} className="flex items-start gap-2">
           {f.included ? (
-            <div className="w-4 h-4 rounded-full bg-blue-50 dark:bg-blue-500/20 flex items-center justify-center flex-shrink-0 mt-0.5">
-              <Check className="w-2.5 h-2.5 text-blue-600 dark:text-blue-300" strokeWidth={3} />
+            <div className="w-4 h-4 rounded-full bg-black/[0.06] dark:bg-white/[0.10] flex items-center justify-center flex-shrink-0 mt-0.5">
+              <Check className="w-2.5 h-2.5 text-black/70 dark:text-white/80" strokeWidth={3} />
             </div>
           ) : (
             <div className="w-4 h-4 rounded-full bg-black/[0.03] dark:bg-white/[0.06] flex items-center justify-center flex-shrink-0 mt-0.5">
@@ -75,7 +75,7 @@ function FeatureList({ features }) {
             <span
               className={`text-xs leading-snug ${
                 f.accent
-                  ? "text-blue-500 dark:text-blue-300 font-medium"
+                  ? "text-black/85 dark:text-white/90 font-medium"
                   : f.included
                   ? "text-black/70 dark:text-white/75"
                   : "text-black/30 dark:text-white/35"
@@ -115,7 +115,7 @@ function PlanCard({
     default:
       "bg-black/90 dark:bg-white text-white dark:text-black hover:bg-black/80 dark:hover:bg-white/90",
     primary:
-      "bg-blue-100 dark:bg-blue-500/25 text-blue-500 dark:text-blue-200 hover:bg-blue-200 dark:hover:bg-blue-500/35 shadow-sm",
+      "bg-black dark:bg-white text-white dark:text-black hover:bg-black/85 dark:hover:bg-white/90 shadow-sm",
   };
 
   return (
@@ -125,7 +125,7 @@ function PlanCard({
       transition={{ duration: 0.4 }}
       className={`relative flex flex-col rounded-2xl border p-5 transition-shadow duration-300 ${
         plan.highlighted
-          ? "border-blue-200 dark:border-blue-400/40 bg-white dark:bg-zinc-900/90 shadow-xl shadow-blue-600/[0.06] dark:shadow-blue-900/30 ring-1 ring-blue-100 dark:ring-blue-400/30"
+          ? "border-black/15 dark:border-white/25 bg-white dark:bg-zinc-900/90 shadow-xl shadow-black/[0.06] dark:shadow-black/40 ring-1 ring-black/[0.06] dark:ring-white/10"
           : "border-black/[0.06] dark:border-white/[0.12] bg-white dark:bg-zinc-900/85 shadow-sm dark:shadow-black/30 hover:shadow-md"
       } ${plan.comingSoon ? "opacity-[0.88]" : ""}`}
     >
@@ -140,7 +140,7 @@ function PlanCard({
       <div className="flex items-center justify-between">
         <h3 className="text-base font-semibold text-black/85 dark:text-white/90">{plan.name}</h3>
         {plan.badge && (
-          <span className="text-[11px] font-semibold text-blue-500 dark:text-blue-200 bg-blue-50 dark:bg-blue-500/20 px-2 py-0.5 rounded-md">
+          <span className="text-[11px] font-semibold text-black/75 dark:text-white/85 bg-black/[0.06] dark:bg-white/[0.10] px-2 py-0.5 rounded-md">
             {plan.badge}
           </span>
         )}
@@ -184,7 +184,7 @@ function PlanCard({
           isCurrent
             ? "border border-black/10 dark:border-white/20 text-black/40 dark:text-white/45 bg-black/[0.02] dark:bg-white/[0.04]"
             : hasJoinedWaitlist
-              ? "border border-emerald-200 dark:border-emerald-400/40 bg-emerald-50 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-200"
+              ? "border border-black/10 dark:border-white/20 bg-black/[0.04] dark:bg-white/[0.08] text-black/70 dark:text-white/80"
               : `${ctaStyles[plan.ctaVariant]} disabled:opacity-60`
         }`}
       >
@@ -370,7 +370,7 @@ export default function BillingNew() {
   );
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-slate-50/80 to-white dark:from-zinc-950 dark:to-zinc-900">
+    <div className="min-h-screen bg-transparent text-black dark:text-white">
       <div className="max-w-6xl mx-auto px-6 py-10">
         {/* Hero */}
         <div className="text-center mb-10">
@@ -379,7 +379,7 @@ export default function BillingNew() {
           </h2>
           <p className="text-base text-black/45 dark:text-white/60 mt-3 max-w-lg mx-auto leading-relaxed">
             Start free, upgrade for top-tier models and unlimited workspace.
-            Cancel anytime — no hidden fees.
+            Cancel anytime, no hidden fees.
           </p>
         </div>
 

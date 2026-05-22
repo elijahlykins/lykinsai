@@ -3,11 +3,18 @@ import { API_BASE_URL } from "@/lib/api-config";
 
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
 /**
- * Debounce so we don't run the profile LLM on every message. Kept tight so
- * the user model feels alive after a short flurry of activity — the server
- * still gates with PROFILE_LLM_THROTTLE_MS so this can't run away.
+ * Debounce so we don't run the profile LLM on every message. The server
+ * still gates with PROFILE_LLM_THROTTLE_MS (24h between actual LLM passes,
+ * see server.js), so this debounce only controls **how long after the
+ * user pauses** we issue the HTTP ping that may run a pass.
+ *
+ * Was 90s — that's the lag a user feels between "I saved my last note for
+ * the night" and "my synthesis layer noticed". Tightened to 30s. The
+ * fact-extraction pipeline downstream short-circuits on the evidence-hash
+ * gate when nothing material changed, so the cost of an extra ping is
+ * usually a cheap evidence-hash compute + a DB read.
  */
-const DEBOUNCE_MS = 90 * 1000;
+const DEBOUNCE_MS = 30 * 1000;
 
 /**
  * Schedule a server-side user-model refresh (LLM distill → `lykn_user_synthesis_profile`).

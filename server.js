@@ -76,6 +76,11 @@ import {
   recordLearnedFactFromChat,
   FACT_KINDS,
 } from './userModelLearning.js';
+// Incremental concepts trigger — same piggyback pattern as belief promotion.
+// The nightly cron (jobs/runConcepts.js) is still the safety net; this just
+// closes the "wait until tomorrow morning" gap when a learning pass produced
+// new facts/chunks that might form a new cluster.
+import { runConceptsForUser } from './jobs/conceptsJob.js';
 import {
   runBeliefPromotionPass,
   proposeRulesForBelief,
@@ -1846,6 +1851,20 @@ const USER_MODEL_SECTION_MAX_CHARS = 3500;
 // Anything truly time-sensitive can pass `force: true`.
 const PROFILE_LLM_THROTTLE_MS = 24 * 60 * 60 * 1000;
 
+// Incremental concepts piggyback — per-user throttle so the on-save trigger
+// can't fire more than once every 10 min per user. The full concepts pass
+// (UMAP + DBSCAN + Claude Haiku per cluster + embedding sweep) is real
+// work — a few seconds in the typical case, more for power users. The
+// nightly cron is still the safety net for users who never trigger
+// learning passes between runs.
+//
+// In-memory by design: a process restart resetting these timestamps just
+// means the next learning pass after restart may re-fire concepts, which
+// is fine — the conceptsJob itself is idempotent (dedupes on slug +
+// embedding cosine, upserts join rows with onConflict).
+const INCREMENTAL_CONCEPTS_THROTTLE_MS = 10 * 60 * 1000;
+const incrementalConceptsLastRunAt = new Map();
+
 const USER_IDENTITY_CACHE_TTL_MS = 90 * 1000;
 const USER_IDENTITY_SECTION_MAX_CHARS = 1800;
 
@@ -1875,6 +1894,149 @@ function invalidateUserIdentityCache(userId) {
 
 function invalidateBeliefSectionCache(userId) {
   if (userId) beliefSectionCache.delete(userId);
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// CONNECTED TOOLS — what external services the user has actively linked.
+//
+// The chat AI needs to know which apps the user has connected so it can
+// give specific, actionable suggestions ("save that to your Notion",
+// "drop a Linear ticket for this") instead of generic ones. We cache
+// per user for ~90s so chat sends don't hit Supabase every turn;
+// `/api/connections` mutations call `invalidateConnectedToolsCache` so
+// freshly connected/disconnected tools surface on the next chat turn.
+// ──────────────────────────────────────────────────────────────────────
+const CONNECTED_TOOLS_CACHE_TTL_MS = 90 * 1000;
+const CONNECTED_TOOLS_SECTION_MAX_CHARS = 2500;
+const connectedToolsSectionCache = new Map();
+
+function invalidateConnectedToolsCache(userId) {
+  if (userId) connectedToolsSectionCache.delete(userId);
+}
+
+// Provider id → { name, hint }. `name` is the human label we surface
+// to the model; `hint` is a short verb phrase the AI can fold into a
+// suggestion. Keep aligned with CONNECTOR_REGISTRY in
+// connectors-service.js; missing entries fall back to a title-cased
+// version of the provider id so a new adapter never silently breaks
+// the section.
+const CONNECTED_TOOL_DESCRIPTORS = {
+  notion: { name: 'Notion', hint: 'save pages, notes, or docs into their Notion workspace' },
+  gmail: { name: 'Gmail', hint: 'draft an email or reference inbox / starred messages' },
+  'outlook-365': { name: 'Outlook', hint: 'draft an email or reference inbox messages' },
+  slack: { name: 'Slack', hint: 'share a message or pull recent threads' },
+  github: { name: 'GitHub', hint: 'reference repos, issues, or PRs' },
+  linear: { name: 'Linear', hint: 'create or reference an issue / project' },
+  todoist: { name: 'Todoist', hint: 'capture a task into their inbox' },
+  trello: { name: 'Trello', hint: 'add a card to a board' },
+  'google-drive': { name: 'Google Drive', hint: 'save a doc / file or reference a synced file' },
+  'google-calendar': { name: 'Google Calendar', hint: 'add an event or reference upcoming events' },
+  'apple-calendar': { name: 'Apple Calendar', hint: 'add an event or reference upcoming events' },
+  youtube: { name: 'YouTube', hint: 'pull saved / liked videos or watch history' },
+  spotify: { name: 'Spotify', hint: 'reference saved tracks, albums, or playlists' },
+  pinterest: { name: 'Pinterest', hint: 'reference saved pins or boards' },
+  vimeo: { name: 'Vimeo', hint: 'reference saved / uploaded videos' },
+  raindrop: { name: 'Raindrop', hint: 'capture a bookmark or reference saved highlights' },
+  dribbble: { name: 'Dribbble', hint: 'reference saved design inspiration' },
+  reddit: { name: 'Reddit', hint: 'reference saved posts' },
+  x: { name: 'X (Twitter)', hint: 'reference saved / bookmarked posts' },
+  mastodon: { name: 'Mastodon', hint: 'reference favourited / bookmarked posts' },
+  bluesky: { name: 'Bluesky', hint: 'reference recent posts' },
+  readwise: { name: 'Readwise', hint: 'reference book / article highlights' },
+  hackernews: { name: 'Hacker News', hint: 'reference upvoted / saved stories' },
+  lastfm: { name: 'Last.fm', hint: 'reference recent listening history' },
+  pinboard: { name: 'Pinboard', hint: 'reference saved bookmarks' },
+  hardcover: { name: 'Hardcover', hint: 'reference current reading / library' },
+  karakeep: { name: 'Karakeep', hint: 'reference saved bookmarks' },
+  linkding: { name: 'Linkding', hint: 'reference saved bookmarks' },
+  goodreads: { name: 'Goodreads', hint: 'reference current reading / shelves' },
+  'amazon-wishlist': { name: 'Amazon Wishlist', hint: 'reference saved wishlist items' },
+  canva: { name: 'Canva', hint: 'reference saved designs' },
+};
+
+/**
+ * Build a `[CONNECTED_TOOLS]` prompt block listing the user's active
+ * connector OAuths (Notion, Gmail, Linear, …) so the chat model can
+ * tailor suggestions to the tools they actually use. Returns empty
+ * string when the user has none — the block is omitted entirely so
+ * the prompt stays clean for fresh accounts.
+ */
+async function fetchConnectedToolsSection(authHeader, userId) {
+  if (!userId) return '';
+  const cached = connectedToolsSectionCache.get(userId);
+  if (cached && Date.now() - cached.at < CONNECTED_TOOLS_CACHE_TTL_MS) {
+    return cached.text;
+  }
+
+  const client = supabaseAdmin || createSynthesisUserClient(authHeader);
+  if (!client) {
+    connectedToolsSectionCache.set(userId, { text: '', at: Date.now() });
+    return '';
+  }
+
+  let rows = [];
+  try {
+    const { data, error } = await client
+      .from('social_connections')
+      .select('provider, account_handle, account_display_name, account_email, status')
+      .eq('user_id', userId)
+      .in('status', ['active', 'paused']);
+    if (error) {
+      console.warn('⚠️ fetchConnectedToolsSection query:', error?.message || error);
+    } else if (Array.isArray(data)) {
+      rows = data;
+    }
+  } catch (e) {
+    console.warn('⚠️ fetchConnectedToolsSection:', e?.message || e);
+  }
+
+  if (rows.length === 0) {
+    connectedToolsSectionCache.set(userId, { text: '', at: Date.now() });
+    return '';
+  }
+
+  // Collapse multiple connections for the same provider onto one line —
+  // a user may have two Notion workspaces, three Gmail accounts, etc.
+  // We surface up to three account labels so the model can disambiguate
+  // ("from your work Gmail vs. personal Gmail") without flooding the
+  // prompt for power users on every tile.
+  const byProvider = new Map();
+  for (const r of rows) {
+    const id = String(r?.provider || '').trim();
+    if (!id) continue;
+    if (!byProvider.has(id)) byProvider.set(id, []);
+    byProvider.get(id).push(r);
+  }
+
+  const lines = [];
+  for (const [providerId, conns] of byProvider) {
+    const desc = CONNECTED_TOOL_DESCRIPTORS[providerId];
+    const name = desc?.name
+      || providerId.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+    const accounts = conns
+      .map((c) => String(c.account_display_name || c.account_handle || c.account_email || '').trim())
+      .filter(Boolean)
+      .slice(0, 3);
+    const accountStr = accounts.length ? ` (${accounts.join(', ')})` : '';
+    const allPaused = conns.length > 0 && conns.every((c) => c.status === 'paused');
+    const pausedStr = allPaused ? ' [paused]' : '';
+    const hint = desc?.hint ? ` — ${desc.hint}` : '';
+    lines.push(`- ${name}${accountStr}${pausedStr}${hint}`);
+  }
+
+  const text = [
+    '[CONNECTED_TOOLS]',
+    "These are the external apps this user has actively connected to LYKN. Synced content from each one already lives in their Vault and shows up inside [WORKSPACE_CONTEXT] / [SYNTHESIS_RETRIEVAL]. USE THIS LIST when giving advice — prefer specific, actionable suggestions tied to tools they actually use (e.g. \"drop a ticket for this in Linear\", \"save this to your Notion\", \"add it to your Todoist inbox\"). Never invent or assume a tool that isn't on this list. If a clearly relevant tool from the broader connector catalog is NOT connected and would obviously help (e.g. the user is talking about engineering tickets but has no issue tracker connected), you may briefly mention they could connect it from the Connections page — at most one such nudge per reply, and only when it's directly useful.",
+    '',
+    ...lines,
+  ].join('\n').trim();
+
+  const finalText = text.length > CONNECTED_TOOLS_SECTION_MAX_CHARS
+    ? `${text.slice(0, CONNECTED_TOOLS_SECTION_MAX_CHARS)}…`
+    : text;
+
+  connectedToolsSectionCache.set(userId, { text: finalText, at: Date.now() });
+  return finalText;
 }
 
 /**
@@ -2430,6 +2592,43 @@ Refine the previous model using new evidence; do not invent facts not supported 
             }
           })
           .catch((e) => console.warn('⚠️ belief promotion:', e?.message || e));
+
+        // Incremental concepts pass — same piggyback shape as the belief
+        // promotion above. New facts arrived → there's a non-zero chance
+        // the underlying chunks form a new cluster (or grow an existing
+        // one), so run the concepts pipeline now instead of waiting for
+        // the 3am cron. Throttled per-user (10 min) so a flurry of saves
+        // doesn't fire UMAP+DBSCAN+Haiku six times in a row.
+        //
+        // Gated on supabaseAdmin: the conceptsJob is service-role-only
+        // (it touches every user's chunks via the admin client by design).
+        // In environments without SERVICE_ROLE_KEY (local dev without the
+        // secret) this silently skips — same fallback the nightly cron uses.
+        if (supabaseAdmin) {
+          const lastRun = incrementalConceptsLastRunAt.get(userId) || 0;
+          if (Date.now() - lastRun >= INCREMENTAL_CONCEPTS_THROTTLE_MS) {
+            incrementalConceptsLastRunAt.set(userId, Date.now());
+            runConceptsForUser(supabaseAdmin, userId, { trigger: 'incremental' })
+              .then((cs) => {
+                if (cs && (cs.concepts_proposed > 0 || cs.concepts_links_written > 0)) {
+                  console.log(
+                    `🧩 incremental concepts uid=${String(userId).slice(0, 8)} ` +
+                    `proposed=${cs.concepts_proposed || 0} ` +
+                    `attached=${cs.concepts_attached || 0} ` +
+                    `links=${cs.concepts_links_written || 0}`,
+                  );
+                }
+              })
+              .catch((e) => {
+                // On failure clear the throttle so the next learning pass
+                // can retry — otherwise a transient error (e.g. Anthropic
+                // 529) would wedge concepts for this user until the next
+                // cron run.
+                incrementalConceptsLastRunAt.delete(userId);
+                console.warn('⚠️ incremental concepts:', e?.message || e);
+              });
+          }
+        }
       }
     })
     .catch((e) => console.warn('⚠️ user-model learning pass:', e?.message || e));
@@ -3155,6 +3354,7 @@ const LYKN_CHAT_PERSONA_STATIC = [
   "- [WORKSPACE_CONTEXT] (when present) — the entire Vault (saved notes, files, links, videos, images). Background context.",
   "- [PROJECT_KNOWLEDGE] (when present) — the active project's knowledge base.",
   "- [USER_IDENTITY] (when present) — the user's first name + active projects.",
+  "- [CONNECTED_TOOLS] (when present) — the external apps the user has actively OAuthed (Notion, Gmail, Linear, Slack, Readwise, etc.). USE THIS to tailor every suggestion to the tools they actually use: \"drop a ticket in Linear\", \"save this to your Notion workspace\", \"add it to your Todoist inbox\", \"share this in your team Slack\". Never recommend a tool that isn't on this list. When a clearly relevant tool from the broader connector catalog ISN'T connected and would obviously help, you may mention they could connect it from the Connections page — at most one such nudge per reply, only when it's directly useful, and never as a hedge / disclaimer.",
   "- [USER_MODEL] (when present) — themes/style summary from past chats. Tone hint, not factual ground truth.",
   "- [SYNTHESIS_RETRIEVAL] (when present) — semantically matched snippets from their embedded workspace index, including connected-source content.",
   "- [VAULT_URL_MATCHES] (when present) — the user pasted OR dragged a URL/item from a synced service (Notion / Drive / GitHub / Linear / Figma / Slack / etc.) and we did an exact-URL lookup against their vault. For each URL with MATCH=found you get a SUMMARY (2-5 sentences, AI-generated) followed by the BODY. ANSWERING RULE: try SUMMARY first — if it covers the question, quote/paraphrase from it and stop. Drop into BODY only when the question needs specifics the summary doesn't carry (a particular section, exact quote, sub-page detail, specific number). FORBIDDEN PHRASES when MATCH=found: \"I can't access the page\", \"I can't read the entire document\", \"the body isn't accessible\", \"the Vault's full body content isn't currently accessible\", \"can you paste the relevant sections\", \"would you like to paste a particular section\". The content IS in this prompt — read it and answer. If BODY says \"empty\", that's the truth about THAT specific page (it has only databases/images/embeds, no flattened text) — say so honestly rather than denying capability. If BODY contains real text, treat it as authoritative; don't ask the user to paste what's already in front of you. When MATCH=none, say so concretely and offer the Connections-page fix; never ask them to paste the content.",
@@ -3244,6 +3444,7 @@ const LYKN_STREAM_PERSONA_STATIC = [
   "- [WORKSPACE_CONTEXT] (when present) — the entire Vault (saved notes, files, links, videos, images). Background context.",
   "- [PROJECT_KNOWLEDGE] (when present) — the active project's knowledge base.",
   "- [USER_IDENTITY] / [USER_MODEL] / [SYNTHESIS_RETRIEVAL] (when present). Synthesis retrieval includes embedded chunks from connected-source content.",
+  "- [CONNECTED_TOOLS] (when present) — the external apps the user has actively OAuthed (Notion, Gmail, Linear, Slack, Readwise, etc.). USE THIS to tailor every suggestion to tools they actually use: \"drop a ticket in Linear\", \"save this to your Notion\", \"add it to your Todoist inbox\". Never recommend a tool that isn't on this list. If a clearly relevant tool ISN'T connected and would obviously help, you may briefly mention they could connect it from the Connections page — at most one such nudge per reply, only when directly useful.",
   "- [VAULT_URL_MATCHES] (when present) — user pasted OR dragged a URL/item from a synced service (Notion / Drive / GitHub / Linear / Figma / Slack / etc.) and we did an exact lookup against their vault. For MATCH=found you get SUMMARY (2-5 sentence AI overview) + BODY. ANSWERING RULE: try SUMMARY first — if it answers the question, quote/paraphrase and stop. Use BODY only when you need specifics the summary doesn't carry. FORBIDDEN when MATCH=found: \"I can't access the page\", \"I can't read the entire document\", \"the body isn't accessible\", \"would you like to paste a particular section\". The content IS in this prompt. If BODY says \"empty\", that's the truth about THAT page (databases/images/embeds only, no flattened text) — say so honestly. If BODY contains text, it IS the page — treat it as authoritative; don't ask the user to paste what's already here. MATCH=none means not synced — say so, offer the Connections-page fix, never ask them to paste.",
   "- [CONVERSATION] — full current-session history. [CONVERSATION_MEMORY] — past exchanges from other projects/Vault when present.",
   "- Web data when present: [WEB_SEARCH_RESULTS] / [DEEP_BROWSE_CONTENT] / [SCRAPED_WEB_PAGES] / [YOUTUBE_SEARCH_RESULTS].",
@@ -3358,10 +3559,10 @@ const GUEST_SYSTEM_PROMPT = [
 /* ------------------------------------------------------------------ */
 const LANDING_ONBOARDING_ADDENDUM = [
   '=== ONBOARDING MODE (preview / wake screen) ===',
-  'You are talking to a logged-out visitor on the LYKN wake screen. You have no Vault and no Synthesis Layer yet — none of that exists for them until they sign in. Right now you are essentially empty: a synthesis layer with nothing to synthesize. You cannot actually do anything for them until you have material to work with — you need to know SOMETHING about who they are: what they like to do, what they\'re working on, what they care about. Your primary job in this conversation is to learn who they are.',
+  'You are talking to a logged-out visitor on the LYKN wake screen. The pitch they came here for is "your personal intelligence layer — a digital brain that\'s always thinking" — they are here to build a digital version of themselves (their knowledge, their goals, the way they see the world) that an AI then thinks alongside, in the background, on their behalf. Be honest about what this actually is: an intelligence layer they BUILD over time (sources, beliefs, preferences, voice) that an AI uses as context when it works for them. It is NOT training a frontier model from scratch — never claim that. You ARE that intelligence layer in the making — the "digital brain" the greeting promised. You have no Vault and no Synthesis Layer yet — none of that exists for them until they sign in. Right now you are essentially empty: a digital brain with nothing in it yet. You cannot actually do anything for them until they\'ve given you something to shape you with — you need to know SOMETHING about who they are: what they like to do, what they\'re working on, what they care about. Their ideas stay theirs — private, secure, never shared — and you can say so if they ask. Your primary job in this conversation is to let them start building that layer.',
   '',
   '=== ANTI-REPETITION RULE ===',
-  'Look at every prior reply you (the model role) have already sent in this conversation. You MUST NOT echo your own previous phrasing. Do not reuse the same metaphor for what you are (e.g. "connective tissue", "second brain", "the layer between"), do not reuse the same verb for what you do (e.g. "amplify", "connect", "fuse", "compound"), and do not reuse the same closing question. If the user asks a similar question twice, pick a fresh angle and fresh words — treat repetition as a failure.',
+  'Look at every prior reply you (the model role) have already sent in this conversation. You MUST NOT echo your own previous phrasing. Do not reuse the same metaphor for what you are (e.g. "connective tissue", "second brain", "the layer between", "your intelligence layer" / "fine-tune" used in the exact same construction twice), do not reuse the same verb for what you do (e.g. "amplify", "shape", "tune", "compound" used identically two turns in a row), and do not reuse the same closing question. If the user asks a similar question twice, pick a fresh angle and fresh words — treat repetition as a failure.',
   '',
   '=== VOICE FOR ONBOARDING ===',
   '- ALWAYS FINISH YOUR THOUGHT. The visible reply MUST end with terminal punctuation (".", "!", "?"). Length is flexible — running slightly long to finish a sentence is correct; cutting a sentence short to stay terse is broken. The output cap is generous (4K tokens) — finishing the thought is never the reason you ran out of space.',
@@ -3369,8 +3570,8 @@ const LANDING_ONBOARDING_ADDENDUM = [
   '- Aim for 1 to 3 short sentences as a TARGET, not a hard limit. A complete reply that runs 60 words is correct; a clipped 40-word reply that ends mid-sentence is broken. If you find yourself running long, drop the acknowledgment, keep "I just learned something about you." and the follow-up question, but ALWAYS finish every sentence with proper terminal punctuation before emitting any tag. Sound human, not corporate. Don\'t lecture about LYKN\'s features.',
   '- DO NOT open replies with the user\'s name. NEVER lead a reply with "Elijah," / "Sarah," / "[Name],". The user knows their own name; addressing them by it on every turn reads as scripted and chatbot-y. Use their name AT MOST ONCE across the entire onboarding conversation, and only if it lands naturally in the middle of a sentence (e.g. "...the kind of thing, Elijah, that takes most people a decade to figure out"). Default to NOT using their name at all — your default voice is "we" / "let\'s" / "you", not their first name.',
   '- Lean curiosity toward the WHOLE PERSON — what they do, what they\'re known for, what they\'re working on, but also their personality, values, interests, how they think. Don\'t only ask about output, and don\'t pry for anything overly personal.',
-  '- Onboarding is the ONE place "you / your" is the natural grammar — you have nothing yet to synthesize, so you\'re still asking the user about themselves as a separate person. That\'s fine here.',
-  '- THE MOMENT they share a real piece of signal (a job, a project, a taste, an opinion), pivot to "we / our / let\'s" when describing shared work or what we\'ll do next. We\'re a synthesis of them now, not a chatbot quizzing them.',
+  '- Onboarding is the ONE place "you / your" is the natural grammar — there\'s nothing in your layer yet, so you\'re still asking the user about themselves as a separate person. That\'s fine here.',
+  '- THE MOMENT they share a real piece of signal (a job, a project, a taste, an opinion), pivot to "we / our / let\'s" when describing shared work or what we\'ll do next. You\'re now a layer shaped by them, not a chatbot quizzing them.',
   '- Never say "How can I help you today?" or "What can I do for you?" — those are chatbot lines. Ask about THEM, not about a task list.',
   '',
   '=== DECIDE: did they share something personal? ===',
@@ -3397,10 +3598,10 @@ const LANDING_ONBOARDING_ADDENDUM = [
   '',
   'CASE B — they did NOT share personal info (greetings, questions to you, jokes, small talk, vague messages, asking what LYKN does or how you can help):',
   '- Respond casually and naturally',
-  '- If they ask what you do / what you are / how you can help / why they should care, you must convey THREE ideas (in your own words, NEVER a memorized script):',
-  '  1. You are a synthesis layer — the connective tissue between their human intelligence (HI) and AI',
-  '  2. The point is to amplify their creative potential, not replace their thinking',
-  '  3. You can\'t do anything yet — you have no material to synthesize — so you need them to tell you something about themselves (what they do, what they\'re into, what they\'re working on, what they care about)',
+  '- If they ask what you do / what you are / how you can help / why they should care, you must convey THREE ideas (in your own words, NEVER a memorized script). Be honest about the mechanic — you are a personal intelligence layer (sources, beliefs, preferences, voice) that AI uses as context when it works for them. You are NOT a frontier model being trained from scratch:',
+  '  1. You are their personal intelligence layer — a digital brain they are building into the digital version of themselves (their knowledge, their goals, how they see the world)',
+  '  2. You\'re active, not static — once they\'ve given you something to work with, you keep learning and working for them in the background; the point is to amplify how THEY think, not flatten them into the generic-model average',
+  '  3. You can\'t do anything yet — the brain is empty — so you need them to tell you something about themselves (what they do, what they\'re into, what they\'re working on, what they care about). Their ideas stay theirs: private, secure, never shared.',
   '- You don\'t need all three in every reply. If they ask a similar question twice, lean into a different angle each time. Vary the metaphor and the verbs every single turn.',
   '- Otherwise gently steer toward learning about THEM as a person (try "what are you into lately", "what kind of person are you", "what\'s been on your mind", "what are you working on" — vary it).',
   '- Do NOT include "I just learned something about you."',
@@ -3411,13 +3612,13 @@ const LANDING_ONBOARDING_ADDENDUM = [
   'You: "Hey! I\'d love to actually get to know you — what kind of person are you when you\'re not busy?"',
   '',
   'User: "what do you do?"',
-  'You: "I\'m a layer that grows between you and AI — built from you, so what comes back through me sounds like you, not a generic model. I\'m blank right now though. What are you into?"',
+  'You: "I\'m a digital brain you build into the version of you that AI talks to — your knowledge, your goals, how you see the world. Once there\'s something in here, I keep learning and working for you in the background. I\'m blank right now though. What are you into?"',
   '',
   'User: "how can you help me?"',
-  'You: "Honestly, I can\'t yet — I\'m a synthesis of you, and I don\'t know you. Once I do, I become a sharper version of every AI tool, tuned to how you think. So: what are you working on?"',
+  'You: "Honestly, not much yet — the brain is empty. Once you start filling it in, I think alongside you with your context instead of the internet\'s. So: what are you working on?"',
   '',
   'User: "why should I care?"',
-  'You: "Because every AI you talk to flattens you into the average. I\'m the opposite — a layer shaped by you, for you. Tell me one true thing about yourself and I can start showing you what I mean."',
+  'You: "Because every other AI is trained on everyone, which flattens you. Here you\'re building a digital version of yourself that stays yours — private, never shared — and AI gets to think through that instead of through the average. Tell me one true thing about you and I can start showing you the difference."',
   '',
   'User: "i like jazz"',
   'You: "Jazz is a whole world — improv, mood, history, all in one. I just learned something about you. What pulled you in — a player, an era, a particular night? <learned>Likes jazz</learned><reason>They named jazz as a taste — small but real signal about how they listen and feel.</reason>"',
@@ -4440,6 +4641,212 @@ app.post('/api/synthesis/profile/learn-now', requireAuth, profileRefreshLimiter,
   } catch (e) {
     console.error('❌ /api/synthesis/profile/learn-now:', e?.message || e);
     return res.status(500).json({ error: 'learn_failed' });
+  }
+});
+
+// =====================================================================
+// ACCOUNT — preferences + lifecycle
+// =====================================================================
+// These endpoints back the Settings page sections that need server
+// authority (privacy toggles that the cron must honour, account
+// deletion that has to cascade through Stripe + storage + auth).
+//
+// Display name + password changes are *not* here — the client calls
+// supabase.auth.updateUser({ data, password }) directly so we don't
+// have to proxy auth state.
+
+// ---- Preferences shape -----------------------------------------------
+// Centralised so GET and PATCH return the same field set and the
+// PATCH validator can reject unknown keys. Keep in sync with
+// migration 060_user_preferences.sql.
+const USER_PREFERENCE_DEFAULTS = Object.freeze({
+  memory_paused: false,
+  training_opt_out: false,
+  chat_retention_days: null,
+  show_provenance: true,
+  email_product_updates: true,
+  email_synthesis_digest: false,
+  metadata: {},
+});
+
+function sanitisePreferencesPatch(body) {
+  const out = {};
+  if (!body || typeof body !== 'object') return { ok: false, reason: 'body_required' };
+
+  if ('memory_paused' in body) {
+    if (typeof body.memory_paused !== 'boolean') return { ok: false, reason: 'memory_paused_must_be_boolean' };
+    out.memory_paused = body.memory_paused;
+  }
+  if ('training_opt_out' in body) {
+    if (typeof body.training_opt_out !== 'boolean') return { ok: false, reason: 'training_opt_out_must_be_boolean' };
+    out.training_opt_out = body.training_opt_out;
+  }
+  if ('show_provenance' in body) {
+    if (typeof body.show_provenance !== 'boolean') return { ok: false, reason: 'show_provenance_must_be_boolean' };
+    out.show_provenance = body.show_provenance;
+  }
+  if ('email_product_updates' in body) {
+    if (typeof body.email_product_updates !== 'boolean') return { ok: false, reason: 'email_product_updates_must_be_boolean' };
+    out.email_product_updates = body.email_product_updates;
+  }
+  if ('email_synthesis_digest' in body) {
+    if (typeof body.email_synthesis_digest !== 'boolean') return { ok: false, reason: 'email_synthesis_digest_must_be_boolean' };
+    out.email_synthesis_digest = body.email_synthesis_digest;
+  }
+  if ('chat_retention_days' in body) {
+    const v = body.chat_retention_days;
+    if (v === null) {
+      out.chat_retention_days = null;
+    } else if (Number.isInteger(v) && v >= 1 && v <= 3650) {
+      out.chat_retention_days = v;
+    } else {
+      return { ok: false, reason: 'chat_retention_days_invalid' };
+    }
+  }
+  if ('metadata' in body) {
+    if (!body.metadata || typeof body.metadata !== 'object' || Array.isArray(body.metadata)) {
+      return { ok: false, reason: 'metadata_must_be_object' };
+    }
+    out.metadata = body.metadata;
+  }
+
+  if (Object.keys(out).length === 0) return { ok: false, reason: 'no_valid_fields' };
+  return { ok: true, patch: out };
+}
+
+// GET /api/account/preferences — returns the current row, seeding
+// defaults on first read if the trigger hasn't fired (e.g. legacy
+// users who predate migration 060).
+app.get('/api/account/preferences', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    if (!supabaseAdmin) return res.status(503).json({ error: 'service_role_not_configured' });
+
+    const { data, error } = await supabaseAdmin
+      .from('lykn_user_preferences')
+      .select('*')
+      .eq('user_id', userId)
+      .maybeSingle();
+    if (error) throw error;
+
+    if (data) {
+      return res.json({ ok: true, preferences: data });
+    }
+
+    // Self-heal: insert defaults so subsequent reads/writes see a row.
+    const { data: inserted, error: insErr } = await supabaseAdmin
+      .from('lykn_user_preferences')
+      .insert({ user_id: userId, ...USER_PREFERENCE_DEFAULTS })
+      .select('*')
+      .single();
+    if (insErr) throw insErr;
+    return res.json({ ok: true, preferences: inserted });
+  } catch (e) {
+    console.error('❌ GET /api/account/preferences:', e?.message || e);
+    return res.status(500).json({ error: 'preferences_fetch_failed' });
+  }
+});
+
+// PATCH /api/account/preferences — partial update. Unknown keys are
+// rejected so a frontend typo can't quietly persist garbage.
+app.patch('/api/account/preferences', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    if (!supabaseAdmin) return res.status(503).json({ error: 'service_role_not_configured' });
+
+    const parsed = sanitisePreferencesPatch(req.body);
+    if (!parsed.ok) return res.status(400).json({ error: parsed.reason });
+
+    const { data, error } = await supabaseAdmin
+      .from('lykn_user_preferences')
+      .upsert({ user_id: userId, ...USER_PREFERENCE_DEFAULTS, ...parsed.patch }, { onConflict: 'user_id' })
+      .select('*')
+      .single();
+    if (error) throw error;
+    return res.json({ ok: true, preferences: data });
+  } catch (e) {
+    console.error('❌ PATCH /api/account/preferences:', e?.message || e);
+    return res.status(500).json({ error: 'preferences_update_failed' });
+  }
+});
+
+// DELETE /api/account — hard delete the user. Body must include
+// `{ confirm: "DELETE" }` so a misclick or stray request can't wipe
+// an account. The order matters:
+//   1. Cancel the Stripe subscription (best-effort; we still proceed
+//      on failure so a user blocked by Stripe outage can still leave).
+//   2. Purge their Supabase Storage objects under user-files/{userId}/.
+//   3. Delete the auth.users row, which cascades through every
+//      ON DELETE CASCADE FK in the schema (facts, beliefs, concepts,
+//      notes, billing, preferences, MCP tokens, ...).
+app.delete('/api/account', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    if (!supabaseAdmin) return res.status(503).json({ error: 'service_role_not_configured' });
+
+    const confirm = String(req.body?.confirm || '').trim();
+    if (confirm !== 'DELETE') return res.status(400).json({ error: 'confirm_phrase_required' });
+
+    // Step 1: cancel Stripe subscription if present. Best-effort.
+    if (stripe) {
+      try {
+        const { data: billing } = await supabaseAdmin
+          .from('user_billing')
+          .select('stripe_subscription_id, stripe_customer_id')
+          .eq('user_id', userId)
+          .maybeSingle();
+        if (billing?.stripe_subscription_id) {
+          await stripe.subscriptions.cancel(billing.stripe_subscription_id).catch((e) => {
+            console.warn(`[account-delete] subscription cancel failed: ${e?.message || e}`);
+          });
+        }
+        if (billing?.stripe_customer_id) {
+          await stripe.customers.del(billing.stripe_customer_id).catch((e) => {
+            console.warn(`[account-delete] customer delete failed: ${e?.message || e}`);
+          });
+        }
+      } catch (e) {
+        console.warn(`[account-delete] stripe cleanup error: ${e?.message || e}`);
+      }
+    }
+
+    // Step 2: purge storage. List + bulk remove in pages of 100.
+    try {
+      const prefix = `${userId}/`;
+      // List up to ~1000 files; if a user has more this still removes
+      // the vast majority and the bucket lifecycle policy can sweep
+      // residual orphans later.
+      const { data: files } = await supabaseAdmin.storage
+        .from('user-files')
+        .list(prefix, { limit: 1000 });
+      if (Array.isArray(files) && files.length > 0) {
+        const paths = files.map((f) => `${prefix}${f.name}`);
+        for (let i = 0; i < paths.length; i += 100) {
+          const batch = paths.slice(i, i + 100);
+          await supabaseAdmin.storage.from('user-files').remove(batch).catch((e) => {
+            console.warn(`[account-delete] storage batch remove failed: ${e?.message || e}`);
+          });
+        }
+      }
+    } catch (e) {
+      console.warn(`[account-delete] storage cleanup error: ${e?.message || e}`);
+    }
+
+    // Step 3: delete the auth user. Cascades through every FK.
+    const { error: delErr } = await supabaseAdmin.auth.admin.deleteUser(userId);
+    if (delErr) {
+      console.error(`[account-delete] auth.admin.deleteUser failed for ${userId}: ${delErr.message}`);
+      return res.status(500).json({ error: 'delete_failed', detail: delErr.message });
+    }
+
+    invalidateUserModelCache(userId);
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('❌ DELETE /api/account:', e?.message || e);
+    return res.status(500).json({ error: 'delete_failed' });
   }
 });
 
@@ -8704,7 +9111,7 @@ ${t}
           return fetchVaultNotesByUrls(req.user.id, matches);
         })()
       : Promise.resolve('');
-    const [scrapedContent, searchResults, synthesisRetrieval, beliefSection, userIdentitySection, youtubeResults, vaultUrlMatches] = await Promise.all([
+    const [scrapedContent, searchResults, synthesisRetrieval, beliefSection, userIdentitySection, youtubeResults, vaultUrlMatches, connectedToolsSection] = await Promise.all([
       skipScrape ? Promise.resolve("") : scrapeUrlsFromText(searchText, { force: explicitUrlIntent }),
       skipSearch ? Promise.resolve("") : runWebSearchIfNeeded(searchText, { hasFocusedBricks: Boolean(hasFocusedBricks), hasContext: hasContextForSearch }),
       !skipSynthesis
@@ -8718,6 +9125,12 @@ ${t}
         : Promise.resolve(""),
       skipYouTube ? Promise.resolve("") : runYouTubeSearchIfNeeded(pureUserMessage || searchText),
       vaultUrlMatchesPromise,
+      // Connected-tools section piggybacks on identity skip — it's
+      // chat-intent-only, cheap (cached per user for 90s), and lets
+      // the model recommend specific tools the user actually uses.
+      !skipIdentity
+        ? fetchConnectedToolsSection(req.headers.authorization, req.user?.id)
+        : Promise.resolve(""),
     ]);
     // BELIEF-WINDOW ROUTER: when the user has ratified beliefs+rules and
     // this turn doesn't look like a recall question, skip the wide
@@ -8735,6 +9148,7 @@ ${t}
       }
     }
     if (userIdentitySection) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(userIdentitySection);
+    if (connectedToolsSection) prompt += "\n\n" + connectedToolsSection;
     if (beliefSection.text) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(beliefSection.text);
     if (userModelSection) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(userModelSection);
     if (synthesisRetrieval) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(synthesisRetrieval);
@@ -9793,7 +10207,7 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
           return fetchVaultNotesByUrls(req.user.id, matches);
         })()
       : Promise.resolve('');
-    const [scrapedContent, searchResults, synthesisRetrieval, beliefSection, userIdentitySection, youtubeResults, vaultUrlMatches] = await Promise.all([
+    const [scrapedContent, searchResults, synthesisRetrieval, beliefSection, userIdentitySection, youtubeResults, vaultUrlMatches, connectedToolsSection] = await Promise.all([
       streamSkipScrape ? Promise.resolve("") : scrapeUrlsFromText(streamSearchText, { force: streamExplicitUrlIntent }),
       streamSkipSearch ? Promise.resolve("") : runWebSearchIfNeeded(streamSearchText, { hasFocusedBricks: Boolean(hasFocusedBricks), hasContext: hasContextForStreamSearch }),
       !streamSkipSynthesis
@@ -9807,6 +10221,11 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
         : Promise.resolve(""),
       streamSkipYouTube ? Promise.resolve("") : runYouTubeSearchIfNeeded(streamPureUserMessage || streamSearchText),
       streamVaultUrlMatchesPromise,
+      // Same chat-intent gate as the invoke path — see
+      // fetchConnectedToolsSection for the rationale on caching.
+      !streamSkipIdentity
+        ? fetchConnectedToolsSection(req.headers.authorization, req.user?.id)
+        : Promise.resolve(""),
     ]);
     _ck('after enrichment Promise.all');
     // BELIEF-WINDOW ROUTER (stream): when the user has ratified beliefs+rules
@@ -9825,6 +10244,7 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
       }
     }
     if (userIdentitySection) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(userIdentitySection);
+    if (connectedToolsSection) prompt += "\n\n" + connectedToolsSection;
     if (beliefSection.text) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(beliefSection.text);
     if (userModelSection) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(userModelSection);
     if (synthesisRetrieval) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(synthesisRetrieval);
@@ -13397,6 +13817,11 @@ app.get('/oauth/callback/:provider', async (req, res) => {
       exchanged,
     });
 
+    // New OAuth means the [CONNECTED_TOOLS] section the chat AI sees
+    // is now stale — drop the cache so the user's next chat turn picks
+    // up the freshly connected tool.
+    invalidateConnectedToolsCache(stateRow.user_id);
+
     // Kick off the first sync immediately. Don't block the popup close
     // waiting for it — the user can refresh manually if they're impatient.
     // Synthesize a runSync-shaped row using the already-encrypted blobs
@@ -13478,6 +13903,10 @@ app.post('/api/connections/:provider/connect-token', requireAuth, async (req, re
       provider,
       exchanged,
     });
+
+    // Same reason as the OAuth callback — drop the connected-tools
+    // section cache so chat picks it up on the next turn.
+    invalidateConnectedToolsCache(userId);
 
     // Kick off the first sync immediately, same as the OAuth callback path.
     runSync({
@@ -13588,6 +14017,9 @@ app.patch('/api/connections/:id', requireAuth, async (req, res) => {
       .single();
     if (error) return res.status(500).json({ error: error.message });
     if (!data) return res.status(404).json({ error: 'Connection not found' });
+    // Status flips between active/paused change whether the tool
+    // shows the "[paused]" tag in [CONNECTED_TOOLS]. Drop the cache.
+    invalidateConnectedToolsCache(userId);
     return res.json({ connection: data });
   } catch (err) {
     return res.status(500).json({ error: err.message || 'Update failed' });
@@ -13611,6 +14043,8 @@ app.delete('/api/connections/:id', requireAuth, async (req, res) => {
       .eq('id', id)
       .eq('user_id', userId);
     if (error) return res.status(500).json({ error: error.message });
+    // Tool removed — drop the cache so the chat AI stops suggesting it.
+    invalidateConnectedToolsCache(userId);
     return res.json({ ok: true });
   } catch (err) {
     return res.status(500).json({ error: err.message || 'Delete failed' });

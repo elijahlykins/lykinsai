@@ -107,15 +107,11 @@ export function IntakeProvider({ children }) {
     setSessionSkipped(true);
   }, [user?.id]);
 
-  const showIntakeModal = Boolean(
-    user &&
-      !authLoading &&
-      !statusLoading &&
-      !statusError &&
-      profileStatus &&
-      profileStatus.intake_completed_at == null &&
-      !sessionSkipped,
-  );
+  // The auto-popup intake questionnaire was removed — users now opt in to
+  // filling out the About You section from Settings instead. Keeping the
+  // provider + status fetch around so SettingsModal's AboutYouSection can
+  // still read/refresh `profileStatus`, but the modal never shows.
+  const showIntakeModal = false;
 
   const value = useMemo(
     () => ({

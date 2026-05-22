@@ -1,26 +1,101 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
-import { Select, SelectContent, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
-import { Save, LogOut, User, Globe, MessageSquare, Sun, Moon, Monitor, Lock, Sparkles, CreditCard } from 'lucide-react';
+import {
+  Save,
+  LogOut,
+  User,
+  Shield,
+  Monitor,
+  CreditCard,
+  HelpCircle,
+  ChevronLeft,
+  ChevronRight,
+  Globe,
+  Sparkles,
+  Download,
+  Upload,
+  FileArchive,
+  X,
+  Loader2,
+  Check,
+  Mail,
+  ExternalLink,
+} from 'lucide-react';
+import { Link } from 'react-router-dom';
 
-import AboutYouSection from '@/components/intake/AboutYouSection';
 import ModelSelectOptions from '@/components/ModelSelectOptions';
 import { useAuth } from '@/lib/SupabaseAuth';
 import { supabase } from '@/lib/supabase';
 import { useNavigate } from 'react-router-dom';
 import { useUserPlan } from '@/lib/useUserPlan';
 import { isModelAllowedForPlan, canonicalizeModelId, defaultModelForTier } from '@/lib/modelTiers';
-import { planMeets } from '@/components/PlanGate';
 import { planLabel } from '@/lib/pricing-config';
 import { API_BASE_URL } from '@/lib/api-config';
+
+// ---------------------------------------------------------------------
+// MenuRow — single icon + title row in the main settings list.
+// Hover is intentionally very light (bg-black/[0.03] / white/[0.04]).
+// ---------------------------------------------------------------------
+function MenuRow({ icon: Icon, title, onClick, danger = false, trailing = null }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`w-full flex items-center gap-3 px-3 py-3 rounded-lg text-left transition-colors
+        ${danger
+          ? 'text-red-600 dark:text-red-400 hover:bg-red-500/[0.06] dark:hover:bg-red-500/[0.08]'
+          : 'text-black dark:text-white hover:bg-black/[0.03] dark:hover:bg-white/[0.04]'}`}
+    >
+      <Icon className={`w-4 h-4 shrink-0 ${danger ? '' : 'text-gray-500 dark:text-gray-400'}`} />
+      <span className="flex-1 text-sm font-medium">{title}</span>
+      {trailing ?? (
+        !danger && <ChevronRight className="w-4 h-4 text-gray-400 dark:text-gray-500" />
+      )}
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------
+// SubViewHeader — back button + title for any settings sub-page.
+// ---------------------------------------------------------------------
+function SubViewHeader({ title, onBack }) {
+  return (
+    <div className="flex items-center gap-2 mb-4">
+      <button
+        type="button"
+        onClick={onBack}
+        className="-ml-2 p-1.5 rounded-md text-gray-600 dark:text-gray-300 hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors"
+        aria-label="Back to settings"
+      >
+        <ChevronLeft className="w-4 h-4" />
+      </button>
+      <h3 className="text-sm font-semibold text-black dark:text-white">{title}</h3>
+    </div>
+  );
+}
 
 export default function SettingsModal({ isOpen, onClose }) {
   const { user, loading, signInWithOAuth, signOut } = useAuth();
   const { planId, modelTier, hasStripeCustomer } = useUserPlan();
   const nav = useNavigate();
   const [portalBusy, setPortalBusy] = useState(false);
+
+  // 'menu' | 'account' | 'privacy' | 'display' | 'import' | 'payment' | 'help'
+  const [view, setView] = useState('menu');
+
+  // ---- Import: chat-history .zip upload ----
+  const [importFile, setImportFile] = useState(null);
+  const [importStatus, setImportStatus] = useState('idle'); // idle | uploading | done | error
+  const [importError, setImportError] = useState('');
+  const [isDraggingImport, setIsDraggingImport] = useState(false);
+
+  // Reset to menu whenever the modal closes/reopens.
+  useEffect(() => {
+    if (!isOpen) setView('menu');
+  }, [isOpen]);
 
   const handleManageSubscription = useCallback(async () => {
     if (portalBusy) return;
@@ -41,29 +116,36 @@ export default function SettingsModal({ isOpen, onClose }) {
       setPortalBusy(false);
     }
   }, [portalBusy]);
-  // Custom AI instructions are a Pro-tier (id: studio) feature. Free / guest
-  // users see the textarea disabled with an upgrade CTA instead.
-  const canUseCustomPrompt = planMeets(planId, "studio");
+
+  // ---- Local visual settings (theme/model) — still localStorage ----
   const [settings, setSettings] = useState({
     theme: 'dark',
     layoutDensity: 'comfortable',
     aiPersonality: 'balanced',
     aiDetailLevel: 'medium',
     aiModel: 'lykn-lite',
-    userPrompt: '',
   });
+
+  // ---- Guest auth form (only shown when no `user`) ----
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [authMode, setAuthMode] = useState('login'); // 'login' or 'signup'
+  const [authMode, setAuthMode] = useState('login');
   const [authError, setAuthError] = useState('');
+
+  // ---- Account: display name + password change ----
+  const initialDisplayName = useMemo(
+    () => user?.user_metadata?.full_name || user?.user_metadata?.name || '',
+    [user?.id, user?.user_metadata?.full_name, user?.user_metadata?.name],
+  );
+  const [displayName, setDisplayName] = useState(initialDisplayName);
+  const [displayNameStatus, setDisplayNameStatus] = useState('idle');
+
+  useEffect(() => {
+    setDisplayName(initialDisplayName);
+  }, [initialDisplayName]);
 
   const DEFAULT_BG_DARK = '#1e1e1e';
 
-  // Mirrors the bootstrap logic in `main.jsx`: while no Supabase auth
-  // session exists in localStorage, the visitor is in the LYKN
-  // walkthrough (landing → synthesis → vault → grid) which is
-  // strictly dark mode. Once they sign in, their saved theme
-  // preference wins.
   const hasAuthSessionInStorage = () => {
     try {
       for (let i = 0; i < localStorage.length; i += 1) {
@@ -73,7 +155,7 @@ export default function SettingsModal({ isOpen, onClose }) {
         }
       }
     } catch {
-      // localStorage access may throw in private mode; treat as no session.
+      /* private mode */
     }
     return false;
   };
@@ -86,7 +168,6 @@ export default function SettingsModal({ isOpen, onClose }) {
     if (isDark) {
       document.documentElement.style.setProperty('--app-background', DEFAULT_BG_DARK);
     } else {
-      // Let the stylesheet's beige --app-background (hsl(var(--background))) apply.
       document.documentElement.style.removeProperty('--app-background');
     }
   };
@@ -98,9 +179,6 @@ export default function SettingsModal({ isOpen, onClose }) {
         try {
           const parsed = JSON.parse(saved);
           if (!parsed.theme) parsed.theme = 'dark';
-          // Migrate stale model ids (e.g. `claude-sonnet-4-6` from older
-          // releases) to the current LYKN catalog so the picker never
-          // renders a blank trigger.
           parsed.aiModel = canonicalizeModelId(parsed.aiModel)
             || defaultModelForTier(modelTier);
           setSettings(parsed);
@@ -110,28 +188,24 @@ export default function SettingsModal({ isOpen, onClose }) {
         }
       }
     };
-    
+
     loadSettings();
     if (isOpen) loadSettings();
-    
+
     const handleSettingsChange = () => loadSettings();
     window.addEventListener('lykinsai_settings_changed', handleSettingsChange);
-    
     return () => {
       window.removeEventListener('lykinsai_settings_changed', handleSettingsChange);
     };
   }, [isOpen, user, modelTier]);
 
-  const handleSave = () => {
-    localStorage.setItem('lykinsai_settings', JSON.stringify(settings));
+  const persistSettings = (next) => {
+    localStorage.setItem('lykinsai_settings', JSON.stringify(next));
     const densities = { compact: '0.75', comfortable: '1', spacious: '1.25' };
-    document.documentElement.style.setProperty('--layout-density', densities[settings.layoutDensity]);
-    applyTheme(settings.theme);
-    
+    document.documentElement.style.setProperty('--layout-density', densities[next.layoutDensity]);
+    applyTheme(next.theme);
     window.dispatchEvent(new CustomEvent('lykinsai_settings_changed'));
     window.dispatchEvent(new Event('storage'));
-    
-    onClose();
   };
 
   const handleAuth = async (e) => {
@@ -148,295 +222,543 @@ export default function SettingsModal({ isOpen, onClose }) {
       setEmail('');
       setPassword('');
     } catch (error) {
-      setAuthError("Sign-in failed. Please check your email and password.");
+      setAuthError('Sign-in failed. Please check your email and password.');
+    }
+  };
+
+  const handleSaveDisplayName = async () => {
+    const trimmed = displayName.trim();
+    setDisplayNameStatus('saving');
+    try {
+      const { error } = await supabase.auth.updateUser({ data: { full_name: trimmed } });
+      if (error) throw error;
+      setDisplayNameStatus('saved');
+      setTimeout(() => setDisplayNameStatus('idle'), 1500);
+    } catch (e) {
+      if (import.meta.env.DEV) console.error('[Settings] display name save failed:', e);
+      setDisplayNameStatus('error');
+      setTimeout(() => setDisplayNameStatus('idle'), 2000);
+    }
+  };
+
+  const MAX_IMPORT_BYTES = 500 * 1024 * 1024; // 500 MB
+  const isZipFile = (file) =>
+    !!file && (
+      file.type === 'application/zip' ||
+      file.type === 'application/x-zip-compressed' ||
+      /\.zip$/i.test(file.name)
+    );
+
+  const handleImportFileSelected = (file) => {
+    setImportError('');
+    setImportStatus('idle');
+    if (!file) return;
+    if (!isZipFile(file)) {
+      setImportError('Please select a .zip export file.');
+      return;
+    }
+    if (file.size > MAX_IMPORT_BYTES) {
+      setImportError('File is too large (max 500 MB).');
+      return;
+    }
+    setImportFile(file);
+  };
+
+  const handleImportDrop = (e) => {
+    e.preventDefault();
+    setIsDraggingImport(false);
+    const file = e.dataTransfer?.files?.[0];
+    handleImportFileSelected(file);
+  };
+
+  const handleImportUpload = async () => {
+    if (!importFile || importStatus === 'uploading') return;
+    setImportStatus('uploading');
+    setImportError('');
+    try {
+      const form = new FormData();
+      form.append('file', importFile);
+      const res = await fetch(`${API_BASE_URL}/api/import/chat-history`, {
+        method: 'POST',
+        body: form,
+      });
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}));
+        throw new Error(json?.message || json?.error || `Upload failed (${res.status})`);
+      }
+      setImportStatus('done');
+      setTimeout(() => {
+        setImportFile(null);
+        setImportStatus('idle');
+      }, 2500);
+    } catch (err) {
+      if (import.meta.env.DEV) console.error('[Settings] import upload failed:', err);
+      setImportStatus('error');
+      setImportError(err?.message || 'Upload failed. Please try again.');
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await signOut();
+    } finally {
+      onClose();
     }
   };
 
   if (loading) {
     return (
       <Dialog open={isOpen} onOpenChange={onClose}>
-        <DialogContent className="bg-white dark:bg-[#171515] border-white/15 dark:border-gray-700 text-black dark:text-white max-w-md backdrop-blur-md">
+        <DialogContent className="bg-white dark:bg-[#1e1e1e] border-white/15 dark:border-gray-700 text-black dark:text-white max-w-md backdrop-blur-md">
           <div className="flex items-center justify-center p-8">
-            <div className="w-6 h-6 border-4 border-slate-200 border-t-slate-800 rounded-full animate-spin"></div>
+            <div className="w-6 h-6 border-4 border-slate-200 border-t-slate-800 rounded-full animate-spin" />
           </div>
         </DialogContent>
       </Dialog>
     );
   }
 
+  // ===========================================================
+  // MAIN MENU
+  // ===========================================================
+  const renderMenu = () => (
+    <div className="py-2">
+      {user && (
+        <div className="px-3 pb-3 mb-1 border-b border-black/[0.06] dark:border-white/[0.06]">
+          <p className="text-xs text-gray-500 dark:text-gray-400">Signed in as</p>
+          <p className="text-sm font-medium text-black dark:text-white truncate">{user.email}</p>
+        </div>
+      )}
+      <div className="flex flex-col">
+        <MenuRow icon={User} title="Account" onClick={() => setView('account')} />
+        <MenuRow icon={Shield} title="Privacy" onClick={() => setView('privacy')} />
+        <MenuRow icon={Monitor} title="Display" onClick={() => setView('display')} />
+        <MenuRow icon={Upload} title="Import" onClick={() => setView('import')} />
+        <MenuRow icon={CreditCard} title="Payment" onClick={() => setView('payment')} />
+        <MenuRow icon={HelpCircle} title="Help" onClick={() => setView('help')} />
+        {user && (
+          <MenuRow
+            icon={LogOut}
+            title="Logout"
+            onClick={handleLogout}
+            danger
+            trailing={<span />}
+          />
+        )}
+      </div>
+    </div>
+  );
+
+  // ===========================================================
+  // ACCOUNT
+  // ===========================================================
+  const renderAccount = () => (
+    <div>
+      <SubViewHeader title="Account" onBack={() => setView('menu')} />
+      {user ? (
+        <div className="space-y-5">
+          <div className="space-y-1.5">
+            <Label className="text-xs text-gray-600 dark:text-gray-400">Email</Label>
+            <p className="text-sm text-black dark:text-white">{user.email}</p>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label className="text-xs text-gray-600 dark:text-gray-400">Display name</Label>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                placeholder="Your name"
+                className="flex-1 px-3 py-2 text-sm bg-white dark:bg-[#1f1d1d] border border-gray-200 dark:border-gray-700 text-black dark:text-white rounded-lg focus:outline-none focus:ring-1 focus:ring-black/20 dark:focus:ring-white/20"
+              />
+              <Button
+                onClick={handleSaveDisplayName}
+                disabled={displayNameStatus === 'saving' || displayName.trim() === initialDisplayName.trim()}
+                variant="outline"
+                className="border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#171515] min-w-[80px]"
+              >
+                {displayNameStatus === 'saving' ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : displayNameStatus === 'saved' ? (
+                  <Check className="w-3.5 h-3.5" />
+                ) : (
+                  'Save'
+                )}
+              </Button>
+            </div>
+          </div>
+
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <Button
+            onClick={async () => {
+              try {
+                setAuthError('');
+                const { error } = await signInWithOAuth('google');
+                if (error) {
+                  setAuthError('Google sign-in failed. Please try again.');
+                  if (import.meta.env.DEV) console.error('Google OAuth error:', error);
+                }
+              } catch (error) {
+                setAuthError('Google sign-in failed. Please try again later.');
+                if (import.meta.env.DEV) console.error('Google OAuth exception:', error);
+              }
+            }}
+            variant="outline"
+            className="w-full border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#171515] flex items-center justify-center gap-2"
+          >
+            <Globe className="w-4 h-4" />
+            Google
+          </Button>
+
+          <div className="relative">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-gray-200 dark:border-gray-700" />
+            </div>
+            <div className="relative flex justify-center text-xs uppercase">
+              <span className="bg-white dark:bg-[#1e1e1e] px-2 text-gray-500 dark:text-gray-400">Or continue with email</span>
+            </div>
+          </div>
+
+          <form onSubmit={handleAuth} className="space-y-3">
+            {authError && <p className="text-sm text-red-500">{authError}</p>}
+            <input
+              type="email"
+              placeholder="Email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="w-full px-3 py-2 bg-white dark:bg-[#1f1d1d] border border-gray-300 dark:border-gray-600 text-black dark:text-white rounded"
+              required
+            />
+            <input
+              type="password"
+              placeholder="Password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="w-full px-3 py-2 bg-white dark:bg-[#1f1d1d] border border-gray-300 dark:border-gray-600 text-black dark:text-white rounded"
+              required
+            />
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')}
+                variant="outline"
+                className="flex-1 border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#171515]"
+              >
+                {authMode === 'login' ? 'Sign Up' : 'Sign In'}
+              </Button>
+              <Button
+                type="submit"
+                className="flex-1 bg-black text-white hover:bg-black/90 dark:bg-white dark:text-black dark:hover:bg-white/90"
+              >
+                {authMode === 'login' ? 'Sign In' : 'Create Account'}
+              </Button>
+            </div>
+          </form>
+        </div>
+      )}
+    </div>
+  );
+
+  // ===========================================================
+  // PRIVACY
+  // ===========================================================
+  const renderPrivacy = () => (
+    <div>
+      <SubViewHeader title="Privacy" onBack={() => setView('menu')} />
+      <div className="space-y-4">
+        <p className="text-sm text-gray-600 dark:text-gray-400">
+          Review LYKN&apos;s privacy commitments and download a copy of your data.
+        </p>
+
+        {user && (
+          <Button
+            disabled
+            variant="outline"
+            className="w-full border-gray-300 dark:border-gray-600 text-gray-500 dark:text-gray-400 cursor-not-allowed flex items-center justify-center gap-2"
+          >
+            <Download className="w-4 h-4" />
+            Export my data
+            <span className="ml-2 text-[10px] uppercase tracking-wider text-amber-600 dark:text-amber-400 bg-amber-100/60 dark:bg-amber-950/30 px-1.5 py-0.5 rounded-full">
+              Soon
+            </span>
+          </Button>
+        )}
+
+        <div className="flex flex-col rounded-lg border border-gray-200 dark:border-gray-700/60 overflow-hidden">
+          {[
+            { to: '/privacy', label: 'Privacy Policy' },
+            { to: '/cookies', label: 'Cookie Policy' },
+            { to: '/dpa', label: 'Data Processing Addendum' },
+            { to: '/terms', label: 'Terms of Service' },
+          ].map((row, i, arr) => (
+            <Link
+              key={row.to}
+              to={row.to}
+              onClick={onClose}
+              className={`flex items-center justify-between px-3 py-2.5 text-sm text-black dark:text-white hover:bg-black/[0.03] dark:hover:bg-white/[0.04] transition-colors ${
+                i < arr.length - 1 ? 'border-b border-gray-200 dark:border-gray-700/60' : ''
+              }`}
+            >
+              <span>{row.label}</span>
+              <ExternalLink className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500" />
+            </Link>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+
+  // ===========================================================
+  // DISPLAY
+  // ===========================================================
+  const renderDisplay = () => (
+    <div>
+      <SubViewHeader title="Display" onBack={() => setView('menu')} />
+      <div className="space-y-4">
+        <div className="space-y-2">
+          <Label className="text-xs text-gray-600 dark:text-gray-400">Theme</Label>
+          <Select
+            value={settings.theme}
+            onValueChange={(value) => {
+              const updated = { ...settings, theme: value };
+              setSettings(updated);
+              persistSettings(updated);
+            }}
+          >
+            <SelectTrigger className="h-auto border-0 bg-transparent shadow-none rounded-none px-1 py-1 text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors focus:ring-0 focus:ring-offset-0">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="bg-white dark:bg-[#1a1818] border border-gray-200 dark:border-white/10 rounded-xl shadow-xl backdrop-blur-xl p-1">
+              {[
+                { value: 'light', label: 'Light' },
+                { value: 'dark', label: 'Dark' },
+                { value: 'system', label: 'System' },
+              ].map(({ value, label }) => (
+                <SelectItem
+                  key={value}
+                  value={value}
+                  className="rounded-lg px-2.5 py-2 text-sm font-medium text-gray-800 dark:text-gray-100 focus:bg-black/[0.04] dark:focus:bg-white/[0.06] data-[state=checked]:bg-black/[0.04] dark:data-[state=checked]:bg-white/[0.06] cursor-pointer"
+                >
+                  {label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div className="space-y-2">
+          <Label className="text-xs text-gray-600 dark:text-gray-400 flex items-center gap-1.5">
+            <Sparkles className="w-3 h-3" />
+            Default AI model
+          </Label>
+          <Select
+            value={settings.aiModel}
+            onValueChange={(value) => {
+              if (!isModelAllowedForPlan(value, modelTier)) return;
+              const updated = { ...settings, aiModel: value };
+              setSettings(updated);
+              persistSettings(updated);
+            }}
+          >
+            <SelectTrigger className="h-auto border-0 bg-transparent shadow-none rounded-none px-1 py-1 text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors focus:ring-0 focus:ring-offset-0">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="bg-white dark:bg-[#1a1818] border border-gray-200 dark:border-white/10 rounded-xl shadow-xl backdrop-blur-xl p-1">
+              <ModelSelectOptions modelTier={modelTier} />
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+    </div>
+  );
+
+  // ===========================================================
+  // IMPORT — upload a chat-history .zip from ChatGPT / Claude / etc.
+  // ===========================================================
+  const renderImport = () => (
+    <div>
+      <SubViewHeader title="Import" onBack={() => setView('menu')} />
+      <div className="space-y-4">
+        <p className="text-sm text-gray-600 dark:text-gray-400">
+          Upload a <code className="px-1 py-0.5 text-xs bg-black/5 dark:bg-white/10 rounded">.zip</code> export from ChatGPT, Claude, or another assistant. LYKN will read every conversation and extract beliefs, preferences, and projects.
+        </p>
+
+        {!importFile ? (
+          <label
+            onDragOver={(e) => { e.preventDefault(); setIsDraggingImport(true); }}
+            onDragLeave={() => setIsDraggingImport(false)}
+            onDrop={handleImportDrop}
+            className={`flex flex-col items-center justify-center px-4 py-8 rounded-xl border-2 border-dashed cursor-pointer transition-colors
+              ${isDraggingImport
+                ? 'border-black/40 dark:border-white/40 bg-black/[0.03] dark:bg-white/[0.04]'
+                : 'border-gray-300 dark:border-gray-700 hover:bg-black/[0.02] dark:hover:bg-white/[0.03]'}`}
+          >
+            <Upload className="w-5 h-5 text-gray-400 dark:text-gray-500 mb-2" />
+            <p className="text-sm text-black dark:text-white">
+              Drop your <span className="font-medium">.zip</span> here or click to choose
+            </p>
+            <p className="text-[11px] text-gray-500 dark:text-gray-500 mt-1">
+              ChatGPT and Claude exports supported · up to 500 MB
+            </p>
+            <input
+              type="file"
+              accept=".zip,application/zip,application/x-zip-compressed"
+              className="hidden"
+              onChange={(e) => handleImportFileSelected(e.target.files?.[0])}
+            />
+          </label>
+        ) : (
+          <div className="flex items-center gap-3 px-3 py-3 rounded-lg border border-gray-200 dark:border-gray-700/60 bg-white/40 dark:bg-white/[0.02]">
+            <FileArchive className="w-5 h-5 text-gray-500 dark:text-gray-400 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-black dark:text-white truncate">{importFile.name}</p>
+              <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                {(importFile.size / (1024 * 1024)).toFixed(2)} MB
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setImportFile(null);
+                setImportStatus('idle');
+                setImportError('');
+              }}
+              disabled={importStatus === 'uploading'}
+              className="p-1 rounded-md text-gray-400 hover:text-black dark:hover:text-white hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors disabled:opacity-40"
+              aria-label="Remove file"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
+        {importError && <p className="text-xs text-red-500">{importError}</p>}
+
+        {importFile && (
+          <Button
+            onClick={handleImportUpload}
+            disabled={importStatus === 'uploading' || importStatus === 'done'}
+            className="w-full bg-black text-white hover:bg-black/90 dark:bg-white dark:text-black dark:hover:bg-white/90 flex items-center justify-center gap-2"
+          >
+            {importStatus === 'uploading' ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Uploading…
+              </>
+            ) : importStatus === 'done' ? (
+              <>
+                <Check className="w-4 h-4" />
+                Uploaded
+              </>
+            ) : (
+              <>
+                <Upload className="w-4 h-4" />
+                Start import
+              </>
+            )}
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+
+  // ===========================================================
+  // PAYMENT
+  // ===========================================================
+  const renderPayment = () => (
+    <div>
+      <SubViewHeader title="Payment" onBack={() => setView('menu')} />
+      {user ? (
+        <div className="space-y-4">
+          <div className="rounded-lg border border-gray-200 dark:border-gray-700/60 p-3">
+            <p className="text-xs text-gray-500 dark:text-gray-400">Current plan</p>
+            <p className="text-sm font-medium text-black dark:text-white">{planLabel(planId)}</p>
+          </div>
+
+          <div className="flex flex-col">
+            {hasStripeCustomer ? (
+              <button
+                type="button"
+                onClick={handleManageSubscription}
+                disabled={portalBusy}
+                className="w-full text-left px-1 py-2 text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors disabled:opacity-50"
+              >
+                {portalBusy ? 'Opening…' : 'Manage subscription'}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => { onClose(); nav('/billing'); }}
+                className="w-full text-left px-1 py-2 text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors"
+              >
+                Upgrade plan
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => { onClose(); nav('/billing'); }}
+              className="w-full text-left px-1 py-2 text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors"
+            >
+              {hasStripeCustomer ? 'Change plan' : 'View plans'}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <p className="text-sm text-gray-600 dark:text-gray-400">
+          Sign in from the Account screen to manage your subscription.
+        </p>
+      )}
+    </div>
+  );
+
+  // ===========================================================
+  // HELP
+  // ===========================================================
+  const renderHelp = () => (
+    <div>
+      <SubViewHeader title="Help" onBack={() => setView('menu')} />
+      <div className="space-y-3">
+        <p className="text-sm text-gray-600 dark:text-gray-400">
+          Need a hand? We respond to every message.
+        </p>
+        <a
+          href="mailto:support@lykn.ai"
+          className="flex items-center justify-between px-3 py-2.5 rounded-lg border border-gray-200 dark:border-gray-700/60 text-sm text-black dark:text-white hover:bg-black/[0.03] dark:hover:bg-white/[0.04] transition-colors"
+        >
+          <span className="flex items-center gap-2">
+            <Mail className="w-4 h-4 text-gray-500 dark:text-gray-400" />
+            Email support
+          </span>
+          <span className="text-xs text-gray-500 dark:text-gray-400">support@lykn.ai</span>
+        </a>
+      </div>
+    </div>
+  );
+
+  const renderView = () => {
+    switch (view) {
+      case 'account': return renderAccount();
+      case 'privacy': return renderPrivacy();
+      case 'display': return renderDisplay();
+      case 'import':  return renderImport();
+      case 'payment': return renderPayment();
+      case 'help':    return renderHelp();
+      default:        return renderMenu();
+    }
+  };
+
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="bg-white dark:bg-[#171515] border-white/15 dark:border-gray-700 text-black dark:text-white max-w-md backdrop-blur-md max-h-[90vh] overflow-y-auto">
+      <DialogContent className="bg-white dark:bg-[#1e1e1e] border-white/15 dark:border-gray-700 text-black dark:text-white max-w-md backdrop-blur-md max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="text-black dark:text-white">Settings</DialogTitle>
         </DialogHeader>
 
-        <div className="space-y-6 py-4">
-          {/* Authentication Section */}
-          <div className="p-4 bg-gray-50 dark:bg-[#1f1d1d]/80 rounded-xl border border-gray-200 dark:border-gray-700">
-            <div className="flex items-center gap-3 mb-3">
-              <div className="w-10 h-10 rounded-full bg-gray-200 dark:bg-gray-700 flex items-center justify-center">
-                <User className="w-5 h-5 text-gray-600 dark:text-gray-300" />
-              </div>
-              <div className="flex-1">
-                {user ? (
-                  <>
-                    <p className="font-semibold text-black dark:text-white">{user.email}</p>
-                    <p className="text-sm text-gray-600 dark:text-gray-400">Signed in</p>
-                  </>
-                ) : (
-                  <>
-                    <p className="font-semibold text-black dark:text-white">Guest User</p>
-                    <p className="text-sm text-gray-600 dark:text-gray-400">Anonymous access</p>
-                  </>
-                )}
-              </div>
-            </div>
-
-            {user ? (
-              <Button
-                onClick={signOut}
-                variant="outline"
-                className="w-full border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#171515] flex items-center justify-center gap-2"
-              >
-                <LogOut className="w-4 h-4" />
-                Sign Out
-              </Button>
-            ) : (
-              <div className="space-y-3">
-                <Button
-                  onClick={async () => {
-                    try {
-                      setAuthError('');
-                      const { error } = await signInWithOAuth('google');
-                      if (error) {
-                        setAuthError("Google sign-in failed. Please try again.");
-                        if (import.meta.env.DEV) console.error('Google OAuth error:', error);
-                      }
-                    } catch (error) {
-                      setAuthError("Google sign-in failed. Please try again later.");
-                      if (import.meta.env.DEV) console.error('Google OAuth exception:', error);
-                    }
-                  }}
-                  variant="outline"
-                  className="w-full border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#171515] flex items-center justify-center gap-2"
-                >
-                  <Globe className="w-4 h-4" />
-                  Google
-                </Button>
-
-                <div className="relative">
-                  <div className="absolute inset-0 flex items-center">
-                    <div className="w-full border-t border-gray-200 dark:border-gray-700"></div>
-                  </div>
-                  <div className="relative flex justify-center text-xs uppercase">
-                    <span className="bg-white dark:bg-[#171515] px-2 text-gray-500 dark:text-gray-400">Or continue with email</span>
-                  </div>
-                </div>
-
-                <form onSubmit={handleAuth} className="space-y-3">
-                  {authError && (
-                    <p className="text-sm text-red-500">{authError}</p>
-                  )}
-                  <input
-                    type="email"
-                    placeholder="Email"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    className="w-full px-3 py-2 bg-white dark:bg-[#1f1d1d] border border-gray-300 dark:border-gray-600 text-black dark:text-white rounded"
-                    required
-                  />
-                  <input
-                    type="password"
-                    placeholder="Password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    className="w-full px-3 py-2 bg-white dark:bg-[#1f1d1d] border border-gray-300 dark:border-gray-600 text-black dark:text-white rounded"
-                    required
-                  />
-                  <div className="flex gap-2">
-                    <Button
-                      type="button"
-                      onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')}
-                      variant="outline"
-                      className="flex-1 border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#171515]"
-                    >
-                      {authMode === 'login' ? 'Sign Up' : 'Sign In'}
-                    </Button>
-                    <Button
-                      type="submit"
-                      className="flex-1 bg-black text-white hover:bg-black/90 dark:bg-white dark:text-black dark:hover:bg-white/90"
-                    >
-                      {authMode === 'login' ? 'Sign In' : 'Create Account'}
-                    </Button>
-                  </div>
-                </form>
-              </div>
-            )}
-          </div>
-
-          {/* Subscription — lets paid users open the Stripe portal directly
-              without navigating to /billing first. Free signed-in users get
-              an Upgrade CTA. */}
-          {user && (
-            <div className="p-4 bg-gray-50 dark:bg-[#1f1d1d]/80 rounded-xl border border-gray-200 dark:border-gray-700">
-              <div className="flex items-center gap-3 mb-3">
-                <div className="w-10 h-10 rounded-full bg-gray-200 dark:bg-gray-700 flex items-center justify-center">
-                  <CreditCard className="w-5 h-5 text-gray-600 dark:text-gray-300" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="font-semibold text-black dark:text-white">
-                    Subscription
-                  </p>
-                  <p className="text-sm text-gray-600 dark:text-gray-400 truncate">
-                    {`You're on ${planLabel(planId)}`}
-                  </p>
-                </div>
-              </div>
-              <div className="flex flex-col sm:flex-row gap-2">
-                {hasStripeCustomer ? (
-                  <Button
-                    onClick={handleManageSubscription}
-                    disabled={portalBusy}
-                    variant="outline"
-                    className="flex-1 border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#171515] flex items-center justify-center gap-2"
-                  >
-                    <CreditCard className="w-4 h-4" />
-                    {portalBusy ? "Opening…" : "Manage subscription"}
-                  </Button>
-                ) : (
-                  <Button
-                    onClick={() => { onClose(); nav("/billing"); }}
-                    className="flex-1 bg-black text-white hover:bg-black/90 dark:bg-white dark:text-black dark:hover:bg-white/90 flex items-center justify-center gap-2"
-                  >
-                    <Sparkles className="w-4 h-4" />
-                    Upgrade plan
-                  </Button>
-                )}
-                <Button
-                  onClick={() => { onClose(); nav("/billing"); }}
-                  variant="outline"
-                  className="flex-1 border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#171515]"
-                >
-                  {hasStripeCustomer ? "Change plan" : "View plans"}
-                </Button>
-              </div>
-            </div>
-          )}
-
-          {/* Custom User Prompt (Pro+) */}
-          <div className="p-4 bg-gray-50 dark:bg-[#1f1d1d]/80 rounded-xl border border-gray-200 dark:border-gray-700 relative">
-            <div className="flex items-center gap-3 mb-3">
-              <div className="w-10 h-10 rounded-full bg-gray-200 dark:bg-gray-700 flex items-center justify-center">
-                <MessageSquare className="w-5 h-5 text-gray-600 dark:text-gray-300" />
-              </div>
-              <div className="flex-1">
-                <p className="font-semibold text-black dark:text-white flex items-center gap-1.5">
-                  Personal AI Instructions
-                  {!canUseCustomPrompt && <Lock className="w-3.5 h-3.5 text-amber-500 dark:text-amber-400" aria-label="Pro-only feature" />}
-                </p>
-                <p className="text-sm text-gray-600 dark:text-gray-400">
-                  {canUseCustomPrompt
-                    ? "Tell the AI about yourself and how you want it to respond"
-                    : "Customize how the AI responds to you — available on Pro and above."}
-                </p>
-              </div>
-            </div>
-            <textarea
-              value={settings.userPrompt || ''}
-              onChange={(e) => { if (canUseCustomPrompt) setSettings({ ...settings, userPrompt: e.target.value }); }}
-              readOnly={!canUseCustomPrompt}
-              placeholder={canUseCustomPrompt
-                ? "e.g. I'm a software developer. Always respond in concise bullet points. I prefer technical explanations over simplified ones."
-                : "Upgrade to Pro to personalize every AI response."}
-              className={`w-full h-28 px-3 py-2 text-sm bg-white dark:bg-[#171515] border border-gray-200 dark:border-gray-700 text-black dark:text-white rounded-lg resize-none focus:outline-none focus:ring-1 focus:ring-black/20 dark:focus:ring-white/20 ${!canUseCustomPrompt ? 'opacity-60 cursor-not-allowed' : ''}`}
-            />
-            {canUseCustomPrompt ? (
-              <p className="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
-                This is added to every AI conversation so it knows your preferences.
-              </p>
-            ) : (
-              <button
-                type="button"
-                onClick={() => { onClose(); nav("/billing"); }}
-                className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold text-blue-600 dark:text-blue-400 hover:underline"
-              >
-                <Sparkles className="w-3 h-3" />
-                Upgrade to Pro
-              </button>
-            )}
-          </div>
-
-          {user ? <AboutYouSection isOpen={isOpen} /> : null}
-
-          {/* Settings */}
-          <div className="space-y-3">
-            <div className="space-y-2">
-              <Label className="text-gray-900 dark:text-white">Appearance</Label>
-              <div className="flex gap-2">
-                {[
-                  { value: 'light', icon: Sun, label: 'Light' },
-                  { value: 'dark', icon: Moon, label: 'Dark' },
-                  { value: 'system', icon: Monitor, label: 'System' },
-                ].map(({ value, icon: Icon, label }) => (
-                  <button
-                    key={value}
-                    onClick={() => {
-                      const updated = { ...settings, theme: value };
-                      setSettings(updated);
-                      applyTheme(value);
-                    }}
-                    className={`flex-1 flex flex-col items-center gap-1.5 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${
-                      settings.theme === value
-                        ? 'bg-black/10 dark:bg-white/15 border border-black/20 dark:border-white/25 text-black dark:text-white shadow-sm'
-                        : 'bg-white/40 dark:bg-white/5 border border-transparent text-gray-500 dark:text-gray-400 hover:bg-white/60 dark:hover:bg-white/10'
-                    }`}
-                  >
-                    <Icon className="w-4 h-4" />
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <Label className="text-gray-900 dark:text-white">AI Model</Label>
-              <Select value={settings.aiModel} onValueChange={(value) => {
-                // Block locked selections so the stored preference never holds
-                // a model the plan can't run. The top-level model picker
-                // already surfaces a toast on locked clicks.
-                if (!isModelAllowedForPlan(value, modelTier)) return;
-                setSettings({...settings, aiModel: value});
-                const updatedSettings = {...settings, aiModel: value};
-                localStorage.setItem('lykinsai_settings', JSON.stringify(updatedSettings));
-                window.dispatchEvent(new CustomEvent('lykinsai_settings_changed'));
-              }}>
-                <SelectTrigger className="bg-white/60 dark:bg-gray-800/60 border-white/40 dark:border-gray-700/40 text-gray-900 dark:text-white backdrop-blur-md rounded-xl">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent className="bg-glass-card border-white/15 dark:border-gray-700/20 backdrop-blur-md">
-                  <ModelSelectOptions modelTier={modelTier} />
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-        </div>
-
-        <div className="flex justify-end gap-2 pt-4 border-t border-white/10 dark:border-gray-700/30">
-          <Button
-            onClick={onClose}
-            variant="ghost"
-            className="text-black hover:text-black dark:text-white dark:hover:text-white"
-          >
-            Cancel
-          </Button>
-          <Button
-            onClick={handleSave}
-            className="bg-blue-500/15 dark:bg-blue-500/20 text-blue-500 dark:text-blue-400 hover:bg-blue-500/25 dark:hover:bg-blue-500/30 border-transparent shadow-none flex items-center gap-2"
-          >
-            <Save className="w-4 h-4" />
-            Save
-          </Button>
+        <div className="py-2">
+          {renderView()}
         </div>
       </DialogContent>
     </Dialog>

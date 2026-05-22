@@ -12,6 +12,7 @@ import {
   PROTO_VAULT_INTRO_SS_KEY,
   PROTOTYPE_CHAT_LS_KEY,
   PROTOTYPE_NEURONS_LS_KEY,
+  seedTourNeurons,
   writePrototypeStep,
 } from "@/lib/prototypeHandoff";
 import {
@@ -22,9 +23,9 @@ import {
 // Prototype "wake" landing experience.
 //
 // Sequence:
-//   1. Boot intro: muted screen + "Welcome to Synthetic Intelligence /
-//      The Future of Thinking" title card, then mute lifts and the
-//      blue perimeter conic-gradient sweeps the screen edge.
+//   1. Boot intro: muted screen + "Build your intelligence layer /
+//      Fine-tuned to you, by you." title card, then mute lifts and
+//      the blue perimeter conic-gradient sweeps the screen edge.
 //   2. Chat bar fades in vertically centered. AI greeting types out
 //      at the top of the conversation column, followed by:
 //        a. A "Get started" button fades in beneath the greeting.
@@ -54,7 +55,7 @@ import {
 // natural reply with NO neuron — only genuine personal info triggers one.
 
 const GREETING =
-  "I'm LYKN — your synthetic intelligence layer, custom-built for you. Right now I'm empty. Unlike general AI trained on everyone, synthetic intelligence is synthesized from you alone — your sources, your taste, the way you think.";
+  "I'm LYKN, your personal intelligence layer built by you. Let me show you around your digital brain.";
 
 // After the greeting types out we don't dump every prompt at once.
 // Instead a Get Started button quietly fades in beneath the greeting,
@@ -148,8 +149,8 @@ const START_BUTTON_DELAY_MS = 500;
 const CHAT_TIMEOUT_MS = 30_000;
 
 // Boot intro on first paint. The screen sits muted (translucent
-// blurred wash) while the "Welcome to Synthetic Intelligence" /
-// "The Future of Thinking" title card fades in, holds, then
+// blurred wash) while the "Build your intelligence layer" /
+// "Fine-tuned to you, by you." title card fades in, holds, then
 // fades out. Once the mute lifts the regular wake sequence
 // (perimeter trace, "Waking up..." bubble, typed greeting) takes
 // over. The overlay itself animates for 4800ms; the title and
@@ -334,8 +335,8 @@ const LandingPrototype = () => {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Signed-in users have no business on the synthetic-intelligence
-  // onboarding chat — bounce them straight into the app. Catches both
+  // Signed-in users have no business on the "build your intelligence
+  // layer" onboarding chat — bounce them straight into the app. Catches both
   // the post-login `from = "/"` case and any signed-in user who lands
   // on `/` (or `/landing-prototype`) by typing the URL or following an
   // old marketing link.
@@ -470,14 +471,31 @@ const LandingPrototype = () => {
 
   // Click handler for the Get Started button. Stages the
   // greeting/intro/button block fading out via opacity (a slow,
-  // deliberate 600ms ease), then flips questionStarted ~620ms
-  // later to mount the big centered question above the chat
-  // box. The chat box itself never moves — it stays at viewport
-  // center the whole time and the question is absolutely
-  // positioned above it.
+  // deliberate 600ms ease), then routes the visitor straight
+  // into their Synthesis Layer — the "digital brain" tour the
+  // greeting promised. We deliberately skip the describe-yourself
+  // chat: the synthesis layer itself is the payoff, not another
+  // onboarding question.
+  //
+  // Before navigating we seed the layer with four sample neurons
+  // (one per kind: identity, focus, goal, style) and flip the
+  // tour-mode flag so the synthesis layer can render a welcome
+  // card, highlight the "+" create-neuron button, and orbit the
+  // camera gently for a beat on arrival. The seeding is no-op
+  // when real prototype neurons already exist (e.g. the visitor
+  // came back through the wake screen after creating one).
   const handleStartClick = () => {
+    seedTourNeurons();
+    // Stamp the walkthrough step immediately so the global
+    // walkthrough trap + click-blocker in AppShell are active the
+    // very first frame the visitor lands on /synthesis-layer. If we
+    // wait for SynthesisLayer's own mount effect to set the step,
+    // there's a brief window where the trap reads `step === null` →
+    // "visitor isn't in the tour" → no chrome hiding, no click
+    // blocker. Setting it here closes that race.
+    writePrototypeStep("synthesis");
     setOldIntroFadingOut(true);
-    window.setTimeout(() => setQuestionStarted(true), 620);
+    window.setTimeout(() => navigate("/synthesis-layer"), 620);
   };
 
   const handleSend = () => {
@@ -791,19 +809,19 @@ const LandingPrototype = () => {
       )}
 
       {/* Boot intro — the stage is muted to full black while the
-          "Synthetic Intelligence" wordmark fades in/holds/fades
-          out at center. Once both finish the wrapper unmounts and
-          the regular wake sequence (perimeter trace, "Waking up"
-          bubble, typed greeting) is revealed. */}
+          "Build your intelligence layer" wordmark fades in/holds/
+          fades out at center. Once both finish the wrapper
+          unmounts and the regular wake sequence (perimeter trace,
+          "Waking up" bubble, typed greeting) is revealed. */}
       {bootActive && (
         <>
           <div aria-hidden className="lykn-wake-boot-overlay" />
           <div aria-hidden className="lykn-wake-boot-title-group">
             <div className="lykn-wake-boot-title">
-              Welcome to Synthetic Intelligence
+              Build your intelligence layer
             </div>
             <div className="lykn-wake-boot-tagline">
-              The Future of Thinking
+              Fine-tuned to you, by you.
             </div>
           </div>
         </>
@@ -970,6 +988,41 @@ const LandingPrototype = () => {
           restrictToSynthesis
         />
       )}
+
+      {/* Discreet legal footer — required by GDPR/CCPA transparency and
+          by the ChatGPT Apps catalog / Anthropic connector reviews. Kept
+          fixed bottom-right at low opacity so it doesn't compete with the
+          wake experience, but a real link path exists from the canonical
+          landing page rather than only from URL guessing. */}
+      <div className="pointer-events-none fixed bottom-3 right-4 z-40 flex items-center gap-3 text-[10px] uppercase tracking-wider text-white/30">
+        <a
+          href="/privacy"
+          className="pointer-events-auto hover:text-white/65 transition-colors"
+        >
+          Privacy
+        </a>
+        <span aria-hidden>·</span>
+        <a
+          href="/terms"
+          className="pointer-events-auto hover:text-white/65 transition-colors"
+        >
+          Terms
+        </a>
+        <span aria-hidden>·</span>
+        <a
+          href="/cookies"
+          className="pointer-events-auto hover:text-white/65 transition-colors"
+        >
+          Cookies
+        </a>
+        <span aria-hidden>·</span>
+        <a
+          href="/dpa"
+          className="pointer-events-auto hover:text-white/65 transition-colors"
+        >
+          DPA
+        </a>
+      </div>
     </div>
   );
 };

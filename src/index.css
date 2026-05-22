@@ -398,6 +398,32 @@ body.embedded-vault-mode .app-content {
 }
 
 /* =========================================================
+   WALKTHROUGH LOCKDOWN
+   While a guest is forced through the onboarding tour, the body
+   gets `lykn-walkthrough-locked` to neutralize every UI control
+   under it. `pointer-events: none` inherits to every descendant
+   that hasn't explicitly overridden it, so the entire app —
+   sidebar (when present), buttons, vault dock, OmniaToolbar,
+   synthesis "+" pill, etc. — becomes inert without an overlay.
+   Elements that should remain interactive (the four walkthrough
+   cards and the guest sign-in prompt) opt back in with the
+   `lykn-walkthrough-interactive` helper or by being marked with
+   Tailwind's `pointer-events-auto` on their inner box. We CANNOT
+   solve this with a fixed-position overlay because the
+   synthesis/vault/grid pages each create their own root
+   stacking context via position: fixed, which demotes any
+   sibling overlay UNDER the cards they contain.
+   ========================================================= */
+body.lykn-walkthrough-locked {
+  pointer-events: none;
+}
+
+body.lykn-walkthrough-locked .lykn-walkthrough-interactive,
+body.lykn-walkthrough-locked [data-walkthrough-interactive="true"] {
+  pointer-events: auto;
+}
+
+/* =========================================================
    UTILITIES — reflective glass controls (same style as text boxes)
    ========================================================= */
 @layer utilities {
@@ -1166,6 +1192,20 @@ body.embedded-vault-mode .app-content {
   to {
     opacity: 1;
     transform: translateX(0);
+  }
+}
+
+/* Vault walkthrough welcome card. Fades + lifts in from below so it
+   reads as a popover anchored to the bottom-left corner, distinct
+   from the chat rail's right-side slide-in. */
+@keyframes vaultIntroCardIn {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
   }
 }
 

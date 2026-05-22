@@ -614,6 +614,12 @@ export default function AppsClaude() {
             <Link to="/terms" className="hover:text-black/85 dark:hover:text-white/85">
               Terms
             </Link>
+            <Link to="/cookies" className="hover:text-black/85 dark:hover:text-white/85">
+              Cookies
+            </Link>
+            <Link to="/dpa" className="hover:text-black/85 dark:hover:text-white/85">
+              DPA
+            </Link>
             <a
               href="mailto:hello@lykn.io"
               className="hover:text-black/85 dark:hover:text-white/85"

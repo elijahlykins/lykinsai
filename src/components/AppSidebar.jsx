@@ -126,6 +126,7 @@ export default function AppSidebar({
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0 });
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [feedbackType, setFeedbackType] = useState("bug");
+  const [searchQuery, setSearchQuery] = useState("");
   const menuRef = useRef(null);
 
   const { data: boards = [] } = useQuery({
@@ -142,6 +143,15 @@ export default function AppSidebar({
     },
     enabled: !!user?.id,
   });
+
+  // Filter chats by the sidebar search input. Case-insensitive match
+  // against the board title; empty query passes everything through.
+  const normalizedQuery = searchQuery.trim().toLowerCase();
+  const filteredBoards = normalizedQuery
+    ? boards.filter((b) =>
+        (b.title || "New Chat").toLowerCase().includes(normalizedQuery),
+      )
+    : boards;
 
   useEffect(() => {
     const onBoardsChanged = () => queryClient.invalidateQueries({ queryKey: ["boards", user?.id] });
@@ -251,6 +261,14 @@ export default function AppSidebar({
               <SearchIcon className="w-3.5 h-3.5 flex-shrink-0" />
               <input
                 placeholder="Search"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    setSearchQuery("");
+                    e.currentTarget.blur();
+                  }
+                }}
                 className="w-full bg-transparent outline-none placeholder:text-black/40 dark:placeholder:text-white/40 text-black/70 dark:text-white/70"
               />
             </div>
@@ -387,8 +405,10 @@ export default function AppSidebar({
                 })()
               ) : boards.length === 0 ? (
                 <div className="text-[0.6875rem] text-black/40 dark:text-white/40 px-2.5 py-1">No chats yet</div>
+              ) : filteredBoards.length === 0 ? (
+                <div className="text-[0.6875rem] text-black/40 dark:text-white/40 px-2.5 py-1">No matches</div>
               ) : (
-                boards.map((board) => {
+                filteredBoards.map((board) => {
                   const isActive = location.pathname === `/grid/${board.id}`;
                   return (
                     <div key={board.id} className="group relative flex items-center">

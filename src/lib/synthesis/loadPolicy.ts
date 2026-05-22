@@ -20,8 +20,21 @@ export const SYNTHESIS_LOAD_POLICY = {
   matchThreshold: 0.55,
   /** Rows per batch insert from the embed worker. */
   chunkInsertBatch: 24,
-  /** Minimum time between re-embedding the same logical source (board, note, etc.). */
-  minEmbedIntervalMs: 60_000,
+  /**
+   * Minimum time between re-embedding the same logical source (board, note,
+   * etc.). Acts as a per-source coalescence window: rapid saves (e.g. a user
+   * typing into a board) all collapse into one POST /api/synthesis/reindex
+   * after the user pauses for this long.
+   *
+   * Was 60_000 — that read as a UX lag because saved-but-not-yet-embedded
+   * notes don't appear in `[SYNTHESIS_RETRIEVAL]` for in-app chat, don't
+   * contribute to the next concepts pass, and don't form vault↔grid cross-
+   * edges on the 3D graph until the chunks land. Tightened to 15s; the
+   * server-side embed budget is bounded by the chunk cap per source (64
+   * chunks, embedded in a single OpenAI batch) so the marginal cost per
+   * coalesced save is small.
+   */
+  minEmbedIntervalMs: 15_000,
   /** Server-side cache for retrieval (optional; Phase 2+). */
   retrievalCacheTtlMs: 45_000,
 } as const;

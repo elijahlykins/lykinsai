@@ -19,7 +19,7 @@
 // ============================================================================
 
 import { Link } from "react-router-dom";
-import { Sparkles, ArrowLeft } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 
 const LAST_UPDATED = "May 11, 2026";
 
@@ -65,6 +65,22 @@ export default function Privacy() {
             >
               privacy@lykn.io
             </a>
+            . Browser-side storage (localStorage, sessionStorage, IndexedDB)
+            is documented separately in our{" "}
+            <Link
+              to="/cookies"
+              className="underline underline-offset-2 hover:text-black/85 dark:hover:text-white/90"
+            >
+              Cookie Policy
+            </Link>
+            . Customers routing personal data of EU/UK data subjects through
+            LYKN as a controller should also read our{" "}
+            <Link
+              to="/dpa"
+              className="underline underline-offset-2 hover:text-black/85 dark:hover:text-white/90"
+            >
+              Data Processing Agreement
+            </Link>
             .
           </p>
         </header>
@@ -362,12 +378,17 @@ export default function Privacy() {
         <footer className="pt-10 mt-10 border-t border-black/[0.06] dark:border-white/[0.08]">
           <div className="flex items-center justify-between text-[11.5px] text-black/55 dark:text-white/55">
             <div className="flex items-center gap-1.5">
-              <Sparkles className="h-3.5 w-3.5 text-amber-500" />
               <span className="font-semibold text-black/75 dark:text-white/75">LYKN</span>
             </div>
             <div className="flex gap-5">
               <Link to="/terms" className="hover:text-black/85 dark:hover:text-white/85">
                 Terms
+              </Link>
+              <Link to="/cookies" className="hover:text-black/85 dark:hover:text-white/85">
+                Cookies
+              </Link>
+              <Link to="/dpa" className="hover:text-black/85 dark:hover:text-white/85">
+                DPA
               </Link>
               <Link to="/" className="hover:text-black/85 dark:hover:text-white/85">
                 Home

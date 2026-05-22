@@ -7,9 +7,13 @@ import { BrowserRouter as Router, Route, Routes, useLocation, Navigate } from 'r
 import PageNotFound from './lib/PageNotFound';
 import { SupabaseAuthProvider, useAuth } from '@/lib/SupabaseAuth';
 import { IntakeProvider } from '@/context/IntakeContext';
-import IntakeModal from '@/components/intake/IntakeModal';
 import LoadingScreen from "@/components/LoadingScreen";
 import RouteErrorBoundary from '@/lib/RouteErrorBoundary';
+import {
+  readPrototypeStep,
+  PROTOTYPE_STEP_EVENT,
+  isWalkthroughLockActive,
+} from '@/lib/prototypeHandoff';
 
 import Login from "./pages/Login";
 import LandingPrototype from "./pages/LandingPrototype";
@@ -17,7 +21,14 @@ import Why from "./pages/Why";
 import Synthesis from "./pages/Synthesis";
 import OmniaGrid from "./pages/OmniaGrid";
 import Settings from "./pages/Settings";
-import SynthesisLayer from "./pages/SynthesisLayer";
+// SynthesisLayer pulls in three.js + react-three-fiber + drei + the
+// Bloom postprocessing pipeline (via its own internal lazy import of
+// the 3D scene). Lazy-loading the route module itself shaves the
+// remaining ~4.7k-line page component (DetailPanel, NeuronCreationModal,
+// belief / fact / concept sections, the layout-engine wrapper) out of
+// the initial bundle too, so first-paint on every other route gets
+// faster — not just first-paint on /synthesis-layer.
+const SynthesisLayer = React.lazy(() => import("./pages/SynthesisLayer"));
 import SharedGrid from "./pages/SharedGrid";
 import AppSidebar from "./components/AppSidebar";
 import MobileTabBar from "./components/MobileTabBar";
@@ -34,6 +45,8 @@ import AppsChatGPT from "./pages/AppsChatGPT";
 import AppsClaude from "./pages/AppsClaude";
 import Privacy from "./pages/Privacy";
 import Terms from "./pages/Terms";
+import CookiePolicy from "./pages/CookiePolicy";
+import DPA from "./pages/DPA";
 import { useIsMobile } from "@/hooks/useViewportTier";
 
 
@@ -85,6 +98,119 @@ function isFreshlyCreatedUser(user) {
   return Date.now() - createdMs < NEW_USER_WINDOW_MS;
 }
 
+// Walkthrough guard. Once a guest has entered the linear synthesis →
+// vault → connections → chat tour (i.e. `lykn_prototype_step` is set
+// to anything other than null or "done"), we trap them inside the four
+// walkthrough surfaces until they either click Finish on the chat
+// card (which flips step to "done") or sign in (auth resolves and
+// `user` flips truthy, short-circuiting the guard).
+//
+// Without this trap, testers consistently bailed mid-tour by hitting
+// the back button, typing a different URL, or clicking a sidebar
+// entry that hadn't been locked yet, and never saw the rest of the
+// guided experience. Sidebar locks already silence the in-app clicks
+// for synthesis/vault/grid steps, but the URL bar + browser nav + any
+// stray `<Link>` in the chrome were still escape hatches. This guard
+// is the belt-and-suspenders layer that covers all of them.
+//
+// `EXEMPT_PREFIXES` covers public surfaces the visitor MUST be able
+// to reach mid-tour: the sign-in flow (so they can opt out of the
+// trap by creating an account), the legal pages (privacy / terms /
+// cookies / DPA — required to be reachable from anywhere by law),
+// the OAuth consent screen (for inbound integrations the guest may
+// have arrived from), and the public app-store landing pages.
+const WALKTHROUGH_ALLOWED_PATHS = new Set([
+  "/synthesis-layer",
+  "/vault",
+  "/connections",
+  "/app",
+]);
+const WALKTHROUGH_EXEMPT_PREFIXES = [
+  "/login",
+  "/oauth",
+  "/privacy",
+  "/terms",
+  "/cookies",
+  "/dpa",
+  "/apps/",
+  "/s/",
+  "/share",
+];
+// Landing-page paths that should never be redirected away from, even
+// while a walkthrough step is set in localStorage. Without this, a
+// guest in the middle of the tour who manually navigates back to "/"
+// or "/landing-prototype" would silently bounce to whatever step
+// they were on — with no way to actually see the wake-screen opening
+// again (i.e. they can never restart the tour from the beginning).
+// Treating these as exempt means the trap leaves them alone on the
+// landing surface; clicking Get Started from there re-stamps fresh
+// walkthrough state and re-enters the tour cleanly.
+const WALKTHROUGH_RESET_PATHS = new Set(["/", "/landing-prototype"]);
+const STEP_TO_DEFAULT_PATH = {
+  synthesis: "/synthesis-layer",
+  vault: "/vault",
+  grid: "/app",
+};
+
+function useWalkthroughTrap() {
+  const { user, loading } = useAuth();
+  const location = useLocation();
+  const [step, setStep] = React.useState(() => readPrototypeStep());
+
+  // Listen for same-tab step changes (writePrototypeStep dispatches
+  // PROTOTYPE_STEP_EVENT) and cross-tab `storage` changes so the trap
+  // releases the visitor the moment they hit Finish — without needing
+  // a hard reload.
+  useEffect(() => {
+    const sync = () => setStep(readPrototypeStep());
+    window.addEventListener(PROTOTYPE_STEP_EVENT, sync);
+    window.addEventListener("storage", sync);
+    return () => {
+      window.removeEventListener(PROTOTYPE_STEP_EVENT, sync);
+      window.removeEventListener("storage", sync);
+    };
+  }, []);
+
+  // Auth still resolving → don't redirect (would flash the wrong page),
+  // and don't claim the visitor is locked yet either.
+  if (loading) return { redirect: null, locked: false };
+  const stateLocked = isWalkthroughLockActive(user?.id ?? null, step);
+  if (!stateLocked) return { redirect: null, locked: false };
+
+  const pathname = location.pathname;
+
+  // Landing-page reset surfaces: if the visitor explicitly navigates
+  // back to "/" or "/landing-prototype", treat that as "restart the
+  // tour". The lock fully releases (no chrome hiding, no click
+  // blocker, no redirect) and the visitor sees the wake screen
+  // normally. They can choose to click Get Started again, which re-
+  // stamps the step + tour-mode flags and re-enters the walkthrough
+  // cleanly. Without this branch the trap silently bounces guests
+  // who manually URL-edit back to "/" — they'd never be able to see
+  // the opening again without DevTools.
+  if (WALKTHROUGH_RESET_PATHS.has(pathname)) {
+    return { redirect: null, locked: false };
+  }
+
+  let redirect = null;
+  if (!WALKTHROUGH_ALLOWED_PATHS.has(pathname)) {
+    const isExempt = WALKTHROUGH_EXEMPT_PREFIXES.some((prefix) =>
+      pathname.startsWith(prefix),
+    );
+    if (!isExempt) {
+      const dest = STEP_TO_DEFAULT_PATH[step] ?? "/synthesis-layer";
+      if (pathname !== dest) redirect = dest;
+    } else {
+      // Exempt paths (login, legal, OAuth, etc.) let the visitor
+      // through and ALSO unlock the chrome — otherwise a guest who
+      // navigated to /login mid-tour would still have the click-
+      // blocker overlay smothering the sign-in form.
+      return { redirect: null, locked: false };
+    }
+  }
+  return { redirect, locked: stateLocked };
+}
+
 function GuestOnly({ children, to = "/app" }) {
   const { user, loading } = useAuth();
   if (loading) return null;
@@ -96,9 +222,10 @@ function GuestOnly({ children, to = "/app" }) {
 }
 
 function AppShell() {
-  const { user, loading } = useAuth();
+  const { user, loading, signInWithOAuth } = useAuth();
   const location = useLocation();
   const isMobile = useIsMobile();
+  const walkthroughRedirect = useWalkthroughTrap();
   const search = new URLSearchParams(location.search);
   const isEmbeddedVault = location.pathname === "/vault" && search.get("embedded") === "1";
   const isLoginPage = location.pathname === "/login";
@@ -109,6 +236,8 @@ function AppShell() {
     location.pathname === "/landing-prototype" ||
     location.pathname === "/privacy" ||
     location.pathname === "/terms" ||
+    location.pathname === "/cookies" ||
+    location.pathname === "/dpa" ||
     location.pathname.startsWith("/apps/");
   const isSharedGridView = location.pathname.startsWith("/s/");
   const isSharePage = location.pathname === "/share";
@@ -122,15 +251,91 @@ function AppShell() {
     };
   }, [isEmbeddedVault]);
 
+  // Walkthrough lockdown via CSS pointer-events. Toggling a body class
+  // is the only reliable way to neutralize the page during the tour:
+  // an overlay <div> gets demoted under any position-fixed sibling's
+  // stacking context (and the synthesis layer, vault, and OmniaGrid
+  // pages all use fixed-position outer containers). pointer-events
+  // inherits, so `body.lykn-walkthrough-locked { pointer-events:
+  // none }` turns the entire DOM tree inert in one shot — and each
+  // walkthrough card + the sign-in prompt re-enables itself with an
+  // explicit `pointer-events: auto`, which always wins regardless
+  // of stacking. See src/index.css for the matching selectors.
+  useEffect(() => {
+    document.body.classList.toggle(
+      "lykn-walkthrough-locked",
+      Boolean(walkthroughRedirect.locked),
+    );
+    return () => {
+      document.body.classList.remove("lykn-walkthrough-locked");
+    };
+  }, [walkthroughRedirect.locked]);
+
   const isGuest = !loading && !user;
   const isStandalone = isLoginPage || isLandingPage || isSharedGridView || isSharePage;
+  const isWalkthroughLocked = walkthroughRedirect.locked;
+
+  // Mid-walkthrough trap: when the guard hook says "redirect to X",
+  // unmount whatever chrome was about to render and bounce the visitor
+  // back to their current walkthrough step. We do this above the
+  // Routes tree (rather than wrapping each route) so it can't be
+  // bypassed by typing a URL that doesn't have a guard wrapper.
+  if (walkthroughRedirect.redirect && location.pathname !== walkthroughRedirect.redirect) {
+    return <Navigate to={walkthroughRedirect.redirect} replace />;
+  }
+
+  // Walkthrough lockdown: while the visitor is inside the guided tour
+  // (guest + step in {synthesis, vault, grid}), strip every piece of
+  // app chrome that could let them escape. The sidebar, mobile tab
+  // bar, mobile-only experience notice, and (further down) the
+  // VaultConnectionsToggle + VaultAppDock all become invisible. The
+  // only paths forward are the typewriter cards' forward arrows or
+  // signing in via the GuestSignInPrompt (which we deliberately keep
+  // mounted — the prompt is the explicit escape valve the user
+  // promised in copy: "unless they sign in").
+  const chromeHidden = isEmbeddedVault || isStandalone || isWalkthroughLocked;
 
   return (
     <>
-      {!isEmbeddedVault && !isStandalone && !isMobile && <AppSidebar />}
-      {!isEmbeddedVault && !isStandalone && isMobile && <MobileTabBar />}
-      {!isEmbeddedVault && !isStandalone && isMobile && <MobileExperienceNotice />}
-      {!isEmbeddedVault && !isStandalone && user && <IntakeModal />}
+      {/* Walkthrough lockdown is CSS-driven (see the body class
+          toggle effect above and `body.lykn-walkthrough-locked` in
+          src/index.css). No overlay <div> is rendered here. */}
+      {!chromeHidden && !isMobile && <AppSidebar />}
+      {!chromeHidden && isMobile && <MobileTabBar />}
+      {!chromeHidden && isMobile && <MobileExperienceNotice />}
+
+      {/* Walkthrough sign-in pill: while the visitor is locked into the
+          guided tour the rest of the app chrome (sidebar, mobile tab
+          bar) is unmounted, which strips out the usual "Sign in" entry
+          point. Returning users shouldn't have to crank through the
+          whole tour just to get to a login screen — so we mount a
+          standalone pill in the top-left for the duration of the
+          lockdown. Same visual treatment as the AppSidebar /
+          LandingPrototype pill (avatar circle + label), so it reads
+          as the canonical sign-in affordance rather than a stray
+          new control. Click → Google OAuth via SupabaseAuth; on
+          success the auth listener flips `user` to truthy, which
+          unwinds the walkthrough lock (`isWalkthroughLockActive`
+          short-circuits on userId) and drops them straight onto the
+          chat surface they were headed for. `pointer-events-auto`
+          is the explicit re-enable that escapes the body-level
+          `pointer-events: none` we apply during the lock. */}
+      {isWalkthroughLocked && (
+        <div className="fixed left-4 top-4 z-[9995] flex items-center gap-3 pointer-events-auto">
+          <button
+            type="button"
+            onClick={() => signInWithOAuth("google")}
+            className="flex items-center gap-1.5 rounded-full bg-white/45 dark:bg-[rgba(60,60,60,0.14)] backdrop-blur-sm border border-black/6 dark:border-white/10 pl-1 pr-3 py-1 text-[0.6875rem] text-black/70 dark:text-white/70 hover:bg-white/60 dark:hover:bg-white/15 shadow-sm transition-colors"
+            title="Sign in"
+            aria-label="Sign in"
+          >
+            <div className="h-6 w-6 rounded-full bg-blue-500/15 dark:bg-blue-400/20 text-[0.6875rem] font-semibold text-blue-600 dark:text-blue-400 flex items-center justify-center flex-shrink-0">
+              ?
+            </div>
+            <span>Sign in</span>
+          </button>
+        </div>
+      )}
       {/* The upload-progress toast was intentionally removed in favor of
           the silent ghost-card pipeline — dropped/uploaded files appear
           immediately in the vault grid via optimistic ghost cards
@@ -160,11 +365,15 @@ function AppShell() {
                 to via /connections#claude. Anthropic's reviewers
                 visit this URL during directory review. */}
             <Route path="/apps/claude" element={<AppsClaude />} />
-            {/* Public privacy + terms — required by ChatGPT Apps catalog,
+            {/* Public legal surface — required by ChatGPT Apps catalog,
                 Anthropic Connectors Directory, Stripe, and consumer-
-                protection law (GDPR/CCPA). */}
+                protection law (GDPR/CCPA/ePrivacy). The DPA is the
+                Article 28 controller↔processor agreement self-serve
+                customers accept by reference via the Terms click-through. */}
             <Route path="/privacy" element={<Privacy />} />
             <Route path="/terms" element={<Terms />} />
+            <Route path="/cookies" element={<CookiePolicy />} />
+            <Route path="/dpa" element={<DPA />} />
             <Route path="/s/:token" element={<SharedGrid />} />
             {/* The prototype landing experience IS the canonical home page —
                 visitors landing on `/` get the synthetic-intelligence
@@ -203,7 +412,11 @@ function AppShell() {
             />
             <Route
               path="/synthesis-layer"
-              element={<SynthesisLayer />}
+              element={
+                <Suspense fallback={loadingFallback}>
+                  <SynthesisLayer />
+                </Suspense>
+              }
             />
             <Route
               path="/tag-management"

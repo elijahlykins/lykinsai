@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
+import { Link, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -361,7 +361,28 @@ export default function Login() {
           </div>
 
           <p className="mt-6 text-center text-xs text-gray-400 dark:text-gray-500">
-            By continuing, you agree to LYKN's Terms of Service and Privacy Policy.
+            By continuing, you agree to LYKN's{" "}
+            <Link
+              to="/terms"
+              className="underline underline-offset-2 hover:text-gray-700 dark:hover:text-gray-300"
+            >
+              Terms of Service
+            </Link>
+            ,{" "}
+            <Link
+              to="/privacy"
+              className="underline underline-offset-2 hover:text-gray-700 dark:hover:text-gray-300"
+            >
+              Privacy Policy
+            </Link>
+            , and{" "}
+            <Link
+              to="/cookies"
+              className="underline underline-offset-2 hover:text-gray-700 dark:hover:text-gray-300"
+            >
+              Cookie Policy
+            </Link>
+            .
           </p>
         </motion.div>
       </div>

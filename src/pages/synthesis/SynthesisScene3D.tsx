@@ -40,7 +40,7 @@ function useIsTouchDevice() {
 export interface Scene3DNode {
   id: string;
   label: string;
-  kind: "root" | "category" | "project" | "grid" | "vault" | "tag" | "neuron" | "belief";
+  kind: "root" | "category" | "grid" | "vault" | "tag" | "neuron" | "belief";
   color: string;
   glow: string;
   radius: number;
@@ -110,6 +110,11 @@ interface Props {
    * "moving away from the cursor").
    */
   lockCamera?: boolean;
+  /**
+   * When true, OrbitControls slowly auto-orbits the scene for the
+   * synthesis-layer tour intro. See CameraControllerProps.autoRotate.
+   */
+  autoRotate?: boolean;
 }
 
 /* ------------------------------------------------------------------ */
@@ -181,7 +186,6 @@ function Neuron({ node, isHovered, isSelected, isDimmed, isTopicMode, onHover, o
       case "root":     return { emissive: 2.2, pulse: true };
       case "category": return { emissive: 1.6, pulse: false };
       case "grid":     return { emissive: 1.2, pulse: false };
-      case "project":  return { emissive: 1.4, pulse: false };
       case "vault":    return { emissive: 1.0, pulse: false };
       case "tag":      return { emissive: 0.9, pulse: false };
       default:         return { emissive: 1.0, pulse: false };
@@ -202,26 +206,42 @@ function Neuron({ node, isHovered, isSelected, isDimmed, isTopicMode, onHover, o
       ? Math.max(0.2, node.relevance)
       : 1;
   useFrame((state) => {
-    if (!coreMatRef.current) return;
+    const mat = coreMatRef.current;
+    if (!mat) return;
     const hoverTarget = isHovered ? 1.4 : 1;
     const dimTarget = isDimmed ? 0.35 : 1;
-    hoverMulRef.current += (hoverTarget - hoverMulRef.current) * 0.18;
-    dimMulRef.current += (dimTarget - dimMulRef.current) * 0.18;
+    const hoverDelta = hoverTarget - hoverMulRef.current;
+    const dimDelta = dimTarget - dimMulRef.current;
+    const opacityDelta = opacityTarget - mat.opacity;
+    // Skip per-frame writes when this neuron's emissive/opacity has
+    // already converged AND we don't need to drive a pulse. Without this
+    // every neuron pushed three uniform updates per frame regardless of
+    // whether anything was changing — multiplied by ~300 neurons × 60fps
+    // that's ~54k writes/sec just to set values to themselves. The bloom
+    // post-pass also stays cheaper when emissive uniforms don't churn.
+    const wantsPulse = glowConfig.pulse && !isSelected && !isHovered;
+    const atRest =
+      Math.abs(hoverDelta) < 0.002 &&
+      Math.abs(dimDelta) < 0.002 &&
+      Math.abs(opacityDelta) < 0.002;
+    if (atRest && !wantsPulse && !isForming) return;
+
+    hoverMulRef.current += hoverDelta * 0.18;
+    dimMulRef.current += dimDelta * 0.18;
     const base = glowConfig.emissive * hoverMulRef.current * dimMulRef.current;
     // Pulse stays off for the focused / hovered neuron. With the camera
     // pulled in close, the bloom halo around a pulsing emissive grows
     // and shrinks several pixels per cycle, which reads as the neuron
     // physically wobbling up and down. The user's focal neuron should
     // be perfectly still.
-    if (glowConfig.pulse && !isSelected && !isHovered) {
+    if (wantsPulse) {
       const t = state.clock.elapsedTime;
       const wave = 0.88 + 0.12 * Math.sin(t * 1.4 + pulsePhase);
-      coreMatRef.current.emissiveIntensity = base * wave;
+      mat.emissiveIntensity = base * wave;
     } else {
-      coreMatRef.current.emissiveIntensity = base;
+      mat.emissiveIntensity = base;
     }
-    const curOpacity = coreMatRef.current.opacity;
-    coreMatRef.current.opacity = curOpacity + (opacityTarget - curOpacity) * 0.18;
+    mat.opacity = mat.opacity + opacityDelta * 0.18;
   });
 
   // Hover scale is animated subtly through a useFrame on the group's scale,
@@ -615,6 +635,16 @@ interface CameraControllerProps {
   focusDistanceOverride?: number | null;
   /** When true, OrbitControls is mounted with all interaction disabled. */
   lockCamera?: boolean;
+  /**
+   * When true, OrbitControls slowly auto-orbits the scene around the
+   * current target (`autoRotate`). Used by the synthesis-layer tour
+   * intro to give a brand-new visitor a "cinematic" first impression
+   * of their digital brain — they see the graph from multiple angles
+   * without having to figure out the drag gesture yet. The parent
+   * flips this off the first time the user actually grabs the canvas
+   * or after a short timer, whichever comes first.
+   */
+  autoRotate?: boolean;
 }
 
 /**
@@ -627,7 +657,7 @@ interface CameraControllerProps {
  */
 const NEURON_FOCUS_DISTANCE = 420;
 
-function CameraController({ zoom, resetSignal, focusPos, focusDistanceOverride, lockCamera = false }: CameraControllerProps) {
+function CameraController({ zoom, resetSignal, focusPos, focusDistanceOverride, lockCamera = false, autoRotate = false }: CameraControllerProps) {
   const ctrlRef = useRef<any>(null);
   const focusTargetRef = useRef<THREE.Vector3 | null>(null);
 
@@ -779,6 +809,12 @@ function CameraController({ zoom, resetSignal, focusPos, focusDistanceOverride, 
       // also start an orbit gesture and visually drift it off-cursor.
       enablePan={!lockCamera}
       enableRotate={!lockCamera}
+      // Slow cinematic spin during the tour intro — autoRotate disables
+      // itself the moment the user grabs the canvas (drei wires that up
+      // internally), and the parent flips the prop off after its timer
+      // anyway, so we don't fight a user who wants to drive.
+      autoRotate={autoRotate && !lockCamera}
+      autoRotateSpeed={0.55}
       panSpeed={0.7}
       // Mouse rotation is dialled in for fine-grained orbit; finger
       // gestures travel a much shorter pixel distance per intent, so we
@@ -919,8 +955,12 @@ export default function SynthesisScene3D(props: Props) {
 
   return (
     <Canvas
-      // dpr capped to 2 to keep bloom affordable on retina displays
-      dpr={[1, 2]}
+      // dpr capped to 1.5 (was 2). On retina the bloom post-pass runs
+      // per-fragment so 2x DPR is ~78% more shader work than 1.5x for
+      // ~no perceptible quality gain at typical viewing distance — the
+      // emissive cores are already bigger than the half-pixel difference
+      // a retina screen would show. Mobile floor stays at 1.
+      dpr={[1, 1.5]}
       gl={{
         antialias: true,
         alpha: true,
@@ -968,6 +1008,7 @@ export default function SynthesisScene3D(props: Props) {
             : (props.focusDistanceOverride ?? null)
         }
         lockCamera={props.lockCamera}
+        autoRotate={props.autoRotate}
       />
 
       {/* Bloom is what actually creates the "neurons glowing" effect — bright
@@ -980,7 +1021,13 @@ export default function SynthesisScene3D(props: Props) {
           luminanceThreshold={0.18}
           luminanceSmoothing={0.18}
           mipmapBlur
-          radius={0.85}
+          // Radius tightened from 0.85 → 0.7. The mipmap-blur pass cost
+          // scales with kernel radius; this trims the largest mip levels
+          // while keeping the halo around emissive cores visually identical
+          // (the visible glow is dominated by the inner mips, not the outer
+          // ones). Combined with the lower DPR above this halves the
+          // per-frame post-process budget on typical machines.
+          radius={0.7}
         />
       </EffectComposer>
     </Canvas>

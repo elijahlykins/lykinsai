@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { CheckCircle2, ShieldAlert, Loader2, Search, X } from "lucide-react";
+import { Check, CheckCircle2, ChevronDown, ShieldAlert, Loader2, Search, X } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
 import { API_BASE_URL } from "@/lib/api-config";
@@ -64,6 +64,57 @@ const FILTERS = [
   { id: "input", label: "Input tools" },
 ];
 
+// AI Tools subgrouping. The flat list of 13 tier-1 outbound targets
+// (Claude / ChatGPT / Cursor / Windsurf / JetBrains / Copilot / …)
+// reads as a wall when the user lands on the Connections page,
+// especially inside a chat where this grid takes ~half the surface
+// area. Split into three intent-driven buckets so each one stays
+// scannable, and collapse all but the first few per bucket behind a
+// "Show all" pill so the section keeps a fixed initial height. Search
+// auto-expands every bucket (see `visibleTiles`).
+//
+// `clientKinds` references the `clientKind` field on each target in
+// `outboundTargets.js`. A target whose clientKind isn't listed in any
+// bucket lands in `coding` as a fallback (current tier-1 lineup has
+// no such target — every entry is mapped explicitly — but the
+// fallback keeps the page resilient to future catalog additions).
+const AI_SUBGROUPS = [
+  {
+    id: "chat",
+    label: "Chat",
+    description: "Conversational assistants — your synthesis layer follows you in.",
+    clientKinds: new Set(["claude", "chatgpt", "gemini", "grok"]),
+  },
+  {
+    id: "coding",
+    label: "Coding",
+    description: "IDEs, agents, and app-builders that should know your code context.",
+    clientKinds: new Set([
+      "claude-code",
+      "cursor",
+      "codex-cli",
+      "windsurf",
+      "jetbrains",
+      "replit",
+      "lovable",
+      "github-copilot",
+    ]),
+  },
+  {
+    id: "docs",
+    label: "Docs & Knowledge",
+    description: "Writing surfaces that benefit from your beliefs and recent work.",
+    clientKinds: new Set(["notion-ai"]),
+  },
+];
+const AI_SUBGROUP_DEFAULT_VISIBLE = 3;
+function aiSubgroupIdFor(target) {
+  for (const g of AI_SUBGROUPS) {
+    if (g.clientKinds.has(target.clientKind)) return g.id;
+  }
+  return "coding";
+}
+
 // Paid-plan warnings. The two data sources encode this differently, so
 // normalize to { title, message } here. Returns null when the upstream
 // app is free to use with LYKN.
@@ -90,12 +141,44 @@ export default function ConnectionsAppGrid({ user }) {
   const navigate = useNavigate();
   const [filter, setFilter] = useState("all");
   const [query, setQuery] = useState("");
+  const [showFilterDropdown, setShowFilterDropdown] = useState(false);
+  const filterDropdownRef = useRef(null);
+  useEffect(() => {
+    const onClick = (event) => {
+      if (filterDropdownRef.current && !filterDropdownRef.current.contains(event.target)) {
+        setShowFilterDropdown(false);
+      }
+    };
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") setShowFilterDropdown(false);
+    };
+    document.addEventListener("mousedown", onClick);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onClick);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, []);
   const [connections, setConnections] = useState([]);
   const [providerConfig, setProviderConfig] = useState({});
   const [tokens, setTokens] = useState([]);
   const [loading, setLoading] = useState(false);
   const [activeAiTarget, setActiveAiTarget] = useState(null);
   const [activeInputConnector, setActiveInputConnector] = useState(null);
+  // Per-AI-subgroup expansion. Empty set = every subgroup is collapsed
+  // to its first AI_SUBGROUP_DEFAULT_VISIBLE tiles. Clicking the
+  // subgroup's "Show all" pill flips it open; the active text-search
+  // bypasses this entirely (see `visibleTiles`) so users always see
+  // every match regardless of which bucket is collapsed.
+  const [expandedAiSubgroups, setExpandedAiSubgroups] = useState(() => new Set());
+  const toggleAiSubgroup = useCallback((id) => {
+    setExpandedAiSubgroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
   // Per-`notes.source` aggregate of (notes, facts, beliefs) so each
   // input tile can show how much of the user's synthesis layer traces
   // back to that one app. Loaded once on mount via the
@@ -233,8 +316,34 @@ export default function ConnectionsAppGrid({ user }) {
         label: "AI Tools",
         description: "Use LYKN's synthesis layer inside your AI of choice.",
       });
+      // Bucket each tier-1 target into its subgroup, keeping the
+      // catalog ordering within the bucket so curation upstream still
+      // wins. Empty buckets are silently dropped so a future change to
+      // the catalog (e.g. removing all Docs tools) doesn't leave a
+      // dangling subgroup header.
+      const bySubgroup = new Map(AI_SUBGROUPS.map((g) => [g.id, []]));
       for (const target of aiTargets) {
-        out.push({ key: `ai:${target.id}`, kind: "ai", target });
+        bySubgroup.get(aiSubgroupIdFor(target)).push(target);
+      }
+      for (const g of AI_SUBGROUPS) {
+        const items = bySubgroup.get(g.id) || [];
+        if (items.length === 0) continue;
+        out.push({
+          key: `aiSubgroup:${g.id}`,
+          kind: "aiSubgroup",
+          subgroupId: g.id,
+          label: g.label,
+          description: g.description,
+          totalInGroup: items.length,
+        });
+        for (const target of items) {
+          out.push({
+            key: `ai:${target.id}`,
+            kind: "ai",
+            target,
+            subgroupId: g.id,
+          });
+        }
       }
     }
 
@@ -259,20 +368,26 @@ export default function ConnectionsAppGrid({ user }) {
   }, []);
 
   // Filter: drop tiles outside the current bucket, apply the free-text
-  // search to app tiles (sections always pass — they get culled below
-  // if their bucket ends up empty), then drop section headers whose
-  // section has no surviving tiles after the filter.
+  // search to app tiles (section/subgroup headers always pass — they
+  // get culled below if their group ends up empty), then drop empty
+  // headers, then apply the per-AI-subgroup collapse pass.
   const visibleTiles = useMemo(() => {
     const keepBucket = (t) => {
       if (filter === "all") return true;
-      if (filter === "ai") return t.kind === "ai" || (t.kind === "section" && t.sectionBucket === "ai");
+      if (filter === "ai") {
+        return (
+          t.kind === "ai" ||
+          t.kind === "aiSubgroup" ||
+          (t.kind === "section" && t.sectionBucket === "ai")
+        );
+      }
       if (filter === "input") return t.kind === "input" || (t.kind === "section" && t.sectionBucket === "input");
       return true;
     };
     const q = query.trim().toLowerCase();
     const matchesQuery = (t) => {
       if (!q) return true;
-      if (t.kind === "section") return true;
+      if (t.kind === "section" || t.kind === "aiSubgroup") return true;
       if (t.kind === "ai") {
         const target = t.target;
         return (
@@ -298,65 +413,172 @@ export default function ConnectionsAppGrid({ user }) {
       return false;
     };
     const filtered = allTiles.filter((t) => keepBucket(t) && matchesQuery(t));
-    const out = [];
+
+    // Drop empty headers:
+    //   • aiSubgroup with no following AI tile from the same subgroup
+    //     (means the user's search excluded every entry in this
+    //     bucket — hide the heading too).
+    //   • section with no following non-header tile at all.
+    const noEmpty = [];
     for (let i = 0; i < filtered.length; i++) {
       const t = filtered[i];
       if (t.kind === "section") {
-        const next = filtered[i + 1];
-        if (!next || next.kind === "section") continue;
+        const next = filtered.slice(i + 1).find(
+          (x) => x.kind !== "section" && x.kind !== "aiSubgroup",
+        );
+        if (!next) continue;
+      } else if (t.kind === "aiSubgroup") {
+        let hasChild = false;
+        for (let j = i + 1; j < filtered.length; j++) {
+          const x = filtered[j];
+          if (x.kind === "section" || x.kind === "aiSubgroup") break;
+          if (x.kind === "ai" && x.subgroupId === t.subgroupId) {
+            hasChild = true;
+            break;
+          }
+        }
+        if (!hasChild) continue;
       }
-      out.push(t);
+      noEmpty.push(t);
+    }
+
+    // Active search bypasses the collapse pass — users always see every
+    // matching tile regardless of which bucket they're in.
+    if (q) return noEmpty;
+
+    // Collapse pass: within each AI subgroup, show only the first
+    // AI_SUBGROUP_DEFAULT_VISIBLE tiles, then emit ONE `aiShowMore`
+    // pill that toggles `expandedAiSubgroups`. Already-expanded
+    // subgroups pass through untouched (sans the pill).
+    const out = [];
+    const shownPerSubgroup = new Map();
+    const totalPerSubgroup = new Map();
+    for (const t of noEmpty) {
+      if (t.kind === "ai") {
+        totalPerSubgroup.set(
+          t.subgroupId,
+          (totalPerSubgroup.get(t.subgroupId) || 0) + 1,
+        );
+      }
+    }
+    for (const t of noEmpty) {
+      if (t.kind !== "ai") {
+        out.push(t);
+        continue;
+      }
+      const expanded = expandedAiSubgroups.has(t.subgroupId);
+      if (expanded) {
+        out.push(t);
+        continue;
+      }
+      const shown = shownPerSubgroup.get(t.subgroupId) || 0;
+      if (shown < AI_SUBGROUP_DEFAULT_VISIBLE) {
+        out.push(t);
+        shownPerSubgroup.set(t.subgroupId, shown + 1);
+        continue;
+      }
+      // First tile that overflows the visible cap — emit the
+      // single show-all pill, then suppress the rest of this
+      // subgroup's tiles. Subsequent overflow tiles fall through
+      // to the skip branch below.
+      if (shown === AI_SUBGROUP_DEFAULT_VISIBLE) {
+        const total = totalPerSubgroup.get(t.subgroupId) || 0;
+        out.push({
+          key: `aiShowMore:${t.subgroupId}`,
+          kind: "aiShowMore",
+          subgroupId: t.subgroupId,
+          hiddenCount: total - AI_SUBGROUP_DEFAULT_VISIBLE,
+        });
+        shownPerSubgroup.set(t.subgroupId, shown + 1);
+      }
+      // else: skip this tile — pill already emitted.
     }
     return out;
-  }, [filter, allTiles, query]);
+  }, [filter, allTiles, query, expandedAiSubgroups]);
 
   const hasResults = visibleTiles.some((t) => t.kind !== "section");
 
+  const currentFilter = FILTERS.find((f) => f.id === filter) || FILTERS[0];
+
   return (
-    <section>
-      {/* ── Toolbar: filter pill + search ─────────────────────────── */}
-      <div className="mb-5 flex flex-wrap items-center gap-3">
-        <div className="flex items-center gap-1 p-1 rounded-full glass-control w-fit">
-          {FILTERS.map((f) => (
+    <>
+      {/* ── Header + toolbar ───────────────────────────────────────── */}
+      {/* Section structure (h1 → description → search row → filter row)
+          mirrors the Vault page's section exactly so switching between
+          the two surfaces via the inline Vault ↔ Connections toggle
+          doesn't reflow the page chrome. Spacing values (`mt-1`, `mt-4`,
+          `mb-6`) match VaultNew.jsx 1:1. */}
+      <section className="mb-6">
+        <h1 className="text-3xl font-semibold">Apps</h1>
+        <p className="text-black/60 dark:text-white/60 mt-1">
+          Everything LYKN can plug into.{" "}
+          <strong className="font-semibold text-black/80 dark:text-white/85">AI tools</strong> get
+          your synthesis layer injected so every chat picks up where the last left off.{" "}
+          <strong className="font-semibold text-black/80 dark:text-white/85">Input tools</strong> feed LYKN the
+          evidence that makes your synthesis layer rich. All revocable any time.
+        </p>
+        {!user && (
+          <p className="mt-2 text-[11px] text-black/45 dark:text-white/45">
+            Sign in to connect apps.
+          </p>
+        )}
+        <div className="mt-4 flex flex-wrap items-center gap-3 relative z-[400]">
+          <div className="relative w-full sm:flex-1 sm:max-w-xl">
+            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-black/35 dark:text-white/35 pointer-events-none" />
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search connections — type an app name, category, or keyword"
+              aria-label="Search connections"
+              className="w-full h-11 rounded-2xl glass-control pl-10 pr-10 text-sm outline-none placeholder:text-black/35 dark:placeholder:text-white/35"
+            />
+            {query && (
+              <button
+                type="button"
+                onClick={() => setQuery("")}
+                aria-label="Clear search"
+                className="absolute right-2 top-1/2 -translate-y-1/2 w-7 h-7 flex items-center justify-center rounded-full text-black/45 dark:text-white/45 hover:bg-black/[0.06] dark:hover:bg-white/[0.08] hover:text-black/70 dark:hover:text-white/80 transition-colors"
+              >
+                <X className="h-4 w-4" strokeWidth={2.25} />
+              </button>
+            )}
+          </div>
+          <div className="relative shrink-0" ref={filterDropdownRef}>
             <button
-              key={f.id}
               type="button"
-              onClick={() => setFilter(f.id)}
-              className={`px-3 py-1 rounded-full text-[11px] font-medium transition-colors ${
-                filter === f.id
-                  ? "bg-black text-white dark:bg-white dark:text-black shadow-sm"
-                  : "text-black/60 dark:text-white/60 hover:text-black dark:hover:text-white"
-              }`}
+              onClick={() => setShowFilterDropdown((v) => !v)}
+              className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[0.6875rem] font-medium text-black/65 dark:text-white/65 hover:text-black/90 dark:hover:text-white/90 hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors"
             >
-              {f.label}
+              {currentFilter.label}
+              <ChevronDown className={`w-3 h-3 transition-transform ${showFilterDropdown ? "rotate-180" : ""}`} />
             </button>
-          ))}
+            {showFilterDropdown && (
+              <div className="absolute top-full right-0 mt-1 w-44 rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-[#1c1c1c]/80 backdrop-blur-md shadow-md z-[400] py-1">
+                {FILTERS.map((f) => {
+                  const active = filter === f.id;
+                  return (
+                    <button
+                      key={f.id}
+                      type="button"
+                      onClick={() => {
+                        setFilter(f.id);
+                        setShowFilterDropdown(false);
+                      }}
+                      className={`w-full flex items-center gap-2 px-3 py-1.5 text-left text-[0.6875rem] hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors ${
+                        active ? "text-blue-600 dark:text-blue-400 font-medium" : "text-black/70 dark:text-white/70"
+                      }`}
+                    >
+                      <span className="flex-1 truncate">{f.label}</span>
+                      {active && <Check className="w-3 h-3" />}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
-        <div className="relative flex-1 min-w-[200px] max-w-sm">
-          <Search
-            className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-black/40 dark:text-white/40"
-            strokeWidth={2}
-          />
-          <input
-            type="search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search connections…"
-            aria-label="Search connections"
-            className="w-full rounded-full border border-black/[0.08] dark:border-white/[0.12] bg-white/60 dark:bg-zinc-900/60 backdrop-blur-md pl-8 pr-8 py-1.5 text-[12px] text-black/85 dark:text-white/90 placeholder:text-black/40 dark:placeholder:text-white/40 outline-none focus:border-black/25 dark:focus:border-white/30 transition-colors"
-          />
-          {query && (
-            <button
-              type="button"
-              onClick={() => setQuery("")}
-              aria-label="Clear search"
-              className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-0.5 text-black/45 dark:text-white/45 hover:bg-black/[0.06] dark:hover:bg-white/[0.08] hover:text-black/70 dark:hover:text-white/80 transition-colors"
-            >
-              <X className="h-3 w-3" strokeWidth={2.25} />
-            </button>
-          )}
-        </div>
-      </div>
+      </section>
 
       {/* ── Unified grid ─────────────────────────────────────────── */}
       <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
@@ -372,6 +594,62 @@ export default function ConnectionsAppGrid({ user }) {
                     {tile.description}
                   </p>
                 )}
+              </div>
+            );
+          }
+          if (tile.kind === "aiSubgroup") {
+            // Subgroup heading sits inside the parent "AI Tools"
+            // section. Visually lighter than a section header (less
+            // tracking, no caps) so the parent → subgroup hierarchy
+            // reads at a glance without two competing all-caps lines.
+            const expanded = expandedAiSubgroups.has(tile.subgroupId);
+            const showCollapseControl =
+              tile.totalInGroup > AI_SUBGROUP_DEFAULT_VISIBLE && expanded;
+            return (
+              <div key={tile.key} className="col-span-full mt-2 first:mt-0">
+                <div className="flex items-baseline justify-between gap-3">
+                  <div>
+                    <h3 className="text-[12px] font-semibold text-black/75 dark:text-white/80">
+                      {tile.label}
+                      <span className="ml-1.5 text-[10.5px] font-medium text-black/40 dark:text-white/40">
+                        {tile.totalInGroup}
+                      </span>
+                    </h3>
+                    {tile.description && (
+                      <p className="mt-0.5 text-[10.5px] text-black/45 dark:text-white/45">
+                        {tile.description}
+                      </p>
+                    )}
+                  </div>
+                  {showCollapseControl && (
+                    <button
+                      type="button"
+                      onClick={() => toggleAiSubgroup(tile.subgroupId)}
+                      className="text-[10.5px] font-medium text-black/55 dark:text-white/55 hover:text-black/80 dark:hover:text-white/85 transition-colors underline-offset-2 hover:underline shrink-0"
+                    >
+                      Show less
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          }
+          if (tile.kind === "aiShowMore") {
+            // One pill per collapsed subgroup, spans full grid width so
+            // it sits cleanly under the last visible tile rather than
+            // wedging into a column. Clicking flips the subgroup to
+            // expanded; the parent header gets a matching "Show less"
+            // button when it's open (see aiSubgroup branch above).
+            return (
+              <div key={tile.key} className="col-span-full -mt-1">
+                <button
+                  type="button"
+                  onClick={() => toggleAiSubgroup(tile.subgroupId)}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-dashed border-black/15 dark:border-white/15 px-3 py-1 text-[11px] font-medium text-black/60 dark:text-white/65 hover:text-black/85 dark:hover:text-white/85 hover:border-black/30 dark:hover:border-white/30 transition-colors"
+                >
+                  Show all {tile.hiddenCount} more
+                  <ChevronDown className="w-3 h-3" />
+                </button>
               </div>
             );
           }
@@ -604,7 +882,7 @@ export default function ConnectionsAppGrid({ user }) {
         }}
         connector={activeInputConnector}
       />
-    </section>
+    </>
   );
 }
 

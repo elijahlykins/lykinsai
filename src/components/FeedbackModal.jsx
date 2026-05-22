@@ -7,13 +7,13 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
-import { Bug, Lightbulb, Send, CheckCircle, AlertCircle } from "lucide-react";
+import { CheckCircle, AlertCircle, Loader2 } from "lucide-react";
 import { API_BASE_URL } from "@/lib/api-config";
 import { useAuth } from "@/lib/SupabaseAuth";
 
 const CATEGORIES = {
-  bug: { label: "Report a Bug", icon: Bug, placeholder: "Describe what happened and what you expected…" },
-  suggestion: { label: "Suggestion", icon: Lightbulb, placeholder: "Tell us your idea or how we can improve…" },
+  bug: { label: "Report a bug", placeholder: "Describe what happened and what you expected…" },
+  suggestion: { label: "Suggestion", placeholder: "Tell us your idea or how we can improve…" },
 };
 
 export default function FeedbackModal({ open, onOpenChange, defaultType = "bug" }) {
@@ -68,30 +68,28 @@ export default function FeedbackModal({ open, onOpenChange, defaultType = "bug" 
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-md bg-white/80 dark:bg-gray-900/80 backdrop-blur-md border-black/8 dark:border-white/8">
+      <DialogContent className="bg-white dark:bg-[#1e1e1e] border-white/15 dark:border-gray-700 text-black dark:text-white max-w-md backdrop-blur-md">
         <DialogHeader>
-          <DialogTitle className="text-base font-semibold text-black/80 dark:text-white/80 flex items-center gap-2">
-            <cat.icon className="w-4 h-4" />
+          <DialogTitle className="text-black dark:text-white">
             {cat.label}
           </DialogTitle>
-          <DialogDescription className="text-xs text-black/50 dark:text-white/50">
+          <DialogDescription className="text-xs text-gray-500 dark:text-gray-400">
             We read every submission — thank you for helping us improve.
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex gap-1 mt-1">
-          {Object.entries(CATEGORIES).map(([key, { label, icon: Icon }]) => (
+        <div className="flex gap-4 pt-1">
+          {Object.entries(CATEGORIES).map(([key, { label }]) => (
             <button
               key={key}
               type="button"
               onClick={() => handleTypeChange(key)}
-              className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border transition-colors ${
+              className={`text-sm font-medium transition-colors ${
                 type === key
-                  ? "bg-blue-500/10 border-blue-500/30 text-blue-700 dark:text-blue-300 font-medium"
-                  : "border-black/10 dark:border-white/10 text-black/50 dark:text-white/50 hover:bg-black/5 dark:hover:bg-white/5"
+                  ? "text-black dark:text-white"
+                  : "text-black/50 dark:text-white/50 hover:text-black dark:hover:text-white"
               }`}
             >
-              <Icon className="w-3 h-3" />
               {label}
             </button>
           ))}
@@ -99,24 +97,24 @@ export default function FeedbackModal({ open, onOpenChange, defaultType = "bug" 
 
         {status === "success" ? (
           <div className="flex flex-col items-center justify-center py-8 gap-2">
-            <CheckCircle className="w-8 h-8 text-green-500" />
-            <p className="text-sm font-medium text-black/70 dark:text-white/70">Sent! Thanks for your feedback.</p>
+            <CheckCircle className="w-6 h-6 text-gray-500 dark:text-gray-400" />
+            <p className="text-sm font-medium text-black dark:text-white">Sent. Thanks for your feedback.</p>
           </div>
         ) : (
-          <form onSubmit={handleSubmit} className="flex flex-col gap-3 mt-1">
+          <form onSubmit={handleSubmit} className="flex flex-col gap-3 pt-2">
             <input
               type="text"
               placeholder="Subject (optional)"
               value={subject}
               onChange={(e) => setSubject(e.target.value)}
-              className="w-full rounded-md border border-black/10 dark:border-white/10 bg-transparent px-3 py-2 text-sm text-black dark:text-white placeholder:text-black/30 dark:placeholder:text-white/30 focus:outline-none focus:ring-1 focus:ring-blue-500/40"
+              className="w-full px-3 py-2 text-sm bg-white dark:bg-[#1f1d1d] border border-gray-200 dark:border-gray-700 text-black dark:text-white placeholder:text-gray-400 dark:placeholder:text-gray-500 rounded-lg focus:outline-none focus:ring-1 focus:ring-black/20 dark:focus:ring-white/20"
             />
             <Textarea
               placeholder={cat.placeholder}
               value={body}
               onChange={(e) => setBody(e.target.value)}
               rows={5}
-              className="resize-none border-black/10 dark:border-white/10 text-sm placeholder:text-black/30 dark:placeholder:text-white/30 focus:ring-blue-500/40"
+              className="resize-none bg-white dark:bg-[#1f1d1d] border-gray-200 dark:border-gray-700 text-sm text-black dark:text-white placeholder:text-gray-400 dark:placeholder:text-gray-500 focus-visible:ring-1 focus-visible:ring-black/20 dark:focus-visible:ring-white/20 focus-visible:ring-offset-0"
               required
             />
 
@@ -130,10 +128,16 @@ export default function FeedbackModal({ open, onOpenChange, defaultType = "bug" 
             <button
               type="submit"
               disabled={!body.trim() || status === "sending"}
-              className="self-end flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-xs font-medium text-white hover:bg-blue-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              className="self-end inline-flex items-center justify-center gap-2 rounded-lg bg-black text-white hover:bg-black/90 dark:bg-white dark:text-black dark:hover:bg-white/90 px-4 py-2 text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              <Send className="w-3.5 h-3.5" />
-              {status === "sending" ? "Sending…" : "Send"}
+              {status === "sending" ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  Sending…
+                </>
+              ) : (
+                "Send"
+              )}
             </button>
           </form>
         )}

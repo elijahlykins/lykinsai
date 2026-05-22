@@ -19,17 +19,17 @@ export default function VaultConnectionsToggle({
   const navigate = useNavigate();
 
   const baseBtn =
-    "flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[0.75rem] font-medium transition-colors touch-manipulation";
+    "relative flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-all duration-200 touch-manipulation";
   const activeBtn =
-    "bg-black text-white dark:bg-white dark:text-black shadow-sm";
+    "bg-white dark:bg-zinc-100 text-black/85 dark:text-zinc-900 shadow-sm";
   const inactiveBtn =
-    "text-black/60 dark:text-white/60 hover:text-black dark:hover:text-white";
+    "text-black/40 dark:text-white/45 hover:text-black/60 dark:hover:text-white/70";
 
   return (
     <div
       role="tablist"
       aria-label="Switch between Vault and Connections"
-      className={`inline-flex items-center gap-0.5 p-0.5 rounded-full glass-control ${className}`}
+      className={`inline-flex rounded-md border border-black/10 dark:border-white/15 bg-black/[0.03] dark:bg-white/[0.06] p-[3px] ${className}`}
     >
       <button
         type="button"
@@ -40,7 +40,7 @@ export default function VaultConnectionsToggle({
         }}
         className={`${baseBtn} ${active === "vault" ? activeBtn : inactiveBtn}`}
       >
-        <Lock className="w-3.5 h-3.5" />
+        <Lock className="w-3 h-3" />
         Vault
       </button>
       <button
@@ -52,7 +52,7 @@ export default function VaultConnectionsToggle({
         }}
         className={`${baseBtn} ${active === "connections" ? activeBtn : inactiveBtn}`}
       >
-        <Plug className="w-3.5 h-3.5" />
+        <Plug className="w-3 h-3" />
         Connections
       </button>
     </div>

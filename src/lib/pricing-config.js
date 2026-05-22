@@ -28,11 +28,6 @@ export const PLANS = [
       { text: "10,000 Vault cards", included: true },
       { text: "All LYKN models", included: true },
       { text: "All connections unlocked", included: true },
-      {
-        text: "Student discount: $10/mo",
-        included: true,
-        note: "Verified students only.",
-      },
     ],
   },
   {
@@ -85,12 +80,12 @@ export const FAQ_ITEMS = [
   {
     question: "What's the difference between Pro and Max?",
     answer:
-      "Pro ($25/mo, or $17/mo billed annually) unlocks unlimited neurons, 10,000 Vault cards, the full LYKN model lineup, and every connection. Max ($65/mo, or $50/mo billed annually) adds the top LLMs on the market — GPT, Claude, Gemini Ultra — an unlimited Vault, and API access.",
+      "Pro ($25/mo, or $17/mo billed annually) unlocks unlimited neurons, 10,000 Vault cards, the full LYKN model lineup, and every connection. Max ($65/mo, or $50/mo billed annually) adds the top LLMs on the market like GPT, Claude, and Gemini Ultra, plus an unlimited Vault and API access.",
   },
   {
     question: "Is there a free trial?",
     answer:
-      "No free trials — the Free plan is the trial. Upgrade to Pro or Max whenever you're ready, and you can cancel anytime.",
+      "No free trials. The Free plan is the trial. Upgrade to Pro or Max whenever you're ready, and you can cancel anytime.",
   },
   {
     question: "How much do I save by paying yearly?",
@@ -98,19 +93,14 @@ export const FAQ_ITEMS = [
       "Roughly a third off. Pro is $25/mo monthly or $17/mo when billed annually ($204/yr). Max is $65/mo monthly or $50/mo when billed annually ($600/yr).",
   },
   {
-    question: "Is there a student discount?",
-    answer:
-      "Yes — verified students get Pro for $10/month. The discount applies to the Pro tier only.",
-  },
-  {
     question: "Can I switch plans anytime?",
     answer:
-      "Yes — you can upgrade, downgrade, or cancel at any time from the billing portal. Upgrades take effect immediately and you're charged a prorated amount. Downgrades take effect at the end of your current billing cycle.",
+      "Yes. You can upgrade, downgrade, or cancel at any time from the billing portal. Upgrades take effect immediately and you're charged a prorated amount. Downgrades take effect at the end of your current billing cycle.",
   },
   {
     question: "When is Teams available?",
     answer:
-      "Teams is our shared-workspace plan — one synthesis layer your whole team can lean on. It's coming soon. Join the waitlist from the plan card and we'll reach out when it goes live.",
+      "Teams is our shared-workspace plan, one synthesis layer your whole team can lean on. It's coming soon. Join the waitlist from the plan card and we'll reach out when it goes live.",
   },
 ];
 

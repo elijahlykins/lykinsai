@@ -10,6 +10,17 @@
 export const PROTOTYPE_NEURONS_LS_KEY = "lykn_prototype_neurons";
 export const PROTOTYPE_CHAT_LS_KEY = "lykn_prototype_chat";
 
+// Set to "1" while the visitor is in the synthesis-layer "tour" — i.e.
+// they clicked Get Started on the wake screen and were dropped into a
+// pre-populated synthesis layer with sample neurons (NOT real neurons
+// from a chat). The synthesis layer uses this to (a) render the welcome
+// card explaining what they're looking at, (b) skip the "neuron forming"
+// animation that's meant for a freshly-created real neuron, and (c)
+// auto-orbit the camera for the first beat so the brain feels alive on
+// arrival. Cleared the moment the visitor opens the "+" add-neuron menu
+// (they've found the create-your-own affordance) or signs in / out.
+export const PROTOTYPE_TOUR_MODE_LS_KEY = "lykn_prototype_tour_mode";
+
 export interface PrototypeNeuron {
   id: string;
   kind: "identity" | "focus" | "goal" | "style";
@@ -21,6 +32,16 @@ export interface PrototypeNeuron {
    * before this field existed will simply omit it.
    */
   reason?: string;
+  /**
+   * Which synthesis-layer category this neuron belongs to. Added when
+   * the new "+" menu started letting guests author beliefs, concepts,
+   * tags, etc. in addition to facts — without this we'd have to
+   * collapse everything into the AI Learned cluster (the only
+   * category the legacy chat-derived prototypes ever populated).
+   * Older prototypes that pre-date this field simply omit it and
+   * default-route to AI Learned, preserving the legacy walkthrough.
+   */
+  neuronType?: "fact" | "belief" | "concept" | "tag";
   /**
    * 1-based index of this neuron in the order it was created. Lets
    * downstream surfaces show "1st neuron", "2nd neuron", etc. without
@@ -34,6 +55,34 @@ export interface PrototypeChatTurn {
   role: "user" | "ai";
   content: string;
 }
+
+// Persist a fresh list of prototype neurons back to localStorage and
+// notify same-window listeners. Kept tiny + side-effect-only so callers
+// can compose it with whatever state shape they already use.
+export const writePrototypeNeurons = (next: PrototypeNeuron[]): void => {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(PROTOTYPE_NEURONS_LS_KEY, JSON.stringify(next));
+  } catch {
+    // ignore quota / private-mode errors
+  }
+};
+
+// Append a guest-built neuron to localStorage and return the new list.
+// Used by the synthesis-layer "+" menu when an unauthenticated visitor
+// creates their first (free) neuron: we don't have a backend to
+// persist to, but we do want the neuron to live in the preview brain
+// until they sign in and we can sync it up. The ordinal is recomputed
+// off the current list length so consecutive guest neurons (if we ever
+// allow more than one) stay numbered correctly.
+export const appendPrototypeNeuron = (n: Omit<PrototypeNeuron, "ordinal" | "createdAt"> & { ordinal?: number; createdAt?: number }): PrototypeNeuron[] => {
+  const current = readPrototypeNeurons();
+  const ordinal = n.ordinal ?? current.length + 1;
+  const createdAt = n.createdAt ?? Date.now();
+  const next = [...current, { ...n, ordinal, createdAt }];
+  writePrototypeNeurons(next);
+  return next;
+};
 
 export const readPrototypeNeurons = (): PrototypeNeuron[] => {
   if (typeof window === "undefined") return [];
@@ -82,6 +131,48 @@ export const hasPrototypeNeurons = (): boolean => {
 };
 
 /* ------------------------------------------------------------------ */
+/*  Synthesis-layer tour mode                                          */
+/* ------------------------------------------------------------------ */
+
+export const readPrototypeTourMode = (): boolean => {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem(PROTOTYPE_TOUR_MODE_LS_KEY) === "1";
+  } catch {
+    return false;
+  }
+};
+
+export const writePrototypeTourMode = (on: boolean): void => {
+  if (typeof window === "undefined") return;
+  try {
+    if (on) {
+      window.localStorage.setItem(PROTOTYPE_TOUR_MODE_LS_KEY, "1");
+    } else {
+      window.localStorage.removeItem(PROTOTYPE_TOUR_MODE_LS_KEY);
+    }
+  } catch {
+    // ignore quota / private-mode errors
+  }
+};
+
+// Arm the synthesis-layer tour. The tour itself is pre-populated NOT
+// with sample neurons but with the five top-level "containers" of the
+// brain (Chats, Vault, AI Learned, Beliefs, Concepts) — see
+// `forceCategoryIds` in SynthesisLayer.tsx. We deliberately do NOT
+// seed any individual neurons: the visitor should see the SHAPE of
+// their future workspace, not a fake populated brain claiming to know
+// things about them. Returns true when the flag was actually flipped
+// (false if a real session is already in progress, in which case the
+// tour overlay would lie about an already-populated layer).
+export const seedTourNeurons = (): boolean => {
+  if (typeof window === "undefined") return false;
+  if (readPrototypeNeurons().length > 0) return false;
+  writePrototypeTourMode(true);
+  return true;
+};
+
+/* ------------------------------------------------------------------ */
 /*  Walkthrough step state                                             */
 /* ------------------------------------------------------------------ */
 
@@ -105,6 +196,26 @@ export const hasPrototypeNeurons = (): boolean => {
 //                 read the chat intro, or signed in).
 export type PrototypeStep = "synthesis" | "vault" | "grid" | "done";
 
+// Pure-function helper for "is this visitor currently locked inside the
+// guided walkthrough?" Lives next to the storage keys so components in
+// any tree (sidebar, vault dock, top-of-page toggles, etc.) can answer
+// the question without duplicating the gate logic.
+//
+// Callers pass `userId` from `useAuth()` so we don't have to thread the
+// Supabase client into this module. Signed-in visitors are never
+// locked; a `null` userId on its own isn't enough either — we also
+// require the visitor to have actually entered the linear tour (step
+// is set to one of the in-progress values). That keeps the rest of
+// the app fully interactive for guests who haven't started the
+// onboarding (e.g. someone landing directly on `/login`).
+export const isWalkthroughLockActive = (
+  userId: string | null | undefined,
+  step: PrototypeStep | null,
+): boolean => {
+  if (userId) return false;
+  return step === "synthesis" || step === "vault" || step === "grid";
+};
+
 export const PROTOTYPE_STEP_LS_KEY = "lykn_prototype_step";
 
 // Session-scoped one-shot flag — set the first time the vault types
@@ -115,12 +226,15 @@ export const PROTOTYPE_STEP_LS_KEY = "lykn_prototype_step";
 export const PROTO_VAULT_INTRO_SS_KEY = "lykn_prototype_vault_intro_played";
 
 // Same idea as PROTO_VAULT_INTRO_SS_KEY but for the chat surface (`/app`)
-// — set the first time LYKN types out the "what's chat for" intro for a
-// guest in the prototype walkthrough, so a refresh of `/app` doesn't
-// keep replaying it. Storage key stays spelled "grid" so old sessions
-// migrate cleanly. Cleared by LandingPrototype whenever the walkthrough
-// resets so a brand-new first neuron re-arms the next visit.
-export const PROTO_GRID_INTRO_SS_KEY = "lykn_prototype_grid_intro_played";
+// — stamped the first time the visitor clicks Finish on the chat
+// walkthrough card, so a refresh of `/app` doesn't replay the tour.
+// The key was bumped to `_v2` when the old chat-rail intro was
+// replaced with a typewriter card: the old version stamped this key
+// at the START of the intro (to avoid mid-typing replay on refresh),
+// while the new version stamps it on Finish — same key, opposite
+// semantics. Bumping makes the cutover clean and means any old
+// sessions still in a tab automatically re-see the new tour beat.
+export const PROTO_GRID_INTRO_SS_KEY = "lykn_prototype_grid_intro_played_v2";
 
 // Same-window listeners (sidebar in particular) need a way to react to
 // step changes without waiting for a `storage` event — those only fire
@@ -263,6 +377,7 @@ export const clearPrototypeState = (): void => {
     window.localStorage.removeItem(PROTOTYPE_NEURONS_LS_KEY);
     window.localStorage.removeItem(PROTOTYPE_CHAT_LS_KEY);
     window.localStorage.removeItem(PROTOTYPE_STEP_LS_KEY);
+    window.localStorage.removeItem(PROTOTYPE_TOUR_MODE_LS_KEY);
   } catch {
     // ignore quota / private-mode errors
   }
