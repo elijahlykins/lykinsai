@@ -5089,10 +5089,20 @@ export default function SynthesisLayer() {
           reset column, but those have been retired in favour of the
           page-level wheel handler + drag-to-orbit being the only ways
           to move the camera. The "+" stays as the sole primary action
-          and shifts left when a detail panel opens. */}
+          and shifts left when a detail panel opens.
+          Bottom offset adds `var(--mobile-tabbar-clear)` so the button
+          floats above the MobileTabBar (when mounted) + the iOS home-
+          indicator safe area. On desktop and during the walkthrough
+          lockdown (chrome hidden → no tab bar), the variable resolves
+          to 0px and the offset collapses back to the original 1.5rem.
+          Without this clearance the tab bar lands directly on top of
+          the "+", which on most phones makes it impossible to tap. */}
       <div
-        className="absolute bottom-6 z-20 flex items-end transition-[right] duration-300"
-        style={{ right: panelOpen || beliefWindowOpen ? 384 : 24 }}
+        className="absolute z-20 flex items-end transition-[right] duration-300"
+        style={{
+          right: panelOpen || beliefWindowOpen ? 384 : 24,
+          bottom: "calc(1.5rem + var(--mobile-tabbar-clear, 0px))",
+        }}
       >
         {/* Add-neuron entry — bigger, circular, sits visually as the
             primary action of the cluster. Picking a type opens a
