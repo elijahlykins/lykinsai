@@ -55,23 +55,31 @@ export function useUserPlan() {
   }
 
   const planId = resolvePlanId(data);
-  const planConf = PLAN_LIMITS[planId] || PLAN_LIMITS[FREE_PLAN];
   const status = String(data?.status || "").toLowerCase();
-  // Paid subscription must be "active" or "trialing" to unlock premium tiers.
-  // Anything else (past_due, canceled, unpaid, inactive) downgrades to free.
+  // Monotone-up rule (client side): once a user has reached a paid
+  // tier, we honor it forever — `status` is informational only.
+  // The server enforces the same rule in resolveUserPlan +
+  // syncSubscriptionToBilling, so client/server stay aligned and a
+  // canceled or past-due Stripe sub never locks the user out of
+  // features they've paid for. Admin can still force-downgrade via
+  // scripts/set-user-plan.mjs, which writes plan='free' directly and
+  // therefore falls through naturally.
+  const effectiveConf = PLAN_LIMITS[planId] || PLAN_LIMITS[FREE_PLAN];
   const isPaidPlan = planId !== FREE_PLAN;
-  const isActive = !isPaidPlan || status === "active" || status === "trialing";
-  const effectivePlan = isActive ? planId : FREE_PLAN;
-  const effectiveConf = PLAN_LIMITS[effectivePlan] || PLAN_LIMITS[FREE_PLAN];
+  // `isActive` here means "billing is currently in good standing" —
+  // it's now decoupled from access and is just a UI signal so the
+  // billing page can show "Past due — update payment" banners without
+  // gating any feature on it.
+  const isBillingHealthy = !isPaidPlan || status === "active" || status === "trialing";
 
   return {
-    planId: effectivePlan,
+    planId,
     modelTier: effectiveConf.modelTier,
     isGuest: false,
-    isActive,
-    // Stripe customer may exist even for downgraded plans (e.g. canceled
-    // subscription): lets the UI offer "Manage subscription" so the user can
-    // re-subscribe or update payment without starting a fresh checkout.
+    isActive: isBillingHealthy,
+    // Stripe customer may exist even when status is past_due / canceled:
+    // lets the UI offer "Manage subscription" so the user can update
+    // payment without starting a fresh checkout.
     hasStripeCustomer: Boolean(data?.has_stripe_customer),
     loading: isLoading || authLoading,
   };

@@ -1,0 +1,196 @@
+import { useEffect, useMemo, useState } from "react";
+import { ExternalLink, LayoutGrid } from "lucide-react";
+import { supabase } from "@/lib/supabase";
+import {
+  resolveStorageTarget,
+  type VaultAttachment as VaultAttachmentData,
+} from "@/lib/vaultContent";
+import LinkPreview from "@/components/LinkPreview";
+
+// Renders a single Vault attachment in whatever shape best fits its
+// `type` field: image / video / YouTube embed / bookmark / spreadsheet
+// / generic external link / file. Originally lived inline in
+// SynthesisLayer's DetailPanel; extracted so the NeuronPanel can render
+// the same media without a circular import back through the page
+// module.
+//
+// Supabase-storage-hosted URLs get re-signed on demand (the public
+// storage URLs persisted with older attachments expire after a few
+// hours), so the renderer always shows a working preview even when the
+// note was saved months ago.
+
+export default function VaultAttachment({ att }: { att: VaultAttachmentData }) {
+  const type = String(att?.type || "").toLowerCase();
+  const rawUrl = String(att?.url || "").trim();
+  const name = String(att?.name || att?.title || "").trim();
+  const [signedUrl, setSignedUrl] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  const storageTarget = useMemo(() => resolveStorageTarget(att), [att]);
+  const needsSigning = !!storageTarget && rawUrl.includes("supabase.co/storage/");
+  const displayUrl = signedUrl || rawUrl;
+
+  useEffect(() => {
+    if (!needsSigning || !storageTarget) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await supabase.storage
+          .from(storageTarget.bucket)
+          .createSignedUrl(storageTarget.path, 60 * 60 * 24);
+        if (!cancelled && data?.signedUrl) setSignedUrl(data.signedUrl);
+        else if (!cancelled) setFailed(true);
+      } catch {
+        if (!cancelled) setFailed(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [needsSigning, storageTarget]);
+
+  if (type === "image") {
+    if (needsSigning && !signedUrl) {
+      if (failed)
+        return (
+          <div className="rounded-lg border border-black/5 dark:border-white/8 bg-black/[0.02] dark:bg-white/[0.03] p-4 flex items-center justify-center">
+            <span className="text-[0.6875rem] text-gray-400">Image unavailable</span>
+          </div>
+        );
+      return (
+        <div className="rounded-lg border border-black/5 dark:border-white/8 bg-black/[0.02] dark:bg-white/[0.03] h-[120px] flex items-center justify-center animate-pulse">
+          <span className="text-[0.625rem] text-gray-400">Loading…</span>
+        </div>
+      );
+    }
+    return (
+      <div className="rounded-lg overflow-hidden border border-black/5 dark:border-white/8">
+        <img
+          src={displayUrl}
+          alt={name}
+          className="w-full max-h-[240px] object-cover"
+          loading="lazy"
+        />
+        {name && (
+          <p className="text-[0.625rem] text-gray-400 dark:text-gray-500 px-2 py-1 truncate">
+            {name}
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  if (type === "video" && !att?.videoId) {
+    if (needsSigning && !signedUrl && !failed) {
+      return (
+        <div className="rounded-lg border border-black/5 dark:border-white/8 bg-black/[0.02] dark:bg-white/[0.03] h-[120px] flex items-center justify-center animate-pulse">
+          <span className="text-[0.625rem] text-gray-400">Loading…</span>
+        </div>
+      );
+    }
+    if (displayUrl) {
+      return (
+        <div className="rounded-lg overflow-hidden border border-black/5 dark:border-white/8">
+          <video
+            src={displayUrl}
+            controls
+            playsInline
+            preload="metadata"
+            className="w-full max-h-[200px]"
+          />
+          {name && (
+            <p className="text-[0.625rem] text-gray-400 dark:text-gray-500 px-2 py-1 truncate">
+              {name}
+            </p>
+          )}
+        </div>
+      );
+    }
+  }
+
+  if ((type === "youtube" || att?.videoId) && (att?.videoId || rawUrl)) {
+    const videoId =
+      att?.videoId || rawUrl.match(/(?:youtu\.be\/|v=)([^&\s]+)/)?.[1];
+    if (videoId) {
+      return (
+        <div className="rounded-lg overflow-hidden border border-black/5 dark:border-white/8">
+          <div className="relative w-full" style={{ paddingBottom: "56.25%" }}>
+            <iframe
+              src={`https://www.youtube.com/embed/${videoId}`}
+              className="absolute inset-0 w-full h-full"
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope"
+              allowFullScreen
+            />
+          </div>
+          {name && (
+            <p className="text-[0.625rem] text-gray-400 dark:text-gray-500 px-2 py-1 truncate">
+              {name}
+            </p>
+          )}
+        </div>
+      );
+    }
+  }
+
+  if ((type === "bookmark" || type === "link") && rawUrl) {
+    // Bookmarks carry full Open Graph metadata when they were saved
+    // through the Vault's "Save link" flow (`image`, `description`,
+    // `siteName`, `favicon`, plus optional oembed for tweets / etc.).
+    // Render the rich `LinkPreview` card so the neuron panel matches
+    // the way the same bookmark appears in the Vault grid — a tile
+    // with a hero image, favicon + site name, title, and snippet —
+    // rather than the single-line chip we used to show here. Bookmarks
+    // saved before the OG-aware flow shipped (or by older mobile
+    // versions) just have a url + title; LinkPreview degrades to a
+    // chip with the favicon in that case, so the fallback is still
+    // graceful.
+    return (
+      <LinkPreview
+        url={rawUrl}
+        title={String(att?.title || name || "")}
+        description={String(att?.description || "")}
+        image={String(att?.image || "")}
+        siteName={String(att?.siteName || "")}
+        favicon={String(att?.favicon || "")}
+        authorName={String(att?.authorName || "")}
+        authorHandle={String(att?.authorHandle || "")}
+        oembedType={String(att?.oembedType || "")}
+        variant="vault"
+      />
+    );
+  }
+
+  if (type === "spreadsheet") {
+    return (
+      <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-black/5 dark:border-white/8 bg-black/[0.02] dark:bg-white/[0.03]">
+        <LayoutGrid size={12} className="text-emerald-400 flex-shrink-0" />
+        <span className="text-[0.6875rem] text-gray-600 dark:text-gray-300 truncate">
+          {name || "Spreadsheet"}
+        </span>
+        {att?.rows && att?.cols && (
+          <span className="text-[0.575rem] text-gray-400 ml-auto">
+            {att.rows}×{att.cols}
+          </span>
+        )}
+      </div>
+    );
+  }
+
+  if (rawUrl) {
+    return (
+      <a
+        href={rawUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="flex items-center gap-2 px-3 py-2 rounded-lg border border-black/5 dark:border-white/8 hover:bg-black/[0.03] dark:hover:bg-white/[0.04] transition-colors"
+      >
+        <ExternalLink size={12} className="text-gray-400 flex-shrink-0" />
+        <span className="text-[0.6875rem] text-gray-600 dark:text-gray-300 truncate">
+          {name || rawUrl}
+        </span>
+      </a>
+    );
+  }
+
+  return null;
+}

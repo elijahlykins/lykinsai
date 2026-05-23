@@ -82,6 +82,14 @@ export function computeIdeaRelevance(
         (n.meta?.beliefText as string) || n.label || ""
       ).toLowerCase();
       if (txt.includes(il)) score = 0.7;
+    } else if (n.kind === "perspective") {
+      // Perspectives are long-form stories — score against the
+      // title/summary shipped in `meta` since the body isn't on
+      // this projection (lazy-loaded for DetailPanel).
+      const title = ((n.meta?.title || n.label) as string).toLowerCase();
+      const summary = ((n.meta?.ai_summary || "") as string).toLowerCase();
+      if (title.includes(il)) score = 0.85;
+      else if (summary.includes(il)) score = 0.7;
     }
     scores.set(n.id, score);
   });
@@ -188,6 +196,11 @@ export function simulateLayout(
     neuron: 90,
     concept: 30,
     belief: 70,
+    // Perspectives sit between concepts and beliefs in the depth
+    // hierarchy: they're user-authored interpretive material (more
+    // structured than a raw note), but not normative principles —
+    // 50 reads as "in the cognition layer, just below beliefs".
+    perspective: 50,
     grid: 0,
     vault: -30,
     tag: -80,
@@ -263,7 +276,13 @@ export function simulateLayout(
 
     if (n.kind === "category") {
       const angle = catAngle.get(n.id) || 0;
-      const dist = mode === "section" ? 220 : mode === "topic" ? 140 : 160;
+      // Section-mode category radius bumped 220 → 460 so child clusters
+      // (clamped to PARENT_MAX_RADIUS below) can't overlap into their
+      // neighbors' territory. With ~6 categories that's an inter-center
+      // distance of ~460, and PARENT_MAX_RADIUS=200, so each category's
+      // bubble stays comfortably disjoint and the scene actually reads
+      // as "sectioned off" instead of one big force-directed blob.
+      const dist = mode === "section" ? 460 : mode === "topic" ? 140 : 160;
       return {
         ...n,
         x: cx + Math.cos(angle) * dist,
@@ -289,8 +308,15 @@ export function simulateLayout(
       const ring = Math.floor(idx / 10);
       const dist = 120 + ring * 80;
       const catNode = filtered.find((f) => f.id === n.categoryId);
-      const catX = catNode ? cx + Math.cos(parentAngle) * 220 : cx;
-      const catY = catNode ? cy + Math.sin(parentAngle) * 220 : cy;
+      // Must mirror the section-mode category radius set above (460).
+      // Previously hard-coded to 220 — when the category radius was
+      // bumped this stayed stale, so children were seeded 240 units
+      // off-center from their fixed parent and the strong parent-
+      // gravity (0.005) had to drag every child a quarter screen
+      // every layout pass. That created the position thrash that
+      // read as the scene blinking on every realtime tick.
+      const catX = catNode ? cx + Math.cos(parentAngle) * 460 : cx;
+      const catY = catNode ? cy + Math.sin(parentAngle) * 460 : cy;
       return {
         ...n,
         x: catX + Math.cos(angle) * dist,
@@ -326,14 +352,17 @@ export function simulateLayout(
       };
     }
 
-    // connections mode: connection-weighted distance, but anchored on
-    // the parent CATEGORY (not the root) so a freshly-created neuron
-    // with one connection doesn't get parked at the connections-mode
-    // outer-ring default and then forced to drift back over dozens of
-    // simulation steps. Highly-connected hubs still get pushed
-    // further from the category and visually float toward the root;
-    // sparse children (the typical case right after Save) seed close
-    // and stay close.
+    // Connections mode (the load-in "Overview" view): connection-
+    // weighted distance, anchored on the parent CATEGORY (not the
+    // root) so a freshly-created neuron with one connection doesn't
+    // get parked at the outer-ring default and forced to drift back
+    // over dozens of simulation steps. Highly-connected hubs still
+    // get pushed further from the category and visually float toward
+    // the root; sparse children seed close and stay close. This is
+    // the "nice and even" force-directed cloud the synthesis layer
+    // shows on first load — distinct enough to feel personal because
+    // it's driven by the user's own graph, but composed enough that
+    // the scene reads as a tidy brain at rest.
     const jitter = (idHash01(n.id) - 0.5) * 1.2;
     const angle = parentAngle + jitter;
     const catNodeC = filtered.find((f) => f.id === n.categoryId);
@@ -363,7 +392,7 @@ export function simulateLayout(
   );
   const map = new Map(simNodes.map((n) => [n.id, n]));
 
-  const REPULSION = mode === "section" ? 5000 : mode === "topic" ? 6000 : 8000;
+  const REPULSION = mode === "section" ? 4500 : mode === "topic" ? 6000 : 8000;
   const EDGE_ATTRACTION = 0.001;
   const DAMPING = 0.85;
   // Iteration count scales with graph size so the inner O(n²) loop's
@@ -375,8 +404,18 @@ export function simulateLayout(
   );
   const MIN_REPULSION_DIST = 30;
   const MAX_VELOCITY = 25;
-  const MAX_RADIUS = mode === "section" ? 720 : 900;
-  const PARENT_MAX_RADIUS = 340;
+  // Section mode places categories at radius 460 with child bubbles
+  // up to PARENT_MAX_RADIUS (200) outside that — so the outermost
+  // child can land at ~660 from origin. MAX_RADIUS needs to leave
+  // breathing room past that or the global clamp will yank the
+  // outermost children of every category back inward and re-merge
+  // them into the central blob the bigger seed radius was meant
+  // to break apart.
+  const MAX_RADIUS = mode === "section" ? 1100 : 900;
+  // Tightened 340 → 200 so each category's child cloud stays inside
+  // its own bubble and adjacent categories visibly separate. Only
+  // the section-mode integration block applies this clamp.
+  const PARENT_MAX_RADIUS = 200;
 
   for (let iter = 0; iter < ITERATIONS; iter++) {
     for (let i = 0; i < simNodes.length; i++) {
@@ -425,31 +464,37 @@ export function simulateLayout(
       if (mode === "section") {
         const parent = map.get(node.categoryId || node.parentId || "");
         if (parent) {
-          // Bumped from 0.0008 → 0.0022 so freshly-created neurons
-          // are pulled back to their category cluster fast enough
-          // that the user sees them settle next to the parent rather
-          // than orbit out into empty space.
-          node.vx += (parent.x - node.x) * 0.0022;
-          node.vy += (parent.y - node.y) * 0.0022;
+          // Bumped 0.0022 → 0.005 (paired with PARENT_MAX_RADIUS
+          // 340 → 200 above) so children visibly pack into their
+          // category bubble instead of drifting toward each other
+          // across the universal repulsion field. The two changes
+          // are coupled: a stronger pull without the tighter clamp
+          // would just orbit children faster around the same wide
+          // ring.
+          node.vx += (parent.x - node.x) * 0.005;
+          node.vy += (parent.y - node.y) * 0.005;
         }
       } else if (mode === "topic") {
         const strength = 0.0003 + node.relevance * 0.002;
         node.vx += (cx - node.x) * strength;
         node.vy += (cy - node.y) * strength;
       } else {
-        const ratio = node.connectionCount / maxConn;
-        const strength = 0.0002 + ratio * 0.0012;
+        // Overview / connections mode (the default load-in cloud).
+        // Gentle center gravity scaled by total connection count —
+        // hubs drift toward the centre, leaves stay further out —
+        // plus a parent-category anchor whose strength tapers as
+        // connection count grows. Together these produce the
+        // composed-but-personal force-directed cloud the synthesis
+        // layer shows on first paint: structurally anchored to the
+        // user's own categories, but loose enough that the scene
+        // breathes instead of looking like a hierarchy chart.
+        const ratioN = node.connectionCount / maxConn;
+        const strength = 0.0002 + ratioN * 0.0012;
         node.vx += (cx - node.x) * strength;
         node.vy += (cy - node.y) * strength;
-        // Connections mode used to only have center gravity, which left
-        // low-connection neurons (the typical case right after Save)
-        // drifting between the root and the outer ring with no force
-        // pulling them home to their category. Anchor them to the
-        // parent category — strength tapers as connection count grows
-        // so true hubs are still free to float toward the root.
         const parent = map.get(node.categoryId || node.parentId || "");
         if (parent) {
-          const parentStrength = 0.0024 * (1 - ratio);
+          const parentStrength = 0.0024 * (1 - ratioN);
           node.vx += (parent.x - node.x) * parentStrength;
           node.vy += (parent.y - node.y) * parentStrength;
         }

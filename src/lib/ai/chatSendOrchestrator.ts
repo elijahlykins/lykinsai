@@ -60,6 +60,60 @@ function maybeNotifyModelDowngrade(res: Response | null | undefined) {
 /*  Shared types re-exported so callers don't need OmniaGrid           */
 /* ------------------------------------------------------------------ */
 
+/**
+ * One tool the AI invoked during this chat turn (the in-app agent loop in
+ * server.js → chat-agent-loop.js). Lives on PromptMessage.toolCalls so the
+ * chat surface can render an inline pill per call ("Listed 7 projects",
+ * "Searched vault: 12 hits") below the assistant bubble.
+ *
+ * `status` transitions running → done | error as the server emits
+ * `tool_call` SSE events. The orchestrator keeps the same `id` across
+ * events so the UI updates the same pill in place.
+ *
+ * `result` is the JSON the tool handler returned (see runChatTool in
+ * mcp-tools/chatTools.js). Shape varies by tool — readers should branch
+ * on `name` before reading specific fields. Cap from the server is ~16KB,
+ * so safe to keep in memory.
+ */
+export type ToolCallEvent = {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+  status: "running" | "done" | "error";
+  result?: any;
+  error?: string;
+  latencyMs?: number;
+  startedAt: number;
+  finishedAt?: number;
+};
+
+/**
+ * A neuron the AI has "brought into the chat" during this turn — currently
+ * triggered when the in-app agent loop runs `lykn_loadNeuron` and the call
+ * succeeds. The orchestrator extracts the rich payload from the tool result
+ * and stashes it on the assistant message under `aiNeurons`; the chat
+ * surface renders one ChatNeuronCard per entry under the assistant bubble.
+ *
+ * One entry per successful loadNeuron call. We dedupe on the `id` field
+ * (the tool_call event id) so the same SSE event firing twice
+ * (running → done) doesn't double-add the card.
+ *
+ * The shape is intentionally permissive (`payload: any`) — the rendering
+ * component (ChatNeuronCard) is the authority on which kinds it supports
+ * and how to lay each one out. The orchestrator just gates on `payload.ok
+ * === true` and `payload.kind` being one of the recognised neuron kinds.
+ */
+export type ChatNeuronAttachment = {
+  id: string;
+  payload: any;
+  addedAt: number;
+};
+
+// node_id prefixes lykn_loadNeuron uses to discriminate which store the
+// neuron lives in. Mirrors the same set the tool handler accepts and is
+// also what ChatNeuronCard renders per-kind layouts for.
+const LOAD_NEURON_KINDS = new Set(["vault", "belief", "fact", "concept"]);
+
 export type PromptMessage = {
   id: string;
   role: "user";
@@ -72,6 +126,31 @@ export type PromptMessage = {
   sources?: { title: string; url: string }[];
   kind?: "prompt";
   attachments?: FocusedChatAttachment[];
+  /**
+   * Tool calls fired by the in-app agent loop during this turn. Each entry
+   * starts in `status: "running"` and transitions to `"done"` (or
+   * `"error"`) once the server pushes the matching `tool_call` SSE event.
+   * Render one pill per entry under the assistant bubble; see ToolCallPill.
+   *
+   * Order matches emission order from the server (hop 0 calls first, then
+   * hop 1, …). Within a hop, OpenAI may emit parallel calls — those land
+   * in whatever order they completed.
+   */
+  toolCalls?: ToolCallEvent[];
+  /**
+   * Neurons (vault items, beliefs, facts, concepts) the AI brought into
+   * the chat during this turn via lykn_loadNeuron. Each entry renders as
+   * a rich ChatNeuronCard under the assistant bubble so the user can see
+   * the actual saved item (image, link card, note body, belief text, …)
+   * directly in the conversation rather than relying on the model to
+   * paraphrase it in text.
+   *
+   * Populated by the SSE `tool_call` handler when a `lykn_loadNeuron`
+   * call lands with status `done` and `result.ok === true`. Deduped on
+   * the tool_call id so repeated events for the same call don't double-
+   * insert the card.
+   */
+  aiNeurons?: ChatNeuronAttachment[];
   /**
    * Set on this message when the AI's reply ended with a hidden
    * <learned kind="...">phrase</learned><reason>why</reason> tag pair —
@@ -914,6 +993,129 @@ async function handleStreamingResponse(
               continue;
             }
             if (parsed.status) { state.setChatStatusText(String(parsed.status)); continue; }
+            if (parsed.tool_call && typeof parsed.tool_call === "object") {
+              // Agent-loop tool call event from server (chat-agent-loop.js).
+              // We update the in-flight assistant message's `toolCalls`
+              // array in place — the same `id` arrives twice (running →
+              // done|error) so we look up by id and patch the existing
+              // entry rather than pushing a duplicate.
+              const tc = parsed.tool_call as {
+                id: string;
+                name: string;
+                args?: Record<string, unknown>;
+                status: "running" | "done" | "error";
+                result?: any;
+                error?: string;
+                latencyMs?: number;
+              };
+              const now = Date.now();
+              // When a `lykn_loadNeuron` or `lykn_loadNeurons` call lands
+              // with ok:true we want each loaded neuron to render as a
+              // real card in the chat (not just as a pill). Build the
+              // attachments up front so the setChatMessages updater
+              // below can push them onto the same message in a single
+              // pass.
+              //
+              //   • lykn_loadNeuron  → one card from `tc.result`
+              //   • lykn_loadNeurons → one card per entry in
+              //                        `tc.result.results[]` whose
+              //                        per-entry `ok` is true and `kind`
+              //                        is recognised. The batch tool
+              //                        guarantees each entry is the same
+              //                        shape the single tool returns, so
+              //                        the card renderer doesn't need to
+              //                        branch on which tool fed it.
+              const newAttachments: ChatNeuronAttachment[] = [];
+              if (
+                tc.status === "done"
+                && tc.result
+                && typeof tc.result === "object"
+                && tc.result.ok === true
+              ) {
+                if (
+                  tc.name === "lykn_loadNeuron"
+                  && LOAD_NEURON_KINDS.has(String(tc.result.kind))
+                ) {
+                  newAttachments.push({ id: tc.id, payload: tc.result, addedAt: now });
+                } else if (
+                  tc.name === "lykn_loadNeurons"
+                  && Array.isArray(tc.result.results)
+                ) {
+                  // Suffix the tool_call id with the per-entry index so
+                  // the dedupe key stays unique across the batch — every
+                  // entry needs its own React key + persistence slot.
+                  tc.result.results.forEach((entry: any, i: number) => {
+                    if (
+                      entry
+                      && entry.ok === true
+                      && LOAD_NEURON_KINDS.has(String(entry.kind))
+                    ) {
+                      newAttachments.push({
+                        id: `${tc.id}#${i}`,
+                        payload: entry,
+                        addedAt: now,
+                      });
+                    }
+                  });
+                }
+              }
+              state.setChatMessages((prev) =>
+                prev.map((m) => {
+                  if (m.id !== promptId) return m;
+                  const existing = Array.isArray(m.toolCalls) ? m.toolCalls : [];
+                  const idx = existing.findIndex((e) => e.id === tc.id);
+                  // Dedupe neuron attachments by id — the same `done`
+                  // event won't fire twice in normal flow, but a
+                  // defensive check costs nothing and prevents double-
+                  // cards if the server ever re-emits. For batch loads
+                  // we union all NEW entries that aren't already there.
+                  const existingNeurons = Array.isArray(m.aiNeurons) ? m.aiNeurons : [];
+                  const haveIds = new Set(existingNeurons.map((n) => n.id));
+                  const additions = newAttachments.filter((n) => !haveIds.has(n.id));
+                  const neuronsNext = additions.length
+                    ? [...existingNeurons, ...additions]
+                    : existingNeurons;
+                  if (idx === -1) {
+                    return {
+                      ...m,
+                      toolCalls: [
+                        ...existing,
+                        {
+                          id: tc.id,
+                          name: tc.name,
+                          args: tc.args || {},
+                          status: tc.status,
+                          result: tc.result,
+                          error: tc.error,
+                          latencyMs: tc.latencyMs,
+                          startedAt: now,
+                          finishedAt: tc.status === "running" ? undefined : now,
+                        },
+                      ],
+                      aiNeurons: neuronsNext,
+                    };
+                  }
+                  const merged = [...existing];
+                  merged[idx] = {
+                    ...merged[idx],
+                    name: tc.name || merged[idx].name,
+                    args: tc.args || merged[idx].args,
+                    status: tc.status,
+                    result: tc.result !== undefined ? tc.result : merged[idx].result,
+                    error: tc.error !== undefined ? tc.error : merged[idx].error,
+                    latencyMs: tc.latencyMs ?? merged[idx].latencyMs,
+                    finishedAt: tc.status === "running" ? merged[idx].finishedAt : now,
+                  };
+                  return { ...m, toolCalls: merged, aiNeurons: neuronsNext };
+                }),
+              );
+              // Give the user a soft status line while tools run so the
+              // bubble doesn't sit silent during a multi-hop loop.
+              if (tc.status === "running") {
+                state.setChatStatusText(`Running ${tc.name.replace(/^lykn_/, "")}…`);
+              }
+              continue;
+            }
             if (parsed.t) {
               if (firstToken) {
                 state.setChatStatusText("Responding...");
@@ -2249,6 +2451,13 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
     projectId: identity.projectId,
     boardId: identity.routeBoardId || identity.boardId || undefined,
     skipWebSearch: hasVideoTranscript,
+    // Opt this turn into the agent loop (chat-agent-loop.js). Authenticated
+    // chat path only — the model can call the in-app tool whitelist
+    // (mcp-tools/chatTools.js) to read/write synthesis-layer state via
+    // OpenAI function-calling, and the SSE stream interleaves tool_call
+    // events with text deltas. Server forces an OpenAI tool-capable model
+    // when this is on; X-Tool-Route header announces the swap.
+    useTools: true,
     ...(trimmedCanvasContext ? { context: trimmedCanvasContext } : {}),
     ...(hasFocusedBricks ? { hasFocusedBricks: true } : {}),
     ...(mediaContext ? { mediaContext: mediaContext.slice(0, 8000) } : {}),

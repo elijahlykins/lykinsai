@@ -8,6 +8,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import NeuronPill from "@/components/synthesis/NeuronPill";
 import AppliedRulePill from "@/components/synthesis/AppliedRulePill";
+import ToolCallPill from "@/components/omnia/ToolCallPill";
+import type { ToolCallEvent } from "@/lib/ai/chatSendOrchestrator";
 import type { AppliedAttribution } from "@/lib/ai/appliedTag";
 import type { FactNeuron } from "@/lib/ai/learnedTag";
 
@@ -119,6 +121,12 @@ type PromptMessage = {
    * the AI response with inline good/rule-was-off/belief-was-off feedback.
    */
   appliedAttribution?: AppliedAttribution;
+  /**
+   * Tools the in-app agent loop invoked while answering this turn.
+   * Renders one ToolCallPill per entry (compact, status-coloured) so the
+   * user sees what the AI did to answer — e.g. "Listed 7 projects".
+   */
+  toolCalls?: ToolCallEvent[];
 };
 
 export interface OmniaSideRailProps {
@@ -501,6 +509,13 @@ const OmniaSideRail: React.FC<OmniaSideRailProps> = React.memo(function OmniaSid
                 </div>
                   </div>
                 </div>
+                {Array.isArray(msg.toolCalls) && msg.toolCalls.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {msg.toolCalls.map((tc) => (
+                      <ToolCallPill key={tc.id} call={tc} size="compact" />
+                    ))}
+                  </div>
+                )}
                 {msg.factNeuron && <NeuronPill fact={msg.factNeuron} size="compact" />}
                 {msg.appliedAttribution && <AppliedRulePill attribution={msg.appliedAttribution} size="compact" />}
               </div>

@@ -11,6 +11,12 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import NeuronPill from "@/components/synthesis/NeuronPill";
 import AppliedRulePill from "@/components/synthesis/AppliedRulePill";
+import ToolCallPill from "@/components/omnia/ToolCallPill";
+import ChatNeuronCard from "@/components/omnia/ChatNeuronCard";
+import type {
+  ToolCallEvent,
+  ChatNeuronAttachment,
+} from "@/lib/ai/chatSendOrchestrator";
 import type { FactNeuron } from "@/lib/ai/learnedTag";
 import { supabase } from "@/lib/supabase";
 
@@ -116,6 +122,23 @@ type PromptMessage = {
    * response so the user sees LYKN learning about them in real time.
    */
   factNeuron?: FactNeuron;
+  /**
+   * Tools the in-app agent loop invoked while answering this turn. One
+   * ToolCallPill per entry is rendered under the assistant bubble; status
+   * transitions running → done|error in place as the SSE stream delivers
+   * matching `tool_call` events.
+   */
+  toolCalls?: ToolCallEvent[];
+  /**
+   * Neurons (vault items, beliefs, facts, concepts) the AI brought into
+   * the chat this turn via lykn_loadNeuron. Renders one ChatNeuronCard
+   * per entry directly under the assistant bubble — same row as the
+   * ToolCallPill strip but laid out as a stack of full cards so the
+   * user actually sees the saved item (image / link card / note body /
+   * belief / etc.) without having to leave the chat. Populated by the
+   * orchestrator on `tool_call` SSE events; see chatSendOrchestrator.
+   */
+  aiNeurons?: ChatNeuronAttachment[];
   /**
    * Action buttons rendered below the AI response bubble. Currently
    * used by the load-in greeting seeded by OmniaGrid — each action is
@@ -1476,6 +1499,20 @@ const MessageItem = React.memo(function MessageItem({
                 </div>
               </div>
             </div>
+            {Array.isArray(msg.toolCalls) && msg.toolCalls.length > 0 && (
+              <div className="px-1 flex flex-wrap gap-1.5">
+                {msg.toolCalls.map((tc) => (
+                  <ToolCallPill key={tc.id} call={tc} />
+                ))}
+              </div>
+            )}
+            {Array.isArray(msg.aiNeurons) && msg.aiNeurons.length > 0 && (
+              <div className="px-1 flex flex-col gap-2 max-w-[32rem]">
+                {msg.aiNeurons.map((att) => (
+                  <ChatNeuronCard key={att.id} attachment={att} />
+                ))}
+              </div>
+            )}
             {msg.factNeuron && <NeuronPill fact={msg.factNeuron} className="px-1" />}
             {(msg as any).appliedAttribution && <AppliedRulePill attribution={(msg as any).appliedAttribution} className="px-1" />}
           </div>

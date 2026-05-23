@@ -543,6 +543,23 @@ export async function createManualBelief(client, userId, payload = {}, opts = {}
   if (!key) return { ok: false, reason: 'unkeyable_text' };
   const rationale = String(payload?.rationale || '').trim().slice(0, 240) || 'User-authored belief.';
 
+  // Composer-supplied extras (migration 063). The unified neuron
+  // composer collects a long-form `story` and free-form `notes` for
+  // every neuron type; on beliefs we tuck them into the metadata jsonb
+  // so the typed columns (rationale, serves_need, …) stay clean. We
+  // accept only the documented keys + cap lengths to keep one client
+  // bug from ballooning the row.
+  const incomingMeta = payload?.metadata && typeof payload.metadata === 'object'
+    ? payload.metadata
+    : null;
+  const metadata = {};
+  if (incomingMeta) {
+    const story = String(incomingMeta.story || '').trim().slice(0, 8000);
+    const notes = String(incomingMeta.notes || '').trim().slice(0, 4000);
+    if (story) metadata.story = story;
+    if (notes) metadata.notes = notes;
+  }
+
   const now = new Date().toISOString();
 
   // Merge "manual" into proposed_by_clients without clobbering whatever
@@ -575,12 +592,17 @@ export async function createManualBelief(client, userId, payload = {}, opts = {}
     source: 'manual',
     proposed_by_clients: proposedByClients,
     ratified_by: 'manual',
+    // Composer extras (story / notes). Empty object is the column
+    // default, so we only set it on the row when the user actually
+    // filled in one of the fields — keeps no-op writes a cheap
+    // upsert without touching the metadata blob.
+    ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
   };
 
   const { data, error } = await client
     .from('lykn_beliefs')
     .upsert(insertRow, { onConflict: 'user_id,belief_key' })
-    .select('id, belief_text, belief_key, serves_need, status, confidence, rationale, created_at, ratified_at')
+    .select('id, belief_text, belief_key, serves_need, status, confidence, rationale, metadata, created_at, ratified_at')
     .maybeSingle();
   if (error) return { ok: false, reason: error.message };
   if (!data) return { ok: false, reason: 'insert_failed' };
@@ -999,7 +1021,7 @@ export function formatBeliefsAndRulesForPromptOutsideClient(beliefs, rules, opts
  */
 export function formatProjectStateForPromptOutsideClient(projectContext) {
   if (!projectContext || !projectContext.project) return '';
-  const { project, state } = projectContext;
+  const { project, state, neurons } = projectContext;
   const stateEntries = state && typeof state === 'object' ? Object.entries(state) : [];
 
   // Header. We tell the model the project name + description (if any)
@@ -1037,6 +1059,31 @@ export function formatProjectStateForPromptOutsideClient(projectContext) {
       })
     : ['(no state pushes yet — this project was just created)'];
 
+  // Clustered neurons. The user explicitly grouped these synthesis-
+  // layer neurons into the project from LYKN's "+ Create project"
+  // flow on the synthesis page. Working state above is what
+  // outside AI clients pushed in; THIS section is the user's
+  // hand-picked answer to "what is this project made of?". Worth
+  // keeping in the context block because the model can reference
+  // specific clustered notes/beliefs/concepts directly without
+  // needing to call extra discovery tools.
+  const neuronList = Array.isArray(neurons) ? neurons : [];
+  const neuronLines = [];
+  if (neuronList.length > 0) {
+    neuronLines.push('', 'Clustered neurons (user-grouped synthesis nodes):');
+    // Cap at ~16 entries inline; the project is the user's pick of
+    // what matters, so list density beats the long tail. The full
+    // list is reachable via lykn_listProjects if the model needs it.
+    for (const n of neuronList.slice(0, 16)) {
+      const kind = n?.kind ? ` [${n.kind}]` : '';
+      const label = (n?.label || '(unlabeled)').toString().replace(/\s+/g, ' ').trim();
+      neuronLines.push(`- ${label}${kind}`);
+    }
+    if (neuronList.length > 16) {
+      neuronLines.push(`(+ ${neuronList.length - 16} more — call lykn_listProjects for the rest)`);
+    }
+  }
+
   const footer = [
     '',
     'When this conversation produces a meaningful decision, milestone, or',
@@ -1046,7 +1093,180 @@ export function formatProjectStateForPromptOutsideClient(projectContext) {
     'not appends. New keys are fine when the topic is genuinely new.',
   ];
 
-  return [...header, '', 'Current state (most recent first):', ...stateLines, ...footer].join('\n').trim();
+  return [
+    ...header,
+    '',
+    'Current state (most recent first):',
+    ...stateLines,
+    ...neuronLines,
+    ...footer,
+  ].join('\n').trim();
+}
+
+/**
+ * In-LYKN variant of the [CURRENT_PROJECT] block. Same body (header +
+ * state kv-pairs + clustered neurons) as the outside-client formatter,
+ * but the trailing footer doesn't push the model toward MCP tool calls
+ * (the in-LYKN AI doesn't have those wired into its chat loop yet — it
+ * gets project context via this prompt block, and writes happen via the
+ * synthesis-page UI). Tells the model the project is the user's current
+ * work and to reference it conversationally rather than re-litigating.
+ *
+ * If `projectContext` is null (no active project), returns ''.
+ */
+export function formatProjectStateForPromptInLykn(projectContext) {
+  if (!projectContext || !projectContext.project) return '';
+  const { project, state, neurons } = projectContext;
+  const stateEntries = state && typeof state === 'object' ? Object.entries(state) : [];
+
+  const lastActive = project.last_active_at
+    ? new Date(project.last_active_at).toISOString()
+    : null;
+
+  const header = [
+    '[CURRENT_PROJECT]',
+    'The user\'s currently active synthesis-layer project — the work they\'re focused on across LYKN and any connected outside AI clients (Claude Desktop, Cursor, Claude Code, ChatGPT). Reference it naturally; don\'t re-litigate decisions already captured below.',
+    '',
+    `Name: ${project.name || '(unnamed)'}`,
+  ];
+  if (project.description) header.push(`Description: ${project.description}`);
+  if (lastActive) header.push(`Last activity: ${lastActive}`);
+  if (project.created_by_client) header.push(`Started in: ${project.created_by_client}`);
+
+  const sorted = stateEntries
+    .filter(([, v]) => v && v.value)
+    .sort((a, b) => {
+      const aSet = a[1]?.set_at ? Date.parse(a[1].set_at) : 0;
+      const bSet = b[1]?.set_at ? Date.parse(b[1].set_at) : 0;
+      return bSet - aSet;
+    })
+    .slice(0, 24);
+
+  const stateLines = sorted.length
+    ? sorted.map(([key, entry]) => {
+        const client = entry.set_by_client ? ` [${entry.set_by_client}]` : '';
+        return `- ${key}${client}: ${String(entry.value).replace(/\s+/g, ' ').trim()}`;
+      })
+    : ['(no state pushes yet — this project was just created)'];
+
+  const neuronList = Array.isArray(neurons) ? neurons : [];
+  const neuronLines = [];
+  if (neuronList.length > 0) {
+    neuronLines.push('', 'Clustered neurons (user-grouped synthesis nodes):');
+    for (const n of neuronList.slice(0, 16)) {
+      const kind = n?.kind ? ` [${n.kind}]` : '';
+      const label = (n?.label || '(unlabeled)').toString().replace(/\s+/g, ' ').trim();
+      neuronLines.push(`- ${label}${kind}`);
+    }
+    if (neuronList.length > 16) {
+      neuronLines.push(`(+ ${neuronList.length - 16} more — visible on the synthesis page)`);
+    }
+  }
+
+  const footer = [
+    '',
+    'If this conversation produces a meaningful new decision, blocker, or',
+    'milestone for this project, suggest the user capture it on the',
+    'synthesis page so other AI clients pick it up next time. Outside AI',
+    'clients can update the project via MCP, but the in-LYKN chat does',
+    'not push state automatically — encourage the user to use the',
+    'project panel to record durable changes.',
+  ];
+
+  return [
+    ...header,
+    '',
+    'Current state (most recent first):',
+    ...stateLines,
+    ...neuronLines,
+    ...footer,
+  ].join('\n').trim();
+}
+
+/**
+ * Load the user's active project + its current kv state + clustered
+ * neurons. Mirrors what mcp-tools/getContextBlock.js used to do
+ * inline; lifted here so server.js (in-LYKN chat enrichment) and the
+ * MCP tool can share the exact same loader and stay in lockstep.
+ *
+ * Best-effort: any failure (missing profile, missing tables, network
+ * blip) returns null so the caller can keep going without project
+ * context. Tables involved:
+ *   • lykn_user_synthesis_profile.active_project_id  → which project
+ *   • lykn_projects                                  → header
+ *   • lykn_project_state (superseded_at IS NULL)     → kv state
+ *   • lykn_project_neurons (migration 063, optional) → cluster members
+ *
+ * Returns:
+ *   null
+ *   | {
+ *       project:  { id, name, description, status, created_by_client, last_active_at },
+ *       state:    { [state_key]: { value, set_by_client, set_at } },
+ *       neurons:  [{ node_id, label, kind }],
+ *     }
+ */
+export async function loadActiveProjectContext(client, userId) {
+  if (!client || !userId) return null;
+  try {
+    const { data: profile } = await client
+      .from('lykn_user_synthesis_profile')
+      .select('active_project_id')
+      .eq('user_id', userId)
+      .maybeSingle();
+    const projectId = profile?.active_project_id;
+    if (!projectId) return null;
+
+    const { data: project } = await client
+      .from('lykn_projects')
+      .select('id, name, description, status, created_by_client, last_active_at')
+      .eq('id', projectId)
+      .eq('user_id', userId)
+      .maybeSingle();
+    if (!project || project.status !== 'active') return null;
+
+    const { data: rows } = await client
+      .from('lykn_project_state')
+      .select('state_key, state_value, set_by_client, created_at')
+      .eq('user_id', userId)
+      .eq('project_id', projectId)
+      .is('superseded_at', null)
+      .order('created_at', { ascending: false })
+      .limit(50);
+
+    const state = {};
+    for (const row of rows || []) {
+      if (!(row.state_key in state)) {
+        state[row.state_key] = {
+          value: row.state_value,
+          set_by_client: row.set_by_client,
+          set_at: row.created_at,
+        };
+      }
+    }
+
+    let neurons = [];
+    try {
+      const { data: memberRows } = await client
+        .from('lykn_project_neurons')
+        .select('node_id, node_label, node_kind, created_at')
+        .eq('user_id', userId)
+        .eq('project_id', projectId)
+        .order('created_at', { ascending: true })
+        .limit(40);
+      neurons = (memberRows || []).map((r) => ({
+        node_id: r.node_id,
+        label: r.node_label,
+        kind: r.node_kind,
+      }));
+    } catch (err) {
+      console.warn('[beliefSystem] project neuron load failed:', err?.message || err);
+    }
+
+    return { project, state, neurons };
+  } catch (err) {
+    console.warn('[beliefSystem] active project load failed:', err?.message || err);
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------

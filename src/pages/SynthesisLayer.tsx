@@ -16,19 +16,25 @@ import {
   ChevronLeft,
   ChevronRight,
   ExternalLink,
+  FolderPlus,
   Hash,
   LayoutGrid,
+  Link2,
   Loader2,
   Lock,
   Network,
   PanelRightClose,
   Plus,
+  Search,
   StickyNote,
   Sparkles,
   Tag,
   X,
 } from "lucide-react";
 import BeliefWindowPanel from "@/components/synthesis/BeliefWindowPanel";
+import NeuronPanel from "@/components/synthesis/NeuronPanel";
+import VaultAttachment from "@/components/synthesis/VaultAttachment";
+import { parseVaultContent } from "@/lib/vaultContent";
 import { API_BASE_URL } from "@/lib/api-config";
 import { GridIcon } from "@/components/ui/GridIcon";
 import {
@@ -61,6 +67,18 @@ import {
   writePrototypeStep,
   writePrototypeTourMode,
 } from "@/lib/prototypeHandoff";
+import {
+  createUserLinks,
+  listUserLinks,
+  type UserLink,
+} from "@/lib/userLinks";
+import {
+  addNeuronsToProject,
+  createUserProject,
+  listUserProjects,
+  type UserProject,
+} from "@/lib/userProjects";
+import ProjectPanel from "@/components/synthesis/ProjectPanel";
 
 // Demo grid boards have real preview routes (see demoGrids.js), so they're
 // navigable even though their ids match the `demo-*` pattern. Other demo
@@ -113,11 +131,15 @@ const palette = {
   // Chats category now.)
   grids:    { bg: "#3b82f6", glow: "rgba(59,130,246,0.30)" },
   vault:    { bg: "#10b981", glow: "rgba(16,185,129,0.30)" },
+  // Legacy palette entries kept so any older `node.color` reads (e.g.
+  // tag pills, neuron subroutines that still reference these slugs)
+  // don't crash. After the 5-category collapse the only categories
+  // that still surface as containers are Chats / Vault / Belief /
+  // Facts / Concepts. `tags`, `neurons`, `beliefs`, `perspectives` no
+  // longer back a top-level cluster but the swatches remain for
+  // legacy meta / edge-case rendering.
   tags:     { bg: "#f59e0b", glow: "rgba(245,158,11,0.30)" },
   neurons:  { bg: "#ec4899", glow: "rgba(236,72,153,0.30)" },
-  // Beliefs are the layer above neurons — palette emphasizes that this is
-  // a separate, higher-order tier (deeper indigo, brighter glow) so the
-  // user reads the cluster as "principles" not just more facts.
   beliefs:  { bg: "#818cf8", glow: "rgba(129,140,248,0.40)" },
   // Concepts are the cross-cutting topic layer (056-058 migrations).
   // Palette is a warm amber so they read as a third cluster distinct
@@ -125,25 +147,41 @@ const palette = {
   // semantically lives "between" beliefs and the raw notes/facts —
   // they organise everything else without being normative.
   concepts: { bg: "#f97316", glow: "rgba(249,115,22,0.35)" },
-  // Facts — the user-authored side of the "AI Learned" axis. Same
-  // top-level container shape as Chats / Vault / Beliefs / Concepts;
-  // colored cyan so it reads as its own cluster and never gets
-  // confused with the pink "AI Learned" container or the green Vault.
-  facts:    { bg: "#06b6d4", glow: "rgba(6,182,212,0.35)" },
+  // Facts — observable truths about the user. In the 5-category model
+  // this cluster absorbs the old "AI Learned" tier (themes, goals,
+  // recurring topics, vocabulary), so it inherits the pink palette
+  // that tier used to wear — both user-stated and AI-observed facts
+  // share the same visual identity now ("once it's a fact, it's just
+  // a fact"). The deeper pink for the category sphere matches the
+  // historical `palette.neurons.bg`.
+  facts:    { bg: "#ec4899", glow: "rgba(236,72,153,0.35)" },
+  // Perspectives — long-form stories / points of view the user has
+  // explicitly written down. Sits next to Facts as another user-
+  // authored tier (Facts = short; Perspectives = long). Coloured violet
+  // so the cluster reads as its own thing distinct from Beliefs
+  // (indigo) which are normative, while Perspectives are narrative.
+  perspectives: { bg: "#c4b5fd", glow: "rgba(196,181,253,0.35)" },
   grid:     { bg: "#60a5fa", glow: "rgba(96,165,250,0.25)" },
   note:     { bg: "#34d399", glow: "rgba(52,211,153,0.25)" },
   tag:      { bg: "#fbbf24", glow: "rgba(251,191,36,0.25)" },
   neuron:   { bg: "#f472b6", glow: "rgba(244,114,182,0.25)" },
-  // Core Belief nodes are pure white — they're meant to read as "lit from
-  // within" against the colored category clusters around them. White +
-  // the boosted emissive in SynthesisScene3D (3.6, pulsing) makes the
-  // principles look like little stars, which matches the intent that
-  // beliefs are the highest-order tier and the AI's brightest signal.
+  // BELIEF — the deepest-self cluster (beliefs + perspectives bundled).
+  // Pure white so the cluster reads as "lit from within" against the
+  // colored category clusters around it. White + the boosted emissive
+  // in SynthesisScene3D (3.6, pulsing) makes the principles look like
+  // little stars, which matches the intent that beliefs are the
+  // highest-order tier and the AI's brightest signal. The same swatch
+  // backs both the `__cat_belief__` category sphere and individual
+  // belief / perspective nodes inside it.
   belief:   { bg: "#ffffff", glow: "rgba(255,255,255,0.45)" },
   // Individual concept nodes — slightly desaturated amber so they
   // recede next to belief stars but still pop out as a coherent
   // cluster amid the colored category groups around them.
   concept:  { bg: "#fb923c", glow: "rgba(251,146,60,0.30)" },
+  // Individual perspective nodes — slightly brighter violet than the
+  // category glow so they pop within their own cluster without
+  // overpowering the brighter belief stars next door.
+  perspective: { bg: "#a78bfa", glow: "rgba(167,139,250,0.30)" },
 };
 
 /* ------------------------------------------------------------------ */
@@ -155,7 +193,7 @@ const palette = {
 // summary/themes for cross-edge heuristics. The DetailPanel lazy-fetches
 // the body when a vault node is actually opened (see `vaultContentQuery`).
 // Optional here so legacy callers (e.g. WelcomePanel removal) still compile.
-type NoteRow = { id: string; title?: string; content?: string; tags?: string[]; ai_summary?: string | null; ai_signals?: any; source?: string | null };
+type NoteRow = { id: string; title?: string; content?: string; tags?: string[]; ai_summary?: string | null; ai_signals?: any; source?: string | null; created_at?: string | null };
 
 // Connector source slug → (app key, display label). Notes whose `source`
 // matches one of these get collapsed into a single rollup node per app
@@ -217,6 +255,27 @@ const CONNECTOR_SOURCE_APPS: Record<string, { app: string; label: string }> = {
   gsheets_starred:   { app: "gdrive",    label: "Google Drive" },
   gslides_starred:   { app: "gdrive",    label: "Google Drive" },
 };
+
+// Magic tag that marks a Vault note as a Perspective neuron. We
+// piggyback on the existing `notes` table for storage so the
+// Perspective composer doesn't require a new migration, but the
+// synthesis layer hides these from the Vault cluster and surfaces
+// them under their own Perspectives category instead. The leading
+// underscore keeps the tag from cluttering the user's normal tag
+// list in the Vault UI (tag rendering filters out underscore-
+// prefixed labels — see `isUserFacingTag` below).
+export const PERSPECTIVE_NOTE_TAG = "_perspective";
+
+function isPerspectiveNote(note: NoteRow): boolean {
+  return Array.isArray(note.tags) && note.tags.includes(PERSPECTIVE_NOTE_TAG);
+}
+
+function isUserFacingTag(tag: string): boolean {
+  // Tags starting with `_` are internal markers (currently just
+  // `_perspective`) — hide them from the tag cloud so the user
+  // never sees a "#_perspective" pseudo-tag floating around.
+  return !tag.startsWith("_");
+}
 
 function noteSourceApp(note: NoteRow): { app: string; label: string } | null {
   const src = (note.source || "").trim();
@@ -288,7 +347,7 @@ function buildVaultGridMap(chunks: ChunkRow[]): Map<string, Set<string>> {
 }
 
 function buildGraph(
-  boards: { id: string; title: string }[],
+  boards: { id: string; title: string; created_at?: string | null }[],
   notes: NoteRow[],
   synthesisThemes: string[],
   synthesis: SynthesisData | null,
@@ -344,6 +403,7 @@ function buildGraph(
     belief_count: number;
     chat_count: number;
     last_touched_at?: string | null;
+    created_at?: string | null;
   }> = [],
   // Links per concept — populated by paging through concept_links()
   // for the concepts in view. Map<concept_id, Array<link>> where
@@ -367,13 +427,34 @@ function buildGraph(
   const rootId = "__root__";
   nodes.push({ id: rootId, label: rootLabel, kind: "root", radius: 42, color: palette.root.bg, glow: palette.root.glow, parentId: null, meta: { narrative: synthesis?.narrative } });
 
+  // Split notes into Perspective neurons vs regular Vault notes. The
+  // user creates Perspectives via the Perspective template in the
+  // "+" menu (long-form title + story). We piggyback storage on the
+  // `notes` table with a magic `_perspective` tag, but the synthesis
+  // layer must keep these out of the green Vault cluster so a
+  // Perspective doesn't show up twice in the brain.
+  const perspectiveNotes = notes.filter(isPerspectiveNote);
+  const vaultNotes = notes.filter((n) => !isPerspectiveNote(n));
+
   const cats: { id: string; label: string; color: string; glow: string }[] = [];
   if (boards.length > 0 || forceCategoryIds.has("__cat_grids__")) cats.push({ id: "__cat_grids__", label: "Chats", color: palette.grids.bg, glow: palette.grids.glow });
-  if (notes.length > 0 || forceCategoryIds.has("__cat_vault__")) cats.push({ id: "__cat_vault__", label: "Vault", color: palette.vault.bg, glow: palette.vault.glow });
+  if (vaultNotes.length > 0 || forceCategoryIds.has("__cat_vault__")) cats.push({ id: "__cat_vault__", label: "Vault", color: palette.vault.bg, glow: palette.vault.glow });
 
+  // Tag pass operates on the regular Vault notes only — Perspectives
+  // carry the `_perspective` marker tag which we never want to expose
+  // as a user-facing tag. `isUserFacingTag` also filters any future
+  // underscore-prefixed internal tags out of the visible tag cloud.
+  //
+  // Post-slim-down (5-category model), tags are NOT a top-level cluster
+  // — they're per-Vault-item attributes. We still walk the tag set
+  // here so we can draw vault↔vault cross-edges between notes that
+  // share a tag (see the "Shared-tag cross-edges" pass further down),
+  // which preserves the "tagged notes feel connected in the brain"
+  // signal without spending pixels on an orange Tags landmark.
   const allTags = new Set<string>();
-  notes.forEach((n) => (n.tags || []).forEach((t) => allTags.add(t)));
-  if (allTags.size > 0 || forceCategoryIds.has("__cat_tags__")) cats.push({ id: "__cat_tags__", label: "Tags", color: palette.tags.bg, glow: palette.tags.glow });
+  vaultNotes.forEach((n) => (n.tags || []).forEach((t) => {
+    if (isUserFacingTag(t)) allTags.add(t);
+  }));
 
   cats.forEach((c) => {
     nodes.push({ id: c.id, label: c.label, kind: "category", radius: 30, color: c.color, glow: c.glow, parentId: rootId });
@@ -382,7 +463,7 @@ function buildGraph(
 
   boards.forEach((b) => {
     const nid = `grid_${b.id}`;
-    nodes.push({ id: nid, label: b.title || "New Chat", kind: "grid", radius: 20, color: palette.grid.bg, glow: palette.grid.glow, parentId: "__cat_grids__", categoryId: "__cat_grids__", meta: { boardId: b.id } });
+    nodes.push({ id: nid, label: b.title || "New Chat", kind: "grid", radius: 20, color: palette.grid.bg, glow: palette.grid.glow, parentId: "__cat_grids__", categoryId: "__cat_grids__", meta: { boardId: b.id, createdAt: b.created_at || null } });
     edges.push({ from: "__cat_grids__", to: nid });
   });
 
@@ -412,7 +493,12 @@ function buildGraph(
     { app: string; label: string; items: Array<{ noteId: string; title: string; ai_summary: string | null; tags: string[]; sourceSlug: string }> }
   >();
 
-  notes.forEach((n) => {
+  // Vault rendering iterates over the non-perspective slice only.
+  // Perspectives get their own cluster below; double-rendering would
+  // both clutter the Vault and break cross-cluster edges (a concept
+  // link to a perspective should target the Perspective node, not a
+  // shadow copy under Vault).
+  vaultNotes.forEach((n) => {
     const sourceInfo = noteSourceApp(n);
     if (sourceInfo) {
       const rollupId = sourceRollupNodeId(sourceInfo.app);
@@ -439,7 +525,7 @@ function buildGraph(
     // both bounded and arrive in the same query.
     const preview = (n.title || n.ai_summary || "").slice(0, 60).trim() || "Note";
     const noteThemes = noteThemeMap.get(n.id) || [];
-    nodes.push({ id: nid, label: preview, kind: "vault", radius: 18, color: palette.note.bg, glow: palette.note.glow, parentId: "__cat_vault__", categoryId: "__cat_vault__", meta: { noteId: n.id, title: n.title, tags: n.tags, ai_summary: n.ai_summary, themes: noteThemes } });
+    nodes.push({ id: nid, label: preview, kind: "vault", radius: 18, color: palette.note.bg, glow: palette.note.glow, parentId: "__cat_vault__", categoryId: "__cat_vault__", meta: { noteId: n.id, title: n.title, tags: n.tags, ai_summary: n.ai_summary, themes: noteThemes, createdAt: n.created_at || null } });
     edges.push({ from: "__cat_vault__", to: nid });
   });
 
@@ -490,24 +576,37 @@ function buildGraph(
   });
 
   const tagArr = Array.from(allTags);
+  // Shared-tag cross-edges. Tags are no longer their own cluster, so the
+  // visual signal "these two notes share #design" has to come from a
+  // direct vault↔vault line rather than a #design tag node both notes
+  // attach to. For each tag, we draw a STAR pattern (notes[0] → each
+  // other vault node tagged with it) instead of every-pair so a tag
+  // shared by 30 notes doesn't blow up to 435 edges. The 8-note cap
+  // per tag keeps even popular tags bounded; tags rarely connect more
+  // than ~8 notes in a way the user actually wants to see threaded in
+  // the brain. `addCrossEdge` (defined below) dedupes across tags so
+  // two notes sharing three tags still produce a single edge.
+  //
+  // We push the edges directly here instead of through `addCrossEdge`
+  // because the helper isn't declared until later in this function;
+  // dedup happens via the `edgeSet` `addCrossEdge` builds out of the
+  // edges array, so these still get deduped against the heuristic /
+  // provenance passes that follow.
+  const SHARED_TAG_EDGE_CAP = 8;
   tagArr.forEach((tag) => {
-    const nid = `tag_${tag}`;
-    nodes.push({ id: nid, label: `#${tag}`, kind: "tag", radius: 18, color: palette.tag.bg, glow: palette.tag.glow, parentId: "__cat_tags__", categoryId: "__cat_tags__", meta: { tag } });
-    edges.push({ from: "__cat_tags__", to: nid });
-    // Dedup the tag→target edges per tag. Pre-rollup every per-note
-    // tag pair was unique (tag → vault_<noteId>); post-rollup many
-    // tagged notes collapse to the same rollup target, so without
-    // local dedup we'd push the same `tag_x → vault_source_gmail`
-    // edge dozens of times. `edgeSet` below would still dedup it for
-    // cross-edge passes, but these edges aren't created via
-    // `addCrossEdge` so they'd otherwise survive.
-    const seen = new Set<string>();
-    notes.forEach((n) => {
-      if (!(n.tags || []).includes(tag)) return;
-      const target = vaultNodeIdFor(n.id);
-      if (seen.has(target)) return;
-      seen.add(target);
-      edges.push({ from: nid, to: target, cross: true });
+    const tagged = vaultNotes.filter((n) => (n.tags || []).includes(tag));
+    if (tagged.length < 2) return;
+    const targets = new Set<string>();
+    tagged.forEach((n) => {
+      const t = vaultNodeIdFor(n.id);
+      targets.add(t);
+    });
+    const targetArr = Array.from(targets);
+    if (targetArr.length < 2) return;
+    const hub = targetArr[0];
+    targetArr.slice(1, 1 + SHARED_TAG_EDGE_CAP).forEach((other) => {
+      if (other === hub) return;
+      edges.push({ from: hub, to: other, cross: true });
     });
   });
 
@@ -540,25 +639,35 @@ function buildGraph(
     }
   }
 
-  if (neuronItems.length > 0 || forceCategoryIds.has("__cat_neurons__")) {
-    cats.push({ id: "__cat_neurons__", label: "AI Learned", color: palette.neurons.bg, glow: palette.neurons.glow });
+  // 5-category model:
+  //   • Chats     — conversations + boards (above)
+  //   • Vault     — files / notes / clippings (above) + tags-as-attributes
+  //   • Belief    — Beliefs + Perspectives bundled (the deepest-self layer)
+  //   • Facts     — user-stated facts + AI-learned themes/goals/topics
+  //   • Concepts  — recurring themes that tie everything together
+  //
+  // The retired top-level clusters (Tags, AI Learned, Perspectives
+  // alone) all fold into one of those five. Comments below reference
+  // the new home of each old cluster.
+
+  // BELIEF — beliefs (white "stars") + perspectives (long-form stories)
+  // share one cluster. They both express the deepest layer of the
+  // user (principles + narrative), and rendering them together stops
+  // the user from feeling like "Beliefs" and "Perspectives" are two
+  // separate things to maintain. The category is labelled "Belief"
+  // singular even though perspectives live inside it — perspectives
+  // will surface as a Belief sub-type when we build out the sub-
+  // chooser; for now they ride along under the Belief umbrella.
+  const beliefHasContent = beliefs.length > 0 || perspectiveNotes.length > 0;
+  if (beliefHasContent || forceCategoryIds.has("__cat_belief__")) {
+    cats.push({ id: "__cat_belief__", label: "Beliefs", color: palette.belief.bg, glow: palette.belief.glow });
   }
 
-  // Beliefs — promoted, user-ratified principles that sit ABOVE atomic
-  // facts. Render as their own cluster so the user reads them as a
-  // separate, higher-order tier (visually closer to the root than the
-  // long-tail neurons).
-  if (beliefs.length > 0 || forceCategoryIds.has("__cat_beliefs__")) {
-    cats.push({ id: "__cat_beliefs__", label: "Beliefs", color: palette.beliefs.bg, glow: palette.beliefs.glow });
-  }
-
-  // Concepts — first-class topic layer (migrations 056-058). Lives as
-  // its own category sibling to Beliefs so the user reads it as the
-  // cross-cutting glue between the colored clusters around it. We hide
+  // Concepts — first-class topic layer (migrations 056-058). Sits as a
+  // sibling cluster to You; the orange dots earn their pixels by
+  // tying together the colored clusters around them. We hide
   // dismissed concepts and concepts with zero attachments by default
-  // — the orange dots only earn their pixels when they're tying
-  // something together. Filtering happens here so downstream layout +
-  // cross-edge passes only see the kept concepts.
+  // so downstream layout + cross-edge passes only see the kept ones.
   const liveConcepts = (concepts || []).filter((c) => {
     if (!c?.concept_id) return false;
     if (c.status === "dismissed") return false;
@@ -574,33 +683,71 @@ function buildGraph(
     cats.push({ id: "__cat_concepts__", label: "Concepts", color: palette.concepts.bg, glow: palette.concepts.glow });
   }
 
-  // Facts — top-level container for things the user explicitly puts in
-  // about themselves (the user-authored counterpart to AI Learned).
-  // Every row coming out of `manualFacts` is something the user said
-  // out loud / typed into the Fact composer, so this is the home for
-  // them — AI Learned stays reserved for synthesis-derived themes,
-  // goals, and recurring topics the AI inferred on its own.
-  if (manualFacts.length > 0 || forceCategoryIds.has("__cat_facts__")) {
+  // Facts — observable truths about the user. Two sources land here:
+  //   1. `manualFacts`: things the user explicitly typed into the
+  //      Fact composer ("I live in Seattle", "I'm building LYKN").
+  //   2. `neuronItems`: themes / goals / recurring topics / vocabulary
+  //      the synthesis profile inferred. Pre-collapse these lived in
+  //      a separate "AI Learned" cluster; the 5-category model folds
+  //      them in here. The user can always correct or add — there's
+  //      no visual distinction between "you wrote this" and "AI
+  //      noticed this" once it's a fact.
+  const factsHasContent = manualFacts.length > 0 || neuronItems.length > 0;
+  if (factsHasContent || forceCategoryIds.has("__cat_facts__")) {
     cats.push({ id: "__cat_facts__", label: "Facts", color: palette.facts.bg, glow: palette.facts.glow });
   }
 
-  // (categories were already pushed above, but neurons cat needs to go in too)
-  if ((neuronItems.length > 0 || forceCategoryIds.has("__cat_neurons__")) && !nodes.some((n) => n.id === "__cat_neurons__")) {
-    nodes.push({ id: "__cat_neurons__", label: "AI Learned", kind: "category", radius: 30, color: palette.neurons.bg, glow: palette.neurons.glow, parentId: rootId });
-    edges.push({ from: rootId, to: "__cat_neurons__" });
-  }
-  if ((beliefs.length > 0 || forceCategoryIds.has("__cat_beliefs__")) && !nodes.some((n) => n.id === "__cat_beliefs__")) {
-    nodes.push({ id: "__cat_beliefs__", label: "Beliefs", kind: "category", radius: 32, color: palette.beliefs.bg, glow: palette.beliefs.glow, parentId: rootId });
-    edges.push({ from: rootId, to: "__cat_beliefs__" });
+  if ((beliefHasContent || forceCategoryIds.has("__cat_belief__")) && !nodes.some((n) => n.id === "__cat_belief__")) {
+    nodes.push({ id: "__cat_belief__", label: "Beliefs", kind: "category", radius: 32, color: palette.belief.bg, glow: palette.belief.glow, parentId: rootId });
+    edges.push({ from: rootId, to: "__cat_belief__" });
   }
   if ((liveConcepts.length > 0 || forceCategoryIds.has("__cat_concepts__")) && !nodes.some((n) => n.id === "__cat_concepts__")) {
     nodes.push({ id: "__cat_concepts__", label: "Concepts", kind: "category", radius: 30, color: palette.concepts.bg, glow: palette.concepts.glow, parentId: rootId });
     edges.push({ from: rootId, to: "__cat_concepts__" });
   }
-  if ((manualFacts.length > 0 || forceCategoryIds.has("__cat_facts__")) && !nodes.some((n) => n.id === "__cat_facts__")) {
+  if ((factsHasContent || forceCategoryIds.has("__cat_facts__")) && !nodes.some((n) => n.id === "__cat_facts__")) {
     nodes.push({ id: "__cat_facts__", label: "Facts", kind: "category", radius: 30, color: palette.facts.bg, glow: palette.facts.glow, parentId: rootId });
     edges.push({ from: rootId, to: "__cat_facts__" });
   }
+
+  // Perspective nodes — long-form stories the user explicitly
+  // authored via the Perspective template. The note row stores the
+  // headline in `title` and the body in `content` (`content` isn't on
+  // this query's projection, so the DetailPanel lazy-fetches it on
+  // demand via the same path Vault notes use). Slightly larger than
+  // Vault notes so they read as deliberate landmarks in the cluster.
+  perspectiveNotes.forEach((n) => {
+    const nid = `perspective_${n.id}`;
+    const label = (n.title || n.ai_summary || "Perspective").slice(0, 60).trim() || "Perspective";
+    nodes.push({
+      id: nid,
+      label,
+      kind: "perspective",
+      radius: 20,
+      // Perspectives now share the white Belief treatment. Pre-collapse
+      // they had their own violet swatch; the 5-category model
+      // unifies them so the user reads beliefs and perspectives as
+      // one cohesive deepest-self cluster instead of two parallel
+      // tiers competing for attention.
+      color: palette.belief.bg,
+      glow: palette.belief.glow,
+      parentId: "__cat_belief__",
+      categoryId: "__cat_belief__",
+      meta: {
+        // Mirror the Vault meta shape so the DetailPanel's existing
+        // note-fetching path (which keys off `noteId`) Just Works for
+        // perspectives too — the body lazy-loads from `notes.content`
+        // the moment the user opens the node.
+        noteId: n.id,
+        title: n.title,
+        ai_summary: n.ai_summary,
+        tags: n.tags,
+        isPerspective: true,
+        createdAt: n.created_at || null,
+      },
+    });
+    edges.push({ from: "__cat_belief__", to: nid });
+  });
 
   // Concept nodes — placed under their own category. Sized by total
   // attached items so concepts with deep coverage (lots of notes /
@@ -640,6 +787,7 @@ function buildGraph(
         conceptBeliefCount: c.belief_count,
         conceptChatCount: c.chat_count,
         conceptLastTouchedAt: c.last_touched_at || null,
+        conceptCreatedAt: c.created_at || null,
       },
     });
     edges.push({ from: "__cat_concepts__", to: nid });
@@ -663,8 +811,8 @@ function buildGraph(
       radius: 24,
       color: palette.belief.bg,
       glow: palette.belief.glow,
-      parentId: "__cat_beliefs__",
-      categoryId: "__cat_beliefs__",
+      parentId: "__cat_belief__",
+      categoryId: "__cat_belief__",
       meta: {
         beliefId: b.id,
         beliefText: b.belief_text,
@@ -676,7 +824,7 @@ function buildGraph(
         beliefCreatedAt: b.created_at || null,
       },
     });
-    edges.push({ from: "__cat_beliefs__", to: nid });
+    edges.push({ from: "__cat_belief__", to: nid });
   });
 
   // Slugs covered by a first-class concept node. We demote the
@@ -704,11 +852,15 @@ function buildGraph(
     const kindLabel = ni.kind === "theme" ? "Theme" : ni.kind === "goal" ? "Goal" : ni.kind === "topic" ? "Topic" : "Pattern";
     nodes.push({
       id: ni.id, label: ni.label, kind: "neuron", radius: 16,
-      color: palette.neuron.bg, glow: palette.neuron.glow,
-      parentId: "__cat_neurons__", categoryId: "__cat_neurons__",
+      // Post-slim-down AI-learned neurons (themes / goals / topics /
+      // vocabulary / reasoning_style) land inside the Facts cluster
+      // with the Facts cyan treatment — no separate "AI Learned" tier.
+      // The user can correct/edit them like any other fact.
+      color: palette.facts.bg, glow: palette.facts.glow,
+      parentId: "__cat_facts__", categoryId: "__cat_facts__",
       meta: { neuronKind: ni.kind, source: ni.source, kindLabel },
     });
-    edges.push({ from: "__cat_neurons__", to: ni.id });
+    edges.push({ from: "__cat_facts__", to: ni.id });
 
     // Cross-link neurons to notes/boards/tags that relate to this theme
     const term = ni.label.toLowerCase();
@@ -1015,9 +1167,25 @@ function buildGraph(
 // `LayoutMode` lives in ./synthesis/layoutTypes (see top-of-file import).
 
 const layoutModes: { id: LayoutMode; label: string; icon: typeof Network }[] = [
+  // "Default" is pinned to the top of the dropdown because it's the
+  // load-in view — the user lands in this mode and sees the composed,
+  // evenly-spread force-directed cloud here, so the dropdown order
+  // reflects what's already on screen. The mode id is kept as
+  // "connections" for back-compat with the layout engine + any saved
+  // URL state; only the label + position changed. (This is NOT a
+  // semantic "most-connected-to-its-peers" clustering — that
+  // experiment was retired because it made the scene look noisy.
+  // Default just looks pretty and reflects the user's own categories.)
+  { id: "connections", label: "Default",        icon: Network },
   { id: "section",     label: "By Section",     icon: LayoutGrid },
-  { id: "connections", label: "Most Connected", icon: Network },
   { id: "topic",       label: "By Idea",        icon: Sparkles },
+  // "By Project" reuses the connections-mode physics (the layout
+  // engine has no special branch for it — see layoutEngine.ts) but
+  // routes a focus set into the 3D scene so only the picked
+  // project's clustered neurons glow against a dimmed background.
+  // The project chooser sub-dropdown only renders while this mode
+  // is active, mirroring how "By Idea" reveals the tag picker.
+  { id: "project",     label: "By Project",     icon: FolderPlus },
 ];
 
 /* ------------------------------------------------------------------ */
@@ -1061,172 +1229,15 @@ const layoutModes: { id: LayoutMode; label: string; icon: typeof Network }[] = [
 // component was also dropped because it was permanently `false`.
 
 /* ------------------------------------------------------------------ */
-/*  Vault content parser                                               */
+/*  Vault content parser + attachment renderer                          */
 /* ------------------------------------------------------------------ */
-
-function parseVaultContent(raw: string): { body: string; attachments: any[] } {
-  const marker = "[ATTACHMENTS_JSON:";
-  const start = raw.indexOf(marker);
-  if (start === -1) return { body: raw.trim(), attachments: [] };
-  const body = raw.slice(0, start).trim();
-  try {
-    const jsonStart = start + marker.length;
-    let depth = 0;
-    let jsonEnd = jsonStart;
-    for (let i = jsonStart; i < raw.length; i++) {
-      if (raw[i] === "[") depth++;
-      else if (raw[i] === "]") {
-        depth--;
-        if (depth === 0) { jsonEnd = i; break; }
-      }
-    }
-    const json = raw.slice(jsonStart, jsonEnd + 1);
-    return { body, attachments: JSON.parse(json) };
-  } catch {
-    return { body, attachments: [] };
-  }
-}
-
-function resolveStorageTarget(att: any): { bucket: string; path: string } | null {
-  const explicitPath = String(att.storagePath || "").trim();
-  if (explicitPath) return { bucket: String(att.storageBucket || "user-files").trim() || "user-files", path: explicitPath };
-  const url = String(att.url || "").trim();
-  if (!url || url.startsWith("data:")) return null;
-  try {
-    const parsed = new URL(url);
-    const p = parsed.pathname || "";
-    const pubMatch = p.match(/\/storage\/v1\/object\/public\/([^/]+)\/(.+)$/);
-    if (pubMatch) return { bucket: decodeURIComponent(pubMatch[1]), path: decodeURIComponent(pubMatch[2]) };
-    const sigMatch = p.match(/\/storage\/v1\/object\/sign\/([^/]+)\/(.+)$/);
-    if (sigMatch) return { bucket: decodeURIComponent(sigMatch[1]), path: decodeURIComponent(sigMatch[2].split("?")[0]) };
-  } catch { /* not a URL */ }
-  return null;
-}
-
-function VaultAttachment({ att }: { att: any }) {
-  const type = String(att.type || "").toLowerCase();
-  const rawUrl = String(att.url || "").trim();
-  const name = String(att.name || att.title || "").trim();
-  const [signedUrl, setSignedUrl] = useState<string | null>(null);
-  const [failed, setFailed] = useState(false);
-
-  const storageTarget = useMemo(() => resolveStorageTarget(att), [att]);
-  const needsSigning = !!storageTarget && rawUrl.includes("supabase.co/storage/");
-  const displayUrl = signedUrl || rawUrl;
-
-  useEffect(() => {
-    if (!needsSigning || !storageTarget) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const { data } = await supabase.storage.from(storageTarget.bucket).createSignedUrl(storageTarget.path, 60 * 60 * 24);
-        if (!cancelled && data?.signedUrl) setSignedUrl(data.signedUrl);
-        else if (!cancelled) setFailed(true);
-      } catch {
-        if (!cancelled) setFailed(true);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [needsSigning, storageTarget]);
-
-  if (type === "image") {
-    if (needsSigning && !signedUrl) {
-      if (failed) return (
-        <div className="rounded-lg border border-black/5 dark:border-white/8 bg-black/[0.02] dark:bg-white/[0.03] p-4 flex items-center justify-center">
-          <span className="text-[0.6875rem] text-gray-400">Image unavailable</span>
-        </div>
-      );
-      return (
-        <div className="rounded-lg border border-black/5 dark:border-white/8 bg-black/[0.02] dark:bg-white/[0.03] h-[120px] flex items-center justify-center animate-pulse">
-          <span className="text-[0.625rem] text-gray-400">Loading…</span>
-        </div>
-      );
-    }
-    return (
-      <div className="rounded-lg overflow-hidden border border-black/5 dark:border-white/8">
-        <img src={displayUrl} alt={name} className="w-full max-h-[240px] object-cover" loading="lazy" />
-        {name && <p className="text-[0.625rem] text-gray-400 dark:text-gray-500 px-2 py-1 truncate">{name}</p>}
-      </div>
-    );
-  }
-
-  if (type === "video" && !att.videoId) {
-    if (needsSigning && !signedUrl && !failed) {
-      return (
-        <div className="rounded-lg border border-black/5 dark:border-white/8 bg-black/[0.02] dark:bg-white/[0.03] h-[120px] flex items-center justify-center animate-pulse">
-          <span className="text-[0.625rem] text-gray-400">Loading…</span>
-        </div>
-      );
-    }
-    if (displayUrl) {
-      return (
-        <div className="rounded-lg overflow-hidden border border-black/5 dark:border-white/8">
-          <video src={displayUrl} controls playsInline preload="metadata" className="w-full max-h-[200px]" />
-          {name && <p className="text-[0.625rem] text-gray-400 dark:text-gray-500 px-2 py-1 truncate">{name}</p>}
-        </div>
-      );
-    }
-  }
-
-  if ((type === "youtube" || att.videoId) && (att.videoId || rawUrl)) {
-    const videoId = att.videoId || rawUrl.match(/(?:youtu\.be\/|v=)([^&\s]+)/)?.[1];
-    if (videoId) {
-      return (
-        <div className="rounded-lg overflow-hidden border border-black/5 dark:border-white/8">
-          <div className="relative w-full" style={{ paddingBottom: "56.25%" }}>
-            <iframe
-              src={`https://www.youtube.com/embed/${videoId}`}
-              className="absolute inset-0 w-full h-full"
-              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope"
-              allowFullScreen
-            />
-          </div>
-          {name && <p className="text-[0.625rem] text-gray-400 dark:text-gray-500 px-2 py-1 truncate">{name}</p>}
-        </div>
-      );
-    }
-  }
-
-  if ((type === "bookmark" || type === "link") && rawUrl) {
-    return (
-      <a
-        href={rawUrl}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="flex items-center gap-2 px-3 py-2 rounded-lg border border-black/5 dark:border-white/8 hover:bg-black/[0.03] dark:hover:bg-white/[0.04] transition-colors"
-      >
-        <ExternalLink size={12} className="text-blue-400 flex-shrink-0" />
-        <span className="text-[0.6875rem] text-blue-500 dark:text-blue-400 truncate">{name || rawUrl}</span>
-      </a>
-    );
-  }
-
-  if (type === "spreadsheet") {
-    return (
-      <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-black/5 dark:border-white/8 bg-black/[0.02] dark:bg-white/[0.03]">
-        <LayoutGrid size={12} className="text-emerald-400 flex-shrink-0" />
-        <span className="text-[0.6875rem] text-gray-600 dark:text-gray-300 truncate">{name || "Spreadsheet"}</span>
-        {att.rows && att.cols && <span className="text-[0.575rem] text-gray-400 ml-auto">{att.rows}×{att.cols}</span>}
-      </div>
-    );
-  }
-
-  if (rawUrl) {
-    return (
-      <a
-        href={rawUrl}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="flex items-center gap-2 px-3 py-2 rounded-lg border border-black/5 dark:border-white/8 hover:bg-black/[0.03] dark:hover:bg-white/[0.04] transition-colors"
-      >
-        <ExternalLink size={12} className="text-gray-400 flex-shrink-0" />
-        <span className="text-[0.6875rem] text-gray-600 dark:text-gray-300 truncate">{name || rawUrl}</span>
-      </a>
-    );
-  }
-
-  return null;
-}
+//
+// Both helpers were extracted into shared modules so the NeuronPanel
+// (which sits in the components/ tree and gets imported by THIS file)
+// can render the same vault media without creating a circular import
+// back through this page module. The behaviour is byte-identical to
+// the inlined versions that previously lived here — only the storage
+// location changed.
 
 // ---------------------------------------------------------------------
 // "Why / when / accept" detail sections rendered inside DetailPanel
@@ -2162,6 +2173,7 @@ function DetailPanel({
   onClose,
   onNavigate,
   onSelectNode,
+  onBeginLinking,
   prototypeChat,
   allConcepts,
   vaultNodeIdFor,
@@ -2177,6 +2189,13 @@ function DetailPanel({
    * The 3D scene watches selectedId and flies the camera to the new node.
    */
   onSelectNode: (id: string) => void;
+  /**
+   * Enter linking mode with this node pre-selected. The page-level
+   * `beginLinking` callback closes this panel, seeds the selection
+   * with the current node id, and reveals the floating action bar
+   * — the user only has to pick the OTHER end(s) of the link.
+   */
+  onBeginLinking?: (seedNodeIds: string[]) => void;
   /**
    * Landing-prototype handoff: the saved transcript of the first chat.
    * Rendered inline when the user clicks the synthetic
@@ -2238,6 +2257,8 @@ function DetailPanel({
     ? `/grid/${boardId}`
     : node.kind === "vault"
     ? "/vault"
+    : node.kind === "perspective"
+    ? "/vault"
     : null;
 
   // Lazy-fetch the full vault note body only when this panel is actually
@@ -2245,29 +2266,48 @@ function DetailPanel({
   // `content` to keep the page-load payload small (see NoteRow comment);
   // here we pay one small round-trip on click and react-query caches the
   // result so re-opening the same note is instant.
-  const vaultNoteId = node.kind === "vault" ? (node.meta?.noteId as string | undefined) : undefined;
-  const { data: vaultContent } = useQuery({
-    queryKey: ["mindmap_vault_note_content", vaultNoteId],
+  // Both Vault notes and Perspectives are persisted in the `notes`
+  // table, so they share the same lazy-content fetch — the projection
+  // strips `content` from the initial query to keep the page payload
+  // small, and we pay one round-trip per panel open. For guest
+  // (prototype) Perspectives that haven't been saved server-side yet
+  // we fall back to the story stashed on the prototype meta so the
+  // user still sees their text echoed back.
+  const noteBackedNoteId =
+    (node.kind === "vault" || node.kind === "perspective")
+      ? (node.meta?.noteId as string | undefined)
+      : undefined;
+  const isPrototypePerspective =
+    node.kind === "perspective" && !!node.meta?.prototypeStory;
+  const { data: noteBackedContent } = useQuery({
+    queryKey: ["mindmap_vault_note_content", noteBackedNoteId],
     queryFn: async () => {
-      if (!vaultNoteId) return "";
+      if (!noteBackedNoteId) return "";
       const { data, error } = await supabase
         .from("notes")
         .select("content")
-        .eq("id", vaultNoteId)
+        .eq("id", noteBackedNoteId)
         .maybeSingle();
       if (error) return "";
       return String(data?.content || "");
     },
-    enabled: !!vaultNoteId,
+    enabled: !!noteBackedNoteId && !isPrototypePerspective,
     staleTime: 5 * 60 * 1000,
   });
+  // Keep the local alias for downstream code that still reads
+  // `vaultContent` (the parsed-vault block below + any future
+  // additions). Both kinds resolve to the same `notes.content`
+  // string so the alias stays accurate.
+  const vaultContent = isPrototypePerspective
+    ? (node.meta?.prototypeStory as string)
+    : noteBackedContent;
 
   const vaultParsed = useMemo(() => {
-    if (node.kind !== "vault") return null;
+    if (node.kind !== "vault" && node.kind !== "perspective") return null;
     return parseVaultContent(String(vaultContent || ""));
   }, [node, vaultContent]);
 
-  const contentPreview = node.kind === "vault"
+  const contentPreview = (node.kind === "vault" || node.kind === "perspective")
     ? (vaultParsed?.body || null)
     : node.meta?.content
       ? (node.meta.content as string).replace(/\[ATTACHMENTS_JSON:[\s\S]*?\]/, "").trim()
@@ -2452,7 +2492,7 @@ function DetailPanel({
             ? "First Conversation"
             : node.meta?.isSourceRollup
             ? `${String(node.meta.sourceLabel || "Source")} · ${Number(node.meta.itemCount || 0).toLocaleString()} items`
-            : node.kind === "vault" && node.meta?.title ? node.meta.title as string : node.label}
+            : (node.kind === "vault" || node.kind === "perspective") && node.meta?.title ? node.meta.title as string : node.label}
         </h2>
         {isPrototypeChatGrid && (
           <p className="text-[0.6875rem] text-gray-400 dark:text-gray-500 mt-1.5">
@@ -2759,6 +2799,24 @@ function DetailPanel({
         )}
       </div>
 
+      {/* "Link to other neurons" — visible on every non-root, non-
+          category node. Clicking enters page-level linking mode with
+          this node pre-selected; the floating action bar takes over
+          and the panel closes so the canvas is unobscured. We deliberately
+          allow guests to use this — the userLinks lib falls back to
+          localStorage and the new edges still render in the brain. */}
+      {onBeginLinking && node.kind !== "root" && node.kind !== "category" && (
+        <div className="px-5 pb-3">
+          <button
+            onClick={() => onBeginLinking([node.id])}
+            className="w-full flex items-center justify-center gap-2 text-[0.75rem] font-medium py-2.5 rounded-lg border border-blue-400/35 bg-blue-500/15 hover:bg-blue-500/25 text-blue-100 transition-colors"
+          >
+            <Link2 size={13} />
+            Link to other neurons
+          </button>
+        </div>
+      )}
+
       {navPath && (
         <div className="px-5 pb-5">
           <button
@@ -2766,7 +2824,7 @@ function DetailPanel({
             className="w-full flex items-center justify-center gap-2 text-[0.75rem] font-medium py-2.5 rounded-lg bg-black/[0.04] dark:bg-white/[0.06] hover:bg-black/[0.07] dark:hover:bg-white/[0.1] text-gray-700 dark:text-gray-200 transition-colors"
           >
             <ExternalLink size={13} />
-            Open {node.kind === "vault" ? "Vault" : node.label}
+            Open {node.kind === "vault" || node.kind === "perspective" ? "Vault" : node.label}
           </button>
         </div>
       )}
@@ -2820,17 +2878,21 @@ const FREE_SYNTHESIS_NODE_LIMIT: number =
 // hiding the dropdown costs nothing functional and removes a decision
 // users were never excited about making.
 
+// Each entry doubles as the modal's visual identity AND the structural
+// blueprint of its compose form. Templates are intentionally distinct
+// per type — a Fact is short-and-sweet, a Belief leaves room for the
+// "why," and a Perspective is a small story. Building neurons should
+// feel like snapping the right-shaped lego together, not filling out
+// the same generic textbox over and over.
 const NEURON_TYPE_THEME = {
   basic: {
-    title: "Basic Neuron",
+    title: "Fact Neuron",
     short: "A single fact about you",
+    // Fact = short and sweet. One sentence. The composer enforces
+    // this with a single-line input + tight char cap so the user
+    // physically can't write a paragraph here.
     description:
-      "Atomic memory the AI can lean on. Anything from \"I work as a designer\" to \"I focus best in the morning.\" It joins your other learned neurons and the AI uses it for context on every reply.",
-    // Light/dark blue family — the same accent the rest of the product
-    // uses for primary signal (LandingPrototype start pill, sidebar
-    // active state, neuron pill on the wake screen). Keeping basic
-    // neurons on this palette makes them read as a first-class part of
-    // the product chrome rather than a one-off violet.
+      "Atomic memory the AI can lean on. Keep it to one sentence — \"I work as a designer,\" \"I focus best in the morning.\" Short, true, easy to recall.",
     accent: "blue",
     accentHex: "#60a5fa", // blue-400
     accentRing: "border-blue-400/35",
@@ -2838,45 +2900,62 @@ const NEURON_TYPE_THEME = {
     accentGlow: "shadow-[0_0_60px_rgba(96,165,250,0.5)]",
   },
   belief: {
-    title: "Core Belief Neuron",
+    title: "Belief Neuron",
     short: "A principle that shapes every reply",
+    // Belief = the principle PLUS the reason. Two-field form: the
+    // belief itself, then a "why" rationale that gets stored on the
+    // belief row. The AI uses the rationale to explain itself when it
+    // applies this belief in chat.
     description:
-      "The principles you live by. The AI runs every reply through these before anything else — they shape how it answers, what it suggests, and what it pushes back on. Example: \"Treat others the way you want to be treated.\"",
-    // Same blue family as Basic neuron — both creation flows are
-    // first-class product chrome and should read as one consistent
-    // visual surface, not two competing palettes.
-    accent: "blue",
-    accentHex: "#60a5fa", // blue-400
-    accentRing: "border-blue-400/35",
-    accentChip: "bg-blue-500/15 text-blue-200 border-blue-400/30",
-    accentGlow: "shadow-[0_0_60px_rgba(96,165,250,0.5)]",
+      "The principles you live by. The AI runs every reply through these before anything else. Capture the belief AND why you hold it, so the AI can explain itself when it leans on this.",
+    accent: "indigo",
+    accentHex: "#a5b4fc", // indigo-300
+    accentRing: "border-indigo-400/35",
+    accentChip: "bg-indigo-500/15 text-indigo-200 border-indigo-400/30",
+    accentGlow: "shadow-[0_0_60px_rgba(165,180,252,0.5)]",
   },
   concept: {
     title: "Concept Neuron",
     short: "A theme that ties your ideas together",
     description:
-      "A named idea the AI should track across your work. Concepts behave like topics — once they exist, anything you say or save that touches them links back here. Example: \"Personal CRM\" or \"Design systems.\"",
-    accent: "blue",
-    accentHex: "#60a5fa",
-    accentRing: "border-blue-400/35",
-    accentChip: "bg-blue-500/15 text-blue-200 border-blue-400/30",
-    accentGlow: "shadow-[0_0_60px_rgba(96,165,250,0.5)]",
+      "A named idea the AI should track across your work. Once it exists, anything you say or save that touches it links back here. Example: \"Personal CRM\" or \"Design systems.\"",
+    accent: "amber",
+    accentHex: "#fb923c", // orange-400 (matches concepts palette)
+    accentRing: "border-orange-400/35",
+    accentChip: "bg-orange-500/15 text-orange-200 border-orange-400/30",
+    accentGlow: "shadow-[0_0_60px_rgba(251,146,60,0.5)]",
+  },
+  perspective: {
+    title: "Perspective Neuron",
+    short: "A story that shapes how you see the world",
+    // Perspective = long-form lego. The user gets a title field +
+    // a roomy story textarea. This is where life events, formative
+    // memories, and "the time I learned X" go. The AI uses these
+    // to ground replies in the user's lived experience instead of
+    // pattern-matching generic advice.
+    description:
+      "A formative story or point of view the AI should know about you. Write the title and then tell the story — a project that changed how you work, a memory that explains how you see things. The AI uses these to ground its replies in your real life.",
+    accent: "violet",
+    accentHex: "#c4b5fd", // violet-300
+    accentRing: "border-violet-400/35",
+    accentChip: "bg-violet-500/15 text-violet-200 border-violet-400/30",
+    accentGlow: "shadow-[0_0_60px_rgba(196,181,253,0.5)]",
   },
   tag: {
     title: "Tag",
     short: "A label you can hang on Vault items",
     description:
       "Tags are how you organize the Vault. Name one here and it'll show up as a filter the next time you save something — perfect for grouping notes, files, or saved chats by project or theme.",
-    accent: "blue",
-    accentHex: "#60a5fa",
-    accentRing: "border-blue-400/35",
-    accentChip: "bg-blue-500/15 text-blue-200 border-blue-400/30",
-    accentGlow: "shadow-[0_0_60px_rgba(96,165,250,0.5)]",
+    accent: "amber",
+    accentHex: "#fbbf24", // amber-400 (matches tags palette)
+    accentRing: "border-amber-400/35",
+    accentChip: "bg-amber-500/15 text-amber-200 border-amber-400/30",
+    accentGlow: "shadow-[0_0_60px_rgba(251,191,36,0.5)]",
   },
 } as const;
 
 type NeuronCreationModalProps = {
-  type: "basic" | "belief" | "concept" | "tag";
+  type: "basic" | "belief" | "concept" | "tag" | "perspective";
   onClose: () => void;
   /** Called after a successful save with the server-returned id (for
       beliefs the lykn_beliefs UUID; for basic neurons the fact id;
@@ -2893,18 +2972,98 @@ type NeuronCreationModalProps = {
       call and instead writes the neuron to localStorage via the
       prototype-handoff helpers so it renders in the preview brain. */
   isGuest?: boolean;
+  /** Snapshot of every neuron currently in the synthesis graph.
+      Powers the in-panel Connections multi-select so the user can
+      wire the freshly-minted neuron to existing nodes as part of
+      the same submit. Pass the same `allNodes` the 3D scene uses;
+      the panel filters out the root + the empty category shells
+      internally so the picker only shows real neurons. */
+  existingNodes?: Array<{ id: string; label: string; kind: string; color?: string }>;
+  /** Authenticated user id for the userLinks write. When undefined
+      we still write connections through `createUserLinks`, which
+      falls back to localStorage (same code path guests use). */
+  userId?: string | null;
 };
 
-function NeuronCreationModal({ type, onClose, onCreated, isGuest = false }: NeuronCreationModalProps) {
+// Tiny presentational helpers for the per-type templates. Pulled out
+// so the JSX in `NeuronCreationModal` reads as a sequence of fields
+// rather than getting buried in repeated label/hint chrome. Both are
+// purely cosmetic — no state, no side effects — and stay scoped to
+// this file because no other modal needs this look.
+function NeuronFieldLabel({
+  label,
+  hint,
+  children,
+}: {
+  label?: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-1.5">
+      {label ? (
+        <p className="text-[0.7rem] font-medium text-white/75">{label}</p>
+      ) : null}
+      {children}
+      {hint ? (
+        <p className="text-[0.62rem] text-white/40 leading-snug">{hint}</p>
+      ) : null}
+    </div>
+  );
+}
+
+function NeuronCharCount({ value, max }: { value: string; max: number }) {
+  const used = value.length;
+  const near = used >= max * 0.9;
+  return (
+    <p
+      className={`text-[0.55rem] tracking-wide text-right ${near ? "text-amber-300/75" : "text-white/30"}`}
+    >
+      {used}/{max}
+    </p>
+  );
+}
+
+function NeuronCreationModal({
+  type,
+  onClose,
+  onCreated,
+  isGuest = false,
+  existingNodes,
+  userId,
+}: NeuronCreationModalProps) {
   const theme = NEURON_TYPE_THEME[type];
   const [phase, setPhase] = useState<"compose" | "forming">("compose");
 
-  // compose-phase state — both modal types are now just a single text
-  // field, so we don't need any per-type form state. Beliefs default
-  // their `serves_need` to "value" (the closest fit for craft-identity
-  // principles, which is what most user-authored beliefs are); the user
-  // can re-categorize from the Core Beliefs panel's inline need-edit.
-  const [text, setText] = useState("");
+  // Unified compose state. After the 5-category collapse every neuron
+  // type uses the SAME shape — title, why, story, connections,
+  // additional notes — so the panel looks identical regardless of
+  // which "+" entry the user clicked. The submit step routes each
+  // field to the right column / table per type:
+  //
+  //   • Title       → primary text column (belief_text / fact_text /
+  //                   label / notes.title for perspectives)
+  //   • Why         → rationale column on beliefs; metadata.why on
+  //                   facts + concepts; skipped on perspectives until
+  //                   a follow-up migration adds metadata to notes
+  //   • Story       → notes.content for perspectives; metadata.story
+  //                   for beliefs / facts / concepts
+  //   • Connections → lykn_user_links rows wiring the new neuron to
+  //                   every selected existing node
+  //   • Notes       → metadata.notes for beliefs / facts / concepts;
+  //                   skipped on perspectives (see Why)
+  //
+  // The "perspective" type still routes through the existing notes-
+  // table insert path; everything else hits the type-specific
+  // /api/* endpoint with the metadata blob attached.
+  const [title, setTitle] = useState("");
+  const [why, setWhy] = useState("");
+  const [story, setStory] = useState("");
+  const [notes, setNotes] = useState("");
+  const [selectedConnections, setSelectedConnections] = useState<Set<string>>(
+    new Set(),
+  );
+  const [connectionSearch, setConnectionSearch] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // What the forming-phase visual displays as the freshly-minted neuron's
@@ -2912,30 +3071,113 @@ function NeuronCreationModal({ type, onClose, onCreated, isGuest = false }: Neur
   // animation.
   const [formedText, setFormedText] = useState("");
 
-  const canSubmit = !!text.trim() && !submitting;
+  // Title is the only universally-required field. Perspectives ALSO
+  // need a story body (the title alone isn't enough to count as a
+  // perspective), but the Why / Notes / Connections are always
+  // optional. The unified shape means the form is never harder to
+  // fill out than the legacy per-type templates — the user can save
+  // a Fact with just the title, exactly like before.
+  const trimmedTitle = title.trim();
+  const canSubmit = !submitting && (
+    type === "perspective"
+      ? !!trimmedTitle && !!story.trim()
+      : !!trimmedTitle
+  );
+
+  // Filtered list for the Connections picker. We drop the root + the
+  // empty category shells (no point linking the new neuron to "Vault"
+  // the cluster, only to neurons inside it), and filter against the
+  // search box if non-empty. Capped at 30 to keep render cheap when a
+  // user has a thousand-node brain.
+  const connectionCandidates = useMemo(() => {
+    const all = existingNodes || [];
+    const q = connectionSearch.trim().toLowerCase();
+    const filtered = all.filter((n) => {
+      if (n.kind === "root" || n.kind === "category") return false;
+      if (!q) return true;
+      return n.label.toLowerCase().includes(q);
+    });
+    return filtered.slice(0, 30);
+  }, [existingNodes, connectionSearch]);
+
+  const toggleConnection = (nodeId: string) => {
+    setSelectedConnections((prev) => {
+      const next = new Set(prev);
+      if (next.has(nodeId)) next.delete(nodeId);
+      else next.add(nodeId);
+      return next;
+    });
+  };
+
+  // Compute the synthesis-layer node id the parent will mint for the
+  // freshly-saved neuron. Mirrors `buildGraph` + the prototype handoff
+  // injection — keep these in sync if either is renamed.
+  const newNodeIdFor = (
+    savedType: typeof type,
+    savedId: string | null,
+    savedTitle: string,
+  ): string | null => {
+    if (!savedId) return null;
+    switch (savedType) {
+      case "belief":      return `belief_${savedId}`;
+      case "concept":     return `concept_${savedId}`;
+      case "perspective": return `perspective_${savedId}`;
+      case "tag":         return `tag_${savedTitle}`;
+      case "basic":       return `fact_${savedId}`;
+      default:            return null;
+    }
+  };
+
+  // Build the metadata blob we attach to /api/learned, /api/beliefs/manual,
+  // and /api/v1/concepts. Each endpoint sanitises + caps the fields
+  // server-side (see migration 063 comment), so we just hand them the
+  // raw user input here.
+  const buildMetadata = (): Record<string, string> | null => {
+    const m: Record<string, string> = {};
+    const s = story.trim();
+    const n = notes.trim();
+    const w = why.trim();
+    if (s) m.story = s;
+    if (n) m.notes = n;
+    if (w) m.why = w;
+    return Object.keys(m).length > 0 ? m : null;
+  };
 
   const submit = async () => {
     if (!canSubmit) return;
     setSubmitting(true);
     setError(null);
-    const t = text.trim();
+    const t = trimmedTitle;
+    const w = why.trim();
+    const s = story.trim();
+    const n = notes.trim();
+    const metadata = buildMetadata();
     try {
       let newId: string | null = null;
       if (isGuest) {
-        // Guest "first neuron" freebie. We don't have an authenticated
-        // backend to persist to, so we stash the neuron in localStorage
-        // through the existing prototype-handoff machinery and tag it
-        // with `neuronType` so the synthesis layer routes it under the
-        // matching category (Facts / Beliefs / Concepts / Tags) — the
-        // legacy code only knew how to drop prototypes into AI Learned,
-        // which is the wrong cluster for everything except the
-        // wake-screen chat's inferred themes.
+        // Guest "first neuron" freebie. No authenticated backend, so we
+        // stash the neuron in localStorage through the prototype-handoff
+        // machinery and tag it with `neuronType` so the synthesis layer
+        // routes it under the matching cluster. The `extra` blob carries
+        // every optional field the user filled in so the preview brain
+        // can echo the full story / why / notes back via the DetailPanel
+        // before the visitor signs in.
         const localId = `proto_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
         const neuronType =
           type === "belief" ? "belief"
           : type === "concept" ? "concept"
           : type === "tag" ? "tag"
+          : type === "perspective" ? "perspective"
           : "fact";
+        const extra: Record<string, string> = {};
+        if (type === "perspective") {
+          extra.title = t;
+          extra.story = s;
+        } else if (s) {
+          extra.story = s;
+        }
+        if (w) extra.rationale = w;
+        if (n) extra.notes = n;
         appendPrototypeNeuron({
           id: localId,
           kind: "identity",
@@ -2948,7 +3190,10 @@ function NeuronCreationModal({ type, onClose, onCreated, isGuest = false }: Neur
               ? "Concept you wrote during the tour."
               : type === "tag"
               ? "Tag you wrote during the tour."
+              : type === "perspective"
+              ? "Perspective you shared during the tour."
               : "Fact you wrote during the tour.",
+          extra: Object.keys(extra).length > 0 ? extra : undefined,
         });
         newId = localId;
       } else if (type === "basic") {
@@ -2958,7 +3203,11 @@ function NeuronCreationModal({ type, onClose, onCreated, isGuest = false }: Neur
         const res = await fetch(`${API_BASE_URL}/api/learned`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: t, kind: "identity" }),
+          body: JSON.stringify({
+            text: t,
+            kind: "identity",
+            ...(metadata ? { metadata } : {}),
+          }),
         });
         const body = await res.json().catch(() => null);
         if (!res.ok || (body && body.ok === false)) {
@@ -2974,14 +3223,18 @@ function NeuronCreationModal({ type, onClose, onCreated, isGuest = false }: Neur
         newId = body?.fact?.id ?? null;
       } else if (type === "belief") {
         // Default servesNeed to "value" — most user-authored beliefs are
-        // about craft, identity, or how-they-work, which fits the Hyrum
-        // Smith "value" need (feeling capable / your work matters). The
-        // user can re-categorize later via the Core Beliefs panel's
-        // inline need editor.
+        // about craft, identity, or how-they-work. The "Why" field maps
+        // to the existing `rationale` column on lykn_beliefs; story +
+        // notes ride along in the metadata jsonb (migration 063).
         const res = await fetch(`${API_BASE_URL}/api/beliefs/manual`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: t, servesNeed: "value" }),
+          body: JSON.stringify({
+            text: t,
+            servesNeed: "value",
+            ...(w ? { rationale: w } : {}),
+            ...(s || n ? { metadata: { ...(s ? { story: s } : {}), ...(n ? { notes: n } : {}) } } : {}),
+          }),
         });
         const body = await res.json().catch(() => null);
         if (!res.ok || (body && body.ok === false)) {
@@ -2998,14 +3251,16 @@ function NeuronCreationModal({ type, onClose, onCreated, isGuest = false }: Neur
       } else if (type === "concept") {
         // Manual concept creation routes through the public concept
         // CRUD endpoint, which auto-embeds in the background and
-        // idempotently dedupes by slug. Default kind is "topic" — the
-        // catch-all that fits most user-authored entries (themes are
-        // AI-derived; entities are proper nouns the synthesis pipeline
-        // tags).
+        // idempotently dedupes by slug. Default kind is "topic". The
+        // why / story / notes ride along in the metadata jsonb (063).
         const res = await fetch(`${API_BASE_URL}/api/v1/concepts`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ label: t, kind: "topic" }),
+          body: JSON.stringify({
+            label: t,
+            kind: "topic",
+            ...(metadata ? { metadata } : {}),
+          }),
         });
         const body = await res.json().catch(() => null);
         if (!res.ok) {
@@ -3018,12 +3273,42 @@ function NeuronCreationModal({ type, onClose, onCreated, isGuest = false }: Neur
           return;
         }
         newId = body?.id ?? null;
+      } else if (type === "perspective") {
+        // Perspectives still piggyback on the Vault notes table: title
+        // + body land in `notes`, plus a `_perspective` tag the
+        // synthesis-layer query filters on. The why / notes fields
+        // are deliberately NOT persisted yet — the notes table doesn't
+        // have a metadata column (deferred to a follow-up migration);
+        // for now the panel renders those fields for visual parity
+        // and the data lives in the user's session-only state.
+        const { data: authData } = await supabase.auth.getUser();
+        const authUserId = authData?.user?.id;
+        if (!authUserId) {
+          setError("Couldn't save — auth_required.");
+          setSubmitting(false);
+          return;
+        }
+        const { data: inserted, error: insErr } = await supabase
+          .from("notes")
+          .insert({
+            user_id: authUserId,
+            title: t,
+            content: s,
+            tags: ["_perspective"],
+          })
+          .select("id")
+          .single();
+        if (insErr || !inserted?.id) {
+          setError(`Couldn't save — ${insErr?.message || "insert_failed"}.`);
+          setSubmitting(false);
+          return;
+        }
+        newId = inserted.id as string;
       } else {
-        // type === "tag" — tags don't live in their own table; they're
-        // string arrays on individual notes. To "create" a tag we
-        // insert a minimal Vault note carrying the tag, which makes
-        // the label show up as a filter in the Vault and as a node
-        // in the Tags category of the synthesis layer.
+        // type === "tag" — legacy path retained so existing references
+        // (programmatic creatingNeuronType="tag") don't blow up. The
+        // "+" menu no longer exposes this entry post-5-category
+        // collapse; tags are Vault-item attributes now.
         const { data: authData } = await supabase.auth.getUser();
         const authUserId = authData?.user?.id;
         if (!authUserId) {
@@ -3049,7 +3334,30 @@ function NeuronCreationModal({ type, onClose, onCreated, isGuest = false }: Neur
         newId = inserted.id as string;
       }
 
-      // Phase 2: hold the modal open through the formation animation.
+      // Connections persistence — wire the new neuron to every node the
+      // user selected in the in-panel picker. We do this AFTER the
+      // primary save so a userLinks failure can't lose the neuron
+      // itself. `createUserLinks` self-falls-back to localStorage for
+      // guests and on any Supabase error, so it always "succeeds" from
+      // the caller's perspective.
+      if (selectedConnections.size > 0) {
+        const newNodeId = newNodeIdFor(type, newId, t);
+        if (newNodeId) {
+          const pairs = Array.from(selectedConnections).map((targetId) => ({
+            fromNodeId: newNodeId,
+            toNodeId: targetId,
+            label: null,
+          }));
+          try {
+            await createUserLinks(userId || null, pairs);
+          } catch (linkErr) {
+            // Non-fatal — the neuron is saved, just the wiring failed.
+            console.warn("createUserLinks failed:", linkErr);
+          }
+        }
+      }
+
+      // Phase 2: hold the panel open through the formation animation.
       // Roughly 1.4s of "neuron forming", then close + handoff.
       setFormedText(t);
       setPhase("forming");
@@ -3064,33 +3372,90 @@ function NeuronCreationModal({ type, onClose, onCreated, isGuest = false }: Neur
     }
   };
 
+  // Per-type copy for the Title field. Every neuron type has the SAME
+  // field structure post-refactor, but the label / placeholder / cap
+  // changes because "title" means slightly different things for each
+  // (a fact's headline is ~one short line; a perspective's title is a
+  // name for a longer story). The hint copy stays purposeful.
+  const titleCopy = (() => {
+    switch (type) {
+      case "basic":
+        return {
+          label: "Title",
+          placeholder: "e.g. 'Designer building LYKN solo.'",
+          hint: "One sentence the AI should remember about you.",
+          maxLength: 140,
+        };
+      case "belief":
+        return {
+          label: "Title",
+          placeholder: "e.g. 'Treat others the way you want to be treated.'",
+          hint: "The principle itself — one sentence.",
+          maxLength: 200,
+        };
+      case "concept":
+        return {
+          label: "Title",
+          placeholder: "e.g. 'Personal CRM'",
+          hint: "A short, memorable name.",
+          maxLength: 80,
+        };
+      case "perspective":
+        return {
+          label: "Title",
+          placeholder: "e.g. 'How I learned to ship before perfecting.'",
+          hint: "A name for this story or point of view.",
+          maxLength: 80,
+        };
+      case "tag":
+      default:
+        return {
+          label: "Title",
+          placeholder: "e.g. 'side-project'",
+          hint: "A short label.",
+          maxLength: 48,
+        };
+    }
+  })();
+
   return (
-    // Backdrop — full-screen, dimmed, click-outside to cancel ONLY in
-    // compose phase; once forming is playing we lock interactions so the
-    // user actually watches the animation through.
+    // Right-side slide-out panel — replaces the centered modal so the
+    // user can keep glancing at the 3D scene while filling out the
+    // longer unified form (Title / Why / Story / Connections / Notes
+    // adds up to ~5x the height of the old compact modal). A dim
+    // backdrop still covers the rest of the page in compose phase to
+    // focus attention on the form; clicking it cancels (same as
+    // hitting the X). During the forming animation we lock both so
+    // the formation plays out cleanly.
+    //
+    // Single-root return so AnimatePresence at the mount site has one
+    // motion element to track for exit; the slide-out panel is nested
+    // as a `position:fixed` child whose layout escapes the parent's
+    // flow, so it still anchors to the right edge of the viewport.
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.16 }}
-      className="fixed inset-0 z-[120] flex items-center justify-center bg-black/65 backdrop-blur-md p-4"
+      className="fixed inset-0 z-[119] bg-black/55 backdrop-blur-[2px]"
       onClick={() => { if (phase === "compose") onClose(); }}
-      role="dialog"
-      aria-modal="true"
-      aria-label={theme.title}
     >
       <motion.div
-        initial={{ opacity: 0, y: 12, scale: 0.96 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        exit={{ opacity: 0, y: 12, scale: 0.96 }}
-        transition={{ type: "spring", stiffness: 320, damping: 28 }}
+        initial={{ x: "100%" }}
+        animate={{ x: 0 }}
+        exit={{ x: "100%" }}
+        transition={{ type: "spring", stiffness: 280, damping: 30 }}
         onClick={(e) => e.stopPropagation()}
-        className={`relative w-full max-w-md rounded-2xl bg-[rgba(15,15,18,0.97)] border ${theme.accentRing} shadow-[0_30px_80px_rgba(0,0,0,0.55)] overflow-hidden`}
+        role="dialog"
+        aria-modal="true"
+        aria-label={theme.title}
+        className={`fixed top-0 right-0 z-[120] h-full w-full max-w-md bg-[rgba(15,15,18,0.97)] border-l ${theme.accentRing} shadow-[-20px_0_60px_rgba(0,0,0,0.55)] flex flex-col`}
       >
         {phase === "compose" ? (
           <>
-            {/* Header — type name + short tagline + X */}
-            <div className="px-5 pt-5 pb-3 flex items-start justify-between gap-3 border-b border-white/8">
+            {/* Header — accent chip + title + close. Sticky to the
+                panel top so it stays visible as the form scrolls. */}
+            <div className="px-5 pt-5 pb-4 flex items-start justify-between gap-3 border-b border-white/8 flex-shrink-0">
               <div className="min-w-0">
                 <div className={`inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 border text-[0.6rem] font-medium ${theme.accentChip} mb-2`}>
                   {type === "belief" ? (
@@ -3099,6 +3464,8 @@ function NeuronCreationModal({ type, onClose, onCreated, isGuest = false }: Neur
                     <Sparkles size={10} />
                   ) : type === "tag" ? (
                     <Tag size={10} />
+                  ) : type === "perspective" ? (
+                    <StickyNote size={10} />
                   ) : (
                     <Brain size={10} />
                   )}
@@ -3117,63 +3484,200 @@ function NeuronCreationModal({ type, onClose, onCreated, isGuest = false }: Neur
               </button>
             </div>
 
-            <div className="px-5 py-4 space-y-4">
-              {/* Description */}
+            {/* Scrollable form body — every neuron type renders the
+                same five sections in the same order, so the panel
+                feels purpose-built but consistent. The "Why" / "Story"
+                / "Notes" textareas are all optional; the only required
+                field is Title (and Story too for Perspectives, where
+                the title alone wouldn't count as a real entry). */}
+            <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5">
               <p className="text-[0.78rem] text-white/65 leading-relaxed">
                 {theme.description}
               </p>
 
-              {/* Form fields (type-specific) */}
-              <div className="space-y-3">
-                <textarea
-                  value={text}
-                  onChange={(e) => setText(e.target.value)}
+              {/* 1. Title — primary text. The shape is always single-
+                  line on the panel, even though the underlying
+                  belief_text column accepts up to 200 chars (the
+                  textarea would feel weirdly out-of-place when every
+                  other type uses a single-line input). */}
+              <NeuronFieldLabel label={titleCopy.label} hint={titleCopy.hint}>
+                <input
+                  type="text"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
                   autoFocus
+                  maxLength={titleCopy.maxLength}
+                  placeholder={titleCopy.placeholder}
+                  className="w-full bg-black/30 border border-white/15 rounded-lg px-3 py-2.5 text-[0.85rem] text-white/95 leading-snug placeholder:text-white/30 focus:outline-none focus:border-white/30"
+                />
+                <NeuronCharCount value={title} max={titleCopy.maxLength} />
+              </NeuronFieldLabel>
+
+              {/* 2. Why — rationale. Optional everywhere. For Beliefs
+                  this maps to the existing `rationale` column; for
+                  Facts + Concepts it goes into metadata.why. */}
+              <NeuronFieldLabel
+                label="Why are you adding this?"
+                hint="Optional — gives the AI a hook for explaining itself when it leans on this neuron."
+              >
+                <textarea
+                  value={why}
+                  onChange={(e) => setWhy(e.target.value)}
                   rows={3}
-                  maxLength={
-                    type === "belief"
-                      ? 140
-                      : type === "tag"
-                      ? 48
-                      : type === "concept"
-                      ? 128
-                      : 240
-                  }
-                  placeholder={
-                    type === "belief"
-                      ? "e.g. 'Treat others the way you want to be treated.'"
-                      : type === "concept"
-                      ? "e.g. 'Personal CRM'"
-                      : type === "tag"
-                      ? "e.g. 'side-project'"
-                      : "e.g. 'Designer building LYKN solo.'"
-                  }
+                  maxLength={500}
+                  placeholder="The reason this matters enough to remember…"
                   className="w-full bg-black/30 border border-white/15 rounded-lg px-3 py-2.5 text-[0.85rem] text-white/95 leading-snug placeholder:text-white/30 focus:outline-none focus:border-white/30 resize-none"
                 />
+                <NeuronCharCount value={why} max={500} />
+              </NeuronFieldLabel>
 
-                {error ? (
-                  <p className="text-[0.7rem] text-rose-300/85">{error}</p>
+              {/* 3. Connections — multi-select picker over every
+                  existing node in the graph. We render a compact
+                  search + chip grid; selected nodes get a check
+                  icon and a highlighted background. The user can
+                  also wire connections after the fact through the
+                  bottom-right "+ → Link neurons" mode, so this
+                  picker is purely a convenience. */}
+              <div className="space-y-1.5">
+                <p className="text-[0.7rem] font-medium text-white/75">
+                  Connect to other neurons
+                </p>
+                <input
+                  type="text"
+                  value={connectionSearch}
+                  onChange={(e) => setConnectionSearch(e.target.value)}
+                  placeholder={
+                    (existingNodes || []).length === 0
+                      ? "No other neurons yet — connections come later."
+                      : "Search by name…"
+                  }
+                  disabled={(existingNodes || []).length === 0}
+                  className="w-full bg-black/30 border border-white/15 rounded-lg px-3 py-2 text-[0.78rem] text-white/95 placeholder:text-white/30 focus:outline-none focus:border-white/30 disabled:opacity-40 disabled:cursor-not-allowed"
+                />
+                {connectionCandidates.length > 0 ? (
+                  <div className="max-h-44 overflow-y-auto rounded-lg border border-white/10 bg-black/20 divide-y divide-white/5">
+                    {connectionCandidates.map((n) => {
+                      const checked = selectedConnections.has(n.id);
+                      return (
+                        <button
+                          key={n.id}
+                          type="button"
+                          onClick={() => toggleConnection(n.id)}
+                          className={`w-full flex items-center gap-2 px-2.5 py-1.5 text-left text-[0.74rem] transition-colors ${
+                            checked
+                              ? "bg-white/8 text-white/95"
+                              : "text-white/70 hover:bg-white/5 hover:text-white/90"
+                          }`}
+                        >
+                          <span
+                            className="w-2 h-2 rounded-full flex-shrink-0"
+                            style={{
+                              background: n.color || "#9ca3af",
+                              boxShadow: `0 0 6px ${n.color || "#9ca3af"}80`,
+                            }}
+                          />
+                          <span className="flex-1 truncate">{n.label}</span>
+                          {checked ? (
+                            <Check size={11} className="flex-shrink-0 text-white/85" />
+                          ) : null}
+                        </button>
+                      );
+                    })}
+                  </div>
                 ) : null}
+                {selectedConnections.size > 0 ? (
+                  <p className="text-[0.62rem] text-white/45 leading-snug">
+                    {selectedConnections.size} connection
+                    {selectedConnections.size === 1 ? "" : "s"} will be wired
+                    when you save.
+                  </p>
+                ) : (
+                  <p className="text-[0.62rem] text-white/35 leading-snug">
+                    Tap a neuron above to connect it. You can always wire more
+                    later from the 3D scene.
+                  </p>
+                )}
               </div>
+
+              {/* 4. Story — long-form body. Optional for every type
+                  EXCEPT Perspectives, where the title alone isn't
+                  enough — the story IS the perspective. */}
+              <NeuronFieldLabel
+                label={type === "perspective" ? "Story" : "Story (optional)"}
+                hint={
+                  type === "perspective"
+                    ? "Tell it like you'd tell a friend. The AI uses this to ground replies in your real life."
+                    : "Anything longer that fills out this neuron — context, examples, the back-story."
+                }
+              >
+                <textarea
+                  value={story}
+                  onChange={(e) => setStory(e.target.value)}
+                  rows={type === "perspective" ? 7 : 5}
+                  maxLength={4000}
+                  placeholder={
+                    type === "perspective"
+                      ? "In 2019, I spent six months perfecting a side project that never shipped…"
+                      : "Context, examples, what led you to this…"
+                  }
+                  className="w-full bg-black/30 border border-white/15 rounded-lg px-3 py-2.5 text-[0.85rem] text-white/95 leading-relaxed placeholder:text-white/30 focus:outline-none focus:border-white/30 resize-none"
+                />
+                <NeuronCharCount value={story} max={4000} />
+              </NeuronFieldLabel>
+
+              {/* 5. Additional info — free-form notes. Anything that
+                  doesn't fit the other slots: links, dates, side
+                  references, "btw the AI should also know…". Lives
+                  in metadata.notes so future surfaces can render it
+                  in DetailPanel context. */}
+              <NeuronFieldLabel
+                label="Additional information"
+                hint="Optional — links, dates, asides, anything else worth attaching."
+              >
+                <textarea
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  rows={3}
+                  maxLength={2000}
+                  placeholder="Anything else…"
+                  className="w-full bg-black/30 border border-white/15 rounded-lg px-3 py-2.5 text-[0.85rem] text-white/95 leading-snug placeholder:text-white/30 focus:outline-none focus:border-white/30 resize-none"
+                />
+                <NeuronCharCount value={notes} max={2000} />
+              </NeuronFieldLabel>
+
+              {error ? (
+                <p className="text-[0.7rem] text-rose-300/85">{error}</p>
+              ) : null}
             </div>
 
-            {/* Footer — Save only. Cancel/dismiss is the X in the header
-                (and clicking the dimmed backdrop), so a second cancel
-                button down here was redundant chrome. */}
-            <div className="px-5 pb-5 pt-2">
+            {/* Footer — sticky save bar. Lives outside the scrollable
+                body so it's always reachable; on a long story the
+                user shouldn't have to scroll to find the button. */}
+            <div className="px-5 py-4 border-t border-white/8 flex-shrink-0">
               <button
                 onClick={submit}
                 disabled={!canSubmit}
-                className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border bg-blue-500/22 hover:bg-blue-500/32 border-blue-400/40 text-blue-100 text-[0.82rem] font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                style={{
+                  background: `${theme.accentHex}26`,
+                  borderColor: `${theme.accentHex}66`,
+                  color: theme.accentHex,
+                }}
+                className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border text-[0.82rem] font-semibold transition-colors hover:brightness-125 disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 {submitting ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
-                {type === "tag" ? "Save tag" : "Save neuron"}
+                {type === "tag"
+                  ? "Save tag"
+                  : type === "perspective"
+                  ? "Save perspective"
+                  : "Save neuron"}
               </button>
             </div>
           </>
         ) : (
           // Forming phase — the "watch it get created" moment.
-          <NeuronFormingVisual theme={theme} text={formedText} />
+          <div className="flex-1 flex items-center justify-center">
+            <NeuronFormingVisual theme={theme} text={formedText} />
+          </div>
         )}
       </motion.div>
     </motion.div>
@@ -3254,7 +3758,7 @@ function NeuronFormingVisual({
 // arrival from the wake screen. Kept short so the typewriter beat doesn't
 // outrun the visitor's attention while the brain orbits in the background.
 const TOUR_WELCOME_TEXT =
-  "This is your synthesis layer, your digital brain.\n\nRight now you can see the seven neurons it grows from: Chats, Vault, Tags, Facts, AI Learned, Beliefs, and Concepts. Each one starts empty and fills as you use LYKN.\n\nYou can also build your own neurons to organize anything you want.";
+  "This is your synthesis layer, your digital brain.\n\nRight now you can see the eight neurons it grows from: Chats, Vault, Tags, Facts, Perspectives, AI Learned, Beliefs, and Concepts. Each one starts empty and fills as you use LYKN.\n\nYou can also build your own neurons to organize anything you want.";
 
 export default function SynthesisLayer() {
   const { user, signInWithOAuth } = useAuth();
@@ -3372,8 +3876,15 @@ export default function SynthesisLayer() {
   const [dimensions, setDimensions] = useState({ w: 1200, h: 800 });
   const [layoutMode, setLayoutMode] = useState<LayoutMode>("connections");
   const [filterTag, setFilterTag] = useState<string | null>(null);
+  // Active project for the "By Project" filter. When non-null the
+  // 3D scene receives a focusedSet of that project's member node
+  // ids — members glow, non-members dim out. Cleared whenever the
+  // user switches away from "project" layout mode (see the mode
+  // dropdown's onClick).
+  const [filterProjectId, setFilterProjectId] = useState<string | null>(null);
   const [showModeMenu, setShowModeMenu] = useState(false);
   const [showTagMenu, setShowTagMenu] = useState(false);
+  const [showProjectMenu, setShowProjectMenu] = useState(false);
   // Core Beliefs slide-out — the user-facing surface for the layer above
   // atomic facts (need → belief → rule → result). Lazy-mounts on first open.
   const [beliefWindowOpen, setBeliefWindowOpen] = useState(false);
@@ -3383,7 +3894,65 @@ export default function SynthesisLayer() {
   // Which neuron creation modal (if any) is currently open. Single source
   // of truth — only one modal at a time, and the backdrop dimming is
   // implicit in this state.
-  const [creatingNeuronType, setCreatingNeuronType] = useState<"basic" | "belief" | "concept" | "tag" | null>(null);
+  const [creatingNeuronType, setCreatingNeuronType] = useState<"basic" | "belief" | "concept" | "tag" | "perspective" | null>(null);
+  // Linking mode — when active, clicking nodes toggles them in the
+  // `linkSelection` set instead of opening their detail panel. The
+  // user confirms with the floating action bar (bottom-center) which
+  // upserts a row per pair into `lykn_user_links` (signed-in) or
+  // localStorage (guests). Used to manually wire neurons together
+  // that the inference passes (concept_links, belief→fact provenance,
+  // tag→note, theme→note) didn't catch on their own.
+  const [linkingMode, setLinkingMode] = useState(false);
+  const [linkSelection, setLinkSelection] = useState<Set<string>>(new Set());
+  // Optional label the user types alongside the link ("supports",
+  // "contradicts", "reminds me of", …). Stays free-text — a future
+  // pass may promote common labels to an enum.
+  const [linkLabel, setLinkLabel] = useState("");
+  // Flips to true while the upsert is in flight so the action bar's
+  // "Connect" button can show a spinner + disable itself, matching
+  // the same pattern the neuron creation modal uses.
+  const [linkSubmitting, setLinkSubmitting] = useState(false);
+
+  // Project-cluster mode — sister flow to linking. Same selection
+  // mechanic (tap nodes in the 3D scene to add/remove from a Set),
+  // but instead of upserting pairwise edges into `lykn_user_links`
+  // we bind the whole selection to a NAMED project in
+  // `lykn_projects` + `lykn_project_neurons`. The point is that the
+  // same project row is what outside AI clients (Claude Desktop /
+  // Cursor / Claude Code) read via lykn_listProjects /
+  // lykn_getContextBlock — clustering here makes the project
+  // visible to the AI for free, alongside whatever working state
+  // those clients have been pushing into it.
+  const [projectMode, setProjectMode] = useState(false);
+  const [projectSelection, setProjectSelection] = useState<Set<string>>(new Set());
+  const [projectName, setProjectName] = useState("");
+  const [projectDescription, setProjectDescription] = useState("");
+  const [projectSubmitting, setProjectSubmitting] = useState(false);
+  // When set, the project-cluster mode is in "add to existing"
+  // form rather than "create new" — `commitProject` appends the
+  // selected neurons onto the targeted project instead of
+  // spawning one. Driven from the ProjectPanel's "Add neurons"
+  // button. Cleared on cancel or commit so the next entry into
+  // the mode defaults back to create.
+  const [projectAddTargetId, setProjectAddTargetId] = useState<string | null>(null);
+  // Free-text query that filters the addable-neurons list
+  // rendered inside the project-mode action bar. Lets the user
+  // pick neurons by typing instead of having to find them in
+  // the 3D scene — invaluable once the brain accumulates a few
+  // hundred nodes. Cleared whenever we enter or exit project
+  // mode so a stale query doesn't ghost across sessions.
+  const [projectSearchQuery, setProjectSearchQuery] = useState("");
+
+  // Project side-panel selection. Independent of `filterProjectId`
+  // (which drives the scene's focus-glow) because the user might
+  // want to keep a focus filter active while peeking at a different
+  // project's panel — or close the panel without dropping the
+  // filter. The two are wired together in the dropdown click
+  // handler below as a convenience: tapping a project there both
+  // sets the filter AND opens the panel, since that's the single
+  // spot where the user is most clearly saying "let me dig into
+  // this project."
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   // Legacy per-type pending-forming states were consolidated into the
   // generic `pendingFormingNodeId` further down (search this file for
   // its declaration). Modal saves and any other create paths now
@@ -3391,6 +3960,7 @@ export default function SynthesisLayer() {
   // there directly, so we no longer need fact / belief specific state.
   const modeMenuRef = useRef<HTMLDivElement>(null);
   const tagMenuRef = useRef<HTMLDivElement>(null);
+  const projectMenuRef = useRef<HTMLDivElement>(null);
   const addMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -3464,6 +4034,14 @@ export default function SynthesisLayer() {
       profile: ["mindmap_synthesis_profile", uid],
       chunks: ["mindmap_synthesis_chunks", uid],
       beliefs: ["mindmap_active_beliefs", uid],
+      // Vault/Perspective notes — kept fresh so when the user deletes
+      // a note from /vault (hard `.delete()` on the row) or saves a
+      // new one (chat → Vault, share receiver, MCP push, …) the
+      // synthesis layer's brain reflects it without a manual refresh.
+      // Also covers the synthesis chunks since vault edits typically
+      // re-chunk the note.
+      notes: ["mindmap_notes", uid],
+      boards: ["mindmap_boards", uid],
     };
     const schedule = (...keys: string[]) => {
       for (const k of keys) pendingKeys.add(k);
@@ -3497,6 +4075,31 @@ export default function SynthesisLayer() {
           schedule("beliefs");
         },
       )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "notes", filter: `user_id=eq.${uid}` },
+        () => {
+          // Any change to `notes` invalidates the mindmap notes query
+          // so the Vault cluster, Perspectives cluster (notes carrying
+          // `_perspective`), tag cluster, and rollup nodes all rebuild
+          // off the fresh row set. Deletes are the headline case —
+          // removing a note from /vault must remove its neuron here.
+          // Chunks travel alongside since vault content typically gets
+          // re-chunked on edit. We don't refresh `profile` here: the
+          // synthesis profile rebuild is a heavier downstream pass and
+          // its own subscription path already covers it.
+          schedule("notes", "chunks");
+        },
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "omnia_boards", filter: `user_id=eq.${uid}` },
+        () => {
+          // Chats deleted from /app or renamed should likewise flow
+          // through to the Chats cluster without a manual refresh.
+          schedule("boards");
+        },
+      )
       // (Used to also listen on `lykn_project_state` to refresh the
       // projects list — dropped along with the projects category when the
       // sidebar projects feature was retired. The load-in greeting still
@@ -3522,7 +4125,7 @@ export default function SynthesisLayer() {
       // payload on every mount. The DB column itself is still populated
       // (other surfaces — chat scoping, /api/v1/synthesis/activity —
       // continue to use it), it just doesn't ride along on this fetch.
-      const { data } = await supabase.from("omnia_boards").select("id, title").eq("user_id", user.id).order("updated_at", { ascending: false }).limit(80);
+      const { data } = await supabase.from("omnia_boards").select("id, title, created_at").eq("user_id", user.id).order("updated_at", { ascending: false }).limit(80);
       return data || [];
     },
     enabled: !!user?.id,
@@ -3547,7 +4150,7 @@ export default function SynthesisLayer() {
       // have hundreds of gmail / notion / slack items — and we want
       // the rollup counts to match what the user actually has, not be
       // capped to the first 100.
-      const { data } = await supabase.from("notes").select("id, title, tags, ai_summary, ai_signals, source").eq("user_id", user.id).order("updated_at", { ascending: false }).limit(300);
+      const { data } = await supabase.from("notes").select("id, title, tags, ai_summary, ai_signals, source, created_at").eq("user_id", user.id).order("updated_at", { ascending: false }).limit(300);
       return data || [];
     },
     enabled: !!user?.id,
@@ -3784,6 +4387,32 @@ export default function SynthesisLayer() {
     return m;
   }, [conceptLinkRows]);
 
+  // User-authored cross-neuron links (migration 062). Read via the
+  // userLinks lib which falls back to localStorage when the migration
+  // hasn't been applied yet OR when the visitor is a guest. We don't
+  // gate `enabled` on `user?.id` because the guest path is a legit
+  // localStorage read; the lib handles the auth branching internally.
+  const { data: userLinks = [] } = useQuery<UserLink[]>({
+    queryKey: ["mindmap_user_links", user?.id || "guest"],
+    queryFn: () => listUserLinks(user?.id),
+    // Cross-device sync isn't time-sensitive — refetch on focus is
+    // enough; we don't need realtime here because the writer (this
+    // same page) calls invalidateQueries directly.
+    staleTime: 60 * 1000,
+  });
+
+  // User-clustered projects (migration 045 + 063). Same persistence
+  // shape as userLinks above — Supabase first, with localStorage
+  // fallback for guests / pre-migration deployments. The "By
+  // Project" filter dropdown lists these and applies the picked
+  // project's member node ids as the scene's `focusedSet`, making
+  // only those neurons glow against the dimmed full graph.
+  const { data: userProjects = [] } = useQuery<UserProject[]>({
+    queryKey: ["lykn_projects", user?.id || "guest"],
+    queryFn: () => listUserProjects(user?.id),
+    staleTime: 60 * 1000,
+  });
+
   // Stable empty-map for guests (and any signed-in user with no chunks
   // yet) — without this, a fresh `synthesisChunks` array reference on each
   // render would make buildVaultGridMap return a fresh `new Map()` every
@@ -3988,19 +4617,19 @@ export default function SynthesisLayer() {
   const isPrototypeHandoff = prototypeNeurons.length > 0 || tourMode;
 
   // Guest-preview surface: an unauthenticated visitor with no real
-  // chat-handoff data ALWAYS sees the six top-level containers (Chats,
-  // Vault, Facts, AI Learned, Beliefs, Concepts) so the synthesis
-  // layer never collapses to a blank "empty" placeholder on them.
-  // This is deliberately decoupled from `tourMode`: the tour flag is
-  // a one-shot UX flag (welcome card + auto-rotate + "+" pulse), but
+  // chat-handoff data ALWAYS sees the five top-level containers
+  // (Chats, Vault, Belief, Facts, Concepts) so the synthesis layer never
+  // collapses to a blank "empty" placeholder on them. This is
+  // deliberately decoupled from `tourMode`: the tour flag is a
+  // one-shot UX flag (welcome card + auto-rotate + "+" pulse), but
   // the category SHAPE should persist for the whole guest session,
   // including after the visitor dismisses the welcome card or pokes
   // the "+" menu. The signed-in / "real handoff with neurons" paths
   // are unaffected.
-  // All seven category containers (Chats / Vault / Tags / Facts / AI
-  // Learned / Beliefs / Concepts) stay forced-on for ANY unauthenticated
-  // visitor — even after they've used their "first neuron" freebie. We
-  // want the brain to keep looking populated and structured so the
+  //
+  // All five category containers stay forced-on for ANY unauthenticated
+  // visitor — even after they've used their "first neuron" freebie.
+  // We want the brain to keep looking populated and structured so the
   // visible payoff motivates the sign-up (vs. collapsing back to just
   // the one neuron they wrote and an otherwise-empty root).
   const showGuestCategories = !user?.id;
@@ -4068,8 +4697,8 @@ export default function SynthesisLayer() {
         // the visitor pressed.
         themes: prototypeNeurons.filter((n) => !n.neuronType).map((n) => n.text),
         narrative: tourMode
-          ? "This is your synthesis layer, the seven neurons your digital brain grows from. Chats, Vault, Tags, Facts, AI Learned, Beliefs, and Concepts all start empty and fill as you use LYKN. You can also build your own neurons to organize anything you want. Tap the + button to add your first one."
-          : "This is your synthesis layer the moment it woke up. The neuron you just created is the only thing here — your chats, vault, and tags are waiting to be filled.",
+          ? "This is your synthesis layer, the five neurons your digital brain grows from. Chats, Vault, Beliefs, Facts, and Concepts all start empty and fill as you use LYKN. You can also build your own neurons to organize anything you want. Tap the + button to add your first one."
+          : "This is your synthesis layer the moment it woke up. The neuron you just created is the only thing here — your chats, vault, and the rest are waiting to be filled.",
         signals: {},
       };
     }
@@ -4088,47 +4717,37 @@ export default function SynthesisLayer() {
     return [...new Set(t.map((s: string) => s.toLowerCase().trim()))].filter(Boolean);
   }, [synthesisData]);
 
-  // Force-render the empty top-level containers depending on what the
-  // visitor is.
+  // Force-render the empty top-level containers. The five top-level
+  // categories — Chats, Vault, Belief, Facts, Concepts — are the
+  // permanent shape of the brain. They're the same five landmarks
+  // the tour welcome card names, so they should be visible regardless
+  // of whether the user has any data inside them.
   //
-  //  • Guest preview (any unauthenticated visitor with no chat-handoff
-  //    neurons): the synthesis layer is the headline destination, so
-  //    we render the SIX top-level containers the brain grows into —
-  //    Chats, Vault, Facts, AI Learned, Beliefs, Concepts — and
-  //    nothing else. The visitor sees the shape, the typewriter card
-  //    on the left explains it, and the "+" button is the call to
-  //    action. This stays on for the entire guest session, including
-  //    after they dismiss the welcome card or open the "+" menu.
+  // This matters for two specific UX failures we used to hit:
+  //   • Brand-new signed-in user with an empty Vault — the green
+  //     Vault landmark wouldn't appear until they saved their first
+  //     note, making the brain feel skeletal on day one.
+  //   • Existing user deletes every Vault note (or every Fact, every
+  //     Concept, …) — the entire category cluster would silently
+  //     disappear, taking with it the affordance to ever add another
+  //     one. "I deleted one thing and my whole Vault category vanished"
+  //     was the surfaced complaint that motivated forcing these.
   //
-  //  • Real handoff (signed-in visitor with neurons from the chat):
-  //    we want them to see Chats / Vault / Tags around their freshly-
-  //    minted neuron so the future workspace shape is implied — but
-  //    NOT the empty AI Learned / Beliefs / Concepts / Facts clusters
-  //    (their real data lives elsewhere; these would just clutter the
-  //    centroid).
+  // The behaviour is identical across guest / prototype-handoff /
+  // signed-in. The forceCategoryIds set is just the canonical 5
+  // every time; buildGraph still skips the per-item rendering when
+  // there's no underlying data, so an empty Vault renders as the
+  // landmark sphere only (no child note dots), which is exactly what
+  // we want — the shape persists, the contents come and go.
   const forceCategoryIds = useMemo(
-    () => {
-      if (showGuestCategories) {
-        return new Set<string>([
-          "__cat_grids__",
-          "__cat_vault__",
-          "__cat_tags__",
-          "__cat_neurons__",
-          "__cat_beliefs__",
-          "__cat_concepts__",
-          "__cat_facts__",
-        ]);
-      }
-      if (isPrototypeHandoff) {
-        return new Set<string>([
-          "__cat_grids__",
-          "__cat_vault__",
-          "__cat_tags__",
-        ]);
-      }
-      return new Set<string>();
-    },
-    [isPrototypeHandoff, showGuestCategories],
+    () => new Set<string>([
+      "__cat_grids__",
+      "__cat_vault__",
+      "__cat_belief__",
+      "__cat_facts__",
+      "__cat_concepts__",
+    ]),
+    [],
   );
 
   /* Build + simulate */
@@ -4149,19 +4768,26 @@ export default function SynthesisLayer() {
         // Legacy (untyped) prototypes were already pushed under
         // `neuron_theme_${text}` via the synthesisThemes path; typed
         // prototypes get a per-category id so they slot into the right
-        // cluster.
+        // cluster. The 5-category model retired stand-alone Tag
+        // neurons (tags are Vault attributes now), so the old "tag"
+        // neuronType is ignored at render time below — we tolerate
+        // legacy localStorage rows so a guest who created a tag pre-
+        // collapse doesn't lose their existing brain.
         const protoNodeId = (pn: { text: string; id: string; neuronType?: string }): string => {
           switch (pn.neuronType) {
-            case "fact":    return `fact_${pn.id}`;
-            case "belief":  return `belief_${pn.id}`;
-            case "concept": return `concept_${pn.id}`;
-            case "tag":     return `tag_${pn.text}`;
-            default:        return `neuron_theme_${pn.text}`;
+            case "fact":        return `fact_${pn.id}`;
+            case "belief":      return `belief_${pn.id}`;
+            case "concept":     return `concept_${pn.id}`;
+            case "perspective": return `perspective_${pn.id}`;
+            default:            return `neuron_theme_${pn.text}`;
           }
         };
 
         for (const pn of prototypeNeurons) {
           if (!pn.neuronType) continue;
+          // Legacy "tag" prototypes are silently dropped — tags are
+          // Vault metadata in the 5-category model, no node to render.
+          if (pn.neuronType === "tag") continue;
           const nid = protoNodeId(pn);
           if (built.nodes.some((n) => n.id === nid)) continue;
           const label = pn.text.length > 56 ? `${pn.text.slice(0, 54)}…` : pn.text;
@@ -4186,11 +4812,13 @@ export default function SynthesisLayer() {
               radius: 24,
               color: palette.belief.bg,
               glow: palette.belief.glow,
-              parentId: "__cat_beliefs__",
-              categoryId: "__cat_beliefs__",
+              // Beliefs + Perspectives both live inside the unified
+              // Belief cluster in the 5-category model.
+              parentId: "__cat_belief__",
+              categoryId: "__cat_belief__",
               meta: { beliefText: pn.text, source: "prototype_belief" },
             });
-            built.edges.push({ from: "__cat_beliefs__", to: nid });
+            built.edges.push({ from: "__cat_belief__", to: nid });
           } else if (pn.neuronType === "concept") {
             const labelShown = pn.text.length > 32 ? `${pn.text.slice(0, 30)}…` : pn.text;
             built.nodes.push({
@@ -4205,19 +4833,38 @@ export default function SynthesisLayer() {
               meta: { conceptLabel: pn.text, conceptSource: "prototype_concept" },
             });
             built.edges.push({ from: "__cat_concepts__", to: nid });
-          } else if (pn.neuronType === "tag") {
+          } else if (pn.neuronType === "perspective") {
+            // Guest perspectives ride the same prototype-handoff
+            // machinery, but since `buildGraph` doesn't see the
+            // localStorage row (no `notes` query for guests), we
+            // inject the node + its parent cluster here. The story
+            // body + title get echoed into `meta.extra` so the
+            // DetailPanel can render the full text before sign-in.
+            const proto = pn as typeof pn & { extra?: { story?: string; title?: string } };
+            const story = proto.extra?.story || "";
+            const title = proto.extra?.title || pn.text;
             built.nodes.push({
               id: nid,
-              label: `#${pn.text}`,
-              kind: "tag",
-              radius: 18,
-              color: palette.tag.bg,
-              glow: palette.tag.glow,
-              parentId: "__cat_tags__",
-              categoryId: "__cat_tags__",
-              meta: { tag: pn.text, source: "prototype_tag" },
+              label: title.length > 60 ? `${title.slice(0, 58)}…` : title,
+              kind: "perspective",
+              radius: 20,
+              color: palette.belief.bg,
+              glow: palette.belief.glow,
+              parentId: "__cat_belief__",
+              categoryId: "__cat_belief__",
+              meta: {
+                title,
+                ai_summary: story.slice(0, 160) || null,
+                tags: ["_perspective"],
+                isPerspective: true,
+                source: "prototype_perspective",
+                prototypeStory: story,
+              },
             });
-            built.edges.push({ from: "__cat_tags__", to: nid });
+            // The Belief cluster is already in forceCategoryIds, so
+            // buildGraph will materialise the parent — no
+            // on-demand category creation needed here anymore.
+            built.edges.push({ from: "__cat_belief__", to: nid });
           }
         }
 
@@ -4254,9 +4901,77 @@ export default function SynthesisLayer() {
           }
         }
       }
+      // User-authored manual links (migration 062). Injected here at
+      // the end of the build pass so they layer on TOP of every
+      // inferred edge (concept_links, belief→fact provenance,
+      // tag→note, theme→note). Each row in `userLinks` already came
+      // out of the lib with the pair normalized to (from < to), so
+      // we don't need to re-normalize here — but we DO filter pairs
+      // that target nodes the current graph doesn't contain (the
+      // user may have linked to a node that's been deleted, or one
+      // truncated by a query LIMIT). The layout engine would otherwise
+      // happily try to route an edge to a non-existent endpoint and
+      // crash the force simulation on the first tick.
+      const nodeIdSet = new Set(built.nodes.map((n) => n.id));
+      // Project name set used to disambiguate legacy rows whose
+      // `source` column was stamped 'user' before the project-
+      // cluster auto-link path learned to pass its own source
+      // string. Those rows have the project name as their
+      // label, so a label match is a reliable secondary signal:
+      // the link came from a project commit even if the column
+      // doesn't say so. Lowercased + trimmed so casing/whitespace
+      // edits to the project name don't break the heuristic.
+      const projectLabelSet = new Set(
+        userProjects
+          .map((p) => p.name.toLowerCase().trim())
+          .filter((s) => s.length > 0),
+      );
+      for (const ul of userLinks) {
+        if (!nodeIdSet.has(ul.fromNodeId) || !nodeIdSet.has(ul.toNodeId)) continue;
+        // Only flag the explicit "Link neurons" verb's edges as
+        // userLink — those get the distinct accent treatment
+        // because the user deliberately wired them. Project
+        // auto-links ride the same `lykn_user_links` table for
+        // storage idempotency, but visually they should read as
+        // ordinary cross-edges when the project filter ISN'T
+        // active. Two signals classify a link as
+        // project-spawned:
+        //   1. `source = 'project_cluster'` — the column the
+        //      auto-link writer stamps explicitly.
+        //   2. label matches a project name — covers legacy
+        //      rows committed before the source column was
+        //      threaded through, AND any future writers that
+        //      forget to pass source but DO label correctly.
+        const labelKey = (ul.label || "").toLowerCase().trim();
+        const isProjectClusterLink =
+          (ul.source && ul.source !== "user") ||
+          (labelKey.length > 0 && projectLabelSet.has(labelKey));
+        // Edge shape per source:
+        //   • Explicit user links → cross + userLink: solid
+        //     bright sky-blue at 0.78 opacity. Stand-out
+        //     accent because the user deliberately wired
+        //     this pair.
+        //   • Project-cluster links → NOT cross, NOT
+        //     userLink: solid slate-gray at 0.40 opacity,
+        //     same as a structural edge. Visible and tidy
+        //     without competing with the explicit-link
+        //     accent. We keep them out of the cross-edge
+        //     bucket on purpose — cross edges render
+        //     dashed at 0.20 opacity (the "inferred" look),
+        //     which made the project mesh look like it
+        //     wasn't connecting anything at all.
+        //   • Everything else (heuristic cross-edges) →
+        //     cross only: dashed slate-gray as before.
+        built.edges.push({
+          from: ul.fromNodeId,
+          to: ul.toNodeId,
+          cross: !isProjectClusterLink,
+          userLink: !isProjectClusterLink,
+        });
+      }
       return built;
     },
-    [effectiveBoards, effectiveNotes, synthesisThemes, synthesisData, vaultGridMap, activeBeliefs, manualFacts, beliefProvenance, conceptRows, conceptLinks, forceCategoryIds, rootLabel, isPrototypeHandoff, prototypeNeurons, tourMode],
+    [effectiveBoards, effectiveNotes, synthesisThemes, synthesisData, vaultGridMap, activeBeliefs, manualFacts, beliefProvenance, conceptRows, conceptLinks, forceCategoryIds, rootLabel, isPrototypeHandoff, prototypeNeurons, tourMode, userLinks, userProjects],
   );
   const nodeMap = useMemo(() => new Map(allNodes.map((n) => [n.id, n])), [allNodes]);
 
@@ -4413,6 +5128,7 @@ export default function SynthesisLayer() {
     const handler = (e: MouseEvent) => {
       if (showModeMenu && modeMenuRef.current && !modeMenuRef.current.contains(e.target as Node)) setShowModeMenu(false);
       if (showTagMenu && tagMenuRef.current && !tagMenuRef.current.contains(e.target as Node)) setShowTagMenu(false);
+      if (showProjectMenu && projectMenuRef.current && !projectMenuRef.current.contains(e.target as Node)) setShowProjectMenu(false);
       // Close the "+" add menu when clicking outside its anchor. The
       // modal that opens after picking a type lives at page-root and has
       // its own backdrop click-to-close — it doesn't share this ref.
@@ -4422,7 +5138,7 @@ export default function SynthesisLayer() {
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
-  }, [showModeMenu, showTagMenu, addMenuOpen]);
+  }, [showModeMenu, showTagMenu, showProjectMenu, addMenuOpen]);
 
   /* Hover highlight */
   const highlightSet = useMemo(() => {
@@ -4435,6 +5151,28 @@ export default function SynthesisLayer() {
     });
     return s;
   }, [hoveredNode, edges]);
+
+  // Filter focus set — currently driven only by the "By Project"
+  // mode, but threaded into the 3D scene as a generic `focusedSet`
+  // so future filters (saved searches, "what I touched today",
+  // multi-project unions) can reuse the same render path. Empty
+  // / null means "no filter" and the scene renders unchanged.
+  //
+  // We pull membership from the snapshot stored in
+  // `lykn_project_neurons` (UserProject.members[].nodeId) rather
+  // than re-deriving from the live graph, because the cluster's
+  // identity is the user's choice from when they created it. A
+  // node that's been deleted since clustering simply won't have
+  // a match in `nodeMap` and the scene's posMap filter will skip
+  // it; nothing else has to know.
+  const projectFocusSet = useMemo<Set<string> | null>(() => {
+    if (layoutMode !== "project" || !filterProjectId) return null;
+    const project = userProjects.find((p) => p.id === filterProjectId);
+    if (!project) return null;
+    const s = new Set<string>();
+    for (const m of project.members) s.add(m.nodeId);
+    return s;
+  }, [layoutMode, filterProjectId, userProjects]);
 
   // 3D camera: zoom is the only piece we still drive externally (the 3D
   // scene's OrbitControls handle orbit + pan internally). resetSignal is a
@@ -4465,6 +5203,38 @@ export default function SynthesisLayer() {
   const handleNodeClick = useCallback((nodeId: string) => {
     const node = nodeMap.get(nodeId);
     if (!node) return;
+    // Linking mode short-circuit. While the user is in link-build
+    // mode every click toggles selection instead of opening the
+    // detail panel — that's the whole point of the mode. We exclude
+    // the root + category nodes from being linkable: the user
+    // wants to wire together actual neurons (facts, beliefs,
+    // perspectives, concepts, vault notes, …), not the structural
+    // containers around them.
+    if (linkingMode) {
+      if (node.kind === "root" || node.kind === "category") return;
+      setLinkSelection((prev) => {
+        const next = new Set(prev);
+        if (next.has(nodeId)) next.delete(nodeId);
+        else next.add(nodeId);
+        return next;
+      });
+      return;
+    }
+    // Project-cluster mode short-circuits the same way linking does:
+    // every tap toggles the node in the project's selection set
+    // instead of opening its detail panel. Structural containers
+    // (root, category) are excluded — they're not real neurons the
+    // user would want in a project.
+    if (projectMode) {
+      if (node.kind === "root" || node.kind === "category") return;
+      setProjectSelection((prev) => {
+        const next = new Set(prev);
+        if (next.has(nodeId)) next.delete(nodeId);
+        else next.add(nodeId);
+        return next;
+      });
+      return;
+    }
     if (node.kind === "root") {
       // In prototype-handoff mode the only "selected" neuron is the user's
       // brand-new one; clicking root in that mode shouldn't yank the camera.
@@ -4472,16 +5242,24 @@ export default function SynthesisLayer() {
       setSelectedId(null);
       return;
     }
-    // Belief nodes (or the Beliefs category itself) shortcut to the
-    // BeliefWindowPanel — that's where ratification, rule editing, and
-    // the Why log live. Selecting them in the 3D scene with no panel
-    // would just show a label nobody can act on.
-    if (node.kind === "belief" || nodeId === "__cat_beliefs__") {
+    // The Belief cluster header (and the legacy __cat_beliefs__ id from
+    // before the cluster rename) still opens the multi-belief manager
+    // — that's where ratification, rule editing, and the Why log live
+    // for browsing/curating ALL beliefs at once. INDIVIDUAL belief
+    // nodes now flow through the same unified NeuronPanel as every
+    // other neuron kind (see render below); the user asked for one
+    // consistent panel per neuron click regardless of type.
+    if (nodeId === "__cat_belief__" || nodeId === "__cat_beliefs__") {
       setBeliefWindowOpen(true);
-      // Still mark it selected so the 3D camera flies to it — the user
-      // sees their principle highlighted while the panel slides in.
       setSelectedId(nodeId);
       return;
+    }
+    // Switching to a non-category neuron while the multi-belief
+    // manager is open: close the manager so it doesn't sit on top of
+    // the new neuron's NeuronPanel (both anchor to right-0 with the
+    // same z-index range).
+    if (beliefWindowOpen) {
+      setBeliefWindowOpen(false);
     }
     // Prototype handoff: clicking the highlighted neuron a second time
     // would normally toggle it off and fly the camera back to the graph
@@ -4493,16 +5271,299 @@ export default function SynthesisLayer() {
       return;
     }
     setSelectedId((prev) => (prev === nodeId ? null : nodeId));
-  }, [nodeMap, prototypeFocusId]);
+  }, [nodeMap, prototypeFocusId, linkingMode, projectMode, beliefWindowOpen]);
 
   // Stable identity for SynthesisScene3D so the scene's React.memo (if
   // any) and prop-equality short-circuits actually fire. Inline lambdas
   // produced new closures on every parent render and forced the scene
   // to reconcile its entire subtree on every hover tick.
   const handleBackgroundClick = useCallback(() => {
+    // Empty-space clicks shouldn't exit linking or project-cluster
+    // mode — the user is mid-selection and may have missed a node.
+    // They explicitly exit via the Cancel button on the floating
+    // action bar.
+    if (linkingMode) return;
+    if (projectMode) return;
     if (prototypeFocusId) return;
     setSelectedId(null);
-  }, [prototypeFocusId]);
+  }, [prototypeFocusId, linkingMode, projectMode]);
+
+  // Enter linking mode from the "+" menu or from a DetailPanel button.
+  // The `seedNodeIds` param optionally pre-fills the selection set
+  // (e.g. when entering from a panel we pre-select that node so the
+  // user only has to pick the OTHER end). Linking mode also closes
+  // the currently-open panel so the floating action bar isn't fighting
+  // the right-side drawer for screen real estate.
+  const beginLinking = useCallback((seedNodeIds: string[] = []) => {
+    setLinkSelection(new Set(seedNodeIds));
+    setLinkLabel("");
+    setLinkingMode(true);
+    setSelectedId(null);
+    setAddMenuOpen(false);
+    // Mutually-exclusive with project-cluster mode (see beginProject's
+    // mirroring cleanup). Two floating action bars at bottom-center
+    // would clobber each other.
+    setProjectMode(false);
+    setProjectSelection(new Set());
+    setProjectName("");
+    setProjectDescription("");
+    setProjectSubmitting(false);
+  }, []);
+
+  const cancelLinking = useCallback(() => {
+    setLinkingMode(false);
+    setLinkSelection(new Set());
+    setLinkLabel("");
+    setLinkSubmitting(false);
+  }, []);
+
+  const commitLinking = useCallback(async () => {
+    const ids = Array.from(linkSelection);
+    if (ids.length < 2 || linkSubmitting) return;
+    setLinkSubmitting(true);
+    try {
+      // Build every unique pair from the selection set. A 3-node
+      // selection produces 3 links (A-B, A-C, B-C) — the user wired
+      // them together, so each pair is a relationship in its own
+      // right and renders as a separate edge. Larger selections
+      // grow O(n²) but the link-mode UI caps practical use to a
+      // handful at a time, so this stays inexpensive.
+      const pairs: Array<{ fromNodeId: string; toNodeId: string; label?: string | null }> = [];
+      for (let i = 0; i < ids.length; i++) {
+        for (let j = i + 1; j < ids.length; j++) {
+          pairs.push({
+            fromNodeId: ids[i],
+            toNodeId: ids[j],
+            label: linkLabel.trim() || null,
+          });
+        }
+      }
+      await createUserLinks(user?.id, pairs);
+      queryClient.invalidateQueries({ queryKey: ["mindmap_user_links", user?.id || "guest"] });
+      cancelLinking();
+    } catch (e) {
+      // Persistence failure is non-fatal — the userLinks lib already
+      // falls back to localStorage internally, so reaching this catch
+      // means something genuinely unexpected happened. Log and bail
+      // out of submitting state so the user can retry.
+      console.error("commitLinking failed", e);
+      setLinkSubmitting(false);
+    }
+  }, [linkSelection, linkSubmitting, linkLabel, user?.id, queryClient, cancelLinking]);
+
+  // ----------------------------------------------------------------
+  // Project-cluster mode — sister flow to the linking trio above.
+  // Entered from the "+" menu. The user selects neurons in the 3D
+  // scene, types a project name (and optional description), and
+  // hits Create. We bind the cluster to a row in `lykn_projects`
+  // (the same table the AI-driven setActiveProject MCP tool writes
+  // into) plus one row per member in `lykn_project_neurons`. Same
+  // table the MCP context block reads from, so the moment the user
+  // commits the cluster, every outside AI client that hits
+  // lykn_listProjects / lykn_getContextBlock can see it.
+  //
+  // Linking and project mode are mutually exclusive — you can't
+  // hold a half-built link and a half-built project at the same
+  // time. `beginProject` kicks `linkingMode` off (and vice versa,
+  // see beginLinking which already clears any open panel) so the
+  // floating action bars don't both try to render at the
+  // bottom-center slot.
+  // ----------------------------------------------------------------
+  const beginProject = useCallback(() => {
+    setProjectSelection(new Set());
+    setProjectName("");
+    setProjectDescription("");
+    setProjectSubmitting(false);
+    setProjectAddTargetId(null);
+    setProjectSearchQuery("");
+    setProjectMode(true);
+    // Defensive: bail out of linking + close the right-side panel +
+    // close the "+" menu so the project action bar owns the screen.
+    setLinkingMode(false);
+    setLinkSelection(new Set());
+    setLinkLabel("");
+    setSelectedId(null);
+    setAddMenuOpen(false);
+  }, []);
+
+  const cancelProject = useCallback(() => {
+    setProjectMode(false);
+    setProjectSelection(new Set());
+    setProjectName("");
+    setProjectDescription("");
+    setProjectSubmitting(false);
+    setProjectAddTargetId(null);
+    setProjectSearchQuery("");
+  }, []);
+
+  const commitProject = useCallback(async () => {
+    if (projectSubmitting) return;
+    if (projectSelection.size === 0) return;
+    // Two commit paths share this callback: the "Create" form
+    // (no add-target → require a name) and the "Add neurons to
+    // existing" form (add-target set → name input is hidden).
+    const isAdding = !!projectAddTargetId;
+    const name = projectName.trim();
+    if (!isAdding && !name) return;
+    setProjectSubmitting(true);
+    try {
+      // Snapshot the label + kind for every selected node at commit
+      // time. We send that snapshot into `lykn_project_neurons`
+      // alongside the node_id so AI consumers don't have to walk
+      // back through the heterogeneous graph-id namespace
+      // (`belief_<uuid>`, `tag_<text>`, `neuron_theme_<slug>`, …)
+      // to figure out what the user clustered. See migration 063
+      // for the rationale.
+      const members = Array.from(projectSelection)
+        .map((id) => {
+          const node = nodeMap.get(id);
+          if (!node) return null;
+          return {
+            nodeId: id,
+            label: node.label || null,
+            kind: node.kind || null,
+          };
+        })
+        .filter(
+          (m): m is { nodeId: string; label: string | null; kind: string | null } => m != null,
+        );
+
+      // Resolve the project context for both the cluster write
+      // AND the auto-link pass below. In "create" mode we don't
+      // know the project name until the user typed it; in "add"
+      // mode we look up the live project so we can reach its
+      // already-existing members for the link mesh.
+      let projectLabel = name;
+      let existingMemberIds: string[] = [];
+      if (isAdding) {
+        const targetProject = userProjects.find(
+          (p) => p.id === projectAddTargetId,
+        );
+        await addNeuronsToProject(user?.id, projectAddTargetId!, members);
+        if (targetProject) {
+          projectLabel = targetProject.name;
+          existingMemberIds = targetProject.members.map((m) => m.nodeId);
+        }
+      } else {
+        await createUserProject(user?.id, {
+          name,
+          description: projectDescription.trim() || null,
+          members,
+        });
+      }
+
+      // ---------------------------------------------------------
+      // Auto-link every neuron in this cluster to every other
+      // neuron in this cluster. The user's mental model of a
+      // project is "these neurons belong together" — surfacing
+      // that as edges in the brain (via `lykn_user_links`) means
+      // the relationship reads even when the user isn't
+      // filtering by project. The project name flows in as the
+      // link label so the user can later see WHY two neurons
+      // got wired together.
+      //
+      // Pair construction:
+      //   • create mode → full mesh across the new selection.
+      //   • add mode    → every NEW neuron paired with every
+      //                   already-existing member, plus pairs
+      //                   among the new neurons themselves.
+      // The userLinks lib normalises every (a,b) into lex order
+      // and the unique constraint dedups across both paths, so
+      // re-running on overlapping selections is idempotent.
+      // ---------------------------------------------------------
+      const newIds = members.map((m) => m.nodeId);
+      // `source: 'project_cluster'` distinguishes these auto-
+      // spawned pairs from explicit "Link neurons" rows so the
+      // graph builder can render them as ordinary cross-edges
+      // outside the project filter (instead of the user-link
+      // accent that explicit links get). See the buildGraph
+      // userLinks merge for the branching.
+      const linkPairs: Array<{
+        fromNodeId: string;
+        toNodeId: string;
+        label?: string | null;
+        source?: string | null;
+      }> = [];
+      for (let i = 0; i < newIds.length; i++) {
+        for (const existingId of existingMemberIds) {
+          if (existingId === newIds[i]) continue;
+          linkPairs.push({
+            fromNodeId: newIds[i],
+            toNodeId: existingId,
+            label: projectLabel,
+            source: "project_cluster",
+          });
+        }
+        for (let j = i + 1; j < newIds.length; j++) {
+          linkPairs.push({
+            fromNodeId: newIds[i],
+            toNodeId: newIds[j],
+            label: projectLabel,
+            source: "project_cluster",
+          });
+        }
+      }
+      if (linkPairs.length > 0) {
+        // Fire against the same lib the explicit "Link neurons"
+        // verb uses. Persistence failures are non-fatal — the
+        // cluster itself already committed, so we log and move
+        // on rather than rolling back the project write.
+        try {
+          await createUserLinks(user?.id, linkPairs);
+        } catch (linkErr) {
+          console.warn("project auto-link failed", linkErr);
+        }
+      }
+
+      // Bust any caches that pull from `lykn_projects` /
+      // `lykn_project_neurons` / `lykn_user_links` so the
+      // synthesis layer (and the project-side panel) reflect
+      // both the new cluster AND the freshly-spawned edges
+      // immediately. Using broad keys on purpose — projects
+      // are small and re-fetched cheaply.
+      queryClient.invalidateQueries({ queryKey: ["lykn_projects", user?.id || "guest"] });
+      queryClient.invalidateQueries({ queryKey: ["mindmap_user_links", user?.id || "guest"] });
+      cancelProject();
+    } catch (e) {
+      // Same shape as commitLinking: persistence failures are
+      // non-fatal because the lib already falls back to
+      // localStorage internally. Reaching this catch means
+      // something genuinely unexpected happened.
+      console.error("commitProject failed", e);
+      setProjectSubmitting(false);
+    }
+  }, [projectName, projectDescription, projectSelection, projectSubmitting, projectAddTargetId, userProjects, nodeMap, user?.id, queryClient, cancelProject]);
+
+  // Sister to `beginProject` — enters the same cluster-selection
+  // mode but anchors it to an EXISTING project so the next
+  // commit appends members instead of creating one. Triggered
+  // from the project side panel's "Add neurons" button. We
+  // close the side panel on entry so the bottom-center action
+  // bar isn't fighting the right-side drawer for screen real
+  // estate (same rule the link/create flows already follow).
+  const beginAddNeuronsToProject = useCallback((projectId: string) => {
+    setProjectSelection(new Set());
+    setProjectName("");
+    setProjectDescription("");
+    setProjectSubmitting(false);
+    setProjectAddTargetId(projectId);
+    setProjectSearchQuery("");
+    setProjectMode(true);
+    setLinkingMode(false);
+    setLinkSelection(new Set());
+    setLinkLabel("");
+    // Deliberately leave `selectedProjectId` set so the project
+    // side panel STAYS open while the user is adding members —
+    // they can keep referencing the existing member list /
+    // updates while picking new neurons. The cluster action bar
+    // is bottom-center and the panel is right-edge, so the two
+    // surfaces don't fight for the same slot. The "+" menu and
+    // any open neuron panel still get cleared because those DO
+    // share screen real estate with the action bar's selection
+    // surface.
+    setSelectedId(null);
+    setAddMenuOpen(false);
+  }, []);
 
   // Prototype handoff: when a guest arrives here right after creating their
   // first neuron in the landing prototype, play a 3D-scene-integrated
@@ -4588,11 +5649,31 @@ export default function SynthesisLayer() {
     if (!nodeMap.has(pendingFormingNodeId)) return;
     const targetId = pendingFormingNodeId;
     setFormingNodeId(targetId);
-    const focusAt = window.setTimeout(() => setSelectedId(targetId), 400);
     const clearAt = window.setTimeout(() => setFormingNodeId(null), 2000);
-    beliefFormingWatchTimeouts.current.push(focusAt, clearAt);
+    beliefFormingWatchTimeouts.current.push(clearAt);
+    if (projectMode) {
+      // Project clustering owns the user's focus right now —
+      // the bottom-center action bar (and the open project
+      // side panel, if any) are where they're working. Don't
+      // pop the right-side NeuronPanel for the freshly-formed
+      // neuron; instead tick it into the running cluster
+      // selection so it lands in the search-list AND ships
+      // with the next Create / Add commit. The user still
+      // sees the formation pulse so they know the save took.
+      setProjectSelection((prev) => {
+        const next = new Set(prev);
+        next.add(targetId);
+        return next;
+      });
+    } else {
+      // Default behaviour: focus the camera + open the
+      // neuron's detail panel so the user sees their save
+      // land in the scene.
+      const focusAt = window.setTimeout(() => setSelectedId(targetId), 400);
+      beliefFormingWatchTimeouts.current.push(focusAt);
+    }
     setPendingFormingNodeId(null);
-  }, [pendingFormingNodeId, nodeMap]);
+  }, [pendingFormingNodeId, nodeMap, projectMode]);
 
   useEffect(() => {
     return () => {
@@ -4615,17 +5696,22 @@ export default function SynthesisLayer() {
     effectiveNotes.length === 0 &&
     (synthesisData?.themes?.length ?? 0) === 0;
   const selectedNode = selectedId ? nodeMap.get(selectedId) : null;
+  const selectedProject = selectedProjectId
+    ? userProjects.find((p) => p.id === selectedProjectId) || null
+    : null;
   const panelOpen = selectedNode != null;
   // Unified "is any right-side pullout open?" so the top-right chevron
   // toggle can act as the single close affordance for ALL right-edge
-  // panels (Core Beliefs, Detail, Welcome). The shared "what's new"
-  // updates panel was retired in favour of routing each individual
-  // update to its own node-specific DetailPanel via `?focus=<id>`.
+  // panels (Core Beliefs, Detail, Welcome, Project). The shared
+  // "what's new" updates panel was retired in favour of routing each
+  // individual update to its own node-specific DetailPanel via
+  // `?focus=<id>`.
   const anyRightPanelOpen =
-    beliefWindowOpen || selectedNode != null;
+    beliefWindowOpen || selectedNode != null || selectedProject != null;
   const closeAllRightPanels = useCallback(() => {
     setBeliefWindowOpen(false);
     setSelectedId(null);
+    setSelectedProjectId(null);
   }, []);
   const isTopicMode = layoutMode === "topic" && !!filterTag;
 
@@ -4801,6 +5887,29 @@ export default function SynthesisLayer() {
               resetSignal={resetSignal}
               onHoverNode={setHoveredNode}
               onClickNode={handleNodeClick}
+              // Linking mode visual feedback. The scene boosts each
+              // selected node's emissive multiplier so the user can
+              // see across the entire cloud which neurons they've
+              // queued for the link without scrolling through the
+              // action bar's count. Empty set = no boost (identical
+              // to pre-link-mode rendering). Project-cluster mode
+              // reuses the same prop because the visual treatment
+              // ("these are the neurons you're collecting") is
+              // identical — only the bottom-center action bar
+              // differs.
+              linkSelectedIds={
+                linkingMode
+                  ? linkSelection
+                  : projectMode
+                    ? projectSelection
+                    : undefined
+              }
+              // Filter highlight (currently driven by the "By
+              // Project" mode). Members of the picked project
+              // glow with the same emissive boost link selections
+              // use; everything else dims out. Null when no
+              // filter is active — scene renders unchanged.
+              focusedSet={projectFocusSet}
               // Prototype handoff: empty-space clicks must NOT deselect the
               // highlighted neuron (would fly the camera back to centroid
               // and undo the whole "this is YOUR neuron, look at it"
@@ -4843,6 +5952,37 @@ export default function SynthesisLayer() {
       <BeliefWindowPanel
         open={beliefWindowOpen}
         onClose={() => setBeliefWindowOpen(false)}
+        // When a belief neuron is selected in the 3D scene, hoist that
+        // belief to the top of the panel and auto-expand it. Node ids
+        // for beliefs are prefixed with `belief_`; strip the prefix to
+        // get the raw uuid the panel keys on.
+        focusBeliefId={
+          beliefWindowOpen && selectedId && selectedId.startsWith("belief_")
+            ? selectedId.slice("belief_".length)
+            : null
+        }
+        // Perspectives feed the new Stories tab inside the panel.
+        // Derive lightweight summaries from the notes payload the
+        // synthesis layer already fetched — the _perspective tag is
+        // the magic marker that splits perspective rows out of
+        // regular Vault notes (see PERSPECTIVE_NOTE_TAG comment).
+        perspectives={effectiveNotes
+          .filter(isPerspectiveNote)
+          .map((n) => ({
+            id: n.id,
+            title: n.title || n.ai_summary || "Untitled perspective",
+            ai_summary: n.ai_summary || null,
+            created_at: null,
+          }))}
+        // "+ New" inside the Perspectives tab opens the same composer
+        // the synthesis-layer "+ → Perspective" path uses.
+        onCreatePerspective={() => setCreatingNeuronType("perspective")}
+        // Clicking a perspective row focuses its node in the 3D scene
+        // (and closes the panel so the DetailPanel can take over).
+        onSelectPerspective={(perId) => {
+          setBeliefWindowOpen(false);
+          setSelectedId(`perspective_${perId}`);
+        }}
       />
 
       {/* The shared "what's new" / Recent activity pullout was retired.
@@ -4893,6 +6033,18 @@ export default function SynthesisLayer() {
           <NeuronCreationModal
             type={creatingNeuronType}
             isGuest={!user?.id}
+            // The unified composer's Connections picker needs the
+            // full live node list (every belief / fact / concept /
+            // perspective / vault note already in the graph). We
+            // hand it the same `allNodes` the 3D scene uses and let
+            // the panel filter out category shells + root internally.
+            existingNodes={allNodes.map((n) => ({
+              id: n.id,
+              label: n.label || n.id,
+              kind: n.kind,
+              color: n.color,
+            }))}
+            userId={user?.id || null}
             onClose={() => setCreatingNeuronType(null)}
             onCreated={(newId, savedText) => {
               // Guest "first neuron" branch — the modal already wrote
@@ -4917,10 +6069,11 @@ export default function SynthesisLayer() {
                 const justSaved = refreshed[refreshed.length - 1];
                 if (justSaved) {
                   const targetId =
-                    justSaved.neuronType === "fact"    ? `fact_${justSaved.id}` :
-                    justSaved.neuronType === "belief"  ? `belief_${justSaved.id}` :
-                    justSaved.neuronType === "concept" ? `concept_${justSaved.id}` :
-                    justSaved.neuronType === "tag"     ? `tag_${justSaved.text}` :
+                    justSaved.neuronType === "fact"        ? `fact_${justSaved.id}` :
+                    justSaved.neuronType === "belief"      ? `belief_${justSaved.id}` :
+                    justSaved.neuronType === "concept"     ? `concept_${justSaved.id}` :
+                    justSaved.neuronType === "perspective" ? `perspective_${justSaved.id}` :
+                    justSaved.neuronType === "tag"         ? `tag_${justSaved.text}` :
                     `neuron_theme_${justSaved.text}`;
                   setPendingFormingNodeId(targetId);
                 }
@@ -4941,6 +6094,19 @@ export default function SynthesisLayer() {
                 setPendingFormingNodeId(`concept_${newId}`);
                 queryClient.invalidateQueries({ queryKey: ["mindmap_concepts", user?.id] });
                 queryClient.invalidateQueries({ queryKey: ["mindmap_concept_links_for_user", user?.id] });
+              } else if (creatingNeuronType === "perspective" && newId) {
+                // Perspectives are persisted as Vault notes carrying
+                // the `_perspective` tag; the synthesis layer surfaces
+                // them as a dedicated Perspectives cluster (the
+                // `mindmap_perspectives` query reads the same `notes`
+                // table). Node id mirrors `perspective_<note_id>` so
+                // the formation pulse lands on the freshly-minted node.
+                setPendingFormingNodeId(`perspective_${newId}`);
+                queryClient.invalidateQueries({ queryKey: ["mindmap_perspectives", user?.id] });
+                // The Vault notes query also caches this row (filtered
+                // out by the perspective tag in buildGraph), so refresh
+                // it as well to keep counts consistent.
+                queryClient.invalidateQueries({ queryKey: ["mindmap_notes", user?.id] });
               } else if (creatingNeuronType === "tag") {
                 // Tag creation inserts a Vault note carrying the tag.
                 // The tag-cluster node id is derived from the tag text
@@ -4978,7 +6144,14 @@ export default function SynthesisLayer() {
         <div ref={modeMenuRef} className="relative">
           <button
             onClick={() => { setShowModeMenu((v) => !v); setShowTagMenu(false); }}
-            className="flex items-center gap-1.5 text-[0.6875rem] font-medium text-white/75 hover:text-white transition-colors"
+            // py-1.5 matches the vertical padding the topic/
+            // project chips beside this button use, so the row's
+            // resting height stays the same whether or not a
+            // companion chip is rendered. Without it, switching
+            // INTO "By Idea" or "By Project" suddenly grows the
+            // row height and the bare-text mode button appears
+            // to "drop into place" — which read as a layout jank.
+            className="flex items-center gap-1.5 py-1.5 text-[0.6875rem] font-medium text-white/75 hover:text-white transition-colors"
           >
             {(() => { const m = layoutModes.find((l) => l.id === layoutMode); return m ? <m.icon size={13} /> : null; })()}
             {layoutModes.find((l) => l.id === layoutMode)?.label}
@@ -5001,6 +6174,22 @@ export default function SynthesisLayer() {
                       setShowModeMenu(false);
                       if (m.id !== "topic") setFilterTag(null);
                       if (m.id === "topic" && allIdeas.length > 0 && !filterTag) setFilterTag(allIdeas[0]);
+                      // "By Project" filter — seed with the
+                      // user's most recently active project so
+                      // the scene immediately reflects a meaningful
+                      // selection instead of showing the dimmed
+                      // "no project picked" placeholder. Clear the
+                      // pick when leaving this mode so re-entering
+                      // doesn't surprise the user with a stale
+                      // selection.
+                      if (m.id !== "project") setFilterProjectId(null);
+                      if (
+                        m.id === "project" &&
+                        userProjects.length > 0 &&
+                        !filterProjectId
+                      ) {
+                        setFilterProjectId(userProjects[0].id);
+                      }
                     }}
                     className={`w-full text-left px-3 py-2 flex items-center gap-2.5 text-[0.6875rem] transition-colors ${
                       layoutMode === m.id
@@ -5052,6 +6241,136 @@ export default function SynthesisLayer() {
                       {t}
                     </button>
                   ))}
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+        )}
+
+        {/* Project chooser — sister to the topic chooser above.
+            Renders next to the mode dropdown only while the user
+            is in "By Project" layout mode. The chosen project's
+            member node ids flow into `projectFocusSet` and from
+            there into the 3D scene's `focusedSet`, so only that
+            project's clustered neurons glow against the dimmed
+            full graph. Deliberately neutral (white-on-dark) to
+            match the rest of the chrome — the "+" menu, the mode
+            dropdown items, the legend — instead of carrying the
+            violet accent the create-project action bar uses.
+            That accent is reserved for the action surface; the
+            filter is just a chip. */}
+        {layoutMode === "project" && (
+          <div ref={projectMenuRef} className="relative">
+            <button
+              onClick={() => { setShowProjectMenu((v) => !v); setShowModeMenu(false); setShowTagMenu(false); }}
+              className="flex items-center gap-1.5 text-[0.6875rem] font-medium px-2.5 py-1.5 rounded-md bg-white/8 border border-white/15 text-white/80 hover:bg-white/14 hover:text-white shadow-sm transition-colors"
+            >
+              <FolderPlus size={12} />
+              {(() => {
+                const p = userProjects.find((x) => x.id === filterProjectId);
+                if (p) {
+                  // Append member count so the user can tell at a
+                  // glance how big the cluster is without opening
+                  // the dropdown — same affordance the legend
+                  // gives for the top-level categories.
+                  const n = p.members.length;
+                  return `${p.name} · ${n}`;
+                }
+                return userProjects.length === 0
+                  ? "No projects yet"
+                  : "Select project";
+              })()}
+              <ChevronDown size={11} />
+            </button>
+            <AnimatePresence>
+              {showProjectMenu && (
+                <motion.div
+                  initial={{ opacity: 0, y: -4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -4 }}
+                  transition={{ duration: 0.12 }}
+                  className="absolute top-full left-0 mt-1.5 w-64 max-h-72 overflow-y-auto rounded-xl bg-[rgba(23,23,23,0.92)] backdrop-blur-md border border-white/10 shadow-lg py-1 z-50 scrollbar-hide"
+                >
+                  {userProjects.length === 0 ? (
+                    <div className="px-3 py-3 text-[0.6875rem] text-white/55 leading-relaxed">
+                      No projects yet. Cluster a few neurons together
+                      to get started.
+                    </div>
+                  ) : userProjects.map((p) => {
+                    const active = filterProjectId === p.id;
+                    return (
+                      <button
+                        key={p.id}
+                        onClick={() => {
+                          // Three things happen in one tap:
+                          //   1. set the focus filter so the scene
+                          //      glows only that project's members,
+                          //   2. open the project side panel so the
+                          //      user can read its updates / member
+                          //      list / hit "Add neurons,"
+                          //   3. close the dropdown.
+                          // Doing all three at once matches how the
+                          // user thinks about this affordance ("show
+                          // me this project") and avoids forcing two
+                          // clicks for the most common flow.
+                          setFilterProjectId(p.id);
+                          setSelectedProjectId(p.id);
+                          setShowProjectMenu(false);
+                        }}
+                        className={`w-full text-left px-3 py-2 text-[0.6875rem] transition-colors flex items-start gap-2 ${
+                          active
+                            ? "bg-white/12 text-white font-medium"
+                            : "text-white/75 hover:bg-white/8"
+                        }`}
+                      >
+                        <FolderPlus
+                          size={11}
+                          className={`mt-0.5 shrink-0 ${active ? "text-white/85" : "text-white/45"}`}
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate">{p.name}</div>
+                          <div className="text-[0.6rem] text-white/45 mt-0.5">
+                            {p.members.length} neuron
+                            {p.members.length === 1 ? "" : "s"}
+                            {p.description ? ` · ${p.description}` : ""}
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
+
+                  {/* Divider + "Create new project" entry — same
+                      verb the "+" menu exposes, surfaced here so
+                      the user can spawn a project without having
+                      to leave the filter dropdown they're already
+                      in. The thicker divider mirrors the "+"
+                      menu's "Link neurons" separator: it tells
+                      the eye "the entries above are nouns, the
+                      entry below is a verb." */}
+                  {userProjects.length > 0 ? (
+                    <div className="h-px bg-white/15 my-1 mx-2" />
+                  ) : null}
+                  <button
+                    onClick={() => {
+                      setShowProjectMenu(false);
+                      // Same guest carrot the "+" menu's Create
+                      // project entry uses — anonymous visitors
+                      // get one prototype neuron, then the
+                      // sign-in wall drops. Keeps the two entry
+                      // points behaving identically so the user
+                      // doesn't discover a backdoor that
+                      // bypasses sign-in.
+                      if (!user?.id && prototypeNeurons.length >= 1) {
+                        setSynthSignInOpen(true);
+                        return;
+                      }
+                      beginProject();
+                    }}
+                    className="w-full text-left px-3 py-2 text-[0.6875rem] text-white/85 hover:bg-white/8 transition-colors flex items-center gap-2"
+                  >
+                    <Plus size={11} className="shrink-0 text-white/55" />
+                    <span>Create new project</span>
+                  </button>
                 </motion.div>
               )}
             </AnimatePresence>
@@ -5174,22 +6493,42 @@ export default function SynthesisLayer() {
                 // zoom-column siblings.
                 //
                 // The panel itself is intentionally black-and-white: it
-                // exposes every neuron type the user can author, and
-                // we don't want any single entry's brand color to read
-                // as the "default" choice. Order is fixed: the three
-                // manual-creation types (Belief / Fact / Concept) come
-                // first, then the structural shortcuts (Tag opens the
-                // tag composer, Vault and Chat route the user to those
-                // pages where the larger creation flows live).
+                // exposes the five top-level categories of the brain
+                // in the same order they read in the legend (Belief /
+                // Vault / Facts / Concepts / Chats), then a divider,
+                // then the "Link neurons" verb at the bottom. We don't
+                // want any single entry's brand color to read as the
+                // "default" choice.
+                //
+                // The category entries map to either a composer
+                // (Belief / Facts / Concepts open the right write-in
+                // form) or a navigation (Vault / Chats route to the
+                // dedicated page where the larger creation flow
+                // lives). The Belief entry currently opens the
+                // Belief composer directly; a future pass will fan
+                // it out into a small chooser (Belief / Perspective
+                // sub-options) when Perspective creation gets
+                // common enough that hiding it inside the Belief
+                // panel's Stories tab feels wrong.
                 className="absolute bottom-full right-0 mb-2 w-60 rounded-xl bg-black border border-white/20 shadow-[0_14px_40px_rgba(0,0,0,0.6)] overflow-hidden z-50"
                 role="menu"
               >
                 {([
+                  // Order within the "noun" section above the divider
+                  // groups the three "deepest-self" neurons (Beliefs,
+                  // Facts, Concepts) together at the top, since they
+                  // all open the unified creation panel. Vault and
+                  // Chat sit below them as navigation entries — they
+                  // bounce to a different page rather than open the
+                  // composer, so visually separating them from the
+                  // composer-trigger group makes the menu read as
+                  // "create a neuron … (or jump to a surface)".
                   {
                     key: "belief",
-                    label: "Belief",
-                    blurb: "A principle that shapes every reply.",
+                    label: "Beliefs",
+                    blurb: "A core belief or principle that shapes every reply.",
                     Icon: Atom,
+                    divider: false,
                     onClick: () => {
                       setAddMenuOpen(false);
                       // Guest carrot: an unauthenticated visitor gets to
@@ -5204,6 +6543,11 @@ export default function SynthesisLayer() {
                         setSynthSignInOpen(true);
                         return;
                       }
+                      // Belief currently maps straight to the Belief
+                      // composer. Perspective is still reachable from
+                      // the Belief panel's Stories tab. We'll expand
+                      // this into a Belief / Perspective sub-chooser
+                      // later.
                       setCreatingNeuronType("belief");
                     },
                   },
@@ -5212,6 +6556,7 @@ export default function SynthesisLayer() {
                     label: "Fact",
                     blurb: "A single fact about you the AI should remember.",
                     Icon: Brain,
+                    divider: false,
                     onClick: () => {
                       setAddMenuOpen(false);
                       if (!user?.id && prototypeNeurons.length >= 1) {
@@ -5226,6 +6571,7 @@ export default function SynthesisLayer() {
                     label: "Concept",
                     blurb: "A theme that ties your ideas together.",
                     Icon: Sparkles,
+                    divider: false,
                     onClick: () => {
                       setAddMenuOpen(false);
                       if (!user?.id && prototypeNeurons.length >= 1) {
@@ -5236,24 +6582,11 @@ export default function SynthesisLayer() {
                     },
                   },
                   {
-                    key: "tag",
-                    label: "Tag",
-                    blurb: "A new label to organize the Vault.",
-                    Icon: Tag,
-                    onClick: () => {
-                      setAddMenuOpen(false);
-                      if (!user?.id && prototypeNeurons.length >= 1) {
-                        setSynthSignInOpen(true);
-                        return;
-                      }
-                      setCreatingNeuronType("tag");
-                    },
-                  },
-                  {
                     key: "vault",
                     label: "Vault",
                     blurb: "Save a note, file, or link.",
                     Icon: StickyNote,
+                    divider: false,
                     onClick: () => {
                       setAddMenuOpen(false);
                       navigate("/vault");
@@ -5264,9 +6597,57 @@ export default function SynthesisLayer() {
                     label: "Chat",
                     blurb: "Start a new conversation with LYKN.",
                     Icon: LayoutGrid,
+                    // Thicker divider here so Link neurons reads as a
+                    // separate "verb" section below the five
+                    // category creation/nav entries above it.
+                    divider: true,
                     onClick: () => {
                       setAddMenuOpen(false);
                       navigate("/app");
+                    },
+                  },
+                  {
+                    // Linking is a verb, not a noun, so it lives below
+                    // the divider — it's the second-most-common
+                    // action from the "+" affordance ("I want to
+                    // wire two things together").
+                    key: "link",
+                    label: "Link neurons",
+                    blurb: "Connect two or more neurons together.",
+                    Icon: Link2,
+                    divider: false,
+                    onClick: () => {
+                      setAddMenuOpen(false);
+                      beginLinking();
+                    },
+                  },
+                  {
+                    // Project clustering — pick the neurons that
+                    // belong to a piece of work, give it a name,
+                    // and the AI sees the cluster the next time it
+                    // calls lykn_listProjects / lykn_getContextBlock
+                    // through MCP. Sits right under "Link neurons"
+                    // because it's the same selection mechanic
+                    // applied to a different verb ("group these"
+                    // instead of "wire these").
+                    key: "project",
+                    label: "Create project",
+                    blurb: "Cluster neurons into a project the AI can see.",
+                    Icon: FolderPlus,
+                    divider: false,
+                    onClick: () => {
+                      setAddMenuOpen(false);
+                      // Same guest carrot as the other create flows:
+                      // anonymous visitors get one prototype neuron,
+                      // then we bounce them to sign-in for any
+                      // further authoring (projects included). The
+                      // userProjects lib still falls back to
+                      // localStorage so the in-session UX works.
+                      if (!user?.id && prototypeNeurons.length >= 1) {
+                        setSynthSignInOpen(true);
+                        return;
+                      }
+                      beginProject();
                     },
                   },
                 ] as const).map((item, idx, arr) => (
@@ -5284,7 +6665,15 @@ export default function SynthesisLayer() {
                         </div>
                       </div>
                     </button>
-                    {idx < arr.length - 1 ? <div className="h-px bg-white/12" /> : null}
+                    {idx < arr.length - 1 ? (
+                      <div
+                        className={
+                          item.divider
+                            ? "h-px bg-white/25"
+                            : "h-px bg-white/12"
+                        }
+                      />
+                    ) : null}
                   </div>
                 ))}
               </motion.div>
@@ -5293,69 +6682,478 @@ export default function SynthesisLayer() {
         </div>
       </div>
 
-      {/* Legend — order matches the canonical reading order around the
-          root: outer scaffolding categories (Chats / Vault / Tags) first,
-          then the AI-derived tiers (Learned → Concepts → Beliefs) which
-          sit on top of the raw content. Projects was dropped when the
-          sidebar projects feature was retired; Concepts was added here
-          so the legend reflects every category the graph actually
-          renders (it was the only category color the user could see
-          without a swatch). */}
+      {/* Legend — five top-level clusters in canonical reading order:
+          outer scaffolding (Chats / Vault) first, then the inner
+          identity tiers (Belief / Facts / Concepts). Tags collapsed
+          into Vault attributes; Perspectives folded into the Belief
+          cluster; AI-learned neurons absorbed into Facts. */}
       <div className="absolute bottom-6 left-6 z-20 flex flex-wrap gap-3 text-[0.625rem] text-white/55 pointer-events-none">
         <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: palette.grids.bg, color: palette.grids.bg }} /> Chats</span>
         <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: palette.vault.bg, color: palette.vault.bg }} /> Vault</span>
-        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: palette.tags.bg, color: palette.tags.bg }} /> Tags</span>
+        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: palette.belief.bg, color: palette.belief.bg }} /> Beliefs</span>
         <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: palette.facts.bg, color: palette.facts.bg }} /> Facts</span>
-        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: palette.neurons.bg, color: palette.neurons.bg }} /> AI Learned</span>
         <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: palette.concepts.bg, color: palette.concepts.bg }} /> Concepts</span>
-        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: palette.beliefs.bg, color: palette.beliefs.bg }} /> Beliefs</span>
       </div>
 
       {/* Orbit hint — first-time users may not realise drag = orbit (not pan).
-          Fades after a few seconds via CSS animation; tiny enough to ignore. */}
-      <div
-        className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20 text-[0.6rem] text-white/40 pointer-events-none animate-pulse"
-      >
-        drag to orbit · scroll to zoom · shift+drag to pan
-      </div>
+          Fades after a few seconds via CSS animation; tiny enough to ignore.
+          Hidden during linking + project-cluster mode so it doesn't fight
+          the action bar for the same bottom-center slot. */}
+      {!linkingMode && !projectMode && (
+        <div
+          className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20 text-[0.6rem] text-white/40 pointer-events-none animate-pulse"
+        >
+          drag to orbit · scroll to zoom · shift+drag to pan
+        </div>
+      )}
 
-      {/* Neuron detail panel — opens when a node is selected (from a graph
-          tap, an updates-panel row click, or a programmatic focus). The
-          welcome modal that used to live in this slot has been retired:
-          on-page-load greeting now lives in chat — LYKN posts a fresh
-          "what's been happening / approvals needed / project updates"
-          message at the top of a new chat every time the user loads
-          into `/app`. See `fetchLoadInUpdatesMessage`. */}
+      {/* Link-mode action bar — floats at bottom-center while the
+          user is wiring neurons together. Shows the running selection
+          count, a free-text label field ("supports", "contradicts",
+          …), and Connect / Cancel actions. Connect upserts one row
+          per unique pair via the userLinks lib (Supabase when the
+          migration is present, localStorage otherwise + always for
+          guests). The bar also shows a tiny instruction line so the
+          user knows what to do — "tap any neurons in the brain to
+          select them" — because link mode is a transient state with
+          no other visual indicator. */}
       <AnimatePresence>
-        {selectedNode ? (
-          <DetailPanel
-            key={selectedNode.id}
-            node={selectedNode}
-            allNodes={allNodes}
-            edges={edges}
-            onClose={() => setSelectedId(null)}
-            onNavigate={navigate}
-            // Clicking a connection in the panel jumps to that neuron in the
-            // 3D graph: selectedId updates → SynthesisScene3D's focusNodeId
-            // changes → CameraController lerps the orbit pivot to it. Set
-            // unconditionally (not toggle) — clicking a connection should
-            // always navigate, never deselect.
-            onSelectNode={(id) => setSelectedId(id)}
-            // Landing-prototype handoff: pass the saved chat transcript
-            // so the synthetic "First Conversation" grid renders the
-            // actual messages instead of an empty grid stub.
-            prototypeChat={isPrototypeHandoff ? prototypeChat : undefined}
-            // First-class concepts (056-058). The concept detail
-            // section uses this list to populate its merge picker.
-            // We pass the full live set so merging into a concept that
-            // happens to be off-screen still works. Reference is memoized
-            // (see `allConceptsForPanel` below) so DetailPanel can rely
-            // on stable identity for downstream useMemo deps.
-            allConcepts={allConceptsForPanel}
-            vaultNodeIdFor={vaultNodeIdFor}
-          />
-        ) : null}
+        {linkingMode && (
+          <motion.div
+            key="link-mode-bar"
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 16 }}
+            transition={{ duration: 0.18, ease: "easeOut" }}
+            className="absolute bottom-6 left-1/2 -translate-x-1/2 z-30 w-[min(92vw,28rem)] rounded-2xl bg-[rgba(15,15,18,0.94)] backdrop-blur-md border border-blue-400/35 shadow-[0_18px_50px_rgba(0,0,0,0.55)] px-4 py-3"
+            role="dialog"
+            aria-label="Link neurons"
+          >
+            <div className="flex items-start gap-2.5">
+              <div className="mt-0.5 h-7 w-7 rounded-full bg-blue-500/20 border border-blue-400/45 flex items-center justify-center flex-shrink-0">
+                <Link2 size={13} className="text-blue-200" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-[0.78rem] font-semibold text-white/95 leading-snug">
+                  {linkSelection.size === 0
+                    ? "Select neurons to link"
+                    : linkSelection.size === 1
+                    ? "1 neuron selected · pick another"
+                    : `${linkSelection.size} neurons selected`}
+                </p>
+                <p className="text-[0.62rem] text-white/55 leading-snug mt-0.5">
+                  Tap any neuron in the brain to add or remove it. Pick two or more, then Connect.
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-3">
+              <input
+                type="text"
+                value={linkLabel}
+                onChange={(e) => setLinkLabel(e.target.value)}
+                maxLength={48}
+                placeholder="Optional label (e.g. 'supports', 'reminds me of')"
+                className="w-full bg-black/30 border border-white/15 rounded-lg px-2.5 py-1.5 text-[0.72rem] text-white/95 placeholder:text-white/30 focus:outline-none focus:border-white/30"
+              />
+            </div>
+
+            <div className="mt-3 flex items-center gap-2">
+              <button
+                onClick={cancelLinking}
+                className="flex-1 px-3 py-1.5 rounded-lg border border-white/15 bg-white/5 hover:bg-white/10 text-[0.72rem] font-medium text-white/80 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={commitLinking}
+                disabled={linkSelection.size < 2 || linkSubmitting}
+                className="flex-[1.4] flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg border bg-blue-500/22 hover:bg-blue-500/32 border-blue-400/40 text-blue-100 text-[0.72rem] font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {linkSubmitting ? (
+                  <Loader2 size={12} className="animate-spin" />
+                ) : (
+                  <Link2 size={12} />
+                )}
+                Connect{linkSelection.size >= 2 ? ` ${linkSelection.size}` : ""}
+              </button>
+            </div>
+          </motion.div>
+        )}
       </AnimatePresence>
+
+      {/* Project-cluster action bar — sister to the link-mode bar
+          above. Same bottom-center slot, same selection mechanic,
+          but the call-to-action commits the selected neurons into
+          a NAMED project (lykn_projects + lykn_project_neurons)
+          rather than upserting pairwise edges. The two modes are
+          mutually exclusive (see beginProject / beginLinking) so
+          they never render simultaneously.
+
+          The bar accepts one required input (project name) and one
+          optional input (description) — both flow into the same
+          `lykn_projects` row that the MCP server's
+          `lykn_listProjects` / `lykn_getContextBlock` tools surface
+          to outside AI clients. That's how the AI "sees" the
+          cluster the moment the user creates it. */}
+      <AnimatePresence>
+        {projectMode && (() => {
+          // Two visual variants share this action bar — see
+          // `beginProject` (create new) vs.
+          // `beginAddNeuronsToProject` (append to existing).
+          // The append form skips the name/description inputs
+          // because the project is already named, and swaps the
+          // header copy + CTA label so the user knows which
+          // path they're on.
+          const addingTo = projectAddTargetId
+            ? userProjects.find((p) => p.id === projectAddTargetId) || null
+            : null;
+          const isAdding = !!addingTo;
+          // Build the addable-neuron list: every real neuron in
+          // the brain except the structural containers (root,
+          // category) — those aren't user-selectable in 3D
+          // either, so showing them in the list would be
+          // misleading. In "add to existing" mode we ALSO drop
+          // members the project already has so the list stays
+          // focused on what the user can newly contribute.
+          const existingMemberIds = new Set<string>(
+            addingTo ? addingTo.members.map((m) => m.nodeId) : [],
+          );
+          const queryLower = projectSearchQuery.trim().toLowerCase();
+          const addableMatches = allNodes
+            .filter((n) => {
+              if (n.kind === "root" || n.kind === "category") return false;
+              if (existingMemberIds.has(n.id)) return false;
+              if (!queryLower) return true;
+              return (n.label || "").toLowerCase().includes(queryLower);
+            })
+            // Selected items float to the top so the running
+            // selection is always visible at a glance, then the
+            // remainder is alphabetical for predictable scroll.
+            .sort((a, b) => {
+              const aSel = projectSelection.has(a.id) ? 0 : 1;
+              const bSel = projectSelection.has(b.id) ? 0 : 1;
+              if (aSel !== bSel) return aSel - bSel;
+              return (a.label || "").localeCompare(b.label || "");
+            })
+            // Cap to keep the dropdown bounded; 80 rows fits
+            // comfortably with the max-h scroll while still
+            // letting the user see "a lot" of options when
+            // they haven't typed a query.
+            .slice(0, 80);
+          return (
+            <motion.div
+              key="project-mode-bar"
+              initial={{ opacity: 0, y: 16 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 16 }}
+              transition={{ duration: 0.18, ease: "easeOut" }}
+              // Deliberately neutral (white-on-dark) — matches the
+              // "+" menu and the project filter chip. The link-mode
+              // bar above keeps its blue accent because linking is
+              // a paired-edge primitive across the whole brain;
+              // project clustering is a quieter authoring action
+              // and reads better without competing with the scene's
+              // own color cues.
+              //
+              // Centering math: the bar normally sits dead-centre
+              // of the viewport, but when a right-edge panel is
+              // open (the project side panel during "Add neurons",
+              // or a neuron panel anyone forgot to close) the
+              // panel covers the right ~380px of the viewport.
+              // We shift the bar's anchor to the centre of the
+              // VISIBLE canvas (viewport minus panel width) so
+              // it doesn't visually crowd the panel on narrower
+              // screens. `-translate-x-1/2` keeps it true-centred
+              // around whatever the anchor resolves to.
+              className="absolute bottom-6 -translate-x-1/2 z-30 w-[min(92vw,30rem)] rounded-2xl bg-[rgba(15,15,18,0.94)] backdrop-blur-md border border-white/15 shadow-[0_18px_50px_rgba(0,0,0,0.55)] px-4 py-3 transition-[left] duration-200"
+              style={{
+                left: anyRightPanelOpen
+                  ? "calc((100vw - 380px) / 2)"
+                  : "50%",
+              }}
+              role="dialog"
+              aria-label={isAdding ? "Add neurons to project" : "Create project"}
+            >
+              <div className="flex items-start gap-2.5">
+                <div className="mt-0.5 h-7 w-7 rounded-full bg-white/10 border border-white/20 flex items-center justify-center flex-shrink-0">
+                  <FolderPlus size={13} className="text-white/80" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-[0.78rem] font-semibold text-white/95 leading-snug">
+                    {isAdding
+                      ? `Adding to “${addingTo!.name}”`
+                      : projectSelection.size === 0
+                        ? "Tap neurons to add them to your project"
+                        : projectSelection.size === 1
+                          ? "1 neuron selected · keep tapping or name it"
+                          : `${projectSelection.size} neurons selected`}
+                  </p>
+                  <p className="text-[0.62rem] text-white/55 leading-snug mt-0.5">
+                    {isAdding
+                      ? `Tap any neuron in the brain to add it to this project. ${projectSelection.size} new neuron${projectSelection.size === 1 ? "" : "s"} queued.`
+                      : "Cluster the neurons that belong to a piece of work. The AI sees this project the moment you create it."}
+                  </p>
+                </div>
+              </div>
+
+              {/* Search + clickable neuron list. Lives in BOTH
+                  variants of the bar (create + add) — once the
+                  brain has more than a handful of neurons,
+                  hunting them in 3D is the bottleneck and a
+                  filterable list is the fastest way to assemble
+                  a cluster. Tapping a row toggles it in
+                  `projectSelection` exactly like tapping the
+                  same neuron in the 3D scene; the two input
+                  surfaces stay perfectly in sync. */}
+              <div className="mt-3 space-y-1.5">
+                <div className="relative">
+                  <Search
+                    size={11}
+                    className="absolute left-2.5 top-1/2 -translate-y-1/2 text-white/40 pointer-events-none"
+                  />
+                  <input
+                    type="text"
+                    value={projectSearchQuery}
+                    onChange={(e) => setProjectSearchQuery(e.target.value)}
+                    placeholder={
+                      isAdding
+                        ? "Search neurons to add…"
+                        : "Search neurons by name…"
+                    }
+                    className="w-full bg-black/30 border border-white/15 rounded-lg pl-7 pr-2.5 py-1.5 text-[0.72rem] text-white/95 placeholder:text-white/30 focus:outline-none focus:border-white/30"
+                  />
+                </div>
+                <div className="max-h-44 overflow-y-auto rounded-lg border border-white/10 bg-black/20 scrollbar-hide">
+                  {addableMatches.length === 0 ? (
+                    <p className="px-3 py-3 text-[0.7rem] text-white/45 leading-relaxed">
+                      {queryLower
+                        ? `No neurons match “${projectSearchQuery.trim()}”.`
+                        : isAdding
+                          ? "Every neuron is already in this project."
+                          : "No neurons in your brain yet."}
+                    </p>
+                  ) : (
+                    addableMatches.map((n) => {
+                      const selected = projectSelection.has(n.id);
+                      return (
+                        <button
+                          key={n.id}
+                          type="button"
+                          onClick={() => {
+                            // Same toggle semantics as a 3D
+                            // tap, so the user can mix-and-match
+                            // input surfaces during one cluster
+                            // session without the selection set
+                            // diverging from itself.
+                            setProjectSelection((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(n.id)) next.delete(n.id);
+                              else next.add(n.id);
+                              return next;
+                            });
+                          }}
+                          className={`w-full flex items-center gap-2 px-2.5 py-1.5 text-left text-[0.7rem] transition-colors border-b border-white/5 last:border-b-0 ${
+                            selected
+                              ? "bg-white/10 text-white"
+                              : "text-white/80 hover:bg-white/[0.05]"
+                          }`}
+                        >
+                          <span
+                            aria-hidden
+                            className={`shrink-0 w-3.5 h-3.5 rounded-[3px] border flex items-center justify-center text-[0.55rem] ${
+                              selected
+                                ? "bg-white text-black border-white"
+                                : "border-white/30 bg-transparent"
+                            }`}
+                          >
+                            {selected ? <Check size={9} /> : null}
+                          </span>
+                          <span className="flex-1 min-w-0 truncate">
+                            {n.label || "(unlabeled)"}
+                          </span>
+                          <span className="shrink-0 text-[0.55rem] uppercase tracking-[0.12em] text-white/40">
+                            {n.kind}
+                          </span>
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+
+              {!isAdding && (
+                <div className="mt-3 space-y-2">
+                  <input
+                    type="text"
+                    value={projectName}
+                    onChange={(e) => setProjectName(e.target.value)}
+                    maxLength={120}
+                    placeholder="Project name (e.g. 'Q1 fundraising deck')"
+                    className="w-full bg-black/30 border border-white/15 rounded-lg px-2.5 py-1.5 text-[0.74rem] text-white/95 placeholder:text-white/30 focus:outline-none focus:border-white/30"
+                  />
+                  <textarea
+                    value={projectDescription}
+                    onChange={(e) => setProjectDescription(e.target.value)}
+                    maxLength={320}
+                    rows={2}
+                    placeholder="Optional one-liner — what is this project about?"
+                    className="w-full bg-black/30 border border-white/15 rounded-lg px-2.5 py-1.5 text-[0.72rem] text-white/95 placeholder:text-white/30 focus:outline-none focus:border-white/30 resize-none"
+                  />
+                </div>
+              )}
+
+              <div className="mt-3 flex items-center gap-2">
+                <button
+                  onClick={cancelProject}
+                  className="flex-1 px-3 py-1.5 rounded-lg border border-white/15 bg-white/5 hover:bg-white/10 text-[0.72rem] font-medium text-white/80 transition-colors"
+                >
+                  Cancel
+                </button>
+                {/* Create-new-neuron shortcut. Opens the SAME
+                    type-picker the "+" button at the bottom-
+                    right exposes (Belief / Vault / Fact /
+                    Concept / Chat) — a project should never
+                    invent a second creation surface. The
+                    pendingFormingNodeId watcher takes any
+                    neuron produced while projectMode is true
+                    and auto-ticks it into projectSelection so
+                    the user can compose-and-cluster in one
+                    motion without re-entering this bar. */}
+                <button
+                  onClick={() => setAddMenuOpen(true)}
+                  className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/15 bg-white/5 hover:bg-white/10 text-[0.7rem] font-medium text-white/80 transition-colors"
+                  aria-label="Create a new neuron and add it to this project"
+                  title="Create a new neuron and add it to this project"
+                >
+                  <Plus size={11} />
+                  Create new
+                </button>
+                <button
+                  onClick={commitProject}
+                  disabled={
+                    projectSubmitting ||
+                    projectSelection.size === 0 ||
+                    (!isAdding && !projectName.trim())
+                  }
+                  className="flex-[1.4] flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/25 bg-white/12 hover:bg-white/18 text-white text-[0.72rem] font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {projectSubmitting ? (
+                    <Loader2 size={12} className="animate-spin" />
+                  ) : (
+                    <FolderPlus size={12} />
+                  )}
+                  {isAdding
+                    ? `Add${projectSelection.size > 0 ? ` · ${projectSelection.size}` : ""}`
+                    : `Create${projectSelection.size > 0 ? ` · ${projectSelection.size}` : ""}`}
+                </button>
+              </div>
+            </motion.div>
+          );
+        })()}
+      </AnimatePresence>
+
+      {/* Neuron detail panel — opens when a node is selected from a
+          graph tap, an updates-panel row click, or a programmatic
+          focus. This is the SINGLE unified surface for every neuron
+          kind (belief, concept, fact, note, perspective, chat, tag):
+          one consistent layout so the user sees the same shape of
+          information no matter what they click. The older bespoke
+          `DetailPanel` is still in this file but no longer rendered
+          for individual neurons; the multi-belief manager
+          (`BeliefWindowPanel`) only opens when the user clicks the
+          Belief cluster header or chooses the "+ → Core Belief neuron"
+          entry. */}
+      <NeuronPanel
+        open={Boolean(selectedNode)}
+        node={selectedNode || null}
+        allNodes={allNodes}
+        edges={edges}
+        userId={user?.id || null}
+        onClose={() => setSelectedId(null)}
+        onSelectNode={(id) => setSelectedId(id)}
+        onBeginLinking={beginLinking}
+        onOpenProject={(projectId) => {
+          setSelectedId(null);
+          setSelectedProjectId(projectId);
+        }}
+        onAfterEdit={(n) => {
+          // Refetch the graph data so a renamed belief/concept reads
+          // through to the 3D scene + the connected-neuron rows in
+          // this panel without a hard reload.
+          if (n.kind === "belief") {
+            queryClient.invalidateQueries({ queryKey: ["mindmap_active_beliefs", user?.id] });
+          } else if (n.kind === "concept") {
+            queryClient.invalidateQueries({ queryKey: ["mindmap_concepts", user?.id] });
+          }
+        }}
+        onAfterDelete={(n) => {
+          // Refetch whichever query backs the deleted kind so the 3D
+          // scene rebuilds without the node on the next layout tick.
+          // Prototype (guest) neurons live in localStorage so we
+          // re-read that list into state directly — there's no react-
+          // query layer for them.
+          if (n.meta?.isPrototypeNeuron) {
+            setPrototypeNeurons(readPrototypeNeurons());
+            return;
+          }
+          if (n.kind === "belief") {
+            queryClient.invalidateQueries({ queryKey: ["mindmap_active_beliefs", user?.id] });
+          } else if (n.kind === "concept") {
+            queryClient.invalidateQueries({ queryKey: ["mindmap_concepts", user?.id] });
+            queryClient.invalidateQueries({ queryKey: ["mindmap_concept_links", user?.id] });
+          } else if (n.kind === "neuron") {
+            // Both AI-learned (synthesis profile) + manually-authored
+            // facts share the same backing table; invalidate both
+            // query keys so whichever pulled the row drops it.
+            queryClient.invalidateQueries({ queryKey: ["mindmap_manual_facts", user?.id] });
+            queryClient.invalidateQueries({ queryKey: ["mindmap_synthesis_profile", user?.id] });
+          } else if (n.kind === "vault" || n.kind === "perspective") {
+            queryClient.invalidateQueries({ queryKey: ["mindmap_notes", user?.id] });
+          }
+        }}
+      />
+
+      {/* Project side panel — opens when the user picks a
+          project in the "By Project" filter dropdown. Lives in
+          the same right-side slot as NeuronPanel; only one is
+          mounted at a time because the dropdown click clears the
+          selected node and clicking a clustered neuron in the
+          project panel closes the project panel and opens the
+          neuron's panel. */}
+      <ProjectPanel
+        open={Boolean(selectedProject)}
+        project={selectedProject}
+        userId={user?.id}
+        onClose={() => setSelectedProjectId(null)}
+        onSelectNode={(id) => {
+          // Jumping into a clustered neuron's detail surface:
+          // close the project panel, open the standard
+          // NeuronPanel for that node. The scene's
+          // selectedId-driven camera fly will center on it.
+          setSelectedProjectId(null);
+          setSelectedId(id);
+        }}
+        onAddNeurons={beginAddNeuronsToProject}
+        onCreateNeuron={(projectId) => {
+          // Re-use the SAME type-picker the "+" button at the
+          // bottom-right exposes (Belief / Vault / Fact /
+          // Concept / Chat). Clustering should never invent a
+          // second creation surface — the user already knows
+          // the "+" menu and the auto-add hook in the
+          // pendingFormingNodeId watcher takes any neuron
+          // produced while projectMode is true and ticks it
+          // straight into the running cluster selection.
+          //
+          // We first flip the page into project ADD mode
+          // anchored to this project so the auto-add knows
+          // where the new neuron belongs.
+          if (projectAddTargetId !== projectId) {
+            beginAddNeuronsToProject(projectId);
+          }
+          setAddMenuOpen(true);
+        }}
+      />
 
       {/* Tour welcome card — left-side typewriter overlay shown only on
           the visitor's first arrival at the synthesis layer from the

@@ -125,16 +125,64 @@ export const listProjectsTool = {
       .maybeSingle();
     const activeId = profile?.active_project_id || null;
 
-    const projects = (rows || []).map((row) => ({
-      id: row.id,
-      name: row.name,
-      description: row.description,
-      status: row.status,
-      created_by_client: row.created_by_client,
-      created_at: row.created_at,
-      last_active_at: row.last_active_at,
-      is_active: row.id === activeId,
-    }));
+    // ----------------------------------------------------------------
+    // User-clustered neurons (migration 063 / lykn_project_neurons).
+    // The synthesis layer's "+ Create project" flow lets the user
+    // explicitly group neurons (beliefs, facts, concepts, vault notes,
+    // perspectives, …) into a project. We piggyback that membership
+    // onto every list response so outside AI clients (Claude /
+    // Cursor / Claude Code / ChatGPT) can see WHAT the project
+    // contains — the user-facing meaning of the project — rather
+    // than only seeing the AI-pushed working state. We snapshot
+    // node_label + node_kind at cluster time, so we can render the
+    // membership without resolving heterogeneous synthesis-layer
+    // node ids back to source rows.
+    //
+    // Best-effort: if the table is missing (063 not yet applied) we
+    // skip silently and the response shape stays backward-compatible.
+    // ----------------------------------------------------------------
+    const projectIds = (rows || []).map((r) => r.id);
+    let neuronsByProject = new Map();
+    if (projectIds.length > 0) {
+      try {
+        const { data: members } = await ctx.supabaseAdmin
+          .from('lykn_project_neurons')
+          .select('project_id, node_id, node_label, node_kind, created_at')
+          .eq('user_id', ctx.userId)
+          .in('project_id', projectIds)
+          .order('created_at', { ascending: true });
+        for (const m of members || []) {
+          const arr = neuronsByProject.get(m.project_id) || [];
+          arr.push({
+            node_id: m.node_id,
+            label: m.node_label,
+            kind: m.node_kind,
+          });
+          neuronsByProject.set(m.project_id, arr);
+        }
+      } catch (err) {
+        console.warn('[mcp:listProjects] neuron load failed:', err?.message || err);
+      }
+    }
+
+    const projects = (rows || []).map((row) => {
+      const neurons = neuronsByProject.get(row.id) || [];
+      return {
+        id: row.id,
+        name: row.name,
+        description: row.description,
+        status: row.status,
+        created_by_client: row.created_by_client,
+        created_at: row.created_at,
+        last_active_at: row.last_active_at,
+        is_active: row.id === activeId,
+        neuron_count: neurons.length,
+        // Cap the inline preview so the response stays under model
+        // context limits even for users with very large clusters; the
+        // count alone tells the model "ask for more if needed."
+        neurons: neurons.slice(0, 25),
+      };
+    });
 
     return jsonContent({
       ok: true,

@@ -16,7 +16,12 @@ export type NodeKind =
   | "tag"
   | "neuron"
   | "belief"
-  | "concept";
+  | "concept"
+  // Long-form story neuron authored via the synthesis-layer "+" menu
+  // (Perspective template). Stored under the hood as a `notes` row
+  // carrying the `_perspective` marker tag, but rendered as its own
+  // category cluster in the graph rather than inside Vault.
+  | "perspective";
 
 export interface MindNode {
   id: string;
@@ -52,6 +57,15 @@ export interface MindEdge {
    * overlay rather than disappearing into heuristic cross-edges.
    */
   provenance?: boolean;
+  /**
+   * Marks edges that came from the user's own "Link neurons" mode
+   * (migration 062 `lykn_user_links`). These are deliberate, explicit
+   * connections the user authored — distinct from the AI-inferred
+   * concept/provenance/theme cross-edges around them. Rendered in a
+   * brighter accent so the user can spot which threads in the brain
+   * came from them.
+   */
+  userLink?: boolean;
 }
 
 export interface SimNode extends MindNode {
@@ -70,4 +84,11 @@ export interface SimNode extends MindNode {
   relevance: number;
 }
 
-export type LayoutMode = "connections" | "section" | "topic";
+// Filter modes for the synthesis layer's top-left dropdown:
+//   • connections — default, no filter; force-layout sizes nodes by edge count
+//   • section     — group by top-level category (Belief / Vault / Facts / …)
+//   • topic       — pick an idea/tag and only its relevant neurons stay bright
+//   • project     — pick a user-clustered project (lykn_projects) and only
+//                   its member neurons glow; the rest dim out so the user
+//                   can see "what's in this project" against the full graph
+export type LayoutMode = "connections" | "section" | "topic" | "project";

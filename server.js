@@ -94,6 +94,8 @@ import {
   applyAttributionFeedback,
   recordRuleApplication,
   formatBeliefsAndRulesForPrompt,
+  formatProjectStateForPromptInLykn,
+  loadActiveProjectContext,
   shouldSkipUserModelGivenBeliefs,
   listActiveBeliefsForUser,
   listActiveRulesForUser,
@@ -112,6 +114,8 @@ import {
 import { buildMcpHandler, buildMcpStreamHandler, mcpMethodNotAllowed, MCP_DISCOVERY } from './mcp-server.js';
 import { mountOauthServer } from './oauth-server.js';
 import { MCP_TOOLS, MCP_TOOLS_BY_NAME } from './mcp-tools/index.js';
+import { CHAT_TOOLS, buildChatToolCtx, providerForModel, supportsTools } from './mcp-tools/chatTools.js';
+import { runAgentLoop } from './chat-agent-loop.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, '.env') });
@@ -1876,6 +1880,12 @@ const userIdentitySectionCache = new Map();
 // it; mutations call invalidateBeliefSectionCache to be explicit.
 const BELIEF_SECTION_CACHE_TTL_MS = 90 * 1000;
 const beliefSectionCache = new Map(); // userId -> { text, beliefs, rules, at }
+// Active synthesis-layer project — same TTL / shape as the belief cache.
+// Project state moves faster than beliefs (outside AI clients can push
+// kv-state mid-conversation via lykn_pushProjectState), so this cache
+// is invalidated on every state push from server-side write paths and
+// re-warms on the next chat turn.
+const projectSectionCache = new Map(); // userId -> { text, projectId, at }
 const lastProfileLlmAt = new Map();
 // Per-user hash of the "evidence" we last sent to the profile LLM. If the
 // next request would send the SAME evidence, skip it — running the same
@@ -1894,6 +1904,10 @@ function invalidateUserIdentityCache(userId) {
 
 function invalidateBeliefSectionCache(userId) {
   if (userId) beliefSectionCache.delete(userId);
+}
+
+function invalidateProjectSectionCache(userId) {
+  if (userId) projectSectionCache.delete(userId);
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -2065,6 +2079,47 @@ async function fetchBeliefSection(authHeader, userId) {
   } catch (e) {
     console.warn('⚠️ fetchBeliefSection:', e?.message || e);
     return { text: '', beliefs: [], rules: [] };
+  }
+}
+
+/**
+ * Build the [CURRENT_PROJECT] prompt block for in-LYKN chat. Surfaces
+ * the user's active synthesis-layer project (header + AI-pushed kv
+ * working state + user-clustered neurons) so the in-LYKN AI sees the
+ * same project context that outside AI clients (Claude Desktop, Cursor,
+ * Claude Code, ChatGPT) get from `lykn_getContextBlock`.
+ *
+ * Cache shape mirrors `fetchBeliefSection`: per-user, 90s TTL,
+ * invalidated on project-write tool calls (PROJECT_WRITE_TOOLS) so
+ * the in-LYKN chat reflects outside-client pushes on the very next
+ * turn. Returns '' when the user has no active project.
+ *
+ * Note: we deliberately ship the in-LYKN formatter (not the outside-
+ * client one) — the outside variant pushes the model toward MCP tool
+ * calls, which the in-LYKN chat loop doesn't currently expose to the
+ * underlying model. The body (header + state kv-pairs + clustered
+ * neurons) is identical; only the trailing footer differs.
+ */
+async function fetchProjectSection(authHeader, userId) {
+  if (!userId) return '';
+  const cached = projectSectionCache.get(userId);
+  if (cached && Date.now() - cached.at < BELIEF_SECTION_CACHE_TTL_MS) {
+    return cached.text;
+  }
+  const client = supabaseAdmin || createSynthesisUserClient(authHeader);
+  if (!client) return '';
+  try {
+    const ctx = await loadActiveProjectContext(client, userId);
+    const text = ctx ? formatProjectStateForPromptInLykn(ctx) : '';
+    projectSectionCache.set(userId, {
+      text,
+      projectId: ctx?.project?.id || null,
+      at: Date.now(),
+    });
+    return text;
+  } catch (e) {
+    console.warn('⚠️ fetchProjectSection:', e?.message || e);
+    return '';
   }
 }
 
@@ -3803,6 +3858,269 @@ const LYKN_STREAM_PERSONA_FULL = [
   LYKN_LEARNED_TAG_INSTRUCTIONS,
 ].join('\n\n');
 
+// ---------------------------------------------------------------------------
+// In-app tool-calling guidance — appended to the system prompt ONLY when
+// the chat turn is run through the agent loop (useTools === true and the
+// resolved model supports function calling). External-MCP guidance lives
+// in mcp-server.js / SERVER_INSTRUCTIONS; this is the in-LYKN equivalent.
+// ---------------------------------------------------------------------------
+// Kept tight on purpose: every byte here is sent + paid for on every
+// tool-enabled turn, and the model only needs to know WHEN to call, not the
+// detailed schema (that's in the function descriptors).
+//
+// Add a new line here every time a new tool is whitelisted in
+// mcp-tools/chatTools.js, in the same order CHAT_TOOL_NAMES lists them.
+const LYKN_CHAT_TOOL_GUIDANCE = [
+  '=== TOOL CALLING ===',
+  'You have access to LYKN tools that read or modify the user\'s synthesis',
+  'layer (their portable beliefs, projects, vault, neurons). Prefer calling',
+  'a tool over guessing whenever the user asks something tools can answer',
+  'authoritatively.',
+  '',
+  'CRITICAL OUTPUT RULES — read carefully:',
+  '  • NEVER write tool names, function-call syntax, or JSON-shaped',
+  '    invocations in your reply text. The tool system runs invisibly',
+  '    via a separate channel; the user MUST NOT see strings like',
+  '    "lykn_findConnections", "[lykn_foo({...})]", "<tool>...</tool>",',
+  '    or "calling X with Y". Anything tool-shaped that leaks into your',
+  '    text is a bug.',
+  '  • Do NOT announce intent ("Let me check…", "I\'ll look that up…").',
+  '    Just call the tool silently and reply with the result.',
+  '  • Use plain language only. Refer to the user\'s STUFF ("your',
+  '    projects", "your vault", "what you\'ve saved on X") — never to',
+  '    the internal tool names.',
+  '',
+  'PROJECT DISCOVERY (read):',
+  '  • lykn_listProjects — what the user is working on. Default to active.',
+  '    Use this any time the user mentions "my projects", "what am I',
+  '    working on", or wants to switch / merge / rename projects.',
+  '  • lykn_getProjectState — the ACTIVE project\'s working memory (a',
+  '    small key-value store: current_blocker, next_milestone,',
+  '    recent_decisions, scope, …). Cheap, idempotent.',
+  '  • lykn_getProjectNeurons — the ACTIVE project\'s clustered neurons',
+  '    (beliefs, facts, concepts, vault notes the user has grouped',
+  '    here). Returns node_ids you can hand to lykn_loadNeuron.',
+  '',
+  'AUTO-CONNECT FLOW — this is the most important pattern in the whole',
+  'toolset. The MOMENT the user mentions a project by name (e.g. "let me',
+  'think about LYKN Labs Robotics", "for my Personal Branding work",',
+  '"on the Q1 deck"), run this 3-tool pipeline silently, IN PARALLEL',
+  'WHERE POSSIBLE, without announcing it:',
+  '  1. lykn_setActiveProject({ name: "<their name>" })  // create:false',
+  '  2. lykn_getProjectState({})                          // working memory',
+  '  3. lykn_getProjectNeurons({})                        // clustered neurons',
+  'Now you have: the project header, every key/value Cursor + Claude',
+  'Desktop + Claude Code pushed about this project, AND every neuron the',
+  'user has explicitly grouped under it. The conversation is now',
+  '"connected" to the project — anything you push next via',
+  'lykn_pushProjectState carries forward to the user\'s next chat AND',
+  'into every other AI client they use.',
+  'If setActiveProject returns project_not_found, the user is likely',
+  'starting NEW work — ask them "Want me to start a new project for',
+  'this?" before passing create:true.',
+  '',
+  'PROJECT WORKING MEMORY (write, git-style — fully reversible):',
+  '  • lykn_pushProjectState — update one key in the active project\'s',
+  '    working memory. This is how the chat session\'s outcomes carry',
+  '    into the user\'s NEXT chat (and into every other AI client they',
+  '    use). Replacement semantics (latest value wins; history kept on',
+  '    the server side).',
+  '    PUSH SILENTLY when an obvious new value appears mid-conversation:',
+  '      • a new blocker → state_key="current_blocker"',
+  '      • a settled decision → state_key="recent_decisions" with the',
+  '        decision appended, OR a more specific key like "tech_stack",',
+  '        "architecture", "scope"',
+  '      • a milestone shift → state_key="next_milestone"',
+  '      • a new open question → state_key="open_questions"',
+  '    ASK FIRST when you\'re about to OVERWRITE a key with content that',
+  '    significantly contradicts what was there, or when wrapping up a',
+  '    long conversation and you\'re considering a "progress_summary"',
+  '    push. A one-liner is enough: "Want me to update your project',
+  '    notes with [X]?" — if they say yes, push; if not, drop it.',
+  '    Use stable, reusable keys — "current_blocker" forever, NEVER',
+  '    "current_blocker_2026_05_23".',
+  '    NEVER push when there\'s no active project. If the project is',
+  '    ambiguous and the user is talking about new work, call',
+  '    lykn_setActiveProject first (or ask the user which project this',
+  '    belongs to).',
+  '',
+  'END-OF-TURN PROJECT PROPOSAL — non-negotiable. Users will not',
+  'remember to say "update my project notes," so YOU drive it. Whenever',
+  'one of the user\'s projects was mentioned in this turn (by name, by',
+  'pronoun referring to it, or implied by the AUTO-CONNECT FLOW above),',
+  'EXACTLY ONE of these must be true by the time you stop writing:',
+  '  (a) You silently called lykn_pushProjectState during this turn',
+  '      because a clear new value appeared (blocker / decision /',
+  '      milestone / open question / scope change). In that case, end',
+  '      your reply with a brief one-liner telling the user what you',
+  '      saved, so they can object: "Saved to <Project>: <key> = <one-',
+  '      line value>." (No question mark — already pushed.)',
+  '  (b) You did NOT push, because nothing concrete enough surfaced. In',
+  '      that case end your reply with EXACTLY one offer line proposing',
+  '      a specific push the user can accept with a single word:',
+  '        "Want me to update <Project>? I\'d set <state_key> = <one-',
+  '         line value>."',
+  '      Pick the most useful single key from the list above; do not',
+  '      offer 3 options. Keep the proposed value tight (≤ ~140 chars).',
+  '      On the user\'s next turn, if they reply with any positive ack',
+  '      ("yes", "yeah", "ok", "sure", "go", "do it", "yep", "please",',
+  '      a thumbs-up), call lykn_pushProjectState IMMEDIATELY with the',
+  '      key and value you proposed — no second confirmation, no',
+  '      rephrasing. If they say no / not yet / skip, drop it silently.',
+  '      If they pivot to a new topic without answering, drop it',
+  '      silently and do not re-ask in the next turn.',
+  'Never end a project-mentioning reply without (a) or (b). This is the',
+  'difference between a memory layer the user has to remember to use,',
+  'and one that just works while they talk. Do not nag — one line, one',
+  'turn, then move on.',
+  '',
+  'IDENTITY (read — call early, these shape EVERY reply):',
+  '  • lykn_getBeliefs — the user\'s ratified beliefs (durable principles',
+  '    that should shape how you respond). Pull this on any nontrivial',
+  '    turn. Each belief has a serves_need (live | love | value |',
+  '    variety) — weight beliefs that match the topic.',
+  '  • lykn_getRules — auto-generated rules-of-thumb derived from active',
+  '    beliefs. Higher-fidelity than the underlying belief for "what',
+  '    would you tell me to do here?" questions. When a reply is shaped',
+  '    by one of these, follow up with lykn_recordRuleApplication so the',
+  '    user gets a clean audit trail.',
+  '  • lykn_getFacts — short third-person facts about the user (role,',
+  '    location, tools, ongoing commitments). Skim before answering',
+  '    "advise me" questions so you reference what they actually do.',
+  '  • lykn_getUserPreferences — server-honoured privacy/pipeline',
+  '    preferences. Check `memory_paused` BEFORE promising to remember',
+  '    anything or before writing a new vault note / fact / belief; if',
+  '    it\'s true, the synthesis is paused and you should not push',
+  '    durable state. Safe to call once per session.',
+  '',
+  'CROSS-SOURCE SEARCH (read):',
+  '  • lykn_findConnections — given a topic OR a starter node_id, return',
+  '    related neurons from EVERY store (beliefs + facts + concepts +',
+  '    vault) in one call. Use when the user asks "what do I think about',
+  '    X?" / "remind me what I have on Y?" / "pull together my thinking',
+  '    on Z" — anywhere the full picture matters.',
+  '  • lykn_loadNeuron — hydrate ONE neuron\'s FULL body into the chat,',
+  '    given a node_id from findConnections / searchVault. findConnections',
+  '    returns snippets; loadNeuron returns the complete content so you',
+  '    can quote, summarise, or build on it. Common pattern:',
+  '    findConnections → pick a node_id → loadNeuron(node_id).',
+  '    IMPORTANT — calling this also VISIBLY brings the neuron into the',
+  '    chat as a rich card the user sees directly (the saved image, the',
+  '    link card, the note body, the belief text, etc.). So whenever the',
+  '    user asks to "show me", "bring up", "pull up", "open", "see", or',
+  '    otherwise wants to LOOK at one of their saved items — a vault',
+  '    note, an image they saved, a bookmark, a belief, a fact, a',
+  '    concept — call lykn_loadNeuron with that node_id and the card',
+  '    will render under your reply automatically. Do NOT paste the full',
+  '    body of the item back as text in your reply when you do this —',
+  '    the card already shows it; your prose should briefly frame WHY',
+  '    you brought it in (e.g. "Here\'s the note you saved about X —")',
+  '    not duplicate its content.',
+  '  • lykn_loadNeurons — batch sibling. Use this INSTEAD of multiple',
+  '    loadNeuron calls when the user wants to see SEVERAL of their',
+  '    items at once ("pull up all my notes on robotics", "show me',
+  '    everything I have on the Q1 deck", "open the three I starred").',
+  '    Pass node_ids as an array (up to 10). Each entry renders as its',
+  '    own card under your reply, same way loadNeuron does. Cheaper and',
+  '    faster than 10 single-tool hops, and avoids burning the per-hop',
+  '    tool-call budget. Same "do not paste the bodies back as text"',
+  '    rule applies — the cards show the content.',
+  '  • lykn_searchVault — vault-only substring search. Use only when',
+  '    you specifically want saved notes / saved articles / saved links',
+  '    and not the other stores.',
+  '  • lykn_getNeuronLinks — the user\'s authored connections between',
+  '    neurons. Pass node_id to see "what is this connected to" — the',
+  '    perfect follow-up to loadNeuron. Omit node_id to see what they\'ve',
+  '    been connecting lately. Cheap.',
+  '  • lykn_getRecentActivity — last-N-days deltas across every store',
+  '    (beliefs, facts, concepts, vault notes, projects, links). The',
+  '    "catch me up on this week" call. Cheap; call once at session',
+  '    start when relevant.',
+  '',
+  'PROJECT CLUSTERING (write, reversible):',
+  '  • lykn_addProjectNeurons — group EXISTING neurons (by node_id from',
+  '    findConnections) into the active project. Common pipeline:',
+  '    findConnections({ query }) → pick top N → addProjectNeurons.',
+  '  • lykn_removeProjectNeurons — drop neurons from a project\'s cluster.',
+  '    The neurons themselves stay around; only the membership goes.',
+  '',
+  'PROJECT METADATA (write, reversible):',
+  '  • lykn_setActiveProject — switch the user\'s current working project.',
+  '    Resume an existing one by project_id whenever possible (call',
+  '    lykn_listProjects first to discover the id). Only pass',
+  '    { name, create: true } when the user has genuinely started new work.',
+  '  • lykn_updateProject — rename / re-describe / archive an existing',
+  '    project. Does NOT change which one is active.',
+  '',
+  'PROJECT DELETE (write, IRREVERSIBLE — confirm-gated):',
+  '  • lykn_deleteProject — hard delete. The tool requires confirm:true',
+  '    AND the project\'s exact current name. Only call after the user',
+  '    has explicitly asked to delete and you\'ve restated which project.',
+  '',
+  'NEW NEURONS (write):',
+  '  • lykn_proposeBelief — when the user states a durable principle that',
+  '    generalises across many decisions ("I always reject X"). If you',
+  '    explicitly asked them "should I add this as a core belief?" and',
+  '    they said yes, pass user_confirmed:true so it lands active.',
+  '    Otherwise (you observed it without asking) leave it omitted so it',
+  '    lands proposed for ratification.',
+  '  • lykn_proposeFact — when the user discloses something concrete and',
+  '    durable about themselves ("works as a designer in Brooklyn"). Use',
+  '    this for facts; use proposeBelief for principles.',
+  '  • lykn_createVaultNote — save a piece of CONTENT (a summary you',
+  '    produced, a snippet the user shared, a working code block, a',
+  '    research extract) into the user\'s vault so it survives this',
+  '    chat. ASK FIRST every time: "Want me to drop this into your',
+  '    vault?" — the vault is the user\'s space, silent writes are',
+  '    hostile. Don\'t use this for principles (proposeBelief) or for',
+  '    identity disclosures (proposeFact).',
+  '',
+  'SYNTHESIS GRAPH (write, low-risk, fully reversible from the UI):',
+  '  • lykn_createNeuronLink — explicitly connect two neurons (by node_id',
+  '    from findConnections / loadNeuron / getProjectNeurons). Use when',
+  '    you notice a real relationship between two pieces of the user\'s',
+  '    thinking ("their belief X supports their fact Y", "this vault',
+  '    note extends that concept"), or when the user explicitly says',
+  '    "these two go together". Direction doesn\'t matter — the pair is',
+  '    auto-normalised and dedupe is automatic. Keep label short.',
+  '    Don\'t link nodes that already share a project cluster (the',
+  '    relationship is already represented) and don\'t link on weak',
+  '    topical overlap — links are for "the user would draw this edge',
+  '    if they saw it".',
+  '  • lykn_touchConcept — bump a concept\'s last_touched_at when the',
+  '    user is genuinely engaging with it (not just brushing past the',
+  '    label). Keeps the synthesis layer\'s "hot right now" ribbon',
+  '    accurate. One touch per concept per conversation, max.',
+  '  • lykn_recordRuleApplication — record that a reply was shaped by',
+  '    one of the user\'s rules/beliefs. Call this AFTER you used a rule',
+  '    or belief to shape your reply (not as a vague "I considered',
+  '    X" — only when it actually changed the answer).',
+  '',
+  'PREFERENCES (write, ASK FIRST every single time):',
+  '  • lykn_updateUserPreference — change ONE preference at a time',
+  '    (memory_paused, training_opt_out, chat_retention_days,',
+  '    show_provenance, email_*). NEVER call without explicit user',
+  '    confirmation in the current turn. Each call is a single field; if',
+  '    the user wants to flip three settings, that\'s three calls, each',
+  '    preceded by confirmation. Don\'t accept "change my theme" via',
+  '    this — visual prefs live in browser localStorage and aren\'t',
+  '    reachable from chat.',
+  '',
+  'AFTER A TOOL RETURNS — summarise the result in plain language. Do NOT',
+  'paste raw JSON, do NOT mention tool names, do NOT mention "node_id" or',
+  'similar internals. If the result is empty, say so plainly and offer a',
+  'next step. If a tool errors, fall back to answering from context',
+  'without mentioning the failure.',
+  '',
+  'BIAS TOWARD ONE CALL — most turns need zero tools, many need exactly',
+  'one, and very few need more than two. If you\'re tempted to call three+',
+  'tools, the user\'s question is probably better answered by one well-',
+  'chosen lykn_findConnections call. The end-of-turn project',
+  'push/proposal above is the ONE exception: it does not count against',
+  'this bias and must still happen whenever a project was mentioned.',
+  '=== END TOOL CALLING ===',
+].join('\n');
+
 const buildLandingOnboardingSystemPrompt = (alreadyLearned) => {
   const cleaned = (Array.isArray(alreadyLearned) ? alreadyLearned : [])
     .map((p) => (typeof p === 'string' ? p.trim() : ''))
@@ -4888,6 +5206,43 @@ app.post('/api/learned', requireAuth, profileRefreshLimiter, async (req, res) =>
       sourceId: req.body?.sourceId,
       replacesText: replacesText || undefined,
     });
+
+    // Composer extras (migration 063): if the unified neuron composer
+    // supplied a story / notes blob, attach it to the freshly-minted
+    // row in a separate UPDATE so we don't have to thread metadata
+    // through the reconcile/upsert machinery in recordLearnedFactFromChat.
+    // We accept only documented keys + cap lengths server-side; the
+    // payload is otherwise opaque to give the composer room to evolve.
+    if (out.ok && req.body?.metadata && typeof req.body.metadata === 'object') {
+      const incoming = req.body.metadata;
+      const metadata = {};
+      if (typeof incoming.story === 'string') {
+        const story = incoming.story.trim().slice(0, 8000);
+        if (story) metadata.story = story;
+      }
+      if (typeof incoming.notes === 'string') {
+        const notes = incoming.notes.trim().slice(0, 4000);
+        if (notes) metadata.notes = notes;
+      }
+      if (typeof incoming.why === 'string') {
+        const why = incoming.why.trim().slice(0, 4000);
+        if (why) metadata.why = why;
+      }
+      const factId = out?.fact?.id;
+      if (factId && Object.keys(metadata).length > 0) {
+        // Best-effort. A metadata write failure shouldn't fail the
+        // whole save — the fact is already in the row.
+        await client
+          .from('lykn_user_model_facts')
+          .update({ metadata })
+          .eq('id', factId)
+          .eq('user_id', userId)
+          .then(({ error: metaErr }) => {
+            if (metaErr) console.warn('⚠️ /api/learned metadata update:', metaErr.message || metaErr);
+          });
+      }
+    }
+
     if (!out.ok) {
       // Map known reasons to the right HTTP status. Anything else is a
       // server-side issue (persist_failed: ..., internal: ..., etc.) and
@@ -5556,6 +5911,10 @@ app.post('/api/beliefs/manual', requireAuth, async (req, res) => {
       text,
       servesNeed,
       rationale: req.body?.rationale,
+      // Composer extras (migration 063): { story?, notes? }.
+      // createManualBelief sanitises + caps each field; anything
+      // else in the blob is dropped.
+      metadata: req.body?.metadata,
     }, {
       autoProposeRules: req.body?.autoProposeRules !== false,
       usageLogger: ({ model, provider, inputTokens, outputTokens, metadata }) =>
@@ -5862,6 +6221,19 @@ function buildToolCtx(req) {
   };
 }
 
+// MCP tools whose successful execution should invalidate the cached
+// in-LYKN [CURRENT_PROJECT] prompt block. Outside AI clients pushing
+// state via these tools should be visible to the in-LYKN chat on the
+// very next turn, not 90 seconds later when the TTL expires.
+const PROJECT_WRITE_TOOLS = new Set([
+  'lykn_setActiveProject',
+  'lykn_pushProjectState',
+  'lykn_updateProject',
+  'lykn_deleteProject',
+  'lykn_addProjectNeurons',
+  'lykn_removeProjectNeurons',
+]);
+
 async function runRestTool(toolName, req, res) {
   const tool = MCP_TOOLS_BY_NAME[toolName];
   if (!tool) return res.status(404).json({ error: 'tool_not_found' });
@@ -5899,6 +6271,10 @@ async function runRestTool(toolName, req, res) {
   }
   const latencyMs = Date.now() - startedAt;
 
+  if (!isError && PROJECT_WRITE_TOOLS.has(toolName)) {
+    invalidateProjectSectionCache(ctx.userId);
+  }
+
   // Telemetry
   Promise.resolve()
     .then(() => logAiUsage({
@@ -5929,6 +6305,14 @@ app.get('/api/v1/synthesis/beliefs', requireAuthOrMcpToken, mcpMinuteLimiter, mc
 app.get('/api/v1/synthesis/rules', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_getRules', req, res));
 app.get('/api/v1/synthesis/facts', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_getFacts', req, res));
 app.get('/api/v1/synthesis/vault/search', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_searchVault', req, res));
+app.get('/api/v1/synthesis/connections', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_findConnections', req, res));
+app.get('/api/v1/synthesis/neuron', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_loadNeuron', req, res));
+// Batch loader — node_ids comes through the body as an array, so POST.
+// Same auth and rate limits as the single-load GET above.
+app.post('/api/v1/synthesis/neurons/load', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_loadNeurons', req, res));
+app.get('/api/v1/synthesis/projects/:project_id/neurons', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_getProjectNeurons', req, res));
+app.get('/api/v1/synthesis/project/neurons', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_getProjectNeurons', req, res));
+app.post('/api/v1/synthesis/vault', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_createVaultNote', req, res));
 app.get('/api/v1/synthesis/context-block', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_getContextBlock', req, res));
 app.get('/api/v1/synthesis/projects/state', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_getProjectState', req, res));
 app.get('/api/v1/synthesis/projects', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_listProjects', req, res));
@@ -5941,6 +6325,32 @@ app.post('/api/v1/synthesis/beliefs/proposals', requireAuthOrMcpToken, mcpMinute
 app.post('/api/v1/synthesis/facts/proposals', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_proposeFact', req, res));
 app.post('/api/v1/synthesis/projects/active', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_setActiveProject', req, res));
 app.post('/api/v1/synthesis/projects/state', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_pushProjectState', req, res));
+// Full project CRUD — mirrors lykn_updateProject / lykn_deleteProject /
+// lykn_addProjectNeurons / lykn_removeProjectNeurons. The synthesis page
+// already mutates these tables directly via supabase-js; these routes
+// give external AI clients (and any future server-side flow) a single
+// auth-gated surface for the same operations, with attribution +
+// rate-limiting + telemetry the direct-Supabase path doesn't get.
+app.post('/api/v1/synthesis/projects/update', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_updateProject', req, res));
+app.post('/api/v1/synthesis/projects/delete', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_deleteProject', req, res));
+app.post('/api/v1/synthesis/projects/neurons/add', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_addProjectNeurons', req, res));
+app.post('/api/v1/synthesis/projects/neurons/remove', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_removeProjectNeurons', req, res));
+// Synthesis-graph user-authored edges — mirrors lykn_createNeuronLink /
+// lykn_getNeuronLinks. POST creates (idempotent), GET reads. Same shape
+// the in-app link-mode UI persists, so MCP-authored links show up in the
+// graph immediately.
+app.post('/api/v1/synthesis/links', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_createNeuronLink', req, res));
+app.get('/api/v1/synthesis/links', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_getNeuronLinks', req, res));
+// Concept recency bump — mirrors lykn_touchConcept. POST because it's a
+// state mutation even though it carries no body beyond the node_id.
+app.post('/api/v1/synthesis/concepts/touch', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_touchConcept', req, res));
+// User preferences — read + write the server-honoured prefs row that
+// governs memory_paused / training_opt_out / chat_retention_days / …
+app.get('/api/v1/synthesis/preferences', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_getUserPreferences', req, res));
+app.post('/api/v1/synthesis/preferences', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_updateUserPreference', req, res));
+// Cross-store recent-activity feed — last-N-days deltas across every
+// neuron store. Read-only.
+app.get('/api/v1/synthesis/activity', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_getRecentActivity', req, res));
 
 // --- Concepts (056-058) ---------------------------------------------------
 // First-class concept/topic layer with hybrid AI/user authorship. The
@@ -6000,6 +6410,29 @@ app.post('/api/v1/concepts', requireAuth, async (req, res) => {
     const kind = ['theme', 'topic', 'entity'].includes(body.kind) ? body.kind : 'topic';
     const slug = rawLabel.toLowerCase().replace(/\s+/g, ' ').slice(0, 128);
 
+    // Composer extras (migration 063): { why?, story?, notes? }. Sanitise
+    // + cap each documented field; ignore anything else. We compute this
+    // up here so both the insert path (new concept) and the bump path
+    // (concept already existed) can write the latest metadata blob the
+    // user typed — clicking Save with new notes/story/why for an
+    // existing concept should not silently drop them.
+    const metadataPatch = {};
+    if (body?.metadata && typeof body.metadata === 'object') {
+      const m = body.metadata;
+      if (typeof m.story === 'string') {
+        const story = m.story.trim().slice(0, 8000);
+        if (story) metadataPatch.story = story;
+      }
+      if (typeof m.notes === 'string') {
+        const notes = m.notes.trim().slice(0, 4000);
+        if (notes) metadataPatch.notes = notes;
+      }
+      if (typeof m.why === 'string') {
+        const why = m.why.trim().slice(0, 4000);
+        if (why) metadataPatch.why = why;
+      }
+    }
+
     const client = createSynthesisUserClient(req.headers.authorization) || supabaseAdmin;
     if (!client) return res.status(503).json({ error: 'Database not configured' });
 
@@ -6020,6 +6453,7 @@ app.post('/api/v1/concepts', requireAuth, async (req, res) => {
         .update({
           status: 'active',
           last_touched_at: new Date().toISOString(),
+          ...(Object.keys(metadataPatch).length > 0 ? { metadata: metadataPatch } : {}),
         })
         .eq('id', existing.id)
         .eq('user_id', userId);
@@ -6036,6 +6470,7 @@ app.post('/api/v1/concepts', requireAuth, async (req, res) => {
         source: 'user_authored',
         status: 'active',
         confidence: 1.0,
+        ...(Object.keys(metadataPatch).length > 0 ? { metadata: metadataPatch } : {}),
       })
       .select('id')
       .single();
@@ -6225,6 +6660,14 @@ app.post('/api/v1/concepts/:id/link', requireAuth, async (req, res) => {
 //             rogue client can't spawn unbounded streams.
 const mcpHandler = buildMcpHandler({
   logUsage: (info) => logAiUsage(info).catch(() => {}),
+  // Invalidate in-LYKN prompt-section caches when an outside AI client
+  // mutates project state via MCP — keeps the in-app chat in sync on
+  // the very next turn instead of waiting for the 90s TTL.
+  onToolComplete: ({ toolName, userId }) => {
+    if (PROJECT_WRITE_TOOLS.has(toolName)) {
+      invalidateProjectSectionCache(userId);
+    }
+  },
 });
 const mcpStreamHandler = buildMcpStreamHandler();
 app.post('/mcp', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, mcpHandler);
@@ -9111,7 +9554,7 @@ ${t}
           return fetchVaultNotesByUrls(req.user.id, matches);
         })()
       : Promise.resolve('');
-    const [scrapedContent, searchResults, synthesisRetrieval, beliefSection, userIdentitySection, youtubeResults, vaultUrlMatches, connectedToolsSection] = await Promise.all([
+    const [scrapedContent, searchResults, synthesisRetrieval, beliefSection, userIdentitySection, youtubeResults, vaultUrlMatches, connectedToolsSection, projectSection] = await Promise.all([
       skipScrape ? Promise.resolve("") : scrapeUrlsFromText(searchText, { force: explicitUrlIntent }),
       skipSearch ? Promise.resolve("") : runWebSearchIfNeeded(searchText, { hasFocusedBricks: Boolean(hasFocusedBricks), hasContext: hasContextForSearch }),
       !skipSynthesis
@@ -9130,6 +9573,14 @@ ${t}
       // the model recommend specific tools the user actually uses.
       !skipIdentity
         ? fetchConnectedToolsSection(req.headers.authorization, req.user?.id)
+        : Promise.resolve(""),
+      // Active synthesis-layer project. Same gate as beliefs — if we
+      // skip beliefs (greeting / cheap turn) we skip project too. The
+      // in-LYKN AI gets the user's current project header + AI-pushed
+      // kv state + user-clustered neurons so it can reference work
+      // outside AI clients have been doing without re-litigating.
+      !skipBeliefs
+        ? fetchProjectSection(req.headers.authorization, req.user?.id)
         : Promise.resolve(""),
     ]);
     // BELIEF-WINDOW ROUTER: when the user has ratified beliefs+rules and
@@ -9150,6 +9601,7 @@ ${t}
     if (userIdentitySection) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(userIdentitySection);
     if (connectedToolsSection) prompt += "\n\n" + connectedToolsSection;
     if (beliefSection.text) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(beliefSection.text);
+    if (projectSection) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(projectSection);
     if (userModelSection) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(userModelSection);
     if (synthesisRetrieval) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(synthesisRetrieval);
     if (vaultUrlMatches) prompt += "\n\n" + vaultUrlMatches;
@@ -10014,6 +10466,11 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
     const incomingImageUrls = Array.isArray(req.body?.imageUrls) ? req.body.imageUrls : [];
     const imageUrls = incomingImageUrls.slice(0, 8);
     let { prompt, text, intent, context, knowledgeBase, projectId, conversation, conversationMemory, userPrompt, responseLength, hasFocusedBricks, skipWebSearch, workspaceContext } = req.body;
+    // useTools — when true (and the resolved model is OpenAI-capable),
+    // route this turn through the chat agent loop in chat-agent-loop.js
+    // so the model can call lykn_listProjects / etc. via function-calling.
+    // Falls through to the legacy single-shot stream when false.
+    const useTools = req.body?.useTools === true && CHAT_TOOLS.length > 0;
     let model = normalizedModel;
     console.log('[LYKN-STREAM] workspaceContext received:', workspaceContext ? `${String(workspaceContext).length} chars` : 'EMPTY/MISSING');
 
@@ -10207,7 +10664,7 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
           return fetchVaultNotesByUrls(req.user.id, matches);
         })()
       : Promise.resolve('');
-    const [scrapedContent, searchResults, synthesisRetrieval, beliefSection, userIdentitySection, youtubeResults, vaultUrlMatches, connectedToolsSection] = await Promise.all([
+    const [scrapedContent, searchResults, synthesisRetrieval, beliefSection, userIdentitySection, youtubeResults, vaultUrlMatches, connectedToolsSection, projectSection] = await Promise.all([
       streamSkipScrape ? Promise.resolve("") : scrapeUrlsFromText(streamSearchText, { force: streamExplicitUrlIntent }),
       streamSkipSearch ? Promise.resolve("") : runWebSearchIfNeeded(streamSearchText, { hasFocusedBricks: Boolean(hasFocusedBricks), hasContext: hasContextForStreamSearch }),
       !streamSkipSynthesis
@@ -10225,6 +10682,14 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
       // fetchConnectedToolsSection for the rationale on caching.
       !streamSkipIdentity
         ? fetchConnectedToolsSection(req.headers.authorization, req.user?.id)
+        : Promise.resolve(""),
+      // Active synthesis-layer project. Same skip gate as beliefs:
+      // skip on greeting / cheap turns; otherwise inject the
+      // [CURRENT_PROJECT] block so the in-LYKN AI sees the same
+      // project context outside AI clients (Claude Desktop, Cursor,
+      // Claude Code, ChatGPT) get from lykn_getContextBlock.
+      !streamSkipBeliefs
+        ? fetchProjectSection(req.headers.authorization, req.user?.id)
         : Promise.resolve(""),
     ]);
     _ck('after enrichment Promise.all');
@@ -10246,6 +10711,7 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
     if (userIdentitySection) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(userIdentitySection);
     if (connectedToolsSection) prompt += "\n\n" + connectedToolsSection;
     if (beliefSection.text) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(beliefSection.text);
+    if (projectSection) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(projectSection);
     if (userModelSection) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(userModelSection);
     if (synthesisRetrieval) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(synthesisRetrieval);
     if (vaultUrlMatches) prompt += "\n\n" + vaultUrlMatches;
@@ -10291,6 +10757,25 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
       actualModel = 'gpt-4.1-nano';
     }
 
+    // Tool-calling agent loop: all four providers (OpenAI / Anthropic /
+    // Gemini / Grok) support native function calling via chat-agent-loop.js.
+    // We respect whatever model the user picked — no forced downgrade.
+    // If the resolved model genuinely doesn't support tools (e.g. some
+    // legacy alias), we surface the swap header and route to a safe
+    // tool-capable default so the in-app tool surface still works.
+    if (useTools && !supportsTools(actualModel)) {
+      try { res.setHeader('X-Tool-Route', `${actualModel}->gpt-4.1-nano`); } catch { /* headers already flushed */ }
+      console.log(`🔧 Stream tool-route: ${actualModel} → gpt-4.1-nano (useTools, model has no tool support)`);
+      actualModel = 'gpt-4.1-nano';
+    }
+    // Append the in-app tool-calling addendum to the prompt so the model
+    // knows WHEN to call. The descriptors themselves go on the provider
+    // request as `tools[]` / `functionDeclarations` — that's the schema;
+    // this is the policy.
+    if (useTools) {
+      prompt += '\n\n' + LYKN_CHAT_TOOL_GUIDANCE;
+    }
+
     const hasTranscript = prompt.includes('[VIDEO TRANSCRIPT') || prompt.includes('Full transcript:');
     console.log(`📡 Stream request — model: ${actualModel}, prompt: ${prompt.length} chars (~${Math.round(prompt.length / 4)} tokens)${hasTranscript ? ' [HAS VIDEO TRANSCRIPT]' : ''}${imageUrls.length ? `, images: ${imageUrls.length}` : ''}${skipWebSearch ? ' [skipWebSearch]' : ''}`);
 
@@ -10308,6 +10793,24 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
         lastClientWriteAt = Date.now();
         streamedTextLength += (text || '').length;
         res.write(`data: ${JSON.stringify({ t: text })}\n\n`);
+        if (typeof res.flush === 'function') res.flush();
+      }
+    };
+    // Tool-call SSE event. Mirrors sendChunk's contract (resets the stall
+    // watchdog, flushes the response) but ships a structured payload so
+    // the client can render an inline pill for each tool the agent loop
+    // fires. Status moves running → done | error.
+    const sendToolCall = (evt) => {
+      if (!res.writableEnded) {
+        streamActivity = Date.now();
+        lastClientWriteAt = Date.now();
+        res.write(`data: ${JSON.stringify({ tool_call: evt })}\n\n`);
+        if (typeof res.flush === 'function') res.flush();
+      }
+    };
+    const sendStatus = (status) => {
+      if (!res.writableEnded) {
+        try { res.write(`data: ${JSON.stringify({ status })}\n\n`); } catch { /* socket closed */ }
         if (typeof res.flush === 'function') res.flush();
       }
     };
@@ -10896,6 +11399,138 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
     // requested before the routing branches above are updated.
     return sendError('All AI providers are temporarily busy \u2014 please wait a moment and try again.');
     }; // end tryStreamAt
+
+    // ── Agent loop short-circuit ─────────────────────────────────────
+    // When useTools is on we route through chat-agent-loop.js instead
+    // of the legacy single-shot tryStreamAt chain. The legacy chain has
+    // 4-provider fallback and stream-level retries that don't translate
+    // cleanly to a multi-hop tool loop (each hop has its own messages
+    // history that depends on previous tool results), so we keep them
+    // separate. If the agent loop errors before producing any text, we
+    // fall through to the legacy chain — the user still gets a reply,
+    // just without tool access.
+    //
+    // The dispatcher in chat-agent-loop.js picks the right provider
+    // impl (openai / grok / anthropic / gemini) based on `provider`,
+    // so we don't branch on model id here — providerForModel does it.
+    const toolProvider = useTools ? providerForModel(actualModel) : null;
+    if (useTools && toolProvider) {
+      _ck(`entering agent loop (${toolProvider})`);
+      const { system: agentSys, user: agentUser } = splitPromptForProvider(prompt);
+
+      // Build provider-correct user content shape. Multimodal image
+      // attachments need provider-native parts; text-only turns just
+      // pass the string.
+      let agentUserContent = agentUser;
+      if (imageUrls.length > 0) {
+        if (toolProvider === 'openai' || toolProvider === 'grok') {
+          agentUserContent = [
+            { type: 'text', text: agentUser },
+            ...imageUrls.map((u) => ({ type: 'image_url', image_url: { url: u } })),
+          ];
+        } else if (toolProvider === 'anthropic') {
+          const parts = [{ type: 'text', text: agentUser }];
+          for (const url of imageUrls) {
+            if (url.startsWith('data:image/')) {
+              const match = url.match(/^data:(image\/[^;]+);base64,(.+)$/);
+              if (match) parts.push({ type: 'image', source: { type: 'base64', media_type: match[1], data: match[2] } });
+            } else {
+              parts.push({ type: 'image', source: { type: 'url', url } });
+            }
+          }
+          agentUserContent = parts;
+        } else if (toolProvider === 'gemini') {
+          const parts = [{ text: agentUser }];
+          for (const url of imageUrls) {
+            try {
+              if (url.startsWith('data:image/')) {
+                const match = url.match(/^data:(image\/[^;]+);base64,(.+)$/);
+                if (match) parts.push({ inline_data: { mime_type: match[1], data: match[2] } });
+              } else {
+                // Gemini doesn't accept arbitrary URLs in inline_data —
+                // fetch + base64 like the legacy path does. Best-effort.
+                const imgRes = await fetch(url);
+                if (imgRes.ok) {
+                  const buf = Buffer.from(await imgRes.arrayBuffer());
+                  const mime = imgRes.headers.get('content-type') || 'image/png';
+                  parts.push({ inline_data: { mime_type: mime, data: buf.toString('base64') } });
+                }
+              }
+            } catch (e) {
+              console.warn('⚠️ agent loop: failed to fetch image for Gemini:', e.message);
+            }
+          }
+          agentUserContent = parts;
+        }
+      }
+
+      // Resolve Gemini alias quirks the same way the legacy path does
+      // so a user picking the alias `gemini-flash-latest` ends up
+      // hitting a real Gemini model id Google currently routes.
+      let agentModel = actualModel;
+      if (toolProvider === 'gemini') {
+        if (agentModel === 'gemini-pro' || agentModel === 'gemini-1.5-flash') agentModel = 'gemini-flash-latest';
+        else if (agentModel === 'gemini-1.5-pro') agentModel = 'gemini-pro-latest';
+        else if (agentModel === 'gemini-3-pro-preview') agentModel = 'gemini-3.1-pro-preview';
+      } else if (toolProvider === 'anthropic') {
+        agentModel = resolveAnthropicModel(actualModel);
+      }
+
+      // pickOutputCap with no intent → OUTPUT_CAPS.chat (same as the
+      // non-tool path uses). Tool loops can run multiple hops; the cap
+      // is per-hop, so the model gets full headroom on the final reply
+      // after tool results land.
+      const agentCap = clampForProvider(pickOutputCap({
+        hasImages: imageUrls.length > 0,
+      }), agentModel);
+      const agentCacheKey = `lykn-${(req.user?.id || 'anon').slice(0, 32)}`;
+
+      try {
+        const agentResult = await runAgentLoop({
+          provider: toolProvider,
+          model: agentModel,
+          systemPrompt: agentSys,
+          userContent: agentUserContent,
+          // We deliberately do NOT thread `conversation` through here:
+          // the [CONVERSATION] block already lives inside `prompt` via
+          // buildLyknStreamPrompt, so passing priorTurns again would
+          // double-count. The agent-loop's priorTurns is for callers
+          // that don't pre-bake conversation into the system prompt.
+          priorTurns: [],
+          maxOutputTokens: agentCap,
+          promptCacheKey: agentCacheKey,
+          env: process.env,
+          ctx: buildChatToolCtx(req),
+          signal: undefined, // request abort wires via res.on('close') already
+          onTextChunk: (t) => sendChunk(t),
+          onToolCall: (evt) => sendToolCall(evt),
+          onStatus: (s) => sendStatus(s),
+        });
+        _ck(`agent loop ${agentResult.reason} (provider=${toolProvider}, tools=${agentResult.toolCalls.length}, hadText=${agentResult.hadText})`);
+
+        if (agentResult.ok && agentResult.hadText) {
+          return sendDone();
+        }
+        // Empty text on hop_cap is rare but possible (model called tools
+        // but never wrote a reply). Tell the client honestly rather than
+        // silently closing — they'd see an empty bubble otherwise.
+        if (agentResult.ok && !agentResult.hadText) {
+          sendChunk('I ran the tools but didn\'t produce a written reply — try rephrasing the question.');
+          return sendDone();
+        }
+        // Agent loop errored. If we already streamed some text, finish
+        // gracefully; otherwise fall through to the legacy non-tool
+        // path so the user still gets an answer.
+        if (agentResult.hadText) {
+          return sendDone();
+        }
+        console.warn(`[stream] agent loop failed (${toolProvider}, ${agentResult.reason}): ${agentResult.errorMessage}. Falling back to legacy stream.`);
+      } catch (agentErr) {
+        console.error('❌ agent loop crashed:', agentErr?.message || agentErr);
+      }
+      // fallthrough — legacy stream below
+    }
+
     await tryStreamAt(0);
   } catch (error) {
     console.error('❌ Stream error:', error.message);
@@ -13001,6 +13636,25 @@ app.get('/api/admin/usage/mcp', requireAuth, requireAdmin, async (req, res) => {
 const PLAN_IDS = new Set(['studio', 'studio_pro', 'studio_max']);
 const BILLING_PERIODS = new Set(['monthly', 'annual']);
 
+// ---------------------------------------------------------------------------
+// Plan ordering. Used by the monotone-up rule in syncSubscriptionToBilling
+// and resolveUserPlan: once a user reaches plan tier X, no Stripe webhook
+// event or subscription-status flip is allowed to move them below X. The
+// ONLY path that can strictly decrease a user's plan is an explicit admin
+// override (scripts/set-user-plan.mjs).
+//
+// Why: refunds, chargebacks, expired cards, accidentally-canceled subs,
+// and Stripe price-id misroutes have all caused phantom downgrades in
+// the past, locking paying users out of features they'd paid for. The
+// product rule is "once upgraded, always upgraded" — payment-collection
+// belongs to Stripe + status flags, not to the access-control gate.
+// ---------------------------------------------------------------------------
+const PLAN_RANK = { free: 0, studio: 1, studio_pro: 2, studio_max: 3 };
+
+function planRank(plan) {
+  return PLAN_RANK[String(plan || 'free').toLowerCase()] ?? 0;
+}
+
 function stripeConfigured() {
   return Boolean(stripe && supabaseAdmin);
 }
@@ -13066,11 +13720,16 @@ async function resolveUserPlan(userId, email = null) {
 
   const row = await loadBillingRow(userId);
   const rawPlan = String(row?.plan || 'free').toLowerCase();
-  const status = String(row?.status || '').toLowerCase();
   const planConf = PLAN_LIMITS[rawPlan];
-  const isPaid = rawPlan !== 'free';
-  const isActive = !isPaid || status === 'active' || status === 'trialing';
-  const effectivePlan = planConf && isActive ? rawPlan : 'free';
+  // Monotone-up rule (read side): if the user has ever reached a paid
+  // tier, honor it forever. We deliberately do NOT gate on `status`
+  // here — a canceled / past_due / unpaid Stripe sub still keeps
+  // access. Payment collection is Stripe's job; access control is
+  // ours, and product-side we promised "once upgraded, always
+  // upgraded." Admin-only manual flips via scripts/set-user-plan.mjs
+  // are the single supported downgrade path; those write rawPlan
+  // directly to 'free' so they fall through naturally below.
+  const effectivePlan = planConf ? rawPlan : 'free';
   const tier = (PLAN_LIMITS[effectivePlan] || PLAN_LIMITS.free).modelTier || 'basic';
 
   userPlanCache.set(userId, {
@@ -13116,11 +13775,24 @@ async function syncSubscriptionToBilling(subscription) {
     : subscription.customer?.id;
   if (!customerId) return;
 
+  // Pull the existing row(s) so we can apply the monotone-up plan rule
+  // below. A Stripe customer normally maps 1:1 to a user_billing row;
+  // we read whatever rows match the customer id and apply the rule
+  // per-row so multi-row edge cases (e.g. account-merge accidents)
+  // don't accidentally downgrade anybody.
+  const { data: existingRows } = await supabaseAdmin
+    .from('user_billing')
+    .select('user_id, plan')
+    .eq('stripe_customer_id', customerId);
+
   const priceId = subscription.items?.data?.[0]?.price?.id;
   const match = planFromPriceId(priceId);
   const isActive = ['active', 'trialing', 'past_due'].includes(subscription.status);
 
-  const updates = {
+  // Status / cycle / period_end / cancel-flag ALWAYS update so the
+  // billing UI ("Renews on X", "Past due", "Canceling Y") stays
+  // accurate. Only the plan tier is sticky.
+  const baseUpdates = {
     stripe_subscription_id: subscription.id,
     status: subscription.status,
     cancel_at_period_end: Boolean(subscription.cancel_at_period_end),
@@ -13128,27 +13800,67 @@ async function syncSubscriptionToBilling(subscription) {
       ? new Date(subscription.current_period_end * 1000).toISOString()
       : null,
   };
+  // billing_period mirrors the matched price's monthly/annual cycle.
+  // Always update when we know it so the cycle display stays right.
+  // Intentionally NOT cleared on cancellation — same reason as plan.
+  if (match) baseUpdates.billing_period = match.period;
 
-  if (match) {
-    updates.plan = isActive ? match.plan : 'free';
-    updates.billing_period = match.period;
-  } else if (!isActive) {
-    updates.plan = 'free';
-    updates.billing_period = null;
+  const rowsToWrite = existingRows && existingRows.length > 0
+    ? existingRows
+    : [{ user_id: null, plan: 'free' }]; // brand-new customer path; no plan to protect
+
+  let lastError = null;
+  const touched = [];
+  for (const existing of rowsToWrite) {
+    const currentPlan = String(existing?.plan || 'free').toLowerCase();
+    const currentRank = planRank(currentPlan);
+    const updates = { ...baseUpdates };
+
+    // Monotone-up plan rule: only promote, never demote. We promote if:
+    //   • Stripe sent a recognised price (match exists), AND
+    //   • that price's plan tier is strictly higher than what the user
+    //     already has on file, AND
+    //   • the subscription is currently active / trialing / past_due
+    //     (past_due included because the user paid recently and we're
+    //     mid-retry — pulling features mid-grace would be hostile).
+    if (match && isActive) {
+      const candidateRank = planRank(match.plan);
+      if (candidateRank > currentRank) updates.plan = match.plan;
+    }
+    // Deliberately NO else-branch that writes plan='free' on
+    // canceled / unpaid / incomplete_expired. Status alone signals
+    // collection problems; access stays. Admin can force-down via
+    // scripts/set-user-plan.mjs.
+
+    // For brand-new rows (no existing row matched the customer id) we
+    // upsert by stripe_customer_id so the customer-creation race
+    // doesn't lose the row. For existing rows we update by user_id so
+    // we never touch a sibling row by accident.
+    let writeRes;
+    if (existing.user_id) {
+      writeRes = await supabaseAdmin
+        .from('user_billing')
+        .update(updates)
+        .eq('user_id', existing.user_id)
+        .select('user_id');
+    } else {
+      // No row yet. Don't invent a plan here — this is normally hit
+      // when the customer-side checkout flow races the webhook; the
+      // webhook will fire again on the next subscription event and
+      // see the row that ensureStripeCustomer creates.
+      continue;
+    }
+
+    if (writeRes.error) {
+      lastError = writeRes.error;
+      console.error('❌ syncSubscriptionToBilling row update failed:', writeRes.error.message);
+      continue;
+    }
+    for (const r of writeRes.data || []) touched.push(r.user_id);
   }
 
-  const { data: updated, error } = await supabaseAdmin
-    .from('user_billing')
-    .update(updates)
-    .eq('stripe_customer_id', customerId)
-    .select('user_id');
-  if (error) {
-    console.error('❌ syncSubscriptionToBilling failed:', error.message);
-    return;
-  }
-  for (const row of updated || []) {
-    invalidateUserPlanCache(row.user_id);
-  }
+  if (lastError && touched.length === 0) return;
+  for (const userId of touched) invalidateUserPlanCache(userId);
 }
 
 async function handleStripeEvent(event) {

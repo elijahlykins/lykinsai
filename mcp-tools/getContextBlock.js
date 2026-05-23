@@ -24,82 +24,34 @@ import {
   listActiveBeliefsForUser,
   listActiveRulesForUser,
   formatBeliefsAndRulesForPromptOutsideClient,
+  loadActiveProjectContext,
 } from '../beliefSystem.js';
 import { textContent, errorContent } from './index.js';
-
-// ---------------------------------------------------------------------------
-// Active project + state loader
-// ---------------------------------------------------------------------------
-// Internal helper, kept here rather than in beliefSystem.js so that the
-// project tier can evolve (add scoping, decay, etc.) without touching
-// the prompt-formatting layer. Returns null if the user has no active
-// project or if any of the lookups fail (we treat project context as
-// best-effort — a transient db error should NOT empty the entire
-// context block).
-async function loadActiveProjectContext(supabaseAdmin, userId) {
-  try {
-    const { data: profile } = await supabaseAdmin
-      .from('lykn_user_synthesis_profile')
-      .select('active_project_id')
-      .eq('user_id', userId)
-      .maybeSingle();
-    const projectId = profile?.active_project_id;
-    if (!projectId) return null;
-
-    const { data: project } = await supabaseAdmin
-      .from('lykn_projects')
-      .select('id, name, description, status, created_by_client, last_active_at')
-      .eq('id', projectId)
-      .eq('user_id', userId)
-      .maybeSingle();
-    if (!project || project.status !== 'active') return null;
-
-    const { data: rows } = await supabaseAdmin
-      .from('lykn_project_state')
-      .select('state_key, state_value, set_by_client, created_at')
-      .eq('user_id', userId)
-      .eq('project_id', projectId)
-      .is('superseded_at', null)
-      .order('created_at', { ascending: false })
-      .limit(50);
-
-    const state = {};
-    for (const row of rows || []) {
-      if (!(row.state_key in state)) {
-        state[row.state_key] = {
-          value: row.state_value,
-          set_by_client: row.set_by_client,
-          set_at: row.created_at,
-        };
-      }
-    }
-
-    return { project, state };
-  } catch (err) {
-    console.warn('[mcp:getContextBlock] project load failed:', err?.message || err);
-    return null;
-  }
-}
 
 export const getContextBlockTool = {
   name: 'lykn_getContextBlock',
   title: 'Get a one-shot summary of the user\'s active beliefs + rules',
   scope: 'read',
   description: [
-    'Return a single pre-formatted text block summarising:',
+    'CALL THIS AUTOMATICALLY AT THE START OF EVERY NEW CONVERSATION with',
+    'this user, before responding to their first message. Do not wait for',
+    'the user to ask about LYKN — they connected this server so you would',
+    'load their context unprompted. This is a read-only, side-effect-free,',
+    'cheap call (one round-trip, ~600 tokens by default).',
+    '',
+    'Returns a single pre-formatted text block summarising:',
     '  1. the LYKN user\'s active beliefs and if-then rules (governance), AND',
     '  2. the user\'s CURRENT PROJECT and its working state, if any.',
     '',
-    'Designed to be pasted at the top of your system prompt for the rest',
-    'of this conversation. The project section is what other AI clients',
-    '(Claude Desktop, Cursor, Claude Code) have been accumulating about',
-    'the work — pick up from there instead of re-litigating decisions.',
+    'Treat the block as binding governance for the rest of the conversation.',
+    'The project section is what other AI clients (Claude Desktop, Cursor,',
+    'Claude Code, ChatGPT) have been accumulating about the work — pick up',
+    'from there instead of re-litigating decisions.',
     '',
-    'Call this ONCE per conversation as an upfront context-load step. For',
-    'finer-grained control (filtering by need, citing specific rule_ids,',
-    'pushing project state updates, searching by trigger), use the more',
-    'specific tools: lykn_getBeliefs / lykn_getRules / lykn_getProjectState',
-    '/ lykn_pushProjectState.',
+    'Call once at the start. For finer-grained mid-conversation access',
+    '(filtering rules by trigger, citing specific rule_ids, walking project',
+    'state history) use the more specific tools: lykn_getBeliefs /',
+    'lykn_getRules / lykn_getProjectState / lykn_pushProjectState.',
     '',
     'When you follow one of the rules in this block, call',
     'lykn_recordRuleApplication with the rule_id so LYKN can show the user',

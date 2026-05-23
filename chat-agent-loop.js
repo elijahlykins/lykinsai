@@ -1,0 +1,929 @@
+// ============================================================================
+// chat-agent-loop.js — multi-provider tool-calling agent loop for in-app chat
+// ============================================================================
+// /api/ai/stream historically only streams text from one provider per turn.
+// This module adds a SECOND streaming mode that interleaves text deltas
+// with tool calls — and supports it across every provider we route to:
+//
+//   • OpenAI  — Chat Completions `tools[]` + tool_calls deltas
+//   • Grok    — xAI's OpenAI-compatible Chat Completions API
+//   • Anthropic — Messages API `tools` + `tool_use` / `tool_result` blocks
+//   • Gemini  — generateContent `tools.functionDeclarations` + functionCall /
+//               functionResponse parts
+//
+// Each provider speaks a different streaming SSE shape, so we keep the
+// loop per provider rather than trying to normalise them into one parser.
+// A small dispatcher at the bottom (`runAgentLoop`) picks the right one
+// based on `provider`.
+//
+// What all four implementations share:
+//   1. POST to the provider with messages + tool descriptors.
+//   2. Forward text deltas via onTextChunk(t).
+//   3. Accumulate tool_call deltas, then on a tool-call finish:
+//      - emit `tool_call` SSE events (status: running → done | error)
+//      - run the tool via runChatTool (the in-app whitelist)
+//      - append the tool result in the provider's native message format
+//      - loop to the next hop
+//   4. Stop when the provider's "no more tool calls, here's the final
+//      reply" signal arrives, or hop cap is hit.
+//
+// What this module does NOT handle (caller is responsible):
+//   • Opening / flushing SSE response headers (server.js does this).
+//   • Telemetry / usage logging (server.js fires logAiUsage on done).
+//   • Picking the model id (caller passes a provider-correct model).
+//   • Fallback when a hop errors before any text — caller can decide
+//     to retry on a different provider, fall back to the legacy stream,
+//     or surface an error.
+
+import {
+  runChatTool,
+  buildOpenAiTools,
+  buildAnthropicTools,
+  buildGeminiTools,
+} from './mcp-tools/chatTools.js';
+
+const MAX_HOPS = 6;
+const MAX_TOOL_CALLS_PER_HOP = 5;
+const TOOL_RESULT_CAP = 16000;
+
+// ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
+
+function safeJsonParse(s) {
+  if (!s) return {};
+  try { return JSON.parse(s); } catch { return {}; }
+}
+
+// ---------------------------------------------------------------------------
+// Tool-syntax stripper — sanitises model TEXT output before it streams to
+// the user. Some models (especially smaller ones) will emit literal
+// tool-call syntax as text instead of (or in addition to) actually
+// invoking the function via the native tool-calling channel, e.g.:
+//   "Let me check. [lykn_findConnections({ "query": "robotics" })]"
+// or "<tool>lykn_listProjects()</tool>".
+//
+// Those should never reach the user. We can't fully prevent it on the
+// prompt side — every provider includes the tool descriptors in its
+// own way and the model can hallucinate call syntax from the
+// descriptors alone — so we run a streaming-safe stripper on every
+// outgoing text chunk.
+//
+// Streaming-safe means:
+//   • Strip COMPLETE patterns immediately.
+//   • For any PARTIAL pattern at the tail (e.g. chunk ends mid-
+//     "[lykn_") hold the tail back until the next chunk arrives.
+//   • Cap the hold at MAX_HOLD so a model that opens a `[` and never
+//     closes it doesn't block the stream forever — past the cap we
+//     flush the tail as-is and trust the user to ignore the noise.
+//   • Flush whatever's left when the hop ends.
+//
+// We deliberately don't strip bare tool-name MENTIONS without a call
+// (e.g. the user asking "what is lykn_findConnections?" and the model
+// repeating the name in its answer). The stripper only kills text
+// that looks like an actual function-call invocation.
+// ---------------------------------------------------------------------------
+
+const STRIP_PATTERNS = [
+  // [lykn_xxx({...})] — bracketed call (most common imitation pattern,
+  // and what shows up when smaller models echo the OpenAI-style
+  // function descriptors).
+  /\[\s*lykn_\w+\s*\([\s\S]*?\)\s*\]/g,
+  // lykn_xxx({...}) — bare JSON-shaped call
+  /\blykn_\w+\s*\(\s*\{[\s\S]*?\}\s*\)/g,
+  // lykn_xxx() — empty-args call
+  /\blykn_\w+\s*\(\s*\)/g,
+  // <tool>...</tool>, <tool_call>...</tool_call>, etc.
+  /<tool[_a-z]*[^>]*>[\s\S]*?<\/tool[_a-z]*>/gi,
+  // Lone opening/closing tool tags (in case the close was on a
+  // different hop or got mangled mid-stream).
+  /<\/?tool[_a-z]*[^>]*>/gi,
+  // <function_call>...</function_call> etc.
+  /<function[_a-z]*[^>]*>[\s\S]*?<\/function[_a-z]*>/gi,
+  /<\/?function[_a-z]*[^>]*>/gi,
+];
+
+// Openers that indicate a partial tool-call invocation that hasn't
+// closed yet — when one of these matches near the tail, hold the
+// tail back rather than flushing.
+const STRIP_OPENERS = [
+  /\[\s*lykn_/,
+  /\blykn_\w+\s*\(/,
+  /<tool[_a-z]*/i,
+  /<function[_a-z]*/i,
+];
+
+function applyStripPatterns(text) {
+  let out = text;
+  for (const re of STRIP_PATTERNS) out = out.replace(re, '');
+  return out;
+}
+
+function makeToolSyntaxStripper(onTextChunk, MAX_HOLD = 1024) {
+  let buffer = '';
+  return {
+    ingest(chunk) {
+      if (!chunk) return;
+      buffer += chunk;
+      // Kill any complete patterns inline (cheap; idempotent).
+      buffer = applyStripPatterns(buffer);
+      // Find earliest position where an UNCLOSED opener starts.
+      // Anything before that is safe to flush.
+      let earliestOpener = -1;
+      for (const re of STRIP_OPENERS) {
+        const m = re.exec(buffer);
+        if (m && (earliestOpener < 0 || m.index < earliestOpener)) {
+          earliestOpener = m.index;
+        }
+      }
+      let safeLen;
+      if (earliestOpener >= 0) {
+        const tailLen = buffer.length - earliestOpener;
+        // Hold the tail unless it's grown past MAX_HOLD — at that
+        // point the model is almost certainly NOT producing a tool
+        // call, and waiting forever degrades the stream.
+        safeLen = tailLen <= MAX_HOLD ? earliestOpener : buffer.length;
+      } else {
+        safeLen = buffer.length;
+      }
+      if (safeLen > 0) {
+        const out = buffer.slice(0, safeLen);
+        if (out) {
+          try { onTextChunk?.(out); } catch { /* swallow */ }
+        }
+        buffer = buffer.slice(safeLen);
+      }
+    },
+    flush() {
+      if (!buffer) return;
+      const out = applyStripPatterns(buffer);
+      if (out) {
+        try { onTextChunk?.(out); } catch { /* swallow */ }
+      }
+      buffer = '';
+    },
+  };
+}
+
+function serialiseToolResult(payload) {
+  try {
+    const json = JSON.stringify(payload);
+    if (json.length <= TOOL_RESULT_CAP) return json;
+    return JSON.stringify({
+      ok: payload?.ok,
+      truncated: true,
+      preview: json.slice(0, TOOL_RESULT_CAP),
+    });
+  } catch {
+    return String(payload || '');
+  }
+}
+
+/**
+ * Wrap onToolCall with try/catch + an `allToolCalls` push so the loop
+ * record stays consistent even if the SSE write fails (e.g. socket
+ * closed mid-stream).
+ */
+function makeToolCallRecorder(onToolCall, allToolCalls) {
+  return function record(evt) {
+    try { onToolCall?.(evt); } catch { /* swallow */ }
+    if (evt.status === 'done' || evt.status === 'error') {
+      allToolCalls.push({
+        id: evt.id,
+        name: evt.name,
+        args: evt.args,
+        status: evt.status,
+        result: evt.result,
+        error: evt.error,
+        latencyMs: evt.latencyMs,
+      });
+    }
+  };
+}
+
+/**
+ * Execute a batch of resolved tool calls in parallel, emitting
+ * running/done events through `record`. Returns the array of normalised
+ * results in the same order as `calls`.
+ *
+ *   calls: [{ id, name, args }]
+ */
+async function runToolBatch(calls, ctx, record) {
+  const capped = calls.slice(0, MAX_TOOL_CALLS_PER_HOP);
+  if (calls.length > MAX_TOOL_CALLS_PER_HOP) {
+    console.warn(`[chat-agent-loop] capping tool calls at ${MAX_TOOL_CALLS_PER_HOP} (model emitted ${calls.length})`);
+  }
+  return Promise.all(capped.map(async (call) => {
+    record({ id: call.id, name: call.name, args: call.args, status: 'running' });
+    const { payload, isError, latencyMs } = await runChatTool(call.name, call.args, ctx);
+    record({
+      id: call.id,
+      name: call.name,
+      args: call.args,
+      status: isError ? 'error' : 'done',
+      result: payload,
+      latencyMs,
+    });
+    return { id: call.id, name: call.name, args: call.args, payload, isError, latencyMs };
+  }));
+}
+
+/**
+ * Walk an SSE response body, calling `processPayload(payload)` for
+ * each `data: <payload>` event. Works on the Web `ReadableStream` that
+ * Node 18+'s global `fetch()` returns (NOT a Node stream — Web streams
+ * don't have `.on()`).
+ *
+ * Returns a Promise that resolves once the stream ends or rejects on
+ * a transport error.
+ */
+async function readSseStream(body, processPayload) {
+  if (!body) return;
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  const handlePayload = (payload) => {
+    if (!payload || payload === '[DONE]') return;
+    processPayload(payload);
+  };
+
+  const drainBuffered = () => {
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('data: ')) continue;
+      handlePayload(trimmed.slice(6));
+    }
+  };
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      drainBuffered();
+    }
+    // Flush any trailing decoded bytes + handle the last line if it
+    // wasn't newline-terminated.
+    buffer += decoder.decode();
+    if (buffer.trim()) {
+      for (const line of buffer.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data: ')) continue;
+        handlePayload(trimmed.slice(6));
+      }
+    }
+  } finally {
+    try { reader.releaseLock(); } catch { /* already released */ }
+  }
+}
+
+/**
+ * Gemini variant — same envelope as readSseStream but parses each
+ * `data: <json>` payload as JSON before forwarding. Gemini's
+ * streamGenerateContent always sends well-formed JSON per data event,
+ * but we still try/catch each parse so a single malformed chunk
+ * doesn't kill the whole stream.
+ */
+async function readGeminiSseStream(body, processJson) {
+  await readSseStream(body, (payload) => {
+    try { processJson(JSON.parse(payload)); } catch { /* skip malformed */ }
+  });
+}
+
+function buildPriorTurns(priorTurns, openaiStyle = true) {
+  const out = [];
+  for (const turn of priorTurns || []) {
+    if (!turn || typeof turn !== 'object') continue;
+    const role = turn.role === 'assistant' ? 'assistant' : 'user';
+    const content = typeof turn.content === 'string' ? turn.content : '';
+    if (!content) continue;
+    if (openaiStyle) {
+      out.push({ role, content });
+    } else {
+      // Anthropic + Gemini both use a `messages`-style or `contents`-style
+      // input where the role is the same but the field is `content` vs
+      // `parts`. Each provider does its own remap above where it needs to.
+      out.push({ role, content });
+    }
+  }
+  return out;
+}
+
+// ===========================================================================
+// OpenAI / Grok agent loop (shared — Grok is OpenAI-compatible)
+// ===========================================================================
+
+async function runOpenAiCompatLoop({
+  apiKey,
+  baseUrl,                      // 'https://api.openai.com/v1' or 'https://api.x.ai/v1'
+  model,
+  systemPrompt,
+  userContent,
+  priorTurns = [],
+  maxOutputTokens,
+  promptCacheKey,               // OpenAI only; safe to pass to Grok (ignored)
+  ctx,
+  signal,
+  onTextChunk,
+  onToolCall,
+  onStatus,
+  providerLabel = 'openai',
+}) {
+  if (!apiKey) {
+    return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: `${providerLabel} API key missing` };
+  }
+  const tools = buildOpenAiTools();
+  if (!tools) {
+    return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: 'no_chat_tools_whitelisted' };
+  }
+
+  const messages = [];
+  if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
+  for (const t of buildPriorTurns(priorTurns)) messages.push(t);
+  messages.push({ role: 'user', content: userContent });
+
+  const allToolCalls = [];
+  const record = makeToolCallRecorder(onToolCall, allToolCalls);
+  const stripper = makeToolSyntaxStripper(onTextChunk);
+  let hadText = false;
+
+  for (let hop = 0; hop < MAX_HOPS; hop++) {
+    if (signal?.aborted) {
+      stripper.flush();
+      return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: 'aborted' };
+    }
+
+    let res;
+    try {
+      const body = {
+        model,
+        messages,
+        tools,
+        tool_choice: 'auto',
+        parallel_tool_calls: true,
+        max_completion_tokens: maxOutputTokens,
+        stream: true,
+        ...(promptCacheKey && providerLabel === 'openai' ? { prompt_cache_key: promptCacheKey } : {}),
+      };
+      res = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+        signal,
+      });
+    } catch (err) {
+      stripper.flush();
+      return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: err?.message || String(err) };
+    }
+
+    if (!res.ok) {
+      let errBody;
+      try { errBody = await res.json(); } catch { errBody = null; }
+      const msg = errBody?.error?.message || res.statusText || `${providerLabel} ${res.status}`;
+      stripper.flush();
+      return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: msg };
+    }
+
+    const pendingCalls = new Map(); // index → { id, name, argsBuf }
+    let finishReason = '';
+
+    try {
+      await readSseStream(res.body, (payload) => {
+        const parsed = safeJsonParse(payload);
+        const choice = parsed?.choices?.[0];
+        if (!choice) return;
+        const delta = choice.delta || {};
+        if (typeof delta.content === 'string' && delta.content) {
+          hadText = true;
+          stripper.ingest(delta.content);
+        }
+        if (Array.isArray(delta.tool_calls)) {
+          for (const tc of delta.tool_calls) {
+            const idx = typeof tc.index === 'number' ? tc.index : 0;
+            let acc = pendingCalls.get(idx);
+            if (!acc) { acc = { id: '', name: '', argsBuf: '' }; pendingCalls.set(idx, acc); }
+            if (tc.id) acc.id = tc.id;
+            if (tc.function?.name) acc.name = tc.function.name;
+            if (typeof tc.function?.arguments === 'string') acc.argsBuf += tc.function.arguments;
+          }
+        }
+        if (choice.finish_reason) finishReason = choice.finish_reason;
+      });
+    } catch (err) {
+      stripper.flush();
+      return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: err?.message || String(err) };
+    }
+
+    if (finishReason !== 'tool_calls' || pendingCalls.size === 0) {
+      stripper.flush();
+      return { ok: true, hadText, toolCalls: allToolCalls, reason: 'stop', errorMessage: null };
+    }
+
+    // Build the assistant turn EXACTLY as OpenAI / Grok expect it.
+    const assistantCalls = [];
+    for (const [, acc] of [...pendingCalls.entries()].sort((a, b) => a[0] - b[0])) {
+      if (!acc.id || !acc.name) continue;
+      assistantCalls.push({
+        id: acc.id,
+        type: 'function',
+        function: { name: acc.name, arguments: acc.argsBuf || '{}' },
+      });
+    }
+    if (assistantCalls.length === 0) {
+      stripper.flush();
+      return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: 'malformed tool_call deltas' };
+    }
+
+    messages.push({ role: 'assistant', content: null, tool_calls: assistantCalls });
+
+    try { onStatus?.('Running tools…'); } catch { /* swallow */ }
+
+    const resolved = assistantCalls.map((c) => ({
+      id: c.id,
+      name: c.function.name,
+      args: safeJsonParse(c.function.arguments),
+    }));
+    const results = await runToolBatch(resolved, ctx, record);
+    for (const r of results) {
+      messages.push({
+        role: 'tool',
+        tool_call_id: r.id,
+        content: serialiseToolResult(r.payload),
+      });
+    }
+  }
+
+  stripper.flush();
+  return {
+    ok: false,
+    hadText,
+    toolCalls: allToolCalls,
+    reason: 'hop_cap',
+    errorMessage: `Tool loop exceeded ${MAX_HOPS} hops`,
+  };
+}
+
+// ===========================================================================
+// Anthropic Claude agent loop
+// ===========================================================================
+// Anthropic Messages API:
+//   request:  { model, system, messages, tools, stream: true }
+//   response stream events:
+//     message_start
+//     content_block_start  { content_block: { type, ... } }
+//     content_block_delta  { delta: { type: 'text_delta'|'input_json_delta', ... } }
+//     content_block_stop
+//     message_delta        { delta: { stop_reason } }
+//     message_stop
+//
+// `tool_use` content blocks arrive as content_block_start with
+// { type: 'tool_use', id, name, input: {} }, followed by
+// content_block_delta with { type: 'input_json_delta', partial_json: '...' }
+// that we concatenate per block index to build the arguments JSON.
+//
+// stop_reason === 'tool_use' is the agent-loop signal.
+
+async function runAnthropicLoop({
+  apiKey,
+  model,
+  systemPrompt,
+  userContent,                  // string OR Anthropic content-parts array (text + image blocks)
+  priorTurns = [],
+  maxOutputTokens,
+  ctx,
+  signal,
+  onTextChunk,
+  onToolCall,
+  onStatus,
+}) {
+  if (!apiKey) {
+    return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: 'ANTHROPIC_API_KEY missing' };
+  }
+  const tools = buildAnthropicTools();
+  if (!tools) {
+    return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: 'no_chat_tools_whitelisted' };
+  }
+
+  // Anthropic messages — `system` is top-level, NOT a message turn. Build
+  // the user-content blob (string or array of text/image blocks).
+  const messages = [];
+  for (const t of buildPriorTurns(priorTurns)) messages.push({ role: t.role, content: t.content });
+  messages.push({ role: 'user', content: userContent });
+
+  const allToolCalls = [];
+  const record = makeToolCallRecorder(onToolCall, allToolCalls);
+  const stripper = makeToolSyntaxStripper(onTextChunk);
+  let hadText = false;
+
+  for (let hop = 0; hop < MAX_HOPS; hop++) {
+    if (signal?.aborted) {
+      stripper.flush();
+      return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: 'aborted' };
+    }
+
+    let res;
+    try {
+      const body = {
+        model,
+        messages,
+        tools,
+        max_tokens: maxOutputTokens,
+        stream: true,
+      };
+      if (systemPrompt) {
+        // Cache the system block — Anthropic charges 25% extra on the
+        // first call but every subsequent in-conversation call reuses
+        // the cached block for free, which dominates the cost on a
+        // tool-heavy multi-hop turn.
+        body.system = [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }];
+      }
+      res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'anthropic-beta': 'prompt-caching-2024-07-31',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(body),
+        signal,
+      });
+    } catch (err) {
+      stripper.flush();
+      return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: err?.message || String(err) };
+    }
+
+    if (!res.ok) {
+      let errBody;
+      try { errBody = await res.json(); } catch { errBody = null; }
+      const msg = errBody?.error?.message || res.statusText || `anthropic ${res.status}`;
+      stripper.flush();
+      return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: msg };
+    }
+
+    // Build up the full assistant content array as the stream arrives.
+    // Anthropic requires the assistant turn append to be the EXACT shape
+    // it produced — text + tool_use blocks in order — so we accumulate
+    // a faithful copy here.
+    //
+    // contentBlocks[index] = { type: 'text', text: '...' } OR
+    //                        { type: 'tool_use', id, name, input: ... , _argsBuf: '...' }
+    const contentBlocks = [];
+    let stopReason = '';
+
+    try {
+      await readSseStream(res.body, (payload) => {
+        const evt = safeJsonParse(payload);
+        const type = evt?.type;
+        if (!type) return;
+
+        if (type === 'content_block_start') {
+          const idx = evt.index;
+          const blk = evt.content_block || {};
+          if (blk.type === 'text') {
+            contentBlocks[idx] = { type: 'text', text: blk.text || '' };
+          } else if (blk.type === 'tool_use') {
+            contentBlocks[idx] = {
+              type: 'tool_use',
+              id: blk.id,
+              name: blk.name,
+              input: blk.input || {},
+              _argsBuf: '',
+            };
+          } else {
+            contentBlocks[idx] = { type: blk.type || 'unknown' };
+          }
+          return;
+        }
+
+        if (type === 'content_block_delta') {
+          const idx = evt.index;
+          const d = evt.delta || {};
+          const blk = contentBlocks[idx];
+          if (!blk) return;
+          if (d.type === 'text_delta' && typeof d.text === 'string') {
+            hadText = true;
+            blk.text = (blk.text || '') + d.text;
+            stripper.ingest(d.text);
+          } else if (d.type === 'input_json_delta' && typeof d.partial_json === 'string') {
+            blk._argsBuf = (blk._argsBuf || '') + d.partial_json;
+          }
+          return;
+        }
+
+        if (type === 'message_delta') {
+          if (evt.delta?.stop_reason) stopReason = evt.delta.stop_reason;
+          return;
+        }
+
+        if (type === 'message_stop') {
+          // nothing — readSseStream resolves on `end`
+          return;
+        }
+      });
+    } catch (err) {
+      stripper.flush();
+      return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: err?.message || String(err) };
+    }
+
+    // Materialise the assistant turn for the messages array, finalising
+    // the input JSON for each tool_use block.
+    const assistantContent = [];
+    const toolCallsThisHop = [];
+    for (const blk of contentBlocks) {
+      if (!blk) continue;
+      if (blk.type === 'text') {
+        if (blk.text) assistantContent.push({ type: 'text', text: blk.text });
+      } else if (blk.type === 'tool_use') {
+        const input = blk._argsBuf ? safeJsonParse(blk._argsBuf) : (blk.input || {});
+        assistantContent.push({ type: 'tool_use', id: blk.id, name: blk.name, input });
+        toolCallsThisHop.push({ id: blk.id, name: blk.name, args: input });
+      }
+    }
+
+    if (stopReason !== 'tool_use' || toolCallsThisHop.length === 0) {
+      stripper.flush();
+      return { ok: true, hadText, toolCalls: allToolCalls, reason: 'stop', errorMessage: null };
+    }
+
+    messages.push({ role: 'assistant', content: assistantContent });
+
+    try { onStatus?.('Running tools…'); } catch { /* swallow */ }
+
+    const results = await runToolBatch(toolCallsThisHop, ctx, record);
+    // Anthropic expects tool_result blocks wrapped as a SINGLE user
+    // turn whose content is the array of tool_result blocks (one per
+    // tool_use id from the assistant turn). Order doesn't matter as
+    // long as every id is matched.
+    const resultBlocks = results.map((r) => ({
+      type: 'tool_result',
+      tool_use_id: r.id,
+      content: serialiseToolResult(r.payload),
+      is_error: Boolean(r.isError),
+    }));
+    messages.push({ role: 'user', content: resultBlocks });
+  }
+
+  stripper.flush();
+  return {
+    ok: false,
+    hadText,
+    toolCalls: allToolCalls,
+    reason: 'hop_cap',
+    errorMessage: `Tool loop exceeded ${MAX_HOPS} hops`,
+  };
+}
+
+// ===========================================================================
+// Google Gemini agent loop
+// ===========================================================================
+// Gemini streamGenerateContent:
+//   request:
+//     contents:       [{ role: 'user'|'model', parts: [{ text }|{ functionCall }|{ functionResponse }] }]
+//     systemInstruction: { parts: [{ text }] }
+//     tools:          [{ functionDeclarations: [...] }]
+//
+//   response (per SSE chunk):
+//     candidates: [{ content: { parts: [{ text }|{ functionCall: { name, args } }] }, finishReason }]
+//
+// Gemini does NOT have streaming function-call deltas like OpenAI's
+// character-by-character JSON — when it emits a functionCall it emits
+// the whole part at once (potentially in a later chunk after some text).
+// We accumulate every part across chunks, then on stream end:
+//   • if any part has functionCall → that's the agent-loop signal
+//   • else → done with the final text reply
+//
+// We also have to handle `thought: true` parts (Gemini 2.5+ thinking
+// mode emits intermediate-reasoning parts that we drop — same as in
+// server.js).
+
+async function runGeminiLoop({
+  apiKey,
+  model,                        // resolved Gemini model id (e.g. gemini-flash-latest)
+  systemPrompt,
+  userContent,                  // string OR Gemini parts array (text + inline_data for images)
+  priorTurns = [],
+  maxOutputTokens,
+  ctx,
+  signal,
+  onTextChunk,
+  onToolCall,
+  onStatus,
+}) {
+  if (!apiKey) {
+    return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: 'GOOGLE_API_KEY missing' };
+  }
+  const tools = buildGeminiTools();
+  if (!tools) {
+    return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: 'no_chat_tools_whitelisted' };
+  }
+
+  // Build the contents array. Gemini uses role 'model' (not 'assistant')
+  // and wraps text in { parts: [{ text }] }.
+  const contents = [];
+  for (const t of buildPriorTurns(priorTurns)) {
+    contents.push({
+      role: t.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: t.content }],
+    });
+  }
+  // userContent can already be an array of parts (multimodal) — preserve.
+  const userParts = Array.isArray(userContent)
+    ? userContent
+    : [{ text: String(userContent || '') }];
+  contents.push({ role: 'user', parts: userParts });
+
+  const allToolCalls = [];
+  const record = makeToolCallRecorder(onToolCall, allToolCalls);
+  const stripper = makeToolSyntaxStripper(onTextChunk);
+  let hadText = false;
+
+  for (let hop = 0; hop < MAX_HOPS; hop++) {
+    if (signal?.aborted) {
+      stripper.flush();
+      return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: 'aborted' };
+    }
+
+    let res;
+    try {
+      const body = {
+        contents,
+        tools,
+        generationConfig: {
+          maxOutputTokens,
+          temperature: 0.7,
+        },
+      };
+      if (systemPrompt) {
+        body.systemInstruction = { parts: [{ text: systemPrompt }] };
+      }
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse&key=${apiKey}`;
+      res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal,
+      });
+    } catch (err) {
+      stripper.flush();
+      return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: err?.message || String(err) };
+    }
+
+    if (!res.ok) {
+      let errBody;
+      try { errBody = await res.json(); } catch { errBody = null; }
+      const msg = errBody?.error?.message || res.statusText || `gemini ${res.status}`;
+      stripper.flush();
+      return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: msg };
+    }
+
+    // Accumulate every model-emitted part across chunks. Text parts get
+    // streamed to the client live; functionCall parts collect into the
+    // assistant turn for the next hop.
+    const assistantParts = [];      // parts to echo back in `contents` for the next request
+    const toolCallsThisHop = [];    // calls to execute at end-of-stream
+
+    try {
+      await readGeminiSseStream(res.body, (parsed) => {
+        const cand = parsed?.candidates?.[0];
+        if (!cand) return;
+        const parts = cand?.content?.parts;
+        if (!Array.isArray(parts)) return;
+        for (const part of parts) {
+          if (part?.thought === true) continue; // drop thinking-mode reasoning
+          if (typeof part?.text === 'string') {
+            if (part.text) {
+              hadText = true;
+              stripper.ingest(part.text);
+              assistantParts.push({ text: part.text });
+            }
+            continue;
+          }
+          if (part?.functionCall && typeof part.functionCall === 'object') {
+            const fc = part.functionCall;
+            const id = fc.id || `fc_${hop}_${toolCallsThisHop.length}`;
+            const args = fc.args && typeof fc.args === 'object' ? fc.args : {};
+            assistantParts.push({ functionCall: { name: fc.name, args, ...(fc.id ? { id: fc.id } : {}) } });
+            toolCallsThisHop.push({ id, name: fc.name, args });
+            continue;
+          }
+        }
+      });
+    } catch (err) {
+      stripper.flush();
+      return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: err?.message || String(err) };
+    }
+
+    if (toolCallsThisHop.length === 0) {
+      stripper.flush();
+      return { ok: true, hadText, toolCalls: allToolCalls, reason: 'stop', errorMessage: null };
+    }
+
+    // Push the assistant turn EXACTLY as Gemini produced it (text +
+    // functionCall parts, in order).
+    contents.push({ role: 'model', parts: assistantParts });
+
+    try { onStatus?.('Running tools…'); } catch { /* swallow */ }
+
+    const results = await runToolBatch(toolCallsThisHop, ctx, record);
+
+    // Gemini wants functionResponse parts in a NEW user turn. Each
+    // functionResponse mirrors a prior functionCall by `name` (and id
+    // if we set one). `response` is a free-form object — we wrap the
+    // tool payload in `{ payload }` so the model never accidentally
+    // collides with a reserved key.
+    const responseParts = results.map((r) => ({
+      functionResponse: {
+        name: r.name,
+        response: {
+          ok: !r.isError,
+          payload: r.payload,
+        },
+      },
+    }));
+    contents.push({ role: 'user', parts: responseParts });
+  }
+
+  stripper.flush();
+  return {
+    ok: false,
+    hadText,
+    toolCalls: allToolCalls,
+    reason: 'hop_cap',
+    errorMessage: `Tool loop exceeded ${MAX_HOPS} hops`,
+  };
+}
+
+// ===========================================================================
+// Dispatcher
+// ===========================================================================
+/**
+ * Run the in-app chat agent loop for one user turn. Dispatches on
+ * `provider` to the right per-provider implementation.
+ *
+ *   await runAgentLoop({
+ *     provider,               // 'openai' | 'grok' | 'anthropic' | 'gemini'
+ *     model,                  // provider-correct model id
+ *     systemPrompt,           // string (may be '')
+ *     userContent,            // string OR provider-native multimodal parts
+ *     priorTurns,             // [{ role: 'user'|'assistant', content }]
+ *     maxOutputTokens,        // per-hop cap
+ *     promptCacheKey,         // OpenAI only
+ *     env,                    // { OPENAI_API_KEY, ANTHROPIC_API_KEY, GOOGLE_API_KEY, XAI_API_KEY }
+ *     ctx,                    // buildChatToolCtx(req)
+ *     signal,                 // optional AbortSignal
+ *     onTextChunk,            // (text) => void
+ *     onToolCall,             // (event) => void   running → done | error
+ *     onStatus,               // (status) => void  optional human status
+ *   });
+ *
+ * Returns:
+ *   { ok, hadText, toolCalls, reason, errorMessage }
+ */
+export async function runAgentLoop(opts) {
+  const provider = String(opts?.provider || '').toLowerCase();
+  switch (provider) {
+    case 'openai':
+      return runOpenAiCompatLoop({
+        ...opts,
+        apiKey: opts.env?.OPENAI_API_KEY,
+        baseUrl: 'https://api.openai.com/v1',
+        providerLabel: 'openai',
+      });
+    case 'grok':
+      return runOpenAiCompatLoop({
+        ...opts,
+        apiKey: opts.env?.XAI_API_KEY,
+        baseUrl: 'https://api.x.ai/v1',
+        providerLabel: 'grok',
+      });
+    case 'anthropic':
+      return runAnthropicLoop({
+        ...opts,
+        apiKey: opts.env?.ANTHROPIC_API_KEY,
+      });
+    case 'gemini':
+      return runGeminiLoop({
+        ...opts,
+        apiKey: opts.env?.GOOGLE_API_KEY,
+      });
+    default:
+      return {
+        ok: false,
+        hadText: false,
+        toolCalls: [],
+        reason: 'error',
+        errorMessage: `unsupported provider: ${provider}`,
+      };
+  }
+}
+
+// Back-compat export — early version of /api/ai/stream used this name.
+// Keep so an in-flight branch doesn't break if it imports it.
+export const runOpenAiAgentLoop = (opts) => runAgentLoop({ ...opts, provider: 'openai' });

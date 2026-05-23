@@ -57,11 +57,6 @@ import SignInActionBlocker from "@/components/SignInActionBlocker";
 import { toast } from "@/components/ui/use-toast";
 import { ToastAction } from "@/components/ui/toast";
 import {
-  buildPrototypePreviewCards,
-  buildSeedNoteRows,
-} from "@/lib/demoVault";
-import {
-  hasPrototypeNeurons,
   isWalkthroughLockActive,
   PROTOTYPE_STEP_EVENT,
   readPrototypeStep,
@@ -901,6 +896,13 @@ export default function VaultNew() {
   // committed (real delete) when the timer fires.
   const [pendingDeleteCardIds, setPendingDeleteCardIds] = useState(() => new Set());
   const pendingDeleteTimersRef = useRef(new Map());
+
+  // Multi-select state. Shift+click selects a range; Cmd/Ctrl+click toggles
+  // a single card. `lastSelectedCardIdRef` is the anchor for range-select —
+  // we re-resolve it against the live `vaultCardsRef` at click time so
+  // selection ranges still make sense after the grid has reordered.
+  const [selectedCardIds, setSelectedCardIds] = useState(() => new Set());
+  const lastSelectedCardIdRef = useRef(null);
   const draggedCardMetricsRef = useRef(null);
   const [resolvedAttachmentUrls, setResolvedAttachmentUrls] = useState({});
   const [failedImageIds, setFailedImageIds] = useState(new Set());
@@ -1461,67 +1463,6 @@ export default function VaultNew() {
     }
   }, [notesQuery.isError, notesQuery.isSuccess]);
 
-  // Seed the starter pack for brand-new signed-in users. Runs once per user
-  // (tracked by a localStorage flag) so deleting every seeded card does NOT
-  // cause them to reappear on the next visit.
-  const demoSeedingRef = useRef(false);
-  useEffect(() => {
-    if (!user?.id) return;
-    if (loading || isLoadingNotes) return;
-    if (notes.length > 0) return;
-    if (demoSeedingRef.current) return;
-
-    const flagKey = `lykn.demo_seeded.${user.id}`;
-    try {
-      if (localStorage.getItem(flagKey)) return;
-    } catch { /* storage disabled — treat as already seeded to be safe */ return; }
-
-    demoSeedingRef.current = true;
-    try { localStorage.setItem(flagKey, "1"); } catch { /* ignore */ }
-
-    // The async IIFE below outlives the effect: a sign-out (or a
-    // remount with a different user) shouldn't have us writing seed
-    // rows for the previous account into the new account's grid.
-    let cancelled = false;
-
-    (async () => {
-      const rows = buildSeedNoteRows(user.id);
-      if (rows.length === 0) return;
-
-      // First attempt: full rows including `tags`. Falls back to a
-      // tags-less insert if the deployment's `notes` table doesn't have a
-      // `tags` column (older schemas — see COLUMN_SETS above).
-      let data = null;
-      let error = null;
-      ({ data, error } = await supabase
-        .from("notes")
-        .insert(rows)
-        .select("id, title, content, tags, created_at, updated_at"));
-      if (cancelled) return;
-
-      if (error) {
-        const rowsNoTags = rows.map(({ tags: _omit, ...rest }) => rest);
-        ({ data, error } = await supabase
-          .from("notes")
-          .insert(rowsNoTags)
-          .select("id, title, content, created_at, updated_at"));
-        if (cancelled) return;
-      }
-
-      if (error || !Array.isArray(data)) {
-        try { localStorage.removeItem(flagKey); } catch { /* ignore */ }
-        demoSeedingRef.current = false;
-        return;
-      }
-      if (cancelled) return;
-      setNotes((prev) => [...data, ...prev]);
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [user?.id, loading, isLoadingNotes, notes.length, setNotes]);
-
   const { data: projects = [] } = useQuery({
     queryKey: ["projects", user?.id],
     queryFn: async () => {
@@ -1698,30 +1639,90 @@ export default function VaultNew() {
     return out;
   }, [uploadItems, notes]);
 
-  // Vault content for signed-out users:
-  //   • Cold guests (no walkthrough yet): nothing. We used to render
-  //     `buildGuestDemoCards()` here (the prebuilt starter-pack from the
-  //     old "demoVault" set) but that surfaced fake content as if it
-  //     were the visitor's own work.
-  //   • Walkthrough guests (came from /landing-prototype with a neuron
-  //     created): the LYKN-themed orientation cards from
-  //     `buildPrototypePreviewCards()`. These aren't user data — they're
-  //     part of the guided tour and explain what the Vault is + how it
-  //     ties into the synthesis layer. Without them the page reads as
-  //     completely empty mid-walkthrough, which made the chat intro
-  //     ("drag a file…") feel disconnected from the surface.
-  const isPrototypePreview = !user?.id && hasPrototypeNeurons();
-  const guestDemoCards = useMemo(() => {
-    if (user?.id) return [];
-    if (isPrototypePreview) return buildPrototypePreviewCards();
-    return [];
-  }, [user?.id, isPrototypePreview]);
+  // The Vault never renders synthetic/template content. Signed-out users
+  // and brand-new signed-in users both see an empty grid until they save
+  // something themselves — no demo cards, no prototype-preview cards, no
+  // seeded notes.
+  const guestDemoCards = useMemo(() => [], []);
 
   // Ref-mirrored vaultCards for handlers that fire outside React's
   // render cycle (drag-end fires from a DOM event, by which time the
   // closed-over `vaultCards` array can be stale — e.g. an upload just
   // landed, the user just deleted a card, etc.).
   const vaultCardsRef = useRef([]);
+
+  // ─── Multi-select helpers ───────────────────────────────────────────
+  //
+  // Declared up here (rather than next to the bulk-delete logic that
+  // uses them most) because the card-click handler defined further
+  // down depends on these in its `useCallback` deps array. Moving
+  // them later in the component body produced a TDZ error
+  // ("Cannot access 'isSelectableCard' before initialization") since
+  // the click handler's `useCallback` runs during render and reads
+  // these refs before the original declarations executed. Only real
+  // content cards (attachment + quick-note) are selectable —
+  // source-folder tiles, chat-previews, and ghost upload cards are
+  // navigation/transient affordances and aren't deletable as a group.
+  const isSelectableCard = useCallback((card) => {
+    if (!card) return false;
+    if (card.isDemo) return false;
+    if (card.isGhost) return false;
+    return card.kind === "attachment" || card.kind === "quick-note";
+  }, []);
+
+  const clearSelection = useCallback(() => {
+    setSelectedCardIds((prev) => (prev.size === 0 ? prev : new Set()));
+    lastSelectedCardIdRef.current = null;
+  }, []);
+
+  const toggleCardSelection = useCallback((card) => {
+    if (!isSelectableCard(card)) return;
+    setSelectedCardIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(card.id)) next.delete(card.id);
+      else next.add(card.id);
+      return next;
+    });
+    lastSelectedCardIdRef.current = card.id;
+  }, [isSelectableCard]);
+
+  // Shift+click range select: pick everything between the last-clicked
+  // anchor and the just-clicked card, in current visual grid order. If
+  // there's no anchor (first shift-click), behave like a plain toggle so
+  // the user always gets a useful result.
+  const selectRangeTo = useCallback((card) => {
+    if (!isSelectableCard(card)) return;
+    const anchorId = lastSelectedCardIdRef.current;
+    const allCards = vaultCardsRef.current || [];
+    if (!anchorId || anchorId === card.id) {
+      setSelectedCardIds((prev) => {
+        const next = new Set(prev);
+        next.add(card.id);
+        return next;
+      });
+      lastSelectedCardIdRef.current = card.id;
+      return;
+    }
+    const idxA = allCards.findIndex((c) => c.id === anchorId);
+    const idxB = allCards.findIndex((c) => c.id === card.id);
+    if (idxA === -1 || idxB === -1) {
+      toggleCardSelection(card);
+      return;
+    }
+    const lo = Math.min(idxA, idxB);
+    const hi = Math.max(idxA, idxB);
+    setSelectedCardIds((prev) => {
+      const next = new Set(prev);
+      for (let i = lo; i <= hi; i += 1) {
+        const c = allCards[i];
+        if (isSelectableCard(c)) next.add(c.id);
+      }
+      return next;
+    });
+    // Don't update the anchor on shift-click — Finder/Files-style: shift
+    // extends from the same anchor each time, so the user can adjust the
+    // range without re-clicking the start.
+  }, [isSelectableCard, toggleCardSelection]);
 
   const vaultCards = useMemo(() => {
     const safeNotes = notes.filter((n) => n && !n.trashed);
@@ -1937,6 +1938,80 @@ export default function VaultNew() {
   useEffect(() => {
     vaultCardsRef.current = vaultCards;
   }, [vaultCards]);
+
+  // ─── Deep-link: ?note=<noteId> ─────────────────────────────────────
+  //
+  // The synthesis-layer NeuronPanel's "Open in vault" button navigates
+  // to `/vault?note=<id>` so the user lands on this page focused on
+  // the specific item the neuron represents. We:
+  //   1. Pull `note` from the URL.
+  //   2. Wait until vault cards are loaded and the matching card is
+  //      mounted in the DOM (cardElementsRef registers each card on
+  //      mount via `registerCardRef`).
+  //   3. Scroll it into view + add a brief flash class so the user
+  //      can see WHICH card the link landed them on (the grid is
+  //      dense; without the flash the right card is easy to miss).
+  //   4. Clear the URL param via `replaceState` so a refresh / back-
+  //      navigate doesn't re-trigger the scroll, and so the URL
+  //      shape after navigation is identical to a normal visit.
+  //
+  // A note can produce multiple cards (one per attachment + one
+  // chat-preview + …). We focus the FIRST card with the matching
+  // noteId — the order in `vaultCards` mirrors how the user sees
+  // them, so the first match is the visually-leading tile.
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const targetNoteId = params.get("note");
+    if (!targetNoteId) return;
+    if (!vaultCards || vaultCards.length === 0) return;
+
+    const match = vaultCards.find(
+      (c) => c && c.noteId && String(c.noteId) === targetNoteId,
+    );
+    if (!match) {
+      // The note is in the user's vault but its card hasn't been
+      // built yet, OR the noteId was stale (deleted, foreign). We
+      // only get one shot at this effect because we clear the URL
+      // param below — but the dependency on `vaultCards` re-runs us
+      // when notes load, so a slow load is fine. A truly missing
+      // noteId just falls through and we strip the param.
+      const next = new URLSearchParams(location.search);
+      next.delete("note");
+      const search = next.toString();
+      window.history.replaceState(
+        null,
+        "",
+        `${location.pathname}${search ? `?${search}` : ""}`,
+      );
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      const el = cardElementsRef.current.get(match.id);
+      if (el) {
+        try {
+          el.scrollIntoView({ behavior: "smooth", block: "center" });
+        } catch {
+          /* very old browsers — silently noop */
+        }
+        el.classList.add("lykn-vault-deeplink-flash");
+        setTimeout(() => {
+          el.classList.remove("lykn-vault-deeplink-flash");
+        }, 2400);
+      }
+      const next = new URLSearchParams(location.search);
+      next.delete("note");
+      const search = next.toString();
+      window.history.replaceState(
+        null,
+        "",
+        `${location.pathname}${search ? `?${search}` : ""}`,
+      );
+    }, 80);
+
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.search, location.pathname, vaultCards]);
 
   const [allTagsRaw, setAllTagsRaw] = useState([]);
 
@@ -3284,10 +3359,36 @@ export default function VaultNew() {
         return;
       }
     }
+
+    // Multi-select gestures take precedence over preview. Shift extends a
+    // range from the last clicked anchor; Cmd/Ctrl/Meta toggles a single
+    // card in/out of the selection. Anything else falls through to the
+    // normal preview behavior, and a plain click also clears any existing
+    // selection (Finder-style — "click somewhere else = deselect").
+    const shift = !!e?.shiftKey;
+    const toggle = !!(e?.metaKey || e?.ctrlKey);
+    if ((shift || toggle) && isSelectableCard(card)) {
+      e?.preventDefault?.();
+      setOpenCardMenuId(null);
+      setOpenAttachmentNotesCardId(null);
+      setPreviewCard(null);
+      if (shift) selectRangeTo(card);
+      else toggleCardSelection(card);
+      return;
+    }
+    if (selectedCardIds.size > 0) clearSelection();
+
     setOpenCardMenuId(null);
     setOpenAttachmentNotesCardId(null);
     setPreviewCard(card);
-  }, [draggedCardId]);
+  }, [
+    draggedCardId,
+    isSelectableCard,
+    selectRangeTo,
+    toggleCardSelection,
+    selectedCardIds,
+    clearSelection,
+  ]);
 
   useEffect(() => {
     if (!previewCard) return;
@@ -4604,6 +4705,13 @@ User: ${text}`;
         }
         purgeVaultNoteEmbeddings(card.noteId);
         setNotes((prev) => prev.filter((n) => String(n?.id) !== String(card.noteId)));
+        // Bust the synthesis-layer's cached `mindmap_notes` query so
+        // the deleted vault note disappears from the brain on the
+        // user's next visit without waiting for the realtime
+        // postgres_changes event (which usually arrives ~100-300ms
+        // later and won't fire at all if the project hasn't enabled
+        // realtime on the `notes` table yet).
+        vaultQueryClient.invalidateQueries({ queryKey: ["mindmap_notes"] });
         storageRemovalAllowed = true;
       } else {
         const nextAttachments = attachments.filter((_, i) => i !== idx);
@@ -4689,12 +4797,16 @@ User: ${text}`;
       }
       purgeVaultNoteEmbeddings(card.noteId);
       setNotes((prev) => prev.filter((n) => String(n?.id) !== String(card.noteId)));
+      // Mirror the attachment-delete path above: bust the synthesis-
+      // layer cache so the quick-note neuron disappears from the brain
+      // without waiting on the postgres_changes realtime round-trip.
+      vaultQueryClient.invalidateQueries({ queryKey: ["mindmap_notes"] });
       removeCardFromProjects(card);
       setOpenCardMenuId(null);
     } finally {
       setIsCardActionBusy(false);
     }
-  }, [user?.id, removeCardFromProjects]);
+  }, [user?.id, removeCardFromProjects, vaultQueryClient]);
 
   const addCardToProject = useCallback(async (card, projectId) => {
     if (!card || !projectId) return;
@@ -4943,6 +5055,139 @@ User: ${text}`;
     if (!ok) return;
     void removeAttachmentFromNote(card);
   }, [removeAttachmentFromNote]);
+
+  // Bulk delete with the same 6-second undo grace window as drag-to-trash.
+  // Each card is hidden optimistically, then committed individually once the
+  // timer fires. Undo restores everything that hasn't been committed yet.
+  const deleteSelectedCards = useCallback(() => {
+    const ids = Array.from(selectedCardIds);
+    if (ids.length === 0) return;
+    const allCards = vaultCardsRef.current || [];
+    const cards = ids
+      .map((id) => allCards.find((c) => c.id === id))
+      .filter((c) => isSelectableCard(c) && !pendingDeleteCardIds.has(c.id));
+    if (cards.length === 0) {
+      clearSelection();
+      return;
+    }
+    const label = cards.length === 1
+      ? `"${String(cards[0].title || "this item").slice(0, 60)}"`
+      : `${cards.length} items`;
+    const ok = window.confirm(
+      `Delete ${label}? This cannot be undone after the undo window.`
+    );
+    if (!ok) return;
+
+    setPendingDeleteCardIds((prev) => {
+      const next = new Set(prev);
+      for (const c of cards) next.add(c.id);
+      return next;
+    });
+
+    const snapshots = cards.slice();
+    for (const card of snapshots) {
+      const commitDelete = () => {
+        pendingDeleteTimersRef.current.delete(card.id);
+        setPendingDeleteCardIds((prev) => {
+          if (!prev.has(card.id)) return prev;
+          const next = new Set(prev);
+          next.delete(card.id);
+          return next;
+        });
+        if (card.kind === "attachment") {
+          void removeAttachmentFromNote(card);
+        } else if (card.kind === "quick-note") {
+          void removeQuickNoteCard(card);
+        }
+      };
+      const timerId = setTimeout(commitDelete, TRASH_UNDO_GRACE_MS);
+      pendingDeleteTimersRef.current.set(card.id, timerId);
+    }
+
+    const t = toast({
+      title: snapshots.length === 1 ? "Moved to trash" : `${snapshots.length} items moved to trash`,
+      description: snapshots.length === 1
+        ? `"${String(snapshots[0].title || "Item").slice(0, 60)}" will be deleted.`
+        : "Items will be deleted shortly.",
+      duration: TRASH_UNDO_GRACE_MS,
+      action: (
+        <ToastAction
+          altText="Undo delete"
+          onClick={() => {
+            for (const card of snapshots) {
+              const pending = pendingDeleteTimersRef.current.get(card.id);
+              if (pending) {
+                clearTimeout(pending);
+                pendingDeleteTimersRef.current.delete(card.id);
+              }
+            }
+            setPendingDeleteCardIds((prev) => {
+              const next = new Set(prev);
+              for (const card of snapshots) next.delete(card.id);
+              return next;
+            });
+            t.dismiss();
+          }}
+        >
+          Undo
+        </ToastAction>
+      ),
+    });
+
+    clearSelection();
+  }, [
+    selectedCardIds,
+    pendingDeleteCardIds,
+    isSelectableCard,
+    clearSelection,
+    removeAttachmentFromNote,
+    removeQuickNoteCard,
+  ]);
+
+  // Drop any selected ids whose underlying card is no longer in the grid —
+  // covers the case where a card the user had selected gets deleted via the
+  // 3-dot menu, drag-to-trash, or vanishes after a sync. Without this the
+  // floating action bar would show stale counts.
+  useEffect(() => {
+    if (selectedCardIds.size === 0) return;
+    const liveIds = new Set((vaultCardsRef.current || []).map((c) => c.id));
+    let changed = false;
+    const next = new Set();
+    for (const id of selectedCardIds) {
+      if (liveIds.has(id)) next.add(id);
+      else changed = true;
+    }
+    if (changed) setSelectedCardIds(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [notes, selectedCardIds]);
+
+  // Keyboard support: Esc clears selection, Delete/Backspace deletes it.
+  // Skip when the user is typing in an input/textarea/contentEditable so we
+  // don't intercept normal text editing.
+  useEffect(() => {
+    if (selectedCardIds.size === 0) return;
+    const onKey = (e) => {
+      const t = e.target;
+      const tag = t?.tagName;
+      const editable =
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||
+        (t && t.isContentEditable);
+      if (e.key === "Escape") {
+        if (editable) return;
+        clearSelection();
+        return;
+      }
+      if (e.key === "Delete" || e.key === "Backspace") {
+        if (editable) return;
+        e.preventDefault();
+        deleteSelectedCards();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectedCardIds, clearSelection, deleteSelectedCards]);
 
 
   // Open the comment composer anchored to a specific element (the
@@ -5495,7 +5740,9 @@ User: ${text}`;
                       <span className="text-xs text-black/40 dark:text-white/40 font-medium">{cards.length}</span>
                     </div>
                     <div className={isEmbeddedMode ? "grid grid-cols-2 gap-3" : "grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4"}>
-                      {cards.map((card) => (
+                      {cards.map((card) => {
+                        const isSelected = selectedCardIds.has(card.id);
+                        return (
                         <motion.article
                           initial={initialCardIdsRef.current?.has(card.id) ? false : { opacity: 0, scale: 0.97 }}
                           animate={{ opacity: 1, scale: 1 }}
@@ -5517,8 +5764,16 @@ User: ${text}`;
                             card.kind === "attachment" || card.kind === "quick-note"
                               ? "bg-transparent border-0 shadow-none"
                               : "glass-control"
-                          }`}
+                          } ${isSelected ? "ring-2 ring-blue-500 ring-offset-2 ring-offset-transparent" : ""}`}
                         >
+                          {isSelected && (
+                            <span
+                              data-no-preview="true"
+                              className="absolute top-2 right-2 z-[120] w-5 h-5 rounded-full bg-blue-500 text-white flex items-center justify-center shadow-md pointer-events-none"
+                            >
+                              <Check className="w-3 h-3" strokeWidth={3} />
+                            </span>
+                          )}
                           {card.isDemo && (
                             <span className="absolute top-2 left-2 z-[120] rounded-full bg-black/45 text-white/95 text-[0.625rem] font-medium px-2 py-0.5 backdrop-blur-sm pointer-events-none">
                               Sample
@@ -5599,7 +5854,8 @@ User: ${text}`;
                             </>
                           )}
                         </motion.article>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                 ))}
@@ -5625,7 +5881,9 @@ User: ${text}`;
                         <span className="text-xs text-black/40 dark:text-white/40 font-medium">{cards.length}</span>
                       </div>
                       <div className={isEmbeddedMode ? "grid grid-cols-2 gap-3" : "grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4"}>
-                        {cards.map((card) => (
+                        {cards.map((card) => {
+                          const isSelected = selectedCardIds.has(card.id);
+                          return (
                           <motion.article
                             initial={initialCardIdsRef.current?.has(card.id) ? false : { opacity: 0, scale: 0.97 }}
                             animate={{ opacity: 1, scale: 1 }}
@@ -5648,8 +5906,16 @@ User: ${text}`;
                               card.kind === "attachment" || card.kind === "quick-note"
                                 ? "bg-transparent border-0 shadow-none"
                                 : "glass-control"
-                            }`}
+                            } ${isSelected ? "ring-2 ring-blue-500 ring-offset-2 ring-offset-transparent" : ""}`}
                           >
+                            {isSelected && (
+                              <span
+                                data-no-preview="true"
+                                className="absolute top-2 right-2 z-[120] w-5 h-5 rounded-full bg-blue-500 text-white flex items-center justify-center shadow-md pointer-events-none"
+                              >
+                                <Check className="w-3 h-3" strokeWidth={3} />
+                              </span>
+                            )}
                             {card.isDemo && (
                               <span className="absolute top-2 left-2 z-[120] rounded-full bg-black/45 text-white/95 text-[0.625rem] font-medium px-2 py-0.5 backdrop-blur-sm pointer-events-none">
                                 Sample
@@ -5723,7 +5989,8 @@ User: ${text}`;
                               </>
                             )}
                           </motion.article>
-                        ))}
+                          );
+                        })}
                       </div>
                     </div>
                   );
@@ -5780,7 +6047,9 @@ User: ${text}`;
                     </div>
                   </div>
                 )}
-                {orderedVisibleCards.map((card) => (
+                {orderedVisibleCards.map((card) => {
+                  const isSelected = selectedCardIds.has(card.id);
+                  return (
                   <motion.article
                     initial={initialCardIdsRef.current?.has(card.id) ? false : { opacity: 0, scale: 0.97 }}
                     animate={{ opacity: 1, scale: 1 }}
@@ -5850,6 +6119,8 @@ User: ${text}`;
                         ? "opacity-30 cursor-grabbing ring-2 ring-blue-400/50"
                         : "cursor-pointer"
                     } ${dropTargetCardId === card.id && draggedCardId !== card.id ? "ring-2 ring-blue-400/40" : ""} ${
+                      isSelected ? "ring-2 ring-blue-500 ring-offset-2 ring-offset-transparent" : ""
+                    } ${
                       card.kind === "attachment" && card.type === "youtube"
                         ? getYouTubeOffsetClass(card.id)
                         : ""
@@ -5859,6 +6130,14 @@ User: ${text}`;
                         : "z-0"
                     }`}
                   >
+                    {isSelected && (
+                      <span
+                        data-no-preview="true"
+                        className="absolute top-2 right-2 z-[120] w-5 h-5 rounded-full bg-blue-500 text-white flex items-center justify-center shadow-md pointer-events-none"
+                      >
+                        <Check className="w-3 h-3" strokeWidth={3} />
+                      </span>
+                    )}
                     {card.isDemo && (
                       <span className="absolute top-2 left-2 z-[120] rounded-full bg-black/45 text-white/95 text-[0.625rem] font-medium px-2 py-0.5 backdrop-blur-sm pointer-events-none">
                         Sample
@@ -6027,7 +6306,8 @@ User: ${text}`;
                       </>
                     )}
                   </motion.article>
-                ))}
+                  );
+                })}
                 <div ref={loadMoreRef} className="break-inside-avoid h-6" />
               </div>
             )}
@@ -7163,6 +7443,41 @@ User: ${text}`;
                       : "w-4 h-4 text-black/35 dark:text-white/35"
               }`} />
             </span>
+          </div>
+        </div>,
+        document.body
+      )}
+      {/* Multi-select action bar — appears any time at least one card is
+          selected via shift/cmd-click. Centered on desktop, sits above the
+          mobile tab bar on phones. Esc and Delete/Backspace also work as
+          keyboard shortcuts (see the keydown effect alongside
+          `deleteSelectedCards`). */}
+      {selectedCardIds.size > 0 && createPortal(
+        <div
+          className="fixed z-[210] left-1/2 -translate-x-1/2 flex items-center"
+          style={{ bottom: isMobileChat ? "80px" : "24px" }}
+        >
+          <div className="flex items-center gap-2 rounded-full bg-black/85 dark:bg-white/10 backdrop-blur-md text-white shadow-lg ring-1 ring-white/10 px-3 py-1.5">
+            <span className="text-xs font-medium px-1.5">
+              {selectedCardIds.size} selected
+            </span>
+            <button
+              type="button"
+              onClick={deleteSelectedCards}
+              className="inline-flex items-center gap-1.5 rounded-full bg-red-500/90 hover:bg-red-500 text-white text-xs font-medium px-3 py-1 transition-colors"
+              title="Delete selected (Delete)"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              Delete
+            </button>
+            <button
+              type="button"
+              onClick={clearSelection}
+              className="inline-flex items-center rounded-full text-white/80 hover:text-white text-xs font-medium px-2 py-1 transition-colors"
+              title="Clear selection (Esc)"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
           </div>
         </div>,
         document.body

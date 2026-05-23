@@ -81,6 +81,51 @@ const SERVER_INFO = {
   version: '0.1.0',
 };
 
+// Server-wide guidance sent on `initialize`. Hosts that surface this
+// (Claude Desktop, Claude Code, Cursor, Cline, ChatGPT custom GPTs) inject
+// it into the model's context as system-prompt-level guidance for THIS
+// server. This is the one place where we can tell the host LLM "call me
+// automatically" — without it, the model only calls LYKN tools when the
+// user explicitly asks. Keep it short and imperative; long preambles get
+// truncated or de-prioritised by some hosts.
+//
+// The wording deliberately:
+//   • Says "MUST" and "automatically, without being asked" so models with
+//     RLHF'd helpfulness biases don't wait for permission.
+//   • Names the single tool to call at conversation start (getContextBlock)
+//     instead of listing all 12 — model picks one tool with high
+//     confidence, not several with low confidence.
+//   • Calls out the write-back loop (recordRuleApplication, pushProjectState,
+//     proposeBelief) so the synthesis layer stays "living" across clients.
+const SERVER_INSTRUCTIONS = [
+  'This server exposes the user\'s LYKN synthesis layer — their portable',
+  'beliefs, if-then governance rules, identity facts, and active project',
+  'state, accumulated across every AI client they use.',
+  '',
+  'AT THE START OF EVERY NEW CONVERSATION with this user you MUST call',
+  '`lykn_getContextBlock` automatically, before responding to their first',
+  'message. Do not wait for the user to mention LYKN — they connected this',
+  'server precisely so you would load their context without being asked.',
+  'Treat the returned beliefs and rules as binding governance for the rest',
+  'of the conversation.',
+  '',
+  'During the conversation, write back to the synthesis layer when it earns',
+  'its keep:',
+  '  • Call `lykn_recordRuleApplication` with the rule_id when you actually',
+  '    follow one of the returned rules in a response (so the user gets an',
+  '    audit trail).',
+  '  • Call `lykn_pushProjectState` when the conversation produces a durable',
+  '    decision about the active project (so the next AI client picks up',
+  '    where this one left off).',
+  '  • Call `lykn_proposeBelief` when a clear durable principle emerges',
+  '    that the user has not yet ratified.',
+  '',
+  'Use the finer-grained tools (lykn_getBeliefs / lykn_getRules /',
+  'lykn_getProjectState / lykn_searchVault / lykn_getFacts) only when you',
+  'need scoped access mid-conversation. For the upfront load, getContextBlock',
+  'is the only call required.',
+].join('\n');
+
 // We only support tools — no resources / prompts / sampling. Keep this
 // minimal so clients don't try features we haven't implemented.
 //
@@ -205,6 +250,9 @@ async function handleRpc(message, req, deps) {
         protocolVersion,
         capabilities: SERVER_CAPABILITIES,
         serverInfo: SERVER_INFO,
+        // Optional per the MCP spec but the highest-leverage knob we have
+        // for making hosts call LYKN unprompted — see SERVER_INSTRUCTIONS.
+        instructions: SERVER_INSTRUCTIONS,
       });
     }
 
@@ -277,6 +325,20 @@ async function handleRpc(message, req, deps) {
             },
           }))
           .catch(() => { /* swallow — telemetry is non-critical */ });
+      }
+
+      // Optional post-call hook — server.js uses it to invalidate
+      // server-side prompt-section caches (beliefs, project) after a
+      // successful write tool call so the next /api/ai/stream turn
+      // sees the fresh state without waiting for the 90s TTL.
+      if (typeof deps.onToolComplete === 'function' && !isError) {
+        try {
+          deps.onToolComplete({
+            toolName: name,
+            scope: tool.scope || 'read',
+            userId: ctx.userId,
+          });
+        } catch { /* swallow */ }
       }
 
       return jsonRpcResult(id, result);

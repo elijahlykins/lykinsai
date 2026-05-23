@@ -62,6 +62,12 @@ export interface Scene3DEdge {
    * beliefs" reads even when the underlying provenance is sparse.
    */
   provenance?: boolean;
+  /**
+   * User-authored cross-link from the "Link neurons" mode. Rendered
+   * in a brighter blue accent at higher opacity so the user can spot
+   * the threads they wired themselves amongst the AI-inferred web.
+   */
+  userLink?: boolean;
 }
 
 interface Props {
@@ -115,6 +121,35 @@ interface Props {
    * synthesis-layer tour intro. See CameraControllerProps.autoRotate.
    */
   autoRotate?: boolean;
+  /**
+   * Set of node IDs currently in the user's "Link neurons" selection.
+   * When non-empty the scene paints those nodes with a brighter
+   * emissive boost so the user can see which neurons they've picked
+   * across the cloud — otherwise link mode has no visual feedback
+   * beyond the floating action bar's count. Empty (or omitted) means
+   * we render exactly as before.
+   */
+  linkSelectedIds?: Set<string>;
+  /**
+   * Set of node IDs that should "glow" against a dimmed background.
+   * Driven by the synthesis-layer filter dropdown — currently only
+   * the "By Project" filter, but designed as a general-purpose
+   * focus channel so future filters (saved searches, "my notes
+   * from this week", …) can reuse the same render path.
+   *
+   * Behaviour when the set is non-empty:
+   *   • members get the same emissive boost as a link-mode selection
+   *     so they brighten against the rest of the cloud,
+   *   • non-members get isDimmed=true (~0.35 emissive, ~0.18 opacity)
+   *     so they recede instead of competing for the user's eye.
+   *   • edges where BOTH endpoints are members render bright; any
+   *     edge with a non-member endpoint is dimmed alongside it.
+   *
+   * Empty / undefined / null → no filter applied; identical to the
+   * pre-filter render. We accept null too because react-query's
+   * loading state often reads as "not yet known."
+   */
+  focusedSet?: Set<string> | null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -149,7 +184,13 @@ interface NeuronProps {
   onHover: (id: string | null) => void;
   onClick: (id: string) => void;
   /**
-   * If true, the neuron is being "formed" — start with scale 0 and animate
+   * If true, this neuron is in the user's current "Link neurons"
+   * selection. Boosts the emissive multiplier so the node visibly
+   * brightens against the rest of the cloud while link mode is on.
+   */
+  isLinkSelected?: boolean;
+  /**
+   * If true, this neuron is being "formed" — start with scale 0 and animate
    * up to 1 only AFTER the leading edge finishes drawing. The delay matches
    * the edge animation's duration in `Edge`.
    */
@@ -159,7 +200,7 @@ interface NeuronProps {
 const NEURON_FORMATION_DELAY_S = 0.8;
 const NEURON_FORMATION_DURATION_S = 0.6;
 
-function Neuron({ node, isHovered, isSelected, isDimmed, isTopicMode, onHover, onClick, isForming = false }: NeuronProps) {
+function Neuron({ node, isHovered, isSelected, isDimmed, isTopicMode, onHover, onClick, isLinkSelected = false, isForming = false }: NeuronProps) {
   const groupRef = useRef<THREE.Group>(null);
   const coreMatRef = useRef<THREE.MeshStandardMaterial>(null);
   const formStartRef = useRef<number | null>(null);
@@ -188,6 +229,11 @@ function Neuron({ node, isHovered, isSelected, isDimmed, isTopicMode, onHover, o
       case "grid":     return { emissive: 1.2, pulse: false };
       case "vault":    return { emissive: 1.0, pulse: false };
       case "tag":      return { emissive: 0.9, pulse: false };
+      // Perspectives are first-class user-authored neurons — emit
+      // brighter than Vault notes (which are passive captures) but
+      // dimmer than the principle-bearing belief stars. A gentle
+      // pulse signals they're alive and the AI uses them.
+      case "perspective": return { emissive: 1.8, pulse: true };
       default:         return { emissive: 1.0, pulse: false };
     }
   }, [node.kind]);
@@ -228,7 +274,14 @@ function Neuron({ node, isHovered, isSelected, isDimmed, isTopicMode, onHover, o
 
     hoverMulRef.current += hoverDelta * 0.18;
     dimMulRef.current += dimDelta * 0.18;
-    const base = glowConfig.emissive * hoverMulRef.current * dimMulRef.current;
+    // Link-mode multiplier — boosts emissive by ~60% so a neuron the
+    // user has tapped into their pending link selection visibly
+    // brightens against the rest of the cloud. Applied as a flat
+    // multiplier on top of the existing hover/dim chain so the
+    // selection signal layers cleanly with hover (a selected
+    // neuron the user is also hovering glows brightest).
+    const linkMul = isLinkSelected ? 1.6 : 1;
+    const base = glowConfig.emissive * hoverMulRef.current * dimMulRef.current * linkMul;
     // Pulse stays off for the focused / hovered neuron. With the camera
     // pulled in close, the bloom halo around a pulsing emissive grows
     // and shrinks several pixels per cycle, which reads as the neuron
@@ -429,6 +482,14 @@ interface EdgeProps {
    */
   isProvenance?: boolean;
   /**
+   * User-authored link from the "Link neurons" mode. Drawn in a bright
+   * blue accent at higher opacity than heuristic cross-edges so the
+   * threads the user wired themselves stand out from the AI-inferred
+   * web around them. Always rendered solid (no dashes) — these are
+   * deliberate, not guessed.
+   */
+  isUserLink?: boolean;
+  /**
    * If true, this edge is the "leading line" of a neuron formation — it
    * draws out from `a` toward `b` over EDGE_FORMATION_DURATION_S in bright
    * electric blue, then sits at full extent.
@@ -482,7 +543,7 @@ function FormingEdge({ a, b }: { a: Scene3DNode; b: Scene3DNode }) {
   );
 }
 
-function Edge({ a, b, isHl, isDimmed, isCross, isProvenance = false, isTopicMode, edgeRelevance, isForming = false }: EdgeProps) {
+function Edge({ a, b, isHl, isDimmed, isCross, isProvenance = false, isUserLink = false, isTopicMode, edgeRelevance, isForming = false }: EdgeProps) {
   const points = useMemo(
     () => [
       new THREE.Vector3(a.x, a.y, a.z),
@@ -505,28 +566,38 @@ function Edge({ a, b, isHl, isDimmed, isCross, isProvenance = false, isTopicMode
       ? 0.10
       : isHl
         ? 0.95
-        : isProvenance
-          ? 0.55
-          : isCross
-            ? 0.20
-            : 0.40;
+        : isUserLink
+          ? 0.78
+          : isProvenance
+            ? 0.55
+            : isCross
+              ? 0.20
+              : 0.40;
 
   // Indigo matches `palette.beliefs.bg` in SynthesisLayer.tsx so the
   // provenance overlay reads as "these edges come from the belief
   // cluster you can see above," not a random new color.
   const PROVENANCE_COLOR = "#a5b4fc";
+  // Bright sky-blue for user links — same family as the "+" menu's
+  // primary action accent and the link-mode action bar, so the user
+  // visually associates "their" threads with the linking affordance.
+  const USER_LINK_COLOR = "#60a5fa";
   const color = isHl
     ? a.color
-    : isProvenance
-      ? PROVENANCE_COLOR
-      : "#94a3b8";
+    : isUserLink
+      ? USER_LINK_COLOR
+      : isProvenance
+        ? PROVENANCE_COLOR
+        : "#94a3b8";
   const lineWidth = isHl
     ? 1.6
-    : isProvenance
-      ? 1.1
-      : isCross
-        ? 0.5
-        : 0.8;
+    : isUserLink
+      ? 1.4
+      : isProvenance
+        ? 1.1
+        : isCross
+          ? 0.5
+          : 0.8;
 
   return (
     <Line
@@ -536,8 +607,9 @@ function Edge({ a, b, isHl, isDimmed, isCross, isProvenance = false, isTopicMode
       transparent
       opacity={opacity}
       // Heuristic cross-edges stay dashed (they're inferred). Provenance
-      // edges render solid so the eye reads them as audited, not guessed.
-      dashed={isCross && !isProvenance}
+      // and user-authored links render solid so the eye reads them as
+      // audited/deliberate, not guessed.
+      dashed={isCross && !isProvenance && !isUserLink}
       dashSize={6}
       gapSize={6}
       toneMapped={false}
@@ -554,8 +626,14 @@ interface InnerProps extends Omit<Props, "zoom" | "resetSignal" | "focusNodeId" 
 }
 
 function SceneInner({
-  nodes, edges, hoveredId, selectedId, highlightSet, isTopicMode, onHoverNode, onClickNode, centroid, formingNodeId,
+  nodes, edges, hoveredId, selectedId, highlightSet, isTopicMode, onHoverNode, onClickNode, centroid, formingNodeId, linkSelectedIds, focusedSet,
 }: InnerProps) {
+  // Materialise the filter focus set's membership test once per
+  // render rather than asking it inside every Neuron/Edge map below.
+  // The Set already gives O(1) membership, but caching the
+  // "any-focus-applied" flag lets us skip the dim/boost branches
+  // entirely when no filter is active — the common case.
+  const hasFocus = !!focusedSet && focusedSet.size > 0;
   const posMap = useMemo(() => {
     const m = new Map<string, Scene3DNode>();
     for (const n of nodes) m.set(n.id, n);
@@ -579,7 +657,15 @@ function SceneInner({
         const a = posMap.get(e.from)!;
         const b = posMap.get(e.to)!;
         const isHl = hoveredId !== null && highlightSet.has(e.from) && highlightSet.has(e.to);
-        const isDimmed = hoveredId !== null && !isHl;
+        // Edge dimming: hover-driven (existing behaviour) OR
+        // filter-driven (new). An edge counts as "in focus" only
+        // when BOTH endpoints are members of the filter set —
+        // otherwise it dangles into the dimmed background and
+        // would visually drag a member node down with it.
+        const inFocus =
+          !hasFocus ||
+          (focusedSet!.has(e.from) && focusedSet!.has(e.to));
+        const isDimmed = (hoveredId !== null && !isHl) || !inFocus;
         const edgeRelevance = isTopicMode ? Math.min(a.relevance, b.relevance) : 1;
         // The forming edge is the one whose endpoint is the forming neuron.
         const isFormingEdge = formingNodeId != null && e.to === formingNodeId;
@@ -592,6 +678,7 @@ function SceneInner({
             isDimmed={isDimmed}
             isCross={!!e.cross}
             isProvenance={!!e.provenance}
+            isUserLink={!!e.userLink}
             isTopicMode={isTopicMode}
             edgeRelevance={edgeRelevance}
             isForming={isFormingEdge}
@@ -602,8 +689,24 @@ function SceneInner({
       {nodes.map((n) => {
         const isHovered = hoveredId === n.id;
         const isSelected = selectedId === n.id;
-        const isDimmed = hoveredId !== null && !highlightSet.has(n.id);
+        // Node dimming: hover-driven (existing) OR filter-driven
+        // (new — non-members of the active focus set fade so the
+        // members visually pop). The two channels OR together so
+        // hovering inside a filtered view still spotlights the
+        // hovered node's neighbours within the focus.
+        const isFocusMember = !hasFocus || focusedSet!.has(n.id);
+        const isDimmed =
+          (hoveredId !== null && !highlightSet.has(n.id)) || !isFocusMember;
         const isForming = formingNodeId === n.id;
+        // Members of the filter focus set borrow the same emissive
+        // boost link-mode selections use — that's what the user
+        // asked for ("only the neurons connected to that project
+        // glow"). When linkSelectedIds is also active (e.g. user
+        // is in linking mode while a filter is on) either signal
+        // alone is enough to trigger the glow.
+        const isLinkSelected =
+          (!!linkSelectedIds && linkSelectedIds.has(n.id)) ||
+          (hasFocus && isFocusMember);
         return (
           <Neuron
             key={n.id}
@@ -615,6 +718,7 @@ function SceneInner({
             onHover={onHoverNode}
             onClick={onClickNode}
             isForming={isForming}
+            isLinkSelected={isLinkSelected}
           />
         );
       })}
@@ -992,6 +1096,8 @@ export default function SynthesisScene3D(props: Props) {
         onClickNode={props.onClickNode}
         centroid={centroid}
         formingNodeId={props.formingNodeId}
+        linkSelectedIds={props.linkSelectedIds}
+        focusedSet={props.focusedSet}
       />
 
       <CameraController

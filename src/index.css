@@ -2191,6 +2191,37 @@ mark {
   100% { opacity: 0; }
 }
 
+/* Deep-link flash applied to a vault card when the user lands here from
+   the synthesis-layer NeuronPanel's "Open in vault" link
+   (`/vault?note=<noteId>`). The Vault page scrolls the matching card
+   into view and adds this class for ~2.4s so the user can see which
+   tile the link landed on — the grid is dense and without the flash
+   the right card is easy to lose. Removed via setTimeout in
+   VaultNew.jsx; the keyframe is one-shot, not a persistent pulse. */
+.lykn-vault-deeplink-flash {
+  animation: lykn-vault-deeplink-flash 2400ms ease-out both;
+  position: relative;
+  z-index: 1;
+}
+
+@keyframes lykn-vault-deeplink-flash {
+  0% {
+    box-shadow:
+      0 0 0 1px rgba(96, 165, 250, 0.0),
+      0 0 0 rgba(59, 130, 246, 0.0);
+  }
+  15% {
+    box-shadow:
+      0 0 0 2px rgba(147, 197, 253, 0.85),
+      0 0 32px rgba(96, 165, 250, 0.65);
+  }
+  100% {
+    box-shadow:
+      0 0 0 1px rgba(96, 165, 250, 0.0),
+      0 0 0 rgba(59, 130, 246, 0.0);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .lykn-wake-cursor,
   .lykn-wake-chat-shell::after,
@@ -2202,6 +2233,7 @@ mark {
   .lykn-wake-synth-node,
   .lykn-wake-synth-node::before,
   .lykn-wake-neuron-pill,
+  .lykn-vault-deeplink-flash,
   .lykn-wake-boot-overlay,
   .lykn-wake-boot-title,
   .lykn-wake-boot-tagline,

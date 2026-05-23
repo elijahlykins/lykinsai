@@ -1116,47 +1116,25 @@ export default function OmniaGridPage() {
   }, [user?.id]);
 
   // --------------------------------------------------------------------
-  // Load-in updates greeting (signed-in users)
+  // Initial-load chat (signed-in users)
   // --------------------------------------------------------------------
-  // LYKN opens with a dashboard chat that recaps recent synthesis
-  // activity, awaiting approvals, project updates, calendar, etc. This
-  // is the "here's what changed" surface that replaced the retired
-  // synthesis-layer updates panel — the chat is now the front door so
-  // the user can react conversationally (approve a belief, follow up on
-  // a project update, etc.).
-  //
-  // The dashboard board is a *persistent* per-user surface: we mint it
-  // once, save its id to localStorage (`lykn:lastLoadInGreetingBoardId`),
-  // and reuse the same board across reloads, redirects, and sidebar
-  // "Chat" navigations. Each visit refreshes the briefing content in
-  // place via the stale-greeting refresh effect (further down) rather
-  // than minting a new chat. As soon as the user types into the
-  // dashboard board, we forget the pointer (handled by a sibling
-  // effect below) so the next visit mints a fresh dashboard instead
-  // of dropping the user back into their previous chat.
+  // Every signed-in user should land in a fresh blank chat — same as
+  // clicking the sidebar "New chat" button. The previous behavior here
+  // seeded an "opening message" (load-in greeting) recap chat that
+  // pulled in awaiting approvals, project updates, etc., but those
+  // greeting boards were not persisting reliably, so we've unplugged
+  // that path. The greeting-specific consume/refresh/graduation effects
+  // below all gate on `kind === "load-in-greeting"` and therefore
+  // become silent no-ops with no greeting ever seeded.
   //
   // Fires whenever OmniaGrid mounts at `/app` (no `routeBoardId`) or
   // on the very first mount of the JS runtime regardless of URL — the
   // first-mount branch covers hard reloads sitting at a stale
   // `/grid/<old>` or transient `/app` redirects (e.g. Privacy → / →
-  // `GuestOnly` → `/app`). The sidebar "New chat" button bypasses
-  // this entirely by navigating directly to `/grid/<newUUID>`; the
-  // sidebar "Chat" entry intentionally lands back on the dashboard.
-  //
-  // Mechanics:
-  //   • Look up the saved dashboard id in `localStorage`. If one
-  //     exists, navigate there. Otherwise mint a fresh UUID.
-  //   • Stash a placeholder briefing in `sessionStorage` keyed by the
-  //     target id. The consume half (below, after `useBoardPersistence`
-  //     runs) only applies it when the board hydrates empty — for a
-  //     reused dashboard with a persisted greeting it's a no-op.
-  //   • `replace`-navigate to `/grid/<id>`. The stale-greeting refresh
-  //     effect then fetches the latest activity payload and overlays
-  //     it onto the single `load-in-greeting` message in place.
-  //
-  // We *must* navigate to a real board id rather than parking on `/app` —
-  // without one, `useBoardPersistence` auto-hydrates the previous board
-  // from `localStorage.omnia_board_id` and clobbers our seeded greeting.
+  // `GuestOnly` → `/app`). Without this nudge, `useBoardPersistence`
+  // would auto-hydrate the user's previous board from
+  // `localStorage.omnia_board_id`, dropping them mid-chat instead of a
+  // blank slate.
   //
   // Prototype/guest users are intentionally skipped: their grid URLs
   // are demo content, not Supabase-backed boards, and the walkthrough
@@ -1170,91 +1148,35 @@ export default function OmniaGridPage() {
 
     const isFirstLoadOfRuntime = !omniaGridDidConsumeFirstLoad;
     const onApp = !routeBoardId;
-    // Fire on (a) the very first OmniaGrid mount of this JS runtime
-    // regardless of URL, or (b) any subsequent landing on `/app`. The
-    // first-mount case covers hard reloads sitting at `/grid/<old>`;
-    // the `/app` case covers redirects through the home route and the
-    // sidebar "Chat" entry — both should land on the persistent
-    // dashboard rather than mint a new chat each time.
     if (!isFirstLoadOfRuntime && !onApp) return;
     omniaGridDidConsumeFirstLoad = true;
 
-    const emailName = String(user?.email || "").split("@")[0].trim();
-    const fullName = String(
-      user?.user_metadata?.full_name || user?.user_metadata?.name || "",
-    ).trim();
-    const firstName = fullName ? fullName.split(/\s+/)[0] : "";
-    const greetingName = firstName || emailName || null;
-
-    // Always prefer the user's existing dashboard board over minting a
-    // new one — that's the whole point of the persistent dashboard:
-    // same board, fresh updates, every visit. The pointer is cleared
-    // by the "graduation" effect below once the user types into the
-    // dashboard, so we only mint when there's no still-pristine board
-    // to return to.
-    let savedDashboardId: string | null = null;
+    // Clear any leftover greeting pointers from the retired load-in
+    // greeting flow so we don't accidentally route a returning user
+    // back to a stale dashboard board.
     try {
-      const raw = localStorage.getItem("lykn:lastLoadInGreetingBoardId");
-      savedDashboardId = raw && raw.trim() ? raw.trim() : null;
-    } catch {
-      savedDashboardId = null;
-    }
-
-    // Already sitting on the saved dashboard URL? Nothing to navigate —
-    // `useBoardPersistence` will hydrate the persisted greeting and the
-    // stale-greeting refresh effect will overlay fresh updates in place.
-    if (savedDashboardId && routeBoardId === savedDashboardId) return;
-
-    // Reuse the existing dashboard id if we have one, otherwise mint
-    // a new UUID. The placeholder we stash in sessionStorage is
-    // intentionally minimal — just enough for the consume effect to
-    // seed a single `load-in-greeting` message when the board
-    // hydrates empty (fresh mint path). For a reused dashboard whose
-    // chat already contains the persisted greeting, the consume
-    // effect's `prev.length > 0 ? prev : [...]` guard turns the seed
-    // into a no-op and the refresh effect handles updating in place.
-    const targetId =
-      savedDashboardId ||
-      (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-        ? crypto.randomUUID()
-        : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
-    try {
-      sessionStorage.setItem(
-        `lykn:loadInGreeting:${targetId}`,
-        JSON.stringify({
-          message: greetingName
-            ? `Catching you up, ${greetingName}…`
-            : "Catching you up…",
-          sections: [],
-          actions: [],
-          stats: undefined,
-          greetingName,
-        }),
-      );
-      localStorage.setItem("lykn:lastLoadInGreetingBoardId", targetId);
-      // Intentionally NOT setting `loadInGreetingMintedThisSession=1`
-      // here — that flag short-circuits the stale-greeting refresh
-      // effect, but we *want* that effect to run because the payload
-      // we stashed above is only a placeholder.
+      localStorage.removeItem("lykn:lastLoadInGreetingBoardId");
       sessionStorage.removeItem("lykn:loadInGreetingMintedThisSession");
     } catch {
-      // private mode → seeding will fail; bail rather than navigate
-      // to a board that can't be hydrated.
-      return;
+      // ignore
     }
-    // Single direct hop from wherever-we-are to `/grid/<targetId>`.
-    // `replace` so the previous URL doesn't pollute browser history.
+
+    // Mint a fresh blank chat — equivalent to the sidebar "New chat"
+    // button. `useBoardPersistence` will create the row in
+    // `omnia_boards` on hydration.
+    const targetId =
+      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     nav(`/grid/${targetId}`, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id, planLoading, routeBoardId]);
 
-  // The matching "graduation" effect that clears the saved dashboard
-  // pointer once the user types into it lives below, after
-  // `useBoardPersistence` provides us with the resolved `boardId`.
-
-  // The matching "consume" half of the load-in-greeting flow lives below
-  // (after `useBoardPersistence` is called) — it needs `boardId` from
-  // the hook in scope to wait for hydration to settle.
+  // The matching "graduation" effect (clears the saved dashboard
+  // pointer once a user types into a load-in greeting board) and the
+  // "consume" half (inflates a stashed greeting payload into a chat
+  // message) live below. They both gate on the load-in greeting flow
+  // that this trigger no longer seeds, so they're effectively dormant.
 
   const createWelcomeText = useMemo(() => {
     const emailName = String(user?.email || "").split("@")[0].trim();

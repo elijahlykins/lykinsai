@@ -47,6 +47,21 @@ import { setActiveProjectTool } from './setActiveProject.js';
 import { pushProjectStateTool } from './pushProjectState.js';
 import { getProjectStateTool } from './getProjectState.js';
 import { listProjectsTool } from './listProjects.js';
+import { updateProjectTool } from './updateProject.js';
+import { addProjectNeuronsTool } from './addProjectNeurons.js';
+import { removeProjectNeuronsTool } from './removeProjectNeurons.js';
+import { deleteProjectTool } from './deleteProject.js';
+import { findConnectionsTool } from './findConnections.js';
+import { createVaultNoteTool } from './createVaultNote.js';
+import { loadNeuronTool } from './loadNeuron.js';
+import { loadNeuronsTool } from './loadNeurons.js';
+import { getProjectNeuronsTool } from './getProjectNeurons.js';
+import { createNeuronLinkTool } from './createNeuronLink.js';
+import { getNeuronLinksTool } from './getNeuronLinks.js';
+import { touchConceptTool } from './touchConcept.js';
+import { getUserPreferencesTool } from './getUserPreferences.js';
+import { updateUserPreferenceTool } from './updateUserPreference.js';
+import { getRecentActivityTool } from './getRecentActivity.js';
 
 export const MCP_TOOLS = [
   // Tier 1 — Core beliefs (governance, ratified)
@@ -57,14 +72,31 @@ export const MCP_TOOLS = [
   // Tier 2 — Project state (working memory, git-style)
   listProjectsTool,
   setActiveProjectTool,
+  updateProjectTool,
+  deleteProjectTool,
   pushProjectStateTool,
   getProjectStateTool,
+  addProjectNeuronsTool,
+  removeProjectNeuronsTool,
+  getProjectNeuronsTool,
   // Tier 3 — Identity facts (background, light-weight)
   getFactsTool,
   proposeFactTool,
   // Cross-tier helpers
   getContextBlockTool,
   searchVaultTool,
+  findConnectionsTool,
+  loadNeuronTool,
+  loadNeuronsTool,
+  createVaultNoteTool,
+  // Synthesis graph — user-authored cross-neuron edges
+  createNeuronLinkTool,
+  getNeuronLinksTool,
+  touchConceptTool,
+  // Preferences & activity feed (server-honoured user policy + cross-store deltas)
+  getUserPreferencesTool,
+  updateUserPreferenceTool,
+  getRecentActivityTool,
 ];
 
 export const MCP_TOOLS_BY_NAME = Object.freeze(

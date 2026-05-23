@@ -41,7 +41,33 @@ export interface PrototypeNeuron {
    * Older prototypes that pre-date this field simply omit it and
    * default-route to AI Learned, preserving the legacy walkthrough.
    */
-  neuronType?: "fact" | "belief" | "concept" | "tag";
+  neuronType?: "fact" | "belief" | "concept" | "tag" | "perspective";
+  /**
+   * Per-type structured payload. Stashes every optional field the
+   * unified neuron composer collects (rationale / story / additional
+   * notes) so the preview brain can echo the user's full input back
+   * at them inside the DetailPanel before they sign in.
+   *
+   *   • rationale → the composer's "Why" field (also the existing
+   *                 lykn_beliefs.rationale column for signed-in users)
+   *   • story     → the composer's "Story" field (long-form body;
+   *                 maps to notes.content for perspectives + to
+   *                 metadata.story for everything else server-side)
+   *   • title     → only used for Perspectives, where the prototype
+   *                 neuron's `text` is the story body and `title` is
+   *                 the separate single-line headline
+   *   • notes     → the composer's "Additional information" field;
+   *                 maps to metadata.notes server-side
+   *
+   * Older prototypes that pre-date any of these fields simply omit
+   * them; downstream consumers must handle absence gracefully.
+   */
+  extra?: {
+    rationale?: string;
+    story?: string;
+    title?: string;
+    notes?: string;
+  };
   /**
    * 1-based index of this neuron in the order it was created. Lets
    * downstream surfaces show "1st neuron", "2nd neuron", etc. without
