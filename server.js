@@ -885,9 +885,13 @@ app.get('/api/health', async (req, res) => {
     healthy = false;
   } else {
     try {
+      // lykn_user_preferences has no `id` column — its primary key is
+      // `user_id` (see migration 060). Selecting a non-existent column
+      // returns PostgREST error 42703 which silently flipped the
+      // database probe to "degraded" before this fix.
       const dbProbe = supabaseAdmin
         .from('lykn_user_preferences')
-        .select('id', { head: true, count: 'exact' })
+        .select('user_id', { head: true, count: 'exact' })
         .limit(1);
       const timeout = new Promise((_, reject) =>
         setTimeout(() => reject(new Error('db_timeout')), 1500),
