@@ -5,6 +5,7 @@ import { supabase } from "@/lib/supabase";
 import { API_BASE_URL } from "@/lib/api-config";
 import { CONNECTORS } from "@/lib/connectors/catalog";
 import { OUTBOUND_TARGETS, aliasClientKindForCatalog } from "@/lib/connectors/outboundTargets";
+import { toast } from "@/components/ui/use-toast";
 import lyknIconUrl from "@/assets/FINAL/LYKN-ICON-A-Squircle/PNGs/LYKN-Icon-A-Squircle-BLUE-master.png";
 
 // Floating macOS-style dock for the Vault page and a vertical variant
@@ -48,6 +49,13 @@ export default function VaultAppDock({ user, orientation = "horizontal" }) {
   const { pathname } = useLocation();
   const [connections, setConnections] = useState([]);
   const [tokens, setTokens] = useState([]);
+  // Provider whose OAuth popup we just launched from a reauth tile. While
+  // non-null we listen for the /oauth/callback postMessage so we can toast +
+  // refresh in-place instead of routing the user to /connections. Scoped to
+  // the dock-initiated flow so we don't double-toast OAuth handshakes that
+  // the OAuthConnectDialog on /connections initiates (it owns its own
+  // listener and toasts for those).
+  const [reconnectingProvider, setReconnectingProvider] = useState(null);
   // Persist the user's "hide this dock" choice across reloads. SSR-safe
   // (window check) and lazy so we never paint the dock for a frame
   // before remembering it was dismissed.
@@ -161,15 +169,25 @@ export default function VaultAppDock({ user, orientation = "horizontal" }) {
       if (conn.last_synced_at) metaBits.push(`synced ${relativeTime(conn.last_synced_at)}`);
       if (conn.status === "paused") metaBits.push("paused");
       if (conn.status === "reauth") metaBits.push("reconnect needed");
+      // `requiresPrefields` flags connectors that can't start OAuth
+      // blind from the dock (Mastodon needs an instance URL first).
+      // Those still get routed to /connections so the user can fill
+      // the form. Everything else (Google, Notion, GitHub, …) can
+      // reauth in one click from here.
+      const requiresPrefields = (connector.oauthPrefields || []).some(
+        (f) => f.required !== false,
+      );
       inputTiles.push({
         key: `input:${provider}`,
         kind: "input",
+        provider,
         name: connector.name,
         domain: connector.domain,
         iconUrl: connector.iconUrl || null,
         launchUrl: resolveLaunchUrl(connector.domain),
         meta: metaBits.join(" · ") || "Connected",
         needsAttention: conn.status === "reauth",
+        requiresPrefields,
       });
     }
 
@@ -181,12 +199,73 @@ export default function VaultAppDock({ user, orientation = "horizontal" }) {
   // connections + tokens lists are still loading. Showing the dock
   // immediately also avoids a layout flash where it pops in late.
 
+  // Kick off an OAuth re-handshake directly from the dock. Same shape as
+  // OAuthConnectDialog.handleConnect — POST /api/connections/{provider}/start,
+  // open the returned URL in a centered popup, let the postMessage listener
+  // below pick up the result. Falls back to /connections on any failure so
+  // the user always has a recovery surface.
+  const handleReconnect = useCallback(
+    async (tile) => {
+      if (tile.kind !== "input" || !tile.provider || tile.requiresPrefields) {
+        navigate("/connections");
+        return;
+      }
+      setReconnectingProvider(tile.provider);
+      try {
+        const res = await authedFetch(`/api/connections/${tile.provider}/start`, {
+          method: "POST",
+          body: JSON.stringify({}),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+        const w = 620;
+        const h = 760;
+        const left = Math.max(0, (window.screen.width - w) / 2);
+        const top = Math.max(0, (window.screen.height - h) / 2);
+        const popup = window.open(
+          data.url,
+          "lyknOauth",
+          `width=${w},height=${h},left=${left},top=${top},popup=1`,
+        );
+        if (!popup) {
+          // Popup blocked — fall back to a same-tab navigation so the
+          // handshake still completes. The callback page will redirect
+          // back to LYKN when done.
+          window.location.href = data.url;
+          return;
+        }
+        // Watchdog: if the popup closes without sending a message
+        // (cancelled, browser killed it, network error inside the
+        // callback page), clear the reconnecting state so the listener
+        // tears down. We don't toast here — silent failures shouldn't
+        // surface as toasts.
+        const watchdog = setInterval(() => {
+          if (popup.closed) {
+            clearInterval(watchdog);
+            setReconnectingProvider((p) => (p === tile.provider ? null : p));
+          }
+        }, 500);
+      } catch (err) {
+        setReconnectingProvider(null);
+        toast({
+          title: "Couldn't start reconnect",
+          description: err.message,
+          variant: "destructive",
+        });
+        navigate("/connections");
+      }
+    },
+    [navigate],
+  );
+
   const handleLaunch = (tile) => {
-    // reauth tiles route to /connections to reconnect rather than
-    // launching the app — the app's session is broken until they
-    // reauthorize. Everything else opens in a new tab.
+    // reauth tiles open the OAuth popup in place so the user can
+    // reconnect in one click — the previous behavior bounced them
+    // to /connections and made them hunt for the "Add another …"
+    // button. Everything else opens in a new tab.
     if (tile.needsAttention) {
-      navigate("/connections");
+      handleReconnect(tile);
       return;
     }
     if (!tile.launchUrl) {
@@ -195,6 +274,45 @@ export default function VaultAppDock({ user, orientation = "horizontal" }) {
     }
     window.open(tile.launchUrl, "_blank", "noopener,noreferrer");
   };
+
+  // Listen for the /oauth/callback handshake message while a dock-initiated
+  // reconnect is in flight. Mirrors OAuthConnectDialog's listener (origin
+  // checked against API_BASE_URL because the callback page renders on the
+  // API host) but scoped to the provider we just launched so we don't
+  // double-toast when the user has the Connections page open in the
+  // background.
+  useEffect(() => {
+    if (!reconnectingProvider) return;
+    const expectedOrigin = (() => {
+      try {
+        return new URL(API_BASE_URL).origin;
+      } catch {
+        return "";
+      }
+    })();
+    const onMessage = (event) => {
+      if (expectedOrigin && event.origin !== expectedOrigin) return;
+      const msg = event?.data;
+      if (!msg || msg.type !== "lykn:oauth") return;
+      if (msg.provider !== reconnectingProvider) return;
+      if (msg.ok) {
+        toast({
+          title: "Reconnected",
+          description: "Sync is back on — give it a moment to catch up.",
+        });
+      } else {
+        toast({
+          title: "Reconnection failed",
+          description: "The provider rejected the request or you cancelled.",
+          variant: "destructive",
+        });
+      }
+      setReconnectingProvider(null);
+      refresh();
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [reconnectingProvider, refresh]);
 
   // Vertical variant anchors itself just inside the chat column, using
   // the same sidebar offset every other chat chrome consumes. The icons
