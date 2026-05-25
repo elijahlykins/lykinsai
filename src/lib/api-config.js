@@ -1,11 +1,12 @@
 // API Configuration - handles both development and production
 // Frontend: Vercel (https://lykn.io)
-// Backend: Render (e.g., https://lykn-ideation.onrender.com)
-// In development, it uses localhost
+// Backend: Render origin (lykn-ideation.onrender.com), fronted by
+//   Cloudflare at https://api.lykn.io — the canonical production URL.
+// In development, it uses localhost.
 
 const getApiBaseUrl = () => {
   // Check for environment variable first (highest priority)
-  // This should be set in Vercel: VITE_API_BASE_URL=https://lykn-ideation.onrender.com
+  // This should be set in Vercel: VITE_API_BASE_URL=https://api.lykn.io
   if (typeof window !== 'undefined') {
     const envApiUrl = import.meta.env.VITE_API_BASE_URL;
     if (envApiUrl) {
@@ -18,9 +19,11 @@ const getApiBaseUrl = () => {
                          !window.location.hostname.includes('192.168.');
     
     if (isProduction) {
-      // Default production backend URL (should be overridden by env var)
-      // Update this to your actual Render backend URL
-      return 'https://lykn-ideation.onrender.com';
+      // Default production backend URL (should be overridden by env var
+      // VITE_API_BASE_URL in Vercel). Points at the Cloudflare edge,
+      // not the raw Render origin, so the WAF still gates the traffic
+      // even if the env var is somehow unset.
+      return 'https://api.lykn.io';
     }
   }
   
