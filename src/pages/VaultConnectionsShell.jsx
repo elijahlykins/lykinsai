@@ -61,17 +61,36 @@ export default function VaultConnectionsShell() {
   }, []);
   const isWalkthroughLocked = isWalkthroughLockActive(user?.id ?? null, walkStep);
 
+  // Use `inert` rather than `aria-hidden` on the inactive subtree.
+  // aria-hidden only hides from AT; if focus is still inside the
+  // subtree (e.g. user just clicked the in-page Vault↔Connections
+  // toggle, which lives inside whichever subtree is being hidden),
+  // Chrome warns: "Blocked aria-hidden on an element because its
+  // descendant retained focus." `inert` is the spec-recommended
+  // fix — it both hides from AT *and* automatically blurs any
+  // focused descendant, so the toggle-click → hide race becomes a
+  // no-op for accessibility.
+  //
+  // Applied via a ref because React 18.3.1 doesn't natively
+  // recognise `inert` as a JSX prop (that landed in React 19);
+  // setAttribute sidesteps the unknown-prop warning entirely.
+  const inertIfHidden = (hidden) => (el) => {
+    if (!el) return;
+    if (hidden) el.setAttribute("inert", "");
+    else el.removeAttribute("inert");
+  };
+
   return (
     <>
       <div
+        ref={inertIfHidden(showConnections)}
         style={{ display: showConnections ? "none" : "contents" }}
-        aria-hidden={showConnections}
       >
         <VaultNew />
       </div>
       <div
+        ref={inertIfHidden(!showConnections)}
         style={{ display: showConnections ? "contents" : "none" }}
-        aria-hidden={!showConnections}
       >
         <Connections />
       </div>
