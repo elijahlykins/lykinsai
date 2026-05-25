@@ -7,7 +7,8 @@ import fetch from 'node-fetch';
 import multer from 'multer';
 import * as cheerio from 'cheerio';
 import * as mammoth from 'mammoth';
-import * as XLSX from 'xlsx';
+import ExcelJS from 'exceljs';
+import { Readable } from 'node:stream';
 import AdmZip from 'adm-zip';
 import rateLimit from 'express-rate-limit';
 import crypto from 'crypto';
@@ -13629,14 +13630,36 @@ function extractTextFromDocx(buffer) {
   }));
 }
 
-function extractTextFromXlsx(buffer) {
-  const wb = XLSX.read(buffer, { type: "buffer" });
-  const sheets = wb.SheetNames.map((name) => {
-    const sheet = wb.Sheets[name];
-    const csv = XLSX.utils.sheet_to_csv(sheet);
-    return `--- Sheet: ${name} ---\n${csv}`;
+// ExcelJS cells can hold rich-text objects, formula+result pairs,
+// hyperlink wrappers, or Date instances. Normalise everything to a
+// flat string so the downstream CSV/text consumers don't have to.
+function xlsxCellToString(v) {
+  if (v == null) return '';
+  if (typeof v !== 'object') return String(v);
+  if (v instanceof Date) return v.toISOString();
+  if (Array.isArray(v.richText)) return v.richText.map((p) => p?.text ?? '').join('');
+  if (v.text != null) return String(v.text);          // hyperlink-cell
+  if (v.result != null) return String(v.result);       // formula-cell
+  return String(v);
+}
+
+function xlsxCsvEscape(s) {
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+async function extractTextFromXlsx(buffer) {
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(buffer);
+  const sheets = wb.worksheets.map((ws) => {
+    const rows = [];
+    ws.eachRow({ includeEmpty: false }, (row) => {
+      // row.values is 1-indexed; index 0 is always a placeholder.
+      const cells = row.values.slice(1).map((v) => xlsxCsvEscape(xlsxCellToString(v)));
+      rows.push(cells.join(','));
+    });
+    return `--- Sheet: ${ws.name} ---\n${rows.join('\n')}`;
   });
-  return { text: sheets.join("\n\n").trim(), format: "xlsx", pageCount: wb.SheetNames.length };
+  return { text: sheets.join("\n\n").trim(), format: "xlsx", pageCount: wb.worksheets.length };
 }
 
 function extractTextFromPptx(buffer) {
@@ -13689,7 +13712,7 @@ app.post('/api/files/extract-text', requireAuth, upload.single('file'), async (r
     if (mime.includes("wordprocessingml") || mime === "application/msword" || name.endsWith(".docx") || name.endsWith(".doc")) {
       result = await extractTextFromDocx(file.buffer);
     } else if (mime.includes("spreadsheetml") || mime.includes("ms-excel") || name.endsWith(".xlsx") || name.endsWith(".xls")) {
-      result = extractTextFromXlsx(file.buffer);
+      result = await extractTextFromXlsx(file.buffer);
     } else if (mime.includes("presentationml") || mime.includes("ms-powerpoint") || name.endsWith(".pptx") || name.endsWith(".ppt")) {
       result = extractTextFromPptx(file.buffer);
     } else if (mime.includes("opendocument") || name.endsWith(".odt")) {
@@ -13723,28 +13746,29 @@ app.post('/api/files/parse-spreadsheet', requireAuth, upload.single('file'), asy
 
     console.log(`📊 Parsing spreadsheet: ${file.originalname} (${(file.size / 1024).toFixed(0)}KB)`);
 
-    let wb;
+    const wb = new ExcelJS.Workbook();
     if (name.endsWith(".csv")) {
-      const text = file.buffer.toString("utf-8");
-      wb = XLSX.read(text, { type: "string" });
+      // ExcelJS's csv reader takes a stream; wrap the in-memory buffer
+      // with node:stream Readable so we avoid spilling to /tmp.
+      await wb.csv.read(Readable.from(file.buffer));
     } else {
-      wb = XLSX.read(file.buffer, { type: "buffer" });
+      await wb.xlsx.load(file.buffer);
     }
 
-    const sheetName = wb.SheetNames[0];
-    if (!sheetName) return res.status(422).json({ error: 'No sheets found.' });
-    const ws = wb.Sheets[sheetName];
-    const range = XLSX.utils.decode_range(ws['!ref'] || 'A1');
-    const rows = Math.min(range.e.r + 1, 200);
-    const cols = Math.min(range.e.c + 1, 30);
+    const ws = wb.worksheets[0];
+    if (!ws) return res.status(422).json({ error: 'No sheets found.' });
+
+    // ExcelJS rows/cols are 1-indexed. We expose 0-indexed coordinates
+    // to the frontend grid renderer (same contract as the prior xlsx
+    // implementation).
+    const rows = Math.min(ws.rowCount, 200);
+    const cols = Math.min(ws.columnCount, 30);
     const cells = {};
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        const addr = XLSX.utils.encode_cell({ r, c });
-        const cell = ws[addr];
-        if (cell != null && cell.v != null && cell.v !== '') {
-          cells[`${r},${c}`] = String(cell.v);
-        }
+    for (let r = 1; r <= rows; r++) {
+      const row = ws.getRow(r);
+      for (let c = 1; c <= cols; c++) {
+        const s = xlsxCellToString(row.getCell(c).value);
+        if (s !== '') cells[`${r - 1},${c - 1}`] = s;
       }
     }
 
@@ -13759,7 +13783,7 @@ app.post('/api/files/parse-spreadsheet', requireAuth, upload.single('file'), asy
     }
 
     console.log(`✅ Parsed spreadsheet: ${rows} rows × ${cols} cols, ${Object.keys(cells).length} filled cells`);
-    res.json({ rows, cols, cells, colWidths, sheetName: wb.SheetNames[0], sheetCount: wb.SheetNames.length });
+    res.json({ rows, cols, cells, colWidths, sheetName: ws.name, sheetCount: wb.worksheets.length });
   } catch (error) {
     console.error('❌ Spreadsheet parse error:', error);
     res.status(500).json({ error: `Failed to parse spreadsheet: ${error.message}` });
