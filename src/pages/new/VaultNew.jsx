@@ -1331,10 +1331,12 @@ export default function VaultNew() {
 
   const resolvedColumnsRef = useRef(null);
 
+  // Attachments live inside `notes.content` as an `[ATTACHMENTS_JSON:[…]]`
+  // marker (see `attachmentsMarker.ts`) — there is intentionally no
+  // `attachments` column on the `notes` table. Older revisions probed for
+  // one and ate a 400 on every cold load; the probe is gone.
   const COLUMN_SETS = [
-    "id, title, content, attachments, tags, created_at, updated_at",
     "id, title, content, tags, created_at, updated_at",
-    "id, title, content, attachments, created_at, updated_at",
     "id, title, content, created_at, updated_at",
   ];
 
@@ -4716,30 +4718,15 @@ User: ${text}`;
       } else {
         const nextAttachments = attachments.filter((_, i) => i !== idx);
         const nextContent = withAttachmentJsonMarker(note.content || "", nextAttachments);
-        const nextAttachmentsString = JSON.stringify(nextAttachments);
         let updateError = null;
         ({ error: updateError } = await supabase
           .from("notes")
           .update({
             content: nextContent,
-            attachments: nextAttachmentsString,
             updated_at: new Date().toISOString(),
           })
           .eq("id", card.noteId)
           .eq("user_id", user.id));
-        if (
-          updateError &&
-          (updateError.code === "PGRST204" || updateError.message?.toLowerCase().includes("does not exist"))
-        ) {
-          ({ error: updateError } = await supabase
-            .from("notes")
-            .update({
-              content: nextContent,
-              updated_at: new Date().toISOString(),
-            })
-            .eq("id", card.noteId)
-            .eq("user_id", user.id));
-        }
         if (updateError) {
           // Bail without touching storage — otherwise the file disappears
           // while the DB row still references it.
@@ -4750,7 +4737,7 @@ User: ${text}`;
         setNotes((prev) =>
           prev.map((n) =>
             String(n?.id) === String(card.noteId)
-              ? { ...n, content: nextContent, attachments: nextAttachmentsString, updated_at: new Date().toISOString() }
+              ? { ...n, content: nextContent, updated_at: new Date().toISOString() }
               : n
           )
         );
@@ -4961,38 +4948,21 @@ User: ${text}`;
       const nextAttachments = attachments.slice();
       nextAttachments[idx] = { ...target, notes: nextAttachmentNotes };
       const nextContent = withAttachmentJsonMarker(note.content || "", nextAttachments);
-      const nextAttachmentsString = JSON.stringify(nextAttachments);
 
-      let updateError = null;
-      ({ error: updateError } = await supabase
+      const { error: updateError } = await supabase
         .from("notes")
         .update({
           content: nextContent,
-          attachments: nextAttachmentsString,
           updated_at: new Date().toISOString(),
         })
         .eq("id", card.noteId)
-        .eq("user_id", user.id));
-
-      if (
-        updateError &&
-        (updateError.code === "PGRST204" || updateError.message?.toLowerCase().includes("does not exist"))
-      ) {
-        ({ error: updateError } = await supabase
-          .from("notes")
-          .update({
-            content: nextContent,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", card.noteId)
-          .eq("user_id", user.id));
-      }
+        .eq("user_id", user.id);
 
       if (!updateError) {
         setNotes((prev) =>
           prev.map((n) =>
             String(n?.id) === String(card.noteId)
-              ? { ...n, content: nextContent, attachments: nextAttachmentsString, updated_at: new Date().toISOString() }
+              ? { ...n, content: nextContent, updated_at: new Date().toISOString() }
               : n
           )
         );
