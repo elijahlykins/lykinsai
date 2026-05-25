@@ -160,14 +160,36 @@ export default function OAuthConnectDialog({ open, onOpenChange, connector }) {
         window.location.href = data.url;
         return;
       }
-      // Watchdog: if the popup closes without sending a message, stop the
-      // spinner. (User cancelled, browser killed it, etc.)
-      const watchdog = setInterval(() => {
-        if (popup.closed) {
-          clearInterval(watchdog);
-          setConnecting(false);
-        }
-      }, 500);
+      // Backstop for "user closed the popup without finishing OAuth".
+      // We deliberately do NOT poll popup.closed here: the opener has
+      // COOP same-origin-allow-popups (vercel.json), and once the popup
+      // navigates to the provider (Google, GitHub, …) every popup.closed
+      // read logs a "Cross-Origin-Opener-Policy policy would block the
+      // window.closed call" warning. At 500ms ticks that's tens of
+      // warnings per OAuth flow.
+      //
+      // Instead we check popup.closed exactly once, when focus returns
+      // to the opener — which happens both when the callback page closes
+      // itself (happy path) and when the user X-es the popup (cancel).
+      // On the happy path the postMessage listener above has already
+      // cleared `connecting` by the time focus fires, so this is a no-op.
+      const onFocus = () => {
+        // Tiny deferral so a racing postMessage wins and clears state
+        // before we touch popup.closed at all.
+        setTimeout(() => {
+          let closed = true;
+          try {
+            closed = popup.closed;
+          } catch {
+            closed = true;
+          }
+          if (closed) {
+            window.removeEventListener("focus", onFocus);
+            setConnecting(false);
+          }
+        }, 100);
+      };
+      window.addEventListener("focus", onFocus);
     } catch (err) {
       setConnecting(false);
       toast({

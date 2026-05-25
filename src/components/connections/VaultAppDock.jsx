@@ -235,17 +235,39 @@ export default function VaultAppDock({ user, orientation = "horizontal" }) {
           window.location.href = data.url;
           return;
         }
-        // Watchdog: if the popup closes without sending a message
+        // Backstop for "user closed the popup without finishing OAuth"
         // (cancelled, browser killed it, network error inside the
-        // callback page), clear the reconnecting state so the listener
-        // tears down. We don't toast here — silent failures shouldn't
-        // surface as toasts.
-        const watchdog = setInterval(() => {
-          if (popup.closed) {
-            clearInterval(watchdog);
-            setReconnectingProvider((p) => (p === tile.provider ? null : p));
-          }
-        }, 500);
+        // callback page). We don't toast here — silent failures
+        // shouldn't surface as toasts.
+        //
+        // We deliberately do NOT poll popup.closed: the opener has
+        // COOP same-origin-allow-popups (vercel.json), and once the
+        // popup navigates to the provider (Google, GitHub, …) every
+        // popup.closed read logs a "Cross-Origin-Opener-Policy policy
+        // would block the window.closed call" warning. At 500ms ticks
+        // that's tens of warnings per OAuth flow.
+        //
+        // Instead we check popup.closed exactly once, when focus
+        // returns to the opener — which happens both when the callback
+        // page closes itself (happy path) and when the user X-es the
+        // popup (cancel). On the happy path the postMessage listener
+        // below has already cleared `reconnectingProvider` by the time
+        // focus fires, so this is a no-op.
+        const onFocus = () => {
+          setTimeout(() => {
+            let closed = true;
+            try {
+              closed = popup.closed;
+            } catch {
+              closed = true;
+            }
+            if (closed) {
+              window.removeEventListener("focus", onFocus);
+              setReconnectingProvider((p) => (p === tile.provider ? null : p));
+            }
+          }, 100);
+        };
+        window.addEventListener("focus", onFocus);
       } catch (err) {
         setReconnectingProvider(null);
         toast({
