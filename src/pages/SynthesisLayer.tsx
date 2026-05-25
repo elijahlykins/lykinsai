@@ -5,6 +5,7 @@ import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { useUserPlan } from "@/lib/useUserPlan";
 import PlanGate from "@/components/PlanGate";
+import LoadingScreen from "@/components/LoadingScreen";
 import { PLAN_LIMITS } from "@/lib/pricing-config";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -2908,11 +2909,17 @@ const NEURON_TYPE_THEME = {
     // applies this belief in chat.
     description:
       "The principles you live by. The AI runs every reply through these before anything else. Capture the belief AND why you hold it, so the AI can explain itself when it leans on this.",
-    accent: "indigo",
-    accentHex: "#a5b4fc", // indigo-300
-    accentRing: "border-indigo-400/35",
-    accentChip: "bg-indigo-500/15 text-indigo-200 border-indigo-400/30",
-    accentGlow: "shadow-[0_0_60px_rgba(165,180,252,0.5)]",
+    // Beliefs render as the WHITE cluster in the 3D scene
+    // (palette.belief.bg = "#ffffff"). The build modal used to be
+    // tinted indigo, which read as purple and didn't match the 3D
+    // node colour anywhere else in the app. White accent here keeps
+    // the build experience consistent with the cluster the neuron
+    // is actually about to join.
+    accent: "white",
+    accentHex: "#ffffff",
+    accentRing: "border-white/30",
+    accentChip: "bg-white/10 text-white/95 border-white/25",
+    accentGlow: "shadow-[0_0_60px_rgba(255,255,255,0.45)]",
   },
   concept: {
     title: "Concept Neuron",
@@ -2935,11 +2942,17 @@ const NEURON_TYPE_THEME = {
     // pattern-matching generic advice.
     description:
       "A formative story or point of view the AI should know about you. Write the title and then tell the story — a project that changed how you work, a memory that explains how you see things. The AI uses these to ground its replies in your real life.",
-    accent: "violet",
-    accentHex: "#c4b5fd", // violet-300
-    accentRing: "border-violet-400/35",
-    accentChip: "bg-violet-500/15 text-violet-200 border-violet-400/30",
-    accentGlow: "shadow-[0_0_60px_rgba(196,181,253,0.5)]",
+    // Perspectives share the Belief cluster's WHITE treatment in the
+    // 3D scene after the 5-category collapse (see the
+    // "Perspectives now share the white Belief treatment" note
+    // elsewhere in this file), so the build modal matches —
+    // previously this was violet, which read as purple and was no
+    // longer reflected anywhere in the rendered graph.
+    accent: "white",
+    accentHex: "#ffffff",
+    accentRing: "border-white/30",
+    accentChip: "bg-white/10 text-white/95 border-white/25",
+    accentGlow: "shadow-[0_0_60px_rgba(255,255,255,0.45)]",
   },
   tag: {
     title: "Tag",
@@ -3758,7 +3771,7 @@ function NeuronFormingVisual({
 // arrival from the wake screen. Kept short so the typewriter beat doesn't
 // outrun the visitor's attention while the brain orbits in the background.
 const TOUR_WELCOME_TEXT =
-  "This is your synthesis layer, your digital brain.\n\nRight now you can see the eight neurons it grows from: Chats, Vault, Tags, Facts, Perspectives, AI Learned, Beliefs, and Concepts. Each one starts empty and fills as you use LYKN.\n\nYou can also build your own neurons to organize anything you want.";
+  "This is your synthesis layer, your digital brain.\n\nRight now you can see the five neurons it grows from: Chats, Vault, Facts, Beliefs, and Concepts. Each one starts empty and fills as you use LYKN.\n\nYou can also build your own neurons to organize anything you want.";
 
 export default function SynthesisLayer() {
   const { user, signInWithOAuth } = useAuth();
@@ -5719,6 +5732,10 @@ export default function SynthesisLayer() {
 
   // Wheel-on-canvas drives external zoom state. OrbitControls has its own
   // wheel-zoom disabled in the scene so this stays the source of truth.
+  // NOTE: depends on `allQueriesFetched` so the listener re-attaches once
+  // the LoadingScreen gate below clears and the canvas div actually
+  // enters the DOM — otherwise svgAreaRef.current is null on first mount
+  // for signed-in users and zoom is silently dead until refresh.
   useEffect(() => {
     const el = svgAreaRef.current;
     if (!el) return;
@@ -5733,7 +5750,20 @@ export default function SynthesisLayer() {
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
-  }, []);
+  }, [allQueriesFetched, user?.id]);
+
+  // Initial-load takeover for signed-in users. Until every core query
+  // (boards / notes / synthesis profile / chunks) has settled, we'd
+  // otherwise paint the "Your Synthesis Layer is empty" brain-icon
+  // placeholder for a beat while data is still in flight — which reads
+  // as a bug to users with non-empty workspaces. Show the same
+  // "Getting things ready…" typewriter screen the Vault uses so the
+  // transition between routes feels uniform. Guests / prototype mode
+  // skip this gate because they render seeded localStorage data
+  // without waiting on any of these queries.
+  if (user?.id && !allQueriesFetched) {
+    return <LoadingScreen isLoading={true} />;
+  }
 
   // Free-tier paywall takeover. Routed through PlanGate (with no children)
   // so we get the same paywall UI used everywhere else — Lock card, plan

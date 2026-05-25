@@ -116,9 +116,38 @@ import { mountOauthServer } from './oauth-server.js';
 import { MCP_TOOLS, MCP_TOOLS_BY_NAME } from './mcp-tools/index.js';
 import { CHAT_TOOLS, buildChatToolCtx, providerForModel, supportsTools } from './mcp-tools/chatTools.js';
 import { runAgentLoop } from './chat-agent-loop.js';
+import { z, validate, validateParams, setValidationFailureHook } from './validation.js';
+import {
+  sanitizeUserContent,
+  sanitizeTurnArray,
+  sanitizeUserContentWithCount,
+  sanitizeTurnArrayWithCount,
+} from './prompt-sanitizer.js';
+import { validateSecrets } from './validateSecrets.js';
+import {
+  SecurityEvent,
+  logSecurityEvent,
+  setSecurityLoggerSink,
+  buildRateLimitHandler,
+  tokenPrefix,
+} from './security-logger.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, '.env') });
+
+// SECURITY (Agent 05): startup secrets validation. Runs immediately after
+// dotenv.config so any missing / undersized / VITE_-leaked secret is
+// caught at boot time, not at first request. In NODE_ENV=production this
+// calls process.exit(1) on any fatal finding (Render's auto-restart loop
+// then surfaces the failure as a deployment-failed alert — preferable to
+// silently running with an undersized cron secret). In development it
+// prints warnings and continues so partial dev configs keep working.
+//
+// SECRET_RULES (the canonical inventory) lives in validateSecrets.js and
+// is also referenced by ROTATION_RUNBOOK.md. The per-call 8-char floor
+// in verifyBackfillSecret / verifyDiscoverIngestSecret /
+// verifyAdminIngestSecret is preserved as a defense-in-depth safety net.
+validateSecrets();
 
 // Debug: Check if API keys are loaded (without exposing the actual keys)
 console.log('🔑 Environment check:');
@@ -138,6 +167,95 @@ console.log('  STRIPE_SECRET_KEY:', process.env.STRIPE_SECRET_KEY ? '✅ Set' : 
 console.log('  STRIPE_WEBHOOK_SECRET:', process.env.STRIPE_WEBHOOK_SECRET ? '✅ Set' : '⚪ Not set (webhook signature check disabled)');
 
 const app = express();
+
+// ============================================
+// PERIMETER HARDENING (Agent 01)
+// ============================================
+// LYKN runs on Render (Node) behind their edge proxy, with the frontend
+// on Vercel. We don't operate a reverse proxy of our own, so the
+// security plumbing that would normally live in nginx/Caddy is set as
+// close to the public edge as we can manage — here, in app middleware.
+// See SECURITY_REPORT_01.md for the full plan + the open items we
+// could not close inside code (Cloudflare/WAF, Supabase IP allowlist).
+
+// Strip the default `X-Powered-By: Express` header so recon scans don't
+// trivially fingerprint the stack.
+app.disable('x-powered-by');
+
+// Render's edge proxy sits exactly one hop in front of us. Telling
+// Express to trust one hop makes req.ip / req.secure / req.protocol
+// reflect the real client IP and TLS state instead of the proxy's.
+// Downstream rate limiting, audit logging, and any future
+// conditional-on-HTTPS logic depend on this being correct.
+app.set('trust proxy', 1);
+
+// Routes that intentionally serve HTML and need looser COOP/CSP so the
+// connector OAuth-popup flow + the OAuth consent / error pages still
+// work. Everything else gets the strict defaults below.
+const HTML_OAUTH_PATH_RE = /^\/(oauth\/|\.well-known\/oauth)/;
+
+app.use((req, res, next) => {
+  // Two years, all subdomains. No `preload` — we don't commit to the
+  // irrevocable browser preload list until every lykn.io subdomain is
+  // confirmed HTTPS-only forever.
+  res.setHeader('Strict-Transport-Security', 'max-age=63072000; includeSubDomains');
+
+  // The API is never embedded in a frame; DENY is strictly safer than
+  // SAMEORIGIN, and `frame-ancestors 'none'` in the CSP below backs
+  // this up for browsers that ignore X-Frame-Options.
+  res.setHeader('X-Frame-Options', 'DENY');
+
+  // Stops browsers from MIME-sniffing a JSON response into HTML or JS,
+  // which would otherwise turn a JSON-injection bug into XSS.
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+
+  // Origin-only cross-site, full URL same-site.
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+
+  // The API server has no reason to advertise camera/mic/geo/etc.
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=()');
+
+  // Explicitly off. Modern browsers ignore it; old IE versions misuse
+  // it. "0" tells legacy clients not to engage the broken heuristic.
+  res.setHeader('X-XSS-Protection', '0');
+
+  // Prevents third-party origins from embedding our API responses as
+  // no-cors resources (`<script src="...">` etc.). API responses are
+  // JSON — there's no legitimate cross-origin resource-embedding case.
+  res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+
+  if (HTML_OAUTH_PATH_RE.test(req.path)) {
+    // OAuth callback HTML uses an inline <script> that calls
+    // window.opener.postMessage(...) plus an inline <style> block.
+    // Three relaxations so the popup→opener handoff still works:
+    //   - script-src/style-src 'unsafe-inline': the inline blocks
+    //     are static + server-generated; no user input is templated
+    //     into them. Threading nonces through one-shot HTML responses
+    //     is more complexity than the (~tiny) attack surface justifies.
+    //   - COOP 'unsafe-none': a 'same-origin' COOP on the popup
+    //     would sever window.opener between the popup
+    //     (lykn-ideation.onrender.com) and the frontend (lykn.io),
+    //     breaking every connector OAuth flow.
+    res.setHeader(
+      'Content-Security-Policy',
+      "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+    );
+    res.setHeader('Cross-Origin-Opener-Policy', 'unsafe-none');
+  } else {
+    // Everywhere else the response is JSON, text, or SSE — the strictest
+    // possible CSP is appropriate. Browsers don't render JSON as a
+    // document, but the header still helps audit tooling and catches
+    // any future HTML response that lands on a non-/oauth path.
+    res.setHeader(
+      'Content-Security-Policy',
+      "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+    );
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  }
+
+  next();
+});
+
 const PORT = 3001;
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
@@ -489,23 +607,33 @@ const STATIC_ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
       'https://www.lykn-ideation.onrender.com',
     ];
 
+// Vercel preview deployments LYKN actually owns. Locked to the exact
+// `lykn-ideation-<slug>-elijahlykins-projects.vercel.app` shape Vercel
+// emits for our project. We previously accepted every `*.vercel.app`
+// origin, which let any Vercel customer's deploy act as a CORS-trusted
+// caller against the API; this pattern matches our previews and nothing
+// else.
+const LYKN_VERCEL_PREVIEW_RE = /^lykn-ideation-[a-z0-9-]+-elijahlykins-projects\.vercel\.app$/;
+
+const IS_PROD = process.env.NODE_ENV === 'production';
+
 function isOriginAllowed(origin) {
   if (!origin) return false;
   if (STATIC_ALLOWED_ORIGINS.includes(origin)) return true;
   // Dev-only loopback escape hatch — picks up Vite's automatic port
   // bumping (5174, 5175, …) without needing to keep STATIC_ALLOWED_ORIGINS
-  // in sync. Origins must be exact protocol+host+port matches; we don't
-  // try to be clever about "localhost" vs "127.0.0.1".
-  if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
+  // in sync. Disabled in production: an attacker serving from
+  // http://localhost:9999 on a victim's machine should never be able
+  // to talk to the prod API through the user's browser.
+  if (!IS_PROD && (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:'))) {
     return true;
   }
-  // Vercel preview deployments. We require the origin to actually END in
-  // `.vercel.app` (not just contain it) to defeat the trivial
-  // `https://attacker.com/.vercel.app` or `https://evil.vercel.app.bad`
-  // bypasses the previous `.includes()` check would have allowed.
+  // Vercel preview deployments — only LYKN's own. See the
+  // LYKN_VERCEL_PREVIEW_RE comment above for why this is pinned and
+  // not a broad `endsWith('.vercel.app')` check.
   try {
     const url = new URL(origin);
-    if (url.protocol === 'https:' && url.hostname.endsWith('.vercel.app')) {
+    if (url.protocol === 'https:' && LYKN_VERCEL_PREVIEW_RE.test(url.hostname)) {
       return true;
     }
   } catch {
@@ -520,22 +648,26 @@ app.use((req, res, next) => {
   if (origin && isOriginAllowed(origin)) {
     res.header('Access-Control-Allow-Origin', origin);
     res.header('Vary', 'Origin');
+    // CORS response headers (methods, credentials, allowed request
+    // headers, exposed response headers) only mean anything when paired
+    // with a matching Access-Control-Allow-Origin. Sending them on
+    // rejected origins is at best noise; at worst it confuses scanners.
+    // Keep them strictly inside the allow branch.
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.header('Access-Control-Expose-Headers', 'X-Model-Downgraded, X-Plan, X-Feature-Stripped');
+    res.header('Access-Control-Allow-Credentials', 'true');
   } else if (origin) {
     // Disallowed cross-origin caller. We deliberately do NOT echo the
     // origin or fall back to `*` — the browser will block the response,
     // which is the correct outcome. We log once so legitimate domains
     // we forgot to allowlist surface during ops review.
-    if (process.env.NODE_ENV !== 'production') {
+    if (!IS_PROD) {
       console.warn(`🔒 CORS: blocked origin ${origin} on ${req.method} ${req.path}`);
     }
   }
   // No-origin requests (same-origin, curl, server-to-server) get no
   // CORS header — they don't need one and don't trigger preflight.
-
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  res.header('Access-Control-Expose-Headers', 'X-Model-Downgraded, X-Plan, X-Feature-Stripped');
-  res.header('Access-Control-Allow-Credentials', 'true');
 
   if (req.method === 'OPTIONS') {
     return res.status(204).end();
@@ -647,7 +779,18 @@ app.post(
   },
 );
 
-app.use(express.json({ limit: '5mb' }));
+// Global JSON body limit. Tightened from the legacy 5mb default to 1mb —
+// no route in the surface area legitimately needs more (the largest is
+// /api/ai/stream with a fully-loaded workspaceContext + conversation +
+// knowledgeBase, which sits in the low-hundred-KB range under the
+// AI_BUDGETS truncation; verified by reading the prompt builder). 1mb
+// keeps a comfortable headroom for that path while shrinking the
+// memory-exhaustion window for every other JSON-accepting route by 5x.
+// File-upload routes use multer (multipart) and are unaffected. The
+// Stripe webhook is mounted with express.raw above this line and is
+// unaffected. Per-route express.json({ limit: ... }) overrides win
+// where a route has different needs (see /api/client-error below).
+app.use(express.json({ limit: '1mb' }));
 
 // ============================================
 // CLIENT ERROR REPORTING
@@ -657,31 +800,145 @@ app.use(express.json({ limit: '5mb' }));
 // the Render service logs and can be tailed during incident triage. There's
 // no Sentry/PostHog wired up yet; this is the fallback for "everyone is
 // hitting an error and we can't see why".
-app.post('/api/client-error', (req, res) => {
-  try {
-    const b = req.body || {};
-    const ip = req.headers['x-forwarded-for'] || req.ip || '';
-    console.error(
-      '🔴 [client-error]',
-      JSON.stringify({
-        ts: b.timestamp || new Date().toISOString(),
-        url: b.url || '',
-        ua: b.userAgent || '',
-        viewport: b.viewport || null,
-        message: b.message || '',
-        name: b.name || '',
-        stack: b.stack || '',
-        componentStack: b.componentStack || '',
-        lsKeys: Array.isArray(b.lsKeys) ? b.lsKeys : [],
-        ip: String(ip).split(',')[0].trim(),
-      }),
-    );
-  } catch (err) {
-    console.error('🔴 [client-error] failed to log:', err);
+//
+// SECURITY (Agent 04):
+//   • This is the ONLY public unauthenticated JSON-accepting endpoint in
+//     the API. A 5MB / 1MB body parser default would let an unauthenticated
+//     attacker flood the log sink and exhaust storage. The per-route
+//     express.json({ limit: '10kb' }) below caps the body at 10kb — easily
+//     enough for any legitimate stack trace + componentStack from
+//     RouteErrorBoundary, but tight enough that abuse is bounded.
+//   • The Zod schema strips unknown fields and length-caps each known one
+//     so a misshapen or oversized field can't tail-pad the log lines.
+const clientErrorSchema = z.object({
+  message: z.string().max(2000).optional(),
+  name: z.string().max(200).optional(),
+  stack: z.string().max(10_000).optional(),
+  componentStack: z.string().max(10_000).optional(),
+  url: z.string().max(500).optional(),
+  userAgent: z.string().max(500).optional(),
+  timestamp: z.string().max(64).optional(),
+  viewport: z.object({
+    w: z.number().int().nonnegative().max(20_000),
+    h: z.number().int().nonnegative().max(20_000),
+  }).optional(),
+  lsKeys: z.array(z.string().max(200)).max(100).optional(),
+});
+
+app.post(
+  '/api/client-error',
+  express.json({ limit: '10kb' }),
+  validate(clientErrorSchema),
+  (req, res) => {
+    try {
+      const b = req.body || {};
+      const ip = req.headers['x-forwarded-for'] || req.ip || '';
+      console.error(
+        '🔴 [client-error]',
+        JSON.stringify({
+          ts: b.timestamp || new Date().toISOString(),
+          url: b.url || '',
+          ua: b.userAgent || '',
+          viewport: b.viewport || null,
+          message: b.message || '',
+          name: b.name || '',
+          stack: b.stack || '',
+          componentStack: b.componentStack || '',
+          lsKeys: Array.isArray(b.lsKeys) ? b.lsKeys : [],
+          ip: String(ip).split(',')[0].trim(),
+        }),
+      );
+    } catch (err) {
+      console.error('🔴 [client-error] failed to log:', err);
+    }
+    // Always 204 — never let the reporter become a source of additional
+    // client-side errors (CORS preflights for non-2xx, etc.).
+    res.status(204).end();
+  },
+);
+
+// ============================================
+// HEALTH CHECK (Agent 06)
+// ============================================
+// Public, unauthenticated, < 2s response — render.yaml declares
+// healthCheckPath: /api/health. Before this route existed, Render fell
+// back to TCP-port liveness, masking app-level failures (DB unreachable,
+// required env vars unset, etc.). Now Render gets real signal.
+//
+// Registered BEFORE requireAuth so it is reachable without a token.
+// Response NEVER includes: env values, version strings, hostname, memory,
+// dependency versions, internal paths, user counts, or PII.
+//
+// Returns 200 when healthy, 503 when degraded — Render uses this to
+// decide whether to route traffic to this instance. Replay-event count
+// is informational only (does NOT flip the health gate).
+//
+// CIA: Availability. Principle: LP (minimum info in response), SbD.
+app.get('/api/health', async (req, res) => {
+  const checks = {};
+  let healthy = true;
+
+  // 1. Supabase connectivity — lightweight ping with a hard 1.5s budget so
+  //    a slow/blocked DB never holds the response past Render's 2s ceiling.
+  if (!supabaseAdmin) {
+    checks.database = 'unconfigured';
+    healthy = false;
+  } else {
+    try {
+      const dbProbe = supabaseAdmin
+        .from('lykn_user_preferences')
+        .select('id', { head: true, count: 'exact' })
+        .limit(1);
+      const timeout = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('db_timeout')), 1500),
+      );
+      const result = await Promise.race([dbProbe, timeout]);
+      checks.database = result?.error ? 'degraded' : 'ok';
+      if (result?.error) healthy = false;
+    } catch {
+      checks.database = 'unreachable';
+      healthy = false;
+    }
   }
-  // Always 204 — never let the reporter become a source of additional
-  // client-side errors (CORS preflights for non-2xx, etc.).
-  res.status(204).end();
+
+  // 2. Required boot secrets still present at request time.
+  //    (validateSecrets ran at startup; this is a runtime re-check that
+  //    catches a hot-mutated env or a worker that lost env after fork.)
+  checks.secrets = process.env.SUPABASE_SERVICE_ROLE_KEY ? 'ok' : 'missing';
+  if (!process.env.SUPABASE_SERVICE_ROLE_KEY) healthy = false;
+
+  // 3. Uptime in seconds. Operational signal, not a health gate.
+  checks.uptime_seconds = Math.floor(process.uptime());
+
+  // 4. Recent oauth.replay_detected count (last 5 min). Informational —
+  //    NEVER flips healthy. Surfaces the number on the same response
+  //    Render polls so a query layer can graph it without standing up a
+  //    second metrics endpoint.
+  if (supabaseAdmin) {
+    try {
+      const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+      const probe = supabaseAdmin
+        .from('lykn_security_audit')
+        .select('id', { head: true, count: 'exact' })
+        .eq('event_type', SecurityEvent.OAUTH_REPLAY_DETECTED)
+        .gte('occurred_at', fiveMinAgo);
+      const timeout = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('replay_probe_timeout')), 500),
+      );
+      const r = await Promise.race([probe, timeout]);
+      checks.replay_events_5m = Number.isFinite(r?.count) ? r.count : 0;
+    } catch {
+      checks.replay_events_5m = 'unavailable';
+    }
+  } else {
+    checks.replay_events_5m = 'unavailable';
+  }
+
+  return res.status(healthy ? 200 : 503).json({
+    status: healthy ? 'ok' : 'degraded',
+    checks,
+    timestamp: new Date().toISOString(),
+  });
 });
 
 // ============================================
@@ -695,15 +952,91 @@ const supabaseAdmin = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
   ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false, autoRefreshToken: false } })
   : null;
 
+// Agent 06: wire the security-logger's audit-table sink. Until this call
+// lands, security-logger.js degrades to console.error-only — which is the
+// correct fallback (dropping a request because the audit table is down
+// would be worse than missing the audit row).
+setSecurityLoggerSink(supabaseAdmin);
+
+// Agent 06: wire the validation failure hook so every 400 from
+// validate() / validateQuery() / validateParams() emits a structured
+// VALIDATION_FAILURE event with field names only (never values).
+setValidationFailureHook(({ target, fields, req }) => {
+  logSecurityEvent(SecurityEvent.VALIDATION_FAILURE, {
+    target,            // 'body' | 'query' | 'params'
+    fields,            // string[]; never the user-submitted values
+  }, { req });
+});
+
+// Agent 06: helper for AI-route prompt sanitisation. The three /api/ai/*
+// endpoints each sanitise ~7 string fields plus the conversation array.
+// We want ONE INJECTION_STRIPPED event per request — not per pattern, not
+// per field. This helper bundles the count-tracking sanitisers, sums the
+// removed counts, and emits exactly once if any fragments were stripped.
+// The event payload contains the COUNT only — never the matched fragments
+// — so a log aggregator never receives injection payloads from real
+// attempts.
+//
+// Returns: { fields, turns, removed }
+//   fields  - object of sanitised string values keyed by input field name
+//   turns   - sanitised turn array (or whatever was passed in)
+//   removed - total fragment count across all inputs
+function sanitizePromptBundle({ req, fields = {}, turns = null, route = null }) {
+  let total = 0;
+  const out = {};
+  for (const [k, v] of Object.entries(fields)) {
+    const { content, removed } = sanitizeUserContentWithCount(v);
+    out[k] = content;
+    total += removed;
+  }
+  let outTurns = turns;
+  if (turns !== null && turns !== undefined) {
+    const { turns: t, removed } = sanitizeTurnArrayWithCount(turns);
+    outTurns = t;
+    total += removed;
+  }
+  if (total > 0) {
+    logSecurityEvent(SecurityEvent.INJECTION_STRIPPED, {
+      matchCount: total,
+      route: route || req?.path || null,
+      // Field-name presence (NOT values) — useful for spotting which
+      // input vector is being targeted (conversation history vs.
+      // workspace context vs. fresh prompt).
+      fieldsScanned: Object.keys(fields),
+      hadConversation: Array.isArray(turns),
+    }, { req });
+  }
+  return { fields: out, turns: outTurns, removed: total };
+}
+
 async function requireAuth(req, res, next) {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     console.warn('🔒 requireAuth: missing/invalid Authorization header on', req.method, req.path);
+    // Agent 06: structured event for missing-bearer path. Fire-and-forget.
+    logSecurityEvent(SecurityEvent.AUTH_MISSING_TOKEN, {}, { req });
     return res.status(401).json({ error: 'Missing or invalid Authorization header' });
   }
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-    console.warn('🔒 requireAuth: SUPABASE_URL / SUPABASE_ANON_KEY not set — skipping auth (dev fallback)');
-    return next(); // skip auth check if Supabase not configured (dev fallback)
+    // Fail-closed in production: a misconfigured deploy (env var lost
+    // during a Render redeploy, secret rotation that didn't fan out)
+    // should refuse traffic, not silently bypass auth on every route.
+    // Local dev keeps the bypass so you can hack on routes without a
+    // Supabase project wired up — but with a louder log so it's clear
+    // why requests are sailing through.
+    if (process.env.NODE_ENV === 'production') {
+      console.error('🔒 requireAuth: SUPABASE_URL / SUPABASE_ANON_KEY missing in production — refusing request');
+      // Agent 06: this is a CRITICAL alert candidate — Agent 02's M2
+      // fail-closed branch should never fire in steady state. Wiring an
+      // event here means a misconfigured production deploy pages the
+      // on-call as soon as the next request lands.
+      logSecurityEvent(SecurityEvent.AUTH_CONFIG_MISSING, {
+        missing: ['SUPABASE_URL', 'SUPABASE_ANON_KEY'].filter((k) => !process.env[k === 'SUPABASE_URL' ? 'VITE_SUPABASE_URL' : 'VITE_SUPABASE_ANON_KEY']),
+      }, { req });
+      return res.status(503).json({ error: 'Authentication service not configured' });
+    }
+    console.warn('🔒 requireAuth: SUPABASE_URL / SUPABASE_ANON_KEY missing — allowing request (DEV FALLBACK ONLY)');
+    return next();
   }
   try {
     const token = authHeader.slice(7);
@@ -713,6 +1046,13 @@ async function requireAuth(req, res, next) {
     if (!resp.ok) {
       const bodyPreview = await resp.text().catch(() => '');
       console.warn('🔒 requireAuth: Supabase rejected token', { status: resp.status, path: req.path, body: bodyPreview.slice(0, 300) });
+      // Agent 06: distinguish 401 (invalid/expired) from missing-token
+      // so alert rules can fire on credential-stuffing patterns
+      // separately from "client forgot the header".
+      logSecurityEvent(SecurityEvent.AUTH_FAILURE, {
+        reason: resp.status === 401 ? 'invalid_or_expired_token' : `supabase_${resp.status}`,
+        tokenPrefix: tokenPrefix(token),
+      }, { req });
       return res.status(401).json({ error: 'Invalid or expired token' });
     }
     const user = await resp.json();
@@ -720,6 +1060,10 @@ async function requireAuth(req, res, next) {
     next();
   } catch (err) {
     console.error('🔒 requireAuth: fetch to Supabase threw', { name: err?.name, message: err?.message, cause: err?.cause?.code || err?.cause?.message, path: req.path });
+    logSecurityEvent(SecurityEvent.AUTH_FAILURE, {
+      reason: 'supabase_fetch_threw',
+      errName: err?.name || null,
+    }, { req });
     return res.status(401).json({ error: 'Auth verification failed' });
   }
 }
@@ -2700,11 +3044,65 @@ const globalLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many requests, slow down' },
+  // Agent 06: emit RATE_LIMIT_HIT on every per-key window exhaustion.
+  // Preserves the original 429 + JSON body.
+  handler: buildRateLimitHandler(SecurityEvent.RATE_LIMIT_HIT, 'globalLimiter'),
 });
 
 const userOrIpKey = (req) => req.user?.id || req.ip;
 
 const rlValidateOff = { keyGeneratorIpFallback: false };
+
+// ─── OAuth provider tier (Agent 04) ──────────────────────────────────────
+//
+// `authLimiter` covers the credential-equivalent OAuth endpoints:
+//   POST /oauth/token        — code+verifier + refresh-token grants
+//   POST /oauth/register     — Dynamic Client Registration (RFC 7591)
+//   GET  /oauth/authorize    — consent screen entry
+//   POST /oauth/authorize/decide  — covered by /oauth/authorize prefix
+//
+// All four are reachable to the public internet (DCR is intentionally
+// unauthenticated; /token + /authorize are public per OAuth spec). Without
+// rate limiting, /token is brute-forceable for refresh tokens / PKCE
+// verifiers and /register is a registration-flood vector. Agent 02
+// explicitly handed this off — /oauth/register has its own in-memory
+// per-IP cap (MAX_REGISTRATIONS_PER_IP_PER_HOUR=30 in oauth-server.js)
+// which we keep as DiD; this is the middleware-layer ceiling.
+//
+// Keyed on req.ip — Agent 01's `app.set('trust proxy', 1)` makes that
+// truthful behind Render's edge.
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.ip,
+  validate: rlValidateOff,
+  message: { error: 'Too many authentication attempts. Try again later.' },
+  // Agent 06: RATE_LIMIT_AUTH is the dedicated high-severity event for
+  // OAuth credential-mint brute-force signals.
+  handler: buildRateLimitHandler(SecurityEvent.RATE_LIMIT_AUTH, 'authLimiter'),
+});
+
+// `oauthReadLimiter` covers the sensitive-but-not-credential-mint OAuth
+// endpoints: /oauth/userinfo (token-authenticated), /oauth/revoke, and
+// /oauth/introspect (confidential-client-authenticated). Looser than
+// authLimiter because legitimate clients call userinfo every session and
+// revoke at logout; tighter than the general 120/min globalLimiter
+// because /api/* doesn't actually cover /oauth/*.
+const oauthReadLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.ip,
+  validate: rlValidateOff,
+  message: { error: 'Too many requests. Please slow down.' },
+  // Agent 06: still RATE_LIMIT_AUTH — /oauth/revoke, /oauth/introspect,
+  // /oauth/userinfo are all credential-adjacent and belong on the same
+  // alerting bucket as authLimiter.
+  handler: buildRateLimitHandler(SecurityEvent.RATE_LIMIT_AUTH, 'oauthReadLimiter'),
+});
 
 const aiLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -2714,8 +3112,12 @@ const aiLimiter = rateLimit({
   keyGenerator: userOrIpKey,
   validate: rlValidateOff,
   message: { error: 'AI rate limit exceeded — try again in a minute' },
+  handler: buildRateLimitHandler(SecurityEvent.RATE_LIMIT_HIT, 'aiLimiter'),
 });
 
+// generationLimiter is currently unmounted (Agent 04 noted it as dead
+// code — INFO 3). Keeping the handler wiring anyway so a future mount
+// will surface events without remembering to retrofit.
 const generationLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 10,
@@ -2724,6 +3126,7 @@ const generationLimiter = rateLimit({
   keyGenerator: userOrIpKey,
   validate: rlValidateOff,
   message: { error: 'Generation rate limit exceeded — try again in a minute' },
+  handler: buildRateLimitHandler(SecurityEvent.RATE_LIMIT_HIT, 'generationLimiter'),
 });
 
 const describeLimiter = rateLimit({
@@ -2734,6 +3137,7 @@ const describeLimiter = rateLimit({
   keyGenerator: userOrIpKey,
   validate: rlValidateOff,
   message: { error: 'Describe rate limit exceeded — try again in a minute' },
+  handler: buildRateLimitHandler(SecurityEvent.RATE_LIMIT_HIT, 'describeLimiter'),
 });
 
 const synthesisLimiter = rateLimit({
@@ -2744,6 +3148,7 @@ const synthesisLimiter = rateLimit({
   keyGenerator: userOrIpKey,
   validate: rlValidateOff,
   message: { error: 'Synthesis reindex rate limit — try again shortly' },
+  handler: buildRateLimitHandler(SecurityEvent.RATE_LIMIT_HIT, 'synthesisLimiter'),
 });
 
 // Guest (unauthenticated) AI limiter — keyed strictly by IP.
@@ -2759,6 +3164,7 @@ const guestAiLimiter = rateLimit({
   keyGenerator: (req) => req.ip,
   validate: rlValidateOff,
   message: { error: 'Guest rate limit — sign in for higher limits' },
+  handler: buildRateLimitHandler(SecurityEvent.RATE_LIMIT_HIT, 'guestAiLimiter'),
 });
 
 const guestAiHourlyLimiter = rateLimit({
@@ -2769,6 +3175,7 @@ const guestAiHourlyLimiter = rateLimit({
   keyGenerator: (req) => req.ip,
   validate: rlValidateOff,
   message: { error: 'Guest hourly limit reached — sign in to keep chatting' },
+  handler: buildRateLimitHandler(SecurityEvent.RATE_LIMIT_HIT, 'guestAiHourlyLimiter'),
 });
 
 const guestAiDailyLimiter = rateLimit({
@@ -2779,6 +3186,7 @@ const guestAiDailyLimiter = rateLimit({
   keyGenerator: (req) => req.ip,
   validate: rlValidateOff,
   message: { error: 'Daily guest limit reached — sign in to keep chatting' },
+  handler: buildRateLimitHandler(SecurityEvent.RATE_LIMIT_HIT, 'guestAiDailyLimiter'),
 });
 
 // Server-wide guest ceiling. In-memory rolling hour counter to act as
@@ -2814,6 +3222,7 @@ const profileRefreshLimiter = rateLimit({
   keyGenerator: userOrIpKey,
   validate: rlValidateOff,
   message: { error: 'Profile refresh rate limit — try again later' },
+  handler: buildRateLimitHandler(SecurityEvent.RATE_LIMIT_HIT, 'profileRefreshLimiter'),
 });
 
 // MCP / REST mirror traffic — keyed by the MCP token id when present, else
@@ -2829,6 +3238,7 @@ const mcpMinuteLimiter = rateLimit({
   keyGenerator: mcpKey,
   validate: rlValidateOff,
   message: { error: 'MCP rate limit — slow down (60/min per token)' },
+  handler: buildRateLimitHandler(SecurityEvent.RATE_LIMIT_HIT, 'mcpMinuteLimiter'),
 });
 const mcpDailyLimiter = rateLimit({
   windowMs: 24 * 60 * 60 * 1000,
@@ -2838,6 +3248,7 @@ const mcpDailyLimiter = rateLimit({
   keyGenerator: mcpKey,
   validate: rlValidateOff,
   message: { error: 'MCP daily quota reached — re-issue the token tomorrow' },
+  handler: buildRateLimitHandler(SecurityEvent.RATE_LIMIT_HIT, 'mcpDailyLimiter'),
 });
 
 app.use('/api/', globalLimiter);
@@ -4147,7 +4558,17 @@ app.post('/api/ai/stream-guest', guestAiGlobalLimiter, guestAiLimiter, guestAiHo
   }
 
   const rawPrompt = typeof req.body?.prompt === 'string' ? req.body.prompt : '';
-  const prompt = rawPrompt.trim().slice(0, GUEST_MAX_PROMPT_CHARS);
+  // SECURITY (Agent 04): strip tool-call & system-prompt-injection syntax
+  // from user-supplied content BEFORE it enters the prompt-builder / model
+  // call chain. The output stripper in chat-agent-loop.js handles model
+  // echoes; this is the input-side defense.
+  // SECURITY (Agent 06): with-count variant lets us emit ONE
+  // INJECTION_STRIPPED event per request with the aggregate match count
+  // across the prompt + history. No event when count is zero.
+  let _injectionStripCount = 0;
+  const _promptStrip = sanitizeUserContentWithCount(rawPrompt.trim().slice(0, GUEST_MAX_PROMPT_CHARS));
+  const prompt = _promptStrip.content;
+  _injectionStripCount += _promptStrip.removed;
   if (!prompt) {
     return res.status(400).json({ error: 'Prompt is required' });
   }
@@ -4166,15 +4587,33 @@ app.post('/api/ai/stream-guest', guestAiGlobalLimiter, guestAiLimiter, guestAiHo
     : GUEST_SYSTEM_PROMPT;
 
   // Lightly sanitized conversation history — role + content only.
+  // SECURITY (Agent 04): sanitize the content of EVERY prior turn, not
+  // just the latest one. A previous turn that contains injection syntax
+  // is reintroduced to the model on every hop of the loop.
   const rawHistory = Array.isArray(req.body?.history) ? req.body.history : [];
   const history = rawHistory
     .filter((m) => m && typeof m === 'object' && typeof m.content === 'string')
-    .map((m) => ({
-      role: m.role === 'assistant' || m.role === 'model' ? 'model' : 'user',
-      content: String(m.content || '').trim().slice(0, 2000),
-    }))
+    .map((m) => {
+      const _r = sanitizeUserContentWithCount(String(m.content || '').trim().slice(0, 2000));
+      _injectionStripCount += _r.removed;
+      return {
+        role: m.role === 'assistant' || m.role === 'model' ? 'model' : 'user',
+        content: _r.content,
+      };
+    })
     .filter((m) => m.content)
     .slice(-GUEST_MAX_HISTORY_TURNS);
+
+  // Agent 06: emit ONE INJECTION_STRIPPED event per request when any
+  // fragments were stripped across prompt + history.
+  if (_injectionStripCount > 0) {
+    logSecurityEvent(SecurityEvent.INJECTION_STRIPPED, {
+      matchCount: _injectionStripCount,
+      route: '/api/ai/stream-guest',
+      fieldsScanned: ['prompt'],
+      hadConversation: rawHistory.length > 0,
+    }, { req });
+  }
 
   let historyChars = 0;
   const trimmedHistory = [];
@@ -4205,6 +4644,14 @@ app.post('/api/ai/stream-guest', guestAiGlobalLimiter, guestAiLimiter, guestAiHo
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
   if (typeof res.flushHeaders === 'function') res.flushHeaders();
+
+  // SECURITY (Agent 04): drop stuck guest streams after 2 minutes. Without
+  // this, a guest client that opens an SSE connection and never closes it
+  // pins the socket indefinitely — a low-cost DoS vector against the free
+  // demo (especially because guests don't authenticate so there's no
+  // per-user limit besides the 4 IP-based limiters above). 120s is well
+  // beyond any legitimate guest-tier model latency.
+  try { req.setTimeout?.(120_000, () => { try { res.end(); } catch { /* socket already closed */ } }); } catch { /* req.setTimeout missing on some test transports */ }
 
   // Guest usage tracking: stable per-browser-per-day id (no PII stored — just
   // a hash of IP + UA + date so multiple guest calls roll up sensibly).
@@ -4683,6 +5130,12 @@ app.post('/api/ai/stream-guest', guestAiGlobalLimiter, guestAiLimiter, guestAiHo
 // Budget constants — mirrors src/lib/ai/promptBuilder.ts CONTEXT_BUDGETS
 const AI_BUDGETS = { canvasTotal: 14000, projectSummary: 2000, projectSummaryInProject: 4000, workspaceContext: 28000, conversation: 8000, userPrompt: 3000, mediaContext: 8000 };
 
+// SECURITY (Agent 04): hard ceiling on combined user-controlled string input
+// to /api/ai/stream and /api/ai/invoke. Used after sanitizeUserContent runs
+// over text/prompt/userPrompt. 200K chars ≈ 50K tokens, above any model's
+// usable context window — exceeding this is an abuse signal.
+const MAX_USER_INPUT_CHARS = 200_000;
+
 // Conversation compressor — mirrors compressConversation() in src/lib/ai/promptBuilder.ts
 //
 // Tier 3 cost cut: more aggressive trimming for long histories.
@@ -4824,7 +5277,7 @@ app.get('/api/synthesis/profile/status', requireAuth, async (req, res) => {
       .select('intake_completed_at, narrative')
       .eq('user_id', userId)
       .maybeSingle();
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) { console.error('[supabase]', req.method, req.path, error); return res.status(500).json({ error: 'database_error' }); }
     const intake_completed_at = data?.intake_completed_at
       ? new Date(data.intake_completed_at).toISOString()
       : null;
@@ -5524,7 +5977,7 @@ app.get('/api/synthesis/profile/revisions', requireAuth, async (req, res) => {
       .eq('user_id', userId)
       .order('created_at', { ascending: false })
       .limit(limit);
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) { console.error('[supabase]', req.method, req.path, error); return res.status(500).json({ error: 'database_error' }); }
     return res.json({ ok: true, revisions: data || [] });
   } catch (e) {
     console.error('❌ /api/synthesis/profile/revisions:', e?.message || e);
@@ -6267,7 +6720,23 @@ async function runRestTool(toolName, req, res) {
     console.error(`[rest:${toolName}] handler threw:`, msg);
     isError = true;
     errMessage = msg;
-    payload = { ok: false, error: msg };
+    // SECURITY (Agent 04): never echo the raw handler-exception message
+    // back to the (potentially external) MCP client. The full string is
+    // preserved in the console log above for diagnostics. The wire payload
+    // returns a stable error code instead of leaking schema names, RLS
+    // denial reasons, or PostgREST internals.
+    payload = { ok: false, error: 'tool_handler_failed' };
+    // Agent 06: ADDITIVE structured emit alongside the existing
+    // console.error. Tool name is safe to log (it's the public API name);
+    // err.message is forwarded into the log line ONLY, never into the
+    // wire payload (which still returns the stable 'tool_handler_failed'
+    // code above). This makes "handler errors clustered on tool X" a
+    // queryable signal without changing the client-facing response.
+    logSecurityEvent(SecurityEvent.TOOL_HANDLER_FAILED, {
+      toolName,
+      errName: err?.name || null,
+      errMessage: msg?.slice(0, 500),
+    }, { userId: ctx?.userId || null, req });
   }
   const latencyMs = Date.now() - startedAt;
 
@@ -6366,8 +6835,8 @@ app.get('/api/v1/concepts', requireAuth, async (req, res) => {
     if (!client) return res.status(503).json({ error: 'Database not configured' });
     const { data, error } = await client.rpc('concepts_overview');
     if (error) {
-      console.error('concepts overview:', error);
-      return res.status(400).json({ error: error.message });
+      console.error('[supabase] GET /api/v1/concepts overview', error);
+      return res.status(500).json({ error: 'database_error' });
     }
     return res.json({ concepts: data || [] });
   } catch (e) {
@@ -6388,8 +6857,8 @@ app.get('/api/v1/concepts/:id/links', requireAuth, async (req, res) => {
     if (!client) return res.status(503).json({ error: 'Database not configured' });
     const { data, error } = await client.rpc('concept_links', { p_concept_id: conceptId });
     if (error) {
-      console.error('concept_links:', error);
-      return res.status(400).json({ error: error.message });
+      console.error('[supabase] GET /api/v1/concepts/:id/links', error);
+      return res.status(500).json({ error: 'database_error' });
     }
     return res.json({ links: data || [] });
   } catch (e) {
@@ -6576,8 +7045,8 @@ app.post('/api/v1/concepts/:id/merge', requireAuth, async (req, res) => {
       into_id: intoId,
     });
     if (error) {
-      console.error('merge_concepts:', error);
-      return res.status(400).json({ error: error.message });
+      console.error('[supabase] POST /api/v1/concepts/:id/merge', error);
+      return res.status(500).json({ error: 'database_error' });
     }
     return res.json({ merged_rows: data });
   } catch (e) {
@@ -6631,8 +7100,8 @@ app.post('/api/v1/concepts/:id/link', requireAuth, async (req, res) => {
         ignoreDuplicates: false,
       });
     if (error) {
-      console.error(`upsert ${table}:`, error);
-      return res.status(400).json({ error: error.message });
+      console.error(`[supabase] POST /api/v1/concepts/:id/link upsert ${table}`, error);
+      return res.status(500).json({ error: 'database_error' });
     }
     return res.json({ ok: true });
   } catch (e) {
@@ -6696,6 +7165,28 @@ app.get('/.well-known/mcp.json', (req, res) => {
 // table as PATs (extended in migration 050 with oauth_client_id +
 // oauth_consent_id + expires_at), so /mcp's existing middleware
 // validates them with no changes required.
+//
+// SECURITY (Agent 04):
+//   The application's globalLimiter is mounted on '/api/' only, so /oauth/*
+//   has no rate limiting unless we attach it explicitly here. Mount the
+//   OAuth-tier limiters BEFORE mountOauthServer so they run before the
+//   route handlers it registers. Agent 01's `app.set('trust proxy', 1)`
+//   makes req.ip truthful for the keyGenerators.
+//
+//   IMPORTANT — `app.use('/oauth/authorize', authLimiter)` deliberately
+//   covers BOTH `GET /oauth/authorize` AND `POST /oauth/authorize/decide`
+//   via Express's prefix-match semantics on `app.use`. The `decide`
+//   sub-route handles the SPA's approve/deny POST and is part of the
+//   same credential-flow surface, so it earns the same Tier-1 limit.
+//   Do NOT change to `app.post(...)` or restructure to a more specific
+//   path without re-asserting decide stays covered.
+app.use('/oauth/token', authLimiter);
+app.use('/oauth/register', authLimiter);
+app.use('/oauth/authorize', authLimiter); // also covers /oauth/authorize/decide via prefix match
+app.use('/oauth/userinfo', oauthReadLimiter);
+app.use('/oauth/revoke', oauthReadLimiter);
+app.use('/oauth/introspect', oauthReadLimiter);
+
 mountOauthServer(app, {
   supabaseAdmin,
   // /oauth/authorize/decide is JWT-authenticated (the SPA calls it with
@@ -6719,6 +7210,14 @@ mountOauthServer(app, {
     process.env.FRONTEND_BASE_URL ||
     process.env.FRONTEND_URL ||
     'http://localhost:5173',
+  // Agent 06: wire the structured security logger into the OAuth provider
+  // so the RFC 6749 §10.4 refresh-token replay branch emits an audit row
+  // (in addition to revoking the token family). Dependency-injected via
+  // this options object rather than a direct import to avoid an
+  // oauth-server.js → server.js cycle. mountOauthServer treats a missing
+  // hook as a no-op (verified in oauth-server.js), so tests / standalone
+  // scripts don't need to wire anything.
+  logSecurityEvent,
 });
 
 // ============================================
@@ -6738,6 +7237,7 @@ const discoverLimiter = rateLimit({
   keyGenerator: userOrIpKey,
   validate: rlValidateOff,
   message: { error: 'Discover rate limit — try again shortly' },
+  handler: buildRateLimitHandler(SecurityEvent.RATE_LIMIT_HIT, 'discoverLimiter'),
 });
 
 // Cache 60 min by default — we only use API quota on cache miss. Call ?force=1
@@ -8917,7 +9417,7 @@ app.post('/api/ai/invoke', requireAuth, aiLimiter, checkAiUsageLimit, async (req
       imageUrlPrefixes: incomingImageUrls.map(u => String(u || '').slice(0, 60)),
     });
     
-    const { intent, text, returnActions, context, knowledgeBase, projectId, conversation, conversationMemory, imageUrls: rawImageUrls, responseLength, hasFocusedBricks, skipWebSearch, workspaceContext } = req.body;
+    let { intent, text, returnActions, context, knowledgeBase, projectId, conversation, conversationMemory, imageUrls: rawImageUrls, responseLength, hasFocusedBricks, skipWebSearch, workspaceContext } = req.body;
     let { userPrompt } = req.body;
     let model = normalizedModel;
     const imageUrls = (Array.isArray(rawImageUrls) ? rawImageUrls : [])
@@ -8925,6 +9425,49 @@ app.post('/api/ai/invoke', requireAuth, aiLimiter, checkAiUsageLimit, async (req
       .filter((u) => u.startsWith('http') || u.startsWith('data:image/'))
       .slice(0, 10);
     let { prompt } = req.body;
+
+    // SECURITY (Agent 04): strip tool-call & system-prompt injection syntax
+    // from EVERY user-controlled string before it enters the prompt builder
+    // and the model call chain. Applied to:
+    //   • top-level free-form fields (text, prompt, userPrompt)
+    //   • each conversation[i].content (a prior turn full of injection
+    //     syntax is just as risky as a fresh message)
+    //   • workspaceContext / knowledgeBase / context (server-assembled but
+    //     contain user-typed vault/project text — defense in depth against
+    //     vault-roundtrip injection)
+    // The output stripper in chat-agent-loop.js already runs over model
+    // text deltas; this is the input-side mirror.
+    // SECURITY (Agent 06): sanitizePromptBundle uses the with-count
+    // variants and emits ONE structured INJECTION_STRIPPED event per
+    // request when fragments are stripped (NEVER the matched text — only
+    // the aggregate count + which fields were scanned).
+    {
+      const _bundle = sanitizePromptBundle({
+        req,
+        fields: { text, prompt, userPrompt, context, knowledgeBase, workspaceContext, conversationMemory },
+        turns: conversation,
+        route: '/api/ai/invoke',
+      });
+      text              = _bundle.fields.text;
+      prompt            = _bundle.fields.prompt;
+      userPrompt        = _bundle.fields.userPrompt;
+      context           = _bundle.fields.context;
+      knowledgeBase     = _bundle.fields.knowledgeBase;
+      workspaceContext  = _bundle.fields.workspaceContext;
+      conversationMemory = _bundle.fields.conversationMemory;
+      conversation      = _bundle.turns;
+    }
+
+    // SECURITY (Agent 04): hard ceiling on combined user-controlled input.
+    // Defense-in-depth on top of the 1MB express.json() limit and the
+    // existing AI_BUDGETS per-section truncation. 200K chars is generous
+    // (≈ 50K tokens, comfortably above any model's working context window
+    // we route to today) — anything larger is an abuse signal, not a
+    // legitimate request.
+    const _userInputLen = (text?.length || 0) + (prompt?.length || 0) + (userPrompt?.length || 0);
+    if (_userInputLen > MAX_USER_INPUT_CHARS) {
+      return res.status(400).json({ error: 'prompt_too_large' });
+    }
 
     // Enforce plan tier: silently downgrade locked models instead of erroring.
     const invokePlan = await resolveUserPlan(req.user?.id, req.user?.email);
@@ -10478,6 +11021,43 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
     if (!prompt && text) prompt = `Answer the user's question clearly.\nQuestion:\n${text}\n`;
     if (!prompt) return res.status(400).json({ error: 'Missing prompt' });
 
+    // SECURITY (Agent 04): strip tool-call & system-prompt injection syntax
+    // from EVERY user-controlled string before it enters the prompt builder
+    // and the agent loop. Applied to:
+    //   • top-level fields (text, prompt, userPrompt)
+    //   • each conversation[i].content (a prior turn full of injection
+    //     syntax is just as risky as a fresh message — the agent loop sees
+    //     it on every hop)
+    //   • workspaceContext / knowledgeBase / context / conversationMemory
+    //     (server-assembled but contain user-typed vault/project text;
+    //     defense in depth against vault-roundtrip injection)
+    // SECURITY (Agent 06): bundled into one helper that emits one
+    // INJECTION_STRIPPED event per request when fragments are stripped.
+    {
+      const _bundle = sanitizePromptBundle({
+        req,
+        fields: { text, prompt, userPrompt, context, knowledgeBase, workspaceContext, conversationMemory },
+        turns: conversation,
+        route: '/api/ai/stream',
+      });
+      text              = _bundle.fields.text;
+      prompt            = _bundle.fields.prompt;
+      userPrompt        = _bundle.fields.userPrompt;
+      context           = _bundle.fields.context;
+      knowledgeBase     = _bundle.fields.knowledgeBase;
+      workspaceContext  = _bundle.fields.workspaceContext;
+      conversationMemory = _bundle.fields.conversationMemory;
+      conversation      = _bundle.turns;
+    }
+
+    // SECURITY (Agent 04): hard ceiling on combined user-controlled input.
+    // Defense-in-depth on top of the 1MB express.json() limit and the
+    // existing AI_BUDGETS per-section truncation downstream.
+    const _userInputLen = (text?.length || 0) + (prompt?.length || 0) + (userPrompt?.length || 0);
+    if (_userInputLen > MAX_USER_INPUT_CHARS) {
+      return res.status(400).json({ error: 'prompt_too_large' });
+    }
+
     // Enforce the caller's plan tier. If they request a model their plan
     // doesn't cover, downgrade to the best model they can use and surface an
     // `X-Model-Downgraded` header so the client can nudge them to upgrade.
@@ -10529,6 +11109,13 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
     });
     res.flushHeaders();
     if (req.socket) req.socket.setNoDelay(true);
+    // SECURITY (Agent 04): drop stuck streams after 3 minutes. Without this,
+    // a client that opens an SSE connection and never closes it pins the
+    // socket indefinitely — slow connection-table exhaustion is a DoS
+    // vector that aiLimiter (per-user) doesn't catch (one user, many
+    // hung connections under the 30/min ceiling). 180s is well beyond
+    // any legitimate model latency we route to today.
+    try { req.setTimeout?.(180_000, () => { try { res.end(); } catch { /* socket already closed */ } }); } catch { /* req.setTimeout missing on some test transports */ }
     try {
       res.write(`data: ${JSON.stringify({ status: 'Thinking\u2026' })}\n\n`);
       if (typeof res.flush === 'function') res.flush();
@@ -13019,8 +13606,8 @@ app.get('/api/unfurl', requireAuth, async (req, res) => {
 
     res.json({ url: finalUrl, title, description, image, favicon, siteName, articleText, ...(socialPlatformTag ? { oembedType: socialPlatformTag } : {}) });
   } catch (err) {
-    console.error('❌ Unfurl error:', err.message);
-    res.status(500).json({ error: `Failed to unfurl URL: ${err.message}` });
+    console.error('❌ Unfurl error:', err);
+    res.status(500).json({ error: 'unfurl_failed' });
   }
 });
 
@@ -13252,19 +13839,29 @@ app.post('/api/files/search', requireAuth, async (req, res) => {
 const FEEDBACK_EMAIL = 'admin@lykn.io';
 const resendClient = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
-app.post('/api/feedback', requireAuth, async (req, res) => {
+// SECURITY (Agent 04):
+//   • Strict Zod schema with unknown-field stripping.
+//   • The user_id and user_email fields are NO LONGER taken from req.body.
+//     They're sourced from the verified JWT (req.user) — a previous
+//     implementation accepted both from the body, which let an
+//     authenticated user spoof another user's id on the feedback row
+//     (confused-deputy via mass assignment).
+const feedbackSchema = z.object({
+  type: z.enum(['bug', 'suggestion', 'other']),
+  subject: z.string().max(500).optional(),
+  body: z.string().min(1).max(20_000),
+});
+
+app.post('/api/feedback', requireAuth, validate(feedbackSchema), async (req, res) => {
   try {
-    const { type, subject, body, userEmail, userId } = req.body;
-    if (!body || !type) {
-      return res.status(400).json({ error: 'Missing required fields' });
-    }
+    const { type, subject, body } = req.body;
 
     const feedbackRow = {
       type,
       subject: subject || (type === 'bug' ? 'Bug Report' : 'Suggestion'),
       body,
-      user_email: userEmail || 'anonymous',
-      user_id: userId || null,
+      user_email: req.user?.email || 'anonymous',
+      user_id: req.user?.id || null,
       created_at: new Date().toISOString(),
     };
 
@@ -13628,6 +14225,86 @@ app.get('/api/admin/usage/mcp', requireAuth, requireAdmin, async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// SECURITY AUDIT QUERY (Agent 06)
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/admin/security/audit
+//
+// Surfaces the lykn_security_audit table (Agent 03's append-only audit log
+// + Agent 06's application-layer event sink) to an admin operator. Used
+// to investigate incidents per INCIDENT_RUNBOOK.md.
+//
+// Query params (all optional):
+//   ?event_type=oauth.replay_detected   exact event_type filter
+//   ?since=2024-01-01T00:00:00Z         ISO timestamp; defaults to -24h
+//   ?limit=100                          max 500; default 100
+//   ?user_id=<uuid>                     filter by owning user
+//   ?client_id=<opaque>                 filter by OAuth client
+//
+// Service-role-only: the audit table has RLS on with ZERO policies, so
+// supabaseAdmin (service-role client) is the ONLY way to read it.
+// Combined with requireAuth + requireAdmin (allowlisted admin emails),
+// this is least-privilege at three layers.
+//
+// CIA: Integrity (events queryable for forensics).
+// Principle: LP (admin only), KISS (one endpoint, no UI).
+app.get('/api/admin/security/audit', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    if (!supabaseAdmin) return res.status(503).json({ error: 'service_role_not_configured' });
+
+    const rawLimit = parseInt(String(req.query.limit ?? '100'), 10);
+    const limit = Math.min(Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : 100, 500);
+
+    // Default window: last 24 hours.
+    let since;
+    if (req.query.since) {
+      const parsed = new Date(String(req.query.since));
+      since = Number.isFinite(parsed.getTime())
+        ? parsed.toISOString()
+        : new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    } else {
+      since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    }
+
+    let query = supabaseAdmin
+      .from('lykn_security_audit')
+      .select('*')
+      .gte('occurred_at', since)
+      .order('occurred_at', { ascending: false })
+      .limit(limit);
+
+    const eventType = req.query.event_type ? String(req.query.event_type) : null;
+    if (eventType) query = query.eq('event_type', eventType);
+
+    const userIdFilter = req.query.user_id ? String(req.query.user_id) : null;
+    if (userIdFilter) query = query.eq('user_id', userIdFilter);
+
+    const clientIdFilter = req.query.client_id ? String(req.query.client_id) : null;
+    if (clientIdFilter) query = query.eq('client_id', clientIdFilter);
+
+    const { data, error } = await query;
+    if (error) {
+      console.error('[supabase] /api/admin/security/audit', error);
+      return res.status(500).json({ error: 'audit_query_failed' });
+    }
+
+    return res.json({
+      events: data || [],
+      count: (data || []).length,
+      since,
+      limit,
+      filters: {
+        event_type: eventType,
+        user_id: userIdFilter,
+        client_id: clientIdFilter,
+      },
+    });
+  } catch (e) {
+    console.error('❌ /api/admin/security/audit:', e?.message || e);
+    return res.status(500).json({ error: 'audit_query_failed' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 // ============================================
 // STRIPE BILLING — customer + checkout + portal + webhook handler
@@ -13954,11 +14631,19 @@ app.get('/api/billing/me', requireAuth, async (req, res) => {
 });
 
 // ── /api/billing/checkout (subscription) ────────────────────────────────────
-app.post('/api/billing/checkout', requireAuth, async (req, res) => {
+// SECURITY (Agent 04): Zod-narrow planId + period to the declared sets BEFORE
+// the handler runs. PLAN_IDS / BILLING_PERIODS are still consulted below as
+// DiD; the schema is the perimeter check.
+const billingCheckoutSchema = z.object({
+  planId: z.string().min(1).max(64),
+  period: z.string().min(1).max(64),
+});
+
+app.post('/api/billing/checkout', requireAuth, validate(billingCheckoutSchema), async (req, res) => {
   try {
     if (!stripeConfigured()) return res.status(503).json({ error: 'Stripe not configured' });
     const user = req.user;
-    const { planId, period } = req.body || {};
+    const { planId, period } = req.body;
     if (!PLAN_IDS.has(planId)) return res.status(400).json({ error: 'invalid_plan' });
     if (!BILLING_PERIODS.has(period)) return res.status(400).json({ error: 'invalid_period' });
 
@@ -13990,7 +14675,7 @@ app.post('/api/billing/checkout', requireAuth, async (req, res) => {
     return res.json({ url: session.url });
   } catch (err) {
     console.error('❌ /api/billing/checkout error:', err);
-    return res.status(500).json({ error: 'checkout_failed', message: err.message });
+    return res.status(500).json({ error: 'checkout_failed' });
   }
 });
 
@@ -14010,7 +14695,7 @@ app.post('/api/billing/portal', requireAuth, async (req, res) => {
     return res.json({ url: portal.url });
   } catch (err) {
     console.error('❌ /api/billing/portal error:', err);
-    return res.status(500).json({ error: 'portal_failed', message: err.message });
+    return res.status(500).json({ error: 'portal_failed' });
   }
 });
 
@@ -14047,22 +14732,26 @@ app.get('/api/billing/waitlist', requireAuth, async (req, res) => {
   }
 });
 
-app.post('/api/billing/waitlist', requireAuth, async (req, res) => {
+// SECURITY (Agent 04): Zod schema length-caps both fields and strips unknown
+// keys (so a misshapen body can't smuggle metadata or user_id past).
+const waitlistSchema = z.object({
+  email: z.string().email().max(320).optional(),
+  note: z.string().max(WAITLIST_NOTE_MAX).optional(),
+});
+
+app.post('/api/billing/waitlist', requireAuth, validate(waitlistSchema), async (req, res) => {
   try {
     if (!supabaseAdmin) return res.status(503).json({ error: 'db_not_configured' });
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: 'Not authenticated' });
 
-    const body = req.body && typeof req.body === 'object' ? req.body : {};
-    const rawEmail = typeof body.email === 'string' ? body.email.trim() : '';
+    const rawEmail = typeof req.body.email === 'string' ? req.body.email.trim() : '';
     // Fall back to the auth email if the client didn't send one.
     const email = (rawEmail || req.user?.email || '').trim().toLowerCase();
     if (!email || !email.includes('@') || email.length > 320) {
       return res.status(400).json({ error: 'invalid_email' });
     }
-    const note = typeof body.note === 'string'
-      ? body.note.trim().slice(0, WAITLIST_NOTE_MAX)
-      : null;
+    const note = typeof req.body.note === 'string' ? req.body.note.trim() : null;
 
     const metadata = {
       ua: String(req.headers['user-agent'] || '').slice(0, 500),
@@ -14115,7 +14804,7 @@ app.post('/api/feeds/discover', requireAuth, async (req, res) => {
     const result = await discoverFeed(url);
     return res.json(result);
   } catch (err) {
-    return res.status(400).json({ error: err.message || 'Could not discover feed' });
+    return res.status(400).json({ error: 'Could not discover feed' });
   }
 });
 
@@ -14135,7 +14824,7 @@ app.get('/api/feeds', requireAuth, async (req, res) => {
       .eq('user_id', userId)
       .order('created_at', { ascending: false });
 
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) { console.error('[supabase]', req.method, req.path, error); return res.status(500).json({ error: 'database_error' }); }
 
     // Annotate each feed with a count of items saved so far.
     const ids = (data || []).map((f) => f.id);
@@ -14160,20 +14849,24 @@ app.get('/api/feeds', requireAuth, async (req, res) => {
       feeds: (data || []).map((f) => ({ ...f, items_saved: counts[f.id] || 0 })),
     });
   } catch (err) {
-    return res.status(500).json({ error: err.message || 'Failed to list feeds' });
+    return res.status(500).json({ error: 'Failed to list feeds' });
   }
 });
 
-app.post('/api/feeds', requireAuth, async (req, res) => {
+// SECURITY (Agent 04): Zod schema strips unknown fields and enforces types
+// before any Supabase call. Replaces the prior hand-rolled if/typeof checks.
+const createFeedSchema = z.object({
+  url: z.string().min(1).max(2048),
+  initialBackfillCount: z.number().int().min(0).max(50).optional(),
+});
+
+app.post('/api/feeds', requireAuth, validate(createFeedSchema), async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: 'Not authenticated' });
     if (!supabaseAdmin) return res.status(503).json({ error: 'Database unavailable' });
 
-    const { url, initialBackfillCount } = req.body || {};
-    if (!url || typeof url !== 'string') {
-      return res.status(400).json({ error: 'Missing url' });
-    }
+    const { url, initialBackfillCount } = req.body;
     if (!isUrlSafe(url)) {
       return res.status(400).json({ error: 'URL not allowed' });
     }
@@ -14207,7 +14900,8 @@ app.post('/api/feeds', requireAuth, async (req, res) => {
       if (error.code === '23505') {
         return res.status(409).json({ error: 'Already subscribed to this feed' });
       }
-      return res.status(500).json({ error: error.message });
+      console.error('[supabase] POST /api/feeds insert', error);
+      return res.status(500).json({ error: 'database_error' });
     }
 
     // Kick off the first poll right away so the user sees immediate value.
@@ -14218,11 +14912,21 @@ app.post('/api/feeds', requireAuth, async (req, res) => {
 
     return res.json({ feed, preview: discovery.recentEntries });
   } catch (err) {
-    return res.status(400).json({ error: err.message || 'Could not add feed' });
+    return res.status(400).json({ error: 'Could not add feed' });
   }
 });
 
-app.patch('/api/feeds/:id', requireAuth, async (req, res) => {
+// SECURITY (Agent 04): Zod schema strips unknown fields and clamps the
+// poll-interval to its declared range before any DB call.
+const patchFeedSchema = z.object({
+  status: z.enum(['active', 'paused']).optional(),
+  poll_interval_minutes: z.number().int().min(5).max(1440).optional(),
+}).refine(
+  (v) => v.status !== undefined || v.poll_interval_minutes !== undefined,
+  { message: 'Nothing to update' },
+);
+
+app.patch('/api/feeds/:id', requireAuth, validate(patchFeedSchema), async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: 'Not authenticated' });
@@ -14230,14 +14934,9 @@ app.patch('/api/feeds/:id', requireAuth, async (req, res) => {
 
     const { id } = req.params;
     const allowed = {};
-    if (typeof req.body?.status === 'string' && ['active', 'paused'].includes(req.body.status)) {
-      allowed.status = req.body.status;
-    }
-    if (Number.isFinite(req.body?.poll_interval_minutes)) {
-      allowed.poll_interval_minutes = Math.max(5, Math.min(1440, Number(req.body.poll_interval_minutes)));
-    }
-    if (!Object.keys(allowed).length) {
-      return res.status(400).json({ error: 'Nothing to update' });
+    if (req.body.status !== undefined) allowed.status = req.body.status;
+    if (req.body.poll_interval_minutes !== undefined) {
+      allowed.poll_interval_minutes = req.body.poll_interval_minutes;
     }
 
     const { data, error } = await supabaseAdmin
@@ -14248,11 +14947,11 @@ app.patch('/api/feeds/:id', requireAuth, async (req, res) => {
       .select('*')
       .single();
 
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) { console.error('[supabase]', req.method, req.path, error); return res.status(500).json({ error: 'database_error' }); }
     if (!data) return res.status(404).json({ error: 'Feed not found' });
     return res.json({ feed: data });
   } catch (err) {
-    return res.status(500).json({ error: err.message || 'Update failed' });
+    return res.status(500).json({ error: 'Update failed' });
   }
 });
 
@@ -14269,10 +14968,10 @@ app.delete('/api/feeds/:id', requireAuth, async (req, res) => {
       .eq('id', id)
       .eq('user_id', userId);
 
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) { console.error('[supabase]', req.method, req.path, error); return res.status(500).json({ error: 'database_error' }); }
     return res.json({ ok: true });
   } catch (err) {
-    return res.status(500).json({ error: err.message || 'Delete failed' });
+    return res.status(500).json({ error: 'Delete failed' });
   }
 });
 
@@ -14295,18 +14994,39 @@ app.post('/api/feeds/:id/refresh', requireAuth, async (req, res) => {
     const result = await fetchAndSaveNewEntries({ supabaseAdmin, feed });
     return res.json(result);
   } catch (err) {
-    return res.status(500).json({ error: err.message || 'Refresh failed' });
+    return res.status(500).json({ error: 'Refresh failed' });
   }
 });
+
+// Admin / cron endpoint shared-secret verification. Mirrors the shape of
+// verifyBackfillSecret / verifyDiscoverIngestSecret — same Bearer header
+// extraction, same `crypto.timingSafeEqual` constant-time compare. Plain
+// `===` / `!==` on a long-lived cron secret leaks one byte at a time on a
+// network with measurable jitter; timingSafeEqual closes that side channel.
+// Falls back from ADMIN_INGEST_SECRET → DISCOVER_INGEST_SECRET so the same
+// cron config keeps working across deploys that haven't been migrated to
+// the dedicated env var yet.
+function verifyAdminIngestSecret(req) {
+  const expected = process.env.ADMIN_INGEST_SECRET || process.env.DISCOVER_INGEST_SECRET;
+  if (!expected || String(expected).length < 8) return false;
+  const auth = req.headers.authorization || '';
+  const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+  if (!token) return false;
+  try {
+    const a = Buffer.from(token, 'utf8');
+    const b = Buffer.from(String(expected), 'utf8');
+    if (a.length !== b.length) return false;
+    return crypto.timingSafeEqual(a, b);
+  } catch {
+    return false;
+  }
+}
 
 // Admin / cron endpoint: poll every feed that's currently due. Protected by
 // the same shared secret used by /api/discover/ingest.
 app.post('/api/feeds/poll-due', async (req, res) => {
   try {
-    const auth = req.headers.authorization || '';
-    const provided = auth.startsWith('Bearer ') ? auth.slice(7) : '';
-    const expected = process.env.ADMIN_INGEST_SECRET || process.env.DISCOVER_INGEST_SECRET;
-    if (!expected || provided !== expected) {
+    if (!verifyAdminIngestSecret(req)) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
     if (!supabaseAdmin) return res.status(503).json({ error: 'Database unavailable' });
@@ -14315,7 +15035,7 @@ app.post('/api/feeds/poll-due', async (req, res) => {
     const result = await pollDueFeeds({ supabaseAdmin, limit });
     return res.json(result);
   } catch (err) {
-    return res.status(500).json({ error: err.message || 'Poll failed' });
+    return res.status(500).json({ error: 'Poll failed' });
   }
 });
 
@@ -14328,10 +15048,7 @@ app.post('/api/feeds/poll-due', async (req, res) => {
 // fallback path for environments where the in-process poller is disabled.
 app.post('/api/connections/poll-due', async (req, res) => {
   try {
-    const auth = req.headers.authorization || '';
-    const provided = auth.startsWith('Bearer ') ? auth.slice(7) : '';
-    const expected = process.env.ADMIN_INGEST_SECRET || process.env.DISCOVER_INGEST_SECRET;
-    if (!expected || provided !== expected) {
+    if (!verifyAdminIngestSecret(req)) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
     if (!supabaseAdmin) return res.status(503).json({ error: 'Database unavailable' });
@@ -14340,7 +15057,7 @@ app.post('/api/connections/poll-due', async (req, res) => {
     const result = await pollDueConnections({ supabaseAdmin, limit });
     return res.json(result);
   } catch (err) {
-    return res.status(500).json({ error: err.message || 'Poll failed' });
+    return res.status(500).json({ error: 'Poll failed' });
   }
 });
 
@@ -14447,7 +15164,7 @@ app.post('/api/connections/:provider/start', requireAuth, async (req, res) => {
 
     return res.json({ url });
   } catch (err) {
-    return res.status(500).json({ error: err.message || 'OAuth start failed' });
+    return res.status(500).json({ error: 'OAuth start failed' });
   }
 });
 
@@ -14458,6 +15175,24 @@ app.post('/api/connections/:provider/start', requireAuth, async (req, res) => {
 app.get('/oauth/callback/:provider', async (req, res) => {
   const { provider } = req.params;
   const { code, state, error: oauthError, error_description } = req.query || {};
+
+  // Pin the postMessage target origin to the trusted frontend. Any other
+  // origin that opens this popup (a malicious page that calls
+  // window.open('https://lykn-ideation.onrender.com/oauth/callback/x'))
+  // would otherwise still receive the {type:'lykn:oauth', provider, ok}
+  // notification — no secrets in the payload, but a confirmation signal
+  // an attacker can use to fingerprint connected providers. Falling back
+  // to '*' on a malformed CONNECTOR_FRONTEND_BASE keeps the popup flow
+  // working in misconfigured environments rather than silently breaking
+  // every connector OAuth — better to ship the message broadly than to
+  // strand the user on a stuck popup.
+  let trustedOrigin = '*';
+  try {
+    trustedOrigin = new URL(CONNECTOR_FRONTEND_BASE).origin;
+  } catch {
+    console.warn(`[connectors] CONNECTOR_FRONTEND_BASE is not a valid URL ("${CONNECTOR_FRONTEND_BASE}") — postMessage origin falling back to "*"`);
+  }
+  const targetOriginLiteral = JSON.stringify(trustedOrigin);
 
   const finishHtml = (title, body, ok = true) =>
     `<!doctype html><html><head><meta charset="utf-8"/><title>${title}</title>
@@ -14476,7 +15211,7 @@ app.get('/oauth/callback/:provider', async (req, res) => {
 (function(){
   try {
     if (window.opener) {
-      window.opener.postMessage(${JSON.stringify({ type: 'lykn:oauth', provider, ok })}, '*');
+      window.opener.postMessage(${JSON.stringify({ type: 'lykn:oauth', provider, ok })}, ${targetOriginLiteral});
     }
   } catch (e) {}
   setTimeout(function(){ try { window.close(); } catch(e){} }, ${ok ? 600 : 2500});
@@ -14581,7 +15316,7 @@ app.get('/api/connections/:provider/connect-info', requireAuth, async (req, res)
     const info = await adapter.connectInfo({ env: process.env });
     return res.json(info || {});
   } catch (err) {
-    return res.status(500).json({ error: err.message || 'connect-info failed' });
+    return res.status(500).json({ error: 'connect-info failed' });
   }
 });
 
@@ -14590,7 +15325,38 @@ app.get('/api/connections/:provider/connect-info', requireAuth, async (req, res)
 // token (or handle + app password). The frontend POSTs the field values
 // here; the adapter validates them, returns a connection-ready object, and
 // we persist it through the same saveConnection path the OAuth flow uses.
-app.post('/api/connections/:provider/connect-token', requireAuth, async (req, res) => {
+//
+// SECURITY (Agent 04):
+//   • req.params.provider is validated against the CONNECTOR_REGISTRY key
+//     allowlist BEFORE the handler runs. The previous code allowed any
+//     string into the registry lookup; while a non-key returns 404, the
+//     allowlist forces the rejection at the perimeter (one less surface
+//     for path-traversal-style abuse if a future adapter dispatcher adds
+//     filesystem or shell behavior to the lookup path).
+//   • The body is loosely typed — different adapters accept different
+//     credential shapes (Bluesky wants handle+appPassword, Readwise wants
+//     a token, etc.) — but the value-coercion happens inside each adapter.
+//     We cap the JSON body at 4kb here as DiD against an oversized paste.
+const connectorProviderParamSchema = z.object({
+  provider: z.enum(Object.keys(CONNECTOR_REGISTRY)),
+});
+// Field shape varies by adapter — accept a flat object of strings and
+// length-cap each value. Unknown adapter-specific keys are intentionally
+// allowed (different adapters consume different field names) but each
+// value is capped to 4096 chars (a realistic ceiling for any pasted
+// token / app-password / instance URL combo we'd ever see).
+const connectorTokenBodySchema = z.record(
+  z.string().max(4096),
+).refine((v) => Object.keys(v).length <= 16, {
+  message: 'Too many fields',
+});
+
+app.post(
+  '/api/connections/:provider/connect-token',
+  requireAuth,
+  validateParams(connectorProviderParamSchema),
+  validate(connectorTokenBodySchema),
+  async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: 'Not authenticated' });
@@ -14598,12 +15364,13 @@ app.post('/api/connections/:provider/connect-token', requireAuth, async (req, re
 
     const { provider } = req.params;
     const adapter = CONNECTOR_REGISTRY[provider];
-    if (!adapter) return res.status(404).json({ error: `Unknown provider "${provider}"` });
+    // adapter is guaranteed non-null by validateParams above, but keep the
+    // mode check — it's adapter-shape, not provider-existence.
     if (adapter.authMode !== 'token' || typeof adapter.connectWithToken !== 'function') {
       return res.status(400).json({ error: `${provider} does not support token-paste connection.` });
     }
 
-    const fields = (req.body && typeof req.body === 'object') ? req.body : {};
+    const fields = req.body;
     const exchanged = await adapter.connectWithToken({ fields });
     if (!exchanged?.accessToken) {
       return res.status(400).json({ error: 'Adapter did not return a credential.' });
@@ -14638,9 +15405,10 @@ app.post('/api/connections/:provider/connect-token', requireAuth, async (req, re
 
     return res.json({ connection });
   } catch (err) {
-    return res.status(400).json({ error: err.message || 'Connect failed' });
+    return res.status(400).json({ error: 'Connect failed' });
   }
-});
+  },
+);
 
 // ── List user's connections ─────────────────────────────────────────────────
 app.get('/api/connections', requireAuth, async (req, res) => {
@@ -14661,7 +15429,7 @@ app.get('/api/connections', requireAuth, async (req, res) => {
       .eq('user_id', userId)
       .order('created_at', { ascending: false });
 
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) { console.error('[supabase]', req.method, req.path, error); return res.status(500).json({ error: 'database_error' }); }
 
     // Annotate with provider configuration so the UI can show "set up
     // pending" for providers without env vars.
@@ -14672,7 +15440,7 @@ app.get('/api/connections', requireAuth, async (req, res) => {
 
     return res.json({ connections: data || [], providerConfig });
   } catch (err) {
-    return res.status(500).json({ error: err.message || 'Failed to list connections' });
+    return res.status(500).json({ error: 'Failed to list connections' });
   }
 });
 
@@ -14695,12 +15463,22 @@ app.post('/api/connections/:id/sync', requireAuth, async (req, res) => {
     const result = await runSync({ supabaseAdmin, connection });
     return res.json(result);
   } catch (err) {
-    return res.status(500).json({ error: err.message || 'Sync failed' });
+    return res.status(500).json({ error: 'Sync failed' });
   }
 });
 
 // ── Update (pause / resume) ─────────────────────────────────────────────────
-app.patch('/api/connections/:id', requireAuth, async (req, res) => {
+// SECURITY (Agent 04): Zod schema with unknown-field stripping. Same
+// shape pattern as /api/feeds/:id PATCH for consistency.
+const patchConnectionSchema = z.object({
+  status: z.enum(['active', 'paused']).optional(),
+  sync_interval_minutes: z.number().int().min(5).max(1440).optional(),
+}).refine(
+  (v) => v.status !== undefined || v.sync_interval_minutes !== undefined,
+  { message: 'Nothing to update' },
+);
+
+app.patch('/api/connections/:id', requireAuth, validate(patchConnectionSchema), async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: 'Not authenticated' });
@@ -14708,13 +15486,10 @@ app.patch('/api/connections/:id', requireAuth, async (req, res) => {
 
     const { id } = req.params;
     const allowed = {};
-    if (typeof req.body?.status === 'string' && ['active', 'paused'].includes(req.body.status)) {
-      allowed.status = req.body.status;
+    if (req.body.status !== undefined) allowed.status = req.body.status;
+    if (req.body.sync_interval_minutes !== undefined) {
+      allowed.sync_interval_minutes = req.body.sync_interval_minutes;
     }
-    if (Number.isFinite(req.body?.sync_interval_minutes)) {
-      allowed.sync_interval_minutes = Math.max(5, Math.min(1440, Number(req.body.sync_interval_minutes)));
-    }
-    if (!Object.keys(allowed).length) return res.status(400).json({ error: 'Nothing to update' });
 
     const { data, error } = await supabaseAdmin
       .from('social_connections')
@@ -14727,14 +15502,14 @@ app.patch('/api/connections/:id', requireAuth, async (req, res) => {
         'total_synced_count, sync_interval_minutes, created_at',
       )
       .single();
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) { console.error('[supabase]', req.method, req.path, error); return res.status(500).json({ error: 'database_error' }); }
     if (!data) return res.status(404).json({ error: 'Connection not found' });
     // Status flips between active/paused change whether the tool
     // shows the "[paused]" tag in [CONNECTED_TOOLS]. Drop the cache.
     invalidateConnectedToolsCache(userId);
     return res.json({ connection: data });
   } catch (err) {
-    return res.status(500).json({ error: err.message || 'Update failed' });
+    return res.status(500).json({ error: 'Update failed' });
   }
 });
 
@@ -14754,18 +15529,115 @@ app.delete('/api/connections/:id', requireAuth, async (req, res) => {
       .delete()
       .eq('id', id)
       .eq('user_id', userId);
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) { console.error('[supabase]', req.method, req.path, error); return res.status(500).json({ error: 'database_error' }); }
     // Tool removed — drop the cache so the chat AI stops suggesting it.
     invalidateConnectedToolsCache(userId);
     return res.json({ ok: true });
   } catch (err) {
-    return res.status(500).json({ error: err.message || 'Delete failed' });
+    return res.status(500).json({ error: 'Delete failed' });
   }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-const HOST = process.env.HOST || '0.0.0.0';
+// ============================================
+// GLOBAL ERROR HANDLER (Agent 04)
+// ============================================
+// MUST be the LAST middleware registered. Express only routes errors to
+// 4-arg `(err, req, res, next)` middleware that comes AFTER every route in
+// the registration order — anything past this point that registers a new
+// route would silently bypass error handling for that route.
+//
+// THIS HANDLER MUST STAY BELOW:
+//   • Every app.<method>(...) call in this file (the last is the
+//     `app.delete('/api/connections/:id', ...)` block above this comment.
+//     Agent 06 added `app.get('/api/health', ...)` near the top + the
+//     `app.get('/api/admin/security/audit', ...)` endpoint earlier in
+//     the admin section — both registered BEFORE this handler).
+//   • mountOauthServer(app, ...) at the top of the file (it registers all
+//     /oauth/* routes synchronously when called).
+//   • The /mcp + /api/v1/synthesis/* mounts (also above).
+//   • Every app.use(...) middleware mount.
+//
+// And MUST stay ABOVE app.listen(...) — handlers added inside the
+// app.listen callback would still come after this in registration order
+// (the callback only registers cron pollers, no routes — verified).
+//
+// DO NOT add new routes below this point. If a future change needs a new
+// route, register it ABOVE this block.
+//
+// CIA: Confidentiality (no stack/internal leakage in prod). Principle: SbD, LP.
+app.use((err, req, res, next) => {
+  // SSE / streamed responses may already have written headers and partial
+  // body bytes by the time something throws. We can't change the status
+  // code at that point — the only safe move is to forward to Express's
+  // default close-the-socket behavior.
+  if (res.headersSent) return next(err);
+
+  // body-parser oversized-payload errors get a stable, recognisable code.
+  const isPayloadTooLarge =
+    err?.type === 'entity.too.large' || err?.status === 413 || err?.statusCode === 413;
+  const status = isPayloadTooLarge
+    ? 413
+    : Number.isInteger(err?.statusCode) ? err.statusCode
+    : Number.isInteger(err?.status) ? err.status
+    : 500;
+
+  // Always log full diagnostic context server-side. (Agent 04's original
+  // structured-log line. Kept verbatim for backwards compatibility with any
+  // log-aggregation rule that already parses '[ERROR]' lines.)
+  console.error('[ERROR]', {
+    path: req.path,
+    method: req.method,
+    userId: req.user?.id,
+    status,
+    message: err?.message,
+    stack: err?.stack,
+  });
+
+  // Agent 06: ADDITIVE structured security event. The console.error above
+  // is the dev-friendly form; this is the queryable form for the audit
+  // table + Render log drain. NEVER includes err.stack (always too noisy
+  // to ship to a SIEM) and never includes err.message in production
+  // payloads (may contain DB schema names, file paths, library internals).
+  const isClientError = status >= 400 && status < 500;
+  logSecurityEvent(SecurityEvent.UNHANDLED_ERROR, {
+    statusCode: status,
+    errorCode: err?.code || null,
+    errName: err?.name || null,
+    // Message is safe in dev only; matches the prod-vs-dev split below.
+    errMessage: process.env.NODE_ENV === 'production' ? null : (err?.message?.slice(0, 500) || null),
+    isClientError,
+  }, { req });
+
+  if (process.env.NODE_ENV === 'production') {
+    // In production: a stable error code only. Never leak err.message or
+    // err.stack to the wire — they may contain DB schema names, file
+    // paths, or library internals.
+    const code = isPayloadTooLarge ? 'payload_too_large'
+      : status >= 500 ? 'internal_error'
+      : status === 401 ? 'unauthorized'
+      : status === 403 ? 'forbidden'
+      : status === 404 ? 'not_found'
+      : 'request_failed';
+    return res.status(status).json({ error: code });
+  }
+
+  // In development: include err.message (helpful for the dev console)
+  // but still no stack — even in dev, stack frames in HTTP responses are
+  // a habit best avoided.
+  return res.status(status).json({
+    error: err?.message || 'request_failed',
+    code: isPayloadTooLarge ? 'payload_too_large' : undefined,
+  });
+});
+
+// In production (Render), HOST must default to 0.0.0.0 so the platform's
+// edge proxy can reach the container. In local dev, bind to loopback
+// only — keeps the dev server (which holds dev secrets and an unauthed
+// admin stub) off every device on the same WiFi. Override with
+// HOST=0.0.0.0 if you actually need to hit dev from another device.
+const HOST = process.env.HOST || (IS_PROD ? '0.0.0.0' : '127.0.0.1');
 const frontendUrl = process.env.FRONTEND_URL || 'https://lykn.io';
 
 export { app, enrichVaultNoteSummary };

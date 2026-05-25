@@ -1,4 +1,4 @@
-#env
+# env
 .env
 .env.*
 !.env.example
@@ -26,6 +26,11 @@ body.json
 resp.json
 serper_news_sample.json
 
+# YouTube player scrape artifacts (Agent 05) — these are 2.4MB external
+# JS scrapes that polluted secret-pattern grep audits with false positives.
+# Pattern matches the 13-digit YouTube video timestamp + "-player-script.js".
+*-player-script.js
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -37,5 +42,6 @@ serper_news_sample.json
 *.sln
 *.sw?
 
-.env
-
+# npm audit scratch
+npm-audit-report.json
+gitleaks-report.json

@@ -140,6 +140,11 @@ export default function SettingsModal({ isOpen, onClose }) {
   const [displayName, setDisplayName] = useState(initialDisplayName);
   const [displayNameStatus, setDisplayNameStatus] = useState('idle');
 
+  // ---- Account: sign-out-everywhere busy state ----
+  // Separate from `handleLogout` so a double-click can't dispatch two
+  // global revocations in flight. Busy stays true until onClose runs.
+  const [signOutEverywhereBusy, setSignOutEverywhereBusy] = useState(false);
+
   useEffect(() => {
     setDisplayName(initialDisplayName);
   }, [initialDisplayName]);
@@ -306,6 +311,25 @@ export default function SettingsModal({ isOpen, onClose }) {
     }
   };
 
+  const handleSignOutEverywhere = async () => {
+    if (signOutEverywhereBusy) return;
+    // Native confirm is intentional here — this revokes every refresh
+    // token on the account across every device, and we want the user
+    // to read the consequence before it fires.
+    const ok = window.confirm(
+      'Sign out of every browser and device signed into this account?\n\n' +
+      'You will need to sign in again everywhere. Use this if you suspect ' +
+      'someone else has access to your account.',
+    );
+    if (!ok) return;
+    setSignOutEverywhereBusy(true);
+    try {
+      await signOut({ everywhere: true });
+    } finally {
+      onClose();
+    }
+  };
+
   if (loading) {
     return (
       <Dialog open={isOpen} onOpenChange={onClose}>
@@ -387,6 +411,27 @@ export default function SettingsModal({ isOpen, onClose }) {
                 )}
               </Button>
             </div>
+          </div>
+
+          <div className="pt-4 mt-4 border-t border-black/[0.06] dark:border-white/[0.06] space-y-2">
+            <Label className="text-xs text-gray-600 dark:text-gray-400">Security</Label>
+            <Button
+              type="button"
+              onClick={handleSignOutEverywhere}
+              disabled={signOutEverywhereBusy}
+              variant="outline"
+              className="w-full border-red-300 dark:border-red-900/60 text-red-600 dark:text-red-400 hover:bg-red-500/[0.06] dark:hover:bg-red-500/[0.08] hover:text-red-700 dark:hover:text-red-300 flex items-center justify-center gap-2 disabled:opacity-50"
+            >
+              {signOutEverywhereBusy ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <LogOut className="w-4 h-4" />
+              )}
+              {signOutEverywhereBusy ? 'Signing out everywhere…' : 'Sign out of all devices'}
+            </Button>
+            <p className="text-[11px] text-gray-500 dark:text-gray-500 leading-snug">
+              Revokes every active session on your account. Use this if you suspect someone else has access.
+            </p>
           </div>
 
         </div>

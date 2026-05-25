@@ -271,24 +271,42 @@ export class ConnectorAuthError extends Error {
 
 const ALGO = 'aes-256-gcm';
 
-function getKey() {
-  const hex = process.env.CONNECTOR_TOKEN_KEY;
+// Validate + materialise a hex-encoded 32-byte key. Used by both the env-key
+// path (the normal app flow) and the explicit-key path (Agent 06's rotation
+// script). Keeping ONE validator means the script can never accept a key the
+// runtime would reject — and vice versa.
+function keyBufferFromHex(hex, source = 'CONNECTOR_TOKEN_KEY') {
   if (!hex) {
     throw new Error(
-      'CONNECTOR_TOKEN_KEY is not set. Generate one with: openssl rand -hex 32',
+      `${source} is not set. Generate one with: openssl rand -hex 32`,
     );
   }
   if (!/^[0-9a-fA-F]{64}$/.test(hex)) {
     throw new Error(
-      'CONNECTOR_TOKEN_KEY must be 64 hex chars (32 bytes). Run: openssl rand -hex 32',
+      `${source} must be 64 hex chars (32 bytes). Run: openssl rand -hex 32`,
     );
   }
   return Buffer.from(hex, 'hex');
 }
 
-export function encryptToken(plaintext) {
+function getKey() {
+  return keyBufferFromHex(process.env.CONNECTOR_TOKEN_KEY, 'CONNECTOR_TOKEN_KEY');
+}
+
+// ── Explicit-key variants (Agent 06) ────────────────────────────────────────
+//
+// The default `encryptToken` / `decryptToken` read CONNECTOR_TOKEN_KEY from
+// process.env. The rotation script (scripts/rotate-connector-key.mjs) needs
+// to decrypt with the OLD key and re-encrypt with the NEW key in the same
+// process — env-mutation would race with any other code that calls getKey().
+// These explicit-key variants take the hex key as an argument and share the
+// exact same AES-256-GCM algorithm, IV size, and blob format as the env-key
+// variants. Keeping the algorithm in ONE function (encryptInternal /
+// decryptInternal) means the script can never silently corrupt tokens via
+// algorithmic drift.
+
+function encryptInternal(plaintext, key) {
   if (plaintext === null || plaintext === undefined) return null;
-  const key = getKey();
   const iv = crypto.randomBytes(12); // 96-bit IV is GCM standard
   const cipher = crypto.createCipheriv(ALGO, key, iv);
   const ct = Buffer.concat([
@@ -299,14 +317,13 @@ export function encryptToken(plaintext) {
   return `${iv.toString('base64')}:${tag.toString('base64')}:${ct.toString('base64')}`;
 }
 
-export function decryptToken(blob) {
+function decryptInternal(blob, key) {
   if (!blob) return null;
   const parts = String(blob).split(':');
   if (parts.length !== 3) {
     throw new Error('Malformed encrypted token blob');
   }
   const [ivB64, tagB64, ctB64] = parts;
-  const key = getKey();
   const decipher = crypto.createDecipheriv(ALGO, key, Buffer.from(ivB64, 'base64'));
   decipher.setAuthTag(Buffer.from(tagB64, 'base64'));
   const pt = Buffer.concat([
@@ -314,6 +331,36 @@ export function decryptToken(blob) {
     decipher.final(),
   ]);
   return pt.toString('utf8');
+}
+
+export function encryptToken(plaintext) {
+  return encryptInternal(plaintext, getKey());
+}
+
+export function decryptToken(blob) {
+  return decryptInternal(blob, getKey());
+}
+
+/**
+ * Encrypt with an explicit key (hex-encoded 32 bytes). Used by the
+ * connector-token rotation script (scripts/rotate-connector-key.mjs) so
+ * OLD and NEW keys can coexist in one process without env mutation.
+ *
+ * Returns the same `iv:tag:ct` blob format as `encryptToken`.
+ */
+export function encryptTokenWithKey(plaintext, hexKey) {
+  return encryptInternal(plaintext, keyBufferFromHex(hexKey, 'hexKey'));
+}
+
+/**
+ * Decrypt with an explicit key (hex-encoded 32 bytes). Used by the
+ * connector-token rotation script to read OLD-key-encrypted blobs.
+ *
+ * Throws if the blob is malformed or the auth-tag check fails (i.e. the
+ * key doesn't match the blob's tag — the wrong key was passed).
+ */
+export function decryptTokenWithKey(blob, hexKey) {
+  return decryptInternal(blob, keyBufferFromHex(hexKey, 'hexKey'));
 }
 
 // ---------------------------------------------------------------------------

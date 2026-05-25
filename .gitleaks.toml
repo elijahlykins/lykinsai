@@ -1,0 +1,83 @@
+# =============================================================================
+# .gitleaks.toml — LYKN secrets-scanning config (Agent 05)
+# =============================================================================
+# Used by:
+#   • The local pre-commit hook (`.git/hooks/pre-commit`) which runs
+#     `gitleaks protect --staged --config .gitleaks.toml` if gitleaks is
+#     installed. The hook is silent if gitleaks isn't installed — first
+#     line of DiD only when the developer's workstation has it.
+#   • Future CI scanning (Agent 06's domain) — same config, same allowlist.
+#
+# Install gitleaks locally:
+#   macOS:    brew install gitleaks
+#   Linux:    https://github.com/gitleaks/gitleaks/releases
+#   Container: docker run --rm -v "${PWD}:/path" zricethezav/gitleaks:latest \
+#                protect --staged --config /path/.gitleaks.toml
+#
+# This config inherits gitleaks' default ruleset (`[extend] useDefault = true`)
+# and adds an `[allowlist]` for known-safe LYKN paths and placeholder shapes.
+# We do NOT weaken or remove any default rule.
+
+title = "LYKN gitleaks config"
+
+[extend]
+useDefault = true
+
+# -----------------------------------------------------------------------------
+# Global allowlist — paths and patterns that are known-safe by construction.
+# -----------------------------------------------------------------------------
+[allowlist]
+description = "LYKN allowlist — placeholder values and reference docs"
+
+paths = [
+  # `.env.example` only contains placeholders that match the regex below.
+  # Real values are in `.env` which is `.gitignore`d.
+  '''^\.env\.example$''',
+  '''(^|/)\.env\.example$''',
+
+  # Security reports + the rotation runbook reference env-var NAMES (e.g.
+  # "STRIPE_WEBHOOK_SECRET") and minimum-length policies. They never
+  # contain real secret VALUES — verified by Agent 05.
+  '''^SECURITY_REPORT_\d+\.md$''',
+  '''^ROTATION_RUNBOOK\.md$''',
+
+  # Supabase migrations may reference column names like `client_secret_hash`,
+  # `token_hash`, etc. — column NAMES, not values.
+  '''^supabase-migrations/.+\.sql$''',
+
+  # `package-lock.json` contains hex hashes (integrity SHAs); these match
+  # generic-secret patterns but are deterministic and public.
+  '''^package-lock\.json$''',
+
+  # Build / vendor outputs — never commit these but some patterns may
+  # match them transiently during dev.
+  '''^node_modules/''',
+  '''^dist/''',
+  '''^dist-ssr/''',
+
+  # Cursor IDE state and the YouTube player scrape clutter.
+  '''^\.cursor/''',
+  '''-player-script\.js$''',
+]
+
+regexes = [
+  # `.env.example` placeholder shapes. EVERY placeholder in the example
+  # follows the `your-...-here` convention by deliberate choice — the
+  # validator regexes below accept this exact shape but nothing else.
+  '''your-[a-z0-9-]+-here''',
+
+  # Stripe placeholder prefixes that look like real keys but are deliberate
+  # examples in `.env.example` and the Stripe docs.
+  '''sk_live_your-[a-z0-9-]+-here''',
+  '''pk_live_your-[a-z0-9-]+-here''',
+  '''whsec_your-[a-z0-9-]+-here''',
+
+  # OpenAI / Anthropic / xAI placeholder keys.
+  '''sk-proj-your-[a-z0-9-]+-here''',
+  '''sk-ant-your-[a-z0-9-]+-here''',
+  '''xai-your-[a-z0-9-]+-here''',
+  '''re_your-[a-z0-9-]+-here''',
+
+  # Supabase example URL.
+  '''https://your-[a-z0-9-]+\.supabase\.co''',
+]

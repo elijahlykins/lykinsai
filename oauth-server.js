@@ -109,10 +109,24 @@ const _registerIpHits = new Map();
  *   requireAuth: import('express').RequestHandler,
  *   getPublicBaseUrl: () => string,
  *   getFrontendBaseUrl: () => string,
+ *   logSecurityEvent?: (eventType: string, payload?: object, ctx?: object) => void | Promise<void>,
  * }} deps
+ *
+ * `logSecurityEvent` is OPTIONAL (Agent 06). When provided, the OAuth
+ * server emits SecurityEvent.OAUTH_REPLAY_DETECTED on the RFC 6749 §10.4
+ * replay-detection branch. When absent (tests, standalone scripts), the
+ * fallback is a NO-OP — never a throw. The OAuth flow itself is unchanged
+ * either way.
  */
 export function mountOauthServer(app, deps) {
   const { supabaseAdmin, requireAuth, getPublicBaseUrl, getFrontendBaseUrl } = deps;
+
+  // No-op fallback: a missing hook degrades silently. The structured audit
+  // row is the operationally-meaningful path; the client still gets the
+  // correct 400 invalid_grant either way. NEVER throw from this layer.
+  const logSecurityEvent = (typeof deps.logSecurityEvent === 'function')
+    ? deps.logSecurityEvent
+    : () => {};
 
   // ── Discovery: Authorization Server Metadata (RFC 8414) ─────────────────
   //
@@ -1057,6 +1071,28 @@ async function handleRefreshTokenGrant({ req, res, body, client, supabaseAdmin }
 
     if (!inGrace || !chainAlive) {
       await revokeRefreshFamily(supabaseAdmin, refreshRow.consent_id);
+      // Agent 06: structured audit + log-drain signal for RFC 6749 §10.4
+      // detection. Token prefix is the first 8 chars of the *submitted*
+      // refresh token — enough to correlate two events that hit the same
+      // stolen token, never enough to replay. clientId / userId / consentId
+      // are opaque ids; safe to log.
+      try {
+        logSecurityEvent('oauth.replay_detected', {
+          targetTable: 'lykn_oauth_refresh_tokens',
+          targetId: refreshRow.id,
+          consentId: refreshRow.consent_id,
+          tokenPrefix: typeof refreshToken === 'string' && refreshToken.length > 0
+            ? `${refreshToken.slice(0, 8)}...`
+            : null,
+        }, {
+          req,
+          userId: refreshRow.user_id,
+          clientId: client?.client_id || refreshRow.client_id || null,
+        });
+      } catch {
+        // logSecurityEvent is a fire-and-forget no-op fallback by default;
+        // this catch only fires if a non-conformant hook threw synchronously.
+      }
       return res.status(400).json({ error: 'invalid_grant', error_description: 'refresh_token replay detected — family revoked.' });
     }
     parallelRace = true;

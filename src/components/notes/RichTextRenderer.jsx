@@ -1,5 +1,4 @@
 import React from 'react';
-import 'react-quill/dist/quill.bubble.css';
 
 export default function RichTextRenderer({ content, className = '' }) {
   if (!content) return null;

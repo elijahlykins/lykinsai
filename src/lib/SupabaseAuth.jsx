@@ -157,7 +157,18 @@ export function SupabaseAuthProvider({ children }) {
     return data;
   };
 
-  const signOut = async () => {
+  // `everywhere: false` (default) — revoke just this device's refresh
+  // token. The in-flight access token stays valid until its natural
+  // ~1h TTL on Supabase. Matches the user's mental model of "sign out
+  // on my phone shouldn't kill my desktop session".
+  //
+  // `everywhere: true` — pass scope:'global' so Supabase revokes every
+  // refresh token tied to this user across all devices. Use this when
+  // the user suspects their account is compromised. Future Settings UI
+  // will surface a "Sign out everywhere" button that calls this with
+  // `{ everywhere: true }`; that button is intentionally not added in
+  // this pass — the capability is exposed first, the UI lands later.
+  const signOut = async ({ everywhere = false } = {}) => {
     if (signOutTimerRef.current) {
       clearTimeout(signOutTimerRef.current);
       signOutTimerRef.current = null;
@@ -168,7 +179,7 @@ export function SupabaseAuthProvider({ children }) {
     // localStorage *before* the hard reload below — otherwise the new page
     // load can rehydrate the old session and momentarily look signed-in.
     try {
-      await supabase.auth.signOut({ scope: 'local' });
+      await supabase.auth.signOut({ scope: everywhere ? 'global' : 'local' });
     } catch (err) {
       if (import.meta.env.DEV) console.warn('[Auth] signOut error:', err);
     }
