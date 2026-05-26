@@ -45,7 +45,13 @@ type ToolCopy = {
   verbRunning: string;
   verbDone: (result: any) => string;
   verbError: string;
-  navTo?: string;
+  // Either a static path (works for tools whose surface is a single
+  // page like /synthesis-layer) or a function that derives a deep
+  // link from the tool result (e.g. project tools that return a
+  // specific `result.project.id`). Returning null/undefined from the
+  // function falls back to leaving the pill non-navigating, while a
+  // bare path is used as-is.
+  navTo?: string | ((result: any) => string | null | undefined);
 };
 
 const DEFAULT_COPY: ToolCopy = {
@@ -53,6 +59,26 @@ const DEFAULT_COPY: ToolCopy = {
   verbDone: () => "Tool finished",
   verbError: "Tool failed",
 };
+
+/**
+ * Build the synthesis-layer deep link for a tool result that names a
+ * single project. Every project-scoped tool (lykn_getProjectNeurons,
+ * lykn_getProjectState, lykn_pushProjectState, lykn_addProjectNeurons,
+ * lykn_removeProjectNeurons, lykn_setActiveProject, lykn_updateProject)
+ * returns `result.project.id`; we pipe that into `?project=<id>` so the
+ * page opens with the project panel pulled up AND the 3D scene focused
+ * on that project's member neurons (the same dual behaviour the "By
+ * Project" filter dropdown triggers — see SynthesisLayer.tsx).
+ *
+ * Falls back to the plain `/synthesis-layer` URL when the result is
+ * missing a project id (shouldn't happen for the wired tools, but the
+ * pill should still navigate somewhere useful instead of being inert).
+ */
+function projectDeepLink(result: any): string {
+  const id = typeof result?.project?.id === "string" ? result.project.id : "";
+  if (!id) return "/synthesis-layer";
+  return `/synthesis-layer?project=${encodeURIComponent(id)}`;
+}
 
 // Per-tool presentation. Defined statically (not derived from the
 // MCP descriptor) because the copy needs to read fluently as
@@ -90,7 +116,7 @@ const TOOL_COPY: Record<string, ToolCopy> = {
       return n === 1 ? `Loaded "${name}" (1 neuron)` : `Loaded "${name}" (${n} neurons)`;
     },
     verbError: "Project neurons read failed",
-    navTo: "/synthesis-layer",
+    navTo: projectDeepLink,
   },
   lykn_getProjectState: {
     verbRunning: "Loading project state",
@@ -102,7 +128,7 @@ const TOOL_COPY: Record<string, ToolCopy> = {
       return n === 1 ? `Loaded "${name}" (1 key)` : `Loaded "${name}" (${n} keys)`;
     },
     verbError: "Project state read failed",
-    navTo: "/synthesis-layer",
+    navTo: projectDeepLink,
   },
   lykn_pushProjectState: {
     verbRunning: "Updating project",
@@ -117,7 +143,7 @@ const TOOL_COPY: Record<string, ToolCopy> = {
         : `Set "${key}"${proj}`;
     },
     verbError: "Project update failed",
-    navTo: "/synthesis-layer",
+    navTo: projectDeepLink,
   },
   lykn_loadNeuron: {
     verbRunning: "Loading neuron",
@@ -173,7 +199,7 @@ const TOOL_COPY: Record<string, ToolCopy> = {
       return n === 1 ? `Added 1 neuron${proj}` : `Added ${n} neurons${proj}`;
     },
     verbError: "Cluster add failed",
-    navTo: "/synthesis-layer",
+    navTo: projectDeepLink,
   },
   lykn_removeProjectNeurons: {
     verbRunning: "Removing neurons",
@@ -184,7 +210,7 @@ const TOOL_COPY: Record<string, ToolCopy> = {
       return n === 1 ? `Removed 1 neuron${proj}` : `Removed ${n} neurons${proj}`;
     },
     verbError: "Cluster remove failed",
-    navTo: "/synthesis-layer",
+    navTo: projectDeepLink,
   },
 
   // ── Project metadata writes ────────────────────────────────────
@@ -200,7 +226,7 @@ const TOOL_COPY: Record<string, ToolCopy> = {
       return name ? `Switched to "${name}"` : "Project switched";
     },
     verbError: "Project switch failed",
-    navTo: "/synthesis-layer",
+    navTo: projectDeepLink,
   },
   lykn_updateProject: {
     verbRunning: "Updating project",
@@ -212,7 +238,7 @@ const TOOL_COPY: Record<string, ToolCopy> = {
       return name ? `Updated "${name}"` : "Project updated";
     },
     verbError: "Project update failed",
-    navTo: "/synthesis-layer",
+    navTo: projectDeepLink,
   },
 
   // ── Project delete (hard, confirm-gated) ───────────────────────
@@ -374,6 +400,61 @@ const TOOL_COPY: Record<string, ToolCopy> = {
     navTo: "/synthesis-layer",
   },
 };
+
+/**
+ * True when a `done` tool result carries no useful signal — e.g. a list
+ * read returned zero rows, a write was a no-op, or a lookup-by-id missed.
+ * Used to suppress the pill entirely so the chat only surfaces tools
+ * that actually moved the needle this turn. Errors are NOT considered
+ * empty (the user should still see failures); `running` is never empty
+ * (we don't know yet).
+ *
+ * Keep this aligned with the reasons each tool returns — when adding
+ * a new tool above, decide whether any of its result shapes count as
+ * "didn't actually use it" and add a case here.
+ */
+function isToolResultEmpty(name: string, result: any): boolean {
+  if (!result) return true;
+  switch (name) {
+    case "lykn_listProjects":
+      return !Array.isArray(result.projects) || result.projects.length === 0;
+    case "lykn_findConnections":
+    case "lykn_searchVault":
+    case "lykn_getBeliefs":
+    case "lykn_getRules":
+    case "lykn_getFacts":
+    case "lykn_getNeuronLinks":
+    case "lykn_getRecentActivity":
+      return !Number.isFinite(result.count) || result.count === 0;
+    case "lykn_getProjectNeurons":
+      return !result.project || (Number(result.count) || 0) === 0;
+    case "lykn_getProjectState":
+      return !result.project || (Number(result.keys_count) || 0) === 0;
+    case "lykn_loadNeurons":
+      return (Number(result.loaded) || 0) === 0;
+    case "lykn_loadNeuron":
+      return result.reason === "not_found";
+    case "lykn_addProjectNeurons":
+      return (Number(result.added_count) || 0) === 0;
+    case "lykn_removeProjectNeurons":
+      return (Number(result.removed_count) || 0) === 0;
+    case "lykn_pushProjectState":
+      return result.reason === "no_active_project" || result.reason === "project_not_found";
+    case "lykn_setActiveProject":
+      return result.reason === "project_not_found";
+    case "lykn_updateProject":
+      return result.reason === "name_conflict"
+        || (Array.isArray(result.changes) && result.changes.length === 0);
+    case "lykn_deleteProject":
+      return ["confirmation_missing", "name_mismatch", "project_not_found"].includes(result.reason);
+    case "lykn_touchConcept":
+      return result.reason === "not_found" || result.reason === "concept_dismissed";
+    case "lykn_recordRuleApplication":
+      return ["rule_not_found", "rule_not_active", "belief_not_active"].includes(result.reason);
+    default:
+      return false;
+  }
+}
 
 /**
  * Tooltip-ready summary of the tool's result. Best-effort — surfaces
@@ -667,6 +748,14 @@ export function ToolCallPill({
   const isError = call.status === "error";
   const isDone = call.status === "done";
 
+  // Hide pills for completed tools that returned an empty / no-op
+  // result so the chat only shows tools that actually moved the needle.
+  // Errors stay visible (failures shouldn't be silent); running stays
+  // visible (we don't know the result yet).
+  if (isDone && isToolResultEmpty(call.name, call.result)) {
+    return null;
+  }
+
   const label = isRunning
     ? `${copy.verbRunning}…`
     : isError
@@ -702,7 +791,11 @@ export function ToolCallPill({
 
   const handleClick = () => {
     if (!isDone) return;
-    if (copy.navTo) navigate(copy.navTo);
+    if (!copy.navTo) return;
+    const target = typeof copy.navTo === "function"
+      ? copy.navTo(call.result)
+      : copy.navTo;
+    if (target) navigate(target);
   };
 
   return (
