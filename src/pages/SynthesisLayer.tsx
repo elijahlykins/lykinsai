@@ -37,6 +37,11 @@ import NeuronPanel from "@/components/synthesis/NeuronPanel";
 import VaultAttachment from "@/components/synthesis/VaultAttachment";
 import { parseVaultContent } from "@/lib/vaultContent";
 import { API_BASE_URL } from "@/lib/api-config";
+import { notifyVaultCapIfApplicable } from "@/lib/vault/vaultCapError";
+import {
+  isSynthesisCapError,
+  notifySynthesisCapIfApplicable,
+} from "@/lib/vault/synthesisCapError";
 import { GridIcon } from "@/components/ui/GridIcon";
 import {
   Dialog,
@@ -2838,14 +2843,19 @@ function DetailPanel({
 /* ------------------------------------------------------------------ */
 
 // Free users get a real preview of the Synthesis Layer up to this many
-// user-created nodes (everything except the root + category shells).
+// EXPLICIT user-created neurons (grids + vault notes + perspectives +
+// ratified beliefs + manual facts). AI-derived nodes — clustered concepts,
+// inferred facts, profile themes / goals / topics / vocabulary — never
+// count toward this cap, so the nightly synthesis job can't accidentally
+// paywall a free user out of their own brain just by inferring things.
+//
 // Pulled from PLAN_LIMITS so the cap stays in lockstep with the rest of
-// the pricing config; falling back here is just defensive in case the
-// limits map ever drops the field.
+// the pricing config; the literal fallback matches the free-tier value
+// today and is just defensive in case the limits map ever drops the field.
 const FREE_SYNTHESIS_NODE_LIMIT: number =
   Number.isFinite(PLAN_LIMITS.free?.synthesisNodes)
     ? (PLAN_LIMITS.free.synthesisNodes as number)
-    : 50;
+    : 100;
 
 // ---------------------------------------------------------------------------
 // NeuronCreationModal
@@ -3229,7 +3239,15 @@ function NeuronCreationModal({
             body?.reason ||
             (res.status === 401 ? "auth_required" : null) ||
             `http_${res.status}`;
-          setError(`Couldn't save — ${reason}.`);
+          // /api/learned forwards the PG trigger message verbatim as `error`,
+          // so a synthesis-cap hit lands as `synthesis_neuron_cap_reached: …`
+          // — dispatch the upgrade modal instead of showing the raw string.
+          if (isSynthesisCapError({ message: reason })) {
+            notifySynthesisCapIfApplicable({ message: reason });
+            setError("Couldn't save — upgrade required.");
+          } else {
+            setError(`Couldn't save — ${reason}.`);
+          }
           setSubmitting(false);
           return;
         }
@@ -3256,7 +3274,15 @@ function NeuronCreationModal({
             body?.reason ||
             (res.status === 401 ? "auth_required" : null) ||
             `http_${res.status}`;
-          setError(`Couldn't save — ${reason}.`);
+          // Same synthesis-cap detection as the basic-neuron path:
+          // createManualBelief forwards the trigger error message via
+          // `reason`, so cap hits arrive as a recognisable substring.
+          if (isSynthesisCapError({ message: reason })) {
+            notifySynthesisCapIfApplicable({ message: reason });
+            setError("Couldn't save — upgrade required.");
+          } else {
+            setError(`Couldn't save — ${reason}.`);
+          }
           setSubmitting(false);
           return;
         }
@@ -3312,7 +3338,16 @@ function NeuronCreationModal({
           .select("id")
           .single();
         if (insErr || !inserted?.id) {
-          setError(`Couldn't save — ${insErr?.message || "insert_failed"}.`);
+          // Vault cap (029/052) and synthesis cap (066) both surface as
+          // PG check_violations on this insert path — perspectives ARE
+          // notes, so both triggers fire on the same row. Translate the
+          // raw PG error into the existing upgrade-modal events before
+          // falling back to the inline error string.
+          if (notifyVaultCapIfApplicable(insErr) || notifySynthesisCapIfApplicable(insErr)) {
+            setError("Couldn't save — upgrade required.");
+          } else {
+            setError(`Couldn't save — ${insErr?.message || "insert_failed"}.`);
+          }
           setSubmitting(false);
           return;
         }
@@ -5019,22 +5054,57 @@ export default function SynthesisLayer() {
     [conceptRows],
   );
 
-  // Count only the nodes the user actually created — chats, vault notes,
-  // tags, and AI-learned neurons. The root node and the category shells
-  // (Chats / Vault / Tags / AI Learned) are scaffolding that exists
-  // regardless of activity, so they're excluded from the free-tier cap
-  // below.
+  // Count only the EXPLICIT neurons the user actually created themselves:
+  // chats (grids), vault notes, perspectives, beliefs the user ratified
+  // (status='active'), and manual facts they typed into the Fact composer
+  // (`source: 'manual_fact'` in buildGraph).
+  //
+  // Everything AI-generated is intentionally free and does not count:
+  //   • concepts (lykn_concepts, mostly ai_clustered by the nightly job)
+  //   • neuron-style nodes derived from the synthesis profile
+  //     (themes / goals / recurring_topics / reasoning_style / vocabulary)
+  //   • inferred facts the model wrote before the user touched them
+  //   • proposed beliefs awaiting ratification
+  //
+  // This matches the server-side cap (066_synthesis_neuron_cap_trigger.sql):
+  // free users get the full synthesis layer up to FREE_SYNTHESIS_NODE_LIMIT
+  // explicit neurons before the page swaps in the upgrade paywall, so the
+  // nightly synthesis job piling on inferred facts / clustered concepts
+  // never trips the gate by itself.
   const userCreatedNodeCount = useMemo(
-    () => allNodes.filter((n) => n.kind !== "root" && n.kind !== "category").length,
+    () =>
+      allNodes.filter((n) => {
+        // Always exclude scaffolding.
+        if (n.kind === "root" || n.kind === "category") return false;
+        // AI-clustered topic layer — never counts.
+        if (n.kind === "concept") return false;
+        // Beliefs only count once the user has ratified them. AI-proposed
+        // beliefs sitting in the inbox don't push someone over the cap.
+        if (n.kind === "belief") {
+          const status = String(n.meta?.beliefStatus || "");
+          return status === "active";
+        }
+        // The `neuron` kind covers both AI-derived profile bits (themes,
+        // goals, recurring topics, vocabulary, reasoning style) and the
+        // user's hand-typed facts. Only the manual ones count — that's
+        // what `source: 'manual_fact'` is set to in the buildGraph fact
+        // pass. Every AI-derived neuron carries one of the synthesis
+        // source slugs and is exempt.
+        if (n.kind === "neuron") {
+          return String(n.meta?.source || "") === "manual_fact";
+        }
+        // grid, vault, perspective — explicit user creations, always count.
+        return true;
+      }).length,
     [allNodes],
   );
 
   // Free tier gets the full Synthesis Layer experience up to
-  // FREE_SYNTHESIS_NODE_LIMIT user-created nodes. Once they cross it the
-  // page swaps in the standard PlanGate paywall instead of the canvas.
-  // Guests bypass this entirely so the demo / prototype-handoff scenes
-  // can still run, and we wait for the plan query to resolve before
-  // gating to avoid a paywall flash for paying users.
+  // FREE_SYNTHESIS_NODE_LIMIT explicit user-created neurons. Once they
+  // cross it the page swaps in the standard PlanGate paywall instead of
+  // the canvas. Guests bypass this entirely so the demo / prototype-
+  // handoff scenes can still run, and we wait for the plan query to
+  // resolve before gating to avoid a paywall flash for paying users.
   const overFreeSynthesisLimit =
     !planLoading &&
     !!user?.id &&
@@ -5776,7 +5846,7 @@ export default function SynthesisLayer() {
       <PlanGate
         minPlan="studio"
         feature="Mind Map"
-        description={`Your Free plan includes the Synthesis Layer up to ${FREE_SYNTHESIS_NODE_LIMIT} nodes. You've reached ${userCreatedNodeCount} — upgrade to Pro for the full, unlimited mind map.`}
+        description={`Your Free plan includes the Synthesis Layer up to ${FREE_SYNTHESIS_NODE_LIMIT} neurons you create yourself (chats, vault notes, perspectives, ratified beliefs, manual facts). You've reached ${userCreatedNodeCount} — upgrade to Pro for the full, unlimited mind map. Concepts and other AI-derived nodes never count against this limit.`}
       >
         {null}
       </PlanGate>

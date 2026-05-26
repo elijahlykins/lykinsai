@@ -214,7 +214,24 @@ export const proposeBeliefTool = {
       .upsert(insertRow, { onConflict: 'user_id,belief_key' })
       .select('id, belief_text, serves_need, status, rationale, source, proposed_by_clients, ratified_by, created_at')
       .maybeSingle();
-    if (error) return errorContent(`belief upsert failed: ${error.message}`);
+    if (error) {
+      // Synthesis-layer free-tier cap (066_synthesis_neuron_cap_trigger.sql)
+      // — translate the raw PG trigger error into a structured, model-
+      // readable payload so the outside client understands why the write
+      // was refused and can tell the user without leaking SQLSTATE noise.
+      // Only fires when a free user is at their explicit-neuron cap AND
+      // the belief is landing active (user_confirmed=true). Proposed
+      // beliefs still go through fine — those don't count toward the cap.
+      if (typeof error.message === 'string' && error.message.includes('synthesis_neuron_cap_reached')) {
+        return jsonContent({
+          ok: false,
+          reason: 'synthesis_neuron_cap_reached',
+          message:
+            'The user is on the Free plan and has reached their explicit-neuron cap (chats + vault notes + ratified beliefs + manual facts). They can ratify this belief themselves in LYKN once they upgrade, or you can keep proposing without user_confirmed and it will still land as a proposal for their inbox.',
+        });
+      }
+      return errorContent(`belief upsert failed: ${error.message}`);
+    }
     if (!data) return errorContent('belief insert returned no row.');
 
     const message = data.status === 'active'

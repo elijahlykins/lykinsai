@@ -108,12 +108,22 @@ export const FAQ_ITEMS = [
 // Enforcement hooks live in server.js (AI requests) and useUsageGate.js
 // (vault/grid). Blocks-per-grid enforcement is applied at the canvas layer.
 //
-// `synthesisNodes` caps how many user-created nodes (projects + grids +
-// vault notes + tags + AI-learned neurons — i.e. everything except the
-// root and category shells) can render in the Synthesis Layer before the
-// page itself swaps in the upgrade paywall. Free users get a real preview
-// of the layer up to this number; paid plans are uncapped. Enforcement
-// lives in `src/pages/SynthesisLayer.tsx`.
+// `synthesisNodes` caps how many EXPLICIT user-created neurons (grids +
+// vault notes + perspectives + ratified beliefs + manual facts) can exist
+// before the Synthesis Layer page swaps in the upgrade paywall. AI-derived
+// nodes (clustered concepts, inferred facts, profile themes / goals /
+// recurring topics / vocabulary / reasoning style) do NOT count — they're
+// always free, regardless of how many the nightly synthesis job produces.
+// This is the cap that makes the synthesis layer "free for everyone, up
+// to a real preview" rather than gated on payment.
+//
+// Frontend enforcement: `userCreatedNodeCount` in
+// `src/pages/SynthesisLayer.tsx` (page-level paywall takeover).
+// Server enforcement: `enforce_synthesis_neuron_cap()` triggers on
+// `omnia_boards`, `lykn_beliefs`, `lykn_user_model_facts` defined in
+// `supabase-migrations/066_synthesis_neuron_cap_trigger.sql`. Notes are
+// not triggered separately because `vaultCards` (50 on free) is always
+// the tighter cap on that table — vault hits its own ceiling first.
 export const PLAN_LIMITS = {
   free: {
     requests: Infinity,
@@ -121,7 +131,7 @@ export const PLAN_LIMITS = {
     blocksPerGrid: 50,
     grids: Infinity,
     projects: Infinity,
-    synthesisNodes: 50,
+    synthesisNodes: 100,
     seats: 1,
     // Free is gated by model tier (non-thinking only), not request count.
     modelTier: "basic",

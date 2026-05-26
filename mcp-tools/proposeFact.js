@@ -121,6 +121,22 @@ export const proposeFactTool = {
       messageId,
     });
     if (!out?.ok) {
+      const rawReason = String(out?.reason || '');
+      // Synthesis-layer free-tier cap (066_synthesis_neuron_cap_trigger.sql)
+      // — `recordLearnedFactFromChat` forwards the PG trigger message via
+      // `reason`, so a cap hit lands here as a recognisable substring.
+      // Translate to a stable code + a model-readable explanation so the
+      // outside client can tell the user without parsing SQL noise.
+      // proposeFact lands manual facts with status='stated' (the explicit
+      // neuron status), which is exactly what the trigger guards on.
+      if (rawReason.includes('synthesis_neuron_cap_reached')) {
+        return jsonContent({
+          ok: false,
+          reason: 'synthesis_neuron_cap_reached',
+          message:
+            'The user is on the Free plan and has reached their explicit-neuron cap (chats + vault notes + ratified beliefs + manual facts). Suggest they upgrade to Pro in LYKN to keep adding facts to their synthesis profile.',
+        });
+      }
       return jsonContent({
         ok: false,
         reason: out?.reason || 'fact_record_failed',
