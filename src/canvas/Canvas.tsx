@@ -4930,10 +4930,10 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
     const clamp = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n));
 
     const callAI = async (prompt: string, userMessage?: string): Promise<string> => {
-      let aiModel = "lykn-lite";
+      let aiModel = "lykn";
       try {
         const settings = JSON.parse(localStorage.getItem("lykinsai_settings") || "{}");
-        aiModel = settings.aiModel || "lykn-lite";
+        aiModel = settings.aiModel || "lykn";
       } catch {
         // ignore
       }

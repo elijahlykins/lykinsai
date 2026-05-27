@@ -1326,7 +1326,7 @@ export default function VaultNew() {
     } catch {
       // ignore
     }
-    return "lykn-lite";
+    return "lykn";
   });
 
   const resolvedColumnsRef = useRef(null);

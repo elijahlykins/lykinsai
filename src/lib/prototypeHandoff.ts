@@ -292,12 +292,9 @@ export const writePrototypeStep = (step: PrototypeStep | null): void => {
   } catch {
     // ignore quota / private-mode errors
   }
-  // Walkthrough → default model coupling. We want the LYKN Fast
-  // Reasoning tier selected through the guided walkthrough (so paid
-  // users get a meatier preview reply), then drop onto LYKN Lite once
-  // the tour finishes so casual follow-ups stay cheap. Each transition
-  // only fires once because writePrototypeStep guards against same-step
-  // writes upstream — see e.g. VaultNew's `step === "synthesis"` check.
+  // Walkthrough → default model coupling. Keep LYKN selected throughout
+  // the guided tour; each transition only fires once because
+  // writePrototypeStep guards against same-step writes upstream.
   applyWalkthroughDefaultModel(step);
 };
 
@@ -316,14 +313,10 @@ const SETTINGS_CHANGED_EVENT = "lykinsai_settings_changed";
 // `src/lib/modelCatalog.js` — anything written here must be a value the
 // picker can render or the trigger will fall back to its placeholder.
 //
-// Connections + chat stay on LYKN Fast Reasoning so the guided
-// walkthrough shows off real reasoning depth. Once the tour finishes
-// we drop the user onto LYKN Lite (free-tier default) so every casual
-// question after the tour stays cheap.
 const STEP_DEFAULT_MODEL: Partial<Record<PrototypeStep, string>> = {
-  vault: "lykn-fast",
-  grid: "lykn-fast",
-  done: "lykn-lite",
+  vault: "lykn",
+  grid: "lykn",
+  done: "lykn",
 };
 
 const applyWalkthroughDefaultModel = (step: PrototypeStep | null): void => {

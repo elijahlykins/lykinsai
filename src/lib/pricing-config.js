@@ -23,7 +23,7 @@ export const PLANS = [
     features: [
       { text: "100 synthesis neurons", included: true },
       { text: "50 Vault cards", included: true },
-      { text: "LYKN Lite model", included: true },
+      { text: "LYKN model", included: true },
       { text: "Claude + one input connection", included: true },
     ],
   },
@@ -43,7 +43,7 @@ export const PLANS = [
     features: [
       { text: "Unlimited neurons", included: true, accent: true },
       { text: "Unlimited Vault cards", included: true, accent: true },
-      { text: "All models — LYKN lineup + frontier picks", included: true, accent: true },
+      { text: "All models — LYKN + frontier picks", included: true, accent: true },
       { text: "All connections unlocked", included: true },
     ],
   },
@@ -71,7 +71,7 @@ export const FAQ_ITEMS = [
   {
     question: "What do I get on the Free plan?",
     answer:
-      "Every account starts on Free. You get a limited number of neurons and Vault cards, the LYKN Lite model for chat, and one input connection plus Claude. It's enough to feel how LYKN's synthesis layer follows you across tools before you upgrade.",
+      "Every account starts on Free. You get a limited number of neurons and Vault cards, the LYKN model for chat, and one input connection plus Claude. It's enough to feel how LYKN's synthesis layer follows you across tools before you upgrade.",
   },
   {
     question: "What does Pro include?",

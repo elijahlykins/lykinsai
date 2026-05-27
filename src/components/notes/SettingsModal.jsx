@@ -124,7 +124,7 @@ export default function SettingsModal({ isOpen, onClose }) {
     layoutDensity: 'comfortable',
     aiPersonality: 'balanced',
     aiDetailLevel: 'medium',
-    aiModel: 'lykn-lite',
+    aiModel: 'lykn',
   });
 
   // ---- Guest auth form (only shown when no `user`) ----

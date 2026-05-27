@@ -3345,66 +3345,31 @@ function internalHeaders(req) {
 }
 
 const MODEL_CATALOG = [
-  // ── LYKN tiers ──────────────────────────────────────────────────────
-  // Three brand-aliased tiers, each routed to a real Gemini model by
-  // `resolveLyknAlias`. The client only ever sends these ids; the
-  // server is the single source of truth for which Gemini variant
-  // each one runs on.
-  { id: 'lykn-lite', label: 'LYKN Lite', provider: 'system', env: 'GOOGLE_API_KEY' },
-  { id: 'lykn-fast', label: 'LYKN Fast Reasoning', provider: 'system', env: 'GOOGLE_API_KEY' },
-  { id: 'lykn-deep', label: 'LYKN Deep Thinking', provider: 'system', env: 'GOOGLE_API_KEY' },
-  // Legacy single-tier alias kept so older clients / cached preferences
-  // still resolve. Routed through `resolveLyknAlias` to the Fast tier.
-  { id: 'lykn', label: 'LYKN', provider: 'system', env: 'GOOGLE_API_KEY' },
+  { id: 'lykn', label: 'LYKN', provider: 'system', env: 'OPENAI_API_KEY' },
 ];
 
 // Brand alias → real model. Keep in sync with `LYKN_ROUTED_MODELS`
 // in `src/lib/modelCatalog.js` (client-side doc constant). The server is
 // the source of truth — clients only ever send the LYKN ids.
 //
-// `lykn-fast` history of pain:
-//   v1: gemini-3-flash-preview — chronically rate-limited mid-2026,
-//       failover added 2-3s/turn.
-//   v2: gemini-flash-latest    — cleared the rate-limit failover but
-//       `*-latest` is a moving alias and started routing to a backend
-//       with 7-11s TTFT for 7-8K-token prompts (verified via the
-//       `⏱  before/after fetch streamGenerateContent` checkpoints).
-//       Net user-perceived latency: 10-25s per chat. Unacceptable for
-//       a tier literally branded "Fast Reasoning".
-//   v3 (now): gpt-4.1-nano. OpenAI's nano returns first token in
-//       ~700-1200ms for the same prompt size and has been the most
-//       reliable provider in our `getFallbackModels` chain for months.
-//       The cross-provider swap is intentional — speed is the entire
-//       value prop of this tier and the user explicitly chose voice
-//       changes over latency in the perf triage. Lite/Deep stay on
-//       Gemini because their value props (cheapest / smartest) aren't
-//       latency-sensitive and Pro/Lite have healthier SLAs than Flash
-//       right now.
-//
-// If Google's Gemini Flash latency recovers, flip this back to
-// `gemini-flash-latest` (or pin a stable version like
-// `gemini-2.5-flash`) — no other code change is needed; the alias
-// resolution + fallback chain are model-agnostic.
+// LYKN brand alias → real model. `gpt-4.1-nano` for sub-1s TTFT on
+// typical chat prompts; see prior lykn-fast routing notes in git history.
+// Retired tier ids (lykn-lite / lykn-fast / lykn-deep) still resolve here
+// so cached preferences and older clients keep working.
 const LYKN_ROUTED_MODELS = {
-  // Google graduated Gemini 3.1 Flash Lite out of preview on 2026-05-26
-  // and the `-preview` suffix now returns HTTP 404 NOT_FOUND, breaking
-  // every free-tier turn (the only model that tier is allowed to use —
-  // see BASIC_MODEL_IDS in src/lib/modelTiers.js). Use the stable name.
-  'lykn-lite': 'gemini-3.1-flash-lite',
+  lykn: 'gpt-4.1-nano',
+  'lykn-lite': 'gpt-4.1-nano',
   'lykn-fast': 'gpt-4.1-nano',
-  'lykn-deep': 'gemini-3.1-pro-preview',
-  // Legacy single-tier alias → middle Fast Reasoning tier (now OpenAI).
-  'lykn': 'gpt-4.1-nano',
+  'lykn-deep': 'gpt-4.1-nano',
 };
 const LYKN_ROUTED_FALLBACK = 'gemini-pro-latest';
 
 const resolveLyknAlias = (model) => {
   const routed = LYKN_ROUTED_MODELS[model];
   if (!routed) return model;
-  if (process.env.GOOGLE_API_KEY) return routed;
-  // Last-ditch: Gemini key is missing in this env. Fall back to a
-  // permissive Gemini latest alias so the request still completes
-  // once a key is provisioned.
+  if (routed.startsWith('gpt-') && process.env.OPENAI_API_KEY) return routed;
+  if (routed.startsWith('gemini-') && process.env.GOOGLE_API_KEY) return routed;
+  if (process.env.OPENAI_API_KEY || process.env.GOOGLE_API_KEY) return routed;
   return LYKN_ROUTED_FALLBACK;
 };
 
@@ -4024,7 +3989,7 @@ const GUEST_SYSTEM_PROMPT = [
   '',
   'There is NO grid, canvas, or block-based board in LYKN. The workspace is chat plus the Vault plus the Synthesis Layer — nothing else. If the user mentions a grid, board, canvas, bricks, blocks, or wires, gently clarify that those don\'t exist here.',
   '',
-  'LYKN runs on three brand-aliased Gemini tiers — Lite (free, fast everyday questions), Fast Reasoning (paid, the everyday workhorse), and Deep Thinking (paid, heavier multi-step problems) — plus dictation and YouTube ingestion with transcripts.',
+  'LYKN is one fast everyday model tuned for chat with your synthesis layer. Pro subscribers can also pick frontier models (GPT, Claude, Gemini, Grok) from the model menu. Dictation and YouTube ingestion with transcripts are built in.',
   '',
   '=== VOICE ===',
   '- Be helpful and direct. Answer the user\'s actual question first. Use markdown when it helps (short lists, bold, code blocks). Keep responses tight unless they ask for depth.',
@@ -10433,25 +10398,6 @@ ${t}
       console.log(`🟣 LYKN alias (${model}) → ${actualModel}`);
     }
 
-    // Tier 3 cost cut: Pro→nano auto-downgrade for trivial turns.
-    // Fires ONLY when the user picked the brand alias `lykn-deep` AND the
-    // turn is a pure greeting/ack. Pro users who pick a raw frontier model
-    // explicitly are NEVER auto-downgraded — they paid for direct provider
-    // access; we honor their pick on every turn.
-    if (
-      model === 'lykn-deep' &&
-      isTrivialTurn(pureUserMessage || text || prompt, {
-        hasImages: imageUrls.length > 0,
-        hasFocusedBricks: Boolean(hasFocusedBricks),
-      })
-    ) {
-      console.log(`💸 Pro→nano auto-downgrade: trivial turn (saving ~12x cost)`);
-      // Target gpt-4.1-nano — same fast-tier model lykn-fast now points at.
-      // Was gemini-flash-latest, but its TTFT was 7-11s in mid-2026.
-      res.setHeader('X-Smart-Route', `${actualModel}->gpt-4.1-nano`);
-      actualModel = 'gpt-4.1-nano';
-    }
-
     // Skip sending images when AI only needs to compute block positions (organize/move/resize)
     const effectiveImageUrls = wantsActions ? [] : imageUrls;
     if (wantsActions && imageUrls.length > 0) {
@@ -10796,7 +10742,7 @@ ${t}
     } else {
       console.error(`❌ Unsupported model: ${actualModel} (original: ${model})`);
       return res.status(400).json({ 
-        error: `Unsupported model: ${actualModel}. Supported models: lykn-lite, lykn-fast, lykn-deep, or any Gemini variant (3.x / 2.5 / flash / pro).` 
+        error: `Unsupported model: ${actualModel}. Supported models: lykn, or any Gemini / GPT / Claude / Grok variant.` 
       });
     }
 
@@ -11596,33 +11542,6 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
     } else if (LYKN_ROUTED_MODELS[model]) {
       actualModel = resolveLyknAlias(model);
       console.log(`🟣 LYKN alias (${model}) → ${actualModel}`);
-    }
-
-    // Tier 3 cost cut: Pro→nano auto-downgrade for trivial turns.
-    // Fires ONLY when the user picked the brand alias `lykn-deep` AND the
-    // turn is a pure greeting/ack — at that point routing through Pro is
-    // wasted spend with identical output on nano.
-    //
-    // Critically, this is gated on the ORIGINAL `model` input, not the
-    // resolved `actualModel`. Pro users who explicitly pick a raw frontier
-    // model from the picker have made a deliberate choice — we honor
-    // that even on greetings. Same for any other frontier model: a user
-    // who picks GPT-5 / Claude Opus / Grok 4 explicitly never gets
-    // silently downgraded.
-    if (
-      model === 'lykn-deep' &&
-      isTrivialTurn(streamPureUserMessage || text || prompt, {
-        hasImages: imageUrls.length > 0,
-        hasFocusedBricks: Boolean(hasFocusedBricks),
-      })
-    ) {
-      console.log(`💸 Stream Pro→nano auto-downgrade: trivial turn (saving ~12x cost)`);
-      // SSE headers were already flushed at the top of this route, so this
-      // setHeader is a no-op (Node throws ERR_HTTP_HEADERS_SENT). Swallow it
-      // — X-Smart-Route is observability-only and the client doesn't read it.
-      // Target gpt-4.1-nano (same model lykn-fast now uses) for sub-1s TTFT.
-      try { res.setHeader('X-Smart-Route', `${actualModel}->gpt-4.1-nano`); } catch { /* headers already flushed */ }
-      actualModel = 'gpt-4.1-nano';
     }
 
     // Tool-calling agent loop: all four providers (OpenAI / Anthropic /

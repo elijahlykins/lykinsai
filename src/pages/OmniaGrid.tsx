@@ -530,8 +530,8 @@ const makeAttId = () =>
  * pass a JSX node prop don't need to import the shared component directly.
  *
  * `modelTier` gates which models are selectable:
- *   - "basic"     (Free / guest)   → LYKN Lite only
- *   - "top+media" (Pro)            → every model including frontier picks
+ *   - "basic"     (Free / guest)   → LYKN only
+ *   - "top+media" (Pro)            → LYKN + frontier picks
  * Locked models are shown greyed out with a lock badge so users can see the
  * upgrade path instead of hiding the tier entirely.
  */
@@ -735,7 +735,7 @@ export default function OmniaGridPage() {
     } catch {
       // ignore
     }
-    return "lykn-lite";
+    return "lykn";
   });
   const [liveAIMode, setLiveAIMode] = useState(() => {
     try {

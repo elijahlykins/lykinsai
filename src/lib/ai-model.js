@@ -1,6 +1,6 @@
-import { canonicalizeModelId, LYKN_LITE_ID } from './modelTiers';
+import { canonicalizeModelId, LYKN_ID } from './modelTiers';
 
-const DEFAULT_AI_MODEL = LYKN_LITE_ID;
+const DEFAULT_AI_MODEL = LYKN_ID;
 
 // Migrate any value (including stale ids like `claude-sonnet-4-6` from
 // older releases) to a current LYKN id, falling back to the provided

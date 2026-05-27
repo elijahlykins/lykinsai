@@ -50,7 +50,7 @@ const solutions = [
     title: "AI Access",
     subtitle: "Three LYKN tiers, one interface",
     description:
-      "LYKN Lite for everyday questions, Fast Reasoning for serious work, Deep Thinking for the hard ones. Switch tiers mid-conversation. Drag AI responses onto your Grid. Feed your Vault into AI context. The first tool where AI and your ideas actually merge.",
+      "One LYKN model tuned for everyday chat with your synthesis layer, plus frontier picks on Pro when you want raw GPT, Claude, Gemini, or Grok. Drag AI responses onto your Grid. Feed your Vault into AI context. The first tool where AI and your ideas actually merge.",
   },
 ];
 
