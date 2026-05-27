@@ -73,8 +73,19 @@ export const CHAT_TOOL_NAMES = [
   'lykn_proposeBelief',
   'lykn_proposeFact',
   'lykn_createVaultNote',
+  // URL-specialised vault save (rich link card, URL dedupe). The agent
+  // should reach for this whenever the thing being saved is a link the
+  // user pasted/dropped; createVaultNote stays the path for plain text
+  // / snippet / code-block saves.
+  'lykn_saveLinkToVault',
   // ── Preference write (ASK FIRST — see tool description) ──────────
   'lykn_updateUserPreference',
+  // ── Capability-aware routing (read-only catalog lookup) ──────────
+  // Called when the user asks LYKN to do something it can't (send email,
+  // generate images, run code in their repo, etc.). Returns a small
+  // list of outside tools the user can connect via /connections. Pull
+  // model only — LYKN never dispatches.
+  'lykn_recommendTools',
 ];
 
 export const CHAT_TOOLS = CHAT_TOOL_NAMES

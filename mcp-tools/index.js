@@ -63,6 +63,8 @@ import { touchConceptTool } from './touchConcept.js';
 import { getUserPreferencesTool } from './getUserPreferences.js';
 import { updateUserPreferenceTool } from './updateUserPreference.js';
 import { getRecentActivityTool } from './getRecentActivity.js';
+import { recommendToolsTool } from './recommendTools.js';
+import { saveLinkToVaultTool } from './saveLinkToVault.js';
 
 export const MCP_TOOLS = [
   // Tier 1 — Core beliefs (governance, ratified)
@@ -91,6 +93,11 @@ export const MCP_TOOLS = [
   loadNeuronTool,
   loadNeuronsTool,
   createVaultNoteTool,
+  // URL-specialised vault save — produces a rich link card with favicon
+  // + platform tags, dedupes by URL. Pairs with the chat handler's
+  // pasted-URL auto-scrape: the AI gets the page content in
+  // [SCRAPED_WEB_PAGES] and can call this with a meaningful title.
+  saveLinkToVaultTool,
   // Synthesis graph — user-authored cross-neuron edges
   createNeuronLinkTool,
   getNeuronLinksTool,
@@ -99,6 +106,10 @@ export const MCP_TOOLS = [
   getUserPreferencesTool,
   updateUserPreferenceTool,
   getRecentActivityTool,
+  // Capability-aware routing — suggests OUTBOUND_TARGETS the user can
+  // connect when LYKN cannot perform the requested action itself. Pure
+  // catalog read; no auth, no side effects, no dispatch.
+  recommendToolsTool,
 ];
 
 export const MCP_TOOLS_BY_NAME = Object.freeze(

@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
+import { fetchBoardsWithContext } from "@/lib/board/fetchBoardsWithContext";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { DEMO_GRID_LIST } from "@/lib/demoGrids";
 
@@ -45,13 +46,7 @@ export default function MobileFocusedChatGrids() {
     queryKey: ["boards", user?.id],
     queryFn: async () => {
       if (!user?.id) return [];
-      const { data } = await supabase
-        .from("omnia_boards")
-        .select("id, title, updated_at")
-        .eq("user_id", user.id)
-        .order("updated_at", { ascending: false })
-        .limit(100);
-      return data || [];
+      return fetchBoardsWithContext(user.id, 100);
     },
     enabled: !!user?.id,
   });

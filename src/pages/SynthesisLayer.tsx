@@ -62,6 +62,7 @@ import SynthesisSceneErrorBoundary from "@/pages/synthesis/SynthesisSceneErrorBo
 import { useIsMobile } from "@/hooks/useViewportTier";
 import { isDemoNodeId } from "@/lib/demoSynthesis";
 import { isDemoGridId } from "@/lib/demoGrids";
+import { fetchBoardsWithContext } from "@/lib/board/fetchBoardsWithContext";
 import {
   appendPrototypeNeuron,
   clearPrototypeState,
@@ -4314,8 +4315,7 @@ export default function SynthesisLayer() {
       // payload on every mount. The DB column itself is still populated
       // (other surfaces — chat scoping, /api/v1/synthesis/activity —
       // continue to use it), it just doesn't ride along on this fetch.
-      const { data } = await supabase.from("omnia_boards").select("id, title, created_at").eq("user_id", user.id).order("updated_at", { ascending: false }).limit(80);
-      return data || [];
+      return fetchBoardsWithContext(user.id, 80);
     },
     enabled: !!user?.id,
   });
@@ -7342,13 +7342,15 @@ export default function SynthesisLayer() {
           setSelectedProjectId(projectId);
         }}
         onAfterEdit={(n) => {
-          // Refetch the graph data so a renamed belief/concept reads
-          // through to the 3D scene + the connected-neuron rows in
-          // this panel without a hard reload.
+          // Refetch the graph data so a renamed belief/concept/vault
+          // item reads through to the 3D scene + the connected-neuron
+          // rows in this panel without a hard reload.
           if (n.kind === "belief") {
             queryClient.invalidateQueries({ queryKey: ["mindmap_active_beliefs", user?.id] });
           } else if (n.kind === "concept") {
             queryClient.invalidateQueries({ queryKey: ["mindmap_concepts", user?.id] });
+          } else if (n.kind === "vault") {
+            queryClient.invalidateQueries({ queryKey: ["mindmap_notes", user?.id] });
           }
         }}
         onAfterDelete={(n) => {

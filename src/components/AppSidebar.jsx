@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import FeedbackModal from "@/components/FeedbackModal";
 import { supabase } from "@/lib/supabase";
+import { fetchBoardsWithContext } from "@/lib/board/fetchBoardsWithContext";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -133,13 +134,7 @@ export default function AppSidebar({
     queryKey: ["boards", user?.id],
     queryFn: async () => {
       if (!user?.id) return [];
-      const { data } = await supabase
-        .from("omnia_boards")
-        .select("id, title, updated_at")
-        .eq("user_id", user.id)
-        .order("updated_at", { ascending: false })
-        .limit(50);
-      return data || [];
+      return fetchBoardsWithContext(user.id, 50);
     },
     enabled: !!user?.id,
   });

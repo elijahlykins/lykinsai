@@ -265,14 +265,17 @@ function openHrefFor(node: MindNode): { href: string; label: string } | null {
 }
 
 /**
- * Which kinds expose a server-side edit route? The pencil button only
- * renders when this returns true. Other kinds (notes, facts, tags,
- * chats, perspectives) don't have rename/edit endpoints today; adding
- * the pencil for them would surface a button that quietly does nothing.
+ * Which kinds expose an edit affordance? The pencil button only
+ * renders when this returns true.
  */
 function isEditable(node: MindNode): boolean {
   if (node.kind === "belief") return Boolean(node.meta?.beliefId);
   if (node.kind === "concept") return Boolean(node.meta?.conceptId);
+  if (node.kind === "vault") {
+    // Connector rollups represent many rows — no single title to rename.
+    if (node.meta?.isSourceRollup) return false;
+    return Boolean(node.meta?.noteId);
+  }
   return false;
 }
 
@@ -304,6 +307,16 @@ async function saveEdit(node: MindNode, text: string): Promise<boolean> {
     const id = node.meta?.conceptId;
     if (!id) return false;
     return patchAuthed(`/api/v1/concepts/${id}`, { label: text });
+  }
+  if (node.kind === "vault") {
+    const id = node.meta?.noteId;
+    if (!id || node.meta?.isSourceRollup) return false;
+    try {
+      const { error } = await supabase.from("notes").update({ title: text }).eq("id", id);
+      return !error;
+    } catch {
+      return false;
+    }
   }
   return false;
 }

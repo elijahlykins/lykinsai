@@ -8,6 +8,7 @@ import { scheduleSynthesisReindex } from "@/lib/synthesis/queueReindex";
 import { scheduleUserProfileRefresh } from "@/lib/synthesis/profileRefresh";
 import type { NotePage } from "@/components/notes/NotesPanel";
 import { notifyBlocksCapIfApplicable } from "@/lib/board/blocksCapError";
+import { fetchRecentBoardWithContext } from "@/lib/board/fetchBoardsWithContext";
 import { isDemoGridId, getDemoGridSnapshot } from "@/lib/demoGrids";
 
 const SNAPSHOT_VERSION = 2;
@@ -122,6 +123,8 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
   const saveTimerRef = useRef<number | null>(null);
   const savingRef = useRef(false);
   const lastSaveTimeRef = useRef<string | null>(null);
+  /** True once this board has a row in `omnia_boards` (loaded or first save). */
+  const boardRowExistsRef = useRef(false);
   // Always points to the freshest saveSnapshot. The autosave / unmount
   // effects below use this ref instead of pulling saveSnapshot in as a
   // dep so they don't re-register (and run their cleanup → spurious
@@ -533,6 +536,29 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
       const snapshot = sanitizeSnapshotForDb(raw);
       const now = new Date().toISOString();
 
+      if (!boardRowExistsRef.current) {
+        const { data: existingRow, error: lookupErr } = await supabase
+          .from("omnia_boards")
+          .select("id")
+          .eq("id", boardId)
+          .eq("user_id", userId)
+          .maybeSingle();
+        if (lookupErr && import.meta.env.DEV) {
+          console.error("[LYKN] Board row lookup failed:", lookupErr.message);
+        }
+        if (!existingRow?.id) {
+          const { error: insertErr } = await supabase
+            .from("omnia_boards")
+            .insert({ id: boardId, user_id: userId, title: savedTitle });
+          if (insertErr && import.meta.env.DEV) {
+            console.error("[LYKN] Board row insert failed:", insertErr.message);
+            return;
+          }
+        }
+        boardRowExistsRef.current = true;
+        try { localStorage.setItem("omnia_board_id", boardId); } catch { /* ignore */ }
+      }
+
       const statePayload = { board_id: boardId, state: snapshot, version: raw.version || SNAPSHOT_VERSION, user_id: userId, updated_at: now };
 
       const [updateRes, initialUpsertRes] = await Promise.all([
@@ -659,11 +685,23 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
     lastSavedTitleRef.current = next;
     setTitleTracked(next);
     if (next !== "New Chat") userRenamedRef.current = true;
-    await supabase
-      .from("omnia_boards")
-      .update({ title: next, updated_at: new Date().toISOString() })
-      .eq("id", boardId)
-      .eq("user_id", userId);
+    if (!boardRowExistsRef.current) {
+      const { error: insertErr } = await supabase
+        .from("omnia_boards")
+        .insert({ id: boardId, user_id: userId, title: next });
+      if (insertErr) {
+        if (import.meta.env.DEV) console.error("[LYKN] Board title insert failed:", insertErr.message);
+        return;
+      }
+      boardRowExistsRef.current = true;
+      try { localStorage.setItem("omnia_board_id", boardId); } catch { /* ignore */ }
+    } else {
+      await supabase
+        .from("omnia_boards")
+        .update({ title: next, updated_at: new Date().toISOString() })
+        .eq("id", boardId)
+        .eq("user_id", userId);
+    }
     window.dispatchEvent(new Event("lykinsai_boards_changed"));
   }, [boardId, setTitleTracked, userId]);
 
@@ -754,6 +792,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
     const loadBoard = async () => {
       hydratedRef.current = false;
       userRenamedRef.current = false;
+      boardRowExistsRef.current = false;
       let id: string | null = null;
       let loadedTitle = "New Chat";
       try {
@@ -767,25 +806,35 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
             .maybeSingle();
           if (data?.id) {
             id = data.id;
+            boardRowExistsRef.current = true;
             loadedTitle = String(data.title || "New Chat");
             if (data.title) setTitleTracked(loadedTitle);
             lastSavedTitleRef.current = loadedTitle;
+            localStorage.setItem("omnia_board_id", id!);
           }
         }
       } catch {
         // ignore
       }
+      if (!id && routeBoardId) {
+        id = routeBoardId;
+        loadedTitle = "New Chat";
+        setTitleTracked("New Chat");
+        lastSavedTitleRef.current = "New Chat";
+        try {
+          if (localStorage.getItem("omnia_board_id") === routeBoardId) {
+            localStorage.removeItem("omnia_board_id");
+          }
+        } catch {
+          // ignore
+        }
+      }
       if (!id && !routeBoardId) {
         try {
-          const { data: recent } = await supabase
-            .from("omnia_boards")
-            .select("id, title")
-            .eq("user_id", userId)
-            .order("updated_at", { ascending: false })
-            .limit(1)
-            .maybeSingle();
+          const recent = await fetchRecentBoardWithContext(userId);
           if (recent?.id) {
             id = recent.id;
+            boardRowExistsRef.current = true;
             loadedTitle = String(recent.title || "New Chat");
             if (recent.title) setTitleTracked(loadedTitle);
             lastSavedTitleRef.current = loadedTitle;
@@ -796,20 +845,15 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
         }
       }
       if (!id) {
-        try {
-          const { data, error: insertErr } = await supabase
-            .from("omnia_boards")
-            .insert(routeBoardId ? { id: routeBoardId, user_id: userId, title: "New Chat" } : { user_id: userId, title: "New Chat" })
-            .select("id, title")
-            .maybeSingle();
-          if (insertErr && import.meta.env.DEV) console.error("[LYKN] Board insert error:", insertErr.message);
-          id = data?.id || null;
-          if (data?.title) setTitleTracked(String(data.title));
-          lastSavedTitleRef.current = String(data?.title || "New Chat");
-          if (id) localStorage.setItem("omnia_board_id", id);
-        } catch (insertCatch) {
-          if (import.meta.env.DEV) console.error("[LYKN] Board creation failed:", insertCatch);
-        }
+        const ephemeralId =
+          routeBoardId ||
+          (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+            ? crypto.randomUUID()
+            : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
+        id = ephemeralId;
+        loadedTitle = "New Chat";
+        setTitleTracked("New Chat");
+        lastSavedTitleRef.current = "New Chat";
       }
       if (cancelled) return;
       if (loadedTitle !== "New Chat") userRenamedRef.current = true;
@@ -903,7 +947,9 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
       }
       hydratedRef.current = true;
 
-      if (id) window.dispatchEvent(new Event("lykinsai_boards_changed"));
+      if (id && boardRowExistsRef.current) {
+        window.dispatchEvent(new Event("lykinsai_boards_changed"));
+      }
     };
     loadBoard();
     return () => {
