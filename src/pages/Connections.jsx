@@ -4,6 +4,7 @@ import { ArrowRight } from "lucide-react";
 
 import { useAuth } from "@/lib/SupabaseAuth";
 import ConnectionsAppGrid from "@/components/connections/ConnectionsAppGrid";
+import CustomAgentsSection from "@/components/connections/CustomAgentsSection";
 import VaultConnectionsToggle from "@/components/connections/VaultConnectionsToggle";
 import {
   isWalkthroughLockActive,
@@ -183,7 +184,23 @@ export default function Connections() {
         className="relative z-20 mx-auto w-full px-4 sm:px-6 lg:px-8 pt-16 pb-16"
         style={{ maxWidth: "1560px" }}
       >
+        {/* Unified app-store grid: AI tools (Claude, ChatGPT, Cursor,
+            …) and input tools (Gmail, Notion, Slack, …) as a single
+            wall of same-shape tiles. The first two tiles in the AI
+            Tools section are the universal "any MCP client" and
+            "bring-your-own REST agent" cards — same visual treatment
+            as every other tile, just pinned to the top so the honest
+            "you only need ONE token" framing leads the page. See
+            ConnectionsAppGrid for the universal-tile + subgroup
+            mechanics. */}
         <ConnectionsAppGrid user={user} />
+        {/* Bring-your-own outbound webhook registry. Sibling to the
+            hero's "Build with the API" card — the hero is the discovery
+            path ("here's your bearer + code snippets") and this section
+            is the lifecycle path ("here are the agents you registered,
+            pause / edit / delete"). Kept at the bottom so the page reads
+            top-to-bottom as: connect → feed → push. */}
+        <CustomAgentsSection user={user} />
       </main>
 
       {/* Walkthrough welcome card — mirrors the synthesis-layer + vault

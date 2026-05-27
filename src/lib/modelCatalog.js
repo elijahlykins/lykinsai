@@ -50,7 +50,7 @@ export const FRONTIER_XAI_ID = "grok-4.3";
 // Documented for reference; the runtime mapping lives in `server.js` so
 // the client can't be tricked into bypassing routing.
 export const LYKN_ROUTED_MODELS = {
-  [LYKN_LITE_ID]: "gemini-3.1-flash-lite-preview",
+  [LYKN_LITE_ID]: "gemini-3.1-flash-lite",
   [LYKN_FAST_ID]: "gpt-4.1-nano",
   [LYKN_DEEP_ID]: "gemini-3.1-pro-preview",
 };

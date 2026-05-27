@@ -966,12 +966,14 @@ export function formatBeliefsAndRulesForPrompt(beliefs, rules, opts = {}) {
 export function formatBeliefsAndRulesForPromptOutsideClient(beliefs, rules, opts = {}) {
   const body = buildBeliefsAndRulesBody(beliefs, rules, opts);
   const projectBlock = formatProjectStateForPromptOutsideClient(opts.projectContext);
+  const otherProjectsBlock = formatOtherProjectsForPromptOutsideClient(opts.otherProjects);
 
-  // If neither beliefs nor a project exist, the prompt block has nothing
-  // to say — return empty so callers can decide whether to emit anything
-  // at all (mcp-tools/getContextBlock.js handles the "no beliefs yet"
-  // case explicitly with a friendlier message).
-  if (!body && !projectBlock) return '';
+  // If beliefs, project, AND other-project candidates are all empty,
+  // the prompt block has nothing to say — return empty so callers can
+  // decide whether to emit anything at all (mcp-tools/getContextBlock.js
+  // handles the "no beliefs yet" case explicitly with a friendlier
+  // message).
+  if (!body && !projectBlock && !otherProjectsBlock) return '';
 
   const lines = [];
 
@@ -994,6 +996,57 @@ export function formatBeliefsAndRulesForPromptOutsideClient(beliefs, rules, opts
   if (projectBlock) {
     if (lines.length) lines.push('', '');
     lines.push(projectBlock);
+  }
+
+  if (otherProjectsBlock) {
+    if (lines.length) lines.push('', '');
+    lines.push(otherProjectsBlock);
+  }
+
+  return lines.join('\n').trim();
+}
+
+/**
+ * Render the user's OTHER recent projects (the ones that are NOT the
+ * current focus) as a compact discovery footer for outside AI clients.
+ *
+ * The goal is to let an external model (Claude Desktop, Cursor, Claude
+ * Code, ChatGPT) see in one round-trip that "LYKN MCP integrations" or
+ * "Q1 fundraising deck" already exist as projects, BEFORE it tells the
+ * user it can't find their project. Every entry includes the project
+ * id, so the model can call lykn_setActiveProject({ project_id }) or
+ * lykn_getProjectState({ project_id }) directly without a separate
+ * lykn_listProjects round-trip.
+ *
+ * Returns '' if there are no candidates so the caller can decide
+ * whether to emit anything at all.
+ *
+ *   otherProjects = [{ id, name, description, last_active_at,
+ *                      state_key_count }]
+ */
+export function formatOtherProjectsForPromptOutsideClient(otherProjects) {
+  const list = Array.isArray(otherProjects) ? otherProjects.filter(Boolean) : [];
+  if (list.length === 0) return '';
+
+  const lines = [
+    '[OTHER_PROJECTS]',
+    'Other projects the user has touched (NOT the current focus). If the',
+    'user mentions one of these by name, switch into it instead of saying',
+    '"I can\'t find that project" — call lykn_setActiveProject({ project_id })',
+    'with the id below, or lykn_getProjectState({ project_id }) to read',
+    'without changing focus.',
+    '',
+  ];
+
+  for (const p of list) {
+    const last = p.last_active_at
+      ? new Date(p.last_active_at).toISOString().slice(0, 10)
+      : 'unknown';
+    const stateCount = Number.isFinite(p.state_key_count) ? p.state_key_count : 0;
+    const desc = p.description
+      ? ` — ${String(p.description).replace(/\s+/g, ' ').trim().slice(0, 120)}`
+      : '';
+    lines.push(`- ${p.name || '(unnamed)'} [id=${p.id}] last=${last} state_keys=${stateCount}${desc}`);
   }
 
   return lines.join('\n').trim();
@@ -1266,6 +1319,81 @@ export async function loadActiveProjectContext(client, userId) {
   } catch (err) {
     console.warn('[beliefSystem] active project load failed:', err?.message || err);
     return null;
+  }
+}
+
+/**
+ * Load a short list of the user's OTHER recent projects — i.e. projects
+ * the user has touched that are NOT the current active focus. Powers the
+ * `[OTHER_PROJECTS]` footer in `getContextBlock` so outside AI clients
+ * can see at a glance what else exists without spending a separate
+ * `lykn_listProjects` round-trip.
+ *
+ * Why this matters:
+ *   The single-project context block was lying-by-omission whenever the
+ *   user mentioned a project that wasn't the current focus — agents
+ *   would say "I can't find that project" and then fumble. Surfacing
+ *   2–5 candidates upfront eliminates the ambiguity in one round-trip.
+ *
+ * Best-effort: returns [] on any failure so the caller can keep going.
+ *
+ * Returns:
+ *   [{ id, name, description, last_active_at, state_key_count }]
+ */
+export async function loadOtherProjectsForUser(client, userId, opts = {}) {
+  if (!client || !userId) return [];
+  const limit = Math.min(Math.max(Number(opts.limit) || 5, 1), 12);
+  const excludeId = typeof opts.excludeId === 'string' ? opts.excludeId : null;
+
+  try {
+    let q = client
+      .from('lykn_projects')
+      .select('id, name, description, last_active_at')
+      .eq('user_id', userId)
+      .eq('status', 'active')
+      .order('last_active_at', { ascending: false })
+      .limit(limit + (excludeId ? 1 : 0));
+
+    const { data: rows, error } = await q;
+    if (error) {
+      console.warn('[beliefSystem] other projects load failed:', error.message);
+      return [];
+    }
+
+    const filtered = (rows || [])
+      .filter((r) => r && r.id !== excludeId)
+      .slice(0, limit);
+    if (filtered.length === 0) return [];
+
+    // Tally state_key_count per candidate so the model can tell at a
+    // glance which "other" projects have working memory accumulated
+    // vs which are just empty shells. One round-trip for the batch.
+    const ids = filtered.map((r) => r.id);
+    const counts = new Map();
+    try {
+      const { data: stateRows } = await client
+        .from('lykn_project_state')
+        .select('project_id, state_key')
+        .eq('user_id', userId)
+        .in('project_id', ids)
+        .is('superseded_at', null);
+      for (const sr of stateRows || []) {
+        counts.set(sr.project_id, (counts.get(sr.project_id) || 0) + 1);
+      }
+    } catch (err) {
+      console.warn('[beliefSystem] other projects state-count failed:', err?.message || err);
+    }
+
+    return filtered.map((r) => ({
+      id: r.id,
+      name: r.name,
+      description: r.description,
+      last_active_at: r.last_active_at,
+      state_key_count: counts.get(r.id) || 0,
+    }));
+  } catch (err) {
+    console.warn('[beliefSystem] other projects load threw:', err?.message || err);
+    return [];
   }
 }
 

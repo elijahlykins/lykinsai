@@ -265,7 +265,7 @@ export const AI_SURFACES = [
     file: "server.js",
     lineRange: "~2136-2547",
     providers: ["google"],
-    models: ["gemini-flash-latest", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview"],
+    models: ["gemini-flash-latest", "gemini-3-flash-preview", "gemini-3.1-flash-lite"],
     actionTypes: ["guest_chat"],
     tier: "low",
     guestAccessible: true,

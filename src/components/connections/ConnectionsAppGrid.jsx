@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { Check, CheckCircle2, ChevronDown, ShieldAlert, Loader2, Search, X } from "lucide-react";
+import { Check, CheckCircle2, ChevronDown, Code2, Plug, ShieldAlert, Loader2, Search, X } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
 import { API_BASE_URL } from "@/lib/api-config";
@@ -136,6 +136,64 @@ function getInputPaidWarning(connector) {
     message: `${connector.statusLabel || "This connection needs a paid tier on the upstream app."} OAuth will still work, but data won't sync until you have an eligible plan. Continue?`,
   };
 }
+
+// Two "universal" tiles that lead the AI Tools section. Same AppTile
+// shape as every other card; pinned to the top of the AI bucket so the
+// honest framing — "you don't need a per-tool integration to use any
+// modern AI client" — is the first thing the user sees, ahead of the
+// curated shortcuts.
+//
+// `buildTarget(base)` synthesises the OUTBOUND_TARGETS row passed to
+// UseLyknWithDialog. We START from a real catalog entry (so the dialog
+// inherits color / domain / helpUrl) but OVERRIDE the framing so the
+// universal flow doesn't bleed dev-facing labels ("Anything else (raw)",
+// "Custom Agent") into the user surface. The MCP tile in particular
+// pivots from the catalog entry's `installType: "raw"` (paste a bearer
+// into your config) to `oauth-mcp` + `connectMode: "copy-only"` — the
+// same OAuth/DCR flow Claude/Cursor/etc. use, because virtually every
+// actively-maintained MCP client now supports it. The API tile keeps
+// the `custom-agent` install path (token mint + code snippets) since
+// developer-written agents legitimately want an embedded bearer.
+const UNIVERSAL_AI_TILES = [
+  {
+    key: "ai-universal:mcp",
+    targetId: "other-mcp",
+    name: "Any AI tool via MCP",
+    description:
+      "Use LYKN inside any MCP-aware client — Claude Desktop, Cursor, Zed, Cline, Goose, Warp, Jan, Continue, or whatever ships next. Paste our MCP URL into the client's server config; it handles the OAuth handshake itself. No token to copy, nothing per-app to wire.",
+    iconNode: Plug,
+    accentClass: "bg-indigo-500/10 text-indigo-600 dark:text-indigo-300 ring-indigo-500/20",
+    buildTarget: (base) => ({
+      ...base,
+      name: "any MCP client",
+      summary:
+        "Paste LYKN's MCP URL into any MCP-aware client (Claude Desktop, Cursor, Zed, Cline, Goose, Warp, Jan, Continue, …). The client handles OAuth itself — you'll approve a LYKN consent screen, no bearer token to copy.",
+      installType: "oauth-mcp",
+      connectMode: "copy-only",
+      installSteps: [
+        "Open your MCP client (Claude Desktop, Cursor, Zed, Cline, Goose, Warp, Jan, Continue, …).",
+        "Find its MCP server config — usually Settings → MCP, or a JSON file like ~/.cursor/mcp.json or ~/.config/cline/mcp_settings.json.",
+        "Add a new server using the URL above as the endpoint. Save / reload.",
+        "Approve the LYKN consent screen when your client pops it.",
+      ],
+    }),
+  },
+  {
+    key: "ai-universal:api",
+    targetId: "custom-agent",
+    name: "Build with the LYKN API",
+    description:
+      "Wire LYKN into something you built yourself — LangChain, n8n, Vapi, a FastAPI service, a robot. Mint one bearer here, then call our REST endpoints (or MCP) from any language that speaks HTTP. Read your context block, search your vault, push project state back.",
+    iconNode: Code2,
+    accentClass: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-300 ring-emerald-500/20",
+    buildTarget: (base) => ({
+      ...base,
+      name: "the LYKN API",
+      summary:
+        "Mint a bearer token and embed it in your own code — LangChain, n8n, Vapi, FastAPI, or any HTTP client. Both the REST mirror and the raw MCP endpoint accept the same token.",
+    }),
+  },
+];
 
 export default function ConnectionsAppGrid({ user }) {
   const navigate = useNavigate();
@@ -316,6 +374,35 @@ export default function ConnectionsAppGrid({ user }) {
         label: "AI Tools",
         description: "Use LYKN's synthesis layer inside your AI of choice.",
       });
+
+      // Universal tiles lead the AI Tools section so the honest framing
+      // ("one token, every client") is the first thing the user sees —
+      // ahead of the curated per-client shortcuts. We resolve the
+      // OUTBOUND_TARGETS entry here (not in render) so a renamed id
+      // surfaces as a single console warning at construct time rather
+      // than a silently-broken tile at click time.
+      for (const u of UNIVERSAL_AI_TILES) {
+        const base = OUTBOUND_TARGETS.find((t) => t.id === u.targetId);
+        if (!base) {
+          // eslint-disable-next-line no-console
+          console.warn(`[ConnectionsAppGrid] universal tile "${u.key}" references missing target id "${u.targetId}"`);
+          continue;
+        }
+        // Resolve the dialog target NOW (not at click time) so a
+        // renamed/missing buildTarget surfaces immediately. Falls back
+        // to the bare catalog entry if no override is declared.
+        const target = typeof u.buildTarget === "function" ? u.buildTarget(base) : base;
+        out.push({
+          key: u.key,
+          kind: "ai-universal",
+          target,
+          name: u.name,
+          description: u.description,
+          iconNode: u.iconNode,
+          accentClass: u.accentClass,
+        });
+      }
+
       // Bucket each tier-1 target into its subgroup, keeping the
       // catalog ordering within the bucket so curation upstream still
       // wins. Empty buckets are silently dropped so a future change to
@@ -365,6 +452,11 @@ export default function ConnectionsAppGrid({ user }) {
     }
 
     return out;
+    // All data sources this memo reads are module-level
+    // (OUTBOUND_TARGETS, CONNECTORS, CONNECTOR_CATEGORIES,
+    // UNIVERSAL_AI_TILES) so the dep list is intentionally empty —
+    // recomputing on every render would just re-allocate identical
+    // arrays.
   }, []);
 
   // Filter: drop tiles outside the current bucket, apply the free-text
@@ -377,6 +469,7 @@ export default function ConnectionsAppGrid({ user }) {
       if (filter === "ai") {
         return (
           t.kind === "ai" ||
+          t.kind === "ai-universal" ||
           t.kind === "aiSubgroup" ||
           (t.kind === "section" && t.sectionBucket === "ai")
         );
@@ -388,6 +481,16 @@ export default function ConnectionsAppGrid({ user }) {
     const matchesQuery = (t) => {
       if (!q) return true;
       if (t.kind === "section" || t.kind === "aiSubgroup") return true;
+      if (t.kind === "ai-universal") {
+        return (
+          (t.name || "").toLowerCase().includes(q) ||
+          (t.description || "").toLowerCase().includes(q) ||
+          "mcp".includes(q) ||
+          "api".includes(q) ||
+          "universal".includes(q) ||
+          "ai tool".includes(q)
+        );
+      }
       if (t.kind === "ai") {
         const target = t.target;
         return (
@@ -653,6 +756,39 @@ export default function ConnectionsAppGrid({ user }) {
               </div>
             );
           }
+          if (tile.kind === "ai-universal") {
+            // Universal tile: same AppTile shell as every other card,
+            // but driven by a lucide icon (no favicon lookup) and a
+            // friendlier label. The dialog target was pre-synthesized
+            // in `allTiles` (see `buildTarget`) — for the MCP tile
+            // that flips the underlying catalog row from a manual-
+            // bearer flow to OAuth-MCP, matching how the curated
+            // Claude/Cursor/etc. tiles work.
+            const target = tile.target;
+            const isOauthFlow = target?.installType === "oauth-mcp";
+            return (
+              <AppTile
+                key={tile.key}
+                anchorId={tile.key.replace(":", "-")}
+                iconNode={tile.iconNode}
+                iconAccentClass={tile.accentClass}
+                name={tile.name}
+                typeLabel="Universal"
+                description={tile.description}
+                badge={null}
+                chips={null}
+                ctaLabel={isOauthFlow ? "Connect" : "Set up"}
+                ctaVariant="primary"
+                onClick={() => {
+                  if (!user) {
+                    toast({ title: "Sign in to set up", description: "Tokens are tied to your LYKN account." });
+                    return;
+                  }
+                  setActiveAiTarget(target);
+                }}
+              />
+            );
+          }
           if (tile.kind === "ai") {
             const target = tile.target;
             const isConnected = (tokensByKind.get(target.clientKind) || []).length > 0;
@@ -892,6 +1028,8 @@ function AppTile({
   anchorId,
   logoDomain,
   logoUrl,
+  iconNode,
+  iconAccentClass,
   name,
   typeLabel,
   description,
@@ -939,9 +1077,28 @@ function AppTile({
       }`}
     >
       <div className="flex items-start gap-3">
-        <div className="h-12 w-12 rounded-2xl flex items-center justify-center flex-shrink-0 bg-white dark:bg-white/95 ring-1 ring-black/[0.06] shadow-sm overflow-hidden">
-          <AppFavicon domain={logoDomain} iconUrl={logoUrl} name={name} />
-        </div>
+        {iconNode ? (
+          // Universal tiles (or any caller passing iconNode) skip the
+          // favicon pipeline entirely — useful when the tile isn't tied
+          // to a specific upstream domain. Accent ring/tint differentiates
+          // them from the favicon-on-white-square treatment used by
+          // every connector-backed tile.
+          <div
+            className={`h-12 w-12 rounded-2xl flex items-center justify-center flex-shrink-0 ring-1 ${
+              iconAccentClass ||
+              "bg-black/[0.04] dark:bg-white/[0.06] text-black/70 dark:text-white/80 ring-black/[0.06] dark:ring-white/[0.08]"
+            }`}
+          >
+            {(() => {
+              const Icon = iconNode;
+              return <Icon className="h-5 w-5" strokeWidth={1.75} />;
+            })()}
+          </div>
+        ) : (
+          <div className="h-12 w-12 rounded-2xl flex items-center justify-center flex-shrink-0 bg-white dark:bg-white/95 ring-1 ring-black/[0.06] shadow-sm overflow-hidden">
+            <AppFavicon domain={logoDomain} iconUrl={logoUrl} name={name} />
+          </div>
+        )}
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
             <h3 className="text-[13.5px] font-semibold text-black/85 dark:text-white/90 truncate">

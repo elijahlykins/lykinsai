@@ -1,7 +1,7 @@
 # ============================================================================
 # .github/workflows/security.yml — CI security gates (Agent 06)
 # ============================================================================
-# Two independent jobs run on every push to main and every PR:
+# Three independent jobs run on every push to main and every PR:
 #
 #   1. gitleaks            — full-history secret scan (second gate after the
 #                            local pre-commit hook installed by Agent 05).
@@ -12,6 +12,14 @@
 #                            so a freshly-disclosed CVE in xlsx / quill /
 #                            react-quill still surfaces (we just don't fail
 #                            on the already-accepted advisories).
+#   3. anon-permission-probe — hits every admin RPC, internal write fn, and
+#                            dropped reporting view with the public anon JWT
+#                            and asserts each one is denied. Regression gate
+#                            for the migration-068 vulnerability where anon
+#                            could read every user's email + AI spend through
+#                            five SECURITY DEFINER admin RPCs. See
+#                            scripts/anon-permission-probe.mjs and
+#                            supabase-migrations/068_lock_down_anon_functions.sql.
 #
 # Every third-party Action is PINNED TO A COMMIT SHA (supply-chain hardening
 # for the CI itself — a compromised v4 tag can't ship malicious code if we
@@ -131,3 +139,49 @@ jobs:
           name: npm-audit-results
           path: audit-results.json
           retention-days: 30
+
+  anon-permission-probe:
+    # Regression gate for the migration-068 anon-RPC info-disclosure bug.
+    # If this job ever fails, a future migration has re-granted the anon
+    # role EXECUTE on a surface that should be authenticated-only or
+    # service-role-only. Treat a failure here as a P0 — the script names
+    # the offending RPC/view so you can pinpoint the regressing migration.
+    name: Anon permission probe
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        # actions/checkout@v4 — pinned to commit SHA
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Setup Node 20
+        # actions/setup-node@v4 — pinned to commit SHA
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies (dotenv only — script has no other deps)
+        run: npm ci
+
+      - name: Skip if Supabase secrets are not configured
+        id: gate
+        run: |
+          if [ -z "${{ secrets.PROBE_SUPABASE_URL }}" ] || [ -z "${{ secrets.PROBE_SUPABASE_ANON_KEY }}" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::PROBE_SUPABASE_URL / PROBE_SUPABASE_ANON_KEY repo secrets not set — skipping probe."
+            echo "::warning::Configure them in repo Settings → Secrets → Actions to enable the regression gate."
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run probe against production Supabase
+        if: steps.gate.outputs.configured == 'true'
+        env:
+          # Use repo secrets, NOT the running app's env vars. We deliberately
+          # point this at the production project so a regression on prod
+          # fails CI even when the regressing PR doesn't touch supabase config.
+          VITE_SUPABASE_URL: ${{ secrets.PROBE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.PROBE_SUPABASE_ANON_KEY }}
+        run: node scripts/anon-permission-probe.mjs

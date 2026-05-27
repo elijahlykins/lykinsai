@@ -37,6 +37,16 @@ export interface UserProject {
   createdAt: number;
   lastActiveAt: number;
   members: UserProjectMember[];
+  // Total number of `lykn_pushProjectState` calls ever made against
+  // this project — counts EVERY row in `lykn_project_state` for the
+  // project, including superseded ones. Each row represents one push
+  // event from an outside AI client, so this is the user-facing
+  // answer to "how much working memory has been written here?" The
+  // "By Project" dropdown surfaces this next to the member count so
+  // the user can tell at a glance which projects the AI is actively
+  // pushing into vs. which ones are dormant. Defaults to 0 on the
+  // localStorage / guest path (no server-side push log available).
+  pushCount: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -55,13 +65,23 @@ function readLocal(userId: string | null | undefined): UserProject[] {
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
-      (r): r is UserProject =>
-        !!r &&
-        typeof r.id === "string" &&
-        typeof r.name === "string" &&
-        Array.isArray((r as UserProject).members),
-    );
+    return parsed
+      .filter(
+        (r): r is UserProject =>
+          !!r &&
+          typeof r.id === "string" &&
+          typeof r.name === "string" &&
+          Array.isArray((r as UserProject).members),
+      )
+      .map((r) => ({
+        // Backfill pushCount on rows persisted before the field
+        // existed so the "By Project" dropdown can always render
+        // "N pushes" without a runtime undefined check.
+        ...r,
+        pushCount: typeof (r as UserProject).pushCount === "number"
+          ? (r as UserProject).pushCount
+          : 0,
+      }));
   } catch {
     return [];
   }
@@ -105,6 +125,7 @@ export async function listUserProjects(userId: string | null | undefined): Promi
 
     const ids = (projects || []).map((p) => p.id as string);
     let membersByProject = new Map<string, UserProjectMember[]>();
+    let pushCountByProject = new Map<string, number>();
     if (ids.length > 0) {
       const { data: members, error: memErr } = await supabase
         .from("lykn_project_neurons")
@@ -123,6 +144,34 @@ export async function listUserProjects(userId: string | null | undefined): Promi
         });
         membersByProject.set(pid, arr);
       }
+
+      // Push counts — one row per `lykn_pushProjectState` call, ever.
+      // We deliberately count ALL rows (superseded + current) because
+      // a push is an event, not a value: a project with 1 stable key
+      // that's been updated 12 times still represents 12 pushes worth
+      // of AI working memory. Supabase-js doesn't have a group-by, so
+      // we pull just the `project_id` column for every push row and
+      // tally client-side. The payload is bounded by total pushes
+      // across all projects, which for any single user is realistically
+      // in the hundreds at most — cheap. If the table is missing
+      // (045/048 not applied) we swallow and leave counts at 0; the
+      // outer try/catch already handles harder failures by falling
+      // back to localStorage.
+      try {
+        const { data: pushRows, error: pushErr } = await supabase
+          .from("lykn_project_state")
+          .select("project_id")
+          .eq("user_id", userId)
+          .in("project_id", ids);
+        if (!pushErr) {
+          for (const r of pushRows || []) {
+            const pid = r.project_id as string;
+            pushCountByProject.set(pid, (pushCountByProject.get(pid) || 0) + 1);
+          }
+        }
+      } catch {
+        /* push log unavailable — leave counts at 0 */
+      }
     }
 
     return (projects || []).map((p) => ({
@@ -134,6 +183,7 @@ export async function listUserProjects(userId: string | null | undefined): Promi
       createdAt: p.created_at ? new Date(p.created_at as string).getTime() : Date.now(),
       lastActiveAt: p.last_active_at ? new Date(p.last_active_at as string).getTime() : Date.now(),
       members: membersByProject.get(p.id as string) || [],
+      pushCount: pushCountByProject.get(p.id as string) || 0,
     }));
   } catch {
     return readLocal(userId);
@@ -191,6 +241,7 @@ export async function createUserProject(
       createdAt: Date.now(),
       lastActiveAt: Date.now(),
       members: cleanMembers,
+      pushCount: 0,
     };
     writeLocal(userId, [fresh, ...existing]);
     return fresh;
@@ -288,6 +339,21 @@ export async function createUserProject(
       .eq("project_id", projectRow.id)
       .order("created_at", { ascending: true });
 
+    // Push count — accurate on the merge path (existing project may
+    // already have history). Same head-count trick `listUserProjects`
+    // uses; we don't need to pull the value column for this.
+    let pushCount = 0;
+    try {
+      const { count } = await supabase
+        .from("lykn_project_state")
+        .select("id", { count: "exact", head: true })
+        .eq("user_id", userId)
+        .eq("project_id", projectRow.id);
+      pushCount = typeof count === "number" ? count : 0;
+    } catch {
+      /* push log unavailable — leave at 0 */
+    }
+
     return {
       id: projectRow.id,
       name: projectRow.name,
@@ -303,6 +369,7 @@ export async function createUserProject(
         label: (m.node_label as string | null) ?? null,
         kind: (m.node_kind as string | null) ?? null,
       })),
+      pushCount,
     };
   } catch {
     // Fall back to local cache so the user still sees their cluster
@@ -317,6 +384,7 @@ export async function createUserProject(
       createdAt: Date.now(),
       lastActiveAt: Date.now(),
       members: cleanMembers,
+      pushCount: 0,
     };
     writeLocal(userId, [fresh, ...existing]);
     return fresh;
@@ -585,4 +653,159 @@ export async function deleteUserProject(
   } catch {
     /* table missing / network — local already cleaned */
   }
+}
+
+// ---------------------------------------------------------------------------
+// Merge — fold one project into another, atomically.
+// ---------------------------------------------------------------------------
+//
+// Wraps the `public.lykn_merge_projects` SQL function (migration 067).
+// Both phases (dry-run preview + live commit) go through the same
+// PostgREST RPC; the function is SECURITY DEFINER and verifies that
+// the caller owns BOTH projects before touching anything. The RPC
+// also returns identical-shape JSON in both phases so the panel can
+// render a "here's what will happen" preview, then re-call with the
+// same arguments + `dryRun: false` to commit.
+//
+// Conflict resolution mirrors the migration's contract:
+//   • Project state — every source row's project_id repoints to
+//     target. Newer-wins supersession reconciles any state_key that
+//     ends up with two non-superseded rows in target.
+//   • Clustered neurons — node_ids unique to source move; node_ids
+//     already in target are dropped from source (target wins).
+//   • Identity facts — project_id repointed where applicable.
+//   • Active focus pointer — redirected to target if it pointed at
+//     source so the user's "current project" survives the merge.
+//   • Source row hard-deleted at the end (cascades clean stragglers).
+//
+// We deliberately do NOT shadow the merge into localStorage. Guest
+// users (no userId) can't merge — projects are server-side rows by
+// the time merging makes sense (you need at least two real projects
+// to consolidate, and guests are capped before they get there).
+
+export interface ProjectMergePreview {
+  /** True when this response was a dry-run; false when it was a commit. */
+  dryRun: boolean;
+  /** Source project's pre-merge identity (only present on dry-run). */
+  source: {
+    id: string;
+    name: string | null;
+    description: string | null;
+  } | null;
+  /** Target project's pre-merge identity (only present on dry-run). */
+  target: {
+    id: string;
+    name: string | null;
+    description: string | null;
+  } | null;
+  stateRowsMoved: number;
+  stateKeysSupersededInTarget: number;
+  neuronsMoved: number;
+  neuronsDroppedAsDuplicate: number;
+  factsRepointed: number;
+  activeProjectPointerRepointed: boolean;
+  /** Always true on commit — the source project is hard-deleted at
+   *  the end of the live path. Surfaced so the UI can mirror the
+   *  intent in the confirm copy ("This will delete \"X\".") */
+  sourceProjectDeleted: boolean;
+  /** Free-form server message — useful for showing the user the
+   *  "Merged X into Y. N rows moved." summary verbatim. */
+  message: string | null;
+}
+
+function readPreviewFromRpc(payload: unknown, dryRun: boolean): ProjectMergePreview {
+  const obj = (payload && typeof payload === "object" ? payload : {}) as Record<string, unknown>;
+  const previewBlock = (
+    dryRun
+      ? (obj.preview as Record<string, unknown> | undefined)
+      : (obj.merged as Record<string, unknown> | undefined)
+  ) || {};
+  const sourceBlock = (obj.source as Record<string, unknown> | undefined) || null;
+  const targetBlock = (obj.target as Record<string, unknown> | undefined) || null;
+
+  const num = (k: string): number => {
+    const v = previewBlock[k];
+    return typeof v === "number" && Number.isFinite(v) ? v : 0;
+  };
+  const bool = (k: string): boolean => previewBlock[k] === true;
+
+  return {
+    dryRun,
+    source: sourceBlock
+      ? {
+          id: String(sourceBlock.id ?? ""),
+          name: (sourceBlock.name as string | null) ?? null,
+          description: (sourceBlock.description as string | null) ?? null,
+        }
+      : null,
+    target: targetBlock
+      ? {
+          id: String(targetBlock.id ?? ""),
+          name: (targetBlock.name as string | null) ?? null,
+          description: (targetBlock.description as string | null) ?? null,
+        }
+      : null,
+    stateRowsMoved: num("state_rows_moved"),
+    stateKeysSupersededInTarget: num(
+      dryRun ? "state_keys_superseded_in_target" : "state_rows_superseded_in_target",
+    ),
+    neuronsMoved: num("neurons_moved"),
+    neuronsDroppedAsDuplicate: num("neurons_dropped_as_duplicate"),
+    factsRepointed: num("facts_repointed"),
+    activeProjectPointerRepointed: bool("active_project_pointer_repointed"),
+    sourceProjectDeleted: !dryRun ? true : bool("source_project_deleted"),
+    message: typeof obj.message === "string" ? (obj.message as string) : null,
+  };
+}
+
+export interface MergeUserProjectsOptions {
+  /** When true (default) the call is a preview — counts are returned
+   *  but nothing is written. Pass false to commit the merge. */
+  dryRun?: boolean;
+}
+
+/**
+ * Atomically fold `sourceProjectId` into `targetProjectId`. Returns
+ * the count of rows moved + superseded + deduped. The first call from
+ * the UI should be a dry run (default); the panel renders the preview
+ * and only re-calls with `{ dryRun: false }` once the user confirms.
+ *
+ * Throws on any RPC error — including ownership mismatch, missing
+ * source/target, or sourceProjectId === targetProjectId. The caller
+ * should surface the message verbatim; the SQL function's RAISE
+ * EXCEPTION strings are written to be human-readable.
+ */
+export async function mergeUserProjects(
+  userId: string | null | undefined,
+  sourceProjectId: string,
+  targetProjectId: string,
+  opts: MergeUserProjectsOptions = {},
+): Promise<ProjectMergePreview> {
+  if (!userId) {
+    throw new Error("Sign in required to merge projects.");
+  }
+  if (!sourceProjectId || !targetProjectId) {
+    throw new Error("Both source and target project ids are required.");
+  }
+  if (sourceProjectId === targetProjectId) {
+    throw new Error("Source and target must be different projects.");
+  }
+
+  const dryRun = opts.dryRun !== false;
+  const { data, error } = await supabase.rpc("lykn_merge_projects", {
+    p_source: sourceProjectId,
+    p_target: targetProjectId,
+    p_dry_run: dryRun,
+    // Frontend uses JWT auth, so the function resolves the caller via
+    // auth.uid(). Passing p_user_id explicitly would be redundant —
+    // and the function rejects mismatched p_user_id vs auth.uid() to
+    // catch programming errors that try to write across accounts.
+    p_user_id: null,
+  });
+
+  if (error) {
+    throw new Error(error.message || "Merge failed.");
+  }
+
+  return readPreviewFromRpc(data, dryRun);
 }

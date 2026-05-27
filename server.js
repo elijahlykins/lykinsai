@@ -70,6 +70,15 @@ import {
   encryptToken,
 } from './connectors-service.js';
 import {
+  listCustomAgents,
+  getCustomAgent,
+  createCustomAgent,
+  updateCustomAgent,
+  deleteCustomAgent,
+  testCustomAgent,
+  CustomAgentValidationError,
+} from './custom-agents-service.js';
+import {
   runUserModelLearningPass,
   applyFactFeedback,
   listActiveFactsForUser,
@@ -383,6 +392,16 @@ function needsWebSearch(text, opts = {}) {
 
 // ---- Auto enrichment classifier: 'none' | 'light' | 'full' ----
 const GREETING_PATTERN = /^(hi|hello|hey|yo|sup|good\s+(morning|afternoon|evening)|thanks|thank\s*you|ok(ay)?|sure|yes|no|yep|nope|got\s*it|cool|nice|great|awesome|perfect|sounds?\s*good|never\s*mind|nvm|lol|haha|hmm+|wow|bye|gn|gm)\b/i;
+
+// Phatic / casual conversation openers — "how are you", "how's it going",
+// "what's up", etc. These look question-shaped (they contain "how" or
+// "what") so the classifier below would otherwise route them to 'light'
+// enrichment, pulling synthesis retrieval + project section + user model
+// just to answer "I'm good, you?". They aren't asking about anything in
+// the user's vault / projects — they're chitchat. The model answers them
+// fine from the persona alone, so we want them on the same 'none' tier
+// as "hi" / "ok" / "thanks".
+const CASUAL_CHITCHAT_PATTERN = /^(?:how(?:'?s|'?ve|\s+(?:is|are|was|have|'?ve|you|ya|r))?\s+(?:it|you|u|ya|things|life|been|going|doing|your\s+day)\b|what(?:'?s|s)?\s+up\b|wassup\b|hru\b|how\s+goes(?:\s+it)?\b|long\s+time\s+no\s+see\b|you\s+(?:there|good|alright|okay|ok|up)(?:\s|\?|$|!))/i;
 const LAYOUT_COMMAND_PATTERN = /\b(move|resize|arrange|organize|sort|align|group|ungroup|stack|tile|spread|grid|snap|place|position|reorder|swap|flip|rotate|duplicate|delete|remove|clear|undo|redo)\s+(the\s+)?(block|brick|card|item|image|element|box|note)s?\b/i;
 const BOARD_ACTION_PATTERN = /\b(make\s+(it|this|that)\s+(bigger|smaller|larger|red|blue|green|bold|italic)|change\s+(the\s+)?(color|size|font|title|name)|rename|set\s+(the\s+)?title)\b/i;
 // Questions about the AI itself ("what do you do", "who are you", "what is
@@ -398,6 +417,7 @@ function classifyEnrichment(text, opts = {}) {
   const t = String(text).trim();
   if (t.length < 3) return 'none';
   if (GREETING_PATTERN.test(t)) return 'none';
+  if (CASUAL_CHITCHAT_PATTERN.test(t)) return 'none';
   if (LAYOUT_COMMAND_PATTERN.test(t)) return 'none';
   if (BOARD_ACTION_PATTERN.test(t)) return 'none';
   if (AI_IDENTITY_QUERY_PATTERN.test(t)) return 'none';
@@ -3366,7 +3386,11 @@ const MODEL_CATALOG = [
 // `gemini-2.5-flash`) — no other code change is needed; the alias
 // resolution + fallback chain are model-agnostic.
 const LYKN_ROUTED_MODELS = {
-  'lykn-lite': 'gemini-3.1-flash-lite-preview',
+  // Google graduated Gemini 3.1 Flash Lite out of preview on 2026-05-26
+  // and the `-preview` suffix now returns HTTP 404 NOT_FOUND, breaking
+  // every free-tier turn (the only model that tier is allowed to use —
+  // see BASIC_MODEL_IDS in src/lib/modelTiers.js). Use the stable name.
+  'lykn-lite': 'gemini-3.1-flash-lite',
   'lykn-fast': 'gpt-4.1-nano',
   'lykn-deep': 'gemini-3.1-pro-preview',
   // Legacy single-tier alias → middle Fast Reasoning tier (now OpenAI).
@@ -3718,7 +3742,7 @@ const GUEST_MODEL_CHAIN_DEFAULT = [
   // Cheap + fast default for everything else: subsequent onboarding turns,
   // the landing-grid demo, etc. Guests don't get top-shelf models on
   // every message.
-  { provider: 'google', model: 'gemini-3.1-flash-lite-preview', envKey: 'GOOGLE_API_KEY' },
+  { provider: 'google', model: 'gemini-3.1-flash-lite', envKey: 'GOOGLE_API_KEY' },
   { provider: 'google', model: 'gemini-flash-latest', envKey: 'GOOGLE_API_KEY' },
 ];
 const GUEST_MAX_PROMPT_CHARS = 6000;
@@ -4417,21 +4441,25 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '    on Z" — anywhere the full picture matters.',
   '  • lykn_loadNeuron — hydrate ONE neuron\'s FULL body into the chat,',
   '    given a node_id from findConnections / searchVault. findConnections',
-  '    returns snippets; loadNeuron returns the complete content so you',
-  '    can quote, summarise, or build on it. Common pattern:',
-  '    findConnections → pick a node_id → loadNeuron(node_id).',
+  '    and searchVault return SNIPPETS; loadNeuron returns the complete',
+  '    content so you can quote, summarise, or build on it.',
   '    IMPORTANT — calling this also VISIBLY brings the neuron into the',
   '    chat as a rich card the user sees directly (the saved image, the',
-  '    link card, the note body, the belief text, etc.). So whenever the',
-  '    user asks to "show me", "bring up", "pull up", "open", "see", or',
-  '    otherwise wants to LOOK at one of their saved items — a vault',
-  '    note, an image they saved, a bookmark, a belief, a fact, a',
-  '    concept — call lykn_loadNeuron with that node_id and the card',
-  '    will render under your reply automatically. Do NOT paste the full',
-  '    body of the item back as text in your reply when you do this —',
-  '    the card already shows it; your prose should briefly frame WHY',
-  '    you brought it in (e.g. "Here\'s the note you saved about X —")',
-  '    not duplicate its content.',
+  '    link card, the note body, the belief text, etc.). THIS IS THE',
+  '    ONLY WAY a saved item from the vault / beliefs / facts / concepts',
+  '    actually appears in the conversation — searchVault and',
+  '    findConnections alone do NOT render anything visible to the user.',
+  '    So whenever the user asks to "show me", "bring up", "bring in",',
+  '    "pull up", "pull in", "open", "see", "render", "drop in",',
+  '    "include", "attach", or otherwise wants to LOOK at one of their',
+  '    saved items — a vault note, an image they saved, a bookmark, a',
+  '    belief, a fact, a concept — you MUST end with a lykn_loadNeuron',
+  '    call (or lykn_loadNeurons for several). Searching and quoting the',
+  '    snippet is not enough; the user wants the file itself in the',
+  '    chat. Do NOT paste the body back as text in your reply — the',
+  '    card already shows it; your prose should briefly frame WHY you',
+  '    brought it in (e.g. "Here\'s the note you saved about X —") not',
+  '    duplicate its content.',
   '  • lykn_loadNeurons — batch sibling. Use this INSTEAD of multiple',
   '    loadNeuron calls when the user wants to see SEVERAL of their',
   '    items at once ("pull up all my notes on robotics", "show me',
@@ -4443,7 +4471,15 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '    rule applies — the cards show the content.',
   '  • lykn_searchVault — vault-only substring search. Use only when',
   '    you specifically want saved notes / saved articles / saved links',
-  '    and not the other stores.',
+  '    and not the other stores. Returns snippets with a `node_id` of',
+  '    shape `vault_<uuid>` on every hit — pass that node_id straight',
+  '    to lykn_loadNeuron / lykn_loadNeurons (do NOT strip the prefix,',
+  '    do NOT pass the bare `id` field). The MANDATORY pattern when the',
+  '    user wants to see what they saved is: searchVault({ query }) →',
+  '    pick the best hit(s) → loadNeuron(node_id) [or loadNeurons for',
+  '    multiple]. Skipping the loadNeuron step means the user only sees',
+  '    your prose and never the actual saved file — that is the failure',
+  '    mode this pipeline exists to prevent.',
   '  • lykn_getNeuronLinks — the user\'s authored connections between',
   '    neurons. Pass node_id to see "what is this connected to" — the',
   '    perfect follow-up to loadNeuron. Omit node_id to see what they\'ve',
@@ -4472,6 +4508,16 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '  • lykn_deleteProject — hard delete. The tool requires confirm:true',
   '    AND the project\'s exact current name. Only call after the user',
   '    has explicitly asked to delete and you\'ve restated which project.',
+  '',
+  'PROJECT MERGE (write, IRREVERSIBLE — two-phase: preview → commit):',
+  '  • lykn_mergeProjects — fold one project into another. Source is',
+  '    deleted; target inherits its state pushes + clustered neurons.',
+  '    ALWAYS run dry-run first (default — confirm:false) and SHOW',
+  '    the returned `preview` counts to the user verbatim before',
+  '    re-calling with confirm:true + source_name. Use this when',
+  '    duplicates are visible in lykn_listProjects ("LYKN MCP work"',
+  '    vs "LYKN MCP integration") and the user has explicitly asked',
+  '    to consolidate. Never merge on your own initiative.',
   '',
   'NEW NEURONS (write):',
   '  • lykn_proposeBelief — when the user states a durable principle that',
@@ -6688,6 +6734,7 @@ const PROJECT_WRITE_TOOLS = new Set([
   'lykn_pushProjectState',
   'lykn_updateProject',
   'lykn_deleteProject',
+  'lykn_mergeProjects',
   'lykn_addProjectNeurons',
   'lykn_removeProjectNeurons',
 ]);
@@ -6807,6 +6854,7 @@ app.post('/api/v1/synthesis/projects/state', requireAuthOrMcpToken, mcpMinuteLim
 // rate-limiting + telemetry the direct-Supabase path doesn't get.
 app.post('/api/v1/synthesis/projects/update', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_updateProject', req, res));
 app.post('/api/v1/synthesis/projects/delete', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_deleteProject', req, res));
+app.post('/api/v1/synthesis/projects/merge', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_mergeProjects', req, res));
 app.post('/api/v1/synthesis/projects/neurons/add', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_addProjectNeurons', req, res));
 app.post('/api/v1/synthesis/projects/neurons/remove', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_removeProjectNeurons', req, res));
 // Synthesis-graph user-authored edges — mirrors lykn_createNeuronLink /
@@ -6825,6 +6873,118 @@ app.post('/api/v1/synthesis/preferences', requireAuthOrMcpToken, mcpMinuteLimite
 // Cross-store recent-activity feed — last-N-days deltas across every
 // neuron store. Read-only.
 app.get('/api/v1/synthesis/activity', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_getRecentActivity', req, res));
+
+// ─── Custom Agents — bring-your-own outbound webhooks ─────────────────
+//
+// CRUD + reachability /test ping for user-registered agent endpoints.
+// JWT-only; the MCP token surface is for INBOUND (agent → LYKN). This
+// registry is the LYKN → agent direction and lives on the web app's
+// auth context.
+//
+// See migration 070 for the table + planned trigger vocabulary.
+// See custom-agents-service.js for dispatcher details. The real
+// dispatcher is NOT yet wired into any trigger source — only the
+// /test endpoint actually POSTs to the user's webhook today.
+
+function _customAgentErr(e) {
+  if (e instanceof CustomAgentValidationError) {
+    return { status: 400, body: { error: 'validation', message: e.message } };
+  }
+  console.error('❌ custom-agents:', e?.message || e);
+  return { status: 500, body: { error: 'internal' } };
+}
+
+app.get('/api/v1/custom-agents', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    if (!supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+    const agents = await listCustomAgents(supabaseAdmin, userId);
+    return res.json({ ok: true, agents });
+  } catch (e) {
+    const { status, body } = _customAgentErr(e);
+    return res.status(status).json(body);
+  }
+});
+
+app.get('/api/v1/custom-agents/:id', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    if (!supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+    const agent = await getCustomAgent(supabaseAdmin, userId, String(req.params.id || ''));
+    if (!agent) return res.status(404).json({ error: 'not_found' });
+    return res.json({ ok: true, agent });
+  } catch (e) {
+    const { status, body } = _customAgentErr(e);
+    return res.status(status).json(body);
+  }
+});
+
+app.post('/api/v1/custom-agents', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    if (!supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+    const agent = await createCustomAgent(supabaseAdmin, userId, req.body || {});
+    return res.json({ ok: true, agent });
+  } catch (e) {
+    const { status, body } = _customAgentErr(e);
+    return res.status(status).json(body);
+  }
+});
+
+app.patch('/api/v1/custom-agents/:id', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    if (!supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+    const agent = await updateCustomAgent(
+      supabaseAdmin,
+      userId,
+      String(req.params.id || ''),
+      req.body || {},
+    );
+    if (!agent) return res.status(404).json({ error: 'not_found' });
+    return res.json({ ok: true, agent });
+  } catch (e) {
+    const { status, body } = _customAgentErr(e);
+    return res.status(status).json(body);
+  }
+});
+
+app.delete('/api/v1/custom-agents/:id', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    if (!supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+    await deleteCustomAgent(supabaseAdmin, userId, String(req.params.id || ''));
+    return res.json({ ok: true });
+  } catch (e) {
+    const { status, body } = _customAgentErr(e);
+    return res.status(status).json(body);
+  }
+});
+
+// Synthetic reachability ping. POSTs a body of shape:
+//   { trigger: "test", user_id, context_block: "<placeholder>",
+//     payload: { message }, lykn: { version, agent_id } }
+// to the user's endpoint with the configured auth header. Returns
+// status + latency + body preview so the user can see exactly what
+// their agent received. Reuses the agent's stored secret — no need
+// to re-enter it for a test.
+app.post('/api/v1/custom-agents/:id/test', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    if (!supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+    const result = await testCustomAgent(supabaseAdmin, userId, String(req.params.id || ''));
+    return res.json({ ok: true, result });
+  } catch (e) {
+    const { status, body } = _customAgentErr(e);
+    return res.status(status).json(body);
+  }
+});
 
 // --- Concepts (056-058) ---------------------------------------------------
 // First-class concept/topic layer with hybrid AI/user authorship. The
@@ -11018,7 +11178,9 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
     // route this turn through the chat agent loop in chat-agent-loop.js
     // so the model can call lykn_listProjects / etc. via function-calling.
     // Falls through to the legacy single-shot stream when false.
-    const useTools = req.body?.useTools === true && CHAT_TOOLS.length > 0;
+    // `let` (not const) because we may downgrade this to `false` once
+    // we've classified the turn — see the 'none' tier gate below.
+    let useTools = req.body?.useTools === true && CHAT_TOOLS.length > 0;
     let model = normalizedModel;
     console.log('[LYKN-STREAM] workspaceContext received:', workspaceContext ? `${String(workspaceContext).length} chars` : 'EMPTY/MISSING');
 
@@ -11228,6 +11390,23 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
     if (streamEnrichTier === 'none') console.log('⚡ Stream: No enrichment — simple query / non-chat');
     else if (streamEnrichTier === 'light') console.log('💡 Stream: Light enrichment — synthesis + user model (no web)');
     else console.log('🔬 Stream: Full enrichment — synthesis, user model, web search, URL scraping');
+
+    // CASUAL-TURN TOOL GATE: on a 'none' tier (greetings, casual chitchat,
+    // identity-of-LYKN questions, single-word acks), turn off the agent
+    // loop entirely. The LYKN_CHAT_TOOL_GUIDANCE block we'd otherwise
+    // append carries an "END-OF-TURN PROJECT PROPOSAL — non-negotiable"
+    // rule plus the AUTO-CONNECT FLOW that fires the moment any project
+    // surfaces. Combined with [USER_IDENTITY] (which lists active projects
+    // on every chat turn for tone/personalisation), the model treats a
+    // simple "how are you?" as cue to call lykn_setActiveProject /
+    // lykn_getProjectState / lykn_getProjectNeurons and ship back a
+    // market-gap analysis of the user's active project. The fix is to
+    // skip tools on phatic turns — there's nothing for them to look up,
+    // and the persona alone produces a clean conversational reply.
+    if (useTools && streamEnrichTier === 'none') {
+      useTools = false;
+      console.log('💬 Stream: useTools disabled for casual turn — skipping agent loop and project-proposal guidance');
+    }
     // Explicit URL intent overrides the tier — if the user pasted a URL and
     // asked us to read / browse / search it, we scrape regardless of tier.
     const streamExplicitUrlIntent = isChatIntent && hasExplicitUrlScrapeIntent(streamSearchText);

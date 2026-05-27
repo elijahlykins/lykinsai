@@ -40,7 +40,17 @@ function useIsTouchDevice() {
 export interface Scene3DNode {
   id: string;
   label: string;
-  kind: "root" | "category" | "grid" | "vault" | "tag" | "neuron" | "belief";
+  kind:
+    | "root"
+    | "category"
+    | "grid"
+    | "vault"
+    | "tag"
+    | "neuron"
+    | "belief"
+    | "concept"
+    | "perspective"
+    | "project";
   color: string;
   glow: string;
   radius: number;
@@ -234,6 +244,13 @@ function Neuron({ node, isHovered, isSelected, isDimmed, isTopicMode, onHover, o
       // dimmer than the principle-bearing belief stars. A gentle
       // pulse signals they're alive and the AI uses them.
       case "perspective": return { emissive: 1.8, pulse: true };
+      // Projects are user-authored neuron clusters. Treat them as
+      // landmarks similar to concepts — emit a touch brighter than
+      // vault/tags so the teal cluster reads as deliberate, with a
+      // gentle pulse so the user notices when an AI client just
+      // pushed an update to one (the scene-side pulse is global, but
+      // the alive feel matches how "working" each project is).
+      case "project":  return { emissive: 1.6, pulse: true };
       default:         return { emissive: 1.0, pulse: false };
     }
   }, [node.kind]);

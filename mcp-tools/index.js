@@ -51,6 +51,7 @@ import { updateProjectTool } from './updateProject.js';
 import { addProjectNeuronsTool } from './addProjectNeurons.js';
 import { removeProjectNeuronsTool } from './removeProjectNeurons.js';
 import { deleteProjectTool } from './deleteProject.js';
+import { mergeProjectsTool } from './mergeProjects.js';
 import { findConnectionsTool } from './findConnections.js';
 import { createVaultNoteTool } from './createVaultNote.js';
 import { loadNeuronTool } from './loadNeuron.js';
@@ -74,6 +75,7 @@ export const MCP_TOOLS = [
   setActiveProjectTool,
   updateProjectTool,
   deleteProjectTool,
+  mergeProjectsTool,
   pushProjectStateTool,
   getProjectStateTool,
   addProjectNeuronsTool,

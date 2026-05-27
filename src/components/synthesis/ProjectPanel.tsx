@@ -1,9 +1,11 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useQuery } from "@tanstack/react-query";
 import {
   Atom,
   BookOpen,
+  ChevronDown,
+  Combine,
   Compass,
   FileText,
   FolderPlus,
@@ -13,9 +15,15 @@ import {
   Network,
   Plus,
   Sparkles,
+  X,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { listProjectStateUpdates, type UserProject } from "@/lib/userProjects";
+import {
+  listProjectStateUpdates,
+  mergeUserProjects,
+  type ProjectMergePreview,
+  type UserProject,
+} from "@/lib/userProjects";
 
 /**
  * ProjectPanel — the right-side detail surface that opens when the
@@ -105,6 +113,18 @@ export type ProjectPanelProps = {
    *  freshly-formed neuron auto-lands in the cluster selection
    *  (see `pendingFormingNodeId` watcher in SynthesisLayer). */
   onCreateNeuron?: (projectId: string) => void;
+  /** Full project list, used as the merge target picker. The panel
+   *  shows every other project the user has so they can fold THIS
+   *  project into one of them. Pass [] to disable the merge button
+   *  entirely (e.g. while projects are still loading or when the
+   *  user only has one project). */
+  allProjects?: UserProject[];
+  /** Fired AFTER a live merge succeeds. Parent uses this to bust the
+   *  React Query cache for the project list, redirect any focus /
+   *  selection that was pinned on the source, and close the panel.
+   *  The panel never assumes it can do those things itself because
+   *  the source row + its query keys are owned by the parent. */
+  onMergeComplete?: (sourceProjectId: string, targetProjectId: string) => void;
 };
 
 export default function ProjectPanel({
@@ -115,7 +135,85 @@ export default function ProjectPanel({
   onSelectNode,
   onAddNeurons,
   onCreateNeuron,
+  allProjects = [],
+  onMergeComplete,
 }: ProjectPanelProps) {
+  // Local merge state. We deliberately keep ALL of this inside the
+  // panel rather than lifting it to the page: the picker, the dry-run
+  // preview, the inflight flag, and any error messaging are entirely
+  // scoped to "is the user currently looking at this panel?" The
+  // moment the panel closes (or the user picks a different project),
+  // the state resets cleanly. Parent only finds out about the merge
+  // through the `onMergeComplete` callback.
+  const [mergePickerOpen, setMergePickerOpen] = useState(false);
+  const [mergeTargetId, setMergeTargetId] = useState<string | null>(null);
+  const [mergePreview, setMergePreview] = useState<ProjectMergePreview | null>(null);
+  const [mergeError, setMergeError] = useState<string | null>(null);
+  // Two distinct inflight flags so the UI can show "previewing…" vs
+  // "committing…" copy: the dry-run pass is cheap (single SELECT-only
+  // SQL function) and clears in <500ms; the commit pass writes across
+  // four tables and feels sluggish enough to deserve its own spinner.
+  const [previewing, setPreviewing] = useState(false);
+  const [committing, setCommitting] = useState(false);
+
+  // Project list to render in the picker — every project EXCEPT the
+  // one we're currently viewing. Sorted by recent activity so the
+  // user's working projects float to the top of the picker, mirroring
+  // the page-level "By Project" dropdown's ordering. Memoised so the
+  // sort doesn't re-run on every keystroke / re-render.
+  const mergeCandidates = useMemo(() => {
+    if (!project) return [] as UserProject[];
+    return allProjects
+      .filter((p) => p.id !== project.id)
+      .slice()
+      .sort((a, b) => b.lastActiveAt - a.lastActiveAt);
+  }, [allProjects, project]);
+
+  const resetMerge = () => {
+    setMergePickerOpen(false);
+    setMergeTargetId(null);
+    setMergePreview(null);
+    setMergeError(null);
+    setPreviewing(false);
+    setCommitting(false);
+  };
+
+  const startPreview = async (targetId: string) => {
+    if (!project || !userId) return;
+    setMergeTargetId(targetId);
+    setMergePreview(null);
+    setMergeError(null);
+    setPreviewing(true);
+    try {
+      const preview = await mergeUserProjects(userId, project.id, targetId, {
+        dryRun: true,
+      });
+      setMergePreview(preview);
+    } catch (err) {
+      setMergeError(err instanceof Error ? err.message : "Preview failed.");
+    } finally {
+      setPreviewing(false);
+    }
+  };
+
+  const commitMerge = async () => {
+    if (!project || !userId || !mergeTargetId) return;
+    setMergeError(null);
+    setCommitting(true);
+    try {
+      await mergeUserProjects(userId, project.id, mergeTargetId, {
+        dryRun: false,
+      });
+      const sourceId = project.id;
+      const targetId = mergeTargetId;
+      resetMerge();
+      onMergeComplete?.(sourceId, targetId);
+    } catch (err) {
+      setMergeError(err instanceof Error ? err.message : "Merge failed.");
+      setCommitting(false);
+    }
+  };
+
   // Lazily fetch the project's working-memory state. We don't
   // bundle this into `listUserProjects` because the projects
   // dropdown only needs name + member count, and pulling state
@@ -336,6 +434,197 @@ export default function ProjectPanel({
                 </div>
               )}
             </section>
+
+            {/* Manage — destructive-leaning project operations live
+                at the bottom so they don't compete with the daily-
+                use affordances above. Today this surfaces a single
+                "Merge into…" entry; the corresponding chat-side path
+                is the lykn_mergeProjects MCP tool, which calls the
+                same `public.lykn_merge_projects` SQL function under
+                the hood (migration 067). Hidden entirely when the
+                user has no other projects to merge into so the
+                section doesn't render as a dead button. Sign-in is
+                also required because the merge contract assumes
+                server-side rows; localStorage-only guests can't
+                produce a meaningful preview. */}
+            {userId && mergeCandidates.length > 0 && (
+              <section className="border-t border-white/8 pt-4">
+                <p className="text-[0.58rem] uppercase tracking-[0.18em] text-white/40 mb-2">
+                  Manage
+                </p>
+
+                {/* Closed state — single button that flips the panel
+                    into picker mode. Combine icon (the "merge"
+                    metaphor users already recognise from git tools)
+                    in white-on-dark to match the chrome elsewhere
+                    in the panel. The destructive nature is explained
+                    in the confirm step, not here, so the entry point
+                    stays low-anxiety. */}
+                {!mergePickerOpen && (
+                  <button
+                    onClick={() => setMergePickerOpen(true)}
+                    className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-md bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 hover:border-white/20 text-white/70 hover:text-white/95 text-[0.7rem] font-medium transition-colors"
+                    aria-label="Merge this project into another"
+                    title="Fold this project's neurons + state into another project"
+                  >
+                    <Combine size={11} />
+                    Merge into…
+                  </button>
+                )}
+
+                {/* Open state, target NOT yet picked — list of every
+                    OTHER project, sorted recent-first. Each row is a
+                    button; clicking it kicks off a dry-run preview.
+                    No commit happens at this step. */}
+                {mergePickerOpen && !mergeTargetId && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-[0.7rem] text-white/65">
+                        Pick a project to fold "{project.name}" into:
+                      </p>
+                      <button
+                        onClick={resetMerge}
+                        className="shrink-0 p-1 rounded text-white/45 hover:text-white/85 hover:bg-white/8 transition-colors"
+                        aria-label="Cancel merge"
+                        title="Cancel"
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
+                    <div className="max-h-48 overflow-y-auto space-y-1 pr-0.5 scrollbar-hide">
+                      {mergeCandidates.map((cand) => (
+                        <button
+                          key={cand.id}
+                          onClick={() => startPreview(cand.id)}
+                          disabled={previewing}
+                          className="w-full text-left px-2.5 py-2 rounded-md bg-white/[0.025] hover:bg-white/[0.06] border border-white/8 hover:border-white/14 transition-colors disabled:opacity-60 disabled:cursor-not-allowed flex items-start gap-2"
+                        >
+                          <FolderPlus size={11} className="mt-0.5 shrink-0 text-white/45" />
+                          <div className="min-w-0 flex-1">
+                            <div className="text-[0.72rem] text-white/85 truncate">
+                              {cand.name}
+                            </div>
+                            <div className="text-[0.6rem] text-white/45 mt-0.5">
+                              {cand.members.length} neuron
+                              {cand.members.length === 1 ? "" : "s"}
+                              {" · "}
+                              {cand.pushCount || 0} push
+                              {(cand.pushCount || 0) === 1 ? "" : "es"}
+                            </div>
+                          </div>
+                          <ChevronDown
+                            size={11}
+                            className="shrink-0 text-white/35 -rotate-90 mt-1.5"
+                          />
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Target picked — show the dry-run preview + a
+                    confirm/cancel pair. Numbers come straight from
+                    the SQL function so the user sees the truth, not
+                    a UI guess. The "Confirm merge" button is the
+                    only red-tinted control in the panel — making it
+                    visually loud is on purpose; this is irreversible. */}
+                {mergePickerOpen && mergeTargetId && (
+                  <div className="space-y-3">
+                    {previewing && (
+                      <div className="flex items-center gap-2 text-[0.7rem] text-white/55 py-1">
+                        <Loader2 size={11} className="animate-spin" />
+                        Calculating preview…
+                      </div>
+                    )}
+
+                    {mergePreview && !previewing && (
+                      <div className="rounded-md bg-white/[0.03] border border-white/10 px-2.5 py-2.5 space-y-1.5">
+                        <p className="text-[0.7rem] text-white/85 leading-snug">
+                          Folding{" "}
+                          <span className="font-medium text-white/95">
+                            "{project.name}"
+                          </span>{" "}
+                          into{" "}
+                          <span className="font-medium text-white/95">
+                            "{mergePreview.target?.name || "target"}"
+                          </span>
+                          .
+                        </p>
+                        <ul className="text-[0.66rem] text-white/65 space-y-0.5 leading-snug pl-3 list-disc marker:text-white/30">
+                          <li>
+                            {mergePreview.stateRowsMoved} state row
+                            {mergePreview.stateRowsMoved === 1 ? "" : "s"} moved
+                            {mergePreview.stateKeysSupersededInTarget > 0
+                              ? ` (${mergePreview.stateKeysSupersededInTarget} key${
+                                  mergePreview.stateKeysSupersededInTarget === 1
+                                    ? ""
+                                    : "s"
+                                } in target will be superseded)`
+                              : ""}
+                          </li>
+                          <li>
+                            {mergePreview.neuronsMoved} neuron
+                            {mergePreview.neuronsMoved === 1 ? "" : "s"} moved
+                            {mergePreview.neuronsDroppedAsDuplicate > 0
+                              ? `, ${mergePreview.neuronsDroppedAsDuplicate} dropped as duplicate`
+                              : ""}
+                          </li>
+                          {mergePreview.factsRepointed > 0 && (
+                            <li>
+                              {mergePreview.factsRepointed} identity fact
+                              {mergePreview.factsRepointed === 1 ? "" : "s"}{" "}
+                              re-pointed
+                            </li>
+                          )}
+                          {mergePreview.activeProjectPointerRepointed && (
+                            <li>
+                              Your active-project focus will move to the
+                              target.
+                            </li>
+                          )}
+                          <li className="text-rose-300/85">
+                            "{project.name}" will be permanently deleted.
+                          </li>
+                        </ul>
+                      </div>
+                    )}
+
+                    {mergeError && (
+                      <p className="text-[0.7rem] text-rose-300/90 leading-snug">
+                        {mergeError}
+                      </p>
+                    )}
+
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        onClick={resetMerge}
+                        disabled={committing}
+                        className="flex-1 px-2.5 py-1.5 rounded-md bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 hover:border-white/20 text-white/70 hover:text-white/95 text-[0.7rem] font-medium transition-colors disabled:opacity-60"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={commitMerge}
+                        disabled={committing || previewing || !mergePreview}
+                        className="flex-1 flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-md bg-rose-500/15 hover:bg-rose-500/25 border border-rose-400/30 hover:border-rose-400/50 text-rose-100 hover:text-white text-[0.7rem] font-medium transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                      >
+                        {committing ? (
+                          <>
+                            <Loader2 size={11} className="animate-spin" />
+                            Merging…
+                          </>
+                        ) : (
+                          <>
+                            <Combine size={11} />
+                            Confirm merge
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </section>
+            )}
           </div>
         </motion.aside>
       ) : null}

@@ -25,6 +25,7 @@ import {
   listActiveRulesForUser,
   formatBeliefsAndRulesForPromptOutsideClient,
   loadActiveProjectContext,
+  loadOtherProjectsForUser,
 } from '../beliefSystem.js';
 import { textContent, errorContent } from './index.js';
 
@@ -40,18 +41,26 @@ export const getContextBlockTool = {
     'cheap call (one round-trip, ~600 tokens by default).',
     '',
     'Returns a single pre-formatted text block summarising:',
-    '  1. the LYKN user\'s active beliefs and if-then rules (governance), AND',
-    '  2. the user\'s CURRENT PROJECT and its working state, if any.',
+    '  1. [BELIEFS_AND_RULES] — the LYKN user\'s active beliefs + if-then rules.',
+    '  2. [CURRENT_PROJECT]   — the user\'s focus project + its working state.',
+    '  3. [OTHER_PROJECTS]    — up to 5 OTHER recent projects with id + name +',
+    '                           last_active + state_key_count, so you can',
+    '                           switch into one if the user mentions it by',
+    '                           name instead of saying "I can\'t find that."',
     '',
     'Treat the block as binding governance for the rest of the conversation.',
-    'The project section is what other AI clients (Claude Desktop, Cursor,',
+    'The project sections are what other AI clients (Claude Desktop, Cursor,',
     'Claude Code, ChatGPT) have been accumulating about the work — pick up',
-    'from there instead of re-litigating decisions.',
+    'from there instead of re-litigating decisions. If the user references',
+    'a project listed under [OTHER_PROJECTS], call',
+    'lykn_setActiveProject({ project_id }) with the id from that block;',
+    'don\'t paraphrase the name into a duplicate.',
     '',
     'Call once at the start. For finer-grained mid-conversation access',
     '(filtering rules by trigger, citing specific rule_ids, walking project',
     'state history) use the more specific tools: lykn_getBeliefs /',
-    'lykn_getRules / lykn_getProjectState / lykn_pushProjectState.',
+    'lykn_getRules / lykn_getProjectState / lykn_pushProjectState /',
+    'lykn_listProjects.',
     '',
     'When you follow one of the rules in this block, call',
     'lykn_recordRuleApplication with the rule_id so LYKN can show the user',
@@ -88,11 +97,21 @@ export const getContextBlockTool = {
       loadActiveProjectContext(ctx.supabaseAdmin, ctx.userId),
     ]);
 
-    // No beliefs AND no project = brand-new user. Tell the model so it
-    // doesn't waste its turn looking for context that isn't there yet.
-    // Project alone (without beliefs) IS still worth shipping — most
-    // users will have a project before they accrue ratified beliefs.
-    if (!beliefs.length && !projectContext) {
+    // Discovery footer: surface up to 5 OTHER recent projects so the
+    // model can answer "what about LYKN MCP integrations?" without a
+    // separate lykn_listProjects round-trip. Excludes the focus project
+    // to avoid duplication. Best-effort — empty array on failure.
+    const otherProjects = await loadOtherProjectsForUser(ctx.supabaseAdmin, ctx.userId, {
+      excludeId: projectContext?.project?.id || null,
+      limit: 5,
+    });
+
+    // No beliefs AND no project AND no other projects = brand-new user.
+    // Tell the model so it doesn't waste its turn looking for context
+    // that isn't there yet. Project (or other-project candidates) alone
+    // are worth shipping — most users will have a project before they
+    // accrue ratified beliefs.
+    if (!beliefs.length && !projectContext && otherProjects.length === 0) {
       return textContent(
         'This LYKN user has no active beliefs and no active project yet.' +
         ' Treat them as a fresh conversation — but you can call lykn_getFacts' +
@@ -105,6 +124,7 @@ export const getContextBlockTool = {
     const block = formatBeliefsAndRulesForPromptOutsideClient(beliefs, rules, {
       maxChars,
       projectContext,
+      otherProjects,
     });
     return textContent(block || '(no active beliefs or project state returned)');
   },

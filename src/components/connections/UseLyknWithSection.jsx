@@ -6,7 +6,6 @@ import {
   ArrowLeftRight,
   ArrowUpRight,
   RefreshCw,
-  ShieldAlert,
   Trash2,
   Loader2,
   Plug,
@@ -373,7 +372,11 @@ function OutboundFavicon({ target }) {
       ]
     : [];
   if (!candidates.length || attempt >= candidates.length) {
-    return <ShieldAlert className="h-5 w-5 text-black/55 dark:text-white/65" strokeWidth={1.75} />;
+    // Bring-your-own targets have no domain to favicon, so render the
+    // canonical "wire it up yourself" Plug icon instead of the generic
+    // ShieldAlert fallback (which previously made the Custom Agent /
+    // Anything-else cards look like security warnings).
+    return <Plug className="h-5 w-5 text-black/55 dark:text-white/65" strokeWidth={1.75} />;
   }
   return (
     <img
@@ -438,6 +441,7 @@ function clientKindLabel(kind) {
     case "figma-ai":        return "Figma AI";
     case "zapier-ai":       return "Zapier AI";
     case "v0-lovable":      return "v0 / Lovable";
+    case "custom-agent":    return "Custom Agent";
     default:                return "Other";
   }
 }

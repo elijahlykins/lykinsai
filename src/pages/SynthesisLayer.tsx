@@ -130,11 +130,17 @@ import type {
 
 const palette = {
   root:     { bg: "#6366f1", glow: "rgba(99,102,241,0.35)" },
-  // (The Projects category was retired when the sidebar projects feature
-  // was removed; the palette swatch + per-node color went with it. Boards
-  // still carry `project_id` in their DB row but the synthesis-layer page
-  // no longer surfaces that grouping — they all hang directly off the
-  // Chats category now.)
+  // Projects — user-authored neuron clusters (lykn_projects + lykn_project_
+  // neurons). Surfaced as their own top-level Projects category so the
+  // user can navigate their projects directly from the brain. Teal is
+  // chosen so the cluster reads distinctly against Chats (blue), Vault
+  // (green), Concepts (orange), Facts (pink), and Beliefs (white).
+  // (Note: boards still carry `project_id` in their DB row independently;
+  // those don't surface here — only the user-clustered `lykn_projects`
+  // rows do. The old sidebar-projects category was retired; this new
+  // category is purpose-built for the user-clustered projects feature.)
+  projects: { bg: "#14b8a6", glow: "rgba(20,184,166,0.32)" },
+  project:  { bg: "#2dd4bf", glow: "rgba(45,212,191,0.30)" },
   grids:    { bg: "#3b82f6", glow: "rgba(59,130,246,0.30)" },
   vault:    { bg: "#10b981", glow: "rgba(16,185,129,0.30)" },
   // Legacy palette entries kept so any older `node.color` reads (e.g.
@@ -426,6 +432,15 @@ function buildGraph(
   // Optional: override the label on the root "Your Mind" node. Used by the
   // landing prototype handoff to render the root as "Your Synthesis Layer".
   rootLabel: string = "Your Mind",
+  // User-authored projects (lykn_projects). Surfaced as a top-level
+  // Projects category — each project becomes its own node parented to
+  // __cat_projects__, with cross-edges out to every clustered member
+  // node so the user can see at a glance which neurons belong to which
+  // project. Clicking a project node opens the existing ProjectPanel
+  // (updates + connected neurons + add-neurons CTA). Empty array means
+  // the category is omitted unless forceCategoryIds includes
+  // __cat_projects__.
+  userProjects: UserProject[] = [],
 ) {
   const nodes: MindNode[] = [];
   const edges: MindEdge[] = [];
@@ -1152,6 +1167,84 @@ function buildGraph(
       else if (link.kind === "belief") targetNodeId = `belief_${link.targetId}`;
       if (!targetNodeId || !nodeIdSet.has(targetNodeId)) continue;
       addCrossEdge(conceptNodeId, targetNodeId, { provenance: true });
+    }
+  });
+
+  // -------------------------------------------------------------------
+  // Projects category — user-clustered projects (lykn_projects + 063).
+  // -------------------------------------------------------------------
+  // Each row in `userProjects` becomes its own node inside the new
+  // Projects category. We size the node by member count so projects
+  // with deep coverage read as landmarks; an empty project still
+  // renders as a small node so the user can find it and add neurons.
+  // Cross-edges from each project node to every member node id make
+  // the cluster visible in the brain — the user sees "this project is
+  // these neurons" without needing to switch into project-filter mode.
+  //
+  // Member edges only fire when the target node exists in the graph
+  // (same guard as the concept_links / belief-provenance passes). A
+  // member pointing at a deleted neuron is silently skipped — the
+  // ProjectPanel will still list it as a stale row, but the brain
+  // never paints a line into empty space.
+  const projectsHasContent = userProjects.length > 0;
+  if (projectsHasContent || forceCategoryIds.has("__cat_projects__")) {
+    if (!nodes.some((n) => n.id === "__cat_projects__")) {
+      nodes.push({
+        id: "__cat_projects__",
+        label: "Projects",
+        kind: "category",
+        radius: 30,
+        color: palette.projects.bg,
+        glow: palette.projects.glow,
+        parentId: rootId,
+      });
+      edges.push({ from: rootId, to: "__cat_projects__" });
+    }
+  }
+
+  userProjects.forEach((p) => {
+    const nid = `project_${p.id}`;
+    // Project node radius is driven by member count, capped so a 50-
+    // neuron project doesn't outsize the category sphere above it.
+    // Floor matches concept/fact sizing so a brand-new empty project
+    // still reads as a real node, not a stray dot.
+    const memberCount = p.members.length;
+    const radius = 18 + Math.min(10, Math.floor(Math.log2(memberCount + 1) * 1.5));
+    const labelShown = p.name.length > 36 ? `${p.name.slice(0, 34)}…` : p.name;
+    nodes.push({
+      id: nid,
+      label: labelShown,
+      kind: "project",
+      radius,
+      color: palette.project.bg,
+      glow: palette.project.glow,
+      parentId: "__cat_projects__",
+      categoryId: "__cat_projects__",
+      meta: {
+        projectId: p.id,
+        projectName: p.name,
+        projectDescription: p.description,
+        projectStatus: p.status,
+        projectCreatedByClient: p.createdByClient,
+        projectMemberCount: memberCount,
+        projectLastActiveAt: p.lastActiveAt,
+      },
+    });
+    edges.push({ from: "__cat_projects__", to: nid });
+
+    // Membership cross-edges — one line from the project node to each
+    // clustered neuron that actually exists in the graph. We rebuild
+    // the node-id set inline (vs reusing `nodeIdSet` from earlier) so
+    // the just-pushed project nodes are also addressable for
+    // member→project lookups in future passes; reusing the stale set
+    // would silently skip any project-to-project edges if we ever
+    // added them.
+    if (memberCount > 0) {
+      const live = new Set(nodes.map((n) => n.id));
+      for (const m of p.members) {
+        if (!m.nodeId || !live.has(m.nodeId)) continue;
+        addCrossEdge(nid, m.nodeId);
+      }
     }
   });
 
@@ -3897,8 +3990,16 @@ export default function SynthesisLayer() {
   //                           own dedicated detail panel — there is
   //                           no longer a shared "what's new" pullout
   //                           on this page.
-  // Read once on mount via the current location; we don't keep this
-  // param in the URL after handling it (router-replace) so refreshes
+  //
+  // The companion `?project=<id>` deep link (wired from the project
+  // ToolCallPill in the chat) is handled in a separate effect further
+  // down because it needs setters (`setFilterProjectId`,
+  // `setSelectedProjectId`, `setLayoutMode`) that are declared below
+  // this point — keeping them in one effect would trip the
+  // use-before-declare lint and rely on TDZ ordering at runtime.
+  //
+  // Read once on mount via the current location; we don't keep these
+  // params in the URL after handling them (router-replace) so refreshes
   // don't re-fire the same intent.
   const _routerLocation = useLocation();
   useEffect(() => {
@@ -3909,6 +4010,8 @@ export default function SynthesisLayer() {
     // Legacy `?showUpdates=1` param: silently strip if any old links
     // are still in flight (cached emails, third-party copies of the
     // chat greeting). The panel it used to open no longer exists.
+    // `?project=` is handled (and stripped) by the project deep-link
+    // effect further down, so we don't touch it here.
     const legacyShowUpdates = params.has("showUpdates");
     if (focusId || legacyShowUpdates) {
       const cleaned = new URLSearchParams(_routerLocation.search);
@@ -4001,6 +4104,44 @@ export default function SynthesisLayer() {
   // spot where the user is most clearly saying "let me dig into
   // this project."
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+
+  // Deep-link entry point used by the project ToolCallPill in the chat:
+  //   ?project=<project_id> → open that project's side panel AND flip
+  //                           the scene into "By Project" focus mode
+  //                           pinned to it, so the user immediately
+  //                           sees which neurons are clustered into
+  //                           the project the AI was just talking
+  //                           about (lit-up members glowing against
+  //                           the dimmed full graph). Mirrors the
+  //                           triple-action the "By Project" dropdown
+  //                           fires when the user picks a project
+  //                           there. See projectDeepLink() in
+  //                           ToolCallPill.tsx for the producer side.
+  //
+  // Read once on mount and stripped from the URL afterwards so a
+  // refresh doesn't re-pop the panel against the user's wishes. We
+  // intentionally don't validate the id against userProjects here —
+  // by the time the chat-side tool returned `result.project.id` the
+  // row existed; and even if the user deletes the project before
+  // clicking the pill, setSelectedProjectId resolves to no `project`
+  // (the lookup at line ~5783 returns null) and the panel just
+  // doesn't render. Cheap and self-healing.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(_routerLocation.search);
+    const projectId = params.get("project");
+    if (!projectId) return;
+    setFilterProjectId(projectId);
+    setSelectedProjectId(projectId);
+    setLayoutMode("project");
+    const cleaned = new URLSearchParams(_routerLocation.search);
+    cleaned.delete("project");
+    const qs = cleaned.toString();
+    const url = `${_routerLocation.pathname}${qs ? `?${qs}` : ""}${_routerLocation.hash || ""}`;
+    window.history.replaceState({}, "", url);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Legacy per-type pending-forming states were consolidated into the
   // generic `pendingFormingNodeId` further down (search this file for
   // its declaration). Modal saves and any other create paths now
@@ -4794,6 +4935,10 @@ export default function SynthesisLayer() {
       "__cat_belief__",
       "__cat_facts__",
       "__cat_concepts__",
+      // Projects is part of the canonical top-level shape now — keep
+      // the landmark visible even when the user has zero projects so
+      // they always know where to find their AI-clustered work.
+      "__cat_projects__",
     ]),
     [],
   );
@@ -4802,7 +4947,7 @@ export default function SynthesisLayer() {
   const rootLabel = isPrototypeHandoff ? "Your Synthesis Layer" : "Your Mind";
   const { nodes: allNodes, edges, noteIdToVaultNodeId } = useMemo(
     () => {
-      const built = buildGraph(effectiveBoards, effectiveNotes, synthesisThemes, synthesisData, vaultGridMap, activeBeliefs, manualFacts, beliefProvenance, conceptRows, conceptLinks, forceCategoryIds, rootLabel);
+      const built = buildGraph(effectiveBoards, effectiveNotes, synthesisThemes, synthesisData, vaultGridMap, activeBeliefs, manualFacts, beliefProvenance, conceptRows, conceptLinks, forceCategoryIds, rootLabel, userProjects);
       // Prototype handoff: stamp each prototype-neuron node with the
       // ordinal (1st, 2nd, ...) and the AI-supplied "why" reason so the
       // detail panel can render "Nth neuron created" + a custom blurb
@@ -5335,6 +5480,21 @@ export default function SynthesisLayer() {
     if (nodeId === "__cat_belief__" || nodeId === "__cat_beliefs__") {
       setBeliefWindowOpen(true);
       setSelectedId(nodeId);
+      return;
+    }
+    // Project nodes route to the existing ProjectPanel (updates +
+    // connected neurons + add-neurons CTA) rather than the unified
+    // NeuronPanel. Clearing selectedId first makes sure the right-
+    // side slot isn't holding a stale NeuronPanel underneath when
+    // the project panel slides in. The project id was stamped onto
+    // node.meta.projectId in buildGraph so we don't have to re-parse
+    // it out of the node id here.
+    if (node.kind === "project") {
+      const projectId = (node.meta?.projectId as string | undefined) || null;
+      if (projectId) {
+        setSelectedId(null);
+        setSelectedProjectId(projectId);
+      }
       return;
     }
     // Switching to a non-category neuron while the multi-belief
@@ -6369,10 +6529,11 @@ export default function SynthesisLayer() {
               {(() => {
                 const p = userProjects.find((x) => x.id === filterProjectId);
                 if (p) {
-                  // Append member count so the user can tell at a
-                  // glance how big the cluster is without opening
-                  // the dropdown — same affordance the legend
-                  // gives for the top-level categories.
+                  // Compact chip: keep the running count to neurons
+                  // only so the chip stays narrow. The expanded
+                  // dropdown rows below carry the full breakdown
+                  // (X neurons · Y pushes) where there's room to
+                  // read it without truncating the project name.
                   const n = p.members.length;
                   return `${p.name} · ${n}`;
                 }
@@ -6432,6 +6593,9 @@ export default function SynthesisLayer() {
                           <div className="text-[0.6rem] text-white/45 mt-0.5">
                             {p.members.length} neuron
                             {p.members.length === 1 ? "" : "s"}
+                            {" · "}
+                            {p.pushCount || 0} push
+                            {(p.pushCount || 0) === 1 ? "" : "es"}
                             {p.description ? ` · ${p.description}` : ""}
                           </div>
                         </div>
@@ -7233,6 +7397,26 @@ export default function SynthesisLayer() {
           // selectedId-driven camera fly will center on it.
           setSelectedProjectId(null);
           setSelectedId(id);
+        }}
+        // Full project list powers the in-panel "Merge into…"
+        // target picker. The panel filters out the currently-
+        // viewed project itself, so we just pass the unfiltered
+        // list and let the picker do the right thing.
+        allProjects={userProjects}
+        // After a live merge: the source row is gone, so any
+        // page-level pointer at it (the "By Project" filter, the
+        // selected-panel pointer) needs to either redirect to the
+        // target or clear. Bust the React Query cache so the
+        // dropdown + scene re-render with the post-merge list.
+        onMergeComplete={(sourceId, targetId) => {
+          if (filterProjectId === sourceId) setFilterProjectId(targetId);
+          setSelectedProjectId(null);
+          queryClient.invalidateQueries({
+            queryKey: ["lykn_projects", user?.id || "guest"],
+          });
+          queryClient.invalidateQueries({
+            queryKey: ["lykn_project_state", user?.id || "guest"],
+          });
         }}
         onAddNeurons={beginAddNeuronsToProject}
         onCreateNeuron={(projectId) => {

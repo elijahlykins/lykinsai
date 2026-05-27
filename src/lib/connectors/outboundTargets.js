@@ -953,7 +953,40 @@ export const OUTBOUND_TARGETS = [
     direction: "bidirectional",
   },
 
-  // ─── Tier 4 — bring your own client ──────────────────────────────
+  // ─── Tier 4 — bring your own client / agent ──────────────────────
+  //
+  // Tier 4 is the catch-all that closes the gap between the named
+  // clients above (which need bespoke OAuth-MCP / deep-link plumbing
+  // per host) and the long tail of stuff people actually build with
+  // LYKN. Two cards live here:
+  //
+  //   1. "Custom Agent" — the front door for users who built (or are
+  //      building) their OWN agent: a LangChain pipeline, n8n flow,
+  //      Vapi voice agent, FastAPI service, robot stack, whatever.
+  //      Same token + REST surface as the raw card below, but
+  //      surfaced as a first-class integration with starter snippets
+  //      (Python / Node / curl), an OpenAPI link, and copy that
+  //      makes clear THIS is the path for "bring your own."
+  //
+  //   2. "Anything else (raw)" — legacy escape hatch for users who
+  //      know what they want (Zed, Cline, Goose…) and just need
+  //      `/mcp` + a token.
+  {
+    id: "custom-agent",
+    clientKind: "custom-agent",
+    name: "Custom Agent",
+    domain: "",
+    color: "#0F172A",
+    installType: "custom-agent",
+    transport: "REST + MCP (Bearer)",
+    summary:
+      "Wire LYKN into an agent you built yourself — LangChain, n8n, Vapi, your own FastAPI service, a robot. One bearer token unlocks both the MCP endpoint and the REST mirror, so your agent can read your context block, search your vault, and push project state back from any language that speaks HTTP.",
+    helpUrl: "https://modelcontextprotocol.io/docs",
+    helpLabel: "MCP + REST spec",
+    available: true,
+    tier: 4,
+    direction: "bidirectional",
+  },
   {
     id: "other-mcp",
     clientKind: "other",
@@ -1021,9 +1054,9 @@ export const OUTBOUND_TIERS = [
   },
   {
     id: 4,
-    label: "Bring your own client",
+    label: "Bring your own agent",
     description:
-      "Any MCP-aware client we don't ship a one-click flow for. Point it at /mcp with your bearer token.",
+      "Plug LYKN into whatever you've built — your own LangChain agent, n8n flow, Vapi voice bot, FastAPI service, robot stack, or any MCP-aware client we don't ship a one-click flow for. One bearer token, two transports (MCP + REST).",
   },
 ];
 
@@ -1034,6 +1067,7 @@ export const OUTBOUND_INSTALL_TYPES = {
   "api-key": { label: "Paste API key", tone: "blue" },
   "browser-extension": { label: "Via LYKN extension", tone: "amber" },
   raw: { label: "Raw URL + token", tone: "neutral" },
+  "custom-agent": { label: "Bring your own agent", tone: "amber" },
 };
 
 /**
@@ -1405,6 +1439,245 @@ export function buildRawInstallInfo({ token, mcpUrl, restBase }) {
     ),
     token: String(token || ""),
     headerExample: `Authorization: Bearer ${String(token || "<your-token>")}`,
+  };
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Custom Agent — starter snippets
+//
+// The "custom-agent" install type renders a token banner + a tabbed code
+// snippet panel + an OpenAPI link. These three builders produce the
+// canonical starter code in the three languages that cover ~95% of what
+// users actually build agents in: Python (LangChain / FastAPI / vanilla
+// requests), Node/TypeScript (Vercel AI SDK / n8n custom code / Express),
+// and curl (for shell scripts, n8n HTTP Request nodes, Zapier webhooks).
+//
+// Every snippet shows the same canonical pattern:
+//   1. Load the user's LYKN context block (one GET request).
+//   2. Pass that context to whatever model / agent the user has.
+//   3. Push state back to LYKN when the agent decides something.
+//
+// We intentionally DO NOT prescribe a model or framework. The whole pitch
+// of "bring your own agent" is that LYKN is the cognition layer for
+// whatever the user already has — so the snippet treats the agent itself
+// as a black box (`callMyAgent(prompt, context)`). Users plug their own
+// model call into that stub.
+// ──────────────────────────────────────────────────────────────────────
+
+/**
+ * Build the Python starter snippet. Plain `requests` so it works
+ * everywhere — no LangChain assumption.
+ */
+export function buildCustomAgentPythonSnippet({ token, restBase }) {
+  const t = String(token || "<your-lykn-token>");
+  const base = String(
+    restBase || PUBLIC_LYKN_MCP_URL.replace(/\/mcp$/, "/api/v1/synthesis"),
+  );
+  return [
+    "# pip install requests",
+    "import requests",
+    "",
+    `LYKN_TOKEN = "${t}"`,
+    `LYKN_BASE = "${base}"`,
+    "HEADERS = {\"Authorization\": f\"Bearer {LYKN_TOKEN}\"}",
+    "",
+    "def get_lykn_context() -> str:",
+    "    \"\"\"Pull the user's beliefs, rules, and current project state.\"\"\"",
+    "    r = requests.get(f\"{LYKN_BASE}/context-block\", headers=HEADERS, timeout=10)",
+    "    r.raise_for_status()",
+    "    return r.json().get(\"contextBlock\", \"\")",
+    "",
+    "def push_project_state(state_key: str, state_value: str) -> None:",
+    "    \"\"\"Tell LYKN about a decision the agent just made.\"\"\"",
+    "    requests.post(",
+    "        f\"{LYKN_BASE}/projects/state\",",
+    "        headers={**HEADERS, \"Content-Type\": \"application/json\"},",
+    "        json={\"state_key\": state_key, \"state_value\": state_value},",
+    "        timeout=10,",
+    "    ).raise_for_status()",
+    "",
+    "def call_my_agent(user_message: str) -> str:",
+    "    \"\"\"Replace this with your real agent: LangChain, OpenAI, Anthropic, local model, etc.\"\"\"",
+    "    context = get_lykn_context()",
+    "    system_prompt = f\"{context}\\n\\nFollow the user's beliefs and rules.\"",
+    "    # ── your model call here ───────────────────────────────",
+    "    return f\"(stub) responded to: {user_message}\"",
+    "",
+    "if __name__ == \"__main__\":",
+    "    reply = call_my_agent(\"What was I working on last week?\")",
+    "    print(reply)",
+    "    push_project_state(\"last_agent_check_in\", \"agent ran and answered a question\")",
+  ].join("\n");
+}
+
+/**
+ * Build the Node / TypeScript starter snippet. Uses the global `fetch`
+ * available in Node 18+, no SDK assumption. Same three-step pattern as
+ * the Python snippet.
+ */
+export function buildCustomAgentNodeSnippet({ token, restBase }) {
+  const t = String(token || "<your-lykn-token>");
+  const base = String(
+    restBase || PUBLIC_LYKN_MCP_URL.replace(/\/mcp$/, "/api/v1/synthesis"),
+  );
+  return [
+    "// Node 18+ (global fetch). No SDK needed.",
+    `const LYKN_TOKEN = "${t}";`,
+    `const LYKN_BASE = "${base}";`,
+    "const HEADERS = { Authorization: `Bearer ${LYKN_TOKEN}` };",
+    "",
+    "async function getLyknContext() {",
+    "  const r = await fetch(`${LYKN_BASE}/context-block`, { headers: HEADERS });",
+    "  if (!r.ok) throw new Error(`LYKN ${r.status}`);",
+    "  const data = await r.json();",
+    "  return data.contextBlock || \"\";",
+    "}",
+    "",
+    "async function pushProjectState(stateKey, stateValue) {",
+    "  await fetch(`${LYKN_BASE}/projects/state`, {",
+    "    method: \"POST\",",
+    "    headers: { ...HEADERS, \"Content-Type\": \"application/json\" },",
+    "    body: JSON.stringify({ state_key: stateKey, state_value: stateValue }),",
+    "  });",
+    "}",
+    "",
+    "async function callMyAgent(userMessage) {",
+    "  const context = await getLyknContext();",
+    "  const systemPrompt = `${context}\\n\\nFollow the user's beliefs and rules.`;",
+    "  // ── your model call here (OpenAI / Anthropic / Ollama / etc) ──",
+    "  return `(stub) responded to: ${userMessage}`;",
+    "}",
+    "",
+    "const reply = await callMyAgent(\"What was I working on last week?\");",
+    "console.log(reply);",
+    "await pushProjectState(\"last_agent_check_in\", \"agent ran and answered a question\");",
+  ].join("\n");
+}
+
+/**
+ * Build the curl starter snippet. The three calls every agent needs:
+ * pull context, search vault, push state. Useful for n8n HTTP Request
+ * nodes, shell scripts, and dropping into Postman.
+ */
+export function buildCustomAgentCurlSnippet({ token, restBase }) {
+  const t = String(token || "<your-lykn-token>");
+  const base = String(
+    restBase || PUBLIC_LYKN_MCP_URL.replace(/\/mcp$/, "/api/v1/synthesis"),
+  );
+  return [
+    "# 1. Read the user's current context block (beliefs + rules + active project)",
+    `curl -s "${base}/context-block" \\`,
+    `  -H "Authorization: Bearer ${t}"`,
+    "",
+    "# 2. Search the user's vault by semantic query",
+    `curl -s "${base}/vault/search?query=robotics+market" \\`,
+    `  -H "Authorization: Bearer ${t}"`,
+    "",
+    "# 3. Push a decision back into LYKN's project state",
+    `curl -s "${base}/projects/state" \\`,
+    `  -X POST \\`,
+    `  -H "Authorization: Bearer ${t}" \\`,
+    "  -H \"Content-Type: application/json\" \\",
+    "  -d '{\"state_key\":\"current_blocker\",\"state_value\":\"need to pick a robotics partner\"}'",
+  ].join("\n");
+}
+
+/**
+ * Build a minimal OpenAPI 3.1 spec for the four endpoints a custom
+ * agent is most likely to use — the same three the snippets above call
+ * (context-block, vault/search, projects/state), plus beliefs. This is
+ * what the dialog hands the user as a downloadable .json so they can
+ * import it into Postman, paste it into a Custom GPT Action, or wire it
+ * up to an n8n OpenAPI node.
+ *
+ * Deliberately kept tight: a 30-page full OpenAPI for /api/v1/synthesis
+ * would be more impressive but harder to read. Users who want the full
+ * surface can browse mcp-tools/ in the repo or hit the MCP endpoint.
+ */
+export function buildCustomAgentOpenApiSpec({ restBase }) {
+  const base = String(
+    restBase || PUBLIC_LYKN_MCP_URL.replace(/\/mcp$/, "/api/v1/synthesis"),
+  );
+  return {
+    openapi: "3.1.0",
+    info: {
+      title: "LYKN — Custom Agent surface",
+      version: "1.0.0",
+      description:
+        "The minimal REST surface a custom agent needs to read the user's LYKN context and push state back. Authenticate with the bearer token shown in the Use LYKN With dialog.",
+    },
+    servers: [{ url: base }],
+    components: {
+      securitySchemes: {
+        bearer: { type: "http", scheme: "bearer" },
+      },
+    },
+    security: [{ bearer: [] }],
+    paths: {
+      "/context-block": {
+        get: {
+          summary: "Get the user's current context block",
+          description:
+            "Returns the beliefs, rules, identity facts, and active project state the user expects every connected AI to read at conversation start.",
+          responses: {
+            "200": {
+              description: "Context block",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: { contextBlock: { type: "string" } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      "/beliefs": {
+        get: {
+          summary: "List the user's ratified beliefs",
+          responses: { "200": { description: "Beliefs" } },
+        },
+      },
+      "/vault/search": {
+        get: {
+          summary: "Semantic search over the user's vault",
+          parameters: [
+            {
+              name: "query",
+              in: "query",
+              required: true,
+              schema: { type: "string" },
+            },
+          ],
+          responses: { "200": { description: "Matching notes" } },
+        },
+      },
+      "/projects/state": {
+        post: {
+          summary: "Push a project state update",
+          description:
+            "Call this whenever the agent reaches a decision worth remembering across conversations. Reuse `state_key` to overwrite (history is preserved server-side).",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["state_key", "state_value"],
+                  properties: {
+                    state_key: { type: "string" },
+                    state_value: { type: "string", maxLength: 2000 },
+                  },
+                },
+              },
+            },
+          },
+          responses: { "200": { description: "Saved" } },
+        },
+      },
+    },
   };
 }
 

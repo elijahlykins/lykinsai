@@ -1739,8 +1739,7 @@ const ENVELOPE_KEY_RE = /"(?:assistant|response|actions|follow_up_questions|foll
 const ACTION_KEY_HINT_RE = /"type"\s*:\s*"(?:create_|update_|delete_|move_|resize_|color_|connect_|disconnect_|organize_|append_notes|update_notes|edit_block)/;
 
 /* ------------------------------------------------------------------ */
-/*  Learn-a-fact helpers live in src/lib/ai/learnedTag.ts so the      */
-/*  ProjectPlaceholder shares the exact same parser + posters. The    */
+/*  Learn-a-fact helpers live in src/lib/ai/learnedTag.ts. The        */
 /*  primary tag-emit + fallback classifier wiring lives in            */
 /*  postProcessResponse below.                                         */
 /* ------------------------------------------------------------------ */

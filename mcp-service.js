@@ -89,6 +89,11 @@ export const MCP_CLIENT_KINDS = new Set([
   'midjourney',
   'sora-veo',
   'figma-ai',
+  // Bring-your-own-agent — distinct from 'other' so the Connections
+  // page can label these tokens "Custom Agent" instead of generic
+  // "Other", and so future Flavor-B work (outbound webhooks, agent
+  // registry) can filter on this signal without changing storage.
+  'custom-agent',
   // Catch-all fallback — kept last for findability.
   'other',
 ]);
@@ -411,6 +416,7 @@ export function labelForClientKind(kind) {
     case 'claude-code':    return 'Claude Code';
     case 'cursor':         return 'Cursor';
     case 'chatgpt':        return 'ChatGPT';
+    case 'custom-agent':   return 'Custom Agent';
     default:               return 'AI client';
   }
 }

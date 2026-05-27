@@ -32,6 +32,10 @@ import {
   buildJetBrainsConfigSnippet,
   buildCopilotInstallLink,
   buildRawInstallInfo,
+  buildCustomAgentPythonSnippet,
+  buildCustomAgentNodeSnippet,
+  buildCustomAgentCurlSnippet,
+  buildCustomAgentOpenApiSpec,
   buildLyknProjectInstructions,
   LYKN_PROJECT_INSTRUCTIONS_TARGETS,
 } from "@/lib/connectors/outboundTargets";
@@ -195,7 +199,14 @@ export default function UseLyknWithDialog({ open, onOpenChange, target, onMinted
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-xl bg-white dark:bg-zinc-950 border border-black/10 dark:border-white/10">
+      {/* `max-h-[90vh] overflow-y-auto` is load-bearing: without it the
+          Radix DialogContent is centre-fixed with no scroll, so when the
+          install steps + project-instructions snippet + token block run
+          taller than the viewport (every MCP-aware client does), the top
+          half spills off-screen with no way to reach it. Width bumped from
+          xl→2xl so the code blocks below have room to breathe before the
+          inner `max-h-72 overflow-y-auto` on each <pre> takes over. */}
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto bg-white dark:bg-zinc-950 border border-black/10 dark:border-white/10">
         <DialogHeader>
           <DialogTitle className="text-[18px] font-semibold tracking-tight flex items-center gap-2">
             <Sparkles className="h-4 w-4 text-amber-500" />
@@ -267,6 +278,14 @@ export default function UseLyknWithDialog({ open, onOpenChange, target, onMinted
 
             {installType === "raw" && (
               <RawSection raw={rawInfo} copied={copied} onCopy={copyTo} />
+            )}
+
+            {installType === "custom-agent" && (
+              <CustomAgentSection
+                raw={rawInfo}
+                copied={copied}
+                onCopy={copyTo}
+              />
             )}
 
             {/* ── Project Instructions (the "always-on" trigger) ─── */}
@@ -670,6 +689,40 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
       return;
     }
 
+    // ── Copy-only: user is configuring a client we don't have a
+    //    deeplink / settings URL for (the "universal MCP" tile —
+    //    Zed, Cline, Goose, Warp, Jan, or whatever new client just
+    //    shipped). We copy the URL and STOP — opening some random
+    //    new tab would be noise, not help. The polling loop still
+    //    catches the OAuth handshake the moment their client does
+    //    the /mcp → 401 → DCR → consent dance, identical to every
+    //    curated tile. No bearer paste involved.
+    if (connectMode === "copy-only") {
+      let copyOk = false;
+      try {
+        await navigator.clipboard.writeText(mcpUrl);
+        copyOk = true;
+      } catch {
+        copyOk = false;
+      }
+      setCopyJustWorked(copyOk);
+      if (!copyOk) {
+        toast({
+          title: "Couldn't copy automatically",
+          description: "Use the Copy URL button below before pasting into your MCP client.",
+          variant: "destructive",
+        });
+      } else {
+        toast({
+          title: "MCP URL copied",
+          description: "Paste it into your client's MCP server config and approve LYKN. We'll auto-detect the connection.",
+        });
+      }
+      setStep((s) => (s < 1 ? 1 : s));
+      setTimeout(() => setCopyJustWorked(false), 4000);
+      return;
+    }
+
     // ── Default: copy URL + open target's settings page in a new tab.
     //    Used by ChatGPT (no deeplink available) and any other client
     //    that still needs the manual paste flow.
@@ -788,6 +841,15 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
                 Apply. AI Assistant pops the LYKN consent screen — we
                 auto-detect the connection. Junie users can paste the same
                 snippet into <code className="font-mono text-[11.5px]">~/.junie/mcp/mcp.json</code>.
+              </>
+            ) : connectMode === "copy-only" ? (
+              <>
+                One button copies LYKN's MCP URL. Paste it into your client's
+                MCP server config (Claude Desktop, Cursor, Zed, Cline, Goose,
+                Warp, Jan, Continue, …) and approve LYKN when the consent
+                screen pops. <strong className="font-semibold">No bearer token
+                to manage</strong> — modern MCP clients handle OAuth themselves.
+                We auto-detect the connection here.
               </>
             ) : (
               <>
@@ -1008,6 +1070,9 @@ function stepOnePromptTitle({ connectMode, targetName }) {
   if (isCliConnectMode(connectMode)) {
     return `Press Connect — we'll copy a one-line ${targetName} install command`;
   }
+  if (connectMode === "copy-only") {
+    return `Press Connect — we'll copy LYKN's MCP URL to your clipboard`;
+  }
   return `Press Connect — we'll copy the URL and open ${targetName}`;
 }
 
@@ -1032,6 +1097,9 @@ function stepOneDoneTitle({ connectMode, targetName }) {
   }
   if (isCliConnectMode(connectMode)) {
     return `Install command copied — paste it in your terminal`;
+  }
+  if (connectMode === "copy-only") {
+    return `URL copied — paste it into your MCP client's config`;
   }
   return `URL copied + ${targetName} opened in a new tab`;
 }
@@ -1243,6 +1311,175 @@ function RawSection({ raw, copied, onCopy }) {
         The MCP endpoint is Streamable HTTP (POST JSON-RPC). The REST mirror
         accepts the same auth and exposes one endpoint per tool — handy for
         clients that don't speak MCP yet.
+      </p>
+    </div>
+  );
+}
+
+/**
+ * CustomAgentSection — first-class "bring your own agent" experience.
+ *
+ * Same underlying token + endpoints as RawSection, but framed for the
+ * user who built their OWN thing: a LangChain agent, n8n flow, Vapi
+ * voice bot, FastAPI service, robot stack. The point is to make clear
+ * that LYKN's entire synthesis surface is already addressable from any
+ * language that speaks HTTP — they don't need to wait for us to ship a
+ * named connector for their tool.
+ *
+ * Three things this section adds on top of RawSection:
+ *   1. Tabbed starter snippets (Python / Node / curl) pre-populated
+ *      with the just-minted token. Copy-to-clipboard on each tab.
+ *   2. A "Download OpenAPI" button that hands the user a minimal
+ *      OpenAPI 3.1 spec — enough to import into Postman, paste into
+ *      a Custom GPT Action, or wire into n8n's OpenAPI node.
+ *   3. A short "what to do next" sentence pointing at the four most
+ *      useful endpoints (context-block, vault/search, projects/state,
+ *      beliefs) — the same ones the snippets demonstrate.
+ *
+ * Deliberately does NOT prescribe a framework. The agent itself is a
+ * black box in every snippet (`call_my_agent(prompt, context)`); the
+ * user plugs whatever model/runtime they already have into that stub.
+ * The pitch is "LYKN is your cognition layer", not "here's how to
+ * build an agent."
+ */
+function CustomAgentSection({ raw, copied, onCopy }) {
+  const [tab, setTab] = useState("python");
+
+  const snippet = useMemo(() => {
+    if (tab === "python") {
+      return buildCustomAgentPythonSnippet({
+        token: raw.token,
+        restBase: raw.restBase,
+      });
+    }
+    if (tab === "node") {
+      return buildCustomAgentNodeSnippet({
+        token: raw.token,
+        restBase: raw.restBase,
+      });
+    }
+    return buildCustomAgentCurlSnippet({
+      token: raw.token,
+      restBase: raw.restBase,
+    });
+  }, [tab, raw.token, raw.restBase]);
+
+  const copyKey = `custom-agent-${tab}`;
+
+  const downloadOpenApi = useCallback(() => {
+    try {
+      const spec = buildCustomAgentOpenApiSpec({ restBase: raw.restBase });
+      const blob = new Blob([JSON.stringify(spec, null, 2)], {
+        type: "application/json",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "lykn-custom-agent.openapi.json";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      toast({
+        title: "Download failed",
+        description: "Copy the spec from the docs instead.",
+        variant: "destructive",
+      });
+    }
+  }, [raw.restBase]);
+
+  return (
+    <div className="space-y-3">
+      <SectionTitle>Endpoints</SectionTitle>
+      <RawRow
+        label="REST base"
+        value={raw.restBase}
+        copied={copied["custom-rest"]}
+        onCopy={() => onCopy("custom-rest", raw.restBase)}
+      />
+      <RawRow
+        label="MCP endpoint"
+        value={raw.mcpUrl}
+        copied={copied["custom-mcp"]}
+        onCopy={() => onCopy("custom-mcp", raw.mcpUrl)}
+      />
+      <RawRow
+        label="Auth header"
+        value={raw.headerExample}
+        copied={copied["custom-header"]}
+        onCopy={() => onCopy("custom-header", raw.headerExample)}
+      />
+
+      <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.04] dark:bg-amber-500/[0.06] p-3 space-y-2.5">
+        <SectionTitle>
+          <span className="text-amber-800 dark:text-amber-300">
+            Starter snippet
+          </span>
+        </SectionTitle>
+        <p className="text-[11.5px] leading-relaxed text-black/65 dark:text-white/70">
+          Pre-filled with your token. Drop it into your agent code, plug
+          in your model call where the stub says, and you're done.
+        </p>
+
+        <div className="inline-flex rounded-lg border border-black/[0.08] dark:border-white/10 bg-white/70 dark:bg-zinc-900/70 p-0.5">
+          {[
+            { id: "python", label: "Python" },
+            { id: "node", label: "Node / TS" },
+            { id: "curl", label: "curl" },
+          ].map((opt) => (
+            <button
+              key={opt.id}
+              type="button"
+              onClick={() => setTab(opt.id)}
+              className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors ${
+                tab === opt.id
+                  ? "bg-black text-white dark:bg-white dark:text-black"
+                  : "text-black/65 dark:text-white/65 hover:bg-black/[0.05] dark:hover:bg-white/[0.06]"
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="relative">
+          <pre className="whitespace-pre-wrap break-words rounded-md border border-black/[0.08] dark:border-white/10 bg-white/70 dark:bg-zinc-900/70 px-3 py-2 text-[11px] font-mono leading-relaxed text-black/85 dark:text-white/85 max-h-72 overflow-y-auto pr-12">
+{snippet}
+          </pre>
+          <div className="absolute top-1.5 right-1.5">
+            <CopyButton
+              copied={copied[copyKey]}
+              onClick={() => onCopy(copyKey, snippet)}
+              label="Copy snippet"
+            />
+          </div>
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-black/[0.08] dark:border-white/10 bg-black/[0.02] dark:bg-white/[0.04] p-3 space-y-2">
+        <SectionTitle>OpenAPI + Postman</SectionTitle>
+        <p className="text-[11.5px] leading-relaxed text-black/65 dark:text-white/70">
+          Import this into Postman, paste it into a Custom GPT Action,
+          or drop it into n8n's OpenAPI node. Covers the four endpoints
+          most agents actually need: context-block, vault search, beliefs,
+          and project-state push.
+        </p>
+        <button
+          type="button"
+          onClick={downloadOpenApi}
+          className="inline-flex items-center gap-2 rounded-lg border border-black/10 dark:border-white/15 bg-white dark:bg-zinc-900 px-3 py-1.5 text-[11.5px] font-medium text-black/85 dark:text-white/90 hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors"
+        >
+          <Download className="h-3.5 w-3.5" />
+          Download OpenAPI 3.1 spec
+        </button>
+      </div>
+
+      <p className="text-[11px] text-black/55 dark:text-white/55 leading-relaxed">
+        The MCP endpoint speaks Streamable HTTP (POST JSON-RPC, same wire
+        format Cursor and Claude use). The REST mirror at <code className="text-[10.5px]">{raw.restBase}</code>{" "}
+        is the easier surface for hand-rolled agents — every MCP tool has
+        a one-to-one REST route with the same auth.
       </p>
     </div>
   );

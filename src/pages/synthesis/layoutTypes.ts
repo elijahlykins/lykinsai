@@ -21,7 +21,14 @@ export type NodeKind =
   // (Perspective template). Stored under the hood as a `notes` row
   // carrying the `_perspective` marker tag, but rendered as its own
   // category cluster in the graph rather than inside Vault.
-  | "perspective";
+  | "perspective"
+  // User-authored project (lykn_projects). Rendered as a node inside the
+  // top-level Projects category; clicking opens the existing
+  // `ProjectPanel` instead of the unified NeuronPanel so the user sees
+  // the project's updates + connected neurons rather than a generic
+  // neuron detail surface. Cross-edges from each project node out to
+  // its member nodeIds make the cluster visually obvious in the brain.
+  | "project";
 
 export interface MindNode {
   id: string;

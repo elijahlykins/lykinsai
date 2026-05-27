@@ -50,8 +50,13 @@ export const listProjectsTool = {
     'then call lykn_setActiveProject({ project_id: "<that id>" }).',
     '',
     'Each result includes id, name, description, status (active|archived),',
-    'created_by_client (which AI tool first inferred the project), and',
-    'last_active_at (used to sort). Status defaults to "active"; pass',
+    'created_by_client (which AI tool first inferred the project),',
+    'last_active_at (used to sort), is_focus (true for the ONE project',
+    'lykn_getContextBlock currently auto-injects), state_key_count (how',
+    'much working memory has been pushed to it), and neuron_count (how',
+    'many synthesis nodes the user hand-grouped into it). NB: status',
+    '"active" just means "not archived" — it does NOT mean "currently in',
+    'focus." Use `is_focus` for that. Status defaults to "active"; pass',
     '"archived" or "all" only when the user explicitly asks to resume',
     'older work.',
     '',
@@ -165,6 +170,34 @@ export const listProjectsTool = {
       }
     }
 
+    // ----------------------------------------------------------------
+    // Per-project working state count. The agent failure mode this
+    // fixes: a project with 5 pushed state keys but 0 clustered
+    // neurons used to read as "empty" because we only surfaced
+    // neuron_count. state_key_count tells the model "this project
+    // has accumulated working memory, just no hand-grouped neurons."
+    // One round-trip for the whole batch.
+    // ----------------------------------------------------------------
+    const stateCountByProject = new Map();
+    if (projectIds.length > 0) {
+      try {
+        const { data: stateRows } = await ctx.supabaseAdmin
+          .from('lykn_project_state')
+          .select('project_id, state_key')
+          .eq('user_id', ctx.userId)
+          .in('project_id', projectIds)
+          .is('superseded_at', null);
+        for (const sr of stateRows || []) {
+          stateCountByProject.set(
+            sr.project_id,
+            (stateCountByProject.get(sr.project_id) || 0) + 1,
+          );
+        }
+      } catch (err) {
+        console.warn('[mcp:listProjects] state count load failed:', err?.message || err);
+      }
+    }
+
     const projects = (rows || []).map((row) => {
       const neurons = neuronsByProject.get(row.id) || [];
       return {
@@ -175,7 +208,16 @@ export const listProjectsTool = {
         created_by_client: row.created_by_client,
         created_at: row.created_at,
         last_active_at: row.last_active_at,
-        is_active: row.id === activeId,
+        // `is_focus` (renamed from the previous `is_active`) means
+        // "this is the project lykn_getContextBlock auto-injects."
+        // The old field name collided with `status: 'active'` and
+        // confused agents into contradicting themselves ("active but
+        // not active"). `is_focus` is unambiguous.
+        is_focus: row.id === activeId,
+        // How much working memory has been pushed to this project by
+        // any AI client. Use this to distinguish "empty shell" from
+        // "rich context, just no clustered neurons."
+        state_key_count: stateCountByProject.get(row.id) || 0,
         neuron_count: neurons.length,
         // Cap the inline preview so the response stays under model
         // context limits even for users with very large clusters; the

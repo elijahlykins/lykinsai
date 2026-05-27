@@ -62,6 +62,8 @@ export const CHAT_TOOL_NAMES = [
   'lykn_updateProject',
   // ── Project hard delete (confirm-gated inside the tool) ──────────
   'lykn_deleteProject',
+  // ── Project merge (two-phase: dry-run preview → confirm commit) ──
+  'lykn_mergeProjects',
   // ── Cross-neuron edges + concept recency (low-risk writes) ───────
   'lykn_createNeuronLink',
   'lykn_touchConcept',

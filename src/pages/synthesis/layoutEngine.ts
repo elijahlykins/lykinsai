@@ -201,6 +201,13 @@ export function simulateLayout(
     // structured than a raw note), but not normative principles —
     // 50 reads as "in the cognition layer, just below beliefs".
     perspective: 50,
+    // Projects are user-authored aggregators that pull together
+    // neurons from across other clusters via cross-edges. Same depth
+    // offset as concepts so the teal project cluster lives on the
+    // same plane as the orange concept aggregators — both are
+    // "organising" tiers above raw notes/chats but below the
+    // principles tier.
+    project: 30,
     grid: 0,
     vault: -30,
     tag: -80,

@@ -20,18 +20,28 @@ export const searchVaultTool = {
   title: 'Search the user\'s LYKN vault for notes / saved items',
   scope: 'read',
   description: [
-    'Search the LYKN user\'s vault — their personal long-term memory of',
-    'notes, saved articles, links, files, and AI-generated snippets — for',
-    'substring matches against title and content. Returns up to 25 hits',
-    'ranked by recency.',
+    'Substring search across the LYKN user\'s vault (notes, saved articles,',
+    'links, files, AI snippets). Returns up to 25 hits ranked by recency.',
+    'Each hit: { node_id: "vault_<uuid>", id, title, snippet, tags,',
+    'created_at, updated_at, url: "/vault?note=<id>" }.',
     '',
-    'Use this when the user asks something that\'s likely already in their',
-    'archive ("what did I save about X?", "find that article on Y", "did',
-    'I take notes on Z?"). Quote the matching snippet rather than',
-    'paraphrasing — the user trusts what they wrote.',
+    'IMPORTANT — hits are SNIPPETS, and they DO NOT render in the LYKN',
+    'chat on their own. If the user wants to SEE / OPEN / READ / "bring',
+    'in" / "pull up" / "show me" a saved item (any verb implying looking',
+    'at the thing itself, not just discussing it), you MUST follow up',
+    'with `lykn_loadNeuron({ node_id })` — or `lykn_loadNeurons` for',
+    'several — using the `node_id` field from the hit (NOT the bare `id`,',
+    'which is missing the required `vault_` prefix). loadNeuron returns',
+    'the full body AND causes the saved file/note/link/image to render as',
+    'a rich card under your reply. Don\'t paraphrase the snippet in that',
+    'case — the card shows the content; your prose just frames WHY you',
+    'brought it in.',
     '',
-    'Each result includes the note id and a URL. If the user wants to',
-    'open the item, send them to /vault?note=<id>.',
+    'Skip the loadNeuron step only when the user wants a LIST of titles',
+    '("what notes do I have on X?") and is not asking to see the items.',
+    '',
+    'Typical triggers: "what did I save about X?", "find that article on',
+    'Y", "did I take notes on Z?", "pull up my note on …".',
   ].join('\n'),
   inputSchema: {
     type: 'object',
@@ -82,6 +92,16 @@ export const searchVaultTool = {
         ? text.slice(Math.max(0, idx - 60), Math.min(text.length, idx + queryRaw.length + 180))
         : text.slice(0, 240);
       return {
+        // Stable cross-store id the model can hand directly to
+        // lykn_loadNeuron / lykn_loadNeurons / lykn_addProjectNeurons.
+        // Without this the model has to know to prefix `vault_` itself,
+        // which it routinely got wrong (passing the bare uuid into
+        // loadNeuron returns "unrecognised_node_id" and the saved note
+        // never makes it into the chat as a rich card).
+        node_id: `vault_${n.id}`,
+        // Bare uuid kept for backward compat with anything that already
+        // reads `id` (the REST mirror docs reference it). New callers
+        // should prefer `node_id`.
         id: n.id,
         title: n.title || '(untitled)',
         snippet: snippet.trim(),
