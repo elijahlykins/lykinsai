@@ -3,7 +3,7 @@ import ReactDOM from 'react-dom/client'
 import App from '@/App.jsx'
 import '@/index.css'
 import ErrorBoundary from '@/lib/ErrorBoundary'
-import { applyTheme, normalizeTheme, readSavedTheme } from '@/lib/theme'
+import { applyTheme } from '@/lib/theme'
 
 try {
   const saved = JSON.parse(localStorage.getItem('lykinsai_settings') || '{}');
@@ -12,12 +12,11 @@ try {
   if (saved.fontSize)      document.documentElement.style.setProperty('--font-scale', fontScales[saved.fontSize] || '1');
   if (saved.layoutDensity) document.documentElement.style.setProperty('--layout-density', densities[saved.layoutDensity] || '1');
 
-  applyTheme(readSavedTheme());
+  applyTheme('dark');
 
-  // Migrate legacy `system` (and other unknown) values to dark on next settings save.
-  const normalized = normalizeTheme(saved.theme);
-  if (saved.theme && saved.theme !== normalized) {
-    localStorage.setItem('lykinsai_settings', JSON.stringify({ ...saved, theme: normalized }));
+  // Light mode is not shipped yet — migrate any saved non-dark value.
+  if (saved.theme && saved.theme !== 'dark') {
+    localStorage.setItem('lykinsai_settings', JSON.stringify({ ...saved, theme: 'dark' }));
   }
 } catch {}
 

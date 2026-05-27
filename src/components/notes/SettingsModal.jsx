@@ -34,7 +34,7 @@ import { useUserPlan } from '@/lib/useUserPlan';
 import { isModelAllowedForPlan, canonicalizeModelId, defaultModelForTier } from '@/lib/modelTiers';
 import { planLabel } from '@/lib/pricing-config';
 import { API_BASE_URL } from '@/lib/api-config';
-import { applyTheme, normalizeTheme } from '@/lib/theme';
+import { applyTheme } from '@/lib/theme';
 
 // ---------------------------------------------------------------------
 // MenuRow — single icon + title row in the main settings list.
@@ -156,11 +156,15 @@ export default function SettingsModal({ isOpen, onClose }) {
       if (saved) {
         try {
           const parsed = JSON.parse(saved);
-          parsed.theme = normalizeTheme(parsed.theme);
+          const needsThemeMigration = parsed.theme && parsed.theme !== 'dark';
+          parsed.theme = 'dark';
           parsed.aiModel = canonicalizeModelId(parsed.aiModel)
             || defaultModelForTier(modelTier);
           setSettings(parsed);
-          applyTheme(parsed.theme);
+          applyTheme('dark');
+          if (needsThemeMigration) {
+            localStorage.setItem('lykinsai_settings', JSON.stringify(parsed));
+          }
         } catch (e) {
           if (import.meta.env.DEV) console.error('Error parsing settings:', e);
         }
@@ -180,7 +184,7 @@ export default function SettingsModal({ isOpen, onClose }) {
   }, [isOpen, user, modelTier]);
 
   const persistSettings = (next) => {
-    const normalized = { ...next, theme: normalizeTheme(next.theme) };
+    const normalized = { ...next, theme: 'dark' };
     localStorage.setItem('lykinsai_settings', JSON.stringify(normalized));
     const densities = { compact: '0.75', comfortable: '1', spacious: '1.25' };
     document.documentElement.style.setProperty('--layout-density', densities[normalized.layoutDensity]);
@@ -541,32 +545,20 @@ export default function SettingsModal({ isOpen, onClose }) {
       <div className="space-y-4">
         <div className="space-y-2">
           <Label className="text-xs text-gray-600 dark:text-gray-400">Theme</Label>
-          <Select
-            value={settings.theme}
-            onValueChange={(value) => {
-              const updated = { ...settings, theme: value };
-              setSettings(updated);
-              persistSettings(updated);
-            }}
-          >
-            <SelectTrigger className="h-auto border-0 bg-transparent shadow-none rounded-none px-1 py-1 text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors focus:ring-0 focus:ring-offset-0">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent className="bg-white dark:bg-[#1a1818] border border-gray-200 dark:border-white/10 rounded-xl shadow-xl backdrop-blur-xl p-1">
-              {[
-                { value: 'dark', label: 'Dark' },
-                { value: 'light', label: 'Light' },
-              ].map(({ value, label }) => (
-                <SelectItem
-                  key={value}
-                  value={value}
-                  className="rounded-lg px-2.5 py-2 text-sm font-medium text-gray-800 dark:text-gray-100 focus:bg-black/[0.04] dark:focus:bg-white/[0.06] data-[state=checked]:bg-black/[0.04] dark:data-[state=checked]:bg-white/[0.06] cursor-pointer"
-                >
-                  {label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <div className="flex flex-col rounded-lg border border-gray-200 dark:border-gray-700/60 overflow-hidden">
+            <div className="flex items-center justify-between px-3 py-2.5 text-sm text-black dark:text-white bg-black/[0.02] dark:bg-white/[0.03]">
+              <span>Dark</span>
+              <span className="text-[10px] uppercase tracking-wider text-blue-600 dark:text-blue-400 bg-blue-100/60 dark:bg-blue-950/30 px-1.5 py-0.5 rounded-full">
+                Active
+              </span>
+            </div>
+            <div className="flex items-center justify-between px-3 py-2.5 text-sm text-gray-500 dark:text-gray-400 border-t border-gray-200 dark:border-gray-700/60">
+              <span>Light</span>
+              <span className="text-[10px] uppercase tracking-wider text-amber-600 dark:text-amber-400 bg-amber-100/60 dark:bg-amber-950/30 px-1.5 py-0.5 rounded-full">
+                Soon
+              </span>
+            </div>
+          </div>
         </div>
 
         <div className="space-y-2">

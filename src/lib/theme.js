@@ -1,29 +1,19 @@
 export const DEFAULT_BG_DARK = '#1e1e1e';
 
-/** Dark is the default; only an explicit `light` choice opts out. */
-export function normalizeTheme(theme) {
-  return theme === 'light' ? 'light' : 'dark';
+/** Light mode is not shipped yet — always dark until it is. */
+export function normalizeTheme(_theme) {
+  return 'dark';
 }
 
-export function isDarkTheme(theme) {
-  return normalizeTheme(theme) === 'dark';
+export function isDarkTheme(_theme) {
+  return true;
 }
 
-export function applyTheme(theme) {
-  const isDark = isDarkTheme(theme);
-  document.documentElement.classList.toggle('dark', isDark);
-  if (isDark) {
-    document.documentElement.style.setProperty('--app-background', DEFAULT_BG_DARK);
-  } else {
-    document.documentElement.style.removeProperty('--app-background');
-  }
+export function applyTheme(_theme) {
+  document.documentElement.classList.add('dark');
+  document.documentElement.style.setProperty('--app-background', DEFAULT_BG_DARK);
 }
 
 export function readSavedTheme() {
-  try {
-    const saved = JSON.parse(localStorage.getItem('lykinsai_settings') || '{}');
-    return normalizeTheme(saved.theme);
-  } catch {
-    return 'dark';
-  }
+  return 'dark';
 }

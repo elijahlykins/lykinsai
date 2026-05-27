@@ -13,14 +13,7 @@
     <meta name="theme-color" content="#0a0a0a" />
     <link rel="manifest" href="/manifest.json" />
     <title>LYKN</title>
-    <script>
-      (function () {
-        try {
-          var s = JSON.parse(localStorage.getItem('lykinsai_settings') || '{}');
-          if (s.theme === 'light') document.documentElement.classList.remove('dark');
-        } catch (e) {}
-      })();
-    </script>
+    <!-- Theme is dark-only for now; light mode is coming soon. -->
   </head>
   <body>
     <script src="/embed-detect.js"></script>
