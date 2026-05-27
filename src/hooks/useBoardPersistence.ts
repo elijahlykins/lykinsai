@@ -828,6 +828,30 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
         } catch {
           // ignore
         }
+        // Explicit new-chat navigation — register the row immediately so
+        // sidebars and the synthesis layer list it before the first save.
+        try {
+          const { error: insertErr } = await supabase
+            .from("omnia_boards")
+            .insert({ id: routeBoardId, user_id: userId, title: "New Chat" });
+          if (!insertErr) {
+            boardRowExistsRef.current = true;
+            localStorage.setItem("omnia_board_id", routeBoardId);
+          } else {
+            const { data: existing } = await supabase
+              .from("omnia_boards")
+              .select("id")
+              .eq("id", routeBoardId)
+              .eq("user_id", userId)
+              .maybeSingle();
+            if (existing?.id) {
+              boardRowExistsRef.current = true;
+              localStorage.setItem("omnia_board_id", routeBoardId);
+            }
+          }
+        } catch {
+          // ignore
+        }
       }
       if (!id && !routeBoardId) {
         try {

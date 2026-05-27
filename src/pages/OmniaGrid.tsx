@@ -59,6 +59,7 @@ import LoadInBriefingPanel from "@/components/omnia/LoadInBriefingPanel";
 import MobileFocusedChatGrids from "@/components/omnia/MobileFocusedChatGrids";
 import GridShareDialog from "@/components/omnia/GridShareDialog";
 import { useBoardPersistence, makeDefaultNotesPages } from "@/hooks/useBoardPersistence";
+import { fetchRecentBoardWithContext } from "@/lib/board/fetchBoardsWithContext";
 import { useChatEngine } from "@/hooks/useChatEngine";
 
 // Feature flag — the LYKN Grid canvas surface is temporarily unplugged.
@@ -68,17 +69,6 @@ import { useChatEngine } from "@/hooks/useChatEngine";
 // state, and components remain wired up — they just never become visible
 // while this flag is on.
 const GRID_DISABLED = true;
-
-// Module-level "first mount of this page load" sentinel — reset on
-// every hard page load (since the JS module re-evaluates) and flipped
-// to false the first time OmniaGrid mounts. We use it to decide
-// whether to bounce a `/grid/<id>` URL back to `/app` so the load-in
-// greeting trigger can mint a fresh chat with the latest updates.
-// Without this, reloading the tab while parked at `/grid/<id>` would
-// leave the user staring at the same stale conversation forever —
-// the trigger only fires when `routeBoardId` is absent (i.e. on
-// `/app`), so the URL needs to drop back there to re-arm it.
-let omniaGridDidConsumeFirstLoad = false;
 
 const TASK_LINE_RE = /^\s*(?:[-*]\s+)?\[([ xX])\]\s+(.+)$/;
 
@@ -1116,25 +1106,13 @@ export default function OmniaGridPage() {
   }, [user?.id]);
 
   // --------------------------------------------------------------------
-  // Initial-load chat (signed-in users)
+  // Resume last chat (signed-in users landing on /app)
   // --------------------------------------------------------------------
-  // Every signed-in user should land in a fresh blank chat — same as
-  // clicking the sidebar "New chat" button. The previous behavior here
-  // seeded an "opening message" (load-in greeting) recap chat that
-  // pulled in awaiting approvals, project updates, etc., but those
-  // greeting boards were not persisting reliably, so we've unplugged
-  // that path. The greeting-specific consume/refresh/graduation effects
-  // below all gate on `kind === "load-in-greeting"` and therefore
-  // become silent no-ops with no greeting ever seeded.
-  //
-  // Fires whenever OmniaGrid mounts at `/app` (no `routeBoardId`) or
-  // on the very first mount of the JS runtime regardless of URL — the
-  // first-mount branch covers hard reloads sitting at a stale
-  // `/grid/<old>` or transient `/app` redirects (e.g. Privacy → / →
-  // `GuestOnly` → `/app`). Without this nudge, `useBoardPersistence`
-  // would auto-hydrate the user's previous board from
-  // `localStorage.omnia_board_id`, dropping them mid-chat instead of a
-  // blank slate.
+  // Login and sidebar "Chat" both route to `/app` with no board id.
+  // Bounce to the user's most recent conversation instead of minting a
+  // fresh blank chat every time — empty "New Chat" shells stay hidden
+  // from sidebars until they have real content. Hard reloads at
+  // `/grid/<id>` are left alone so the URL the user bookmarked wins.
   //
   // Prototype/guest users are intentionally skipped: their grid URLs
   // are demo content, not Supabase-backed boards, and the walkthrough
@@ -1145,32 +1123,60 @@ export default function OmniaGridPage() {
     if (!user?.id) return;
     if (planLoading) return;
     if (hasPrototypeNeurons()) return;
+    if (routeBoardId) return;
 
-    const isFirstLoadOfRuntime = !omniaGridDidConsumeFirstLoad;
-    const onApp = !routeBoardId;
-    if (!isFirstLoadOfRuntime && !onApp) return;
-    omniaGridDidConsumeFirstLoad = true;
+    let cancelled = false;
 
-    // Clear any leftover greeting pointers from the retired load-in
-    // greeting flow so we don't accidentally route a returning user
-    // back to a stale dashboard board.
-    try {
-      localStorage.removeItem("lykn:lastLoadInGreetingBoardId");
-      sessionStorage.removeItem("lykn:loadInGreetingMintedThisSession");
-    } catch {
-      // ignore
-    }
+    (async () => {
+      try {
+        localStorage.removeItem("lykn:lastLoadInGreetingBoardId");
+        sessionStorage.removeItem("lykn:loadInGreetingMintedThisSession");
+      } catch {
+        // ignore
+      }
 
-    // Mint a fresh blank chat — equivalent to the sidebar "New chat"
-    // button. `useBoardPersistence` will create the row in
-    // `omnia_boards` on hydration.
-    const targetId =
-      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-        ? crypto.randomUUID()
-        : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    nav(`/grid/${targetId}`, { replace: true });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.id, planLoading, routeBoardId]);
+      let targetId: string | null = null;
+
+      try {
+        const stored = localStorage.getItem("omnia_board_id");
+        if (stored) {
+          const { data } = await supabase
+            .from("omnia_boards")
+            .select("id")
+            .eq("id", stored)
+            .eq("user_id", user.id)
+            .maybeSingle();
+          if (data?.id) targetId = data.id;
+        }
+      } catch {
+        // ignore
+      }
+
+      if (!targetId) {
+        try {
+          const recent = await fetchRecentBoardWithContext(user.id);
+          if (recent?.id) targetId = recent.id;
+        } catch {
+          // ignore
+        }
+      }
+
+      if (!targetId) {
+        targetId =
+          typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+            ? crypto.randomUUID()
+            : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      }
+
+      if (!cancelled) {
+        nav(`/grid/${targetId}`, { replace: true });
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id, planLoading, routeBoardId, nav]);
 
   // The matching "graduation" effect (clears the saved dashboard
   // pointer once a user types into a load-in greeting board) and the

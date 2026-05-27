@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
-import { fetchBoardsWithContext } from "@/lib/board/fetchBoardsWithContext";
+import { fetchBoardsWithContext, invalidateBoardListQueries, mergeActiveRouteBoard } from "@/lib/board/fetchBoardsWithContext";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { DEMO_GRID_LIST } from "@/lib/demoGrids";
 
@@ -52,7 +52,7 @@ export default function MobileFocusedChatGrids() {
   });
 
   useEffect(() => {
-    const onBoardsChanged = () => queryClient.invalidateQueries({ queryKey: ["boards", user?.id] });
+    const onBoardsChanged = () => invalidateBoardListQueries(queryClient, user?.id);
     window.addEventListener("lykinsai_boards_changed", onBoardsChanged);
     return () => window.removeEventListener("lykinsai_boards_changed", onBoardsChanged);
   }, [queryClient, user?.id]);
@@ -72,8 +72,8 @@ export default function MobileFocusedChatGrids() {
     if (!user) {
       return DEMO_GRID_LIST.map((g) => ({ id: g.id, title: g.title, updated_at: null }));
     }
-    return boards;
-  }, [user, boards]);
+    return mergeActiveRouteBoard(boards, location.pathname);
+  }, [user, boards, location.pathname]);
 
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase();

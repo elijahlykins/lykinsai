@@ -119,6 +119,8 @@ export function filterBoardsWithContext<T extends BoardListRow>(
   return rows.filter((row) => {
     if (boardTitleLooksCustomized(row.title)) return true;
     const state = stateByBoardId?.get(row.id) ?? stateFromBoardRow(row as Record<string, unknown>);
+    // Board row with no snapshot yet — user explicitly opened a new chat.
+    if (state == null) return true;
     return snapshotHasContext(state);
   });
 }

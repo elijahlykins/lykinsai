@@ -20,7 +20,7 @@ import {
 } from "lucide-react";
 import FeedbackModal from "@/components/FeedbackModal";
 import { supabase } from "@/lib/supabase";
-import { fetchBoardsWithContext } from "@/lib/board/fetchBoardsWithContext";
+import { fetchBoardsWithContext, invalidateBoardListQueries, mergeActiveRouteBoard } from "@/lib/board/fetchBoardsWithContext";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -142,14 +142,15 @@ export default function AppSidebar({
   // Filter chats by the sidebar search input. Case-insensitive match
   // against the board title; empty query passes everything through.
   const normalizedQuery = searchQuery.trim().toLowerCase();
+  const visibleBoards = mergeActiveRouteBoard(boards, location.pathname);
   const filteredBoards = normalizedQuery
-    ? boards.filter((b) =>
+    ? visibleBoards.filter((b) =>
         (b.title || "New Chat").toLowerCase().includes(normalizedQuery),
       )
-    : boards;
+    : visibleBoards;
 
   useEffect(() => {
-    const onBoardsChanged = () => queryClient.invalidateQueries({ queryKey: ["boards", user?.id] });
+    const onBoardsChanged = () => invalidateBoardListQueries(queryClient, user?.id);
     window.addEventListener("lykinsai_boards_changed", onBoardsChanged);
     return () => {
       window.removeEventListener("lykinsai_boards_changed", onBoardsChanged);
