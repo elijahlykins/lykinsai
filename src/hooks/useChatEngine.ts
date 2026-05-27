@@ -451,12 +451,12 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   // — for a 50-message chat that was thousands of wasted markdown re-parses
   // per second during streaming.
   const STATIC_MD_COMPONENTS = useMemo(() => ({
-    h1: ({ children }: any) => React.createElement("h1", { className: "text-xl font-semibold mt-3 mb-2" }, children),
-    h2: ({ children }: any) => React.createElement("h2", { className: "text-lg font-semibold mt-3 mb-2" }, children),
-    h3: ({ children }: any) => React.createElement("h3", { className: "text-base font-semibold mt-2.5 mb-1.5" }, children),
-    p: ({ children }: any) => React.createElement("p", { className: "my-1.5 whitespace-pre-wrap" }, children),
-    ul: ({ children }: any) => React.createElement("ul", { className: "my-2 list-disc pl-5 space-y-1" }, children),
-    ol: ({ children }: any) => React.createElement("ol", { className: "my-2 list-decimal pl-5 space-y-1" }, children),
+    h1: ({ children }: any) => React.createElement("h1", { className: "text-xl font-semibold mt-6 mb-2.5 tracking-tight" }, children),
+    h2: ({ children }: any) => React.createElement("h2", { className: "text-lg font-semibold mt-5 mb-2 tracking-tight" }, children),
+    h3: ({ children }: any) => React.createElement("h3", { className: "text-base font-semibold mt-4 mb-1.5 tracking-tight" }, children),
+    p: ({ children }: any) => React.createElement("p", { className: "mb-4 last:mb-0 leading-[1.65] whitespace-pre-wrap" }, children),
+    ul: ({ children }: any) => React.createElement("ul", { className: "my-3 list-disc pl-5 space-y-1.5" }, children),
+    ol: ({ children }: any) => React.createElement("ol", { className: "my-3 list-decimal pl-5 space-y-1.5" }, children),
     strong: ({ children }: any) => React.createElement("strong", { className: "font-semibold" }, children),
     blockquote: ({ children }: any) => React.createElement("blockquote", { className: "border-l-2 border-black/20 dark:border-white/20 pl-3 my-2 text-black/70 dark:text-white/70 italic" }, children),
     code: ({ children, className }: any) => {
@@ -1896,6 +1896,9 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       isSendingRef.current = false;
       setChatFlowMode("idle");
       window.setTimeout(() => chatPanelInputRef.current?.focus(), 0);
+      if (user?.id) {
+        setTimeout(() => window.dispatchEvent(new Event("omnia_flush_save")), 300);
+      }
     }
   }, [
     isChatLoading, focusedChatAttachments, selectedModel, boardId, routeBoardId, projectId, user?.id, setChatInput,

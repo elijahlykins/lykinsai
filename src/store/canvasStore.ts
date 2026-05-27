@@ -31,7 +31,7 @@ type CanvasState = {
   history: string[];
   future: string[];
   // Plan-driven hard cap on non-"create" blocks per grid. `null` means no
-  // cap (Studio / Studio Pro / Studio Max). When `addBlock` is called beyond
+  // cap (Pro). When `addBlock` is called beyond
   // this cap, it silently refuses and fires a window event so the usage gate
   // can surface an upgrade modal.
   blockLimit: number | null;

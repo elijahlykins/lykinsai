@@ -5,8 +5,7 @@ import { useUserPlan } from "@/lib/useUserPlan";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { PLAN_LIMITS, planLabel } from "@/lib/pricing-config";
 
-// Plans ordered cheapest → priciest. `minPlan` means "allow this plan and any
-// plan above it".
+// Plans ordered cheapest → priciest. Legacy paid ids rank the same as Pro.
 const PLAN_ORDER = ["free", "studio", "studio_pro", "studio_max"];
 
 function planRank(planId) {
@@ -23,9 +22,8 @@ function planRank(planId) {
  *   </PlanGate>
  *
  * Props:
- *   - minPlan: "free" | "studio" | "studio_pro" | "studio_max" — the lowest
- *     plan that can access the children. (User-facing labels: Free / Pro /
- *     Max / Teams.)
+ *   - minPlan: "free" | "studio" — the lowest plan that can access the
+ *     children. (User-facing labels: Free / Pro.)
  *   - feature: human-readable feature name shown in the paywall.
  *   - description: optional extra copy under the title.
  *   - fallback: if provided, rendered instead of the default paywall.

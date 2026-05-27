@@ -5,51 +5,46 @@ export const BILLING_PERIODS = {
 
 // Plan IDs are used as primary keys throughout the app (DB `user_billing.plan`,
 // Stripe price map in server.js, PLAN_LIMITS below). Don't rename without a
-// migration — the LYKN-finalized May 2026 plan names (Pro / Max / Teams) are
-// the user-facing labels, but the underlying ids are kept stable:
-//   studio      → Pro
-//   studio_pro  → Max
-//   studio_max  → Teams
+// migration. The user-facing paid tier is Pro ($25/mo or $17/mo billed
+// annually). Legacy ids `studio_pro` / `studio_max` may still appear on
+// older billing rows — they resolve to the same limits as `studio`.
 export const PLANS = [
+  {
+    id: "free",
+    name: "Free",
+    tagline: "Try LYKN's synthesis layer across your tools before you upgrade.",
+    monthlyPrice: 0,
+    annualPrice: 0,
+    cta: "Always free",
+    ctaVariant: "outline",
+    highlighted: false,
+    checkout: false,
+    comingSoon: false,
+    features: [
+      { text: "100 synthesis neurons", included: true },
+      { text: "50 Vault cards", included: true },
+      { text: "LYKN Lite model", included: true },
+      { text: "Claude + one input connection", included: true },
+    ],
+  },
   {
     id: "studio",
     name: "Pro",
-    tagline: "Unlimited neurons, every connection, and the full LYKN model lineup.",
+    tagline: "Unlimited neurons and Vault storage, every model, every connection.",
     monthlyPrice: 25,
-    // $17/mo billed annually = $204/yr (LYKN-finalized).
+    // $17/mo billed annually = $204/yr.
     annualPrice: 204,
     cta: "Upgrade to Pro",
     ctaVariant: "primary",
     highlighted: true,
     badge: "Popular",
+    checkout: true,
     comingSoon: false,
     features: [
       { text: "Unlimited neurons", included: true, accent: true },
-      { text: "10,000 Vault cards", included: true },
-      { text: "All LYKN models", included: true },
+      { text: "Unlimited Vault cards", included: true, accent: true },
+      { text: "All models — LYKN lineup + frontier picks", included: true, accent: true },
       { text: "All connections unlocked", included: true },
-    ],
-  },
-  {
-    id: "studio_pro",
-    name: "Max",
-    tagline: "Top LLMs on the market and an unlimited Vault.",
-    monthlyPrice: 65,
-    // $50/mo billed annually = $600/yr (LYKN-finalized).
-    annualPrice: 600,
-    cta: "Upgrade to Max",
-    ctaVariant: "default",
-    highlighted: false,
-    comingSoon: false,
-    features: [
-      { text: "Everything in Pro", included: true },
-      {
-        text: "Top LLMs on the market (GPT, Claude, Gemini Ultra)",
-        included: true,
-        accent: true,
-      },
-      { text: "Unlimited Vault storage", included: true, accent: true },
-      { text: "API access", included: true, accent: true },
     ],
   },
   {
@@ -61,6 +56,7 @@ export const PLANS = [
     cta: "Join Waitlist",
     ctaVariant: "default",
     highlighted: false,
+    checkout: false,
     comingSoon: true,
     features: [
       { text: "Shared team workspace", included: true, accent: true },
@@ -75,32 +71,32 @@ export const FAQ_ITEMS = [
   {
     question: "What do I get on the Free plan?",
     answer:
-      "Every account starts on Free. You get a limited number of neurons and Vault cards, the LYKN base model for chat, and one input connection plus Claude. It's enough to feel how LYKN's synthesis layer follows you across tools before you upgrade.",
+      "Every account starts on Free. You get a limited number of neurons and Vault cards, the LYKN Lite model for chat, and one input connection plus Claude. It's enough to feel how LYKN's synthesis layer follows you across tools before you upgrade.",
   },
   {
-    question: "What's the difference between Pro and Max?",
+    question: "What does Pro include?",
     answer:
-      "Pro ($25/mo, or $17/mo billed annually) unlocks unlimited neurons, 10,000 Vault cards, the full LYKN model lineup, and every connection. Max ($65/mo, or $50/mo billed annually) adds the top LLMs on the market like GPT, Claude, and Gemini Ultra, plus an unlimited Vault and API access.",
+      "Pro ($25/mo, or $17/mo billed annually) unlocks unlimited neurons, unlimited Vault cards, every model in the picker — including GPT, Claude, Gemini, and Grok frontier picks — and every connection.",
   },
   {
     question: "Is there a free trial?",
     answer:
-      "No free trials. The Free plan is the trial. Upgrade to Pro or Max whenever you're ready, and you can cancel anytime.",
+      "No free trials. The Free plan is the trial. Upgrade to Pro whenever you're ready, and you can cancel anytime.",
   },
   {
     question: "How much do I save by paying yearly?",
     answer:
-      "Roughly a third off. Pro is $25/mo monthly or $17/mo when billed annually ($204/yr). Max is $65/mo monthly or $50/mo when billed annually ($600/yr).",
+      "Roughly a third off. Pro is $25/mo monthly or $17/mo when billed annually ($204/yr).",
   },
   {
     question: "Can I switch plans anytime?",
     answer:
-      "Yes. You can upgrade, downgrade, or cancel at any time from the billing portal. Upgrades take effect immediately and you're charged a prorated amount. Downgrades take effect at the end of your current billing cycle.",
+      "Yes. You can upgrade or cancel at any time from the billing portal. Upgrades take effect immediately and you're charged a prorated amount. Cancellation keeps access through the end of your billing period.",
   },
   {
     question: "When is Teams available?",
     answer:
-      "Teams is our shared-workspace plan, one synthesis layer your whole team can lean on. It's coming soon. Join the waitlist from the plan card and we'll reach out when it goes live.",
+      "Teams is our shared-workspace plan — one synthesis layer your whole team can lean on. It's coming soon. Join the waitlist from the plan card and we'll reach out when it goes live.",
   },
 ];
 
@@ -111,19 +107,13 @@ export const FAQ_ITEMS = [
 // `synthesisNodes` caps how many EXPLICIT user-created neurons (grids +
 // vault notes + perspectives + ratified beliefs + manual facts) can exist
 // before the Synthesis Layer page swaps in the upgrade paywall. AI-derived
-// nodes (clustered concepts, inferred facts, profile themes / goals /
-// recurring topics / vocabulary / reasoning style) do NOT count — they're
-// always free, regardless of how many the nightly synthesis job produces.
-// This is the cap that makes the synthesis layer "free for everyone, up
-// to a real preview" rather than gated on payment.
+// nodes do NOT count.
 //
 // Frontend enforcement: `userCreatedNodeCount` in
 // `src/pages/SynthesisLayer.tsx` (page-level paywall takeover).
 // Server enforcement: `enforce_synthesis_neuron_cap()` triggers on
 // `omnia_boards`, `lykn_beliefs`, `lykn_user_model_facts` defined in
-// `supabase-migrations/066_synthesis_neuron_cap_trigger.sql`. Notes are
-// not triggered separately because `vaultCards` (50 on free) is always
-// the tighter cap on that table — vault hits its own ceiling first.
+// `supabase-migrations/066_synthesis_neuron_cap_trigger.sql`.
 export const PLAN_LIMITS = {
   free: {
     requests: Infinity,
@@ -133,19 +123,19 @@ export const PLAN_LIMITS = {
     projects: Infinity,
     synthesisNodes: 100,
     seats: 1,
-    // Free is gated by model tier (non-thinking only), not request count.
     modelTier: "basic",
   },
   studio: {
     requests: Infinity,
-    vaultCards: 10000,
+    vaultCards: Infinity,
     blocksPerGrid: Infinity,
     grids: Infinity,
     projects: Infinity,
     synthesisNodes: Infinity,
     seats: 1,
-    modelTier: "top",
+    modelTier: "top+media",
   },
+  // Legacy paid ids — same entitlements as Pro (grandfathered billing rows).
   studio_pro: {
     requests: Infinity,
     vaultCards: Infinity,
@@ -163,7 +153,7 @@ export const PLAN_LIMITS = {
     grids: Infinity,
     projects: Infinity,
     synthesisNodes: Infinity,
-    seats: 5,
+    seats: 1,
     modelTier: "top+media",
   },
 };
@@ -171,40 +161,21 @@ export const PLAN_LIMITS = {
 // ---------------------------------------------------------------------------
 // Upload rate limits (per-user).
 //
-// These cap how many *file uploads* a single user can push into the Vault in
-// a rolling time window. They exist on top of `vaultCards` (the absolute
-// count cap) — that one answers "how many items can you own?", these answer
-// "how fast can you add them?".
-//
-// Enforced in two places (stay in sync!):
-//   • Client-side pacing in `src/lib/vault/uploadPipeline.ts`, which throttles
-//     big batch drops (e.g. "drop a 2,000-file folder") into manageable
-//     chunks rather than hammering storage.
-//   • DB trigger in `supabase-migrations/033_upload_rate_trigger.sql`, which
-//     is the real safety net — it counts `notes` rows with source='file_upload'
-//     in the last minute / hour per caller and raises if the plan's limit
-//     would be exceeded.
-//
-// `Infinity` means no cap in that window. Bytes caps are intentionally not
-// tracked here (file size is buried inside the attachment JSON, not a
-// first-class column). If we need to enforce bytes later, add a column to
-// `notes` and extend both the trigger and the client check.
+// Enforced in `src/lib/vault/uploadPipeline.ts` and
+// `supabase-migrations/033_upload_rate_trigger.sql`.
 // ---------------------------------------------------------------------------
 export const UPLOAD_RATE_LIMITS = {
   free:       { perMinute: 20,  perHour: 120  },
-  studio:     { perMinute: 100, perHour: 1200 },
+  studio:     { perMinute: 300, perHour: 3600 },
   studio_pro: { perMinute: 300, perHour: 3600 },
   studio_max: { perMinute: 600, perHour: 7200 },
 };
 
-// Centralised id → display label mapping. Use this everywhere user-visible
-// copy mentions a plan, so the LYKN-finalized naming (Pro / Max / Teams)
-// stays consistent. The underlying ids in the DB / Stripe map are unchanged.
 export const PLAN_LABELS = {
   free: "Free",
   studio: "Pro",
-  studio_pro: "Max",
-  studio_max: "Teams",
+  studio_pro: "Pro",
+  studio_max: "Pro",
 };
 
 export function planLabel(planId) {

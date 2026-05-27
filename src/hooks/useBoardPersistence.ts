@@ -8,7 +8,7 @@ import { scheduleSynthesisReindex } from "@/lib/synthesis/queueReindex";
 import { scheduleUserProfileRefresh } from "@/lib/synthesis/profileRefresh";
 import type { NotePage } from "@/components/notes/NotesPanel";
 import { notifyBlocksCapIfApplicable } from "@/lib/board/blocksCapError";
-import { fetchRecentBoardWithContext } from "@/lib/board/fetchBoardsWithContext";
+import { fetchMostRecentBoard } from "@/lib/board/fetchBoardsWithContext";
 import { isDemoGridId, getDemoGridSnapshot } from "@/lib/demoGrids";
 
 const SNAPSHOT_VERSION = 2;
@@ -855,7 +855,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
       }
       if (!id && !routeBoardId) {
         try {
-          const recent = await fetchRecentBoardWithContext(userId);
+          const recent = await fetchMostRecentBoard(userId);
           if (recent?.id) {
             id = recent.id;
             boardRowExistsRef.current = true;
@@ -1011,6 +1011,24 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boardId, buildSnapshot, onCanvasChange, userId]);
+
+  /* ------------------------------------------------------------------ */
+  /*  Chat → Supabase debounced save (cross-device sync)                 */
+  /* ------------------------------------------------------------------ */
+  useEffect(() => {
+    if (!boardId || !userId) return;
+    if (isDemoGridId(boardId)) return;
+    if (!hydratedRef.current) return;
+    if (chatMessages.length === 0) return;
+
+    const timer = setTimeout(() => {
+      savingRef.current = false;
+      saveSnapshotRef.current();
+    }, 2000);
+
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boardId, userId, chatMessages]);
 
   /* ------------------------------------------------------------------ */
   /*  Chat localStorage persist effect                                   */

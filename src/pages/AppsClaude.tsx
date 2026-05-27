@@ -272,7 +272,7 @@ export default function AppsClaude() {
               </a>
             </div>
             <p className="mt-4 text-[11.5px] text-black/45 dark:text-white/45">
-              Works on Free, Pro, and Max — no Developer Mode toggle, no
+              Works on Free and Pro — no Developer Mode toggle, no
               waitlist.{" "}
               {!DIRECTORY_URL && (
                 <>
@@ -547,7 +547,7 @@ export default function AppsClaude() {
                     Add as a custom connector
                   </h3>
                   <p className="text-[12.5px] text-black/60 dark:text-white/65 leading-relaxed mb-4">
-                    Free, Pro, and Max all eligible — no Developer Mode toggle.
+                    Free and Pro are both eligible — no Developer Mode toggle.
                     We'll copy the URL, deep-link you into{" "}
                     <strong>Settings → Connectors</strong>, and the connection
                     auto-syncs to Desktop, mobile, Cowork, and Claude Code.

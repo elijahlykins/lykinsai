@@ -34,6 +34,7 @@ import { useUserPlan } from '@/lib/useUserPlan';
 import { isModelAllowedForPlan, canonicalizeModelId, defaultModelForTier } from '@/lib/modelTiers';
 import { planLabel } from '@/lib/pricing-config';
 import { API_BASE_URL } from '@/lib/api-config';
+import { applyTheme, normalizeTheme } from '@/lib/theme';
 
 // ---------------------------------------------------------------------
 // MenuRow — single icon + title row in the main settings list.
@@ -149,41 +150,13 @@ export default function SettingsModal({ isOpen, onClose }) {
     setDisplayName(initialDisplayName);
   }, [initialDisplayName]);
 
-  const DEFAULT_BG_DARK = '#1e1e1e';
-
-  const hasAuthSessionInStorage = () => {
-    try {
-      for (let i = 0; i < localStorage.length; i += 1) {
-        const k = localStorage.key(i);
-        if (k && /^sb-.*-auth-token$/.test(k) && localStorage.getItem(k)) {
-          return true;
-        }
-      }
-    } catch {
-      /* private mode */
-    }
-    return false;
-  };
-
-  const applyTheme = (theme) => {
-    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-    const effectiveTheme = hasAuthSessionInStorage() ? theme : 'dark';
-    const isDark = effectiveTheme === 'dark' || (effectiveTheme === 'system' && prefersDark);
-    document.documentElement.classList.toggle('dark', isDark);
-    if (isDark) {
-      document.documentElement.style.setProperty('--app-background', DEFAULT_BG_DARK);
-    } else {
-      document.documentElement.style.removeProperty('--app-background');
-    }
-  };
-
   useEffect(() => {
     const loadSettings = () => {
       const saved = localStorage.getItem('lykinsai_settings');
       if (saved) {
         try {
           const parsed = JSON.parse(saved);
-          if (!parsed.theme) parsed.theme = 'dark';
+          parsed.theme = normalizeTheme(parsed.theme);
           parsed.aiModel = canonicalizeModelId(parsed.aiModel)
             || defaultModelForTier(modelTier);
           setSettings(parsed);
@@ -191,6 +164,8 @@ export default function SettingsModal({ isOpen, onClose }) {
         } catch (e) {
           if (import.meta.env.DEV) console.error('Error parsing settings:', e);
         }
+      } else {
+        applyTheme('dark');
       }
     };
 
@@ -205,10 +180,11 @@ export default function SettingsModal({ isOpen, onClose }) {
   }, [isOpen, user, modelTier]);
 
   const persistSettings = (next) => {
-    localStorage.setItem('lykinsai_settings', JSON.stringify(next));
+    const normalized = { ...next, theme: normalizeTheme(next.theme) };
+    localStorage.setItem('lykinsai_settings', JSON.stringify(normalized));
     const densities = { compact: '0.75', comfortable: '1', spacious: '1.25' };
-    document.documentElement.style.setProperty('--layout-density', densities[next.layoutDensity]);
-    applyTheme(next.theme);
+    document.documentElement.style.setProperty('--layout-density', densities[normalized.layoutDensity]);
+    applyTheme(normalized.theme);
     window.dispatchEvent(new CustomEvent('lykinsai_settings_changed'));
     window.dispatchEvent(new Event('storage'));
   };
@@ -578,9 +554,8 @@ export default function SettingsModal({ isOpen, onClose }) {
             </SelectTrigger>
             <SelectContent className="bg-white dark:bg-[#1a1818] border border-gray-200 dark:border-white/10 rounded-xl shadow-xl backdrop-blur-xl p-1">
               {[
-                { value: 'light', label: 'Light' },
                 { value: 'dark', label: 'Dark' },
-                { value: 'system', label: 'System' },
+                { value: 'light', label: 'Light' },
               ].map(({ value, label }) => (
                 <SelectItem
                   key={value}

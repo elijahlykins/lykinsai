@@ -33,6 +33,22 @@ export async function fetchRecentBoardWithContext(
   return rows[0] ?? null;
 }
 
+/** Most recently touched board row — includes in-progress chats not yet in sidebars. */
+export async function fetchMostRecentBoard(
+  userId: string,
+): Promise<BoardListRow | null> {
+  const { data, error } = await supabase
+    .from("omnia_boards")
+    .select("id, title, updated_at, created_at, omnia_board_states(state)")
+    .eq("user_id", userId)
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw error;
+  return (data as BoardListRow | null) ?? null;
+}
+
 /** Invalidate every react-query cache that lists chats for sidebars / synthesis. */
 export function invalidateBoardListQueries(
   queryClient: QueryClient,

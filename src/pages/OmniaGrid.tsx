@@ -59,7 +59,7 @@ import LoadInBriefingPanel from "@/components/omnia/LoadInBriefingPanel";
 import MobileFocusedChatGrids from "@/components/omnia/MobileFocusedChatGrids";
 import GridShareDialog from "@/components/omnia/GridShareDialog";
 import { useBoardPersistence, makeDefaultNotesPages } from "@/hooks/useBoardPersistence";
-import { fetchRecentBoardWithContext } from "@/lib/board/fetchBoardsWithContext";
+import { fetchMostRecentBoard } from "@/lib/board/fetchBoardsWithContext";
 import { useChatEngine } from "@/hooks/useChatEngine";
 
 // Feature flag — the LYKN Grid canvas surface is temporarily unplugged.
@@ -530,9 +530,8 @@ const makeAttId = () =>
  * pass a JSX node prop don't need to import the shared component directly.
  *
  * `modelTier` gates which models are selectable:
- *   - "basic"     (Free / guest)   → only non-thinking fast models
- *   - "top"       (Studio)          → all text LLMs, no media gen
- *   - "top+media" (Studio Pro/Max) → everything
+ *   - "basic"     (Free / guest)   → LYKN Lite only
+ *   - "top+media" (Pro)            → every model including frontier picks
  * Locked models are shown greyed out with a lock badge so users can see the
  * upgrade path instead of hiding the tier entirely.
  */
@@ -1135,30 +1134,43 @@ export default function OmniaGridPage() {
         // ignore
       }
 
+      // Cross-device resume: pick the board with the newest `updated_at`
+      // from Supabase, not stale per-device localStorage. Phone and laptop
+      // each keep their own `omnia_board_id`; without this, opening /app on
+      // a second device resurrects an old laptop chat instead of the phone
+      // conversation the user just had.
       let targetId: string | null = null;
+      let remoteBoard: { id: string; updated_at?: string | null } | null = null;
+      let storedBoard: { id: string; updated_at?: string | null } | null = null;
+
+      try {
+        const recent = await fetchMostRecentBoard(user.id);
+        if (recent?.id) remoteBoard = recent;
+      } catch {
+        // ignore
+      }
 
       try {
         const stored = localStorage.getItem("omnia_board_id");
         if (stored) {
           const { data } = await supabase
             .from("omnia_boards")
-            .select("id")
+            .select("id, updated_at")
             .eq("id", stored)
             .eq("user_id", user.id)
             .maybeSingle();
-          if (data?.id) targetId = data.id;
+          if (data?.id) storedBoard = data;
         }
       } catch {
         // ignore
       }
 
-      if (!targetId) {
-        try {
-          const recent = await fetchRecentBoardWithContext(user.id);
-          if (recent?.id) targetId = recent.id;
-        } catch {
-          // ignore
-        }
+      if (remoteBoard?.id && storedBoard?.id) {
+        const remoteTs = remoteBoard.updated_at ? new Date(remoteBoard.updated_at).getTime() : 0;
+        const storedTs = storedBoard.updated_at ? new Date(storedBoard.updated_at).getTime() : 0;
+        targetId = remoteTs >= storedTs ? remoteBoard.id : storedBoard.id;
+      } else {
+        targetId = remoteBoard?.id || storedBoard?.id || null;
       }
 
       if (!targetId) {

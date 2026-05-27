@@ -726,17 +726,17 @@ const STRIPE_PRICE_MAP = {
 // ============================================
 // COMPED ACCOUNTS — internal team / friends-of-house
 // ============================================
-// Emails listed here get free Studio Pro access regardless of their
+// Emails listed here get free Pro access regardless of their
 // `user_billing` row or Stripe state. Both server enforcement
 // (`resolveUserPlan`) and the `/api/billing/me` endpoint that powers the
 // frontend `useUserPlan` hook short-circuit through here, so these accounts
-// look identical to a paying Studio Pro subscriber to the rest of the app.
+// look identical to a paying Pro subscriber to the rest of the app.
 // Stripe webhooks can't override this — even if the row says `free`, comp
-// users still resolve to studio_pro.
+// users still resolve to studio.
 //
 // Add overrides via `COMPED_PRO_EMAILS` env (comma-separated) without a
 // redeploy; the hardcoded list is the source of truth for known team members.
-const COMPED_PRO_PLAN_ID = 'studio_pro';
+const COMPED_PRO_PLAN_ID = 'studio';
 const COMPED_PRO_EMAILS = new Set(
   [
     'aj@intertwine.tv',
@@ -3892,14 +3892,14 @@ const LYKN_CHAT_PERSONA_STATIC = [
   "- Don't hedge unless genuinely uncertain — then say what specifically is uncertain.",
   "- Lists only when content is genuinely list-like. Never open a response with a list.",
   "- Em dashes: at most one per response; otherwise rewrite.",
-  "- Headers/subheaders only when the response is long enough to need navigation.",
+  "- Structure: when a reply has 2+ distinct topics or sections, use Markdown ## / ### headings to label them. Short one-paragraph answers and casual greetings don't need headings; substantive multi-part answers should. Use real Markdown headings (# syntax), not bold/colon-titled pseudo-headers.",
   "- Tone: direct. No throat-clearing, no preamble, no restating the question. Start on the answer. Speak to the user, not at them.",
   "- For greetings: simple greeting back + a question about their workspace + casual lead-in (2-3 sentences). Do NOT lead the greeting with their first name — \"Hey, what are we tackling?\" not \"Hey Elijah, what are we tackling?\". Never 'Good to see you'. Never 'What would you like to work on?'.",
   "",
   "OUTPUT RULES (chat mode, no actions):",
   "- Plain natural language. YouTube URLs embed automatically — include freely.",
   "- NO JSON, no markdown wrappers, no tool calls, no [CREATE_BLOCK:...] / <add_blocks> / <add_wires> / action JSON. There is no canvas, grid, or block editor — the entire workspace is chat + Vault + Synthesis Layer. If the user asks you to put something on a grid/board/canvas or to create/move/connect bricks, gently note that those don't exist and offer to do it in chat or save it to the Vault instead.",
-  "- Blank lines between paragraphs.",
+  "- Markdown formatting: put a blank line between every paragraph and before every heading. Use ## / ### headings to break up multi-section answers.",
   "- ALWAYS FINISH YOUR THOUGHT. The visible reply MUST end with terminal punctuation (\".\", \"!\", \"?\"). Length is flexible — running slightly long to finish a sentence is correct; cutting a sentence short to stay terse is broken. If your reply needs an extra clause to land cleanly, write it. The output cap is very generous (~9,000 words / 12K tokens) — finishing the thought is NEVER the reason you ran out of space, and you should never assume you are about to.",
   "- NEVER SPLIT A REPLY INTO PARTS. Deliver the COMPLETE answer in this single response. Do NOT end with \"Want me to continue?\", \"Shall I continue?\", \"Should I keep going?\", \"Let me know if you want the rest\", \"Type 'continue' for more\", \"Reply 'continue' to keep going\", \"Part 1 of N\", \"To be continued\", or any variant that asks the user to prompt again to receive the rest. The user must NEVER have to ask for a continuation. If the topic is huge, finish a complete, self-contained answer at the right scope rather than promising more later. The only acceptable closings are a real ending, a natural question that advances the conversation, or nothing.",
   "- NEVER emit a meta truncation marker. Do NOT write \"_…response truncated. Ask 'continue' for the rest._\", \"_…reply truncated for length._\", \"_…response cut off — type 'continue' to see more._\", \"[response truncated, reply continue]\", \"(response truncated)\", or any italicized / parenthetical / bracketed self-note announcing that the reply is incomplete. You are NEVER incomplete on purpose. If you find yourself wanting to write a marker like that, scope the answer down so it actually finishes instead. Write only the natural reply body — no meta status notes about the reply itself.",
@@ -3981,14 +3981,14 @@ const LYKN_STREAM_PERSONA_STATIC = [
   "- Don't hedge unless genuinely uncertain — then say what specifically is uncertain.",
   "- Lists only when content is genuinely list-like. Never open a response with a list.",
   "- Em dashes: at most one per response; otherwise rewrite.",
-  "- Headers/subheaders only when the response is long enough to need navigation.",
+  "- Structure: when a reply has 2+ distinct topics or sections, use Markdown ## / ### headings to label them. Short one-paragraph answers and casual greetings don't need headings; substantive multi-part answers should. Use real Markdown headings (# syntax), not bold/colon-titled pseudo-headers.",
   "- Tone: direct, no throat-clearing, no preamble, no restating the question. Start on the answer.",
   "- For greetings: simple greeting back + a question about their workspace + casual lead-in (2-3 sentences). Do NOT lead the greeting with their first name — \"Hey, what are we tackling?\" not \"Hey Elijah, what are we tackling?\". Never 'Good to see you'. Never 'What would you like to work on?'.",
   "",
   "OUTPUT RULES (chat mode, NO actions):",
   "- Plain natural language. YouTube URLs embed automatically.",
   "- NO JSON, NO markdown wrappers, NO tool calls, NO action payloads of any kind: never emit `{\"type\":\"create_text\"...}`, `{\"actions\":[...]}`, `[CREATE_BLOCK:{...}]`, `<add_blocks>`, `<add_wires>`, ```json fences containing actions, or any invented XML/HTML/markdown wrapper. There is no canvas, grid, or block editor — the workspace is chat + Vault + Synthesis Layer. If the user asks you to put something on a grid/board/canvas or create/move/connect bricks, gently note that those don't exist and offer to do it in chat or save it to the Vault instead.",
-  "- Blank lines between paragraphs.",
+  "- Markdown formatting: put a blank line between every paragraph and before every heading. Use ## / ### headings to break up multi-section answers.",
   "- ALWAYS FINISH YOUR THOUGHT. The visible reply MUST end with terminal punctuation (\".\", \"!\", \"?\"). Length is flexible — running slightly long to finish a sentence is correct; cutting a sentence short to stay terse is broken. If your reply needs an extra clause to land cleanly, write it. The output cap is very generous (~9,000 words / 12K tokens) — finishing the thought is NEVER the reason you ran out of space, and you should never assume you are about to.",
   "- NEVER SPLIT A REPLY INTO PARTS. Deliver the COMPLETE answer in this single response. Do NOT end with \"Want me to continue?\", \"Shall I continue?\", \"Should I keep going?\", \"Let me know if you want the rest\", \"Type 'continue' for more\", \"Reply 'continue' to keep going\", \"Part 1 of N\", \"To be continued\", or any variant that asks the user to prompt again to receive the rest. The user must NEVER have to ask for a continuation. If the topic is huge, finish a complete, self-contained answer at the right scope rather than promising more later. The only acceptable closings are a real ending, a natural question that advances the conversation, or nothing.",
   "- NEVER emit a meta truncation marker. Do NOT write \"_…response truncated. Ask 'continue' for the rest._\", \"_…reply truncated for length._\", \"_…response cut off — type 'continue' to see more._\", \"[response truncated, reply continue]\", \"(response truncated)\", or any italicized / parenthetical / bracketed self-note announcing that the reply is incomplete. You are NEVER incomplete on purpose. If you find yourself wanting to write a marker like that, scope the answer down so it actually finishes instead. Write only the natural reply body — no meta status notes about the reply itself.",
@@ -10435,9 +10435,8 @@ ${t}
 
     // Tier 3 cost cut: Pro→nano auto-downgrade for trivial turns.
     // Fires ONLY when the user picked the brand alias `lykn-deep` AND the
-    // turn is a pure greeting/ack. Max users who pick the raw
-    // `gemini-3.1-pro-preview` (or any other frontier model) explicitly
-    // are NEVER auto-downgraded — they paid $65/mo for direct provider
+    // turn is a pure greeting/ack. Pro users who pick a raw frontier model
+    // explicitly are NEVER auto-downgraded — they paid for direct provider
     // access; we honor their pick on every turn.
     if (
       model === 'lykn-deep' &&
@@ -11605,9 +11604,8 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
     // wasted spend with identical output on nano.
     //
     // Critically, this is gated on the ORIGINAL `model` input, not the
-    // resolved `actualModel`. Max users who explicitly pick the raw
-    // `gemini-3.1-pro-preview` from the frontier picker have made a
-    // deliberate choice ("I want Gemini Pro for this turn") — we honor
+    // resolved `actualModel`. Pro users who explicitly pick a raw frontier
+    // model from the picker have made a deliberate choice — we honor
     // that even on greetings. Same for any other frontier model: a user
     // who picks GPT-5 / Claude Opus / Grok 4 explicitly never gets
     // silently downgraded.
@@ -14663,7 +14661,9 @@ app.get('/api/admin/security/audit', requireAuth, requireAdmin, async (req, res)
 // STRIPE BILLING — customer + checkout + portal + webhook handler
 // ============================================
 
-const PLAN_IDS = new Set(['studio', 'studio_pro', 'studio_max']);
+// Only Pro (`studio`) is offered at checkout. Legacy price ids for
+// studio_pro / studio_max still map via STRIPE_PRICE_MAP for existing subs.
+const PLAN_IDS = new Set(['studio']);
 const BILLING_PERIODS = new Set(['monthly', 'annual']);
 
 // ---------------------------------------------------------------------------
@@ -14679,7 +14679,7 @@ const BILLING_PERIODS = new Set(['monthly', 'annual']);
 // product rule is "once upgraded, always upgraded" — payment-collection
 // belongs to Stripe + status flags, not to the access-control gate.
 // ---------------------------------------------------------------------------
-const PLAN_RANK = { free: 0, studio: 1, studio_pro: 2, studio_max: 3 };
+const PLAN_RANK = { free: 0, studio: 1, studio_pro: 1, studio_max: 1 };
 
 function planRank(plan) {
   return PLAN_RANK[String(plan || 'free').toLowerCase()] ?? 0;
@@ -14736,7 +14736,7 @@ function invalidateUserPlanCache(userId) {
 async function resolveUserPlan(userId, email = null) {
   if (!userId) return { planId: 'free', modelTier: 'basic' };
 
-  // Comped team accounts always resolve to Studio Pro. Bypass the cache *and*
+  // Comped team accounts always resolve to Pro. Bypass the cache *and*
   // the user_billing read so a stray `free` row or canceled Stripe sub can't
   // accidentally lock them out.
   if (isCompedProEmail(email)) {

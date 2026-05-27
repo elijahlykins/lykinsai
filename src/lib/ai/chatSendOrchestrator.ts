@@ -2173,6 +2173,12 @@ async function postProcessResponse(
       }
     })();
   }
+
+  // Persist the finished turn promptly so switching devices (phone → laptop)
+  // doesn't depend on the 30s autosave interval or a tab-background event.
+  if (identity.userId) {
+    setTimeout(() => window.dispatchEvent(new Event("omnia_flush_save")), 300);
+  }
 }
 
 /* ------------------------------------------------------------------ */

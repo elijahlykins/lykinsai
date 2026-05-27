@@ -79,7 +79,7 @@ export const OUTBOUND_TARGETS = [
     //    The old separate web / Desktop cards just confused users
     //    ("do I need to do both?"). One card, one click, all surfaces.
     summary:
-      "Anthropic's assistant — web, Desktop, mobile, and Cowork all share the same connector list. One click opens claude.ai with the Add Custom Connector dialog already filled in for LYKN — you approve once and every Claude surface you sign into picks it up automatically. Available on Free, Pro, and Max.",
+      "Anthropic's assistant — web, Desktop, mobile, and Cowork all share the same connector list. One click opens claude.ai with the Add Custom Connector dialog already filled in for LYKN — you approve once and every Claude surface you sign into picks it up automatically. Available on Free and Pro.",
     helpUrl: "https://claude.com/docs/connectors/custom/remote-mcp",
     helpLabel: "Claude Connectors docs",
     available: true,
@@ -96,7 +96,7 @@ export const OUTBOUND_TARGETS = [
     // fallback target for tooling that wants to manually navigate.
     openUrl: "https://claude.ai/settings/connectors",
     planNote:
-      "Available on Free (one custom connector), Pro, and Max — no special toggle. Team / Enterprise admins enable it from Admin → Connectors first; members then add via Settings.",
+      "Available on Free (one custom connector) and Pro — no special toggle. Team / Enterprise admins enable it from Admin → Connectors first; members then add via Settings.",
     installSteps: [
       "Press Connect Claude — we open claude.ai with the Add Custom Connector dialog already filled in.",
       "Inside Claude: click Add.",
@@ -1401,7 +1401,7 @@ function ensureHttpsMcpUrl(maybeUrl) {
  * to them server-side. We coerce via ensureHttpsMcpUrl so dev clicks
  * still produce a working deep link (pointed at prod LYKN).
  *
- * Works on Free, Pro, and Max plans. The resulting custom connector
+ * Works on Free and Pro plans. The resulting custom connector
  * auto-syncs to Claude Desktop, mobile, Cowork, and Claude Code with
  * no extra config (Anthropic ties connectors to the user, not the
  * client install).

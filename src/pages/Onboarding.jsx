@@ -856,7 +856,7 @@ export default function Onboarding() {
             onCopyUrl={handleCopyUrl}
             secondaryNote={
               <>
-                Available on Free, Pro, and Max. One approval syncs LYKN to
+                Available on Free and Pro. One approval syncs LYKN to
                 every Claude surface signed into your account — Desktop, mobile,
                 Cowork, and Claude Code all pick it up automatically.
               </>

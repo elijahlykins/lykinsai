@@ -8,7 +8,7 @@
 // a client release. See `resolveLyknAlias` and `LYKN_ROUTED_MODELS` in
 // `server.js` for the runtime routing table.
 //
-// Max plan ($65/mo) ALSO gets direct access to the four current frontier
+// Pro plan ($25/mo) gets direct access to the four current frontier
 // models from each major provider (OpenAI / Anthropic / Google / xAI).
 // Those are passed through verbatim — no alias rewriting — so the user
 // is paying for the real top-tier model from the vendor of their choice.
@@ -21,7 +21,7 @@ export const LYKN_FAST_ID = "lykn-fast";
 export const LYKN_DEEP_ID = "lykn-deep";
 
 // Top frontier models — one flagship per major provider, gated to the
-// Max ($65/mo) plan via `modelTiers.js`. These ids are sent to the
+// Pro ($25/mo) plan via `modelTiers.js`. These ids are sent to the
 // server verbatim and hit the provider API exactly as written.
 //
 // Verified against each provider's API docs on 2026-05-16:
@@ -78,9 +78,9 @@ export const LEGACY_LYKN_ID = "lykn";
 //
 // Two groups: the LYKN brand-aliased tiers (Lite / Fast / Deep) for
 // every paid plan, and the frontier models (one per provider) gated
-// to the Max plan via `modelTiers.js`. Pickers render both groups in
-// order; locked items show a lock badge so Pro users can see what
-// they'd unlock at Max. Group labels appear as section headers in the
+// to Pro via `modelTiers.js`. Pickers render both groups in order;
+// locked items show a lock badge so free users can see the upgrade path.
+// Group labels appear as section headers in the
 // dropdown, except when blank.
 export const MODEL_GROUPS = [
   {

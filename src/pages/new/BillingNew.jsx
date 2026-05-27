@@ -104,7 +104,13 @@ function PlanCard({
   waitlistState,
   onJoinWaitlist,
 }) {
-  const isCurrent = plan.id === currentPlan;
+  const isCheckoutPlan = plan.checkout !== false;
+  const isCurrent =
+    plan.id === currentPlan ||
+    (plan.id === "studio" &&
+      (currentPlan === "studio" ||
+        currentPlan === "studio_pro" ||
+        currentPlan === "studio_max"));
   const isBusy = busy === plan.id;
   const isWaitlistCard = plan.comingSoon;
   const hasJoinedWaitlist = isWaitlistCard && Boolean(waitlistState?.joined);
@@ -173,11 +179,13 @@ function PlanCard({
             if (!hasJoinedWaitlist) onJoinWaitlist?.(plan.id);
             return;
           }
+          if (!isCheckoutPlan) return;
           onCheckout(plan.id);
         }}
         disabled={
           isCurrent ||
           isBusy ||
+          !isCheckoutPlan ||
           (isWaitlistCard ? hasJoinedWaitlist || waitlistBusy : false)
         }
         className={`mt-4 w-full py-2 px-3 rounded-lg text-xs font-semibold transition-all duration-200 cursor-pointer disabled:cursor-default ${
@@ -185,6 +193,8 @@ function PlanCard({
             ? "border border-black/10 dark:border-white/20 text-black/40 dark:text-white/45 bg-black/[0.02] dark:bg-white/[0.04]"
             : hasJoinedWaitlist
               ? "border border-black/10 dark:border-white/20 bg-black/[0.04] dark:bg-white/[0.08] text-black/70 dark:text-white/80"
+              : !isCheckoutPlan
+                ? "border border-black/10 dark:border-white/20 text-black/40 dark:text-white/45 bg-black/[0.02] dark:bg-white/[0.04]"
               : `${ctaStyles[plan.ctaVariant]} disabled:opacity-60`
         }`}
       >
@@ -196,6 +206,8 @@ function PlanCard({
               : waitlistBusy
                 ? "Adding you…"
                 : plan.cta
+            : !isCheckoutPlan
+              ? plan.cta
             : isBusy
               ? "Redirecting…"
               : plan.cta}
@@ -378,7 +390,7 @@ export default function BillingNew() {
             Pick the plan that fits how you work
           </h2>
           <p className="text-base text-black/45 dark:text-white/60 mt-3 max-w-lg mx-auto leading-relaxed">
-            Start free, upgrade for top-tier models and unlimited workspace.
+            Start free, upgrade to Pro for every model and unlimited workspace.
             Cancel anytime, no hidden fees.
           </p>
         </div>

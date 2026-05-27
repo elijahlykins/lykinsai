@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="dark">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/x-icon" href="/favicon.ico?v=5" />
@@ -13,6 +13,14 @@
     <meta name="theme-color" content="#0a0a0a" />
     <link rel="manifest" href="/manifest.json" />
     <title>LYKN</title>
+    <script>
+      (function () {
+        try {
+          var s = JSON.parse(localStorage.getItem('lykinsai_settings') || '{}');
+          if (s.theme === 'light') document.documentElement.classList.remove('dark');
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <script src="/embed-detect.js"></script>

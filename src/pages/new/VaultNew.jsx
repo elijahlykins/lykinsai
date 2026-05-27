@@ -1116,12 +1116,12 @@ export default function VaultNew() {
   }, []);
 
   const buildChatMarkdownComponents = useCallback((msgId) => ({
-    h1: ({ children }) => <h1 className="text-xl font-semibold mt-3 mb-2">{children}</h1>,
-    h2: ({ children }) => <h2 className="text-lg font-semibold mt-3 mb-2">{children}</h2>,
-    h3: ({ children }) => <h3 className="text-base font-semibold mt-2.5 mb-1.5">{children}</h3>,
-    p: ({ children }) => <p className="my-1.5 whitespace-pre-wrap">{children}</p>,
-    ul: ({ children }) => <ul className="my-2 list-disc pl-5 space-y-1">{children}</ul>,
-    ol: ({ children }) => <ol className="my-2 list-decimal pl-5 space-y-1">{children}</ol>,
+    h1: ({ children }) => <h1 className="text-xl font-semibold mt-6 mb-2.5 tracking-tight">{children}</h1>,
+    h2: ({ children }) => <h2 className="text-lg font-semibold mt-5 mb-2 tracking-tight">{children}</h2>,
+    h3: ({ children }) => <h3 className="text-base font-semibold mt-4 mb-1.5 tracking-tight">{children}</h3>,
+    p: ({ children }) => <p className="mb-4 last:mb-0 leading-[1.65] whitespace-pre-wrap">{children}</p>,
+    ul: ({ children }) => <ul className="my-3 list-disc pl-5 space-y-1.5">{children}</ul>,
+    ol: ({ children }) => <ol className="my-3 list-decimal pl-5 space-y-1.5">{children}</ol>,
     li: ({ children }) => {
       const raw = flattenNodeText(children).trim();
       const match = raw.match(/^\[( |x|X)\]\s+(.+)$/);
