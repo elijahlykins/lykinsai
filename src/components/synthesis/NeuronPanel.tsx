@@ -630,7 +630,21 @@ export default function NeuronPanel({
   const vaultParsed = useMemo(() => {
     if (!node) return null;
     if (node.kind !== "vault" && node.kind !== "perspective") return null;
-    return parseVaultContent(vaultRaw);
+    const parsed = parseVaultContent(vaultRaw);
+    const attIdx = node.meta?.attachmentIndex;
+    if (
+      node.kind === "vault" &&
+      typeof attIdx === "number" &&
+      Number.isFinite(attIdx) &&
+      parsed.attachments.length > 1
+    ) {
+      const one = parsed.attachments[attIdx];
+      return {
+        body: "",
+        attachments: one ? [one] : [],
+      };
+    }
+    return parsed;
   }, [node, vaultRaw]);
 
   const editable = node ? isEditable(node) : false;

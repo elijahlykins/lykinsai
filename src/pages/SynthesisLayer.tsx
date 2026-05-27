@@ -36,6 +36,11 @@ import BeliefWindowPanel from "@/components/synthesis/BeliefWindowPanel";
 import NeuronPanel from "@/components/synthesis/NeuronPanel";
 import VaultAttachment from "@/components/synthesis/VaultAttachment";
 import { parseVaultContent } from "@/lib/vaultContent";
+import {
+  fetchMindmapNotes,
+  hydrateMindmapNoteContent,
+  type MindmapNoteRow,
+} from "@/lib/vault/fetchMindmapNotes";
 import { API_BASE_URL } from "@/lib/api-config";
 import { notifyVaultCapIfApplicable } from "@/lib/vault/vaultCapError";
 import {
@@ -206,7 +211,7 @@ const palette = {
 // summary/themes for cross-edge heuristics. The DetailPanel lazy-fetches
 // the body when a vault node is actually opened (see `vaultContentQuery`).
 // Optional here so legacy callers (e.g. WelcomePanel removal) still compile.
-type NoteRow = { id: string; title?: string; content?: string; tags?: string[]; ai_summary?: string | null; ai_signals?: any; source?: string | null; created_at?: string | null };
+type NoteRow = MindmapNoteRow & { ai_signals?: any };
 
 // Connector source slug → (app key, display label). Notes whose `source`
 // matches one of these get collapsed into a single rollup node per app
@@ -540,14 +545,72 @@ function buildGraph(
       return;
     }
 
+    const noteThemes = noteThemeMap.get(n.id) || [];
+    const attachments = n.content?.includes("[ATTACHMENTS_JSON:")
+      ? parseVaultContent(n.content).attachments
+      : [];
+
+    // Vault renders one card per attachment; mirror that here so a note
+    // backing three files becomes three neurons, not one.
+    if (attachments.length > 1) {
+      attachments.forEach((att, idx) => {
+        const nid = `vault_${n.id}_att_${idx}`;
+        if (idx === 0) noteIdToVaultNodeId.set(n.id, nid);
+        const attName = String(att?.name || att?.title || "").trim();
+        const preview =
+          (attName || n.title || n.ai_summary || "").slice(0, 60).trim() || "Note";
+        nodes.push({
+          id: nid,
+          label: preview,
+          kind: "vault",
+          radius: 18,
+          color: palette.note.bg,
+          glow: palette.note.glow,
+          parentId: "__cat_vault__",
+          categoryId: "__cat_vault__",
+          meta: {
+            noteId: n.id,
+            attachmentIndex: idx,
+            title: attName || n.title,
+            tags: n.tags,
+            ai_summary: n.ai_summary,
+            themes: noteThemes,
+            createdAt: n.created_at || null,
+            vaultItemHint: String(att?.type || ""),
+          },
+        });
+        edges.push({ from: "__cat_vault__", to: nid });
+      });
+      return;
+    }
+
     const nid = `vault_${n.id}`;
     noteIdToVaultNodeId.set(n.id, nid);
-    // Preview prefers title → summary → "Note". `content` is no longer in
-    // the payload, so we can't slice the raw body here. Title/summary are
-    // both bounded and arrive in the same query.
-    const preview = (n.title || n.ai_summary || "").slice(0, 60).trim() || "Note";
-    const noteThemes = noteThemeMap.get(n.id) || [];
-    nodes.push({ id: nid, label: preview, kind: "vault", radius: 18, color: palette.note.bg, glow: palette.note.glow, parentId: "__cat_vault__", categoryId: "__cat_vault__", meta: { noteId: n.id, title: n.title, tags: n.tags, ai_summary: n.ai_summary, themes: noteThemes, createdAt: n.created_at || null } });
+    // Preview prefers title → summary → attachment name → "Note".
+    const singleAttName =
+      attachments.length === 1 ? String(attachments[0]?.name || "").trim() : "";
+    const preview =
+      (n.title || singleAttName || n.ai_summary || "").slice(0, 60).trim() || "Note";
+    nodes.push({
+      id: nid,
+      label: preview,
+      kind: "vault",
+      radius: 18,
+      color: palette.note.bg,
+      glow: palette.note.glow,
+      parentId: "__cat_vault__",
+      categoryId: "__cat_vault__",
+      meta: {
+        noteId: n.id,
+        title: n.title,
+        tags: n.tags,
+        ai_summary: n.ai_summary,
+        themes: noteThemes,
+        createdAt: n.created_at || null,
+        vaultItemHint:
+          attachments.length === 1 ? String(attachments[0]?.type || "") : undefined,
+      },
+    });
     edges.push({ from: "__cat_vault__", to: nid });
   });
 
@@ -4324,23 +4387,14 @@ export default function SynthesisLayer() {
     queryKey: ["mindmap_notes", user?.id],
     queryFn: async () => {
       if (!user?.id) return [];
-      // NOTE: deliberately omit `content` from the projection — the graph
-      // only needs id/title/tags/summary/signals/source for cross-edge
-      // heuristics + per-source rollup grouping. Shipping 100 full note
-      // bodies on every mount was the single biggest payload on this
-      // page. DetailPanel lazy-fetches `content` on demand.
-      //
-      // `source` is the connector-slug ('gmail_inbox', 'notion_page',
-      // 'slack_saved', …) used by `buildGraph` to collapse high-volume
-      // connector syncs into a single per-app rollup node instead of
-      // flooding the Vault category with one node per inbox item.
-      // Limit is bumped from 100 → 300 because manual notes typically
-      // sit well under the old cap but connector firehose users can
-      // have hundreds of gmail / notion / slack items — and we want
-      // the rollup counts to match what the user actually has, not be
-      // capped to the first 100.
-      const { data } = await supabase.from("notes").select("id, title, tags, ai_summary, ai_signals, source, created_at").eq("user_id", user.id).order("updated_at", { ascending: false }).limit(300);
-      return data || [];
+      // Paginate through the full notes table (see fetchMindmapNotes) so
+      // every vault card can become a neuron — the old single-query
+      // `.limit(300)` silently dropped anything outside the most-recent
+      // 300 rows. Content is hydrated in a second pass only for manual
+      // notes so multi-attachment rows can fan out to one neuron per card
+      // without shipping every note body up front.
+      const rows = await fetchMindmapNotes(user.id);
+      return hydrateMindmapNoteContent(user.id, rows);
     },
     enabled: !!user?.id,
   });
