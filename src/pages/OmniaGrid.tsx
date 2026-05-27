@@ -2278,7 +2278,7 @@ export default function OmniaGridPage() {
         ...(uploaded ? { storagePath, storageBucket: "user-files", size: fileSize } : {}),
         mimeType,
       }];
-      const noteContent = `AI-generated image${promptText ? ` — "${promptText.slice(0, 100)}"` : ""}\n\n[View Image](${fileUrl})\n\n[ATTACHMENTS_JSON:${JSON.stringify(attachment)}]`;
+      const noteContent = `AI-generated image${promptText ? ` — "${promptText.slice(0, 100)}"` : ""}\n\n[ATTACHMENTS_JSON:${JSON.stringify(attachment)}]`;
 
       const { data: ins, error } = await supabase
         .from("notes")
@@ -2437,7 +2437,7 @@ export default function OmniaGridPage() {
         ...(uploaded ? { storagePath, storageBucket: "user-files", size: fileSize } : {}),
         mimeType,
       }];
-      const noteContent = `${filename}\n\n[View](${fileUrl})\n\n[ATTACHMENTS_JSON:${JSON.stringify(attachment)}]`;
+      const noteContent = `${filename}\n\n[ATTACHMENTS_JSON:${JSON.stringify(attachment)}]`;
       const { data: ins, error } = await supabase
         .from("notes")
         .insert({

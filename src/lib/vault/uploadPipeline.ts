@@ -189,10 +189,6 @@ type StartFileUploadsInput = {
   onFileComplete?: (note: { id: string; [key: string]: unknown }) => void;
 };
 
-const VIDEO_EXTENSIONS = new Set([
-  "mov", "mp4", "m4v", "webm", "mkv", "avi", "wmv", "mpeg", "mpg", "3gp", "qt",
-]);
-
 const UPLOAD_PARALLELISM = 4;
 
 // ---------------------------------------------------------------------------
@@ -219,6 +215,13 @@ function inFlightDedupKey(userId: string, file: File, filename: string): string 
   return `${userId}::${filename}::${size}::${lastModified}`;
 }
 
+const VIDEO_EXTENSIONS = new Set([
+  "mov", "mp4", "m4v", "webm", "mkv", "avi", "wmv", "mpeg", "mpg", "3gp", "qt",
+]);
+const IMAGE_EXTENSIONS = new Set([
+  "jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "heic", "heif", "tiff", "avif",
+]);
+
 function getFileType(mimeType: string, filename: string): string {
   const ext = filename.split(".").pop()?.toLowerCase() || "";
   if (mimeType?.startsWith("image/")) return "image";
@@ -230,6 +233,7 @@ function getFileType(mimeType: string, filename: string): string {
   if (mimeType?.includes("presentation") || ext === "ppt" || ext === "pptx") return "presentation";
   if (mimeType?.includes("text") || ext === "txt" || ext === "md") return "text";
   if (VIDEO_EXTENSIONS.has(ext)) return "video";
+  if (IMAGE_EXTENSIONS.has(ext)) return "image";
   return "file";
 }
 
@@ -299,7 +303,10 @@ async function createVaultNote(args: CreateNoteArgs): Promise<any | null> {
     mimeType,
   }];
 
-  const noteContent = `File uploaded: ${filename}\n\nType: ${fileType}\nSize: ${sizeDisplay}\n\n[View File](${fileUrl || ""})\n\n[ATTACHMENTS_JSON:${JSON.stringify(attachmentPayload)}]`;
+  // Attachment-only body: title + ATTACHMENTS_JSON carry everything the
+  // renderers need. No prose line, no storage URL — the neuron panel
+  // and vault grid draw the image/video/file from the attachment payload.
+  const noteContent = `[ATTACHMENTS_JSON:${JSON.stringify(attachmentPayload)}]`;
 
   const richInsert = {
     user_id: userId,

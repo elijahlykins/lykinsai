@@ -184,7 +184,9 @@ export async function saveFileToVault(
       },
     ];
 
-    const noteContent = `File uploaded: ${filename}\n\nType: ${fileType}\nSize: ${sizeDisplay}\n\n[View File](${fileUrl})\n\n[ATTACHMENTS_JSON:${JSON.stringify(attachmentPayload)}]`;
+    // Attachment-only body — renderers pull filename/type/url from the
+    // JSON payload; no prose line and no storage URL in the body.
+    const noteContent = `[ATTACHMENTS_JSON:${JSON.stringify(attachmentPayload)}]`;
 
     const tags: string[] = [fileType, "uploaded"];
     if (projectName) tags.push(projectName);

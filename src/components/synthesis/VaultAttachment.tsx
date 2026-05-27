@@ -3,6 +3,7 @@ import { ExternalLink, LayoutGrid } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import {
   resolveStorageTarget,
+  isSupabaseStorageUrl,
   type VaultAttachment as VaultAttachmentData,
 } from "@/lib/vaultContent";
 import LinkPreview from "@/components/LinkPreview";
@@ -19,8 +20,35 @@ import LinkPreview from "@/components/LinkPreview";
 // hours), so the renderer always shows a working preview even when the
 // note was saved months ago.
 
+const IMAGE_EXTENSIONS = new Set([
+  "jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "heic", "heif", "tiff", "avif",
+]);
+
+function inferAttachmentType(att: VaultAttachmentData): string {
+  const explicit = String(att?.type || "").toLowerCase();
+  if (explicit && explicit !== "file") return explicit;
+  const rawUrl = String(att?.url || "").trim();
+  const name = String(att?.name || att?.title || "").trim();
+  const extSource = name || rawUrl.split("/").pop() || "";
+  const ext = extSource.split(".").pop()?.toLowerCase() || "";
+  if (rawUrl.startsWith("data:image/")) return "image";
+  if (rawUrl.startsWith("data:video/")) return "video";
+  if (IMAGE_EXTENSIONS.has(ext)) return "image";
+  if (rawUrl.includes("youtube.com") || rawUrl.includes("youtu.be")) return "youtube";
+  return explicit || "file";
+}
+
+function linkLabel(att: VaultAttachmentData, rawUrl: string, name: string): string {
+  if (name) return name;
+  if (isSupabaseStorageUrl(rawUrl)) {
+    const pathTail = String(att?.storagePath || rawUrl.split("/").pop() || "").split("/").pop();
+    return pathTail || "View file";
+  }
+  return rawUrl;
+}
+
 export default function VaultAttachment({ att }: { att: VaultAttachmentData }) {
-  const type = String(att?.type || "").toLowerCase();
+  const type = inferAttachmentType(att);
   const rawUrl = String(att?.url || "").trim();
   const name = String(att?.name || att?.title || "").trim();
   const [signedUrl, setSignedUrl] = useState<string | null>(null);
@@ -177,6 +205,7 @@ export default function VaultAttachment({ att }: { att: VaultAttachmentData }) {
   }
 
   if (rawUrl) {
+    const label = linkLabel(att, rawUrl, name);
     return (
       <a
         href={rawUrl}
@@ -186,7 +215,7 @@ export default function VaultAttachment({ att }: { att: VaultAttachmentData }) {
       >
         <ExternalLink size={12} className="text-gray-400 flex-shrink-0" />
         <span className="text-[0.6875rem] text-gray-600 dark:text-gray-300 truncate">
-          {name || rawUrl}
+          {label}
         </span>
       </a>
     );
