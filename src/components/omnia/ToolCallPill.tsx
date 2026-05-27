@@ -776,10 +776,10 @@ export function ToolCallPill({
       : "w-1.5 h-1.5 rounded-full bg-blue-300 shadow-[0_0_8px_rgba(96,165,250,1)]";
 
   const palette = isRunning
-    ? "text-slate-100 border border-slate-400/45 bg-slate-500/[0.10] hover:bg-slate-500/[0.18] hover:text-white"
+    ? "text-slate-700 dark:text-slate-100 border border-slate-400/45 bg-slate-500/[0.10] hover:bg-slate-500/[0.18] hover:text-slate-900 dark:hover:text-white"
     : isError
-      ? "text-rose-100 border border-rose-400/45 bg-rose-500/[0.10] hover:bg-rose-500/[0.20] hover:text-white hover:border-rose-300/70"
-      : "text-blue-100 border border-blue-400/45 bg-blue-500/[0.10] hover:bg-blue-500/[0.20] hover:text-white hover:border-blue-300/70";
+      ? "text-rose-700 dark:text-rose-100 border border-rose-400/45 bg-rose-500/[0.10] hover:bg-rose-500/[0.20] hover:text-rose-900 dark:hover:text-white hover:border-rose-300/70"
+      : "text-blue-700 dark:text-blue-100 border border-blue-400/45 bg-blue-500/[0.10] hover:bg-blue-500/[0.20] hover:text-blue-900 dark:hover:text-white hover:border-blue-300/70";
 
   const baseClass =
     "lykn-wake-neuron-pill inline-flex items-center gap-1.5 rounded-full font-semibold tracking-wide transition-colors cursor-pointer";

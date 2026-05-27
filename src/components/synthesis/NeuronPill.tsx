@@ -45,8 +45,8 @@ export function NeuronPill({
   const baseClass =
     "lykn-wake-neuron-pill inline-flex items-center gap-1.5 rounded-full font-semibold tracking-wide transition-colors cursor-pointer";
   const palette = isUpd
-    ? "text-violet-100 border border-violet-400/45 bg-violet-500/[0.10] hover:bg-violet-500/[0.20] hover:text-white hover:border-violet-300/70"
-    : "text-blue-100 border border-blue-400/45 bg-blue-500/[0.10] hover:bg-blue-500/[0.20] hover:text-white hover:border-blue-300/70";
+    ? "text-violet-700 dark:text-violet-100 border border-violet-400/45 bg-violet-500/[0.10] hover:bg-violet-500/[0.20] hover:text-violet-900 dark:hover:text-white hover:border-violet-300/70"
+    : "text-blue-700 dark:text-blue-100 border border-blue-400/45 bg-blue-500/[0.10] hover:bg-blue-500/[0.20] hover:text-blue-900 dark:hover:text-white hover:border-blue-300/70";
   const pillClass = `${baseClass} ${SIZE_CLASSES[size]} ${palette}`;
   const title =
     isUpd && fact.previousText

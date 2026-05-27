@@ -88,7 +88,7 @@ export function AppliedRulePill({
   const baseClass =
     "lykn-applied-rule-pill inline-flex items-center gap-1.5 rounded-full font-semibold tracking-wide transition-colors cursor-pointer";
   const palette =
-    "text-blue-100 border border-blue-400/45 bg-blue-500/[0.10] hover:bg-blue-500/[0.20] hover:text-white hover:border-blue-300/70";
+    "text-blue-700 dark:text-blue-100 border border-blue-400/45 bg-blue-500/[0.10] hover:bg-blue-500/[0.20] hover:text-blue-900 dark:hover:text-white hover:border-blue-300/70";
   const pillClass = `${baseClass} ${SIZE_CLASSES[size]} ${palette}`;
   const needLabel = NEED_LABEL[attribution.servesNeed] || attribution.servesNeed || "—";
 
@@ -113,24 +113,24 @@ export function AppliedRulePill({
       {expanded && (
         <div className="mt-2 rounded-lg border border-blue-400/25 bg-blue-500/[0.04] px-3 py-2.5 text-[0.7rem] leading-snug max-w-md">
           <div className="flex items-center justify-between gap-2 mb-1.5">
-            <span className="text-[0.6rem] uppercase tracking-[0.18em] text-blue-200/70 font-semibold">
+            <span className="text-[0.6rem] uppercase tracking-[0.18em] text-blue-700/70 dark:text-blue-200/70 font-semibold">
               Why this answer
             </span>
-            <span className="text-[0.6rem] px-1.5 py-0.5 rounded-md bg-blue-500/15 border border-blue-400/30 text-blue-200">
+            <span className="text-[0.6rem] px-1.5 py-0.5 rounded-md bg-blue-500/15 border border-blue-400/30 text-blue-700 dark:text-blue-200">
               serves: {needLabel}
             </span>
           </div>
 
           {attribution.beliefSnapshot && (
-            <p className="text-white/88">{attribution.beliefSnapshot}</p>
+            <p className="text-black/85 dark:text-white/88">{attribution.beliefSnapshot}</p>
           )}
           {attribution.ruleSnapshot && (
-            <p className="mt-1 text-white/55 italic">
+            <p className="mt-1 text-black/55 dark:text-white/55 italic">
               {attribution.ruleSnapshot}
             </p>
           )}
           {attribution.reason && (
-            <p className="mt-1.5 text-white/65">"{attribution.reason}"</p>
+            <p className="mt-1.5 text-black/65 dark:text-white/65">"{attribution.reason}"</p>
           )}
 
           {feedback === "pending" && (
@@ -138,7 +138,7 @@ export function AppliedRulePill({
               <button
                 type="button"
                 onClick={() => submitFeedback({ action: "good" })}
-                className="px-2 py-1 rounded-md bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-400/30 text-emerald-200 text-[0.65rem] font-medium transition-colors"
+                className="px-2 py-1 rounded-md bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-400/30 text-emerald-700 dark:text-emerald-200 text-[0.65rem] font-medium transition-colors"
               >
                 Good call
               </button>
@@ -147,7 +147,7 @@ export function AppliedRulePill({
                 onClick={() =>
                   submitFeedback({ action: "bad", ruleWasBad: true })
                 }
-                className="px-2 py-1 rounded-md bg-amber-500/12 hover:bg-amber-500/22 border border-amber-400/30 text-amber-200 text-[0.65rem] font-medium transition-colors"
+                className="px-2 py-1 rounded-md bg-amber-500/12 hover:bg-amber-500/22 border border-amber-400/30 text-amber-700 dark:text-amber-200 text-[0.65rem] font-medium transition-colors"
               >
                 Rule was off
               </button>
@@ -156,14 +156,14 @@ export function AppliedRulePill({
                 onClick={() =>
                   submitFeedback({ action: "bad", beliefWasBad: true })
                 }
-                className="px-2 py-1 rounded-md bg-rose-500/10 hover:bg-rose-500/20 border border-rose-400/25 text-rose-200 text-[0.65rem] font-medium transition-colors"
+                className="px-2 py-1 rounded-md bg-rose-500/10 hover:bg-rose-500/20 border border-rose-400/25 text-rose-700 dark:text-rose-200 text-[0.65rem] font-medium transition-colors"
               >
                 Belief was off
               </button>
               <button
                 type="button"
                 onClick={() => navigate("/synthesis-layer")}
-                className="ml-auto text-[0.6rem] text-white/45 hover:text-white/85 transition-colors"
+                className="ml-auto text-[0.6rem] text-black/45 dark:text-white/45 hover:text-black/85 dark:hover:text-white/85 transition-colors"
               >
                 Open Core Beliefs →
               </button>
@@ -171,10 +171,10 @@ export function AppliedRulePill({
           )}
 
           {feedback === "submitting" && (
-            <p className="mt-2 text-[0.62rem] text-white/55">Saving…</p>
+            <p className="mt-2 text-[0.62rem] text-black/55 dark:text-white/55">Saving…</p>
           )}
           {feedback === "submitted" && outcome && (
-            <p className="mt-2 text-[0.62rem] text-white/65">{outcome}</p>
+            <p className="mt-2 text-[0.62rem] text-black/65 dark:text-white/65">{outcome}</p>
           )}
         </div>
       )}
