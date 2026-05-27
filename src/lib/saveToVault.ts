@@ -307,11 +307,46 @@ export async function saveLinkToVault(
     let noteContent: string;
 
     if (isYouTube) {
+      // Fetch real video title + author + thumbnail via /api/unfurl
+      // (which now hits YouTube's public oEmbed endpoint). Without
+      // this, every YouTube save lands as a note titled "YouTube
+      // Video" with no searchable text — searchVault for "C++" /
+      // any video topic returns zero hits even when the user has
+      // ten matching videos saved.
+      let meta: any = { url, title: "YouTube Video" };
+      try {
+        const { API_BASE_URL } = await import("@/lib/api-config");
+        const res = await fetch(
+          `${API_BASE_URL}/api/unfurl?url=${encodeURIComponent(url)}`
+        );
+        if (res.ok) meta = await res.json();
+      } catch {
+        /* fall back to placeholder title — embed still renders fine */
+      }
       attachmentPayload = [
-        { type: "youtube", url, name: "YouTube Video" },
+        {
+          type: "youtube",
+          url: meta.url || url,
+          name: meta.title || "YouTube Video",
+          title: meta.title || "",
+          description: meta.description || "",
+          image: meta.image || "",
+          thumbnail_url: meta.image || "",
+          siteName: meta.siteName || "YouTube",
+          authorName: meta.authorName || "",
+        },
       ];
-      noteTitle = "YouTube Video";
-      noteContent = `Link saved: ${url}\n\n[ATTACHMENTS_JSON:${JSON.stringify(attachmentPayload)}]`;
+      noteTitle = meta.title || "YouTube Video";
+      // Keep the URL in the body so substring search across content
+      // also matches direct URL drops, plus the title/description for
+      // topical searches ("C++", "SQL", etc.).
+      const bodyParts = [
+        meta.title ? meta.title : "",
+        meta.authorName ? `by ${meta.authorName}` : "",
+        meta.description || "",
+        `Link saved: ${url}`,
+      ].filter(Boolean);
+      noteContent = `${bodyParts.join("\n")}\n\n[ATTACHMENTS_JSON:${JSON.stringify(attachmentPayload)}]`;
     } else if (socialPlatform) {
       const label = getSocialEmbedLabel(socialPlatform);
       let meta: any = { url, title: `${label} Post` };

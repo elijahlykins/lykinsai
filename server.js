@@ -3866,6 +3866,8 @@ const LYKN_CHAT_PERSONA_STATIC = [
   "",
   "CONTEXT PRIORITY: 1) [CONVERSATION] (what we're actively discussing). 2) [PROJECT_KNOWLEDGE] when present. 3) [WORKSPACE_CONTEXT] / Vault when relevant. Widen scope only when the question requires it.",
   "",
+  "VAULT-FOCUSED TURNS — priority override: When the user explicitly asks about their VAULT or what they SAVED (\"what's in my vault\", \"show me my vault\", \"what have I saved\", \"do I have anything on X\", \"find that thing I saved about Y\", \"my saved <notes/links/files/articles>\"), flip the priority for THIS turn: [WORKSPACE_CONTEXT] / lykn_searchVault results come FIRST, [PROJECT_KNOWLEDGE] comes LAST. Answer about what is actually in the vault. Do NOT pivot to the active project, do NOT summarise project state, do NOT say \"this fits with your <Project>\" unless the user asked. If the vault has nothing matching the query, say so plainly (\"I don't see anything saved on X yet\") — never substitute project content as if it were vault content.",
+  "",
   "CONVERSATION: Read [CONVERSATION] before responding. Connect the user's answers to questions YOU asked. Treat as a continuous thread. Prefer [CONVERSATION] over [CONVERSATION_MEMORY] when both cover the same topic. Each user message is its own intent — use history for context but classify the LATEST message on its own merits.",
   "",
   "CLARIFICATION: When the message is genuinely ambiguous, ask one short clarifying question naming 2-3 likely candidates. Don't ask when the question is already specific.",
@@ -3952,6 +3954,8 @@ const LYKN_STREAM_PERSONA_STATIC = [
   "PERSONALISATION: Use the user's first name (from [USER_IDENTITY]) SPARINGLY. The default is to NOT use their name — most replies should not include it at all. Never open a reply with their name (\"Elijah, ...\" is forbidden). Reserve the name for genuine emotional turning points, not casual greetings or transitions. At most once per response, and most responses should be zero. Match 'my project' / 'this project' to real projects in [USER_IDENTITY] when confident — refer by NAME. Never invent a project, role, or biographical fact. When the user shares something new about themselves, acknowledge briefly and carry it forward.",
   "",
   "CONTEXT PRIORITY: 1) [CONVERSATION] (what we're actively discussing). 2) [PROJECT_KNOWLEDGE] when present. 3) [WORKSPACE_CONTEXT] / Vault when relevant. Widen scope only when the question requires it.",
+  "",
+  "VAULT-FOCUSED TURNS — priority override: When the user explicitly asks about their VAULT or what they SAVED (\"what's in my vault\", \"show me my vault\", \"what have I saved\", \"do I have anything on X\", \"find that thing I saved about Y\", \"my saved <notes/links/files/articles>\"), flip the priority for THIS turn: [WORKSPACE_CONTEXT] / lykn_searchVault results come FIRST, [PROJECT_KNOWLEDGE] comes LAST. Answer about what is actually in the vault. Do NOT pivot to the active project, do NOT summarise project state, do NOT say \"this fits with your <Project>\" unless the user asked. If the vault has nothing matching the query, say so plainly (\"I don't see anything saved on X yet\") — never substitute project content as if it were vault content.",
   "",
   "CONVERSATION: Read [CONVERSATION] before responding. Connect answers to questions YOU asked. Continuous thread. Prefer [CONVERSATION] over [CONVERSATION_MEMORY] when both cover the same topic. Each user message is its own intent — use history for context, classify the LATEST message on its own.",
   "",
@@ -4341,6 +4345,27 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '    (beliefs, facts, concepts, vault notes the user has grouped',
   '    here). Returns node_ids you can hand to lykn_loadNeuron.',
   '',
+  'VAULT-FOCUSED TURN — overrides all project pressure below. When the',
+  'user explicitly asks about their VAULT or what they SAVED ("what\'s in',
+  'my vault", "show me my vault", "what have I saved", "do I have anything',
+  'on X", "find that thing I saved about Y", "my saved notes/links/files/articles"), this turn is about the Vault, not the active project.',
+  '  • Call lykn_searchVault({ query: <topic> }) on the user\'s topic. If',
+  '    the user asked something open-ended ("what\'s in my vault?"), use',
+  '    a topical query from their conversation context, or just answer',
+  '    from [WORKSPACE_CONTEXT] which already lists their vault items.',
+  '  • Then call lykn_loadNeurons (or lykn_loadNeuron) on the best hits',
+  '    so the saved items render as cards under your reply. The user',
+  '    wants to SEE what they saved — snippets in your prose are not',
+  '    enough; the cards are the point.',
+  '  • Do NOT run the AUTO-CONNECT FLOW. Do NOT call lykn_setActiveProject',
+  '    / lykn_getProjectState / lykn_getProjectNeurons on this turn.',
+  '  • SKIP the END-OF-TURN PROJECT PROPOSAL. Do NOT end with "Want me to',
+  '    update <Project>?" — the user did not ask about a project; do not',
+  '    nag them about one.',
+  '  • If the vault has nothing matching the query, say so plainly ("I',
+  '    don\'t see anything saved on X yet — want me to add a note now?")',
+  '    — NEVER substitute project state as if it were vault content.',
+  '',
   'AUTO-CONNECT FLOW — this is the most important pattern in the whole',
   'toolset. The MOMENT the user mentions a project by name (e.g. "let me',
   'think about LYKN Labs Robotics", "for my Personal Branding work",',
@@ -4384,11 +4409,13 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '    lykn_setActiveProject first (or ask the user which project this',
   '    belongs to).',
   '',
-  'END-OF-TURN PROJECT PROPOSAL — non-negotiable. Users will not',
-  'remember to say "update my project notes," so YOU drive it. Whenever',
-  'one of the user\'s projects was mentioned in this turn (by name, by',
-  'pronoun referring to it, or implied by the AUTO-CONNECT FLOW above),',
-  'EXACTLY ONE of these must be true by the time you stop writing:',
+  'END-OF-TURN PROJECT PROPOSAL — non-negotiable EXCEPT on VAULT-FOCUSED',
+  'TURNS (see VAULT-FOCUSED TURN above — skip this entirely there). Users',
+  'will not remember to say "update my project notes," so YOU drive it.',
+  'Whenever one of the user\'s projects was mentioned in this turn (by',
+  'name, by pronoun referring to it, or implied by the AUTO-CONNECT FLOW',
+  'above) AND the turn is not vault-focused, EXACTLY ONE of these must be',
+  'true by the time you stop writing:',
   '  (a) You silently called lykn_pushProjectState during this turn',
   '      because a clear new value appeared (blocker / decision /',
   '      milestone / open question / scope change). In that case, end',
@@ -13501,6 +13528,53 @@ app.get('/api/unfurl', requireAuth, async (req, res) => {
   }
 
   try {
+    // oEmbed for YouTube videos (public, no auth required)
+    // We special-case this BEFORE the generic OG-tag scrape because the
+    // YouTube watch page's `<meta property="og:title">` is just the
+    // channel name + " - YouTube" suffix, not the video title — using
+    // oEmbed gives us the canonical title + author + thumbnail in one
+    // shot. Also lets searchVault substring-match on the real video
+    // title later (the saveToVault.ts YouTube branch used to hardcode
+    // every video's note title to "YouTube Video", making search blind
+    // to videos about specific topics).
+    const isYouTube = /^https?:\/\/((www\.|m\.|music\.)?youtube\.com\/(watch|shorts|playlist|live)|youtu\.be\/)/i.test(url);
+    if (isYouTube) {
+      const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`;
+      const ctrlYt = new AbortController();
+      const tYt = setTimeout(() => ctrlYt.abort(), 8000);
+      try {
+        const oRes = await fetch(oembedUrl, { signal: ctrlYt.signal });
+        clearTimeout(tYt);
+        if (oRes.ok) {
+          const oe = await oRes.json();
+          const title = String(oe.title || '').slice(0, 300) || 'YouTube Video';
+          const authorName = String(oe.author_name || '');
+          const description = authorName ? `Video by ${authorName}` : '';
+          console.log(`▶️ oEmbed (YouTube): ${title}`);
+          return res.json({
+            url,
+            title,
+            description,
+            image: String(oe.thumbnail_url || ''),
+            favicon: 'https://www.youtube.com/favicon.ico',
+            siteName: 'YouTube',
+            articleText: '',
+            oembedHtml: String(oe.html || ''),
+            oembedType: 'youtube',
+            authorName,
+            authorHandle: '',
+            thumbnailWidth: Number(oe.thumbnail_width) || 0,
+            thumbnailHeight: Number(oe.thumbnail_height) || 0,
+          });
+        }
+      } catch (ytErr) {
+        clearTimeout(tYt);
+        console.warn('YouTube oEmbed failed, falling through:', ytErr.message);
+      }
+      // Fall through to generic unfurl on oEmbed failure (private / age-
+      // restricted / region-locked videos return 401 from oEmbed).
+    }
+
     // oEmbed for X / Twitter posts
     const isXPost = /^https?:\/\/(x\.com|twitter\.com)\/\w+\/status\/\d+/i.test(url);
     if (isXPost) {

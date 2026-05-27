@@ -3899,7 +3899,7 @@ function NeuronFormingVisual({
 // arrival from the wake screen. Kept short so the typewriter beat doesn't
 // outrun the visitor's attention while the brain orbits in the background.
 const TOUR_WELCOME_TEXT =
-  "This is your synthesis layer, your digital brain.\n\nRight now you can see the five neurons it grows from: Chats, Vault, Facts, Beliefs, and Concepts. Each one starts empty and fills as you use LYKN.\n\nYou can also build your own neurons to organize anything you want.";
+  "This is your synthesis layer, your digital brain.\n\nRight now you can see the six neurons it grows from: Chats, Vault, Facts, Beliefs, Concepts, and Projects. Each one starts empty and fills as you use LYKN.\n\nYou can also build your own neurons to organize anything you want.";
 
 export default function SynthesisLayer() {
   const { user, signInWithOAuth } = useAuth();
@@ -4886,7 +4886,7 @@ export default function SynthesisLayer() {
         // the visitor pressed.
         themes: prototypeNeurons.filter((n) => !n.neuronType).map((n) => n.text),
         narrative: tourMode
-          ? "This is your synthesis layer, the five neurons your digital brain grows from. Chats, Vault, Beliefs, Facts, and Concepts all start empty and fill as you use LYKN. You can also build your own neurons to organize anything you want. Tap the + button to add your first one."
+          ? "This is your synthesis layer, the six neurons your digital brain grows from. Chats, Vault, Beliefs, Facts, Concepts, and Projects all start empty and fill as you use LYKN. You can also build your own neurons to organize anything you want. Tap the + button to add your first one."
           : "This is your synthesis layer the moment it woke up. The neuron you just created is the only thing here — your chats, vault, and the rest are waiting to be filled.",
         signals: {},
       };
