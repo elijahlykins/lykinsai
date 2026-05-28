@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/lib/SupabaseAuth";
+import { isConnectOnboardingDone } from "@/lib/prototypeHandoff";
 import { motion, AnimatePresence } from "framer-motion";
 
 const GoogleIcon = () => (
@@ -106,7 +107,7 @@ export default function Login() {
   useEffect(() => {
     if (loading || !user) return;
     const hasExplicitFrom = !!location.state?.from?.pathname;
-    if (!hasExplicitFrom && isFreshlyCreatedUser(user)) {
+    if (!hasExplicitFrom && isFreshlyCreatedUser(user) && !isConnectOnboardingDone()) {
       nav("/onboarding/connect", { replace: true });
       return;
     }

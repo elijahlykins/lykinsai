@@ -13,6 +13,7 @@ import {
   readPrototypeStep,
   PROTOTYPE_STEP_EVENT,
   isWalkthroughLockActive,
+  isConnectOnboardingDone,
 } from '@/lib/prototypeHandoff';
 
 import Login from "./pages/Login";
@@ -211,11 +212,17 @@ function useWalkthroughTrap() {
   return { redirect, locked: stateLocked };
 }
 
+function shouldRouteFreshUserToConnectOnboarding(user) {
+  return isFreshlyCreatedUser(user) && !isConnectOnboardingDone();
+}
+
 function GuestOnly({ children, to = "/app" }) {
   const { user, loading } = useAuth();
   if (loading) return null;
   if (user) {
-    const dest = isFreshlyCreatedUser(user) ? "/onboarding/connect" : to;
+    const dest = shouldRouteFreshUserToConnectOnboarding(user)
+      ? "/onboarding/connect"
+      : to;
     return <Navigate to={dest} replace />;
   }
   return children;
@@ -343,7 +350,9 @@ function AppShell() {
           via the global `toast()` notification raised from
           `uploadPipeline.ts`. So there's no longer a persistent
           upload-progress UI to render. */}
-      {!isEmbeddedVault && !isStandalone && !user && <GuestSignInPrompt />}
+      {!isEmbeddedVault && !isStandalone && !user && !isWalkthroughLocked && (
+        <GuestSignInPrompt />
+      )}
       <div className={isStandalone ? "" : (isGuest ? "app-content guest-mode" : "app-content")}>
         <RouteErrorBoundary>
           <Routes>

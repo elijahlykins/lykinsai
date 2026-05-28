@@ -14,6 +14,7 @@ import { useAuth } from "@/lib/SupabaseAuth";
 import { supabase } from "@/lib/supabase";
 import { API_BASE_URL } from "@/lib/api-config";
 import { toast } from "@/components/ui/use-toast";
+import { markConnectOnboardingDone } from "@/lib/prototypeHandoff";
 import {
   OUTBOUND_TARGETS,
   buildCursorOauthDeeplink,
@@ -1198,14 +1199,20 @@ export default function Onboarding() {
         <div className="mt-8 flex items-center justify-between gap-4 pt-4 border-t border-black/[0.06] dark:border-white/10">
           <button
             type="button"
-            onClick={() => navigate("/connections")}
+            onClick={() => {
+              markConnectOnboardingDone();
+              navigate("/connections");
+            }}
             className="text-[12px] font-medium text-black/60 dark:text-white/65 hover:text-black/90 dark:hover:text-white underline-offset-2 hover:underline"
           >
             Skip — wire it up later
           </button>
           <button
             type="button"
-            onClick={() => navigate("/")}
+            onClick={() => {
+              markConnectOnboardingDone();
+              navigate("/app");
+            }}
             disabled={connected.size === 0}
             className="inline-flex items-center gap-2 rounded-full bg-black text-white dark:bg-white dark:text-black px-4 py-2 text-[12.5px] font-medium hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
           >

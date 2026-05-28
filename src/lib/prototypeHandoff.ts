@@ -242,6 +242,33 @@ export const isWalkthroughLockActive = (
   return step === "synthesis" || step === "vault" || step === "grid";
 };
 
+/** True after the guest clicks Finish on the final /app walkthrough beat. */
+export const isPrototypeWalkthroughComplete = (): boolean =>
+  readPrototypeStep() === "done";
+
+// Post-signup "Connect your AI tools" (/onboarding/connect). Separate from
+// the guest walkthrough step — once the user clicks Done or Skip we stop
+// re-routing fresh accounts back through GuestOnly / Login.
+export const CONNECT_ONBOARDING_DONE_LS_KEY = "lykn_connect_onboarding_done";
+
+export const isConnectOnboardingDone = (): boolean => {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem(CONNECT_ONBOARDING_DONE_LS_KEY) === "1";
+  } catch {
+    return false;
+  }
+};
+
+export const markConnectOnboardingDone = (): void => {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(CONNECT_ONBOARDING_DONE_LS_KEY, "1");
+  } catch {
+    // ignore quota / private-mode errors
+  }
+};
+
 export const PROTOTYPE_STEP_LS_KEY = "lykn_prototype_step";
 
 // Session-scoped one-shot flag — set the first time the vault types
@@ -397,6 +424,7 @@ export const clearPrototypeState = (): void => {
     window.localStorage.removeItem(PROTOTYPE_CHAT_LS_KEY);
     window.localStorage.removeItem(PROTOTYPE_STEP_LS_KEY);
     window.localStorage.removeItem(PROTOTYPE_TOUR_MODE_LS_KEY);
+    window.localStorage.removeItem(CONNECT_ONBOARDING_DONE_LS_KEY);
   } catch {
     // ignore quota / private-mode errors
   }

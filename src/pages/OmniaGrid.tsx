@@ -2,7 +2,9 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   hasPrototypeNeurons,
+  isPrototypeWalkthroughComplete,
   PROTO_GRID_INTRO_SS_KEY,
+  PROTOTYPE_STEP_EVENT,
   readPrototypeStep,
   writePrototypeStep,
 } from "@/lib/prototypeHandoff";
@@ -900,6 +902,27 @@ export default function OmniaGridPage() {
   const [chatIntroText, setChatIntroText] = useState("");
   const [chatIntroDone, setChatIntroDone] = useState(false);
   const typingCancelRef = useRef(false);
+  const [walkthroughStep, setWalkthroughStep] = useState(() =>
+    typeof window === "undefined" ? null : readPrototypeStep(),
+  );
+
+  useEffect(() => {
+    const sync = () => {
+      const step = readPrototypeStep();
+      setWalkthroughStep(step);
+      if (step === "done") {
+        typingCancelRef.current = true;
+        setChatIntroShown(false);
+      }
+    };
+    sync();
+    window.addEventListener(PROTOTYPE_STEP_EVENT, sync);
+    window.addEventListener("storage", sync);
+    return () => {
+      window.removeEventListener(PROTOTYPE_STEP_EVENT, sync);
+      window.removeEventListener("storage", sync);
+    };
+  }, []);
 
   useEffect(() => {
     const onResize = () => setViewportWidth(window.innerWidth || 1280);
@@ -919,6 +942,7 @@ export default function OmniaGridPage() {
   useEffect(() => {
     if (user?.id) return;
     if (routeBoardId) return; // only on /app, not on a specific /grid/<id>
+    if (isPrototypeWalkthroughComplete()) return;
     // Two-stage gate:
     //   1. If the walkthrough step is "grid" (Connections' advance arrow
     //      just bumped us here), ALWAYS show the card. This is the
@@ -3970,7 +3994,7 @@ export default function OmniaGridPage() {
           next click on the canvas or chat-send is what surfaces it,
           which keeps the wall feeling like a natural consequence of
           trying to use the app rather than an interrupt mid-typing. */}
-      {chatIntroShown && (
+      {chatIntroShown && walkthroughStep !== "done" && (
         <div className="fixed right-6 top-20 z-[9995] w-[min(88vw,18rem)]">
           <div
             className="pointer-events-auto relative rounded-2xl bg-[rgba(15,15,18,0.78)] backdrop-blur-md border border-white/10 px-4 py-3.5 shadow-[0_18px_50px_rgba(0,0,0,0.5)]"

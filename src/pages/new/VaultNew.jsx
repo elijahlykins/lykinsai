@@ -57,6 +57,7 @@ import SignInActionBlocker from "@/components/SignInActionBlocker";
 import { toast } from "@/components/ui/use-toast";
 import { ToastAction } from "@/components/ui/toast";
 import {
+  isPrototypeWalkthroughComplete,
   isWalkthroughLockActive,
   PROTOTYPE_STEP_EVENT,
   readPrototypeStep,
@@ -672,6 +673,7 @@ export default function VaultNew() {
       window.removeEventListener("storage", sync);
     };
   }, []);
+
   const isPrototypeWalkthroughLocked = isWalkthroughLockActive(
     user?.id ?? null,
     walkthroughStepForLock,
@@ -772,6 +774,27 @@ export default function VaultNew() {
     };
   }, []);
 
+  // Dismiss the vault intro card the moment the guest finishes the tour
+  // (Finish on /app) so revisiting /vault doesn't flash a stale card.
+  useEffect(() => {
+    const dismissIfDone = () => {
+      if (!isPrototypeWalkthroughComplete()) return;
+      typingCancelRef.current = true;
+      if (typingTimerRef.current) {
+        window.clearTimeout(typingTimerRef.current);
+        typingTimerRef.current = null;
+      }
+      setIntroWelcomeShown(false);
+    };
+    dismissIfDone();
+    window.addEventListener(PROTOTYPE_STEP_EVENT, dismissIfDone);
+    window.addEventListener("storage", dismissIfDone);
+    return () => {
+      window.removeEventListener(PROTOTYPE_STEP_EVENT, dismissIfDone);
+      window.removeEventListener("storage", dismissIfDone);
+    };
+  }, []);
+
   // Landing-prototype handoff: on first load of the Vault, surface a
   // short orientation message that types itself out on screen — how
   // Connections and the Vault work together to feed the Synthesis
@@ -782,7 +805,7 @@ export default function VaultNew() {
   // walkthrough kicks off, so a fresh first neuron re-arms it.
   useEffect(() => {
     if (user?.id) return;
-    // The intro fires for any unauthenticated guest landing on /vault.
+    if (isPrototypeWalkthroughComplete()) return;
     // We deliberately removed the previous "must have prototype neurons
     // OR be in a walkthrough step" gate — both signals were getting
     // wiped before this effect could read them (the wake-screen
@@ -790,8 +813,8 @@ export default function VaultNew() {
     // restarts, and `VaultConnectionsShell` is a sibling route so a
     // synthesis → vault navigation can race the writePrototypeStep
     // call from the synthesis arrow). For a guest, the only sensible
-    // thing to show on /vault is the orientation card anyway, so
-    // there's no harm in always playing it once per mount.
+    // thing to show on /vault is the orientation card anyway — unless
+    // they already finished the full walkthrough (step === "done").
     const fullText =
       "This is your Vault, the raw material that feeds your digital brain.\n\n" +
       "Drag any file in (PDFs, images, video, audio, screenshots, web links, quick notes) and LYKN reads it, breaks down what it means about you, and turns those meanings into new neurons connected to the ones already there.\n\n" +
@@ -6298,7 +6321,7 @@ User: ${text}`;
           wrapper are off so guests can keep dragging files / scrolling
           underneath while the card animates; the card itself
           re-enables pointer events for its own buttons. */}
-      {introWelcomeShown && (
+      {introWelcomeShown && walkthroughStepForLock !== "done" && (
         <div className="fixed right-6 top-20 z-[9995] w-[min(88vw,18rem)]">
           <div
             className="pointer-events-auto relative rounded-2xl bg-[rgba(15,15,18,0.78)] backdrop-blur-md border border-white/10 px-4 py-3.5 shadow-[0_18px_50px_rgba(0,0,0,0.5)]"

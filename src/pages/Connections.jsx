@@ -7,6 +7,7 @@ import ConnectionsAppGrid from "@/components/connections/ConnectionsAppGrid";
 import CustomAgentsSection from "@/components/connections/CustomAgentsSection";
 import VaultConnectionsToggle from "@/components/connections/VaultConnectionsToggle";
 import {
+  isPrototypeWalkthroughComplete,
   isWalkthroughLockActive,
   PROTOTYPE_STEP_EVENT,
   readPrototypeStep,
@@ -67,6 +68,25 @@ export default function Connections() {
       window.removeEventListener("storage", sync);
     };
   }, []);
+
+  useEffect(() => {
+    const dismissIfDone = () => {
+      if (!isPrototypeWalkthroughComplete()) return;
+      typingCancelRef.current = true;
+      if (typingTimerRef.current) {
+        window.clearTimeout(typingTimerRef.current);
+        typingTimerRef.current = null;
+      }
+      setIntroShown(false);
+    };
+    dismissIfDone();
+    window.addEventListener(PROTOTYPE_STEP_EVENT, dismissIfDone);
+    window.addEventListener("storage", dismissIfDone);
+    return () => {
+      window.removeEventListener(PROTOTYPE_STEP_EVENT, dismissIfDone);
+      window.removeEventListener("storage", dismissIfDone);
+    };
+  }, []);
   const isPrototypeWalkthroughLocked = isWalkthroughLockActive(
     user?.id ?? null,
     walkthroughStepForLock,
@@ -81,6 +101,7 @@ export default function Connections() {
 
   useEffect(() => {
     if (user?.id) return;
+    if (isPrototypeWalkthroughComplete()) return;
     // VaultConnectionsShell keeps BOTH /vault and /connections mounted
     // simultaneously (so the in-page toggle feels instant), which means
     // this component mounts the moment a visitor lands on /vault — long
@@ -209,7 +230,7 @@ export default function Connections() {
           and pointer-events-none on the wrapper so the connection grid
           stays interactive underneath; the card re-enables pointer
           events for its own controls. */}
-      {introShown && (
+      {introShown && walkthroughStepForLock !== "done" && (
         <div className="fixed right-6 top-20 z-[9995] w-[min(88vw,18rem)]">
           <div
             className="pointer-events-auto relative rounded-2xl bg-[rgba(15,15,18,0.78)] backdrop-blur-md border border-white/10 px-4 py-3.5 shadow-[0_18px_50px_rgba(0,0,0,0.5)]"

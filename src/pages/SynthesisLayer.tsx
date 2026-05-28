@@ -72,6 +72,8 @@ import {
   appendPrototypeNeuron,
   clearPrototypeState,
   hasPrototypeNeurons,
+  isPrototypeWalkthroughComplete,
+  PROTOTYPE_STEP_EVENT,
   readPrototypeChat,
   readPrototypeNeurons,
   readPrototypeStep,
@@ -4029,9 +4031,14 @@ export default function SynthesisLayer() {
     // Step is null on first-ever visit (writePrototypeStep("synthesis")
     // ran from LandingPrototype but might be cleared) or "synthesis"
     // on the canonical first visit. Both mean "first time here, let
-    // them through". Any other value (vault / grid / done) means they
-    // already finished this beat and are coming BACK — wall them.
-    if (step !== null && step !== "synthesis") {
+    // them through". "done" means the guest finished the full walkthrough
+    // — let them browse freely. vault / grid mean they already finished
+    // this beat and are coming BACK — wall them.
+    if (
+      step !== null &&
+      step !== "synthesis" &&
+      step !== "done"
+    ) {
       setSynthSignInOpen(true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -4698,6 +4705,7 @@ export default function SynthesisLayer() {
   // the card alive any time a guest is meant to be on this beat.
   const [tourWelcomeOpen, setTourWelcomeOpen] = useState(() => {
     if (typeof window === "undefined") return false;
+    if (isPrototypeWalkthroughComplete()) return false;
     if (readPrototypeTourMode()) return true;
     return readPrototypeStep() === "synthesis";
   });
@@ -4717,6 +4725,23 @@ export default function SynthesisLayer() {
   useEffect(() => {
     if (tourMode) writePrototypeTourMode(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // Close the welcome card if the visitor finishes the tour on another
+  // surface (e.g. clicks Finish on /app while this route stays mounted).
+  useEffect(() => {
+    const sync = () => {
+      if (isPrototypeWalkthroughComplete()) {
+        setTourWelcomeOpen(false);
+        setTourAddNeuronHintVisible(false);
+      }
+    };
+    sync();
+    window.addEventListener(PROTOTYPE_STEP_EVENT, sync);
+    window.addEventListener("storage", sync);
+    return () => {
+      window.removeEventListener(PROTOTYPE_STEP_EVENT, sync);
+      window.removeEventListener("storage", sync);
+    };
   }, []);
   // After the visitor dismisses the welcome card we flip on a pulsing
   // ring around the "+" button and a small "Tap to add your own neuron"
@@ -7504,7 +7529,7 @@ export default function SynthesisLayer() {
           hint. AnimatePresence handles the fade in/out so the card
           slides in from the left edge and fades back out cleanly. */}
       <AnimatePresence>
-        {tourWelcomeOpen && (
+        {tourWelcomeOpen && !isPrototypeWalkthroughComplete() && (
           <motion.div
             key="tour-welcome-card"
             initial={{ opacity: 0, x: -24 }}
