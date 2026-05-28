@@ -10,6 +10,9 @@
 export const PROTOTYPE_NEURONS_LS_KEY = "lykn_prototype_neurons";
 export const PROTOTYPE_CHAT_LS_KEY = "lykn_prototype_chat";
 
+/** Full chat-rail state for First Conversation while the SPA is open. */
+export const PROTOTYPE_GRID_CHAT_SS_KEY = "lykn_prototype_grid_chat_v1";
+
 // Set to "1" while the visitor is in the synthesis-layer "tour" — i.e.
 // they clicked Get Started on the wake screen and were dropped into a
 // pre-populated synthesis layer with sample neurons (NOT real neurons
@@ -126,6 +129,73 @@ export const readPrototypeNeurons = (): PrototypeNeuron[] => {
     );
   } catch {
     return [];
+  }
+};
+
+export interface PrototypeGridChatSession {
+  chatMessages: PromptMessageLike[];
+  aiThread: AiThreadTurn[];
+}
+
+export const readPrototypeGridChatSession = (): PrototypeGridChatSession | null => {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(PROTOTYPE_GRID_CHAT_SS_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed?.chatMessages) || parsed.chatMessages.length === 0) {
+      return null;
+    }
+    return {
+      chatMessages: parsed.chatMessages,
+      aiThread: Array.isArray(parsed?.aiThread) ? parsed.aiThread : [],
+    };
+  } catch {
+    return null;
+  }
+};
+
+export const writePrototypeGridChatSession = (
+  chatMessages: PromptMessageLike[],
+  aiThread: AiThreadTurn[],
+): void => {
+  if (typeof window === "undefined") return;
+  try {
+    if (!chatMessages.length) {
+      window.sessionStorage.removeItem(PROTOTYPE_GRID_CHAT_SS_KEY);
+      return;
+    }
+    window.sessionStorage.setItem(
+      PROTOTYPE_GRID_CHAT_SS_KEY,
+      JSON.stringify({ chatMessages, aiThread }),
+    );
+  } catch {
+    // ignore quota / private mode
+  }
+};
+
+/** Keep localStorage transcript in sync for synthesis-layer / sidebar reload. */
+export const syncPrototypeChatFromPromptMessages = (
+  messages: PromptMessageLike[],
+): void => {
+  if (typeof window === "undefined") return;
+  const existing = readPrototypeChat();
+  const prefix: PrototypeChatTurn[] =
+    existing.length > 0 && existing[0].role === "ai" ? [existing[0]] : [];
+  const turns: PrototypeChatTurn[] = [...prefix];
+  for (const m of messages) {
+    if ((m as { kind?: string }).kind === "load-in-greeting") continue;
+    const content = String(m.content || "").trim();
+    if (!content || content === "(LYKN)") continue;
+    turns.push({ role: "user", content });
+    const reply = String(m.aiResponse || "").trim();
+    if (reply) turns.push({ role: "ai", content: reply });
+  }
+  if (turns.length <= prefix.length) return;
+  try {
+    window.localStorage.setItem(PROTOTYPE_CHAT_LS_KEY, JSON.stringify(turns));
+  } catch {
+    // ignore
   }
 };
 
@@ -379,7 +449,7 @@ const applyWalkthroughDefaultModel = (step: PrototypeStep | null): void => {
 /*  or using a private window — that's fine, the server limits catch   */
 /*  those cases. Defense in depth.                                     */
 /* ------------------------------------------------------------------ */
-export const GUEST_CHAT_SESSION_CAP = 12;
+export const GUEST_CHAT_SESSION_CAP = 10;
 export const GUEST_CHAT_SESSION_COUNT_KEY = "lykn_guest_chat_session_count";
 
 export const readGuestChatCount = (): number => {
@@ -432,6 +502,9 @@ export const clearPrototypeState = (): void => {
     window.sessionStorage.removeItem(PROTO_VAULT_INTRO_SS_KEY);
     window.sessionStorage.removeItem(PROTO_GRID_INTRO_SS_KEY);
     window.sessionStorage.removeItem(GUEST_CHAT_SESSION_COUNT_KEY);
+    window.sessionStorage.removeItem("lykn_guest_chat_board_id");
+    window.sessionStorage.removeItem("lykn_guest_chat_v1");
+    window.sessionStorage.removeItem(PROTOTYPE_GRID_CHAT_SS_KEY);
   } catch {
     // ignore
   }

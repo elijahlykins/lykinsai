@@ -28,6 +28,7 @@ import {
   PROTOTYPE_STEP_EVENT,
   readPrototypeStep,
 } from "@/lib/prototypeHandoff";
+import { requestGuestSignIn } from "@/lib/guestChatLimits";
 
 export default function AppSidebar({
   controlledOpen,
@@ -95,6 +96,15 @@ export default function AppSidebar({
     if (lockedDestination && path !== lockedDestination) return;
     window.dispatchEvent(new Event("omnia_flush_save"));
     setTimeout(() => nav(path), 80);
+  };
+
+  const handleNewChat = () => {
+    if (!user) {
+      requestGuestSignIn("new_chat");
+      return;
+    }
+    const newId = crypto.randomUUID();
+    goTo(`/grid/${newId}`);
   };
 
   const [internalOpen, setInternalOpen] = useState(false);
@@ -270,10 +280,7 @@ export default function AppSidebar({
             </div>
             <button
               type="button"
-              onClick={() => {
-                const newId = crypto.randomUUID();
-                goTo(`/grid/${newId}`);
-              }}
+              onClick={handleNewChat}
               className="flex-shrink-0 w-7 h-7 rounded-md hover:bg-blue-500/15 transition-colors flex items-center justify-center text-black/60 dark:text-white/60"
               title="New chat"
             >
@@ -355,10 +362,7 @@ export default function AppSidebar({
           <div className="flex-shrink-0">
             <button
               type="button"
-              onClick={() => {
-                const newId = crypto.randomUUID();
-                goTo(`/grid/${newId}`);
-              }}
+              onClick={handleNewChat}
               className="w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2 text-black/60 dark:text-white/60"
             >
               <Plus className="w-3.5 h-3.5" />

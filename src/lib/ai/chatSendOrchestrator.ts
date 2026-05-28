@@ -26,6 +26,7 @@ import {
   guestChatCapReached,
   incrementGuestChatCount,
 } from "@/lib/prototypeHandoff";
+import { requestGuestSignIn } from "@/lib/guestChatLimits";
 import { toast } from "@/components/ui/use-toast";
 
 // Show a one-shot toast when the server downgrades the model. The server
@@ -862,6 +863,7 @@ async function runGuestChat(
   // real ceiling, but this short-circuit gives the user a clear
   // sign-in nudge before we burn another LLM call.
   if (guestChatCapReached()) {
+    requestGuestSignIn("chat");
     const msg =
       `You've hit the free preview limit (${GUEST_CHAT_SESSION_CAP} messages) ` +
       "for this session — sign in (it's free) to keep chatting and save what you've made.";

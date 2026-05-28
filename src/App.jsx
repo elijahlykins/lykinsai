@@ -38,6 +38,7 @@ import VaultConnectionsShell from "./pages/VaultConnectionsShell";
 import TagManagementNew from "./pages/new/TagManagementNew";
 import BillingNew from "./pages/new/BillingNew";
 import GuestSignInPrompt from "./components/GuestSignInPrompt";
+import GuestSignInGate from "./components/GuestSignInGate";
 import ShareReceiver from "./pages/ShareReceiver";
 import Onboarding from "./pages/Onboarding";
 import AdminUsage from "./pages/AdminUsage";
@@ -353,6 +354,7 @@ function AppShell() {
       {!isEmbeddedVault && !isStandalone && !user && !isWalkthroughLocked && (
         <GuestSignInPrompt />
       )}
+      {!isEmbeddedVault && !isStandalone && !user && <GuestSignInGate />}
       <div className={isStandalone ? "" : (isGuest ? "app-content guest-mode" : "app-content")}>
         <RouteErrorBoundary>
           <Routes>

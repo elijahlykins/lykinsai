@@ -10,6 +10,12 @@ import type { NotePage } from "@/components/notes/NotesPanel";
 import { notifyBlocksCapIfApplicable } from "@/lib/board/blocksCapError";
 import { fetchMostRecentBoard } from "@/lib/board/fetchBoardsWithContext";
 import { isDemoGridId, getDemoGridSnapshot } from "@/lib/demoGrids";
+import {
+  isPrototypeFirstChatBoardId,
+  readPrototypeGridChatSession,
+  syncPrototypeChatFromPromptMessages,
+  writePrototypeGridChatSession,
+} from "@/lib/prototypeHandoff";
 
 const SNAPSHOT_VERSION = 2;
 
@@ -746,12 +752,23 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
         // chat so it doesn't matter for them — but the prototype-handoff
         // "First Conversation" grid carries the saved transcript on its
         // snapshot, so hydrate it explicitly here.
-        if (!cancelled && snapshot && Array.isArray(snapshot.chatMessages) && snapshot.chatMessages.length > 0) {
-          setChatMessages(snapshot.chatMessages);
+        const sessionChat = isPrototypeFirstChatBoardId(routeBoardId)
+          ? readPrototypeGridChatSession()
+          : null;
+        const chatToHydrate =
+          sessionChat?.chatMessages?.length
+            ? sessionChat.chatMessages
+            : snapshot?.chatMessages;
+        const threadToHydrate =
+          sessionChat?.aiThread?.length
+            ? sessionChat.aiThread
+            : snapshot?.aiThread;
+        if (!cancelled && Array.isArray(chatToHydrate) && chatToHydrate.length > 0) {
+          setChatMessages(chatToHydrate);
           setChatRailOpen(true);
           setChatRailVisible(true);
-          if (Array.isArray(snapshot.aiThread) && snapshot.aiThread.length > 0) {
-            aiThreadRef.current = snapshot.aiThread;
+          if (Array.isArray(threadToHydrate) && threadToHydrate.length > 0) {
+            aiThreadRef.current = threadToHydrate;
           }
         }
         if (!cancelled) hydratedRef.current = true;
@@ -1029,6 +1046,19 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boardId, userId, chatMessages]);
+
+  /* ------------------------------------------------------------------ */
+  /*  Prototype "First Conversation" chat persist (guest preview)        */
+  /* ------------------------------------------------------------------ */
+  useEffect(() => {
+    if (!boardId || !isPrototypeFirstChatBoardId(boardId)) return;
+    if (!hydratedRef.current) return;
+    const timer = setTimeout(() => {
+      writePrototypeGridChatSession(chatMessages, aiThreadRef.current || []);
+      syncPrototypeChatFromPromptMessages(chatMessages);
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [boardId, chatMessages]);
 
   /* ------------------------------------------------------------------ */
   /*  Chat localStorage persist effect                                   */

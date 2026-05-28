@@ -63,6 +63,11 @@ import GridShareDialog from "@/components/omnia/GridShareDialog";
 import { useBoardPersistence, makeDefaultNotesPages } from "@/hooks/useBoardPersistence";
 import { fetchMostRecentBoard } from "@/lib/board/fetchBoardsWithContext";
 import { useChatEngine } from "@/hooks/useChatEngine";
+import {
+  guestChatCapReached,
+  isGuestAllowedBoardRoute,
+  requestGuestSignIn,
+} from "@/lib/guestChatLimits";
 
 // Feature flag — the LYKN Grid canvas surface is temporarily unplugged.
 // Keep this `true` to make the focused chat the main interface across `/app`,
@@ -1048,19 +1053,15 @@ export default function OmniaGridPage() {
   // real Supabase-backed chats take over without a stale local copy
   // shadowing them.
   const GUEST_CHAT_SS_KEY = "lykn_guest_chat_v1";
-  const guestChatRestoredRef = useRef(false);
   const guestChatPersistTimerRef = useRef<number | null>(null);
 
-  // One-shot restore on initial mount. Gated on `!user?.id` so a
-  // sign-in mid-session doesn't pull the guest copy back over the
-  // real one; and on `!routeBoardId` so opening a specific
-  // `/grid/<id>` lets the existing snapshot/localStorage path
-  // hydrate that board normally.
+  // Restore guest `/app` chat whenever the visitor returns to the
+  // boardless chat surface (e.g. synthesis layer → Chat). Re-run on
+  // every `/app` entry — not a one-shot — so navigation away and back
+  // does not wipe the in-tab preview transcript.
   useEffect(() => {
-    if (guestChatRestoredRef.current) return;
     if (user?.id) return;
     if (routeBoardId) return;
-    guestChatRestoredRef.current = true;
     try {
       const raw = sessionStorage.getItem(GUEST_CHAT_SS_KEY);
       if (!raw) return;
@@ -1127,6 +1128,16 @@ export default function OmniaGridPage() {
       // ignore
     }
   }, [user?.id]);
+
+  // Guests get one preview chat: block extra `/grid/:id` URLs (new-chat
+  // links, bookmarks, demo hops) and surface the sign-in wall.
+  useEffect(() => {
+    if (user?.id) return;
+    if (!routeBoardId) return;
+    if (isGuestAllowedBoardRoute(routeBoardId)) return;
+    requestGuestSignIn("second_chat");
+    nav("/app", { replace: true });
+  }, [user?.id, routeBoardId, nav]);
 
   // --------------------------------------------------------------------
   // Resume last chat (signed-in users landing on /app)
@@ -2506,10 +2517,16 @@ export default function OmniaGridPage() {
   // canvas mousedown trap above so neither click-to-create nor the
   // chat input can be used to keep poking around the grid for free.
   const gatedHandleChatSend = useCallback(async () => {
-    if (!user?.id && (prototypeSignInTriggered || prototypeSignInArmed)) {
-      setPrototypeSignInOpen(true);
-      setPrototypeSignInTriggered(true);
-      return;
+    if (!user?.id) {
+      if (guestChatCapReached()) {
+        requestGuestSignIn("chat");
+        return;
+      }
+      if (prototypeSignInTriggered || prototypeSignInArmed) {
+        setPrototypeSignInOpen(true);
+        setPrototypeSignInTriggered(true);
+        return;
+      }
     }
     await handleChatSend();
   }, [user?.id, prototypeSignInTriggered, prototypeSignInArmed, handleChatSend]);

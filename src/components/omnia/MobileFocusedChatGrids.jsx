@@ -15,14 +15,13 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import { fetchBoardsWithContext, invalidateBoardListQueries, mergeActiveRouteBoard } from "@/lib/board/fetchBoardsWithContext";
 import { useAuth } from "@/lib/SupabaseAuth";
-import { DEMO_GRID_LIST } from "@/lib/demoGrids";
+import { isDemoGridId } from "@/lib/demoGrids";
+import { requestGuestSignIn } from "@/lib/guestChatLimits";
 
 const flushAndNavigate = (nav, path) => {
   window.dispatchEvent(new Event("omnia_flush_save"));
   setTimeout(() => nav(path), 80);
 };
-
-const isDemoId = (id) => DEMO_GRID_LIST.some((g) => g.id === String(id));
 
 /**
  * Mobile-only entry point for switching between saved chats while in
@@ -70,10 +69,13 @@ export default function MobileFocusedChatGrids() {
 
   const list = useMemo(() => {
     if (!user) {
-      return DEMO_GRID_LIST.map((g) => ({ id: g.id, title: g.title, updated_at: null }));
+      const activeId = routeBoardId || "app";
+      const title =
+        location.pathname === "/app" || !routeBoardId ? "Your preview chat" : "Your chat";
+      return [{ id: activeId, title, updated_at: null }];
     }
     return mergeActiveRouteBoard(boards, location.pathname);
-  }, [user, boards, location.pathname]);
+  }, [user, boards, location.pathname, routeBoardId]);
 
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase();
@@ -83,11 +85,28 @@ export default function MobileFocusedChatGrids() {
 
   const goToGrid = (id) => {
     setOpen(false);
+    if (!user) {
+      const activeId = routeBoardId || "app";
+      if (String(id) !== String(activeId)) {
+        requestGuestSignIn("second_chat");
+        return;
+      }
+    }
+    if (id === "app") {
+      if (location.pathname === "/app") return;
+      flushAndNavigate(nav, "/app");
+      return;
+    }
     if (location.pathname === `/grid/${id}`) return;
     flushAndNavigate(nav, `/grid/${id}`);
   };
 
   const createNewGrid = () => {
+    if (!user) {
+      setOpen(false);
+      requestGuestSignIn("new_chat");
+      return;
+    }
     const newId = (typeof crypto !== "undefined" && crypto.randomUUID)
       ? crypto.randomUUID()
       : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -100,7 +119,7 @@ export default function MobileFocusedChatGrids() {
 
   const renameGrid = async (boardId, currentTitle) => {
     if (!user?.id) return;
-    if (isDemoId(boardId)) return;
+    if (isDemoGridId(boardId)) return;
     const next = window.prompt("Rename chat", currentTitle || "New Chat");
     if (next === null) return;
     const name = next.trim() || "New Chat";
@@ -125,7 +144,7 @@ export default function MobileFocusedChatGrids() {
 
   const deleteGrid = async (boardId) => {
     if (!user?.id) return;
-    if (isDemoId(boardId)) return;
+    if (isDemoGridId(boardId)) return;
     const ok = window.confirm("Delete this chat? This cannot be undone.");
     if (!ok) return;
     await supabase.from("omnia_board_states").delete().eq("board_id", boardId);
@@ -220,7 +239,7 @@ export default function MobileFocusedChatGrids() {
             <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-3">
               {!user ? (
                 <div className="px-3 pt-1 pb-2 text-[0.75rem] text-black/55 dark:text-white/55">
-                  Sign in to save and switch between your own chats. The list below is a demo.
+                  One free preview chat per visit. Sign in to save work and start more chats.
                 </div>
               ) : null}
               {filtered.length === 0 ? (
@@ -246,7 +265,7 @@ export default function MobileFocusedChatGrids() {
                     const isActive =
                       String(routeBoardId || "") === String(b.id) ||
                       location.pathname === `/grid/${b.id}`;
-                    const canEdit = !!user && !isDemoId(b.id);
+                    const canEdit = !!user && !isDemoGridId(b.id);
                     return (
                       <li key={b.id} className="relative">
                         <div

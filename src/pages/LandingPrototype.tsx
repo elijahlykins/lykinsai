@@ -4,6 +4,7 @@ import { API_BASE_URL } from "@/lib/api-config";
 import AppSidebar from "@/components/AppSidebar";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/lib/SupabaseAuth";
+import { requestGuestSignIn } from "@/lib/guestChatLimits";
 import {
   GUEST_CHAT_SESSION_CAP,
   guestChatCapReached,
@@ -520,6 +521,7 @@ const LandingPrototype = () => {
     // Session-scoped guest cap. Server enforces per-IP / per-day too,
     // but stopping here keeps the UI honest and saves an LLM call.
     if (guestChatCapReached()) {
+      requestGuestSignIn("chat");
       setMessages((prev) => [
         ...prev,
         {

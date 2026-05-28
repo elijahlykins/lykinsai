@@ -6794,7 +6794,7 @@ User: ${text}`;
           return (
             <div
               ref={cardMenuRef}
-              className="rounded-2xl border border-white/30 dark:border-white/10 bg-white/60 dark:bg-[#171515]/60 backdrop-blur-md shadow-md p-2 overflow-y-auto scrollbar-hide"
+              className="rounded-2xl border border-white/30 dark:border-white/10 bg-white/60 dark:bg-[#171515]/60 backdrop-blur-md shadow-md p-2 flex flex-col overflow-hidden"
               style={{
                 position: "fixed",
                 width: menuW,
@@ -6807,99 +6807,110 @@ User: ${text}`;
               }}
               onMouseDown={(e) => e.stopPropagation()}
             >
-              <div className="px-2 py-1 text-[0.6875rem] font-medium text-black/60 dark:text-white/60">Add to project</div>
-              <div className="space-y-1">
-                <button
-                  type="button"
-                  disabled={isCardActionBusy}
-                  onClick={() => void createProjectFromCard(menuCard)}
-                  className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 dark:hover:bg-white/5 disabled:opacity-60 flex items-center gap-2"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  New project
-                </button>
-                <div className="my-1 h-px bg-black/10 dark:bg-white/10" />
-                <div className="max-h-44 overflow-y-auto scrollbar-hide space-y-1">
-                  {projects.length === 0 ? (
-                    <div className="px-2 py-1.5 text-[0.6875rem] text-black/55 dark:text-white/55">No projects found.</div>
-                  ) : (
-                    projects.map((project) => (
-                      <button
-                        key={project.id}
-                        type="button"
-                        disabled={isCardActionBusy}
-                        onClick={() => void addCardToProject(menuCard, project.id)}
-                        className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/10 dark:hover:bg-white/10 disabled:opacity-60 truncate"
-                        title={project.name}
-                      >
-                        {project.name}
-                      </button>
-                    ))
-                  )}
-                </div>
-              </div>
-              {(menuCard.kind === "attachment" || menuCard.kind === "quick-note") && (
-                <>
-                  <div className="my-1 h-px bg-black/10 dark:bg-white/10" />
+              {/*
+                Tall cards (notably drag-dropped YouTube embeds) anchor the
+                ⋯ menu near the bottom of the viewport. When the menu opens
+                upward with a tight maxHeight, a single scroll container
+                hid Delete below the fold — link-added YouTube stayed as
+                shorter bookmark tiles so the bug only showed on drag-drop.
+                Keep Delete pinned outside the scroll region.
+              */}
+              <div className="min-h-0 flex-1 overflow-y-auto scrollbar-hide">
+                <div className="px-2 py-1 text-[0.6875rem] font-medium text-black/60 dark:text-white/60">Add to project</div>
+                <div className="space-y-1">
                   <button
                     type="button"
                     disabled={isCardActionBusy}
-                    onClick={() => {
-                      // Anchor the composer to the card itself rather
-                      // than this menu item — the menu is closing as
-                      // we click, so its rect would jump. The card
-                      // wrapper carries `data-vault-card-id` and is
-                      // always present in the DOM while the card is
-                      // visible.
-                      const anchor =
-                        document.querySelector(`[data-vault-card-id="${menuCard.id}"]`) ||
-                        cardMenuRef.current;
-                      openAttachmentNotesForAnchor(menuCard.id, anchor);
-                      setOpenCardMenuId(null);
-                    }}
+                    onClick={() => void createProjectFromCard(menuCard)}
                     className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 dark:hover:bg-white/5 disabled:opacity-60 flex items-center gap-2"
                   >
-                    <MessageSquare className="w-3.5 h-3.5" />
-                    Comment
+                    <Plus className="w-3.5 h-3.5" />
+                    New project
                   </button>
-                </>
-              )}
-              {menuCard.noteId && (
-                <>
                   <div className="my-1 h-px bg-black/10 dark:bg-white/10" />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const rect = openCardMenuRect;
-                      setTagPickerCardId(menuCard.id);
-                      setTagPickerPosition({ left: rect.left, top: rect.bottom + 8 });
-                      setOpenCardMenuId(null);
-                    }}
-                    className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 dark:hover:bg-white/5 flex items-center gap-2"
-                  >
-                    <Tag className="w-3.5 h-3.5" />
-                    Tags
-                  </button>
-                </>
-              )}
-              <div className="my-1 h-px bg-black/10 dark:bg-white/10" />
-              <button
-                type="button"
-                disabled={isCardActionBusy}
-                onClick={() => {
-                  if (menuCard.kind === "attachment") {
-                    confirmAndDeleteAttachment(menuCard);
-                  } else {
-                    const ok = window.confirm(`Are you sure you want to delete "${menuCard.title || "Quick Note"}"? This cannot be undone.`);
-                    if (!ok) return;
-                    void removeQuickNoteCard(menuCard);
-                  }
-                }}
-                className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 dark:hover:bg-white/5 disabled:opacity-60 flex items-center gap-2 text-red-600"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                Delete
-              </button>
+                  <div className="max-h-44 overflow-y-auto scrollbar-hide space-y-1">
+                    {projects.length === 0 ? (
+                      <div className="px-2 py-1.5 text-[0.6875rem] text-black/55 dark:text-white/55">No projects found.</div>
+                    ) : (
+                      projects.map((project) => (
+                        <button
+                          key={project.id}
+                          type="button"
+                          disabled={isCardActionBusy}
+                          onClick={() => void addCardToProject(menuCard, project.id)}
+                          className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/10 dark:hover:bg-white/10 disabled:opacity-60 truncate"
+                          title={project.name}
+                        >
+                          {project.name}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </div>
+                {(menuCard.kind === "attachment" || menuCard.kind === "quick-note") && (
+                  <>
+                    <div className="my-1 h-px bg-black/10 dark:bg-white/10" />
+                    <button
+                      type="button"
+                      disabled={isCardActionBusy}
+                      onClick={() => {
+                        // Anchor the composer to the card itself rather
+                        // than this menu item — the menu is closing as
+                        // we click, so its rect would jump. The card
+                        // wrapper carries `data-vault-card-id` and is
+                        // always present in the DOM while the card is
+                        // visible.
+                        const anchor =
+                          document.querySelector(`[data-vault-card-id="${menuCard.id}"]`) ||
+                          cardMenuRef.current;
+                        openAttachmentNotesForAnchor(menuCard.id, anchor);
+                        setOpenCardMenuId(null);
+                      }}
+                      className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 dark:hover:bg-white/5 disabled:opacity-60 flex items-center gap-2"
+                    >
+                      <MessageSquare className="w-3.5 h-3.5" />
+                      Comment
+                    </button>
+                  </>
+                )}
+                {menuCard.noteId && (
+                  <>
+                    <div className="my-1 h-px bg-black/10 dark:bg-white/10" />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const rect = openCardMenuRect;
+                        setTagPickerCardId(menuCard.id);
+                        setTagPickerPosition({ left: rect.left, top: rect.bottom + 8 });
+                        setOpenCardMenuId(null);
+                      }}
+                      className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 dark:hover:bg-white/5 flex items-center gap-2"
+                    >
+                      <Tag className="w-3.5 h-3.5" />
+                      Tags
+                    </button>
+                  </>
+                )}
+              </div>
+              <div className="shrink-0 pt-1 mt-1 border-t border-black/10 dark:border-white/10">
+                <button
+                  type="button"
+                  disabled={isCardActionBusy}
+                  onClick={() => {
+                    if (menuCard.kind === "attachment") {
+                      confirmAndDeleteAttachment(menuCard);
+                    } else {
+                      const ok = window.confirm(`Are you sure you want to delete "${menuCard.title || "Quick Note"}"? This cannot be undone.`);
+                      if (!ok) return;
+                      void removeQuickNoteCard(menuCard);
+                    }
+                  }}
+                  className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 dark:hover:bg-white/5 disabled:opacity-60 flex items-center gap-2 text-red-600"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  Delete
+                </button>
+              </div>
             </div>
           );
         })(),
