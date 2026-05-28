@@ -174,6 +174,41 @@ export const writePrototypeGridChatSession = (
   }
 };
 
+const LEGACY_GUEST_APP_CHAT_SS_KEY = "lykn_guest_chat_v1";
+
+/** One session store for `/app` + First Conversation grid (walkthrough guests). */
+export const readGuestPreviewChatSession = (): PrototypeGridChatSession | null => {
+  const current = readPrototypeGridChatSession();
+  if (current) return current;
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(LEGACY_GUEST_APP_CHAT_SS_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed?.chatMessages) || parsed.chatMessages.length === 0) {
+      return null;
+    }
+    const migrated: PrototypeGridChatSession = {
+      chatMessages: parsed.chatMessages,
+      aiThread: Array.isArray(parsed?.aiThread) ? parsed.aiThread : [],
+    };
+    writePrototypeGridChatSession(migrated.chatMessages, migrated.aiThread);
+    window.sessionStorage.removeItem(LEGACY_GUEST_APP_CHAT_SS_KEY);
+    syncPrototypeChatFromPromptMessages(migrated.chatMessages);
+    return migrated;
+  } catch {
+    return null;
+  }
+};
+
+export const writeGuestPreviewChatSession = (
+  chatMessages: PromptMessageLike[],
+  aiThread: AiThreadTurn[],
+): void => {
+  writePrototypeGridChatSession(chatMessages, aiThread);
+  syncPrototypeChatFromPromptMessages(chatMessages);
+};
+
 /** Keep localStorage transcript in sync for synthesis-layer / sidebar reload. */
 export const syncPrototypeChatFromPromptMessages = (
   messages: PromptMessageLike[],
@@ -225,6 +260,10 @@ export const readPrototypeChat = (): PrototypeChatTurn[] => {
 export const hasPrototypeNeurons = (): boolean => {
   return readPrototypeNeurons().length > 0;
 };
+
+/** Guest has the single preview chat (landing + walkthrough handoff). */
+export const hasGuestFirstConversation = (): boolean =>
+  hasPrototypeNeurons() || readPrototypeChat().length > 0;
 
 /* ------------------------------------------------------------------ */
 /*  Synthesis-layer tour mode                                          */
@@ -389,6 +428,9 @@ export const writePrototypeStep = (step: PrototypeStep | null): void => {
   } catch {
     // ignore quota / private-mode errors
   }
+  if (step === "done") {
+    resetGuestChatCount();
+  }
   // Walkthrough → default model coupling. Keep LYKN selected throughout
   // the guided tour; each transition only fires once because
   // writePrototypeStep guards against same-step writes upstream.
@@ -441,21 +483,30 @@ const applyWalkthroughDefaultModel = (step: PrototypeStep | null): void => {
 /* ------------------------------------------------------------------ */
 /*  Guest chat session cap                                              */
 /*                                                                      */
-/*  Hard ceiling on the number of LLM calls a guest can make from a    */
-/*  single browser session. Server-side per-IP limits already apply,   */
-/*  but a session-scoped client check makes the abuse path obvious to  */
-/*  the user (clear in-chat sign-in nudge) and stops us from even      */
-/*  hitting the network past the cap. Bypassable by clearing storage   */
-/*  or using a private window — that's fine, the server limits catch   */
-/*  those cases. Defense in depth.                                     */
+/*  Landing-prototype onboarding chat is unlimited — it must not share  */
+/*  a counter with post-tour First Conversation or visitors hit the     */
+/*  wall after a couple of landing turns.                               */
+/*                                                                      */
+/*  Walkthrough guests get POST_TOUR_GUEST_CHAT_CAP (10) sends only    */
+/*  after step === "done" (Finish on the /app intro card).             */
 /* ------------------------------------------------------------------ */
 export const GUEST_CHAT_SESSION_CAP = 10;
-export const GUEST_CHAT_SESSION_COUNT_KEY = "lykn_guest_chat_session_count";
+const LEGACY_GUEST_CHAT_SESSION_COUNT_KEY = "lykn_guest_chat_session_count";
+export const POST_TOUR_GUEST_CHAT_COUNT_KEY = "lykn_post_tour_guest_chat_count";
+
+/** Count only post-tour / First Conversation sends toward the 10 cap. */
+export const shouldApplyPostTourGuestCap = (): boolean => {
+  if (typeof window === "undefined") return true;
+  if (hasGuestFirstConversation()) {
+    return isPrototypeWalkthroughComplete();
+  }
+  return true;
+};
 
 export const readGuestChatCount = (): number => {
   if (typeof window === "undefined") return 0;
   try {
-    const raw = window.sessionStorage.getItem(GUEST_CHAT_SESSION_COUNT_KEY);
+    const raw = window.sessionStorage.getItem(POST_TOUR_GUEST_CHAT_COUNT_KEY);
     const n = parseInt(raw || "0", 10);
     return Number.isFinite(n) && n >= 0 ? n : 0;
   } catch {
@@ -465,17 +516,31 @@ export const readGuestChatCount = (): number => {
 
 export const incrementGuestChatCount = (): number => {
   if (typeof window === "undefined") return 0;
+  if (!shouldApplyPostTourGuestCap()) return readGuestChatCount();
   const next = readGuestChatCount() + 1;
   try {
-    window.sessionStorage.setItem(GUEST_CHAT_SESSION_COUNT_KEY, String(next));
+    window.sessionStorage.setItem(POST_TOUR_GUEST_CHAT_COUNT_KEY, String(next));
   } catch {
     // ignore (private mode, quota, etc.)
   }
   return next;
 };
 
-export const guestChatCapReached = (): boolean =>
-  readGuestChatCount() >= GUEST_CHAT_SESSION_CAP;
+/** Fresh 10-message allowance when the walkthrough chat beat finishes. */
+export const resetGuestChatCount = (): void => {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.removeItem(POST_TOUR_GUEST_CHAT_COUNT_KEY);
+    window.sessionStorage.removeItem(LEGACY_GUEST_CHAT_SESSION_COUNT_KEY);
+  } catch {
+    // ignore
+  }
+};
+
+export const guestChatCapReached = (): boolean => {
+  if (!shouldApplyPostTourGuestCap()) return false;
+  return readGuestChatCount() >= GUEST_CHAT_SESSION_CAP;
+};
 
 /* ------------------------------------------------------------------ */
 /*  Walkthrough reset                                                   */
@@ -501,7 +566,8 @@ export const clearPrototypeState = (): void => {
   try {
     window.sessionStorage.removeItem(PROTO_VAULT_INTRO_SS_KEY);
     window.sessionStorage.removeItem(PROTO_GRID_INTRO_SS_KEY);
-    window.sessionStorage.removeItem(GUEST_CHAT_SESSION_COUNT_KEY);
+    window.sessionStorage.removeItem(POST_TOUR_GUEST_CHAT_COUNT_KEY);
+    window.sessionStorage.removeItem(LEGACY_GUEST_CHAT_SESSION_COUNT_KEY);
     window.sessionStorage.removeItem("lykn_guest_chat_board_id");
     window.sessionStorage.removeItem("lykn_guest_chat_v1");
     window.sessionStorage.removeItem(PROTOTYPE_GRID_CHAT_SS_KEY);
@@ -526,8 +592,21 @@ export const clearPrototypeState = (): void => {
 // real grid in the app instead of a custom one-off page.
 export const PROTOTYPE_FIRST_CHAT_BOARD_ID = "__prototype_first_chat__";
 
+export const guestFirstConversationPath = (): string =>
+  `/grid/${PROTOTYPE_FIRST_CHAT_BOARD_ID}`;
+
 export const isPrototypeFirstChatBoardId = (id: unknown): boolean =>
   typeof id === "string" && id === PROTOTYPE_FIRST_CHAT_BOARD_ID;
+
+/** True when the visitor is on their one allowed preview chat surface. */
+export const isGuestPreviewChatRoute = (
+  pathname: string,
+  boardId: string | undefined | null,
+): boolean => {
+  if (!hasGuestFirstConversation()) return false;
+  if (isPrototypeFirstChatBoardId(boardId)) return true;
+  return pathname === "/app" || pathname === "/dashboard" || pathname === "/omnia";
+};
 
 interface PromptMessageLike {
   id: string;

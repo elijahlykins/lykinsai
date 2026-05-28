@@ -17,6 +17,11 @@ import { fetchBoardsWithContext, invalidateBoardListQueries, mergeActiveRouteBoa
 import { useAuth } from "@/lib/SupabaseAuth";
 import { isDemoGridId } from "@/lib/demoGrids";
 import { requestGuestSignIn } from "@/lib/guestChatLimits";
+import {
+  guestFirstConversationPath,
+  hasGuestFirstConversation,
+  isGuestPreviewChatRoute,
+} from "@/lib/prototypeHandoff";
 
 const flushAndNavigate = (nav, path) => {
   window.dispatchEvent(new Event("omnia_flush_save"));
@@ -68,14 +73,14 @@ export default function MobileFocusedChatGrids() {
   }, [open]);
 
   const list = useMemo(() => {
+    if (!user && hasGuestFirstConversation()) {
+      return [{ id: "__prototype_first_chat__", title: "First Conversation", updated_at: null }];
+    }
     if (!user) {
-      const activeId = routeBoardId || "app";
-      const title =
-        location.pathname === "/app" || !routeBoardId ? "Your preview chat" : "Your chat";
-      return [{ id: activeId, title, updated_at: null }];
+      return [];
     }
     return mergeActiveRouteBoard(boards, location.pathname);
-  }, [user, boards, location.pathname, routeBoardId]);
+  }, [user, boards, location.pathname]);
 
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase();
@@ -86,15 +91,14 @@ export default function MobileFocusedChatGrids() {
   const goToGrid = (id) => {
     setOpen(false);
     if (!user) {
-      const activeId = routeBoardId || "app";
-      if (String(id) !== String(activeId)) {
+      if (!hasGuestFirstConversation()) {
         requestGuestSignIn("second_chat");
         return;
       }
-    }
-    if (id === "app") {
-      if (location.pathname === "/app") return;
-      flushAndNavigate(nav, "/app");
+      const target = guestFirstConversationPath();
+      if (!isGuestPreviewChatRoute(location.pathname, routeBoardId)) {
+        flushAndNavigate(nav, target);
+      }
       return;
     }
     if (location.pathname === `/grid/${id}`) return;
@@ -237,9 +241,9 @@ export default function MobileFocusedChatGrids() {
             </div>
 
             <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-3">
-              {!user ? (
+              {!user && hasGuestFirstConversation() ? (
                 <div className="px-3 pt-1 pb-2 text-[0.75rem] text-black/55 dark:text-white/55">
-                  One free preview chat per visit. Sign in to save work and start more chats.
+                  One free preview chat — First Conversation. Sign in to start more.
                 </div>
               ) : null}
               {filtered.length === 0 ? (

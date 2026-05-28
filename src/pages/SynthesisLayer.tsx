@@ -4716,7 +4716,8 @@ export default function SynthesisLayer() {
   // button fades in.
   const [tourTypedText, setTourTypedText] = useState("");
   const [tourTypedDone, setTourTypedDone] = useState(false);
-  const typewriterIntervalRef = useRef<number | null>(null);
+  const tourTypingTimerRef = useRef<number | null>(null);
+  const tourTypingCancelRef = useRef(false);
   // Consume the localStorage tour flag on first mount: clearing it here
   // means a mid-tour browser refresh doesn't replay the welcome card,
   // while the in-memory `tourMode` keeps the "+" button hint alive until
@@ -4768,35 +4769,46 @@ export default function SynthesisLayer() {
     };
   }, [tourMode]);
 
-  // Type out the welcome text in the left-side card, character by
-  // character. Starts after a short delay so it doesn't begin while the
-  // boot route transition is still in flight. ~22ms per character feels
-  // like LYKN is "thinking and writing" without dragging out the read.
+  // Type out the welcome text word-by-word — same cadence as the Vault,
+  // Connections, and /app chat intro cards (28ms/word, 1100ms lead-in).
   useEffect(() => {
     if (!tourWelcomeOpen) return;
     setTourTypedText("");
     setTourTypedDone(false);
+    tourTypingCancelRef.current = false;
     let cancelled = false;
-    let i = 0;
-    const startTimer = window.setTimeout(() => {
-      const id = window.setInterval(() => {
+
+    const startTypingTimer = window.setTimeout(() => {
+      if (cancelled) return;
+      const words = TOUR_WELCOME_TEXT.split(" ").filter(Boolean);
+      let i = 0;
+      let current = "";
+      const tick = () => {
         if (cancelled) return;
+        if (tourTypingCancelRef.current) {
+          setTourTypedText(TOUR_WELCOME_TEXT);
+          setTourTypedDone(true);
+          return;
+        }
+        current += (i === 0 ? "" : " ") + words[i];
         i += 1;
-        setTourTypedText(TOUR_WELCOME_TEXT.slice(0, i));
-        if (i >= TOUR_WELCOME_TEXT.length) {
-          window.clearInterval(id);
+        setTourTypedText(current);
+        if (i < words.length) {
+          tourTypingTimerRef.current = window.setTimeout(tick, 28);
+        } else {
+          tourTypingTimerRef.current = null;
           setTourTypedDone(true);
         }
-      }, 22);
-      // Stash so the cleanup can clear an in-flight interval.
-      typewriterIntervalRef.current = id;
-    }, 350);
+      };
+      tick();
+    }, 1100);
+
     return () => {
       cancelled = true;
-      window.clearTimeout(startTimer);
-      if (typewriterIntervalRef.current) {
-        window.clearInterval(typewriterIntervalRef.current);
-        typewriterIntervalRef.current = null;
+      window.clearTimeout(startTypingTimer);
+      if (tourTypingTimerRef.current) {
+        window.clearTimeout(tourTypingTimerRef.current);
+        tourTypingTimerRef.current = null;
       }
     };
   }, [tourWelcomeOpen]);
@@ -7572,6 +7584,11 @@ export default function SynthesisLayer() {
                     <button
                       type="button"
                       onClick={() => {
+                        tourTypingCancelRef.current = true;
+                        if (tourTypingTimerRef.current) {
+                          window.clearTimeout(tourTypingTimerRef.current);
+                          tourTypingTimerRef.current = null;
+                        }
                         setTourWelcomeOpen(false);
                         if (tourMode) {
                           setTourMode(false);

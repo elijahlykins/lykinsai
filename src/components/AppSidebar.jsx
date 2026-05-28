@@ -24,7 +24,10 @@ import { fetchBoardsWithContext, invalidateBoardListQueries, mergeActiveRouteBoa
 import { useAuth } from "@/lib/SupabaseAuth";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  guestFirstConversationPath,
+  hasGuestFirstConversation,
   hasPrototypeNeurons,
+  isGuestPreviewChatRoute,
   PROTOTYPE_STEP_EVENT,
   readPrototypeStep,
 } from "@/lib/prototypeHandoff";
@@ -42,7 +45,8 @@ export default function AppSidebar({
   // Prototype-handoff "preview" mode: when a guest came from the landing
   // prototype with at least one neuron in localStorage, suppress the demo
   // grid list so the sidebar reads as a brand-new, empty workspace.
-  const isPrototypePreview = !user && hasPrototypeNeurons();
+  const isPrototypePreview = !user && hasGuestFirstConversation();
+  const firstConversationPath = guestFirstConversationPath();
 
   // Walkthrough step (read from localStorage). Drives the auto-mounted
   // sidebar's nudges on /synthesis-layer and beyond — e.g. opens itself
@@ -72,6 +76,12 @@ export default function AppSidebar({
   const effectiveHighlightSynthesis = highlightSynthesis || (walkActive && walkStep === "synthesis");
   const effectiveHighlightVault = walkActive && walkStep === "vault";
   const effectiveHighlightGrid = walkActive && walkStep === "grid";
+  // Tour ends on `/app`; after Finish both `/app` and First Conversation
+  // are the same chat. While step is "grid", sidebar lock keeps `/app`.
+  const guestChatPath =
+    isPrototypePreview && !(walkActive && walkStep === "grid")
+      ? firstConversationPath
+      : "/app";
   // Centralized navigation lock: during a walkthrough step only the
   // highlighted destination (Synthesis Layer, Connections, or Chat) is
   // clickable. The "vault" / "grid" step names are storage-only labels
@@ -291,7 +301,7 @@ export default function AppSidebar({
           <div className="mt-1.5 flex flex-col gap-0.5">
             <button
               type="button"
-              onClick={() => goTo("/app")}
+              onClick={() => goTo(guestChatPath)}
               className={`w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2 ${
                 effectiveHighlightGrid ? "lykn-sidebar-grid-glow" : ""
               }`}
@@ -371,7 +381,7 @@ export default function AppSidebar({
           </div>
           <div className="flex-1 min-h-0 overflow-y-auto scrollbar-hide">
             <div className="flex flex-col gap-0.5">
-              {!user && !isPrototypePreview ? (
+              {!user && !hasGuestFirstConversation() ? (
                 // Signed-out, no walkthrough yet: show nothing. We used to
                 // render `DEMO_GRID_LIST` (3 prebuilt demo boards) here so
                 // the sidebar wasn't empty, but that surfaced fake content
@@ -379,15 +389,18 @@ export default function AppSidebar({
                 // anyone trying out LYKN cold. Now signed-out users only
                 // ever see what THEY create through the walkthrough.
                 <div className="text-[0.6875rem] text-black/40 dark:text-white/40 px-2.5 py-1">No chats yet</div>
-              ) : !user && isPrototypePreview ? (
-                // Prototype-handoff preview: the user has exactly one
-                // "grid" — the saved transcript of their first chat
-                // with LYKN. Surfaces it in the sidebar so it's a real
-                // navigable artifact, not just a node in the synthesis
-                // layer they happened to see once.
+              ) : !user && hasGuestFirstConversation() ? (
+                // Walkthrough / landing handoff: exactly one chat —
+                // "First Conversation" — shared between `/app` (tour end)
+                // and the synthetic grid route.
                 (() => {
-                  const path = "/grid/__prototype_first_chat__";
-                  const isActive = location.pathname === path;
+                  const path = firstConversationPath;
+                  const isActive = isGuestPreviewChatRoute(
+                    location.pathname,
+                    location.pathname.startsWith("/grid/")
+                      ? location.pathname.split("/grid/")[1]
+                      : null,
+                  );
                   return (
                     <div className="group relative flex items-center">
                       <button

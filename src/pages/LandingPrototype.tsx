@@ -4,11 +4,7 @@ import { API_BASE_URL } from "@/lib/api-config";
 import AppSidebar from "@/components/AppSidebar";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/lib/SupabaseAuth";
-import { requestGuestSignIn } from "@/lib/guestChatLimits";
 import {
-  GUEST_CHAT_SESSION_CAP,
-  guestChatCapReached,
-  incrementGuestChatCount,
   PROTO_GRID_INTRO_SS_KEY,
   PROTO_VAULT_INTRO_SS_KEY,
   PROTOTYPE_CHAT_LS_KEY,
@@ -518,25 +514,8 @@ const LandingPrototype = () => {
       setQuestionStarted(true);
     }
 
-    // Session-scoped guest cap. Server enforces per-IP / per-day too,
-    // but stopping here keeps the UI honest and saves an LLM call.
-    if (guestChatCapReached()) {
-      requestGuestSignIn("chat");
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: msgId,
-          content: text,
-          aiResponse:
-            `You've hit the free preview limit (${GUEST_CHAT_SESSION_CAP} messages). ` +
-            "Sign in (it's free) to keep chatting and save what you've made.",
-          aiStreamComplete: true,
-        },
-      ]);
-      setDraft("");
-      return;
-    }
-    incrementGuestChatCount();
+    // Landing onboarding chat is uncapped — the 10-message limit applies
+    // only after the walkthrough finishes (First Conversation / /app).
 
     // Build conversational history so Gemini sees the full thread, not just
     // the latest message in isolation. We use the visible (tag-stripped)

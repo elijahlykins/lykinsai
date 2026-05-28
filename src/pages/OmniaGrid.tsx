@@ -1,8 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import {
+  buildPrototypeFirstChatSnapshot,
+  hasGuestFirstConversation,
   hasPrototypeNeurons,
   isPrototypeWalkthroughComplete,
+  readGuestPreviewChatSession,
+  writeGuestPreviewChatSession,
   PROTO_GRID_INTRO_SS_KEY,
   PROTOTYPE_STEP_EVENT,
   readPrototypeStep,
@@ -64,6 +68,7 @@ import { fetchMostRecentBoard } from "@/lib/board/fetchBoardsWithContext";
 import { useChatEngine } from "@/hooks/useChatEngine";
 import {
   guestChatCapReached,
+  guestPreviewRedirectPath,
   isGuestAllowedBoardRoute,
   requestGuestSignIn,
 } from "@/lib/guestChatLimits";
@@ -1053,59 +1058,89 @@ export default function OmniaGridPage() {
   // shadowing them.
   const GUEST_CHAT_SS_KEY = "lykn_guest_chat_v1";
   const guestChatPersistTimerRef = useRef<number | null>(null);
+  const guestUsesFirstConversation = !user?.id && hasGuestFirstConversation();
 
-  // Restore guest `/app` chat whenever the visitor returns to the
-  // boardless chat surface (e.g. synthesis layer → Chat). Re-run on
-  // every `/app` entry — not a one-shot — so navigation away and back
-  // does not wipe the in-tab preview transcript.
+  // Restore the single preview chat (walkthrough: `/app` + First Conversation
+  // grid share one session store). Re-run whenever the visitor returns so
+  // leaving for synthesis/connections and coming back does not reset.
   useEffect(() => {
     if (user?.id) return;
-    if (routeBoardId) return;
-    try {
-      const raw = sessionStorage.getItem(GUEST_CHAT_SS_KEY);
-      if (!raw) return;
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed?.chatMessages) && parsed.chatMessages.length > 0) {
-        setChatMessages(parsed.chatMessages);
-        chatMessagesRef.current = parsed.chatMessages;
-        setChatRailOpen(true);
-        setChatRailVisible(true);
-        if (Array.isArray(parsed?.aiThread) && parsed.aiThread.length > 0) {
-          aiThreadRef.current = parsed.aiThread;
-        }
-      }
-    } catch {
-      // corrupt sessionStorage / private mode — fall back to empty.
+    if (guestUsesFirstConversation) {
+      if (routeBoardId && !isGuestAllowedBoardRoute(routeBoardId)) return;
+    } else if (routeBoardId) {
+      return;
     }
-  }, [user?.id, routeBoardId]);
+    const session = guestUsesFirstConversation
+      ? readGuestPreviewChatSession()
+      : (() => {
+          try {
+            const raw = sessionStorage.getItem(GUEST_CHAT_SS_KEY);
+            if (!raw) return null;
+            const parsed = JSON.parse(raw);
+            if (!Array.isArray(parsed?.chatMessages) || parsed.chatMessages.length === 0) {
+              return null;
+            }
+            return {
+              chatMessages: parsed.chatMessages,
+              aiThread: Array.isArray(parsed?.aiThread) ? parsed.aiThread : [],
+            };
+          } catch {
+            return null;
+          }
+        })();
+    let messages = session?.chatMessages;
+    let thread = session?.aiThread;
+    if (!messages?.length && guestUsesFirstConversation) {
+      const snap = buildPrototypeFirstChatSnapshot();
+      if (snap.chatMessages?.length) {
+        messages = snap.chatMessages;
+        thread = snap.aiThread;
+      }
+    }
+    if (!messages?.length) return;
+    setChatMessages(messages);
+    chatMessagesRef.current = messages;
+    setChatRailOpen(true);
+    setChatRailVisible(true);
+    if (thread?.length) {
+      aiThreadRef.current = thread;
+    }
+  }, [user?.id, routeBoardId, guestUsesFirstConversation]);
 
-  // Persist on every chat change. Debounced by 600ms so AI token
-  // streaming doesn't hammer sessionStorage on every progressive
-  // update — the chat surface mutates `chatMessages` per token while
-  // a reply streams in.
+  // Persist preview chat (debounced — streaming updates chatMessages often).
   useEffect(() => {
     if (user?.id) return;
-    if (routeBoardId) return;
+    if (guestUsesFirstConversation) {
+      if (routeBoardId && !isGuestAllowedBoardRoute(routeBoardId)) return;
+    } else if (routeBoardId) {
+      return;
+    }
     if (guestChatPersistTimerRef.current != null) {
       window.clearTimeout(guestChatPersistTimerRef.current);
     }
     guestChatPersistTimerRef.current = window.setTimeout(() => {
       try {
         if (chatMessages.length === 0) {
-          sessionStorage.removeItem(GUEST_CHAT_SS_KEY);
+          if (guestUsesFirstConversation) {
+            writeGuestPreviewChatSession([], []);
+          } else {
+            sessionStorage.removeItem(GUEST_CHAT_SS_KEY);
+          }
           return;
         }
-        sessionStorage.setItem(
-          GUEST_CHAT_SS_KEY,
-          JSON.stringify({
-            chatMessages,
-            aiThread: aiThreadRef.current || [],
-          }),
-        );
+        if (guestUsesFirstConversation) {
+          writeGuestPreviewChatSession(chatMessages, aiThreadRef.current || []);
+        } else {
+          sessionStorage.setItem(
+            GUEST_CHAT_SS_KEY,
+            JSON.stringify({
+              chatMessages,
+              aiThread: aiThreadRef.current || [],
+            }),
+          );
+        }
       } catch {
-        // quota / private mode — surfacing this would be louder than
-        // the broken promise of in-memory chat persistence we'd be
-        // covering.
+        // quota / private mode
       }
     }, 600);
     return () => {
@@ -1113,20 +1148,7 @@ export default function OmniaGridPage() {
         window.clearTimeout(guestChatPersistTimerRef.current);
       }
     };
-  }, [user?.id, routeBoardId, chatMessages]);
-
-  // Clear the guest copy the moment the visitor signs in. Their
-  // real chats live in Supabase + the existing localStorage cache,
-  // and the now-stale guest snapshot would otherwise sit around
-  // until the tab closes.
-  useEffect(() => {
-    if (!user?.id) return;
-    try {
-      sessionStorage.removeItem(GUEST_CHAT_SS_KEY);
-    } catch {
-      // ignore
-    }
-  }, [user?.id]);
+  }, [user?.id, routeBoardId, guestUsesFirstConversation, chatMessages]);
 
   // Guests get one preview chat: block extra `/grid/:id` URLs (new-chat
   // links, bookmarks, demo hops) and surface the sign-in wall.
@@ -1135,7 +1157,7 @@ export default function OmniaGridPage() {
     if (!routeBoardId) return;
     if (isGuestAllowedBoardRoute(routeBoardId)) return;
     requestGuestSignIn("second_chat");
-    nav("/app", { replace: true });
+    nav(guestPreviewRedirectPath(), { replace: true });
   }, [user?.id, routeBoardId, nav]);
 
   // --------------------------------------------------------------------
@@ -2510,25 +2532,15 @@ export default function OmniaGridPage() {
   }, [user?.id, routeBoardId, boardId, requireSignIn]);
 
 
-  // Gate the underlying chat-send for guests once the prototype tour
-  // has surfaced the sign-in wall. Any further send attempt re-opens
-  // the wall instead of firing another LLM call. This pairs with the
-  // canvas mousedown trap above so neither click-to-create nor the
-  // chat input can be used to keep poking around the grid for free.
+  // Guest preview: only the 10-message session cap blocks sends (not the
+  // old post-tour sign-in wall — visitors chat normally after Finish).
   const gatedHandleChatSend = useCallback(async () => {
-    if (!user?.id) {
-      if (guestChatCapReached()) {
-        requestGuestSignIn("chat");
-        return;
-      }
-      if (prototypeSignInTriggered || prototypeSignInArmed) {
-        setPrototypeSignInOpen(true);
-        setPrototypeSignInTriggered(true);
-        return;
-      }
+    if (!user?.id && guestChatCapReached()) {
+      requestGuestSignIn("chat");
+      return;
     }
     await handleChatSend();
-  }, [user?.id, prototypeSignInTriggered, prototypeSignInArmed, handleChatSend]);
+  }, [user?.id, handleChatSend]);
 
   const handleCenterAskSend = useCallback(async () => {
     if (!chatInputRef.current.trim() || isChatLoading) return;
@@ -3556,20 +3568,6 @@ export default function OmniaGridPage() {
           style={{
             marginRight: isMobileGrid ? 0 : `${chatRailWidthPx + (showVaultSidebar ? vaultSidebarWidthPx : 0)}px`,
           }}
-          onMouseDownCapture={(e) => {
-            // Landing-prototype handoff (final beat): once the typed
-            // grid intro has finished, any click on the canvas surface
-            // is intercepted to surface the sign-in wall. We swallow
-            // the mousedown so no quick note, selection, or block
-            // creation slips through underneath. The wall is sticky —
-            // it stays armed for guests until they actually sign in.
-            if (prototypeSignInArmed && !user?.id) {
-              e.stopPropagation();
-              e.preventDefault();
-              setPrototypeSignInOpen(true);
-              setPrototypeSignInTriggered(true);
-            }
-          }}
         >
           <Canvas liveAIMode={false} isAiThinking={isChatLoading} thinkingStatusText={thinkingStatus} hidden={GRID_DISABLED || chatMode} />
         </div>
@@ -4041,7 +4039,6 @@ export default function OmniaGridPage() {
                     if (step === "synthesis" || step === "vault" || step === "grid") {
                       writePrototypeStep("done");
                     }
-                    setPrototypeSignInArmed(true);
                   }}
                   className="rounded-full bg-blue-500/20 hover:bg-blue-500/30 border border-blue-400/40 text-blue-100 hover:text-white px-3 py-1 text-[0.75rem] font-medium transition-colors"
                   aria-label="Finish walkthrough"

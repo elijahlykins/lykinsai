@@ -11,9 +11,12 @@ import { notifyBlocksCapIfApplicable } from "@/lib/board/blocksCapError";
 import { fetchMostRecentBoard } from "@/lib/board/fetchBoardsWithContext";
 import { isDemoGridId, getDemoGridSnapshot } from "@/lib/demoGrids";
 import {
+  hasGuestFirstConversation,
   isPrototypeFirstChatBoardId,
+  readGuestPreviewChatSession,
   readPrototypeGridChatSession,
   syncPrototypeChatFromPromptMessages,
+  writeGuestPreviewChatSession,
   writePrototypeGridChatSession,
 } from "@/lib/prototypeHandoff";
 
@@ -753,7 +756,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
         // "First Conversation" grid carries the saved transcript on its
         // snapshot, so hydrate it explicitly here.
         const sessionChat = isPrototypeFirstChatBoardId(routeBoardId)
-          ? readPrototypeGridChatSession()
+          ? readGuestPreviewChatSession()
           : null;
         const chatToHydrate =
           sessionChat?.chatMessages?.length
@@ -781,6 +784,9 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
     // user still gets an empty canvas they can play with after clicking
     // "Add New Grid" in the sidebar.
     if (!userId) {
+      if (routeBoardId && hasGuestFirstConversation() && !isPrototypeFirstChatBoardId(routeBoardId)) {
+        return () => { cancelled = true; };
+      }
       if (routeBoardId) {
         (async () => {
           hydratedRef.current = false;
@@ -1054,8 +1060,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
     if (!boardId || !isPrototypeFirstChatBoardId(boardId)) return;
     if (!hydratedRef.current) return;
     const timer = setTimeout(() => {
-      writePrototypeGridChatSession(chatMessages, aiThreadRef.current || []);
-      syncPrototypeChatFromPromptMessages(chatMessages);
+      writeGuestPreviewChatSession(chatMessages, aiThreadRef.current || []);
     }, 600);
     return () => clearTimeout(timer);
   }, [boardId, chatMessages]);

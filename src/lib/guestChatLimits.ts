@@ -1,7 +1,10 @@
 import {
   GUEST_CHAT_SESSION_CAP,
   guestChatCapReached,
+  guestFirstConversationPath,
+  hasGuestFirstConversation,
   isPrototypeFirstChatBoardId,
+  PROTOTYPE_FIRST_CHAT_BOARD_ID,
 } from "@/lib/prototypeHandoff";
 
 export { GUEST_CHAT_SESSION_CAP, guestChatCapReached };
@@ -36,6 +39,9 @@ export function guestSubtitleForReason(reason: GuestSignInReason): string {
 
 /** Stable id for the single guest preview chat (stored per browser tab). */
 export function getOrCreateGuestChatBoardId(): string {
+  if (hasGuestFirstConversation()) {
+    return PROTOTYPE_FIRST_CHAT_BOARD_ID;
+  }
   if (typeof window === "undefined") {
     return "__guest_preview__";
   }
@@ -55,11 +61,19 @@ export function getOrCreateGuestChatBoardId(): string {
   }
 }
 
-/** Guests may only use `/app` or their one preview board (plus walkthrough demo). */
+/** Guests may only use `/app` or First Conversation (one chat total). */
 export function isGuestAllowedBoardRoute(boardId: string | undefined | null): boolean {
   if (!boardId) return true;
+  if (hasGuestFirstConversation()) {
+    return isPrototypeFirstChatBoardId(boardId);
+  }
   if (isPrototypeFirstChatBoardId(boardId)) return true;
   return boardId === getOrCreateGuestChatBoardId();
+}
+
+export function guestPreviewRedirectPath(): string {
+  if (hasGuestFirstConversation()) return guestFirstConversationPath();
+  return "/app";
 }
 
 export function clearGuestChatLimitState(): void {
