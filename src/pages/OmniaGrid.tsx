@@ -56,7 +56,6 @@ import OmniaVaultOverlay from "@/components/omnia/OmniaVaultOverlay";
 import FileDropModeDialog from "@/components/omnia/FileDropModeDialog";
 import OmniaSideRail from "@/components/omnia/OmniaSideRail";
 import OmniaFocusedChat from "@/components/omnia/OmniaFocusedChat";
-import VaultAppDock from "@/components/connections/VaultAppDock";
 import LoadInBriefingPanel from "@/components/omnia/LoadInBriefingPanel";
 import MobileFocusedChatGrids from "@/components/omnia/MobileFocusedChatGrids";
 import GridShareDialog from "@/components/omnia/GridShareDialog";
@@ -3750,17 +3749,6 @@ export default function OmniaGridPage() {
           onRegenerateNonUser={handleFocusedChatRegenerateNonUser}
           onLoadInGreetingRefresh={refreshLoadInGreetingInPlace}
         />
-      )}
-
-      {/* Vertical app launcher on the left edge of the chat surface.
-          Same connected-apps dock that sits at the bottom of the Vault,
-          flipped to a stacked column so it lives alongside the chat
-          column without crowding it. Desktop-only — the phone layout
-          already uses every pixel of horizontal space for the chat
-          bubbles, and the bottom tab bar covers the launcher's job
-          there. */}
-      {chatMode && !isMobilePhone && !isMobileGrid && (
-        <VaultAppDock user={user} orientation="vertical" />
       )}
 
       {/* Floating load-in briefing panel — anchored to the far right

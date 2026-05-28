@@ -544,24 +544,6 @@ export default function SettingsModal({ isOpen, onClose }) {
       <SubViewHeader title="Display" onBack={() => setView('menu')} />
       <div className="space-y-4">
         <div className="space-y-2">
-          <Label className="text-xs text-gray-600 dark:text-gray-400">Theme</Label>
-          <div className="flex flex-col rounded-lg border border-gray-200 dark:border-gray-700/60 overflow-hidden">
-            <div className="flex items-center justify-between px-3 py-2.5 text-sm text-black dark:text-white bg-black/[0.02] dark:bg-white/[0.03]">
-              <span>Dark</span>
-              <span className="text-[10px] uppercase tracking-wider text-blue-600 dark:text-blue-400 bg-blue-100/60 dark:bg-blue-950/30 px-1.5 py-0.5 rounded-full">
-                Active
-              </span>
-            </div>
-            <div className="flex items-center justify-between px-3 py-2.5 text-sm text-gray-500 dark:text-gray-400 border-t border-gray-200 dark:border-gray-700/60">
-              <span>Light</span>
-              <span className="text-[10px] uppercase tracking-wider text-amber-600 dark:text-amber-400 bg-amber-100/60 dark:bg-amber-950/30 px-1.5 py-0.5 rounded-full">
-                Soon
-              </span>
-            </div>
-          </div>
-        </div>
-
-        <div className="space-y-2">
           <Label className="text-xs text-gray-600 dark:text-gray-400 flex items-center gap-1.5">
             <Sparkles className="w-3 h-3" />
             Default AI model
