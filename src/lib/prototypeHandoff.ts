@@ -355,6 +355,18 @@ export const isWalkthroughLockActive = (
 export const isPrototypeWalkthroughComplete = (): boolean =>
   readPrototypeStep() === "done";
 
+/**
+ * End the linear guest walkthrough when the visitor signs in mid-tour.
+ * Marks step "done" (unlocks AppShell chrome + vault/connections toggles)
+ * without wiping prototype neurons/chat — those still sync after signup.
+ */
+export const releaseWalkthroughOnSignIn = (): void => {
+  const step = readPrototypeStep();
+  if (step === "synthesis" || step === "vault" || step === "grid") {
+    writePrototypeStep("done");
+  }
+};
+
 // Post-signup "Connect your AI tools" (/onboarding/connect). Separate from
 // the guest walkthrough step — once the user clicks Done or Skip we stop
 // re-routing fresh accounts back through GuestOnly / Login.

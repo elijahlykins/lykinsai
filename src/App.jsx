@@ -332,7 +332,9 @@ function AppShell() {
         <div className="fixed left-4 top-4 z-[9995] flex items-center gap-3 pointer-events-auto">
           <button
             type="button"
-            onClick={() => signInWithOAuth("google")}
+            onClick={() =>
+              signInWithOAuth("google", { redirectTo: window.location.href })
+            }
             className="flex items-center gap-1.5 rounded-full bg-white/45 dark:bg-[rgba(60,60,60,0.14)] backdrop-blur-sm border border-black/6 dark:border-white/10 pl-1 pr-3 py-1 text-[0.6875rem] text-black/70 dark:text-white/70 hover:bg-white/60 dark:hover:bg-white/15 shadow-sm transition-colors"
             title="Sign in"
             aria-label="Sign in"

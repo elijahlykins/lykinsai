@@ -1,6 +1,6 @@
 import { useContext, useEffect, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
-import { clearPrototypeState } from '@/lib/prototypeHandoff';
+import { clearPrototypeState, releaseWalkthroughOnSignIn } from '@/lib/prototypeHandoff';
 import { AuthContext } from '@/lib/authContext';
 
 export function SupabaseAuthProvider({ children }) {
@@ -9,6 +9,7 @@ export function SupabaseAuthProvider({ children }) {
   const [authError, setAuthError] = useState(null);
   const signOutTimerRef = useRef(null);
   const recoveryInFlightRef = useRef(false);
+  const userRef = useRef(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -50,8 +51,11 @@ export function SupabaseAuthProvider({ children }) {
         // With detectSessionInUrl:true the client will have already exchanged
         // any ?code= from an OAuth return, so the session is ready here.
         if (event === 'INITIAL_SESSION') {
-          setUser(session?.user ?? null);
+          const nextUser = session?.user ?? null;
+          userRef.current = nextUser;
+          setUser(nextUser);
           setLoading(false);
+          if (nextUser) releaseWalkthroughOnSignIn();
           return;
         }
 
@@ -60,7 +64,9 @@ export function SupabaseAuthProvider({ children }) {
             clearTimeout(signOutTimerRef.current);
             signOutTimerRef.current = null;
           }
+          userRef.current = session.user;
           setUser(session.user);
+          releaseWalkthroughOnSignIn();
           return;
         }
 
@@ -70,6 +76,7 @@ export function SupabaseAuthProvider({ children }) {
             clearTimeout(signOutTimerRef.current);
             signOutTimerRef.current = null;
           }
+          userRef.current = null;
           setUser(null);
           return;
         }
@@ -86,21 +93,32 @@ export function SupabaseAuthProvider({ children }) {
             const { data } = await supabase.auth.getSession();
             if (!isMounted) return;
             if (data?.session?.user) {
+              userRef.current = data.session.user;
               setUser(data.session.user);
               return;
             }
           } catch { /* fall through to debounced sign-out */ }
           finally { recoveryInFlightRef.current = false; }
 
-          if (!signOutTimerRef.current) {
-            signOutTimerRef.current = setTimeout(() => {
-              signOutTimerRef.current = null;
-              if (isMounted) setUser(null);
-            }, 1500);
+          // Only debounce-clear when we never had a signed-in user in
+          // this tab. A transient refresh failure while browsing
+          // /vault or /connections used to flip the UI back to guest +
+          // re-arm the walkthrough lock (sidebar chevron vanished).
+          if (!userRef.current) {
+            if (!signOutTimerRef.current) {
+              signOutTimerRef.current = setTimeout(() => {
+                signOutTimerRef.current = null;
+                if (isMounted) {
+                  userRef.current = null;
+                  setUser(null);
+                }
+              }, 1500);
+            }
           }
           return;
         }
 
+        userRef.current = null;
         setUser(null);
       }
     );
@@ -115,10 +133,14 @@ export function SupabaseAuthProvider({ children }) {
 
   const signInWithOAuth = async (provider, opts = {}) => {
     setAuthError(null);
-    // Default redirect is the app root; callers (e.g. the OAuth consent
-    // page) can override with `{ redirectTo: window.location.href }` to
-    // preserve their query string across the Supabase OAuth round-trip.
-    const redirectTo = opts.redirectTo || window.location.origin;
+    // Default redirect is the current URL so mid-walkthrough sign-in on
+    // /vault or /connections returns to the same surface instead of `/`
+    // (which used to bounce guests through GuestOnly → /app and strand
+    // them off the vault/connections beat they were on). Callers can
+    // still override — e.g. OAuth consent passes an explicit return URL.
+    const redirectTo =
+      opts.redirectTo ||
+      (typeof window !== 'undefined' ? window.location.href : window.location?.origin ?? '');
     const { data, error } = await supabase.auth.signInWithOAuth({
       provider,
       options: { redirectTo },
@@ -173,6 +195,7 @@ export function SupabaseAuthProvider({ children }) {
       clearTimeout(signOutTimerRef.current);
       signOutTimerRef.current = null;
     }
+    userRef.current = null;
     setUser(null);
 
     // Awaiting the supabase call ensures the auth tokens are cleared from
