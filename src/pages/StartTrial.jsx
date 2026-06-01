@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Navigate, useNavigate, useSearchParams } from "react-router-dom";
 import { loadStripe } from "@stripe/stripe-js";
 import { EmbeddedCheckout, EmbeddedCheckoutProvider } from "@stripe/react-stripe-js";
@@ -11,7 +11,7 @@ import { supabase } from "@/lib/supabase";
 import lyknLogo from "@/assets/FINAL/LYKN-LOGO-B-Open/PNGs/LYKN-Logo-Primary-B-Open-NEUTRAL-web.png";
 
 const NEW_USER_WINDOW_MS = 10 * 60 * 1000;
-const STRIPE_PUBLISHABLE_KEY = import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY || "";
+const BUILD_STRIPE_PUBLISHABLE_KEY = import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY || "";
 
 function isFreshlyCreatedUser(user) {
   if (!user?.created_at) return false;
@@ -33,7 +33,15 @@ async function fetchBillingMe() {
   return res.json();
 }
 
-async function startTrialCheckout() {
+async function fetchStripePublishableKey() {
+  if (BUILD_STRIPE_PUBLISHABLE_KEY) return BUILD_STRIPE_PUBLISHABLE_KEY;
+  const res = await fetch(`${API_BASE_URL}/api/billing/stripe-config`);
+  if (!res.ok) return null;
+  const json = await res.json().catch(() => ({}));
+  return json?.publishableKey || null;
+}
+
+async function startTrialCheckout(mode) {
   const headers = {
     "Content-Type": "application/json",
     ...(await authHeaders()),
@@ -41,6 +49,7 @@ async function startTrialCheckout() {
   const res = await fetch(`${API_BASE_URL}/api/billing/trial-checkout`, {
     method: "POST",
     headers,
+    body: JSON.stringify({ mode }),
   });
   const json = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -65,17 +74,18 @@ export default function StartTrial() {
   const checkoutResult = searchParams.get("checkout");
   const [phase, setPhase] = useState(() => {
     if (checkoutResult === "success") return "confirming";
+    if (checkoutResult === "canceled") return "error";
     return "starting";
   });
-  const [error, setError] = useState(null);
+  const [error, setError] = useState(() =>
+    checkoutResult === "canceled"
+      ? "Checkout was canceled. Try again when you are ready."
+      : null,
+  );
   const [trialDays, setTrialDays] = useState(7);
   const [clientSecret, setClientSecret] = useState(null);
+  const [stripePromise, setStripePromise] = useState(null);
   const startedRef = useRef(false);
-
-  const stripePromise = useMemo(
-    () => (STRIPE_PUBLISHABLE_KEY ? loadStripe(STRIPE_PUBLISHABLE_KEY) : null),
-    [],
-  );
 
   const pollUntilActive = useCallback(async () => {
     for (let i = 0; i < 20; i += 1) {
@@ -91,14 +101,6 @@ export default function StartTrial() {
     setPhase("starting");
     setClientSecret(null);
 
-    if (!stripePromise) {
-      setError(
-        "Checkout is not available right now. Please try again in a few minutes.",
-      );
-      setPhase("error");
-      return;
-    }
-
     try {
       const billing = await fetchBillingMe();
       if (typeof billing?.trial_days === "number") {
@@ -109,15 +111,27 @@ export default function StartTrial() {
         return;
       }
 
-      const payload = await startTrialCheckout();
-      if (!payload?.client_secret) {
-        throw new Error("Missing checkout session");
-      }
-      setClientSecret(payload.client_secret);
+      const publishableKey = await fetchStripePublishableKey();
+      const checkoutMode = publishableKey ? "embedded" : "hosted";
+      const payload = await startTrialCheckout(checkoutMode);
+
       if (typeof payload.trial_days === "number") {
         setTrialDays(payload.trial_days);
       }
-      setPhase("checkout");
+
+      if (checkoutMode === "embedded" && payload?.client_secret && publishableKey) {
+        setStripePromise(loadStripe(publishableKey));
+        setClientSecret(payload.client_secret);
+        setPhase("checkout");
+        return;
+      }
+
+      if (payload?.url) {
+        window.location.assign(payload.url);
+        return;
+      }
+
+      throw new Error("Missing checkout session");
     } catch (err) {
       if (err?.code === "already_subscribed") {
         navigate(postTrialDestination(user), { replace: true });
@@ -126,7 +140,7 @@ export default function StartTrial() {
       setError(toBillingCheckoutError(err));
       setPhase("error");
     }
-  }, [navigate, stripePromise, user]);
+  }, [navigate, user]);
 
   useEffect(() => {
     if (authLoading || !user) return;
@@ -163,6 +177,8 @@ export default function StartTrial() {
       })();
       return;
     }
+
+    if (checkoutResult === "canceled") return;
 
     if (startedRef.current) return;
     startedRef.current = true;

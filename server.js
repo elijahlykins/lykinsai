@@ -14985,6 +14985,23 @@ app.post('/api/billing/checkout', requireAuth, validate(billingCheckoutSchema), 
   }
 });
 
+function stripePublishableKey() {
+  return (
+    process.env.STRIPE_PUBLISHABLE_KEY ||
+    process.env.VITE_STRIPE_PUBLISHABLE_KEY ||
+    ''
+  ).trim();
+}
+
+// ── /api/billing/stripe-config (public publishable key for embedded checkout) ─
+app.get('/api/billing/stripe-config', (_req, res) => {
+  const publishableKey = stripePublishableKey();
+  if (!publishableKey) {
+    return res.status(503).json({ error: 'stripe_not_configured' });
+  }
+  return res.json({ publishableKey });
+});
+
 // ── /api/billing/trial-checkout (7-day Pro trial, card required) ────────────
 app.post('/api/billing/trial-checkout', requireAuth, async (req, res) => {
   try {
@@ -15005,7 +15022,7 @@ app.post('/api/billing/trial-checkout', requireAuth, async (req, res) => {
     const period = 'monthly';
     const priceId = STRIPE_PRICE_MAP[planId]?.[period];
     if (!priceId) {
-      return res.status(500).json({
+      return res.status(503).json({
         error: 'price_not_configured',
         message: `Missing env var for ${planId}/${period} price id`,
       });
@@ -15013,14 +15030,15 @@ app.post('/api/billing/trial-checkout', requireAuth, async (req, res) => {
 
     const customerId = await ensureStripeCustomer(user);
     const appUrl = appUrlFromReq(req);
+    const mode = String(req.body?.mode || 'embedded').toLowerCase() === 'hosted'
+      ? 'hosted'
+      : 'embedded';
 
-    const session = await stripe.checkout.sessions.create({
-      ui_mode: 'embedded',
+    const sessionParams = {
       mode: 'subscription',
       customer: customerId,
       line_items: [{ price: priceId, quantity: 1 }],
       payment_method_collection: 'always',
-      return_url: `${appUrl}/start-trial?checkout=success&session_id={CHECKOUT_SESSION_ID}`,
       client_reference_id: user.id,
       allow_promotion_codes: true,
       metadata: {
@@ -15038,10 +15056,22 @@ app.post('/api/billing/trial-checkout', requireAuth, async (req, res) => {
           trial: 'true',
         },
       },
-    });
+    };
+
+    if (mode === 'hosted') {
+      sessionParams.success_url = `${appUrl}/start-trial?checkout=success&session_id={CHECKOUT_SESSION_ID}`;
+      sessionParams.cancel_url = `${appUrl}/start-trial?checkout=canceled`;
+    } else {
+      sessionParams.ui_mode = 'embedded';
+      sessionParams.return_url = `${appUrl}/start-trial?checkout=success&session_id={CHECKOUT_SESSION_ID}`;
+    }
+
+    const session = await stripe.checkout.sessions.create(sessionParams);
 
     return res.json({
-      client_secret: session.client_secret,
+      mode,
+      client_secret: session.client_secret || null,
+      url: session.url || null,
       trial_days: STRIPE_TRIAL_DAYS,
     });
   } catch (err) {
